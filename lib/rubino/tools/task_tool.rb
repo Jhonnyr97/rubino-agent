@@ -185,7 +185,17 @@ module Rubino
         # spawn); with_ui binds that SAME instance thread-locally so any global
         # Rubino.ui lookup inside the nested loop also resolves to it.
         ui_for_child = child_ui || nested_ui_for(entry, parent_ui)
-        result   = Rubino.with_ui(ui_for_child) { runner.run!(prompt) }
+        # Wire the child Loop with the entry's OWN steering queue (parent->child
+        # `steer` channel) and bind the current-subagent id so a tool the child
+        # invokes (ask_parent) can find its own registry entry. The steer queue
+        # is the SAME InputQueue the human uses to steer the parent: the parent
+        # pushes a note via BackgroundTasks#steer, the child folds it in at its
+        # next iteration boundary (Loop#inject_steered_input).
+        result = Rubino.with_current_subagent_id(entry.id) do
+          Rubino.with_ui(ui_for_child) do
+            runner.run!(prompt, input_queue: entry.steer_queue)
+          end
+        end
         text     = result.to_s.strip
         text     = "(subagent '#{entry.subagent}' #{NOOP_RESULT_SUFFIX}" if text.empty?
 

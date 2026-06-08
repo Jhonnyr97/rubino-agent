@@ -107,6 +107,8 @@ module Rubino
           :handled
         when "agents", "tasks"
           handle_agents(arguments)
+        when "reply"
+          handle_reply(arguments)
           :handled
         when "sessions"
           handle_sessions(arguments)
@@ -389,15 +391,142 @@ module Rubino
 
         tokens = args.split(/\s+/)
         stop   = tokens.delete("--stop") ? true : false
-        id     = tokens.first
+        id     = tokens.shift
 
         if id.nil? || id.empty?
           show_agents_list
         elsif stop
           stop_agent(id)
+        elsif tokens.first == "steer"
+          steer_agent(id, dequote(tokens[1..].join(" ")))
+        elsif tokens.first == "probe"
+          probe_agent(id, dequote(tokens[1..].join(" ")))
         else
           show_agent_detail(id)
         end
+      end
+
+      # parent->child STEER: a fire-and-forget note that enters the child\'s
+      # context at its next turn boundary (Loop#inject_steered_input). Pushes onto
+      # the child\'s steering queue via BackgroundTasks#steer — the SAME wire the
+      # human uses to steer the parent. Echoed with the existing steer vocabulary
+      # (▸, "enters child context") + a card repaint so the parked note shows.
+      def steer_agent(id, text)
+        if text.to_s.strip.empty?
+          @ui.error(%(Usage: /agents #{id} steer "your note"))
+          return
+        end
+
+        if Tools::BackgroundTasks.instance.steer(id, text)
+          @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}  (parked · enters child context next turn)")
+          @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
+        else
+          @ui.error("Cannot steer #{id} — no such running subagent.")
+        end
+      end
+
+      # parent->child PROBE: an EPHEMERAL read-only peek. Snapshots the child\'s
+      # current messages, runs ONE side-inference ([child messages] + question) on
+      # the child\'s own model, prints the answer in a dashed "ephemeral · not
+      # saved" aside, and DISCARDS it — nothing is appended to the child\'s
+      # history, nothing enters the timeline. The absence of any saved/timeline
+      # entry is itself the signal that the peek changed nothing.
+      def probe_agent(id, question)
+        if question.to_s.strip.empty?
+          @ui.error(%(Usage: /agents #{id} probe "your question"))
+          return
+        end
+
+        entry = Tools::BackgroundTasks.instance.find(id)
+        unless entry
+          @ui.error("Cannot probe #{id} — no such subagent.")
+          return
+        end
+
+        @ui.info(pastel.dim("┄┄ probe → #{id} ┄┄  (ephemeral · not saved · child trajectory unchanged)"))
+        @ui.info("?  #{question}")
+        answer = Tools::SubagentProbe.new.peek(entry: entry, question: question)
+        @ui.info("⟵  #{answer}")
+        @ui.info(pastel.dim("┄┄ end probe (nothing was saved to #{id}) ┄┄"))
+      end
+
+      # child->parent ASK_PARENT answer: /reply <id> <answer>. Resolves the
+      # child\'s ask gate (Run::ApprovalGate#decide) so a BLOCKING ask unwinds with
+      # the answer as its tool result, and ALSO pushes the answer onto the child\'s
+      # steer queue so a NON-BLOCKING ask folds it in at its next turn boundary.
+      # Either way the answer PERSISTS in the child\'s context. With no inline
+      # answer, falls back to an interactive prompt (the ◆ takeover, like the
+      # approval menu). Clears the blocked state and unblocks the tree.
+      def handle_reply(arguments)
+        tokens = arguments.to_s.strip.split(/\s+/)
+        id     = tokens.shift
+        if id.nil? || id.empty?
+          show_blocked_agents
+          return
+        end
+
+        entry = Tools::BackgroundTasks.instance.find(id)
+        if entry.nil? || entry.status != :blocked_on_human
+          @ui.error("#{id} is not waiting on you.")
+          return
+        end
+
+        answer = dequote(tokens.join(" "))
+        answer = prompt_reply_answer(entry) if answer.to_s.strip.empty?
+        if answer.to_s.strip.empty?
+          @ui.info("No answer given — #{id} is still waiting.")
+          return
+        end
+
+        deliver_reply(entry, answer)
+      end
+
+      # The interactive ◆ takeover for /reply with no inline answer — mirrors the
+      # approval menu (composer-suspend, ◆ glyph) so answering an ask_parent feels
+      # exactly like answering an approval, a pattern the user already knows.
+      def prompt_reply_answer(entry)
+        @ui.info("")
+        @ui.info("◆ #{entry.id} (#{entry.subagent}) asks — everything is waiting on this")
+        @ui.info("   ❓ #{entry.ask_question}")
+        @ui.ask("✎ your answer › ").to_s
+      end
+
+      # Routes the answer back DOWN to the child: decide the gate (unblocks a
+      # blocking ask with the answer as its tool result) and push it onto the
+      # steer queue (a non-blocking ask folds it in next turn). Then clear the
+      # blocked state and repaint so the ⛔ marker clears.
+      def deliver_reply(entry, answer)
+        entry.ask_gate&.decide(entry.ask_id, answer)
+        Tools::BackgroundTasks.instance.steer(entry.id, "[parent answer] #{answer}")
+        Tools::BackgroundTasks.instance.end_ask(entry.id)
+        @ui.info("↳ answered #{entry.id}: #{truncate(answer, 80)}")
+        @ui.info("✓ tree unblocked · #{entry.id} resumes at its next turn")
+        @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
+      end
+
+      # Lists the children currently blocked on the human (the /reply with no id
+      # case) so the user can see who is waiting and on what.
+      def show_blocked_agents
+        blocked = Tools::BackgroundTasks.instance.awaiting_human
+        if blocked.empty?
+          @ui.info("No subagent is waiting on you.")
+          return
+        end
+
+        @ui.info(pastel.red("⛔ #{blocked.size} subagent waiting on you:"))
+        blocked.each do |e|
+          @ui.info("  #{e.id} · #{e.subagent}: #{truncate(e.ask_question, 80)}")
+        end
+        @ui.info("/reply <id> <answer> to answer")
+      end
+
+      # Strips a single pair of wrapping double/single quotes from a steer/probe
+      # argument so `steer "be terse"` lands as `be terse`, not `"be terse"`.
+      def dequote(text)
+        t = text.to_s.strip
+        return t[1..-2] if t.length >= 2 && ((t.start_with?(%(")) && t.end_with?(%("))) || (t.start_with?("\'") && t.end_with?("\'")))
+
+        t
       end
 
       def show_agents_list

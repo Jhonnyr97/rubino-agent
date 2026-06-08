@@ -29,9 +29,12 @@ module Rubino
       # list anyway with an explicit overflow tail.
       MAX_CARDS = Tools::BackgroundTasks::MAX_CONCURRENT
 
-      # Collapsed glyph (a running card) / approval glyph (needs the human).
+      # Collapsed glyph (a running card) / approval glyph (needs the human) /
+      # BLOCKED glyph (an escalated ask_parent waiting on the human — RESERVED for
+      # "the tree is blocked on you" and nothing else, the distinct-signal rule).
       COLLAPSED = "▸"
       APPROVAL  = "●"
+      BLOCKED   = "⛔"
 
       def initialize(pastel: Pastel.new)
         @pastel = pastel
@@ -56,7 +59,9 @@ module Rubino
 
       # One collapsed card row for a single entry.
       def card_line(entry)
-        if entry.status == :needs_approval
+        if entry.status == :blocked_on_human
+          blocked_card_line(entry)
+        elsif entry.status == :needs_approval
           approval_card_line(entry)
         else
           glyph = @pastel.cyan(COLLAPSED)
@@ -65,6 +70,18 @@ module Rubino
           body += " · #{entry.last_activity}" unless entry.last_activity.to_s.empty?
           "  #{glyph} #{body}"
         end
+      end
+
+      # A card for a child parked on an escalated ask_parent — the ⛔ "tree is
+      # blocked on YOU" row, the loudest state. Leads with the red ⛔ glyph and
+      # the question, and points at /reply <id> (the answer verb), distinct from
+      # the approval row's /agents <id>.
+      def blocked_card_line(entry)
+        glyph    = @pastel.red(BLOCKED)
+        question = entry.ask_question.to_s
+        "  #{glyph} #{entry.id} · #{entry.subagent} · " +
+          @pastel.red("waiting on you") + ": #{first_line(question, 60)}" \
+          " · /reply #{entry.id}"
       end
 
       # A card for a child parked on a human approval — the approval is the most
@@ -81,13 +98,17 @@ module Rubino
       private
 
       def live?(entry)
-        entry.status == :running || entry.status == :needs_approval
+        entry.status == :running || entry.status == :needs_approval ||
+          entry.status == :blocked_on_human
       end
 
       # Shared hint under the block. When something needs approval the hint leads
       # with the answer affordance; otherwise it's the watch/stop hint.
       def hint_line(shown)
-        if shown.any? { |e| e.status == :needs_approval }
+        blocked = shown.count { |e| e.status == :blocked_on_human }
+        if blocked.positive?
+          @pastel.red("    \u26d4 #{blocked} subagent waiting on you · /reply <id> to answer")
+        elsif shown.any? { |e| e.status == :needs_approval }
           @pastel.dim("    └ /agents <id> to approve · --stop to cancel")
         else
           @pastel.dim("    └ /agents <id> to watch · --stop to cancel")

@@ -47,7 +47,7 @@ RSpec.describe Rubino::Tools::TaskTool do
   # with and replays a canned final message — lets us assert isolation (only the
   # prompt crosses the boundary) without spinning a real nested loop.
   StubRunner = Struct.new(:final, :seen_prompts) do
-    def run!(input)
+    def run!(input, **_opts)
       seen_prompts << input
       final
     end
@@ -318,7 +318,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       factory = lambda do |definition|
         view = Rubino::UI::SubagentView.new(agent_name: definition.name, out: out)
         Class.new do
-          define_method(:run!) do |input|
+          define_method(:run!) do |input, **_opts|
             view.tool_started("grep", arguments: { "pattern" => "needle" })
             result = Rubino::Tools::Result.success(
               name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
@@ -397,7 +397,7 @@ RSpec.describe Rubino::Tools::TaskTool do
     # the `task` call returned WITHOUT waiting for the child to finish.
     def gated_runner(final, latch)
       Class.new do
-        define_method(:run!) do |_input|
+        define_method(:run!) do |_input, **_opts|
           latch.pop # blocks until the test releases it
           final
         end
@@ -484,7 +484,7 @@ RSpec.describe Rubino::Tools::TaskTool do
     it "records a failed status + failure notice when the child raises" do
       sink = Rubino::Interaction::InputQueue.new
       runner = Class.new do
-        def run!(_input) = raise("boom")
+        def run!(_input, **_opts) = raise("boom")
         def cancel!; end
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
@@ -597,7 +597,7 @@ RSpec.describe Rubino::Tools::TaskTool do
     # view is resolved off Rubino.with_ui, which TaskTool binds to the child UI.
     def activity_runner(final, latch)
       Class.new do
-        define_method(:run!) do |_input|
+        define_method(:run!) do |_input, **_opts|
           view = Rubino.ui # the card-mode SubagentView bound by with_ui
           view.tool_started("grep", arguments: { "pattern" => "needle" })
           result = Rubino::Tools::Result.success(name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches")
@@ -716,7 +716,7 @@ RSpec.describe Rubino::Tools::TaskTool do
     it "reports the full result of a completed background subagent" do
       latch  = Queue.new
       runner = Class.new do
-        define_method(:run!) { |_i| latch.pop; "FINAL DETAIL" }
+        define_method(:run!) { |_i, **_opts| latch.pop; "FINAL DETAIL" }
         define_method(:cancel!) {}
       end.new
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
@@ -748,7 +748,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch     = Queue.new
       cancelled = []
       runner = Class.new do
-        define_method(:run!) { |_i| latch.pop; "x" }
+        define_method(:run!) { |_i, **_opts| latch.pop; "x" }
         define_method(:cancel!) { cancelled << true }
       end.new
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
