@@ -58,7 +58,7 @@ The hardline floor and explicit `permissions: deny` rules run **before** the yol
 
 - **Connection refused** — the server binds `127.0.0.1` by default. Use `--host 0.0.0.0` (or `RUBINO_API_HOST`) to expose it, only behind TLS or a trusted segment.
 - **401 unauthorized** — every route except `GET /v1/health` and `GET /v1/metrics` requires `Authorization: Bearer <RUBINO_API_KEY>`. Set `RUBINO_API_KEY` (or `--api_key`) on the server and send the matching token.
-- **TLS errors on the web→agent hop** — the API serves a self-signed cert; the client must **pin** it. Fetch it with `rubino tls-cert`. See [security.md](security.md#tls-for-the-http-api).
+- **TLS errors on a remote HTTP client** — the API serves a self-signed cert; the client must **pin** it. Fetch it with `rubino tls-cert`. See [security.md](security.md#tls-for-the-http-api).
 
 ## OAuth routes return errors
 

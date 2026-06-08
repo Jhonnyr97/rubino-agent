@@ -5,7 +5,7 @@ Background work in rubino is split into two surfaces that share the `Rubino::Job
 1. **Internal background queue** — async side-effects the agent enqueues for itself (memory extraction, context compaction, session summarization, retention sweeps).
 2. **Cron jobs** — user-defined schedules that fire fresh agent runs on a cron expression, with optional webhook delivery on completion. HTTP surface lives at [`/v1/jobs`](api/v1.md#cron-jobs).
 
-This doc describes both, plus the **Backend Adapter contract** that the queue and the scheduler will be plugged into post-v0.1 so the gem can be hosted on Sidekiq / SolidQueue / GoodJob / ActiveJob without rewriting handlers.
+This doc describes both, plus the **Backend Adapter contract** that the queue and the scheduler are designed to be plugged into so the gem can be hosted on Sidekiq / SolidQueue / GoodJob / ActiveJob without rewriting handlers.
 
 ---
 
@@ -72,7 +72,7 @@ Retry uses linear backoff: `retry_backoff_seconds * attempts`. After `max_attemp
 | `manual` | enqueue only — nothing runs until `rubino jobs run` is invoked. | air-gapped or CI batch flows |
 | `worker` | a long-running `rubino jobs worker` polls and dequeues. | production single-process |
 
-The worker is a single-threaded poll loop with `SIGINT`/`SIGTERM` graceful stop. It is not safe to run more than one worker per SQLite file — locking is row-level but `WAL` contention will dominate. Multi-process scaling is what the [Backend Adapter](#backend-adapter-post-v01-design) section is for.
+The worker is a single-threaded poll loop with `SIGINT`/`SIGTERM` graceful stop. It is not safe to run more than one worker per SQLite file — locking is row-level but `WAL` contention will dominate. Multi-process scaling is what the [Backend Adapter](#backend-adapter-planned-design) section is for.
 
 ### Handler contract
 
@@ -171,19 +171,19 @@ scheduler.shutdown!                     # at server stop
 | Payload | `{ job_id, job_name, run_id, status, session_id }` |
 | Metrics | `webhook_deliveries_total{outcome="ok"|"http_error"|"error"}` |
 
-Per-job webhook URLs and signed payloads are post-v0.1.
+Per-job webhook URLs and signed payloads are planned.
 
 ### Multi-process limitation
 
-Because rufus lives in the Ruby heap, **every Puma worker** would run **every cron tick** if you scaled `rubino server` horizontally. v0.1 ships as single-instance only. The [Backend Adapter](#backend-adapter-post-v01-design) section sketches what cluster-safe scheduling looks like.
+Because rufus lives in the Ruby heap, **every Puma worker** would run **every cron tick** if you scaled `rubino server` horizontally. The scheduler currently ships as single-instance only. The [Backend Adapter](#backend-adapter-planned-design) section sketches what cluster-safe scheduling looks like.
 
 ---
 
-## Backend Adapter (post-v0.1, design)
+## Backend Adapter (planned design)
 
 The internal queue today is hardwired to SQLite via Sequel. For real production deployments — multi-process Puma, k8s pods, heavy fanout — the natural move is to plug Sidekiq / SolidQueue / GoodJob / Resque underneath without rewriting any handler.
 
-The contract below is **not implemented in v0.1**. It is documented so that:
+The contract below is **not implemented yet**. It is documented so that:
 
 1. Today's `Jobs::Queue` keeps a stable public method set (`enqueue / find / list / pending_count`) that can become the adapter facade later.
 2. Anyone writing a new handler today knows what *not* to depend on (DB queries on `:jobs`, transaction semantics, Sequel handles).
@@ -244,7 +244,7 @@ end
 
 `Jobs::Queue.new` becomes a façade that delegates to `Rubino.configuration.jobs_backend`. No handler changes; no API changes; `inline` / `manual` / `worker` modes collapse into whatever the adapter exposes.
 
-### Sketch adapters (NOT shipped in v0.1)
+### Sketch adapters (NOT shipped yet)
 
 Each row below shows the **only file** an integrator would have to write. Handlers stay the same Ruby object with `#perform(payload)`.
 
@@ -313,7 +313,7 @@ In every case the HTTP surface (`/v1/jobs`) does not change. Only **who actually
 
 ---
 
-## Non-goals (v0.1)
+## Non-goals
 
 - **Pluggable backends are designed, not shipped.** The default and only backend is `Sqlite`. The `Jobs::Backend` module above does not exist in the code yet — `Jobs::Queue` is the SQLite implementation directly.
 - **No cluster-safe cron.** The rufus scheduler is single-instance only. Running more than one `rubino server` in front of the same DB will multi-fire every cron job.

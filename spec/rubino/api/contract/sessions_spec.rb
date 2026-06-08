@@ -3,7 +3,7 @@
 require "spec_helper"
 
 # Full-stack round-trip for /v1/sessions. Locks the wire shape of
-# create → show → delete that clients (client-ui) depend on.
+# create → show → delete that API clients depend on.
 RSpec.describe "API contract: sessions" do
   before { with_test_db }
 

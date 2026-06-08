@@ -10,7 +10,7 @@ module Rubino
     # (Context::Compressor, Context::SummaryBuilder, Context::PromptAssembler)
     # with near-identical Sequel blocks that DIVERGED: the compressor stamped
     # parent_summary_id to chain lineage, the builder's own save! did not — so
-    # whether a summary linked to its predecessor depended on which code path
+    # whether a summary linked to its parent depended on which code path
     # happened to write it. Centralising here means the row shape and the
     # parent lineage live in exactly one place.
     #

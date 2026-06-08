@@ -18,7 +18,6 @@ The project was rebranded from `ruby-agent` to **Rubino**. This is a clean break
   - `RUBY_AGENT_API_HOST` → `RUBINO_API_HOST`
   - `RUBY_AGENT_API_PORT` → `RUBINO_API_PORT`
   - `RUBY_AGENT_TLS` → `RUBINO_TLS`
-  - `RUBY_AGENT_PROXY_URL` → `RUBINO_PROXY_URL`
   - `RUBY_AGENT_WEBHOOK_URL` → `RUBINO_WEBHOOK_URL`
   - `RUBY_AGENT_WEBHOOK_SECRET` → `RUBINO_WEBHOOK_SECRET`
   - `RUBY_AGENT_LOG_LEVEL` → `RUBINO_LOG_LEVEL`
@@ -29,7 +28,7 @@ The project was rebranded from `ruby-agent` to **Rubino**. This is a clean break
   - `RUBY_AGENT_GIT_REF` → `RUBINO_GIT_REF`
   - `RUBY_AGENT_RUBY_VERSION` → `RUBINO_RUBY_VERSION`
 
-The GitHub repository URL is unchanged (`github.com/Jhonnyr97/ruby-agent`); renaming the repo is a separate action by the owner. Publishing the renamed gem is **not** done as part of this change.
+The GitHub repository is `github.com/Jhonnyr97/rubino-agent`. Publishing the renamed gem is **not** done as part of this change.
 
 ## [0.3.0] - 2026-06-06
 

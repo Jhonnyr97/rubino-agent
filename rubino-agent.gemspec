@@ -8,10 +8,10 @@ Gem::Specification.new do |spec|
   spec.authors = ["Jhon Rojas"]
   spec.email = ["jhon@example.com"]
 
-  spec.summary = "A Ruby-first agentic framework with persistent memory, sessions, and context compaction"
-  spec.description = "An alternative to the predecessor built on ruby_llm. Provides agent loop, " \
-                     "persistent memory, SQLite sessions, context compaction, job system, " \
-                     "tool registry, and extensible UI layer."
+  spec.summary = "A lightweight Ruby coding and automation agent with persistent memory, sessions, and context compaction"
+  spec.description = "A standalone, self-contained coding and automation agent built on ruby_llm. " \
+                     "Provides an agent loop, persistent memory, SQLite sessions, context compaction, " \
+                     "a job system, a tool registry, and an extensible UI layer."
   spec.homepage = "https://github.com/Jhonnyr97/rubino-agent"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"

@@ -13,7 +13,7 @@ module Rubino
       #
       # Buckets refill linearly over a 60-second window. Storage is a single
       # in-memory hash with monotonic timestamps; safe for a single-process
-      # v0.1 deployment. Multi-process / multi-host needs a shared backend
+      # deployment. Multi-process / multi-host needs a shared backend
       # (Redis, etc.) — defer until we actually scale out.
       #
       # On exceed: 429 with the canonical error envelope

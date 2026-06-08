@@ -18,9 +18,9 @@ conn = repo.list.find { |c| c[:provider] == "github" }
 client = Octokit::Client.new(access_token: conn[:access_token])
 ```
 
-> **v0.1 scope:** no auto-refresh. Expired tokens are returned as-is; the tool that uses them is responsible for handling 401s (typically by surfacing a re-auth prompt). A future task will add transparent refresh inside the repository's read path.
+> **Current scope:** no auto-refresh. Expired tokens are returned as-is; the tool that uses them is responsible for handling 401s (typically by surfacing a re-auth prompt). A future task will add transparent refresh inside the repository's read path.
 
-## Built-in providers (v0.1)
+## Built-in providers
 
 | ID | Class | Default scopes | Required env |
 |---|---|---|---|
@@ -132,7 +132,7 @@ Providers not declared in config are not registered — `GET /v1/oauth/providers
 Rich did it: it has `/api/providers/oauth/*`. Reason it makes sense in rubino too:
 
 - **Tools need tokens.** A `GithubTool` needs a token to call the API. If OAuth is the client's responsibility, the client has to forward tokens with every run, which is ugly and leaky.
-- **Refresh logic will be centralized.** Once auto-refresh lands (post-v0.1), expired tokens get refreshed in one place, not duplicated per client.
+- **Refresh logic will be centralized.** Once auto-refresh lands, expired tokens get refreshed in one place, not duplicated per client.
 - **Encrypted persistence.** Clients shouldn't store user tokens long-term; the agent does, encrypted, with a redaction-aware logger.
 
 The client (a web UI) handles only the redirect dance — opening the authorize URL in a browser and POSTing the code back. Everything else stays here.
@@ -140,6 +140,6 @@ The client (a web UI) handles only the redirect dance — opening the authorize 
 ## Non-goals
 
 - **Apple Sign-In:** uses JWT-signed assertions, not standard OAuth. Postponed.
-- **Multi-account per provider:** v0.1 supports one connection per provider per instance. Multi-account requires UI for selection — out of scope.
+- **Multi-account per provider:** one connection per provider per instance is supported. Multi-account requires UI for selection — out of scope.
 - **OAuth1.0:** Twitter/X is the only relevant one. Postponed.
 - **OIDC discovery:** providers are explicit classes. No `.well-known/openid-configuration` autodiscovery.

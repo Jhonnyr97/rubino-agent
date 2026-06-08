@@ -5,7 +5,7 @@ require "spec_helper"
 # Full-stack contract for GET /v1/sessions?q=... — when q is present, the
 # endpoint switches from "list recent" to "search messages, group by session,
 # order by latest match". The wire envelope stays { sessions: [...] } either
-# way so client-ui can render the same component.
+# way so API clients can render the same component.
 RSpec.describe "API contract: sessions search" do
   before { with_test_db }
 
