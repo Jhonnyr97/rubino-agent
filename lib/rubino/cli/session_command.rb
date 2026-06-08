@@ -19,6 +19,10 @@ module Rubino
       option :search, type: :string,  desc: "Filter by title (substring match)"
       def list
         repo = Session::Repository.new
+        # Reap sessions left "active" by a process that died without ending them
+        # (hard terminal kill / SIGKILL, #11) so the list never shows a stale
+        # "active" for a window that is actually gone.
+        repo.reap_orphaned_active!
         sessions = repo.list(limit: options[:limit], status: options[:status],
                              search: options[:search])
 

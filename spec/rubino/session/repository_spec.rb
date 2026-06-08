@@ -182,6 +182,53 @@ RSpec.describe Rubino::Session::Repository do
     end
   end
 
+  # #11: a hard kill (SIGKILL) / closed terminal can leave a session "active"
+  # with its owning process gone. The reaper stamps ended_at on next list/resume.
+  describe "#reap_orphaned_active!" do
+    it "ends an active session whose owning process is dead" do
+      session = repo.create(source: "cli")
+      # Forge a dead owner: kill -0 against a guaranteed-free pid raises ESRCH.
+      dead_pid = unused_pid
+      db_connection.db[:sessions].where(id: session[:id]).update(owner_pid: dead_pid)
+
+      reaped = repo.reap_orphaned_active!
+
+      expect(reaped).to eq(1)
+      ended = repo.find(session[:id])
+      expect(ended[:status]).to eq("ended")
+      expect(ended[:ended_at]).not_to be_nil
+    end
+
+    it "leaves a session owned by a live process (this one) untouched" do
+      session = repo.create(source: "cli") # create stamps owner_pid = Process.pid
+      expect(repo.reap_orphaned_active!).to eq(0)
+      expect(repo.find(session[:id])[:status]).to eq("active")
+    end
+
+    it "leaves a session with no recorded pid untouched" do
+      session = repo.create(source: "cli")
+      db_connection.db[:sessions].where(id: session[:id]).update(owner_pid: nil)
+      expect(repo.reap_orphaned_active!).to eq(0)
+      expect(repo.find(session[:id])[:status]).to eq("active")
+    end
+
+    # Returns the lowest pid not currently in use, so kill(0) raises ESRCH.
+    def unused_pid
+      pid = 999_999
+      pid -= 1 while pid > 1 && process_present?(pid)
+      pid
+    end
+
+    def process_present?(pid)
+      Process.kill(0, pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+  end
+
   describe "#latest_active" do
     it "returns the most recently updated active session" do
       repo.create(source: "cli")

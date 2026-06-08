@@ -887,6 +887,12 @@ module Rubino
       # opts in; one-shot (`-q`/scripted) keeps the old "fresh unless asked"
       # behaviour so automation isn't silently hijacked onto a past session.
       def resolve_session_id(auto_resume: false)
+        # Reap sessions orphaned by a hard kill (SIGKILL) or a closed terminal
+        # whose SIGHUP never landed (#11): end any "active" row whose owning
+        # process is gone before we resolve a resume target, so --continue /
+        # auto-resume never treats a dead session as live.
+        Session::Repository.new.reap_orphaned_active!
+
         id = opt(:session)
         return id if id
 
