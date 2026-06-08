@@ -108,6 +108,9 @@ module Rubino
         when "reasoning"
           handle_reasoning(arguments)
           :handled
+        when "think"
+          handle_think(arguments)
+          :handled
         when "status"
           show_status
           :handled
@@ -206,6 +209,33 @@ module Rubino
 
         Rubino.configuration.set("display", "reasoning", sym.to_s)
         @ui.reasoning_changed(sym, previous: previous) if @ui.respond_to?(:reasoning_changed)
+      end
+
+      # `/think`         → show current effort
+      # `/think <level>` → switch (off | low | medium | high)
+      #
+      # Writes thinking.effort on the live configuration; the adapter derives the
+      # thinking-token budget from it on the next turn. An unknown value is
+      # rejected with the valid list.
+      def handle_think(arguments)
+        name = arguments.to_s.strip.downcase.split(/\s+/).first
+        previous = Config::ReasoningPrefs.effort(Rubino.configuration) ||
+                   Config::ReasoningPrefs::DEFAULT_EFFORT
+
+        if name.nil? || name.empty?
+          @ui.think_status(previous) if @ui.respond_to?(:think_status)
+          return
+        end
+
+        sym = name.to_sym
+        unless Config::ReasoningPrefs::EFFORTS.include?(sym)
+          @ui.error("unknown effort: #{name}")
+          @ui.info("Available: #{Config::ReasoningPrefs::EFFORTS.join(', ')}")
+          return
+        end
+
+        Rubino.configuration.set("thinking", "effort", sym.to_s)
+        @ui.think_changed(sym, previous: previous) if @ui.respond_to?(:think_changed)
       end
 
       # --- /status & welcome -------------------------------------------------

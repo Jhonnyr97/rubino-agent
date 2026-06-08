@@ -494,12 +494,16 @@ module Rubino
       end
 
       # Thinking/reasoning budget in tokens. 0 / nil disables thinking entirely.
-      # providers.<name>.thinking_budget wins, then model.thinking_budget, then
-      # a medium default (8000 — the same value the reference THINKING_BUDGET maps
-      # "medium" to). Only meaningful for the anthropic-compatible path; other
-      # providers ignore with_thinking or never see it (we still set it, ruby_llm
-      # only renders thinking for providers that support it).
+      # thinking.effort wins when set (off→0, low→4000, medium→8000, high→16000);
+      # otherwise providers.<name>.thinking_budget, then model.thinking_budget,
+      # then a medium default (8000 — the same value the reference THINKING_BUDGET
+      # maps "medium" to). Only meaningful for the anthropic-compatible path;
+      # other providers ignore with_thinking or never see it (we still set it,
+      # ruby_llm only renders thinking for providers that support it).
       def thinking_budget
+        effort = Config::ReasoningPrefs.effort(@config)
+        return Config::ReasoningPrefs.effort_budget(effort).to_i if effort
+
         raw = provider_cfg.key?("thinking_budget") ? provider_cfg["thinking_budget"] : nil
         raw = @config.dig("model", "thinking_budget") if raw.nil?
         raw = 8000 if raw.nil?

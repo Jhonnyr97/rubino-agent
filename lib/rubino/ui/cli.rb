@@ -602,6 +602,21 @@ module Rubino
         $stdout.puts @pastel.dim("┄ reasoning #{arrow} ┄")
       end
 
+      # `/think` with no arg: confirm the current effort in house style.
+      #   ┄ effort: medium ┄
+      def think_status(effort)
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ effort: #{effort} ┄")
+      end
+
+      # `/think <level>`: confirm the effort switch.
+      #   ┄ effort medium → high ┄
+      def think_changed(effort, previous: nil)
+        arrow = previous && previous != effort ? "#{previous} → #{effort}" : effort.to_s
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ effort #{arrow} ┄")
+      end
+
       def mode_changed(name, previous: nil)
         arrow = previous && previous != name ? "#{previous} → #{name}" : name.to_s
         text = "┄ mode #{arrow} ┄"

@@ -43,9 +43,37 @@ RSpec.describe Rubino::Commands::Executor do
     end
   end
 
-  describe "BuiltIns NAMES exposes /reasoning for tab-completion" do
-    it "includes /reasoning in the completion set" do
-      expect(Rubino::Commands::BuiltIns::NAMES).to include("/reasoning")
+  describe "/think" do
+    it "switches the effort on config and emits think_changed" do
+      result = exec.try_execute("/think high")
+
+      expect(result).to eq(:handled)
+      expect(Rubino.configuration.dig("thinking", "effort")).to eq("high")
+      event = ui.messages.find { |m| m[:level] == :think_changed }
+      expect(event).to include(level: :think_changed, message: :high, previous: :medium)
+    end
+
+    it "switches to off" do
+      exec.try_execute("/think off")
+      expect(Rubino.configuration.dig("thinking", "effort")).to eq("off")
+    end
+
+    it "reports an unknown value as an error" do
+      exec.try_execute("/think extreme")
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to match(/unknown effort/)
+    end
+
+    it "with no argument shows the current effort" do
+      exec.try_execute("/think")
+      event = ui.messages.find { |m| m[:level] == :think_status }
+      expect(event).to include(level: :think_status, message: :medium)
+    end
+  end
+
+  describe "BuiltIns NAMES exposes the new commands for tab-completion" do
+    it "includes /reasoning and /think in the completion set" do
+      expect(Rubino::Commands::BuiltIns::NAMES).to include("/reasoning", "/think")
     end
   end
 end

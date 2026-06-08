@@ -193,9 +193,12 @@ module Rubino
         "thinking" => {
           # Reasoning effort: off | low | medium | high. Mapped to an Anthropic
           # thinking-token budget (off→0, low→4000, medium→8000, high→16000) on
-          # the anthropic-family path. "off" disables thinking. When set it wins
-          # over the model/provider thinking_budget chain.
-          "effort" => "medium"
+          # the anthropic-family path. "off" disables thinking. When SET it wins
+          # over the model/provider thinking_budget chain; left nil (the default)
+          # the budget falls through that chain, whose own default is 8000 — i.e.
+          # the effective default effort is already "medium". /think reports
+          # "medium" for the nil case.
+          "effort" => nil
         },
         "streaming" => {
           "enabled" => true,
