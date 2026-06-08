@@ -8,7 +8,7 @@ group :development, :test do
   gem "rack-test", "~> 2.1"
   gem "rspec", "~> 3.12"
   gem "rubocop", "~> 1.60"
-  gem "rubocop-rspec", "~> 2.25"
+  gem "rubocop-rspec", "~> 3.0"
   gem "simplecov", "~> 0.22"
   gem "webmock", "~> 3.19"
   gem "factory_bot", "~> 6.4"
