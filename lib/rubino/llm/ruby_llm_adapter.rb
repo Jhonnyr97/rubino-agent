@@ -284,7 +284,7 @@ module Rubino
         if ENV["RUBYLLM_DEBUG"]
           require "logger"
           require "fileutils"
-          log_path = File.expand_path("~/.rubino/logs/ruby_llm.log")
+          log_path = debug_log_path
           FileUtils.mkdir_p(File.dirname(log_path))
           # Build the Logger explicitly so that ruby_llm's lazy
           # `@logger ||= config.logger || Logger.new(...)` picks it up
@@ -519,6 +519,13 @@ module Rubino
       end
 
       # Provider config hash from the config file (e.g. providers.ollama.*)
+      # The RUBYLLM_DEBUG log path, under the resolved home (RUBINO_HOME ->
+      # else ~/.rubino) so an isolated/custom home is not polluted with a log
+      # written into the default ~/.rubino (issue #27).
+      def debug_log_path
+        File.join(Rubino::Config::Loader.default_home_path, "logs", "ruby_llm.log")
+      end
+
       def provider_cfg
         @config.provider_config(@provider)
       end

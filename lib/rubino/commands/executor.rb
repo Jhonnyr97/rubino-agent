@@ -974,12 +974,14 @@ module Rubino
       end
 
       # The directories the loader actually searches, for the empty-state copy.
+      # Resolves through Loader.resolve_path so the "Searched:" line reports the
+      # real paths (RUBINO_HOME-aware), not a literal ~/.rubino never searched.
       def command_dirs
-        paths = Rubino.configuration.dig("commands", "paths") ||
-                [".rubino/commands", "~/.rubino/commands"]
-        Array(paths)
+        paths = Rubino.configuration.dig("commands", "paths")
+        paths = Config::Defaults.to_hash.dig("commands", "paths") if paths.nil?
+        Array(paths).map { |dir| Loader.resolve_path(dir) }
       rescue StandardError
-        [".rubino/commands", "~/.rubino/commands"]
+        Loader.default_command_paths
       end
 
       # "  - <description>" suffix for a custom-command listing, omitted when the

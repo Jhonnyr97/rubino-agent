@@ -10,6 +10,12 @@ module Rubino
       # home (RUBINO_HOME) instead of a literal ~/.rubino (issue #96).
       DEFAULT_DATABASE_PATH = "<RUBINO_HOME>/rubino.sqlite3"
 
+      # Sentinel for the user-home commands directory. Resolved at read time
+      # (Commands::Loader/Executor) against the resolved home (RUBINO_HOME)
+      # instead of a literal ~/.rubino so commands in a custom home are
+      # actually discovered (issue #38).
+      HOME_COMMANDS_PATH = "<RUBINO_HOME>/commands"
+
       MODULE_DEFAULTS = {
         "model" => {
           "default" => "openai/gpt-4.1",
@@ -396,7 +402,7 @@ module Rubino
         "commands" => {
           "paths" => [
             ".rubino/commands",
-            "~/.rubino/commands"
+            HOME_COMMANDS_PATH
           ],
           # When false (default), !`shell` interpolation in command templates is
           # disabled. Set to true only in trusted environments where you explicitly
