@@ -111,16 +111,21 @@ module Rubino
         PROVIDERS.each_with_index do |p, i|
           @output.puts "  #{i + 1}) #{p[:label]}"
         end
-        @output.print "Choose a provider [1-#{PROVIDERS.size}, Enter to skip]: "
-        @output.flush
-        raw = read_line
-        return nil if raw.nil? || raw.strip.empty? || %w[s skip].include?(raw.strip.downcase)
 
-        idx = raw.strip.to_i
-        return PROVIDERS[idx - 1] if idx.between?(1, PROVIDERS.size)
+        # Re-prompt on an invalid choice instead of abandoning the wizard on
+        # the first typo (#31). Only an explicit skip (empty / `s` / `skip`) or
+        # EOF leaves the loop with nil; an out-of-range number just asks again.
+        loop do
+          @output.print "Choose a provider [1-#{PROVIDERS.size}, Enter to skip]: "
+          @output.flush
+          raw = read_line
+          return nil if raw.nil? || raw.strip.empty? || %w[s skip].include?(raw.strip.downcase)
 
-        @ui.warning("Not a valid choice — skipping setup.")
-        nil
+          idx = raw.strip.to_i
+          return PROVIDERS[idx - 1] if idx.between?(1, PROVIDERS.size)
+
+          @ui.warning("Not a valid choice — please pick 1-#{PROVIDERS.size}, or press Enter to skip.")
+        end
       end
 
       def ask_api_key(choice)

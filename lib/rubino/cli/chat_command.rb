@@ -1061,7 +1061,17 @@ module Rubino
         return resume if resume
 
         if opt(:continue) || opt(:c)
-          return Session::Repository.new.latest_active&.dig(:id)
+          # Explicit --continue/-c resumes the same session a bare `chat`
+          # auto-resume would (#43): the latest RESUMABLE session (any status,
+          # message_count > 0), not just an "active" one — otherwise a cleanly
+          # ended prior session is invisible and -c silently forks a fresh one,
+          # losing context. When there genuinely is none, tell the user instead
+          # of silently starting over.
+          @auto_resumed_session = Session::Repository.new.latest_resumable
+          return @auto_resumed_session[:id] if @auto_resumed_session
+
+          $stderr.puts pastel.yellow("No previous session to continue — starting a new one.")
+          return nil
         end
 
         # --new forces a brand-new session; otherwise a BARE interactive `chat`
