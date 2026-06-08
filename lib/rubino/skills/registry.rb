@@ -11,9 +11,16 @@ module Rubino
       # Directory skills: <dir>/<name>/SKILL.md (Claude skill layout).
       DIR_GLOB = File.join("*", "SKILL.md")
 
-      def initialize(config: nil, state_repository: nil)
+      # +include_project_local+ controls whether the cwd `.rubino/skills`
+      # catalogue is discovered. Folder-trust passes false for an UNtrusted
+      # primary root so a hostile repo's skill descriptions can't be auto-
+      # injected into the system prompt before the user vouches for the folder
+      # (the home `~/.rubino/skills` catalogue is always loaded — it's the
+      # user's own, not attacker-controllable by cd-ing into a repo).
+      def initialize(config: nil, state_repository: nil, include_project_local: true)
         @config = config || Rubino.configuration
         @state_repository = state_repository
+        @include_project_local = include_project_local
         @skills = {}
         @discovered = false
       end
@@ -118,10 +125,29 @@ module Rubino
       end
 
       def skill_paths
-        @config.dig("skills", "paths") || [
+        paths = @config.dig("skills", "paths") || [
           ".rubino/skills",
           "~/.rubino/skills"
         ]
+        return paths if @include_project_local
+
+        # Untrusted primary root: drop the project-local (cwd-relative) skill
+        # dirs, keeping only absolute / home (~) paths the user controls.
+        paths.reject { |p| project_local_path?(p) }
+      end
+
+      # A skill path is "project-local" when it resolves under the primary
+      # workspace root (the cwd a hostile repo could ship skills in), as
+      # opposed to an absolute or ~/.rubino path the user owns.
+      def project_local_path?(path)
+        return false if path.to_s.start_with?("~", "/")
+
+        expanded = File.expand_path(path.to_s)
+        root = File.expand_path(Workspace.primary_root)
+        expanded == root || expanded.start_with?("#{root}#{File::SEPARATOR}")
+      rescue StandardError
+        # Conservative: if we can't tell, treat as project-local and drop it.
+        true
       end
     end
   end

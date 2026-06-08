@@ -188,10 +188,10 @@ module Rubino
         @files_cache
       end
 
-      # Same source of truth as Tools::Base#workspace_root.
+      # Same source of truth as Tools::Base#workspace_root (the primary root).
       def workspace_root
         root = @files_root_proc&.call if @files_root_proc
-        root || Rubino.configuration.dig("terminal", "cwd") || Dir.pwd
+        root || Rubino::Workspace.primary_root
       rescue StandardError
         Dir.pwd
       end

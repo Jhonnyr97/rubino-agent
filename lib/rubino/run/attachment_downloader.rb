@@ -32,9 +32,7 @@ module Rubino
       LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
 
       def initialize(workspace_root: nil, allowed_hosts: nil)
-        @workspace_root = workspace_root ||
-                          Rubino.configuration&.dig("terminal", "cwd") ||
-                          Dir.pwd
+        @workspace_root = workspace_root || Rubino::Workspace.primary_root
         @allowed_hosts  = normalize_hosts(allowed_hosts || default_allowed_hosts)
       end
 
