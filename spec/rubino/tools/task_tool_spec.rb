@@ -515,6 +515,68 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
+  # #16: a denied / no-op subagent completion must NOT read as a green ✓. The
+  # outcome glyph reflects the actual result: ✓ only on genuine output, a neutral
+  # ⊘ "no-op" when the run produced nothing (no-op or fully-denied). Applies to
+  # BOTH the background completion line and the foreground delegation row.
+  # ---------------------------------------------------------------------------
+  describe "completion outcome indicator (#16)" do
+    let(:tool) { described_class.new }
+
+    def entry(subagent: "explore", tool_count: 3)
+      Rubino::Tools::BackgroundTasks::Entry.new(
+        id: "sa_abc123", subagent: subagent, tool_count: tool_count
+      )
+    end
+
+    describe "background completion line (#completion_summary)" do
+      it "renders ✓ for a genuine completion with output" do
+        line = tool.send(:completion_summary, entry, "FOUND: lib/x.rb:42")
+        expect(line).to start_with("✓")
+        expect(line).to include("· done ·")
+        expect(line).not_to include("⊘")
+      end
+
+      it "renders a neutral ⊘ no-op (not ✓) when the subagent did nothing / was denied" do
+        noop = "(subagent 'explore' returned no output)"
+        line = tool.send(:completion_summary, entry, noop)
+        expect(line).to start_with("⊘")
+        expect(line).to include("· no-op ·")
+        expect(line).not_to start_with("✓")
+      end
+    end
+
+    describe "foreground delegation row (UI::CLI#delegation_finished, #123 path)" do
+      let(:cli) { Rubino::UI::CLI.new }
+
+      def render(output_text)
+        cli.instance_variable_set(:@delegation_subagent, "explore")
+        original = $stdout
+        $stdout = StringIO.new
+        cli.send(
+          :delegation_finished,
+          Rubino::Tools::Result.success(name: "task", call_id: "c1", output: output_text)
+        )
+        Pastel.new(enabled: false).strip($stdout.string)
+      ensure
+        $stdout = original
+      end
+
+      it "renders ✓ for a genuine completion with output" do
+        rendered = render("FOUND: lib/x.rb:42")
+        expect(rendered).to include("✓ explore:")
+        expect(rendered).not_to include("⊘")
+      end
+
+      it "renders a neutral ⊘ (not ✓) for a no-op / denied delegation" do
+        rendered = render("(subagent 'explore' returned no output)")
+        expect(rendered).to include("⊘ explore:")
+        expect(rendered).not_to include("✓ explore:")
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Variant A: a background child's tool activity feeds the registry (the card /
   # drill-in source) instead of flooding the parent — and the parent's card is
   # repainted. End-to-end through a card-mode SubagentView.
