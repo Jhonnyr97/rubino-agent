@@ -185,6 +185,29 @@ module Rubino
       Thread.current[:rubino_background_sink] = prev
     end
 
+    # The BackgroundTasks entry id of the subagent run executing on THIS thread,
+    # if any. Set by TaskTool#run_child_thread around the child Runner#run! so a
+    # tool the child invokes (today: ask_parent) can find its own registry entry
+    # — the card it surfaces on, the steer queue it receives answers through —
+    # without threading the id through the loop/executor/tool signatures. Nil on
+    # the parent thread and on any non-delegated (top-level) run, which is the
+    # signal ask_parent uses to refuse (a top-level agent has no parent to ask).
+    def current_subagent_id
+      Thread.current[:rubino_current_subagent_id]
+    end
+
+    # Binds +id+ as the current subagent id for the duration of the block
+    # (set by TaskTool around the child run, exactly like #with_ui / the
+    # background sink). Thread-local so the child's tools reach it with zero
+    # signature churn.
+    def with_current_subagent_id(id)
+      prev = Thread.current[:rubino_current_subagent_id]
+      Thread.current[:rubino_current_subagent_id] = id
+      yield
+    ensure
+      Thread.current[:rubino_current_subagent_id] = prev
+    end
+
     # Returns the current structured logger.
     def logger
       @logger ||= Logger.new

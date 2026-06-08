@@ -243,6 +243,24 @@ module Rubino
         $stdout.puts @pastel.dim("┄ #{text} ┄")
       end
 
+      # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
+      # instant a background child escalates an ask_parent to the human. This is
+      # the ATTENTION event (the one-time, unmissable banner); the persistent
+      # AMBIENT reminder is the ⛔ card line the live region keeps showing (see
+      # UI::SubagentCards#hint_line) so a blocked tree can never hide behind a
+      # spinner. The answer verb is /reply <id>; --stop cancels the child. Routed
+      # through $stdout so (during a turn) it lands above the bottom composer like
+      # every other committed line; between turns it prints inline.
+      def subagent_ask_banner(id, subagent, question)
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ a subagent needs you ┄")
+        $stdout.puts @pastel.red.bold("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer")
+        $stdout.puts @pastel.yellow("   ❓ #{question}")
+        $stdout.puts @pastel.dim("   everything it needs is paused until you answer — no timeout")
+        $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
+        $stdout.flush
+      end
+
       # Repaints the SUBAGENT CARD block in the live region from the
       # BackgroundTasks registry (Variant A). Called whenever a background
       # subagent's activity changes (a child tool started/finished, a spawn, a

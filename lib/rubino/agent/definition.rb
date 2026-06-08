@@ -60,6 +60,13 @@ module Rubino
       # even propose a `task` call.
       DELEGATION_TOOLS = %w[task task_result task_stop].freeze
 
+      # The inverse of DELEGATION_TOOLS: tools that ONLY make sense for a
+      # subagent and must be hidden from a primary/top-level agent. ask_parent
+      # escalates a question to the PARENT — a top-level agent has no parent, so
+      # exposing it there would be a dead tool. Subagents keep it; everyone else
+      # drops it. Single enforcement point, same as DELEGATION_TOOLS.
+      SUBAGENT_ONLY_TOOLS = %w[ask_parent].freeze
+
       def resolved_tools
         tools =
           case @tools
@@ -73,7 +80,11 @@ module Rubino
             Tools::Registry.enabled_tools
           end
 
-        subagent? ? tools.reject { |t| DELEGATION_TOOLS.include?(t.name) } : tools
+        if subagent?
+          tools.reject { |t| DELEGATION_TOOLS.include?(t.name) }
+        else
+          tools.reject { |t| SUBAGENT_ONLY_TOOLS.include?(t.name) }
+        end
       end
     end
   end

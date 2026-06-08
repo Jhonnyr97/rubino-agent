@@ -7,6 +7,10 @@ module Rubino
     class Runner
       attr_reader :session
 
+      # The resolved model id this runner runs against. Read by SubagentProbe so an
+      # ephemeral peek uses the child's OWN model, not the global default.
+      attr_reader :model_id
+
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
                      event_bus: nil)
