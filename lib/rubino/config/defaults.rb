@@ -30,8 +30,8 @@ module Rubino
           # budget so the model can think AND answer. Mirrors the reference +4096.
           "max_tokens_text_headroom" => 4096,
           # nil = auto-detect from model_id via LLM::ContentBuilder.supports_vision?.
-          # Set to true/false to override (e.g. when running behind a proxy that
-          # hides the real upstream model name, like rubino-ui's `auto`).
+          # Set to true/false to override (e.g. when running behind a gateway that
+          # hides the real upstream model name, like the gateway provider's `auto`).
           "supports_vision" => nil
         },
         "providers" => {
@@ -60,8 +60,8 @@ module Rubino
           # gateway that exposes an OpenAI-style /v1/* API: set base_url and
           # api_key and the agent routes everything here regardless of model id.
           # The gateway decides which upstream (OpenAI/Anthropic/…) and model
-          # to call. Set model.provider: "rubino-ui" to enable.
-          "rubino-ui" => {
+          # to call. Set model.provider: "gateway" to enable.
+          "gateway" => {
             "openai_compatible" => true,
             "assume_model_exists" => true,
             "base_url" => nil,
@@ -279,8 +279,8 @@ module Rubino
         # downloader refuses everything else. ENV["ALLOWED_FILE_URL_HOSTS"]
         # (comma-separated) is merged in too, so a downstream consumer can keep
         # using its existing env knob. Loopback hosts (localhost, 127.0.0.1, ::1) are
-        # ALWAYS allowed on top of this list: in a co-located
-        # deployment the web app is on the same host, so attachment URLs are loopback.
+        # ALWAYS allowed on top of this list, since an HTTP client co-located on the
+        # same host produces loopback attachment URLs.
         # Empty list + empty env = only loopback is fetchable.
         "attachments" => {
           "allowed_hosts" => [],

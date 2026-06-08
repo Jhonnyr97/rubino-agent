@@ -60,9 +60,9 @@ module Rubino
           config:   {}
         },
         {
-          key:      "rubino-ui",
-          label:    "rubino-ui proxy (OpenAI-compatible gateway)",
-          provider: "rubino-ui",
+          key:      "gateway",
+          label:    "OpenAI-compatible gateway",
+          provider: "gateway",
           model:    "auto",
           env_var:  "OPENAI_API_KEY",
           config:   {

@@ -23,11 +23,11 @@ module Rubino
       MAX_BYTES_PER_FILE = 50 * 1024 * 1024 # 50 MB hard cap, matches uploads
       HTTP_TIMEOUT       = 30
 
-      # In the single-tenant-per-VM topology the web app is co-located with
-      # the agent, so attachment URLs are loopback (http://localhost:3000/...).
+      # When an HTTP client is co-located on the same host as the agent,
+      # attachment URLs are loopback (http://localhost:3000/...).
       # These are always allowed IN ADDITION to attachments.allowed_hosts so
       # the common case works out of the box without opening the guard to
-      # arbitrary external hosts. SSRF risk is bounded: only the local app is
+      # arbitrary external hosts. SSRF risk is bounded: only the local host is
       # reachable, which the agent could already talk to via the shell.
       LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
 

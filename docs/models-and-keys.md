@@ -10,7 +10,7 @@ Which provider, which model, which key — answered in 60 seconds. The fastest p
 | **MiniMax** | Anthropic-compatible | `MiniMax-M2.7` |
 | **Anthropic** | Claude models | `claude-sonnet-4-5` |
 | **Google (Gemini)** | Gemini models | `gemini-2.5-pro` |
-| **rubino-ui proxy** | An OpenAI-compatible gateway picks the upstream | `auto` |
+| **OpenAI-compatible gateway** | A gateway picks the upstream | `auto` |
 | **fake** | Tests/demos only | `fake/happy-path` (needs `RUBINO_ALLOW_FAKE=1`) |
 
 How resolution works: an explicit `model.provider` (anything other than `auto`) wins. When `provider: auto`, the provider is derived from the `model.default` id by ruby_llm's registry. A key for the resolved provider must be available either via `providers.<name>.api_key` in `config.yml` **or** the provider's native ENV var.
@@ -125,18 +125,18 @@ GEMINI_API_KEY=...
 # GOOGLE_API_KEY is also accepted
 ```
 
-### rubino-ui proxy (OpenAI-compatible gateway)
+### OpenAI-compatible gateway
 
-Point this at any OpenAI-compatible gateway; the gateway decides which upstream (OpenAI/MiniMax/Anthropic/…) and which model to call. Route everything to it with `provider: rubino-ui` and `model: auto`, and set `base_url` + `api_key` for your gateway.
+Point this at any OpenAI-compatible gateway; the gateway decides which upstream (OpenAI/MiniMax/Anthropic/…) and which model to call. Route everything to it with `provider: gateway` and `model: auto`, and set `base_url` + `api_key` for your gateway.
 
 ```yaml
 model:
   default: "auto"
-  provider: "rubino-ui"
-  supports_vision: null   # set true/false if the proxy hides the upstream model name
+  provider: "gateway"
+  supports_vision: null   # set true/false if the gateway hides the upstream model name
 
 providers:
-  rubino-ui:
+  gateway:
     openai_compatible: true
     assume_model_exists: true
     base_url: "https://your-gateway/v1"

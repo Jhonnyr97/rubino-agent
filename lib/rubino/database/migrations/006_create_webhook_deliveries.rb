@@ -7,7 +7,7 @@ Sequel.migration do
       String :job_id
       String :run_id
       String :target_url, null: false
-      # request_id (X-Ruby-Agent-Delivery-Id) is unique across delivery rows so
+      # request_id (X-Rubino-Delivery-Id) is unique across delivery rows so
       # a crash-then-restart cannot create two pending rows for the same logical
       # attempt; the resume hook keys off this column.
       String :request_id, null: false, unique: true

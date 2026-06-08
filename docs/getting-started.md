@@ -49,7 +49,7 @@ No API key is configured yet. Pick a provider (or press Enter to skip).
   2) MiniMax (Anthropic-compatible)
   3) Anthropic (Claude)
   4) Google (Gemini)
-  5) rubino-ui proxy (OpenAI-compatible gateway)
+  5) OpenAI-compatible gateway
 Choose a provider [1-5, Enter to skip]: 1
 Paste your OPENAI_API_KEY (input hidden; Enter to skip): ••••••••
 Configured OpenAI (GPT) (recommended default) with model gpt-4.1.
@@ -61,7 +61,7 @@ What the wizard does, exactly:
 - Writes `model.default` and `model.provider` for the chosen provider into `config.yml`.
 - Writes any provider block it needs (e.g. MiniMax sets `providers.minimax.base_url` + `anthropic_compatible: true` + `api_key: ${MINIMAX_API_KEY}`).
 - Appends `KEY=value` to `~/.rubino/.env` (mode `0600`); the key is **never echoed back** and is exported into the current process so the very next message works.
-- The **rubino-ui proxy** option additionally asks for the gateway base URL.
+- The **OpenAI-compatible gateway** option additionally asks for the gateway base URL.
 
 The defaults written per provider:
 
@@ -71,7 +71,7 @@ The defaults written per provider:
 | MiniMax | `minimax` | `MiniMax-M2.7` | `MINIMAX_API_KEY` |
 | Anthropic | `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
 | Google | `google` | `gemini-2.5-pro` | `GEMINI_API_KEY` |
-| rubino-ui proxy | `rubino-ui` | `auto` | `OPENAI_API_KEY` |
+| OpenAI-compatible gateway | `gateway` | `auto` | `OPENAI_API_KEY` |
 
 Press **Enter** at the provider prompt to skip. You can also configure things by hand — see [models-and-keys.md](models-and-keys.md).
 

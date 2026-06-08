@@ -89,7 +89,7 @@ A run parked on a human decision is bounded by `approvals.wait_timeout_seconds` 
 
 ## Attachment SSRF guard
 
-URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed (the web app is co-located per VM). Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped.
+URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped.
 
 ## <a id="autonomous-memory"></a>Autonomous memory tool
 
@@ -101,7 +101,7 @@ The fake LLM provider can short-circuit tool decisions, so `chat` and `server` r
 
 ## TLS for the HTTP API
 
-The API binds `127.0.0.1` by default; only expose it (`--host 0.0.0.0` / `RUBINO_API_HOST`) behind TLS or a trusted segment. For the server→server web→agent hop, set `RUBINO_TLS=1` (or leave a cert in place) and the API serves over a self-signed cert that the client **pins** (no DNS / Let's Encrypt needed). On first boot it generates `cert.pem` + `key.pem` under `$RUBINO_HOME/tls` (CN/SAN = host/IP, ~10y) and reuses them. Hand the public cert to a pinning client with:
+The API binds `127.0.0.1` by default; only expose it (`--host 0.0.0.0` / `RUBINO_API_HOST`) behind TLS or a trusted segment. For a remote HTTP client, set `RUBINO_TLS=1` (or leave a cert in place) and the API serves over a self-signed cert that the client **pins** (no DNS / Let's Encrypt needed). On first boot it generates `cert.pem` + `key.pem` under `$RUBINO_HOME/tls` (CN/SAN = host/IP, ~10y) and reuses them. Hand the public cert to a pinning client with:
 
 ```bash
 rubino tls-cert   # prints $RUBINO_HOME/tls/cert.pem (generating it if absent)

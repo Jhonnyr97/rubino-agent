@@ -31,7 +31,7 @@ module Rubino
     class MarkdownRenderer
       # Map of common GFM language hints we don't need to special-case. Listed
       # only to acknowledge: rendering treats all languages identically (no
-      # syntax highlighting in v0.1 — too much code for marginal gain).
+      # syntax highlighting — too much code for marginal gain).
 
       # Smallest width we'll ask TTY::Table to fit into. Below this, resize
       # tends to raise (a column needs at least ~2 cols + borders); we clamp up

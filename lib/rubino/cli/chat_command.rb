@@ -7,7 +7,7 @@ require "io/console"
 module Rubino
   module CLI
     # Interactive and non-interactive chat session command.
-    # Supports predecessor compatible flags:
+    # Supported flags:
     #   -q/--query    one-shot non-interactive prompt
     #   -c/--continue resume most recent session
     #   -r/--resume   resume session by ID or title
