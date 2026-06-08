@@ -147,7 +147,7 @@ module Rubino
         when "thinking"
           text = interpolate(event["text"] || event[:text])
           return if text.nil? || text.empty?
-          return unless show_reasoning?
+          return if reasoning_hidden?
           safe_yield(block, type: :thinking, text: text, message_id: 0)
         when "tool_call"
           tool_calls << build_tool_call(event)
@@ -244,8 +244,8 @@ module Rubino
         last_user[:content] || last_user["content"] || ""
       end
 
-      def show_reasoning?
-        @config.dig("display", "show_reasoning") == true
+      def reasoning_hidden?
+        Config::ReasoningPrefs.mode(@config) == :hidden
       end
 
       # Pulls the override scenarios directory off the adapter's own config

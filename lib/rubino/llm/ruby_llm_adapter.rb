@@ -156,7 +156,7 @@ module Rubino
         emit = lambda do |type, text|
           next if text.nil? || text.empty?
           buffered << text if type == :content
-          next if type == :thinking && !show_reasoning?
+          next if type == :thinking && reasoning_hidden?
 
           begin
             block.call({ type: type, text: text, message_id: message_block_id })
@@ -543,9 +543,11 @@ module Rubino
         provider_cfg["anthropic_compatible"] == true
       end
 
-      # True when display.show_reasoning is enabled — streams thinking tokens.
-      def show_reasoning?
-        @config.dig("display", "show_reasoning") == true
+      # True when reasoning is suppressed at the adapter gate. Only the "hidden"
+      # render mode drops :thinking chunks; "collapsed" and "full" both let them
+      # through so the UI can buffer them (collapse cue / full aside).
+      def reasoning_hidden?
+        Config::ReasoningPrefs.mode(@config) == :hidden
       end
 
       # ── Streaming resilience helpers (issues #12, #22) ────────────────────
@@ -584,7 +586,7 @@ module Rubino
           api_key:        ENV["BEDROCK_API_KEY"],
           region:         ENV["BEDROCK_REGION"] || "us-east-1",
           model_id:       @model_id,
-          show_reasoning: show_reasoning?,
+          show_reasoning: !reasoning_hidden?,
           event_bus:      @event_bus
         )
       end

@@ -37,6 +37,20 @@ module Rubino
         @stream_type        = nil
         @stream_md          = nil # StreamingMarkdown buffer, lazily built per content stream
         @thinking_indicator = false
+        # Animated "thinking…" state: a small timer thread repaints the live row,
+        # @thinking_started_at marks the start so the collapse cue can report the
+        # elapsed seconds, and @reasoning_buffer accumulates the model's reasoning
+        # deltas (no longer raw-printed) for the collapse cue / full aside / ctrl-o.
+        @thinking_thread    = nil
+        @thinking_started_at = nil
+        @reasoning_buffer   = +""
+        # The last retained reasoning block (committed/collapsed), revealable via
+        # ctrl-o even after the answer has streamed. Reset per turn.
+        @last_reasoning     = nil
+        @last_reasoning_seconds = nil
+        # Session override for the render mode / effort (set by /reasoning, /think).
+        # nil means "fall through to config".
+        @reasoning_mode_override = nil
         @activity_open      = false
         @activity_name      = nil
         @session_id         = session_id || SecureRandom.uuid
@@ -194,8 +208,10 @@ module Rubino
       def activity_started(name, hint: nil)
         # Replace a still-showing "thinking…" indicator before the committed
         # activity row so it isn't stranded above it (#86): the model emits the
-        # indicator during TTFB and may go straight to a tool call.
-        clear_thinking_indicator
+        # indicator during TTFB and may go straight to a tool call. Collapse any
+        # buffered reasoning into the cue/aside FIRST so a reasoning→tool turn
+        # (no answer text) never strands the thought.
+        collapse_reasoning
         hint_str = hint ? " · #{hint}" : ""
         $stdout.puts
         $stdout.puts @pastel.cyan("● running  #{name}#{hint_str}")
@@ -352,8 +368,8 @@ module Rubino
         # A progress indicator must be REPLACED by its result, never left as
         # residue above the answer (#86). On the non-streaming path nothing
         # else clears the transient "thinking…" line before the committed
-        # answer, so erase it here first.
-        clear_thinking_indicator
+        # answer, so collapse any buffered reasoning + clear the animation first.
+        collapse_reasoning
         $stdout.puts
         commit_markdown_block(text)
         $stdout.puts
@@ -406,6 +422,18 @@ module Rubino
         text = chunk[:text].to_s
         return if text.empty?
 
+        # Reasoning deltas are NEVER raw-printed (that dumped unstyled reasoning
+        # indistinguishable from the answer). Buffer them so the collapse cue /
+        # full aside / ctrl-o reveal can render them in house style instead. The
+        # animated "thinking…" row keeps spinning while reasoning accumulates.
+        if type == :thinking
+          @reasoning_buffer << text
+          return
+        end
+
+        # First answer token: collapse any buffered reasoning into scrollback
+        # (cue or aside per mode) before the answer streams below it.
+        collapse_reasoning if @thinking_indicator || !@reasoning_buffer.empty?
         clear_thinking_indicator
 
         if type != @stream_type
@@ -413,13 +441,7 @@ module Rubino
           @stream_type = type
         end
 
-        if type == :content
-          stream_content(text)
-        else
-          # thinking / reasoning keep the existing raw path.
-          $stdout.print text
-          $stdout.flush
-        end
+        stream_content(text)
       end
 
       def stream_end
@@ -433,13 +455,61 @@ module Rubino
         @stream_type = nil
       end
 
+      # Glyphs for the star-pulse thinking animation, cycled on the timer.
+      THINKING_GLYPHS = %w[· ✢ ✳ ✶ ✻].freeze
+      # Repaint cadence for the animation (seconds).
+      THINKING_TICK = 0.1
+
+      # Starts the animated "thinking…" row: a pulsing star glyph + a live
+      # elapsed-seconds counter, all dim, repainted ~10×/s through $stdout.live
+      # so every frame goes through the composer's render mutex (no rogue
+      # cursor/thread that would desync the frame). Off a live-capable stdout
+      # (plain mode / non-TTY) it degrades to a single static dim print, today's
+      # behavior — never animate into a pipe.
       def thinking_started
         return if @stream_type
         return if @thinking_indicator
 
-        $stdout.print @pastel.dim("thinking…")
-        $stdout.flush
-        @thinking_indicator = true
+        @thinking_started_at = monotonic_now
+        @thinking_indicator  = true
+
+        unless $stdout.respond_to?(:live)
+          $stdout.print @pastel.dim("thinking…")
+          $stdout.flush
+          return
+        end
+
+        out = $stdout
+        @thinking_thread = Thread.new do
+          i = 0
+          loop do
+            elapsed = (monotonic_now - @thinking_started_at).to_i
+            glyph   = THINKING_GLYPHS[i % THINKING_GLYPHS.length]
+            out.live(@pastel.dim("#{glyph} thinking…  #{elapsed}s"))
+            i += 1
+            sleep THINKING_TICK
+          end
+        rescue StandardError
+          # The animation is cosmetic — a repaint failure must never break the
+          # turn. Stop quietly.
+        end
+      end
+
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # The active reasoning render mode (:hidden | :collapsed | :full). A session
+      # override (set by /reasoning) wins over config; the config resolver handles
+      # the legacy show_reasoning back-compat mapping.
+      def reasoning_mode
+        @reasoning_mode_override || Config::ReasoningPrefs.mode(Rubino.configuration)
+      end
+
+      # Whole seconds the current/last thinking phase ran, for the collapse cue.
+      def thinking_elapsed_seconds
+        return 0 unless @thinking_started_at
+        (monotonic_now - @thinking_started_at).to_i
       end
 
       # Replay user input in compact form
@@ -778,6 +848,10 @@ module Rubino
       def clear_thinking_indicator
         return unless @thinking_indicator
 
+        # Stop the animation thread FIRST so it can't repaint the row after we
+        # erase it (no print-after-clear leak). join is bounded by the tick.
+        stop_thinking_animation
+
         if $stdout.respond_to?(:live)
           $stdout.live("")
         else
@@ -787,13 +861,75 @@ module Rubino
         @thinking_indicator = false
       end
 
+      # Kills + joins the animation timer thread cleanly. Idempotent.
+      def stop_thinking_animation
+        thread = @thinking_thread
+        @thinking_thread = nil
+        return unless thread
+
+        thread.kill
+        thread.join
+      rescue StandardError
+        nil
+      end
+
+      # Commits the buffered reasoning into scrollback per the active render mode,
+      # then clears the animation. Called when the first answer token arrives, or
+      # when a tool/activity starts with reasoning still buffered (never strand
+      # the cue). After committing it retains the buffer in @last_reasoning so a
+      # later ctrl-o can re-reveal it, and resets @reasoning_buffer for the next
+      # phase. A no-op in :hidden mode (just clears the animation) and when there
+      # is nothing buffered.
+      def collapse_reasoning
+        seconds = thinking_elapsed_seconds
+        buffered = @reasoning_buffer
+        mode = reasoning_mode
+
+        stop_thinking_animation
+        clear_thinking_indicator
+
+        unless buffered.strip.empty? || mode == :hidden
+          if mode == :full
+            commit_reasoning_aside(buffered, seconds)
+          else
+            commit_reasoning_cue(seconds)
+          end
+          @last_reasoning = buffered
+          @last_reasoning_seconds = seconds
+        end
+
+        @reasoning_buffer = +""
+        @thinking_started_at = nil
+      end
+
+      # The dim one-liner committed in :collapsed mode:
+      #   ┄ ✻ thought for <N>s · ctrl-o to show ┄
+      def commit_reasoning_cue(seconds)
+        $stdout.puts @pastel.dim("┄ ✻ thought for #{seconds}s · ctrl-o to show ┄")
+      end
+
+      # The expanded reasoning aside (full mode / ctrl-o reveal), reusing the
+      # `┊` left-rail family of #probe_aside: a `┄ thinking ┄` opening rail, the
+      # reasoning body on a dim 2-space `┊` rail, and a `┄ thought for <N>s ┄`
+      # closing rail. The hint verb differs per call site (show vs hide).
+      def commit_reasoning_aside(text, seconds, hint: "ctrl-o to hide")
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ thinking ┄#{'─' * 50}")
+        text.to_s.each_line do |line|
+          $stdout.puts @pastel.dim("┊  #{line.chomp}")
+        end
+        $stdout.puts @pastel.dim("┄ thought for #{seconds}s · #{hint} ┄")
+        $stdout.puts
+      end
+      alias commit_reasoning_aside_full commit_reasoning_aside
+
       # --- Subagent delegation rows (the `task` tool) ---
 
       # `● delegato → <subagent>  <prompt-preview>`. Stashes the subagent name so
       # the matching #delegation_finished can label the close row even though
       # tool_finished only receives the result, not the arguments.
       def delegation_started(arguments)
-        clear_thinking_indicator
+        collapse_reasoning
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub

@@ -179,10 +179,23 @@ module Rubino
         },
         "display" => {
           "streaming" => true,
+          # Tri-state reasoning render: "hidden" suppresses thinking entirely,
+          # "collapsed" buffers it and commits a one-liner cue ("thought for Ns"),
+          # "full" renders the whole reasoning as a dim aside above the answer.
+          # The legacy boolean display.show_reasoning still maps in for back-compat
+          # (true→full, false→hidden) when display.reasoning is unset.
+          "reasoning" => "collapsed",
           "show_reasoning" => true,
           "language" => "en",
           "runtime_footer" => { "enabled" => false },
           "interim_assistant_messages" => false
+        },
+        "thinking" => {
+          # Reasoning effort: off | low | medium | high. Mapped to an Anthropic
+          # thinking-token budget (off→0, low→4000, medium→8000, high→16000) on
+          # the anthropic-family path. "off" disables thinking. When set it wins
+          # over the model/provider thinking_budget chain.
+          "effort" => "medium"
         },
         "streaming" => {
           "enabled" => true,

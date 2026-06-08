@@ -36,12 +36,27 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to match(/┌─/)
     end
 
-    it "streams thinking text dimmed" do
+    it "buffers thinking text instead of raw-printing it (bug #2)" do
       out = capture_stdout do
         ui.stream(type: :thinking, text: "musing")
+      end
+      # Reasoning is NEVER raw-printed — it accumulates in the buffer so the
+      # collapse cue / full aside / ctrl-o reveal can render it in house style.
+      expect(out).not_to include("musing")
+      expect(ui.instance_variable_get(:@reasoning_buffer)).to eq("musing")
+    end
+
+    it "collapses buffered reasoning into a dim cue when the answer arrives" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      out = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "musing")
+        ui.stream(type: :content, text: "hello")
         ui.stream_end
       end
-      expect(out).to include("musing")
+      expect(out).to match(/┄ ✻ thought for \d+s · ctrl-o to show ┄/)
+      expect(out).to include("hello")
+      expect(out).not_to include("musing")
     end
 
     it "clears thinking indicator when first content chunk arrives" do
@@ -54,6 +69,37 @@ RSpec.describe Rubino::UI::CLI do
 
     it "ignores empty chunk text" do
       expect { ui.stream(type: :content, text: "") }.not_to output.to_stdout
+    end
+
+    it "animates the thinking row through #live and stops the timer cleanly" do
+      # A live-capable stdout double drives the animated path (not the static
+      # plain-mode print). The timer thread must start, then be joined/killed by
+      # clear_thinking_indicator with no leak.
+      live = Class.new(StringIO) do
+        def live(str) = print(str)
+      end.new
+      old = $stdout
+      $stdout = live
+      begin
+        ui.thinking_started
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_a(Thread)
+        sleep 0.15 # let at least one frame paint
+        ui.send(:clear_thinking_indicator)
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+        expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+        expect(live.string).to match(/thinking…/)
+      ensure
+        $stdout = old
+      end
+    end
+
+    it "thinking_started/clear are safe to call repeatedly" do
+      expect do
+        ui.thinking_started
+        ui.thinking_started
+        ui.send(:clear_thinking_indicator)
+        ui.send(:clear_thinking_indicator)
+      end.not_to raise_error
     end
 
     it "handles multi-line streamed text" do
