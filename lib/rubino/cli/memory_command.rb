@@ -17,6 +17,7 @@ module Rubino
       option :kind, type: :string, desc: "Filter by memory kind"
       option :limit, type: :numeric, default: 20, desc: "Max results"
       def list
+        Rubino.ensure_database_ready!
         memories = backend_store.list(kind: options[:kind], limit: options[:limit])
 
         if memories.empty?

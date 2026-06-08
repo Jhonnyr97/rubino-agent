@@ -107,6 +107,10 @@ module Rubino
           :handled
         when "agents", "tasks"
           handle_agents(arguments)
+          # handle_agents delegates to the puts-based UI (info/table), whose
+          # methods return nil; without an explicit :handled the falsy result
+          # makes try_execute fall through to the unknown-command path (#34).
+          :handled
         when "reply"
           handle_reply(arguments)
           :handled

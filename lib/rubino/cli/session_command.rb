@@ -18,6 +18,7 @@ module Rubino
       option :status, type: :string,  desc: "Filter by status"
       option :search, type: :string,  desc: "Filter by title (substring match)"
       def list
+        Rubino.ensure_database_ready!
         repo = Session::Repository.new
         # Reap sessions left "active" by a process that died without ending them
         # (hard terminal kill / SIGKILL, #11) so the list never shows a stale
@@ -44,6 +45,7 @@ module Rubino
 
       desc "show ID", "Show session details"
       def show(id)
+        Rubino.ensure_database_ready!
         repo = Session::Repository.new
         session = repo.find(id)
 
@@ -70,6 +72,7 @@ module Rubino
       option :force, type: :boolean, default: false, aliases: "-f",
                      desc: "Skip the confirmation prompt"
       def delete(id)
+        Rubino.ensure_database_ready!
         repo = Session::Repository.new
         session = repo.find(id)
 
@@ -95,6 +98,7 @@ module Rubino
 
       desc "compact ID", "Manually trigger compaction on a session"
       def compact(id)
+        Rubino.ensure_database_ready!
         repo = Session::Repository.new
         session = repo.find(id)
 
