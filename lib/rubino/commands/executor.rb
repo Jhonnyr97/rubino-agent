@@ -116,6 +116,18 @@ module Rubino
           :handled
         when "sessions"
           handle_sessions(arguments)
+        when "probe"
+          # `/probe <text>` is the discoverable alias for the `? ` prefix. We
+          # don't run the side-inference here (the Executor has no LLM seam) —
+          # we hand the REPL a {probe:} signal it runs against the live runner's
+          # session, then renders+discards. Bare `/probe` just teaches the tip.
+          handle_probe(arguments)
+        when "branch"
+          # `/branch [name]` forks the CURRENT session at this point into a new
+          # saved one and switches into it. The REPL owns the runner/session, so
+          # we return a {branch_from:, title:} signal on the SAME channel /new
+          # and /sessions use, and it does the build/seed/swap.
+          handle_branch(arguments)
         when "new"
           # Hand the REPL a signal to rebuild the runner on a brand-new session.
           # The current session is left intact (and will be marked ended on the
@@ -770,6 +782,28 @@ module Rubino
         return list_sessions if query.empty?
 
         resume_session(query)
+      end
+
+      # `/probe <text>` — the discoverable alias for the `? ` prefix. Bare
+      # `/probe` only teaches the prefix (the one-keystroke common case); with
+      # text, signal the REPL to run the ephemeral side-inference and discard.
+      def handle_probe(arguments)
+        text = arguments.to_s.strip
+        if text.empty?
+          @ui.info("Ask an ephemeral side-question that is NOT saved to this session.")
+          @ui.info("Tip: just start a line with '? ' — e.g.  ? is this lib MIT or GPL?")
+          return :handled
+        end
+
+        { probe: text }
+      end
+
+      # `/branch [name]` — fork the current session here into a NEW saved one
+      # and switch into it. The REPL holds the runner/session, so we just pass
+      # the optional title along on the branch signal.
+      def handle_branch(arguments)
+        title = arguments.to_s.strip
+        { branch: true, title: title.empty? ? nil : title }
       end
 
       def list_sessions

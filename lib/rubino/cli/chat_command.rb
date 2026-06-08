@@ -200,16 +200,43 @@ module Rubino
             # the model a default question so it has something to answer.
             input = "What do you see in this image?" if input.empty?
 
+            # A leading `? ` is the one-keystroke ephemeral probe (Option A of
+            # the locked UX): the rest of the line is a side-question answered
+            # from the session context, rendered in a dim aside, then DISCARDED
+            # — nothing is written to the transcript. Handled BEFORE slash
+            # dispatch so `? /foo` is still a probe about a literal `/foo`.
+            if (question = probe_question(input))
+              run_probe(runner, question, ui)
+              next
+            end
+
             if input.start_with?("/")
               result = cmd_executor.try_execute(input)
               case result
               when :exit    then break
               when :handled then next
               when Hash
+                if result[:probe]
+                  # /probe <text>: same ephemeral side-inference as the `? `
+                  # prefix, then discard. The teaching-only bare /probe returned
+                  # :handled above, so this always carries a question.
+                  run_probe(runner, result[:probe], ui)
+                  next
+                end
+                if result[:branch]
+                  # /branch [name]: fork the current session here into a new
+                  # saved one (inheriting context + any preceding probe) and
+                  # SWITCH into it, leaving the original intact.
+                  runner = branch_runner(ui, runner, result[:title])
+                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  next
+                end
                 if result[:resume_session_id]
                   # /sessions <id|title>: rebuild the runner on the chosen
                   # session in place and replay its history, then go back to the
-                  # prompt — no process restart needed.
+                  # prompt — no process restart needed. Leaving a branch (e.g.
+                  # back to the parent) drops the branch chip.
+                  @branch_short_id = nil
                   runner = resume_runner(ui, result[:resume_session_id])
                   cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
                   next
@@ -217,6 +244,7 @@ module Rubino
                 if result[:new_session]
                   # /new: end the current session and rebuild the runner on a
                   # fresh one in place — the counterpart to the bare-chat resume.
+                  @branch_short_id = nil
                   runner.end_session!
                   runner = fresh_runner(ui)
                   cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
@@ -568,6 +596,11 @@ module Rubino
       # call sites. The proxy is torn down and the terminal restored to cooked
       # mode in +ensure+ so raw mode / the swap never leak on a raise.
       def run_turn(runner, prompt, ui, input_queue = nil)
+        # A real turn has happened, so any prior probe is no longer the
+        # "immediately-preceding interaction" — a later /branch must NOT fold it
+        # into the seed. Clear it here, the single chokepoint for real turns.
+        @last_probe = nil
+
         # Consume the turn's queued image attachments (the native vision slot)
         # and reset so they're attached exactly once, not re-sent next turn.
         image_paths = pending_image_paths
@@ -732,11 +765,104 @@ module Rubino
         ui.separator
       end
 
+      # The leading `? ` ephemeral-probe trigger. Returns the side-question text
+      # (everything after the `? `) when the line is a probe, nil otherwise. A
+      # bare `?` or `?` with no following space is NOT a probe (so a real
+      # message can start with `?` by typing it without the trailing space, or
+      # by leading with a space per the escape rule in the UX doc).
+      def probe_question(input)
+        return nil unless input.start_with?("? ")
+
+        q = input[2..].to_s.strip
+        q.empty? ? nil : q
+      end
+
+      # Runs an ephemeral side-question against the live session and renders it
+      # in the dim "probe (ephemeral · not saved)" aside, then DISCARDS it: the
+      # Q&A never touches the session store, so the next real turn is unchanged.
+      # The Q&A is stashed in @last_probe so a `/branch` right after can promote
+      # it into the fork seed (the "actually, let's pursue this" move).
+      def run_probe(runner, question, ui)
+        result = Interaction::Probe.new(
+          session:           runner.session,
+          model_override:    model_name,
+          provider_override: opt(:provider)
+        ).ask(question)
+        ui.probe_aside(result.answer)
+        @last_probe = result
+      rescue StandardError => e
+        # A probe is a throwaway aside — a failure must never break the REPL.
+        ui.warning("probe failed: #{e.message}")
+        @last_probe = nil
+      end
+
+      # Forks the current session at this point into a NEW saved session and
+      # returns a runner switched into it (the REPL replaces its runner with
+      # this). The original session is left untouched.
+      #
+      # Reuse: Session::Repository#create(parent_session_id:) sets the lineage
+      # column, and Session::Store#copy_into seeds the child with the parent's
+      # message history so far — the same context a resume would replay. When
+      # the immediately-preceding interaction was a probe (@last_probe set), its
+      # Q&A is appended to the seed too, so an aside that "never happened" in the
+      # original becomes the branch's starting point.
+      def branch_runner(ui, parent_runner, title)
+        parent     = parent_runner.session
+        store      = ::Rubino::Session::Store.new
+        # Persist the parent if it was a lazily-built, never-saved session, so a
+        # branch from a brand-new chat still inherits whatever is there and the
+        # parent_session_id points at a real row.
+        Session::Repository.new.persist!(parent) if parent[:persisted] == false
+
+        child = Session::Repository.new.create(
+          source:            "cli",
+          model:             parent[:model],
+          provider:          parent[:provider],
+          title:             title,
+          parent_session_id: parent[:id]
+        )
+
+        store.copy_into(child[:id], store.for_session(parent[:id]))
+        included_probe = seed_probe_into!(store, child[:id])
+        # copy_into/seed write message rows but don't touch the session's cached
+        # message_count, so sync it once here — otherwise /sessions shows the
+        # inherited branch as "0 msgs" even though its transcript is populated.
+        Session::Repository.new.update(child[:id], message_count: store.count(child[:id]))
+
+        ui.branch_confirmation(
+          new_id:         child[:id],
+          parent_id:      parent[:id],
+          title:          title,
+          included_probe: included_probe
+        )
+
+        @branch_short_id = child[:id][0..3]
+        @last_probe = nil
+        resume_runner(ui, child[:id])
+      end
+
+      # Appends the immediately-preceding probe's Q&A to the branch seed when one
+      # is present (the user is promoting the aside). Returns true if a probe was
+      # folded in, false otherwise.
+      def seed_probe_into!(store, child_session_id)
+        probe = @last_probe
+        return false unless probe
+
+        store.create(session_id: child_session_id, role: "user", content: probe.question)
+        store.create(session_id: child_session_id, role: "assistant", content: probe.answer)
+        true
+      end
+
       # Agent composer prompt — looks like an input field, not Bash/Zsh.
       # Mode is the only live context shown. Workspace, git, model, and
       # session are printed once at startup in startup_banner.
+      #
+      # After a `/branch`, the chip leads with `branch:<id>` so the user always
+      # knows they're in a fork (and which one), composing with the mode chip.
       def build_prompt
-        "#{mode_label} #{PROMPT_CARET} "
+        chip = mode_label
+        chip = "#{pastel.cyan("branch:#{@branch_short_id}")} #{chip}" if @branch_short_id
+        "#{chip} #{PROMPT_CARET} "
       end
 
       def mode_label
