@@ -17,9 +17,14 @@ module Rubino
         keys = key_path.split(".")
         hash = raw
 
-        keys[0..-2].each do |k|
+        keys[0..-2].each_with_index do |k, i|
           hash[k] ||= {}
           hash = hash[k]
+          unless hash.is_a?(Hash)
+            traversed = keys[0..i].join(".")
+            raise ConfigurationError,
+                  "cannot set '#{key_path}': '#{traversed}' is a scalar value, not a section"
+          end
         end
 
         hash[keys.last] = coerce_value(value)
@@ -30,7 +35,11 @@ module Rubino
       def get(key_path)
         raw = load_raw
         keys = key_path.split(".")
+        # A scalar intermediate node (e.g. a String) has no #dig; treat such a
+        # path as "not found" rather than crashing with a TypeError.
         raw.dig(*keys)
+      rescue TypeError
+        nil
       end
 
       private
