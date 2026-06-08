@@ -1,0 +1,98 @@
+# RuboCop configuration for rubino-agent.
+#
+# This config encodes the project's actual house style so that `rubocop -a`
+# aligns with the committed code instead of fighting it. The two most
+# important conventions:
+#   * Strings are DOUBLE-quoted.
+#   * Every Ruby file carries `# frozen_string_literal: true`.
+
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.3
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - ".bundle/**/*"
+    - "tmp/**/*"
+    - "pkg/**/*"
+    - "coverage/**/*"
+    - "doc/**/*"
+    - "_yardoc/**/*"
+    - "Gemfile.lock"
+
+# --- House style: strings ----------------------------------------------------
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+
+# --- Layout ------------------------------------------------------------------
+
+Layout/LineLength:
+  Max: 120
+
+# --- Metrics: relaxed for a mature codebase ----------------------------------
+# Thresholds raised to keep the signal useful without drowning in churn on a
+# codebase that predates RuboCop. Tighten over time.
+
+Metrics/MethodLength:
+  Max: 40
+
+Metrics/ClassLength:
+  Max: 400
+
+Metrics/ModuleLength:
+  Max: 400
+
+Metrics/AbcSize:
+  Max: 50
+
+Metrics/CyclomaticComplexity:
+  Max: 15
+
+Metrics/PerceivedComplexity:
+  Max: 15
+
+Metrics/BlockLength:
+  Max: 40
+  Exclude:
+    - "spec/**/*"
+    - "*.gemspec"
+    - "Rakefile"
+
+Metrics/ParameterLists:
+  Max: 6
+
+# --- RSpec: relax cops that fight idioms already in the suite ----------------
+
+RSpec/ExampleLength:
+  Enabled: false
+
+RSpec/MultipleExpectations:
+  Enabled: false
+
+RSpec/NestedGroups:
+  Max: 5
+
+RSpec/MultipleMemoizedHelpers:
+  Enabled: false
+
+RSpec/MessageSpies:
+  Enabled: false
+
+RSpec/VerifiedDoubles:
+  Enabled: false
+
+RSpec/ExampleWording:
+  Enabled: false
+
+RSpec/SpecFilePathFormat:
+  Enabled: false
