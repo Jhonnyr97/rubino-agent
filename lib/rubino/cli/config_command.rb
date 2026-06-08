@@ -16,8 +16,17 @@ module Rubino
 
       desc "get KEY", "Get a configuration value (dot-notation)"
       def get(key)
-        writer = Config::Writer.new(config_path: config_path)
-        value = writer.get(key)
+        # Resolve against the effective config (file merged over defaults), the
+        # same source `show` and the running agent use, so default-valued keys
+        # are returned instead of falsely reported "not found" (issue #36).
+        # A scalar intermediate node (e.g. descending into a String) has no
+        # #dig; treat such a path as "not found" rather than crashing.
+        value =
+          begin
+            Rubino.configuration.dig(*key.split("."))
+          rescue TypeError
+            nil
+          end
         if value.nil?
           Rubino.ui.warning("Key '#{key}' not found")
         else
