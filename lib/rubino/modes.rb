@@ -12,6 +12,15 @@ module Rubino
   # `/mode yolo` or `Modes.set(:yolo)` from the API caller takes effect
   # for the rest of that process. We can move it onto Session later if
   # users actually want it sticky.
+  #
+  # Boot pinning (#3): the process forgets the active mode on restart, which
+  # surprises callers when an external supervisor re-applies config and bounces
+  # the process out from under an already-set mode. Rather than introduce
+  # on-disk state, the initial mode is read once from the RUBINO_BOOT_MODE env
+  # var: an unattended supervisor can pin it in the process environment so a
+  # restart comes back up in the same mode it was configured for. Unset (the
+  # normal interactive case) keeps the :default boot. An unknown value is
+  # ignored so a typo in the environment can never crash boot.
   module Modes
     DEFAULT = :default
     PLAN    = :plan
@@ -32,7 +41,7 @@ module Rubino
 
     class << self
       def current
-        @current ||= DEFAULT
+        @current ||= boot_default
       end
 
       # Switches the active mode. Returns the new mode symbol. Raises on
@@ -42,6 +51,17 @@ module Rubino
         sym = name.to_s.downcase.to_sym
         raise ArgumentError, "unknown mode: #{name.inspect} (valid: #{ALL.join(', ')})" unless ALL.include?(sym)
         @current = sym
+      end
+
+      # Initial mode for a fresh process. Honours RUBINO_BOOT_MODE so an
+      # external supervisor can pin the mode across a restart without any
+      # on-disk state; an unset or unknown value falls back to DEFAULT.
+      def boot_default
+        raw = ENV["RUBINO_BOOT_MODE"]
+        return DEFAULT if raw.nil? || raw.strip.empty?
+
+        sym = raw.strip.downcase.to_sym
+        ALL.include?(sym) ? sym : DEFAULT
       end
 
       def reset!
