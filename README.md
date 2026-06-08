@@ -81,6 +81,9 @@ bundle exec rubino chat
 | `rubino tools` | List tools and their enabled/disabled state |
 | `rubino memory list` | Inspect stored memories (uses the active backend) |
 | `rubino version` | Print the version |
+| `rubino update` | Update to the latest published version via RubyGems |
+
+`rubino update` runs `gem update rubino-agent` under the active interpreter (multi-Ruby safe); for a source/dev checkout it points you back at the installer instead. On interactive boot rubino shows a single dim line when a newer version is available (`▸ rubino vX.Y available — run \`rubino update\``). The check is cached and refreshed out-of-band (once / 24h, short timeout), so it never slows startup and is silent offline. Set `RUBINO_NO_UPDATE_CHECK=1` to disable it (it is also off when not a TTY or under `CI`). It prints nothing until the gem is actually published. See **[docs/commands.md](docs/commands.md)**.
 
 Inside a chat, type `/help` for the slash commands (`/status`, `/sessions`, `/memory`, `/agents`, `/skills`, `/mode`, `/commands`, `/new`, …). The full reference is **[docs/commands.md](docs/commands.md)**.
 
