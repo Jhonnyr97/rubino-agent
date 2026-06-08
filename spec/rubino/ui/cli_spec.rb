@@ -88,6 +88,25 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("answer")
     end
 
+    it "reveals the last retained reasoning buffer via ctrl-o (one-way)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      # Collapse a reasoning phase (collapsed mode) so the buffer is retained.
+      capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "Let me check the failing test first.\n")
+        ui.stream(type: :content, text: "ok")
+        ui.stream_end
+      end
+      out = capture_stdout { ui.reveal_last_reasoning }
+      expect(out).to match(/┄ thinking ┄/)
+      expect(out).to include("┊  Let me check the failing test first.")
+      expect(out).to match(/┄ thought for \d+s · ctrl-o to show ┄/)
+    end
+
+    it "ctrl-o reveal is a no-op when nothing is retained" do
+      expect { ui.reveal_last_reasoning }.not_to output.to_stdout
+    end
+
     it "clears thinking indicator when first content chunk arrives" do
       out = capture_stdout do
         ui.thinking_started

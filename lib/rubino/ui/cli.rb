@@ -572,6 +572,19 @@ module Rubino
         $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok ┄")
       end
 
+      # Ctrl+O reveal: re-render the LAST retained reasoning buffer as the
+      # full-style `┊` aside, committed into scrollback NOW (append-only — a
+      # scrollback terminal can't un-print the committed cue, so this is a
+      # one-way reveal of the retained buffer, not a hide-toggle). A no-op when
+      # nothing is retained (hidden mode, or no reasoning yet this session).
+      # Wired as the BottomComposer's on_ctrl_o callback; prints through $stdout
+      # so it lands above the prompt under the composer's render mutex.
+      def reveal_last_reasoning
+        return if @last_reasoning.nil? || @last_reasoning.strip.empty?
+
+        commit_reasoning_aside(@last_reasoning, @last_reasoning_seconds.to_i, hint: "ctrl-o to show")
+      end
+
       # `/reasoning` with no arg: confirm the current render mode in house style.
       #   ┄ reasoning: collapsed ┄
       def reasoning_status(mode)

@@ -158,6 +158,23 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "#handle_key Ctrl+O (reveal reasoning)" do
+    it "invokes the on_ctrl_o callback and does not touch the buffer" do
+      called = 0
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_ctrl_o: -> { called += 1 })
+      "ab".each_char { |ch| c.handle_key(ch) }
+      result = c.handle_key("\x0f")
+      expect(called).to eq(1)
+      expect(result).to be_nil
+      expect(c.buffer).to eq("ab") # the byte never lands in the input line
+    end
+
+    it "is a quiet no-op when no callback is wired" do
+      expect { composer.handle_key("\x0f") }.not_to raise_error
+    end
+  end
+
   describe "bracketed paste (L1)" do
     # Drive a paste by preloading the input IO with the bytes that follow the
     # initial ESC, then triggering the escape consumer via handle_key("\e").

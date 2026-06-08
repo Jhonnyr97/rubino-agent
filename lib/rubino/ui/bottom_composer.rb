@@ -64,10 +64,15 @@ module Rubino
       # @param prompt [String] the input-line prefix, e.g. the mode-aware
       #   "default ❯ " / "yolo ❯ " (may contain ANSI color). Defaults to the
       #   bare caret for standalone use / tests.
-      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT)
+      # @param on_ctrl_o [#call, nil] invoked when the user presses Ctrl+O — the
+      #   CLI uses it to REVEAL the last retained reasoning buffer as a `┊` aside
+      #   committed into scrollback. The composer never formats reasoning itself;
+      #   it only dispatches the keystroke. nil = no-op.
+      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, on_ctrl_o: nil)
         @input_queue = input_queue
         @input       = input
         @output      = output
+        @on_ctrl_o   = on_ctrl_o
         @prompt      = prompt.to_s.empty? ? PROMPT : prompt
         # Visible width ignores ANSI color escapes so the one-row clamp math is
         # correct for a colored mode prompt.
@@ -298,6 +303,8 @@ module Rubino
             @buffer.chop! # codepoint-aware → safe for multi-byte UTF-8
             draw_input
           end
+        when "\x0f" # Ctrl+O: reveal the last retained reasoning aside.
+          @on_ctrl_o&.call
         when "\e"
           # ESC: start of a CSI escape (arrow keys etc.). Swallow the rest of a
           # short sequence so it never lands in the buffer. Live editing of these

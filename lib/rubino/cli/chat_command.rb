@@ -421,7 +421,8 @@ module Rubino
       # for 3 cards + typing + resize), so a tick or a child event can never
       # corrupt the input buffer or desync the frame.
       def read_idle_line_with_cards(input_queue, draft)
-        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt)
+        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
+                                          on_ctrl_o: ctrl_o_handler)
         composer.start
         # Seed the carried-over draft char-by-char so backspace stays
         # codepoint-granular (handle_key chops one codepoint at a time).
@@ -696,7 +697,8 @@ module Rubino
 
         # Use the SAME mode-aware prompt as the between-turns Reline prompt
         # (default / plan / yolo ❯) so the bottom composer doesn't drop the mode.
-        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt)
+        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
+                                          on_ctrl_o: ctrl_o_handler)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
@@ -875,6 +877,16 @@ module Rubino
       #
       # After a `/branch`, the chip leads with `branch:<id>` so the user always
       # knows they're in a fork (and which one), composing with the mode chip.
+      # The Ctrl+O callback for the composer: reveal the last retained reasoning
+      # aside via the UI adapter (the CLI keeps the buffer). nil when the adapter
+      # doesn't support it, so the composer treats Ctrl+O as a no-op.
+      def ctrl_o_handler
+        ui = Rubino.ui
+        return nil unless ui.respond_to?(:reveal_last_reasoning)
+
+        -> { ui.reveal_last_reasoning }
+      end
+
       def build_prompt
         chip = mode_label
         chip = "#{pastel.cyan("branch:#{@branch_short_id}")} #{chip}" if @branch_short_id
