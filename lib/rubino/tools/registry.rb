@@ -100,6 +100,10 @@ module Rubino
           # the same tools.task key — disabling delegation disables these too.
           register(Rubino::Tools::TaskResultTool.new)
           register(Rubino::Tools::TaskStopTool.new)
+          # ask_parent: the child->parent escalation tool. Registered globally
+          # (gated by the same tools.task key), but Definition#resolved_tools
+          # exposes it ONLY to subagents — a top-level agent has no parent to ask.
+          register(Rubino::Tools::AskParentTool.new)
         end
 
         private

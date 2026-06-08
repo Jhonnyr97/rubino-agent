@@ -41,6 +41,21 @@ module Rubino
         :thread, :runner, :started_at, :finished_at,
         :last_activity, :tool_count, :activity_log,
         :approval_gate, :approval_id, :approval_question, :approval_command,
+        # Parent->child steer (the `/agents <id> steer "..."` note). Wired into
+        # the child Loop as its Interaction::InputQueue (the SAME turn-boundary
+        # steering channel the human uses on the parent); the parent pushes a
+        # note, the child folds it in at its next iteration via
+        # Loop#inject_steered_input. nil ⇒ no steer wire (sync/foreground path).
+        :steer_queue,
+        # child->parent ask_parent escalation (Run::ApprovalGate handoff). When a
+        # subagent calls ask_parent and it escalates to the HUMAN, the child
+        # parks on `ask_gate` keyed by `ask_id`, the entry flips to
+        # :blocked_on_human, and the card/banner surface `ask_question`. A
+        # blocking ask holds the child's worker thread on the gate (bounded only
+        # by an explicit /reply or stop — see ask_parent_tool.rb); a non-blocking
+        # ask returns immediately and the answer is delivered later via
+        # `steer_queue`. The human answers via /reply <id>, which decides the gate.
+        :ask_gate, :ask_id, :ask_question, :ask_blocking,
         keyword_init: true
       )
 
@@ -78,7 +93,11 @@ module Rubino
             status:       :running,
             started_at:   Time.now,
             tool_count:   0,
-            activity_log: []
+            activity_log: [],
+            # Every background child gets its OWN steering queue at reserve time
+            # so the parent can `/agents <id> steer "..."` it the instant it is
+            # listed — no separate wiring step, no nil window.
+            steer_queue:  Interaction::InputQueue.new
           )
           @entries[entry.id] = entry
           entry
@@ -170,6 +189,67 @@ module Rubino
         end
       end
 
+      # Records a parent->child steer note (the `/agents <id> steer \"...\"`
+      # affordance). Pushes the text onto the child's steering queue, which the
+      # child Loop drains at its next iteration boundary (Loop#inject_steered_input)
+      # — between turns, never between a tool_use and its results. Best-effort:
+      # returns false (and pushes nothing) when the entry is gone or has no queue
+      # (e.g. a finished child), true when the note was queued.
+      def steer(id, text)
+        queue = @mutex.synchronize do
+          entry = @entries[id]
+          entry&.steer_queue
+        end
+        return false unless queue
+
+        queue.push(text)
+        true
+      end
+
+      # Flips an entry into the :blocked_on_human state for an escalated
+      # ask_parent: stores the gate + question + blocking flag the card/banner
+      # surface (mirror of #begin_approval, but for a child->parent question that
+      # the parent couldn't answer and escalated to the human). The child thread
+      # then parks on `ask_gate.await(ask_id)` (blocking ask) until /reply <id>
+      # decides the gate, or keeps working (non-blocking ask) with the answer
+      # delivered later via the steer queue. A child in this state still holds a
+      # concurrency slot (its thread is alive, or it is awaiting the human), so it
+      # counts as live.
+      def begin_ask(id, gate:, ask_id:, question:, blocking:)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return unless entry
+
+          entry.ask_gate     = gate
+          entry.ask_id       = ask_id
+          entry.ask_question = question.to_s
+          entry.ask_blocking = blocking ? true : false
+          entry.status       = :blocked_on_human
+        end
+      end
+
+      # Clears the ask state and returns the entry to :running once the human has
+      # answered (or the child unwinds / is stopped).
+      def end_ask(id)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return unless entry
+
+          entry.ask_gate     = nil
+          entry.ask_id       = nil
+          entry.ask_question = nil
+          entry.ask_blocking = nil
+          entry.status       = :running if entry.status == :blocked_on_human
+        end
+      end
+
+      # Entries parked on an escalated ask_parent, waiting on THE HUMAN — the
+      # source of the persistent \"\u26d4 N subagent waiting on you\" marker and
+      # answerable via /reply <id>.
+      def awaiting_human
+        @mutex.synchronize { @entries.values.select { |e| e.status == :blocked_on_human } }
+      end
+
       # Entries currently parked on a human approval — surfaced on their card
       # and answerable via /agents <id>.
       def awaiting_approval
@@ -200,9 +280,10 @@ module Rubino
       private
 
       # A child holds a concurrency slot while its thread is alive — whether
-      # actively running or parked on a human approval.
+      # actively running, parked on a human approval, or parked on an escalated
+      # ask_parent question waiting on the human.
       def live_status?(status)
-        status == :running || status == :needs_approval
+        status == :running || status == :needs_approval || status == :blocked_on_human
       end
 
       def running_count
