@@ -13,11 +13,13 @@ A **micro agent** for coding and automation — small, self-contained, and built
 
 ## Install
 
-One line, Linux (x86_64 / arm64). Installs a compatible Ruby via [`rv`](https://github.com/spinel-coop/rv), then the gem — all in user space, no sudo:
+One line, Linux and macOS (x86_64 / arm64). Installs a compatible Ruby, then the gem — all in user space, no sudo:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Jhonnyr97/rubino-agent/main/install.sh | bash
 ```
+
+On **Linux** the installer fetches a precompiled Ruby via [`rv`](https://github.com/spinel-coop/rv). On **macOS**, if [Homebrew](https://brew.sh) is present it asks whether to use Homebrew (`brew install ruby`) or `rv`; without Homebrew it uses `rv` directly. Skip the prompt with `RUBINO_INSTALL_METHOD=brew` or `=rv`.
 
 > **Review before you pipe.** Piping a script into your shell runs whatever it contains. Read it first:
 > ```bash
