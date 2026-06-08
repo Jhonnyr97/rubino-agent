@@ -1,6 +1,6 @@
 # rubino
 
-A **micro agent** for coding and automation — small, self-contained, and built to run *where the work is*: directly on your machine or inside a VM. You drop it onto a box and it works there, reachable over a CLI and an HTTP API. It is not a heavy framework; it's a lightweight agent with persistent memory, sessions, and context compaction. Built on [ruby_llm](https://github.com/crmne/ruby_llm).
+A coding & automation **agent** — small, self-contained, and built to run *where the work is*: directly on your machine or inside a VM. You drop it onto a box and it works there, reachable over a CLI and an HTTP API. It is not a heavy framework; it's a lightweight agent with persistent memory, sessions, and context compaction. Built on [ruby_llm](https://github.com/crmne/ruby_llm).
 
 ## Why rubino
 
@@ -119,7 +119,7 @@ tools:
   memory: true
 ```
 
-> **Heads-up on the default model.** The shipped `model.default` is `openai/gpt-4.1`, which ruby_llm's registry resolves to **OpenRouter** — so a first run with no OpenAI/OpenRouter key fails fast with guidance instead of hanging. Run `rubino setup` (MiniMax is the recommended default) or set your provider/key explicitly. See **[docs/models-and-keys.md](docs/models-and-keys.md)**.
+> **Heads-up on the default model.** The shipped `model.default` is `openai/gpt-4.1`, which ruby_llm's registry resolves to **OpenRouter** — so a first run with no OpenAI/OpenRouter key fails fast with guidance instead of hanging. Run `rubino setup` (the wizard defaults to OpenAI gpt-4.1) or set your provider/key explicitly. See **[docs/models-and-keys.md](docs/models-and-keys.md)**.
 
 Full reference (every key, env vars, precedence): **[docs/configuration.md](docs/configuration.md)**.
 
