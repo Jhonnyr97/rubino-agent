@@ -18,11 +18,22 @@ module Rubino
     class OnboardingWizard
       # Each provider: the model.provider to write, a default model id, the .env
       # key var, and any providers.<name> config block to persist. Ordered so the
-      # recommended default (MiniMax) comes first, matching the blueprint.
+      # recommended default comes first and matches the seeded config default
+      # (config/defaults.rb model.default => openai/gpt-4.1), keeping the from-zero
+      # experience consistent between the wizard and the non-interactive
+      # fail-fast guidance.
       PROVIDERS = [
         {
+          key:      "openai",
+          label:    "OpenAI (GPT) — recommended default",
+          provider: "openai",
+          model:    "gpt-4.1",
+          env_var:  "OPENAI_API_KEY",
+          config:   {}
+        },
+        {
           key:      "minimax",
-          label:    "MiniMax (recommended default — Anthropic-compatible)",
+          label:    "MiniMax (Anthropic-compatible)",
           provider: "minimax",
           model:    "MiniMax-M2.7",
           env_var:  "MINIMAX_API_KEY",
@@ -31,14 +42,6 @@ module Rubino
             "base_url"             => "https://api.minimax.io/anthropic",
             "api_key"              => "${MINIMAX_API_KEY}"
           }
-        },
-        {
-          key:      "openai",
-          label:    "OpenAI (GPT)",
-          provider: "openai",
-          model:    "gpt-4.1",
-          env_var:  "OPENAI_API_KEY",
-          config:   {}
         },
         {
           key:      "anthropic",
