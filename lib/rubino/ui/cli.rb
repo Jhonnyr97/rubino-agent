@@ -261,6 +261,41 @@ module Rubino
         $stdout.flush
       end
 
+      # Renders an ephemeral `probe` answer in the dim, fenced aside that the
+      # locked UX prescribes: an opening `┄ probe (ephemeral · not saved) ┄`
+      # rail, the answer body on a dim `┊` left-rail, then a closing
+      # `┄ vanished · main thread untouched ┄` rail. The whole block is dim and
+      # never enters scrollback as a "real" answer — it is the visual contract
+      # that nothing here was saved. Same render family as #note / #mode_changed.
+      def probe_aside(answer)
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ probe (ephemeral · not saved) ┄#{'─' * 28}")
+        answer.to_s.each_line do |line|
+          $stdout.puts @pastel.dim("┊  #{line.chomp}")
+        end
+        $stdout.puts @pastel.dim("┄ vanished · main thread untouched ┄#{'─' * 25}")
+        $stdout.puts
+      end
+
+      # Confirms a `/branch` fork in the dim block from the locked UX: the new
+      # session id + title, the parent it inherits from, and the literal way
+      # back (`/sessions <parent>`), bracketed by `┄ branched ┄` / `┄ now in
+      # <id> ┄` rails. The CLI flips the prompt chip to `branch:<id> ❯` after.
+      def branch_confirmation(new_id:, parent_id:, title:, included_probe:)
+        short_new    = new_id.to_s[0..3]
+        short_parent = parent_id.to_s[0..3]
+        seed = "inherits  #{short_parent}  ▸ up to here"
+        seed += "  + the probe above" if included_probe
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ branched ┄#{'─' * 50}")
+        label = title.to_s.strip.empty? ? "" : %(  "#{title}")
+        $stdout.puts @pastel.dim("┊  new session  #{short_new}#{label}")
+        $stdout.puts @pastel.dim("┊  #{seed}")
+        $stdout.puts @pastel.dim("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return")
+        $stdout.puts @pastel.dim("┄ now in  #{short_new} ┄#{'─' * 42}")
+        $stdout.puts
+      end
+
       # Repaints the SUBAGENT CARD block in the live region from the
       # BackgroundTasks registry (Variant A). Called whenever a background
       # subagent's activity changes (a child tool started/finished, a spawn, a

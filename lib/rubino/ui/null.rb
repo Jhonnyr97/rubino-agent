@@ -52,6 +52,18 @@ module Rubino
         @messages << { level: :note, message: text }
       end
 
+      def probe_aside(answer)
+        @messages << { level: :probe_aside, message: answer.to_s }
+      end
+
+      def branch_confirmation(new_id:, parent_id:, title:, included_probe:)
+        @messages << {
+          level: :branch_confirmation,
+          message: { new_id: new_id, parent_id: parent_id, title: title,
+                     included_probe: included_probe }
+        }
+      end
+
       def stream(chunk)
         # Every adapter yields the common chunk contract:
         #   { type: :content | :thinking, text: String, message_id: Integer }
