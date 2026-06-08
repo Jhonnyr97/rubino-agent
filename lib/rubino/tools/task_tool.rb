@@ -31,6 +31,20 @@ module Rubino
     # filters it), so a background child can't spawn background grandchildren — a
     # hard guard against runaway recursion / fan-out storms.
     class TaskTool < Base
+      # Suffix of the placeholder a subagent run lands on when it produced no
+      # final assistant text — a no-op or a fully-denied run (every tool denied,
+      # nothing said). Used as the single signal that a completion was a no-op so
+      # both the background completion line and the foreground delegation row can
+      # show a neutral indicator instead of a misleading green ✓ (#16).
+      NOOP_RESULT_SUFFIX = "returned no output)"
+
+      # True when a subagent's final result text is the no-op placeholder, i.e.
+      # the run did nothing / was denied. Shared by completion_summary so the
+      # background path mirrors the foreground delegation row.
+      def self.noop_result?(text)
+        text.to_s.strip.end_with?(NOOP_RESULT_SUFFIX)
+      end
+
       def name
         "task"
       end
@@ -173,7 +187,7 @@ module Rubino
         ui_for_child = child_ui || nested_ui_for(entry, parent_ui)
         result   = Rubino.with_ui(ui_for_child) { runner.run!(prompt) }
         text     = result.to_s.strip
-        text     = "(subagent '#{entry.subagent}' returned no output)" if text.empty?
+        text     = "(subagent '#{entry.subagent}' #{NOOP_RESULT_SUFFIX}" if text.empty?
 
         BackgroundTasks.instance.complete(entry, status: :completed, result: text)
         notify(sink, completion_notice(entry, text))
@@ -196,10 +210,18 @@ module Rubino
       # prompt by #surface_completion (the card itself clears when the registry
       # snapshot no longer lists it as running). Mirrors the blueprint's
       # `✓ sa_… · explore · done · 47s · 18 tools — <result head>`.
+      # The glyph reflects the OUTCOME: a genuine completion shows ✓, while a
+      # no-op / fully-denied run (final text is the no-op placeholder) shows a
+      # neutral ⊘ "no-op" instead — a denied subagent that did nothing must not
+      # read as a success (#16). The error path renders ✗ in #run_child_thread.
       def completion_summary(entry, text)
         count = entry.tool_count.to_i
         head  = truncate(text.lines.first.to_s.strip, 80)
-        "✓ #{entry.id} · #{entry.subagent} · done · #{count} tools — #{head}"
+        if self.class.noop_result?(text)
+          "⊘ #{entry.id} · #{entry.subagent} · no-op · #{count} tools — #{head}"
+        else
+          "✓ #{entry.id} · #{entry.subagent} · done · #{count} tools — #{head}"
+        end
       end
 
       # Repaints the parent's collapsed card block from the registry snapshot.
@@ -358,7 +380,7 @@ module Rubino
         runner = build_runner(definition)
         result = runner.run!(prompt)
         text   = result.to_s.strip
-        text.empty? ? "(subagent '#{definition.name}' returned no output)" : text
+        text.empty? ? "(subagent '#{definition.name}' #{NOOP_RESULT_SUFFIX}" : text
       end
 
       # Builds the nested Runner. Injectable via the constructor for tests
