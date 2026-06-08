@@ -763,12 +763,23 @@ module Rubino
       def delegation_finished(result)
         @activity_open = false
         sub     = @delegation_subagent || "subagent"
-        failed  = delegation_failed?(result)
         summary = truncate_inline(result&.output.to_s.strip, 80)
-        icon    = failed ? "✗" : "✓"
-        color   = failed ? :red : :green
+        icon, color =
+          if delegation_failed?(result)        then ["✗", :red]
+          elsif delegation_noop?(result)       then ["⊘", :dim]
+          else                                      ["✓", :green]
+          end
         $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
         @delegation_subagent = nil
+      end
+
+      # True when a delegation did nothing / was denied: the subagent produced no
+      # final text, so the task tool returned the no-op placeholder. Not a failure
+      # (no error), but not a success either — it renders a neutral ⊘ instead of a
+      # misleading green ✓ (#16).
+      def delegation_noop?(result)
+        output = result.respond_to?(:output) ? result.output : result
+        Tools::TaskTool.noop_result?(output)
       end
 
       # True when a delegation result represents a failure. Mirrors how
