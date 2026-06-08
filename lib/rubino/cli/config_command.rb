@@ -30,6 +30,9 @@ module Rubino
         writer = Config::Writer.new(config_path: config_path)
         writer.set(key, value)
         Rubino.ui.success("#{key} = #{value}")
+      rescue ConfigurationError => e
+        Rubino.ui.error(e.message)
+        exit(1)
       end
 
       desc "show", "Show full configuration"
