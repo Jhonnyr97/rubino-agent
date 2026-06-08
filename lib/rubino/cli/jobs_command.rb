@@ -17,6 +17,7 @@ module Rubino
       option :status, type: :string, desc: "Filter by status (queued, running, completed, failed)"
       option :limit, type: :numeric, default: 20, desc: "Max results"
       def list
+        Rubino.ensure_database_ready!
         queue = Jobs::Queue.new
         jobs = queue.list(status: options[:status], limit: options[:limit])
 

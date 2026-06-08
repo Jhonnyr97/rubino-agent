@@ -224,14 +224,39 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
   describe "/agents" do
     let(:reg) { Rubino::Tools::BackgroundTasks.instance }
 
+    # The real UI::CLI #info/#table are puts-based and return nil. The Null
+    # adapter, however, returns the messages array (truthy) from those methods,
+    # which masked #34: when the agents/tasks branch returned handle_agents's
+    # value (nil) instead of :handled, try_execute treated the falsy result as
+    # "not a built-in" and fell through to the unknown-command path — appending
+    # a spurious "✗ Unknown command: /agents" + the Available list AFTER the
+    # correct output (try_execute STILL returned :handled, because the
+    # unknown-command branch itself returns :handled, so a return-value-only
+    # assertion couldn't catch it). These cases force the puts-based reality
+    # (record-then-return-nil) AND assert the spurious unknown-command output is
+    # absent, so the spec fails if the branch ever stops returning :handled.
+    def make_ui_return_nil(*methods)
+      methods.each do |m|
+        original = ui.method(m)
+        allow(ui).to receive(m) do |*args, **kwargs|
+          kwargs.empty? ? original.call(*args) : original.call(*args, **kwargs)
+          nil
+        end
+      end
+    end
+
     it "shows an empty-state when no subagents have run" do
+      make_ui_return_nil(:info, :table, :error, :separator)
       expect(exec.try_execute("/agents")).to eq(:handled)
       expect(info_lines.join("\n")).to include("No background subagents")
+      expect(info_lines.join("\n")).not_to include("Unknown command")
     end
 
     it "/tasks is an alias for /agents" do
+      make_ui_return_nil(:info, :table, :error, :separator)
       expect(exec.try_execute("/tasks")).to eq(:handled)
       expect(info_lines.join("\n")).to include("No background subagents")
+      expect(info_lines.join("\n")).not_to include("Unknown command")
     end
 
     it "lists subagents read from BackgroundTasks with status + label" do
