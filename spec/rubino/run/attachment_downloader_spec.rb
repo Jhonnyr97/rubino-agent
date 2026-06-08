@@ -57,7 +57,7 @@ RSpec.describe Rubino::Run::AttachmentDownloader do
       expect(downloader.fetch_all(run_id: run_id, urls: %w[https://proxy.example.test/x])).to be_empty
     end
 
-    context "loopback hosts (Bug C: co-located web app)" do
+    context "loopback hosts (co-located HTTP client)" do
       %w[
         http://localhost:3000/internal/files/abc
         http://127.0.0.1:3000/internal/files/abc

@@ -521,18 +521,18 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
-  # rubino-ui proxy provider — model name "auto" passthrough.
-  # The /v1/* gateway proxy rewrites the model upstream, so the agent
+  # gateway provider — model name "auto" passthrough.
+  # The /v1/* gateway rewrites the model upstream, so the agent
   # only needs to (a) skip model validation, (b) route as OpenAI-compat,
-  # (c) point at the proxy base_url with the client api_key.
+  # (c) point at the gateway base_url with the client api_key.
   # -----------------------------------------------------------------------
 
-  describe "rubino-ui proxy provider" do
+  describe "gateway provider" do
     let(:cfg) do
       test_configuration(
-        "model" => { "provider" => "rubino-ui", "default" => "auto",
+        "model" => { "provider" => "gateway", "default" => "auto",
                      "temperature" => 0.3, "context_length" => nil },
-        "providers" => { "rubino-ui" => {
+        "providers" => { "gateway" => {
           "openai_compatible" => true,
           "assume_model_exists" => true,
           "api_key" => "client_abc",
@@ -541,12 +541,12 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       )
     end
 
-    it "resolves provider as rubino-ui (no auto-detection on model id)" do
+    it "resolves provider as gateway (no auto-detection on model id)" do
       adapter = described_class.new(model_id: "auto", config: cfg)
-      expect(adapter.provider).to eq("rubino-ui")
+      expect(adapter.provider).to eq("gateway")
     end
 
-    it "configures RubyLLM with the proxy base_url and tenant api_key" do
+    it "configures RubyLLM with the gateway base_url and tenant api_key" do
       captured = nil
       allow(RubyLLM).to receive(:configure).and_wrap_original do |orig, &blk|
         captured = double("rubyllm-config").as_null_object

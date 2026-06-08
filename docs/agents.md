@@ -22,7 +22,7 @@ rubino supports multiple agent types, each with their own model, tools, permissi
 
 ## Switching Agents
 
-In the TUI, press **Tab** to cycle through primary agents.
+In the interactive CLI, press **Tab** to cycle through primary agents.
 
 In chat, use `@mention`:
 

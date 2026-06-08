@@ -66,7 +66,7 @@ bundle exec rubino chat
 
 - Ruby >= 3.1
 - SQLite3
-- An LLM provider API key (MiniMax, OpenAI, Anthropic, or Google) — or run behind the rubino-ui proxy.
+- An LLM provider API key (MiniMax, OpenAI, Anthropic, or Google) — or any OpenAI-compatible gateway.
 
 ## Essential commands
 
@@ -94,7 +94,7 @@ Configuration lives in `~/.rubino/config.yml` (created by `rubino setup`); secre
 ```yaml
 model:
   default: "openai/gpt-4.1"   # the shipped default — see the note below
-  provider: "auto"            # auto | openai | anthropic | bedrock | gemini | minimax | rubino-ui
+  provider: "auto"            # auto | openai | anthropic | bedrock | gemini | minimax | gateway
   temperature: 0.3
 
 agent:
@@ -173,7 +173,7 @@ export RUBINO_ENCRYPTION_KEY="$(openssl rand -base64 32)"   # required for OAuth
 rubino server --port 4820
 ```
 
-Every request carries `Authorization: Bearer <RUBINO_API_KEY>` except `GET /v1/health` and `GET /v1/metrics`. The server binds `127.0.0.1` by default — pass `--host 0.0.0.0` (or set `RUBINO_API_HOST`) to expose it, and only do so behind TLS or a trusted segment. For the web→agent hop the API can serve over a self-signed cert the client pins (`RUBINO_TLS=1`; read it with `rubino tls-cert`).
+Every request carries `Authorization: Bearer <RUBINO_API_KEY>` except `GET /v1/health` and `GET /v1/metrics`. The server binds `127.0.0.1` by default — pass `--host 0.0.0.0` (or set `RUBINO_API_HOST`) to expose it, and only do so behind TLS or a trusted segment. For a remote HTTP client the API can serve over a self-signed cert the client pins (`RUBINO_TLS=1`; read it with `rubino tls-cert`).
 
 Full request/response shapes, the error envelope, and SSE replay are in **[docs/api/v1.md](docs/api/v1.md)**.
 

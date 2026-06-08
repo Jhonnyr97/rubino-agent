@@ -40,7 +40,7 @@ RSpec.describe Rubino::Jobs::WebhookDelivery do
       expect(row[:job_id]).to eq("j1")
     end
 
-    it "emits a unique X-Ruby-Agent-Delivery-Id per delivery (different attempt-sets get different IDs)" do
+    it "emits a unique X-Rubino-Delivery-Id per delivery (different attempt-sets get different IDs)" do
       stub_request(:post, url).to_return(status: 200, body: "ok")
 
       build.deliver({ a: 1 })
@@ -50,10 +50,10 @@ RSpec.describe Rubino::Jobs::WebhookDelivery do
       expect(ids.uniq.size).to eq(2)
     end
 
-    it "reuses the same X-Ruby-Agent-Delivery-Id across retries of the same attempt-set" do
+    it "reuses the same X-Rubino-Delivery-Id across retries of the same attempt-set" do
       seen_ids = []
       stub_request(:post, url).to_return do |req|
-        seen_ids << req.headers["X-Ruby-Agent-Delivery-Id"]
+        seen_ids << req.headers["X-Rubino-Delivery-Id"]
         { status: 500, body: "" }
       end
 
@@ -74,7 +74,7 @@ RSpec.describe Rubino::Jobs::WebhookDelivery do
       build.deliver(payload)
 
       expect(WebMock).to have_requested(:post, url).with { |req|
-        req.headers["X-Ruby-Agent-Signature"] == expected_sig
+        req.headers["X-Rubino-Signature"] == expected_sig
       }
     end
 
@@ -82,7 +82,7 @@ RSpec.describe Rubino::Jobs::WebhookDelivery do
       stub_request(:post, url).to_return(status: 200, body: "ok")
       build(secret: nil).deliver({ a: 1 })
       expect(WebMock).to have_requested(:post, url).with { |req|
-        !req.headers.key?("X-Ruby-Agent-Signature")
+        !req.headers.key?("X-Rubino-Signature")
       }
     end
   end
@@ -149,7 +149,7 @@ RSpec.describe Rubino::Jobs::WebhookDelivery do
 
       row = db[:webhook_deliveries].where(id: "row-1").first
       expect(row[:status]).to eq("delivered")
-      expect(WebMock).to have_requested(:post, url).with(headers: { "X-Ruby-Agent-Delivery-Id" => "req-resume-1" })
+      expect(WebMock).to have_requested(:post, url).with(headers: { "X-Rubino-Delivery-Id" => "req-resume-1" })
     end
 
     it "ignores rows scheduled in the future" do

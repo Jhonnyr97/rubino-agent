@@ -33,7 +33,7 @@ Use in any string value:
 ```yaml
 model:
   default: "openai/gpt-4.1"     # Model identifier (NOTE: resolves to OpenRouter — see models-and-keys.md)
-  provider: "auto"              # auto | openai | anthropic | bedrock | gemini | minimax | rubino-ui
+  provider: "auto"              # auto | openai | anthropic | bedrock | gemini | minimax | gateway
   context_length: null          # Override context window (null = use model default)
   temperature: 0.3              # Generation temperature
   max_tokens: null              # Max output tokens (anthropic-family path); null = adapter default (16384)
@@ -60,7 +60,7 @@ providers:
     request_timeout_seconds: 600
   gemini:
     request_timeout_seconds: 600
-  rubino-ui:                       # OpenAI-compatible gateway
+  gateway:                         # OpenAI-compatible gateway
     openai_compatible: true
     assume_model_exists: true
     base_url: null

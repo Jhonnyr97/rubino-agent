@@ -88,14 +88,14 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     # allowlist ignored that and warned "No API keys found" on a healthy tenant.
     it "is :ok when an openai_compatible provider carries its key in config" do
       with_config(
-        "model"     => { "default" => "my-local-model", "provider" => "rubino-ui" },
-        "providers" => { "rubino-ui" => { "openai_compatible" => true, "api_key" => "tenant-key" } }
+        "model"     => { "default" => "my-local-model", "provider" => "gateway" },
+        "providers" => { "gateway" => { "openai_compatible" => true, "api_key" => "tenant-key" } }
       )
 
       result = doctor.send(:check_provider_keys)
 
       expect(result).to eq(name: "provider_keys", status: :ok)
-      expect(ui.messages.last[:message]).to include("rubino-ui")
+      expect(ui.messages.last[:message]).to include("gateway")
     end
 
     it "is :ok for an openai_compatible provider falling back to OPENAI_API_KEY" do

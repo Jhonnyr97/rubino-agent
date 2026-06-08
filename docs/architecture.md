@@ -6,7 +6,7 @@ rubino is a lightweight agent that runs on a PC or inside a VM. It follows a
 layered architecture with strict separation of concerns:
 
 ```
-Presentation Layer     →  CLI, TUI, JSON API Server
+Presentation Layer     →  CLI, JSON API Server
 Orchestration Layer    →  Agent Router, Interaction Lifecycle
 Core Layer             →  Agent Loop, Context, Memory, Jobs, Tools
 Infrastructure Layer   →  LLM Adapter, Database, MCP, OAuth

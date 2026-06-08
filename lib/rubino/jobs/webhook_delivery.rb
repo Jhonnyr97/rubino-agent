@@ -15,15 +15,15 @@ module Rubino
     #
     # Every #deliver call is recorded as a row in +webhook_deliveries+ before
     # the HTTP request fires; the row's +request_id+ doubles as the
-    # +X-Ruby-Agent-Delivery-Id+ header receivers MUST treat as the dedup
+    # +X-Rubino-Delivery-Id+ header receivers MUST treat as the dedup
     # key. The body is signed with HMAC-SHA256 under +RUBINO_WEBHOOK_SECRET+
     # (or a per-job secret passed via +secret:+) and sent as
-    # +X-Ruby-Agent-Signature+. When no secret is configured the header is
+    # +X-Rubino-Signature+. When no secret is configured the header is
     # omitted; the receiver is then on its own.
     #
     # Failures retry up to 3 attempts total with exponential backoff
-    # (5s, 30s, 5min) using lightweight Thread.new sleeps. This is v0.1:
-    # the trade-off is that an agent crash mid-backoff loses the in-flight
+    # (5s, 30s, 5min) using lightweight Thread.new sleeps. The current
+    # trade-off is that an agent crash mid-backoff loses the in-flight
     # retry timer, but the persisted row stays +pending+ and #resume_pending!
     # at boot picks it up. A real job queue is overkill for the expected
     # webhook volume; revisit if backlog grows.
@@ -109,9 +109,9 @@ module Rubino
         request_id = row_request_id(row_id) || SecureRandom.uuid
         response = @conn.post(@url) do |req|
           req.headers["content-type"] = "application/json"
-          req.headers["X-Ruby-Agent-Delivery-Id"] = request_id
+          req.headers["X-Rubino-Delivery-Id"] = request_id
           if @secret && !@secret.empty?
-            req.headers["X-Ruby-Agent-Signature"] = "sha256=#{sign(body)}"
+            req.headers["X-Rubino-Signature"] = "sha256=#{sign(body)}"
           end
           req.body = body
         end

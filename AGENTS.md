@@ -15,14 +15,14 @@ These decisions are permanent. Reopen only with a written justification.
 - **No dual HTTP APIs.** One server, one versioned prefix (`/v1`). When we break, bump to `/v2`. Never aliases.
 - **No multi-tenant inside one process.** One instance = one workspace = one identity. Multi-tenant deployments run N instances.
 - **No dashboard / theme system / plugin hub.** The dashboard is whatever client consumes our API. We don't ship a UI server.
-- **No skill catalog bundled.** Skills are user-supplied directories. We ship 2-3 examples in `docs/examples/` and nothing else.
+- **No skill catalog bundled.** Skills are user-supplied directories. We don't ship a catalog.
 - **No compat layers.** Renamed something? Rename everywhere. Reshaped a response? Bump version.
 - **No auto-update endpoints.** Deploy = gem update + restart. Period.
 - **No backwards-compat shims, no _deprecated suffixes, no "legacy" anything.**
 
 ## Architectural rules (load-bearing)
 
-Inchiodate. Quando una PR le viola, è la PR che si rifà.
+These are load-bearing. When a PR violates them, it is the PR that gets redone.
 
 1. **One interface per concept.** One `LLM::Adapter`, one `Tools::Base`, one `Memory::Store`. Variants are subclasses, not parallels.
 2. **No PORO commands in `lib/`.** Domain logic on models/repositories; orchestration as class methods. No `app/services/Foo::DoThingCommand`.
@@ -35,7 +35,7 @@ Inchiodate. Quando una PR le viola, è la PR che si rifà.
 9. **Handlers stay thin.** Endpoint >30 LOC → extract `Operation` class.
 10. **Less code, less bugs.** A refactor is good if it deletes net lines. Distrust preparatory abstractions (PORO/Result/custom errors before you need them).
 
-## Tech stack (fixed for v0.1)
+## Tech stack
 
 | Layer | Choice | Why |
 |---|---|---|
@@ -48,7 +48,7 @@ Inchiodate. Quando una PR le viola, è la PR che si rifà.
 | Config | `dry-configurable` | Already in use. |
 | CLI | `thor` | Already in use. |
 | Autoload | `zeitwerk` | Already in use. |
-| TUI | `tty-*` + `ratatui_ruby` | Optional, only when running `rubino chat`. |
+| CLI UI | `tty-*` + `reline` | The interactive `rubino chat` prompt (history, completion, multi-line editing). |
 
 `ruby_llm` is the foundation. `LLM::RubyLLMAdapter` is a thin wrapper: it configures `RubyLLM`, delegates `chat`/`stream`/`model_info`, and exposes nothing the underlying gem can't already do. **If you find yourself adding business logic to the adapter, push it into the run loop instead.**
 
@@ -57,21 +57,21 @@ Inchiodate. Quando una PR le viola, è la PR che si rifà.
 ```
 lib/rubino/
   agent/         # run loop, lifecycle, multi-agent routing
-  api/           # HTTP gateway (Rack app, middleware, operations) ← v0.1 NEW
+  api/           # HTTP gateway (Rack app, middleware, operations)
   cli/           # thor commands
   config/        # dry-configurable
   context/       # compaction, prompt assembly
   interaction/   # conversation lifecycle primitives
-  jobs/          # scheduler + worker (cron in v0.1)
+  jobs/          # scheduler + worker (cron)
   llm/           # ruby_llm adapter + model registry
   mcp/           # MCP client + tool wrapper
   memory/        # Memory::Store + extractors + retrievers
-  oauth/         # OAuth providers + connection storage ← v0.1 NEW
+  oauth/         # OAuth providers + connection storage
   security/      # approval policy, sandboxing
   session/       # repository + persistence
   skills/        # SKILL.md loader
   tools/         # built-in tools
-  ui/            # cli/tui/null/api stub UIs
+  ui/            # cli/null/api stub UIs
 ```
 
 ## Surfaces this project exposes
@@ -80,12 +80,11 @@ lib/rubino/
 - **CLI** — `rubino {setup,chat,prompt,server,config,memory,sessions,jobs,tools,doctor,version}`.
 - **Library** — `require "rubino"; Rubino.run(...)`.
 
-The TUI ships as part of `rubino chat`. Multi-agent routing, MCP, and plugin hooks are designed in but not fully wired yet.
+The interactive CLI ships as part of `rubino chat`. Multi-agent routing, MCP, and plugin hooks are designed in but not fully wired yet.
 
 ## Working on this codebase
 
-- Read `docs/v0.1-roadmap.md` for current milestone.
-- Read `docs/architecture.md` for the bigger picture (existing).
+- Read `docs/architecture.md` for the bigger picture.
 - Read `docs/api/v1.md` for HTTP contract.
 - Read `docs/oauth-providers.md` for OAuth design.
 - Run `bundle exec rspec` before pushing.

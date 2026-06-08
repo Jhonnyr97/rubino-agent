@@ -28,7 +28,7 @@ module Rubino
       end
 
       # ----------------------------------------------------------------
-      # chat — interactive and non-interactive (predecessor compatible)
+      # chat — interactive and non-interactive
       # ----------------------------------------------------------------
       desc "chat [PROMPT]", "Chat with the agent (interactive or one-shot with -q)"
 
