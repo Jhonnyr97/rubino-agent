@@ -422,7 +422,8 @@ module Rubino
       # corrupt the input buffer or desync the frame.
       def read_idle_line_with_cards(input_queue, draft)
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
-                                          on_ctrl_o: ctrl_o_handler)
+                                          on_ctrl_o: ctrl_o_handler,
+                                          on_mode_cycle: mode_cycle_handler)
         composer.start
         # Seed the carried-over draft char-by-char so backspace stays
         # codepoint-granular (handle_key chops one codepoint at a time).
@@ -698,7 +699,8 @@ module Rubino
         # Use the SAME mode-aware prompt as the between-turns Reline prompt
         # (default / plan / yolo ❯) so the bottom composer doesn't drop the mode.
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
-                                          on_ctrl_o: ctrl_o_handler)
+                                          on_ctrl_o: ctrl_o_handler,
+                                          on_mode_cycle: mode_cycle_handler)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
@@ -885,6 +887,26 @@ module Rubino
         return nil unless ui.respond_to?(:reveal_last_reasoning)
 
         -> { ui.reveal_last_reasoning }
+      end
+
+      # The Shift+Tab callback for the composer: cycle the mode to the next in
+      # Modes::ALL (default→plan→yolo→default), PERSIST it via Modes.set, print a
+      # transient house-style footer with the new mode's description, and RETURN
+      # the freshly-built prompt chip so the composer can redraw it. The composer
+      # holds no mode logic — it just adopts the returned prompt.
+      def mode_cycle_handler
+        -> { cycle_mode }
+      end
+
+      def cycle_mode
+        previous = Rubino::Modes.current
+        idx      = Rubino::Modes::ALL.index(previous) || 0
+        nxt      = Rubino::Modes::ALL[(idx + 1) % Rubino::Modes::ALL.length]
+        Rubino::Modes.set(nxt)
+        $stdout.puts
+        $stdout.puts pastel.dim("┄ mode · #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        $stdout.flush
+        build_prompt
       end
 
       def build_prompt

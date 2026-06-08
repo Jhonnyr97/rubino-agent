@@ -60,4 +60,38 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::Modes.set(:default)
     end
   end
+
+  describe "#cycle_mode (Shift+Tab)" do
+    def strip_ansi(s) = s.gsub(/\e\[[0-9;]*m/, "")
+
+    it "cycles default→plan→yolo→default, persisting via Modes" do
+      Rubino::Modes.set(:default)
+      cmd.send(:cycle_mode)
+      expect(Rubino::Modes.current).to eq(:plan)
+      cmd.send(:cycle_mode)
+      expect(Rubino::Modes.current).to eq(:yolo)
+      cmd.send(:cycle_mode)
+      expect(Rubino::Modes.current).to eq(:default)
+    ensure
+      Rubino::Modes.set(:default)
+    end
+
+    it "returns the freshly-built prompt chip and prints the transition footer" do
+      Rubino::Modes.set(:default)
+      out = capture_stdout { @new_prompt = cmd.send(:cycle_mode) }
+      expect(strip_ansi(@new_prompt)).to eq("plan ❯ ")
+      expect(strip_ansi(out)).to include("┄ mode · plan — #{Rubino::Modes.description(:plan)}, shift+tab to cycle ┄")
+    ensure
+      Rubino::Modes.set(:default)
+    end
+  end
+
+  def capture_stdout
+    old = $stdout
+    $stdout = StringIO.new
+    yield
+    $stdout.string
+  ensure
+    $stdout = old
+  end
 end

@@ -68,11 +68,18 @@ module Rubino
       #   CLI uses it to REVEAL the last retained reasoning buffer as a `┊` aside
       #   committed into scrollback. The composer never formats reasoning itself;
       #   it only dispatches the keystroke. nil = no-op.
-      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, on_ctrl_o: nil)
-        @input_queue = input_queue
-        @input       = input
-        @output      = output
-        @on_ctrl_o   = on_ctrl_o
+      # @param on_mode_cycle [#call, nil] invoked when the user presses Shift+Tab
+      #   to cycle the mode. The callback owns the mode logic (persist + emit the
+      #   transition footer) and RETURNS the freshly-built prompt string (the mode
+      #   chip), which the composer adopts and redraws. The composer holds no mode
+      #   knowledge itself. nil = Shift+Tab is a no-op.
+      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
+                     on_ctrl_o: nil, on_mode_cycle: nil)
+        @input_queue   = input_queue
+        @input         = input
+        @output        = output
+        @on_ctrl_o     = on_ctrl_o
+        @on_mode_cycle = on_mode_cycle
         @prompt      = prompt.to_s.empty? ? PROMPT : prompt
         # Visible width ignores ANSI color escapes so the one-row clamp math is
         # correct for a colored mode prompt.
@@ -548,7 +555,27 @@ module Rubino
           # Final byte of a CSI sequence terminates it.
           break if c.ord.between?(0x40, 0x7E)
         end
-        consume_paste if seq == "200~"
+        if seq == "200~"
+          consume_paste
+        elsif seq == "Z"
+          cycle_mode # Shift+Tab arrives as ESC[Z
+        end
+      end
+
+      # Shift+Tab: ask the callback to cycle + persist the mode and print its
+      # transition footer, then adopt the new prompt chip it returns and redraw
+      # the prompt under the render mutex. The composer owns NO mode logic.
+      def cycle_mode
+        return unless @on_mode_cycle
+
+        new_prompt = @on_mode_cycle.call
+        return if new_prompt.nil?
+
+        @render.synchronize do
+          @prompt = new_prompt.to_s.empty? ? PROMPT : new_prompt.to_s
+          @prompt_width = @prompt.gsub(ANSI_RE, "").length
+          draw_input
+        end
       end
 
       # Accumulate a bracketed-paste body until the closing ESC[201~ marker, then

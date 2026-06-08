@@ -175,6 +175,27 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "#handle_key Shift+Tab (mode cycle)" do
+    # Shift+Tab arrives as ESC[Z: preload the bytes after ESC, then trigger the
+    # escape consumer via handle_key("\e") — the same way the paste specs drive it.
+    it "invokes on_mode_cycle and adopts the returned prompt chip" do
+      cycles = 0
+      io = StringIO.new("[Z")
+      c = described_class.new(input_queue: queue, input: io, output: output,
+                              on_mode_cycle: -> { cycles += 1; "yolo ❯ " })
+      c.handle_key("\e")
+      expect(cycles).to eq(1)
+      expect(output.string).to include("yolo ❯ ") # the new chip was redrawn
+    end
+
+    it "is a quiet no-op when no callback is wired" do
+      io = StringIO.new("[Z")
+      expect { composer.handle_key("\e"); composer.send(:read_nonblock_char) }.not_to raise_error
+      composer2 = described_class.new(input_queue: queue, input: io, output: output)
+      expect { composer2.handle_key("\e") }.not_to raise_error
+    end
+  end
+
   describe "bracketed paste (L1)" do
     # Drive a paste by preloading the input IO with the bytes that follow the
     # initial ESC, then triggering the escape consumer via handle_key("\e").
