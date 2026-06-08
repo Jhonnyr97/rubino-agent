@@ -32,6 +32,7 @@ module Rubino
           provider: provider,
           title: title,
           status: "active",
+          owner_pid: Process.pid,
           message_count: 0,
           token_count: 0,
           created_at: now,
@@ -78,6 +79,7 @@ module Rubino
           provider: session[:provider],
           title: session[:title],
           status: session[:status] || "active",
+          owner_pid: Process.pid,
           message_count: 0,
           token_count: 0,
           created_at: session[:created_at] || Time.now.utc.iso8601,
@@ -165,8 +167,33 @@ module Rubino
         @db[:sessions].where(id: id).update(
           status: "ended",
           ended_at: now,
+          owner_pid: nil,
           updated_at: now
         )
+      end
+
+      # Reaps orphaned sessions: any row still "active" whose owning process is
+      # gone is stamped "ended" (#11). This covers the un-trappable hard kill
+      # (SIGKILL) and a closed terminal whose SIGHUP never reached the process,
+      # where neither the clean-exit path nor the signal traps ran. Rows owned
+      # by a live process (including the current one) and rows with no recorded
+      # pid (pre-#11 / future sources) are left untouched. Called lazily before
+      # listing/resuming sessions; best-effort, returns the number reaped.
+      def reap_orphaned_active!
+        reaped = 0
+        @db[:sessions]
+          .where(status: "active")
+          .exclude(owner_pid: nil)
+          .select(:id, :owner_pid)
+          .each do |row|
+            next if process_alive?(row[:owner_pid])
+
+            end_session!(row[:id])
+            reaped += 1
+          end
+        reaped
+      rescue StandardError
+        reaped
       end
 
       # Returns the most recent active session, if any
@@ -218,6 +245,23 @@ module Rubino
       end
 
       private
+
+      # True when a process with this pid is currently alive and signalable by
+      # us. Process.kill(0, pid) is the canonical liveness probe: it sends no
+      # signal but raises Errno::ESRCH when the pid is gone. Errno::EPERM means
+      # the pid exists but is owned by another user — still alive, do not reap.
+      def process_alive?(pid)
+        return false if pid.nil?
+
+        Process.kill(0, pid)
+        true
+      rescue Errno::ESRCH
+        false
+      rescue Errno::EPERM
+        true
+      rescue StandardError
+        true # unknown error: be conservative and keep the session
+      end
 
       def generate_id
         SecureRandom.uuid

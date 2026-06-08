@@ -239,7 +239,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
     let(:repo) { instance_double(Rubino::Session::Repository) }
     let(:session) { { id: "abc123ef", title: "my session", status: "active" } }
 
-    before { allow(Rubino::Session::Repository).to receive(:new).and_return(repo) }
+    before do
+      allow(Rubino::Session::Repository).to receive(:new).and_return(repo)
+      # resolve_session_id reaps orphaned-active sessions (#11) before resolving.
+      allow(repo).to receive(:reap_orphaned_active!)
+    end
 
     it "passes --session ID to Runner" do
       described_class.new("query" => "hi", "session" => "abc123ef").execute
@@ -355,6 +359,38 @@ RSpec.describe Rubino::CLI::ChatCommand do
       described_class.new({}).execute
 
       expect(fake_runner).to have_received(:end_session!)
+    end
+  end
+
+  # #11: closing a terminal tab delivers SIGHUP; a session left "active" must be
+  # stamped ended_at by the installed trap, the same as SIGTERM. SIGKILL cannot
+  # be trapped — that path is covered by Repository#reap_orphaned_active!.
+  describe "SIGHUP/close teardown trap (#11)" do
+    let(:runner) { instance_double(Rubino::Agent::Runner) }
+
+    around do |example|
+      prev = Signal.trap("HUP", "DEFAULT")
+      example.run
+    ensure
+      Signal.trap("HUP", prev || "DEFAULT")
+    end
+
+    it "installs a HUP handler that ends the session on close" do
+      skip "SIGHUP not supported on this platform" unless Signal.list.key?("HUP")
+      allow(runner).to receive(:end_session!)
+
+      cmd = described_class.new({})
+      prev = cmd.send(:install_session_end_traps, runner)
+      expect(prev).to have_key("HUP")
+
+      # Capture the installed handler (Signal.trap returns the prior one) and
+      # invoke it directly. Firing a real SIGHUP would exit(0) the rspec
+      # process; the handler ends the session then exits, so we assert both.
+      handler = Signal.trap("HUP", "DEFAULT")
+      expect(handler).to respond_to(:call)
+      expect { handler.call }.to raise_error(SystemExit)
+
+      expect(runner).to have_received(:end_session!)
     end
   end
 
