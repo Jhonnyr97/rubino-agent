@@ -1031,15 +1031,8 @@ module Rubino
       # to run every boot. Only fall back to a friendly "run setup" message if
       # the auto-init itself fails, never a Ruby backtrace.
       def ensure_database_ready!
-        connection = Rubino.database
-        migrator   = Database::Migrator.new(connection)
+        return if Rubino.ensure_database_ready!
 
-        return unless connection.healthy? == false || migrator.pending?
-
-        Rubino.ensure_directories!
-        migrator.migrate!
-      rescue StandardError => e
-        Rubino.logger.debug(event: "auto_setup_failed", error: "#{e.class}: #{e.message}")
         $stderr.puts "rubino isn't set up yet — run `rubino setup` first."
         exit(1)
       end

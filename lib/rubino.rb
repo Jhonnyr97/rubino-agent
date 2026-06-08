@@ -221,6 +221,30 @@ module Rubino
       @database ||= Database::Connection.new(configuration.database_path)
     end
 
+    # First-run guard for any DB-touching entry point. A brand-new RUBINO_HOME
+    # has no schema yet (setup/chat hasn't migrated it), so a read path like
+    # `rubino sessions list` would otherwise hit a raw
+    # `SQLite3::SQLException: no such table` backtrace (#35). `healthy?` only
+    # runs `SELECT 1`, which passes the moment SQLite lazily creates the empty
+    # file — the tables are still missing — so we also check migrator.pending?.
+    # Migrations are idempotent, so this is safe to call on every command. This
+    # is the same logic the interactive `chat` command already used; promoted
+    # here so the read CLIs (sessions/memory/jobs) share one implementation.
+    # Returns true when the schema is ready, false when initialization failed
+    # (callers decide whether that's fatal or degrades to an empty state).
+    def ensure_database_ready!
+      connection = database
+      migrator   = Database::Migrator.new(connection)
+      return true unless connection.healthy? == false || migrator.pending?
+
+      ensure_directories!
+      migrator.migrate!
+      true
+    rescue StandardError => e
+      logger.debug(event: "ensure_database_ready_failed", error: "#{e.class}: #{e.message}")
+      false
+    end
+
     # Returns the event bus instance
     def event_bus
       @event_bus ||= Interaction::EventBus.new
