@@ -2,7 +2,7 @@
 
 ## Overview
 
-rubino is a micro agent that runs on a PC or inside a VM. It follows a
+rubino is a lightweight agent that runs on a PC or inside a VM. It follows a
 layered architecture with strict separation of concerns:
 
 ```
@@ -25,7 +25,7 @@ Infrastructure Layer   →  LLM Adapter, Database, MCP, OAuth
 
 ### `agent/`
 Multiple agent types and @mention routing exist as a design surface; the
-micro agent runs a single agent by default and multi-agent routing is dormant.
+rubino runs a single agent by default and multi-agent routing is dormant.
 - `AgentRegistry` — Defines all agent types (build, plan, explore, general, utility)
 - `Router` — Routes input to appropriate agent via @mention
 - `Definition` — Agent type with model, tools, permissions, MCP scoping
@@ -86,7 +86,7 @@ API's `parent_session_id` path.
 
 ### `mcp/`
 MCP support is present as a design surface but dormant in the current
-micro-agent build.
+current lightweight build.
 - `Manager` — Manages multiple MCP client connections
 - `MCPToolWrapper` — Wraps MCP tools into Tools::Base interface
 

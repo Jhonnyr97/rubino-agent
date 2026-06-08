@@ -62,7 +62,7 @@ client                    rubino                provider
   │ ◄───────────────────────────│                         │
 ```
 
-The **client** (e.g. client-ui) keeps `state` + `code_verifier` between connect and callback. rubino does not maintain a per-flow session — keeps it stateless.
+The **client** (e.g. a web UI) keeps `state` + `code_verifier` between connect and callback. rubino does not maintain a per-flow session — keeps it stateless.
 
 ## Storage
 
@@ -135,7 +135,7 @@ Rich did it: it has `/api/providers/oauth/*`. Reason it makes sense in rubino to
 - **Refresh logic will be centralized.** Once auto-refresh lands (post-v0.1), expired tokens get refreshed in one place, not duplicated per client.
 - **Encrypted persistence.** Clients shouldn't store user tokens long-term; the agent does, encrypted, with a redaction-aware logger.
 
-The client (client-ui) handles only the redirect dance — opening the authorize URL in a browser and POSTing the code back. Everything else stays here.
+The client (a web UI) handles only the redirect dance — opening the authorize URL in a browser and POSTing the code back. Everything else stays here.
 
 ## Non-goals
 

@@ -6,8 +6,8 @@ Which provider, which model, which key — answered in 60 seconds. The fastest p
 
 | Provider | When | Default model the wizard writes |
 |---|---|---|
-| **MiniMax** | Recommended default; Anthropic-compatible | `MiniMax-M2.7` |
-| **OpenAI** | GPT models | `gpt-4.1` |
+| **OpenAI** | Recommended default; GPT models | `gpt-4.1` |
+| **MiniMax** | Anthropic-compatible | `MiniMax-M2.7` |
 | **Anthropic** | Claude models | `claude-sonnet-4-5` |
 | **Google (Gemini)** | Gemini models | `gemini-2.5-pro` |
 | **rubino-ui proxy** | An OpenAI-compatible gateway picks the upstream | `auto` |
@@ -56,7 +56,7 @@ The native ENV var per provider: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_
 
 Each block goes in `~/.rubino/config.yml`; the key goes in `~/.rubino/.env`.
 
-### MiniMax (recommended default)
+### MiniMax (Anthropic-compatible)
 
 MiniMax speaks the Anthropic API, so it routes through the anthropic-compatible path.
 
@@ -79,7 +79,7 @@ MINIMAX_API_KEY=...
 
 > MiniMax M2 ignores tool definitions and roleplays bash in markdown; use **MiniMax-M2.7** for working tool use.
 
-### OpenAI (GPT)
+### OpenAI (GPT) (recommended default)
 
 Uses OpenAI's own API (not OpenRouter) when `provider: openai` and the model id is a bare OpenAI id.
 

@@ -474,7 +474,7 @@ api:
 
 | Variable | Purpose |
 |----------|---------|
-| `MINIMAX_API_KEY` | MiniMax API key (recommended default) |
+| `MINIMAX_API_KEY` | MiniMax API key |
 | `OPENAI_API_KEY` | OpenAI key (also the fallback for `openai_compatible` gateways) |
 | `ANTHROPIC_API_KEY` | Anthropic key (also the fallback for `anthropic_compatible` gateways) |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini key |
