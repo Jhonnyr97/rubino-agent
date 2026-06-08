@@ -1,0 +1,308 @@
+# frozen_string_literal: true
+
+require "set"
+
+module Rubino
+  module Context
+    # Assembles the complete prompt from all context sources.
+    # Returns the message array (system + summary + history) for LLM submission.
+    class PromptAssembler
+      # Process-wide cache of the memory snapshot keyed by session id.
+      # Captured the first time build_system_prompt runs for a session and
+      # reused on every subsequent assembly in that session — even if the
+      # agent calls Tools::MemoryTool mid-session. Rationale: without
+      # freezing, an injected memory written this turn would land in the
+      # *next* prompt and effectively self-elevate. The agent must wait
+      # for the next session (or call reset_snapshot!) for new writes to
+      # appear in the system prompt.
+      @snapshots = {}
+      @snapshots_mutex = Mutex.new
+
+      class << self
+        # Returns the cached snapshot for a session, computing it via the
+        # supplied block on first access. The block receives no args and
+        # must return the memory-context hash to freeze.
+        def snapshot_for(session_id)
+          @snapshots_mutex.synchronize do
+            @snapshots[session_id] ||= yield
+          end
+        end
+
+        # Drops the cached snapshot for a session so the next assembly
+        # captures fresh memory state. Use this when a tool call must
+        # influence the very next turn (trade-off: the freeze stops
+        # protecting against same-turn poisoning).
+        def reset_snapshot!(session_id)
+          @snapshots_mutex.synchronize { @snapshots.delete(session_id) }
+        end
+
+        # Test/teardown hook. Not part of the public API.
+        def reset_all_snapshots!
+          @snapshots_mutex.synchronize { @snapshots.clear }
+        end
+      end
+
+      def initialize(session:, memory_context:, config:, agent_definition: nil)
+        @session = session
+        @memory_context = memory_context
+        @config = config
+        @agent_definition = agent_definition
+        @message_store = Session::Store.new
+      end
+
+      # Builds and returns the full message array for LLM submission
+      def build
+        messages = []
+
+        # System prompt (always first)
+        messages << { role: "system", content: build_system_prompt }
+
+        # Session summary (if compacted)
+        summary = load_summary
+        if summary
+          messages << { role: "system", content: "[Session Summary]\n#{summary}" }
+        end
+
+        # Conversation history. Repair tool pairing across the FULL list before
+        # mapping to wire format — this is the defensive "net" that recovers
+        # sessions already corrupted by the historical metadata-dropping bug in
+        # compaction/fork (those rows exist in prod). Mirrors Claude Code's
+        # pre-call sanitization: never emit an orphan tool block that 400s a
+        # strict provider. Conservative by design — when in doubt, keep.
+        history = repair_tool_pairs(@message_store.for_session(@session[:id]))
+        history.each do |msg|
+          messages << msg.to_context
+        end
+
+        messages
+      end
+
+      private
+
+      # Final pairing repair over the full history (a list of Message objects).
+      # Two orphan shapes 400 strict providers; we fix both, conservatively:
+      #
+      #   1. tool RESULT with no matching assistant tool_call upstream → drop it.
+      #   2. assistant tool_call whose results are ENTIRELY absent downstream →
+      #      strip its tool_calls (keep the message if it still has content,
+      #      otherwise drop it). Partially-answered calls are LEFT ALONE: pruning
+      #      a still-referenced id would itself create an orphan.
+      #
+      # Reuses ToolPairSanitizer's id predicates so the matching logic lives in
+      # one place. Returns a list of Message objects safe to map via to_context.
+      def repair_tool_pairs(history)
+        sanitizer = ToolPairSanitizer.new
+
+        # All tool_call ids declared by assistant messages anywhere in history.
+        declared_ids = history
+                         .select { |m| sanitizer.assistant_tool_call?(m) }
+                         .flat_map { |m| sanitizer.tool_call_ids(m) }
+                         .to_set
+
+        # All ids actually answered by a tool result anywhere in history.
+        answered_ids = history
+                         .select { |m| m.role == "tool" && m.tool_call_id }
+                         .map(&:tool_call_id)
+                         .to_set
+
+        repaired = []
+        history.each do |msg|
+          if msg.role == "tool" && msg.tool_call_id
+            # Drop a result whose triggering assistant call is gone.
+            next unless declared_ids.include?(msg.tool_call_id)
+            repaired << msg
+          elsif sanitizer.assistant_tool_call?(msg)
+            ids = sanitizer.tool_call_ids(msg)
+            if ids.any? { |id| answered_ids.include?(id) }
+              # At least one result present → keep the call intact. Partial
+              # answers stay as-is (pruning would re-orphan the kept result).
+              repaired << msg
+            else
+              # No results at all → strip tool_calls so we don't emit a toolUse
+              # with no following toolResult. Keep the surrounding prose if any.
+              stripped = strip_tool_calls(msg)
+              repaired << stripped if stripped
+            end
+          else
+            repaired << msg
+          end
+        end
+
+        repaired
+      end
+
+      # Returns a copy of an assistant message with tool_calls removed, or nil
+      # when the message would be empty afterwards (nothing left to send).
+      def strip_tool_calls(msg)
+        return nil if msg.content.nil? || msg.content.to_s.strip.empty?
+
+        metadata = msg.metadata.is_a?(Hash) ? msg.metadata.dup : {}
+        metadata.delete(:tool_calls)
+        metadata.delete("tool_calls")
+
+        Session::Message.new(
+          id:           msg.id,
+          session_id:   msg.session_id,
+          role:         msg.role,
+          content:      msg.content,
+          tool_name:    msg.tool_name,
+          tool_call_id: msg.tool_call_id,
+          token_count:  msg.token_count,
+          metadata:     metadata,
+          created_at:   msg.created_at
+        )
+      end
+
+      # Assembles the system prompt as a stack of labelled blocks:
+      #   1. Identity        — role-specific built-in prompt (or override)
+      #   2. Product preamble— config.prompts.preamble, customer-side
+      #   3. Environment     — date/OS/cwd/git/runtimes/PATH utilities
+      #   4. User profile    — from memory
+      #   5. Relevant memories
+      #   6. Skills index   — "## Skills (mandatory)" catalogue (auto-trigger)
+      #   7. Project context — AGENTS.md / CLAUDE.md walk
+      # Each block is independent: if a section is empty/disabled it just
+      # drops out without leaving a stray header.
+      def build_system_prompt
+        # Memory snapshot is frozen for the lifetime of the session — see
+        # the class-level @snapshots cache for why. The first assembly in
+        # a session captures @memory_context; later assemblies reuse it
+        # even if Memory::Store has been mutated in the meantime.
+        snapshot = self.class.snapshot_for(@session[:id]) { @memory_context }
+
+        parts = []
+        parts << agent_identity
+        product = product_preamble
+        parts << "[Product]\n#{product}" if product
+        env = environment_block
+        parts << env if env
+
+        if snapshot[:user_profile] && !snapshot[:user_profile].empty?
+          parts << "[User Profile]\n#{snapshot[:user_profile]}"
+        end
+
+        if snapshot[:relevant_memories]&.any?
+          memories_text = snapshot[:relevant_memories].map { |m| "- #{m[:content]}" }.join("\n")
+          parts << "[Relevant Memories]\n#{memories_text}"
+        end
+
+        skills_index = skills_index_block
+        parts << skills_index if skills_index
+
+        project_ctx = load_project_context
+        parts << "[Project Context]\n#{project_ctx}" if project_ctx
+
+        parts.join("\n\n")
+      end
+
+      # The "## Skills (mandatory)" catalogue. This is the load-bearing trigger
+      # for skill auto-activation — surfacing skills in the system prompt (not
+      # just the `skill` tool description) is what makes the model proactively
+      # scan and load a relevant skill before replying.
+      #
+      # Gated, mirroring the reference (which gates on the skills
+      # toolset being present), on both holding:
+      #   - the skills feature is enabled (config skills.enabled), and
+      #   - the `skill` tool is actually available this turn.
+      # When either fails we inject nothing. When both hold we always inject the
+      # block, even with zero skills discovered: the catalogue half drops out but
+      # the proactive-creation nudge remains, so a fresh install still gets told
+      # to distill repeatable work into a skill (PromptIndex#render handles the
+      # empty-catalogue case and never returns nil).
+      def skills_index_block
+        return nil unless skills_feature_enabled?
+        return nil unless skill_tool_available?
+
+        Skills::PromptIndex.new(
+          registry: Skills::Registry.new(config: @config)
+        ).render
+      rescue StandardError
+        nil
+      end
+
+      def skills_feature_enabled?
+        value = @config.dig("skills", "enabled")
+        value.nil? ? true : value == true
+      end
+
+      # True when the `skill` tool is exposed to the model this turn. Honors the
+      # agent definition's tool restrictions when present, else falls back to the
+      # globally enabled tools — the same source the loop uses to pick tools.
+      def skill_tool_available?
+        tools =
+          if @agent_definition
+            @agent_definition.resolved_tools
+          else
+            Tools::Registry.instance.enabled_tools
+          end
+        tools.any? { |t| t.respond_to?(:name) && t.name == "skill" }
+      rescue StandardError
+        false
+      end
+
+      def agent_identity
+        return @agent_definition.system_prompt if @agent_definition&.system_prompt
+
+        load_builtin_prompt("build") || <<~FALLBACK.strip
+          You are a helpful AI assistant powered by rubino.
+          You can use tools to help accomplish tasks.
+          Be concise and accurate in your responses.
+        FALLBACK
+      end
+
+      def product_preamble
+        return nil unless @config.respond_to?(:prompts_preamble)
+
+        @config.prompts_preamble
+      end
+
+      def environment_block
+        return nil unless environment_enabled?
+
+        EnvironmentInspector.new(
+          extra_utilities: environment_extra_utilities
+        ).render
+      rescue StandardError
+        # The env block is a convenience; never let a probe failure
+        # (read-only filesystem, missing `git`, weird PATH) take down the
+        # whole interaction.
+        nil
+      end
+
+      def environment_enabled?
+        return true unless @config.respond_to?(:prompts_environment_enabled?)
+
+        @config.prompts_environment_enabled?
+      end
+
+      def environment_extra_utilities
+        return [] unless @config.respond_to?(:prompts_environment_extra_utilities)
+
+        @config.prompts_environment_extra_utilities
+      end
+
+      def load_builtin_prompt(name)
+        path = File.expand_path("../agent/prompts/#{name}.txt", __dir__)
+        File.exist?(path) ? File.read(path).strip : nil
+      rescue StandardError
+        nil
+      end
+
+      def load_summary
+        Session::SummaryStore.new.latest_content(@session[:id])
+      rescue StandardError
+        nil
+      end
+
+      def load_project_context
+        return nil unless @config.dig("memory", "project_context_enabled")
+
+        discovery = Context::FileDiscovery.new
+        discovery.load_project_context
+      rescue StandardError
+        nil
+      end
+
+    end
+  end
+end

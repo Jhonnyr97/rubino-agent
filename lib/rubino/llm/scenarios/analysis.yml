@@ -1,0 +1,501 @@
+# Analysis scenario: model streams long reasoning token-by-token,
+# reads a file via the real `read` tool, then continues reasoning.
+# Mirrors the reference analysis scenario in the FakeProvider vocabulary.
+# The fake provider terminates when events run out, so no completion event
+# is needed.
+events:
+  - type: thinking
+    text: "Let"
+  - type: thinking
+    text: " me"
+  - type: thinking
+    text: " analyze"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " full"
+  - type: thinking
+    text: " architecture"
+  - type: thinking
+    text: " step"
+  - type: thinking
+    text: " by"
+  - type: thinking
+    text: " step."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "First,"
+  - type: thinking
+    text: " let"
+  - type: thinking
+    text: " me"
+  - type: thinking
+    text: " understand"
+  - type: thinking
+    text: " what"
+  - type: thinking
+    text: " we"
+  - type: thinking
+    text: " are"
+  - type: thinking
+    text: " looking"
+  - type: thinking
+    text: " at."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "The"
+  - type: thinking
+    text: " system"
+  - type: thinking
+    text: " has"
+  - type: thinking
+    text: " multiple"
+  - type: thinking
+    text: " layers"
+  - type: thinking
+    text: " that"
+  - type: thinking
+    text: " interact"
+  - type: thinking
+    text: " in"
+  - type: thinking
+    text: " specific"
+  - type: thinking
+    text: " ways."
+
+  - type: delay_seconds
+    value: 0.8
+
+  - type: thinking
+    text: "\n\n"
+  - type: thinking
+    text: "Layer"
+  - type: thinking
+    text: " one:"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " Acme"
+  - type: thinking
+    text: " API"
+  - type: thinking
+    text: " server."
+  - type: thinking
+    text: "\nIt"
+  - type: thinking
+    text: " exposes"
+  - type: thinking
+    text: " endpoints"
+  - type: thinking
+    text: " for"
+  - type: thinking
+    text: " creating"
+  - type: thinking
+    text: " runs,"
+  - type: thinking
+    text: " streaming"
+  - type: thinking
+    text: " events,"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " handling"
+  - type: thinking
+    text: " approvals."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "It"
+  - type: thinking
+    text: " uses"
+  - type: thinking
+    text: " aiohttp"
+  - type: thinking
+    text: " for"
+  - type: thinking
+    text: " async"
+  - type: thinking
+    text: " HTTP"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " SSE"
+  - type: thinking
+    text: " for"
+  - type: thinking
+    text: " real-time"
+  - type: thinking
+    text: " communication."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "The"
+  - type: thinking
+    text: " key"
+  - type: thinking
+    text: " endpoints"
+  - type: thinking
+    text: " are:"
+  - type: thinking
+    text: " POST"
+  - type: thinking
+    text: " /v1/runs,"
+  - type: thinking
+    text: " GET"
+  - type: thinking
+    text: " /v1/runs/{id}"
+  - type: thinking
+    text: "/events,"
+  - type: thinking
+    text: " POST"
+  - type: thinking
+    text: " /v1/runs/{id}"
+  - type: thinking
+    text: "/stop,"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " POST"
+  - type: thinking
+    text: " /v1/runs/{id}"
+  - type: thinking
+    text: "/approvals"
+  - type: thinking
+    text: "/{aid}."
+
+  - type: delay_seconds
+    value: 1.0
+
+  - type: thinking
+    text: "\n\n"
+  - type: thinking
+    text: "Layer"
+  - type: thinking
+    text: " two:"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " Rails"
+  - type: thinking
+    text: " UI."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "It"
+  - type: thinking
+    text: " connects"
+  - type: thinking
+    text: " via"
+  - type: thinking
+    text: " AcmeApiService"
+  - type: thinking
+    text: " which"
+  - type: thinking
+    text: " wraps"
+  - type: thinking
+    text: " all"
+  - type: thinking
+    text: " HTTP"
+  - type: thinking
+    text: " calls"
+  - type: thinking
+    text: " to"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " API"
+  - type: thinking
+    text: " server."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "AcmeRunJob"
+  - type: thinking
+    text: " processes"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " SSE"
+  - type: thinking
+    text: " stream"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " persists"
+  - type: thinking
+    text: " events"
+  - type: thinking
+    text: " as"
+  - type: thinking
+    text: " RunEvent"
+  - type: thinking
+    text: " records."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "The"
+  - type: thinking
+    text: " timeline"
+  - type: thinking
+    text: " rendering"
+  - type: thinking
+    text: " reads"
+  - type: thinking
+    text: " from"
+  - type: thinking
+    text: " RunEvent"
+  - type: thinking
+    text: " via"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " build_items"
+  - type: thinking
+    text: " method."
+
+  - type: delay_seconds
+    value: 1.2
+
+  - type: tool_call
+    name: read
+    arguments:
+      file_path: "/app/app/jobs/acme_run_job.rb"
+
+  - type: delay_seconds
+    value: 1.0
+
+  - type: thinking
+    text: "\n\n"
+
+  - type: thinking
+    text: "Looking"
+  - type: thinking
+    text: " at"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " job"
+  - type: thinking
+    text: " code,"
+  - type: thinking
+    text: " I"
+  - type: thinking
+    text: " can"
+  - type: thinking
+    text: " see"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " refactoring"
+  - type: thinking
+    text: " removed"
+  - type: thinking
+    text: " content_buffer"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " reasoning_buffer."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "These"
+  - type: thinking
+    text: " were"
+  - type: thinking
+    text: " accumulating"
+  - type: thinking
+    text: " text"
+  - type: thinking
+    text: " in"
+  - type: thinking
+    text: " memory"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " flushing"
+  - type: thinking
+    text: " to"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " database."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "Now"
+  - type: thinking
+    text: " RunEvent"
+  - type: thinking
+    text: " is"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " single"
+  - type: thinking
+    text: " source"
+  - type: thinking
+    text: " of"
+  - type: thinking
+    text: " truth"
+  - type: thinking
+    text: " for"
+  - type: thinking
+    text: " both"
+  - type: thinking
+    text: " content"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " reasoning."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "The"
+  - type: thinking
+    text: " flush_now"
+  - type: thinking
+    text: " method"
+  - type: thinking
+    text: " now"
+  - type: thinking
+    text: " only"
+  - type: thinking
+    text: " handles"
+  - type: thinking
+    text: " tool_calls_cache"
+  - type: thinking
+    text: " for"
+  - type: thinking
+    text: " real-time"
+  - type: thinking
+    text: " tool"
+  - type: thinking
+    text: " status"
+  - type: thinking
+    text: " updates."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "Everything"
+  - type: thinking
+    text: " else"
+  - type: thinking
+    text: " is"
+  - type: thinking
+    text: " event-driven."
+
+  - type: delay_seconds
+    value: 0.8
+
+  - type: thinking
+    text: "\n\n"
+  - type: thinking
+    text: "This"
+  - type: thinking
+    text: " changes"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " data"
+  - type: thinking
+    text: " flow"
+  - type: thinking
+    text: " significantly."
+  - type: thinking
+    text: "\n"
+  - type: thinking
+    text: "When"
+  - type: thinking
+    text: " a"
+  - type: thinking
+    text: " user"
+  - type: thinking
+    text: " sends"
+  - type: thinking
+    text: " a"
+  - type: thinking
+    text: " message:"
+  - type: thinking
+    text: "\n1."
+  - type: thinking
+    text: " AcmeRunJob"
+  - type: thinking
+    text: " starts"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " calls"
+  - type: thinking
+    text: " POST"
+  - type: thinking
+    text: " /v1/runs"
+  - type: thinking
+    text: "\n2."
+  - type: thinking
+    text: " Acme"
+  - type: thinking
+    text: " returns"
+  - type: thinking
+    text: " a"
+  - type: thinking
+    text: " run_id"
+  - type: thinking
+    text: "\n3."
+  - type: thinking
+    text: " The"
+  - type: thinking
+    text: " job"
+  - type: thinking
+    text: " connects"
+  - type: thinking
+    text: " to"
+  - type: thinking
+    text: " the"
+  - type: thinking
+    text: " SSE"
+  - type: thinking
+    text: " stream"
+  - type: thinking
+    text: "\n4."
+  - type: thinking
+    text: " Events"
+  - type: thinking
+    text: " arrive"
+  - type: thinking
+    text: " and"
+  - type: thinking
+    text: " are"
+  - type: thinking
+    text: " persisted"
+  - type: thinking
+    text: "\n5."
+  - type: thinking
+    text: " On"
+  - type: thinking
+    text: " run.completed,"
+  - type: thinking
+    text: " final_output"
+  - type: thinking
+    text: " is"
+  - type: thinking
+    text: " set"
+  - type: thinking
+    text: "\n6."
+  - type: thinking
+    text: " Timeline"
+  - type: thinking
+    text: " renders"
+  - type: thinking
+    text: " from"
+  - type: thinking
+    text: " RunEvent"
+  - type: thinking
+    text: " records"
+
+  - type: delay_seconds
+    value: 1.5
+
+  - type: thinking
+    text: "\n\n"

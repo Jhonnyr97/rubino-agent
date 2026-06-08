@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# bin/dev — boot rubino in fake-LLM mode for local dev. Zero token cost.
+#
+# Defaults can be overridden via env:
+#   PORT                          (default: 13500)
+#   RUBINO_HOME               (default: /tmp/rubino-dev)
+#   RUBINO_API_KEY            (default: dev-key)
+#   RUBINO_ENCRYPTION_KEY     (default: freshly generated base64-32B)
+#   FAKE_MODEL                    (default: "fake" — auto-router picks scenario
+#                                  from input text. Set to "fake/<scenario>"
+#                                  to pin one scenario, e.g. "fake/with-approvals")
+#
+# Re-runnable: setup is idempotent; the config file is overwritten each boot
+# so changes to defaults pick up automatically.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
+
+PORT="${PORT:-13500}"
+export RUBINO_HOME="${RUBINO_HOME:-/tmp/rubino-dev}"
+export RUBINO_API_KEY="${RUBINO_API_KEY:-dev-key}"
+export RUBINO_ENCRYPTION_KEY="${RUBINO_ENCRYPTION_KEY:-$(openssl rand -base64 32 | tr -d '\n')}"
+export RUBINO_ALLOW_FAKE=1
+FAKE_MODEL="${FAKE_MODEL:-fake}"
+
+FAKE_WORKDIR="${FAKE_WORKDIR:-$RUBINO_HOME/workspace}"
+mkdir -p "$RUBINO_HOME" "$FAKE_WORKDIR"
+
+# Write a minimal config every boot so FAKE_MODEL / PORT changes apply without
+# manual edits.
+#
+# - terminal.cwd points at a scratch workspace so write/edit/attach tools
+#   land their output somewhere predictable and disposable.
+# - tools.workspace_strict is disabled because fake scenarios sometimes
+#   reference fixed absolute paths (legacy fake-provider compatibility) and
+#   we don't want the strict sandbox refusing them in a dev-only mode.
+# - scenarios_dir points at the in-repo YAML fixtures.
+cat >"$RUBINO_HOME/config.yml" <<YAML
+paths:
+  home: $RUBINO_HOME
+logging:
+  level: info
+api:
+  host: 127.0.0.1
+  port: $PORT
+terminal:
+  cwd: $FAKE_WORKDIR
+tools:
+  workspace_strict: false
+model:
+  default: $FAKE_MODEL
+  provider: fake
+providers:
+  fake:
+    scenarios_dir: $REPO_ROOT/lib/rubino/llm/scenarios
+YAML
+
+echo "▸ rubino dev (fake LLM)"
+echo "  home:     $RUBINO_HOME"
+echo "  port:     $PORT"
+echo "  model:    $FAKE_MODEL"
+echo "  api key:  $RUBINO_API_KEY"
+echo "  health:   curl -H 'Authorization: Bearer $RUBINO_API_KEY' http://127.0.0.1:$PORT/v1/health"
+echo
+
+# Free the port if a previous bin/dev (or a stale child of one) is still
+# holding it. Without this the second invocation crashes with EADDRINUSE
+# and the user has to lsof | kill by hand.
+if PIDS=$(lsof -ti tcp:"$PORT" 2>/dev/null); then
+  echo "▸ port $PORT busy — killing $PIDS"
+  echo "$PIDS" | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
+
+# Bundle expects the Gemfile to be discoverable, but the server itself
+# should run with Dir.pwd = $FAKE_WORKDIR so the write tool drops files
+# inside the scratch workspace (not in the repo root).
+export BUNDLE_GEMFILE="$REPO_ROOT/Gemfile"
+bundle exec "$REPO_ROOT/exe/rubino" setup >/dev/null
+cd "$FAKE_WORKDIR"
+
+# Auto-reload: rerun watches lib/ and the scenarios dir from REPO_ROOT
+# and restarts the server process on any .rb / .yml edit. Pass
+# --no-notify so macOS doesn't pop a system banner on every restart.
+# When NO_RELOAD=1 (or rerun is missing) fall back to a plain exec.
+SERVER_CMD=(bundle exec "$REPO_ROOT/exe/rubino" server --port "$PORT")
+if [ "${NO_RELOAD:-0}" = "1" ] || ! bundle exec rerun --version >/dev/null 2>&1; then
+  echo "▸ auto-reload disabled (NO_RELOAD=${NO_RELOAD:-0}) — exec'ing server directly"
+  exec "${SERVER_CMD[@]}"
+fi
+
+echo "▸ auto-reload on — watching $REPO_ROOT/lib and $REPO_ROOT/lib/rubino/llm/scenarios"
+# --wait 3: Puma needs a beat to release the TCP socket on macOS after
+# SIGTERM (TIME_WAIT). Without it, the next boot races the previous
+# Puma's bind and dies with EADDRINUSE.
+# --signal TERM,KILL: try graceful first, force-kill if it ignores.
+exec bundle exec rerun \
+  --dir "$REPO_ROOT/lib" \
+  --pattern '**/*.{rb,yml}' \
+  --no-notify \
+  --signal TERM,KILL \
+  --wait 3 \
+  -- "${SERVER_CMD[@]}"

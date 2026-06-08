@@ -1,0 +1,194 @@
+# frozen_string_literal: true
+
+module Rubino
+  module Security
+    # Determines whether a tool execution requires user approval.
+    # Uses pattern-based rules, tool risk levels, and doom loop detection.
+    #
+    # Config example:
+    #   approvals:
+    #     mode: "manual"  # manual | auto | skip
+    #   permissions:
+    #     "git *": "allow"
+    #     "shell rm *": "deny"
+    #     "shell bundle *": "allow"
+    #     "file_system write ~/.env": "deny"
+    class ApprovalPolicy
+      MODES = %w[manual auto skip].freeze
+
+      def initialize(config: nil, agent_overrides: nil)
+        @config = config || Rubino.configuration
+        @mode = @config.approvals_mode
+        # Effective shell prompt policy (:confirm_all | :dangerous_only).
+        # Derived from security.confirm_policy, with security.require_confirmation_for_shell
+        # as a back-compat alias (see Configuration#confirm_policy). Older config
+        # objects that predate the accessor fall back to :confirm_all.
+        @confirm_policy =
+          @config.respond_to?(:confirm_policy) ? @config.confirm_policy : :confirm_all
+        @pattern_matcher = PatternMatcher.new(
+          rules: load_permission_rules(agent_overrides)
+        )
+        @doom_detector = DoomLoopDetector.new
+      end
+
+
+      # Returns the decision for a tool call: :allow, :ask, :deny
+      #
+      # CANONICAL DECISION ORDER (deny-class checks precede every allow path).
+      # Mirrors the reconciled reference ordering:
+      #
+      #   1. hardline(:deny)            non-bypassable floor BELOW yolo
+      #   2. permissions:deny           an explicit deny rule also beats yolo
+      #   3. yolo / skip-approvals      allow-exit (doom still guards it)
+      #   4. doom loop                  break a stuck autopilot
+      #   5. permissions:allow / :ask   remaining explicit rules
+      #   6. command_allowlist (prefix) pre-approved commands -> :allow
+      #   7-8. confirm_policy shell gate  confirm_all -> :ask; dangerous_only
+      #                                 -> :ask only if dangerous?, else :allow
+      #   9. mode fallback
+      #
+      # The invariant that makes this slice worth doing: HARDLINE and an
+      # explicit permissions:deny BOTH run before any allow path (yolo,
+      # permissions:allow, command_allowlist), so neither can be overridden
+      # by a fast-path the way yolo used to override deny rules.
+      def decide(tool, arguments: {})
+        command_str = self.class.command_string(tool, arguments)
+
+        # 1. Hardline floor — a floor BELOW yolo. Catastrophic, unrecoverable
+        #    commands (rm -rf /, mkfs, dd to a raw device, fork bomb,
+        #    shutdown/reboot, sudo -S password guessing) are denied
+        #    UNCONDITIONALLY: before yolo/skip, before doom, before any
+        #    permissions:allow rule or command_allowlist entry. Opting into
+        #    yolo trusts the agent with your files, NOT to wipe the disk.
+        #    Mirrors the reference approval module (enforced first).
+        blocked, = HardlineGuard.detect(command_str)
+        return :deny if blocked
+
+        # 2. Explicit permissions:deny — like hardline, a deny rule is a
+        #    deny-class check and must beat every allow path. We evaluate the
+        #    pattern rules ONCE here and reuse the result below; only the :deny
+        #    verdict short-circuits before yolo. allow/ask wait until after the
+        #    yolo allow-exit and the doom guard (steps 3-4) so they keep their
+        #    original precedence. Mirrors the deny-before-allow ordering in the
+        #    plan (hardline -> permissions:deny -> yolo -> doom -> allow/ask).
+        pattern_result = @pattern_matcher.match(tool.name, command_str)
+        return :deny if pattern_result == :deny
+
+        # 3. Modes.yolo short-circuits the remaining allow/ask logic. We still
+        #    run the doom detector AFTER, because an autopilot stuck in a loop
+        #    is the one thing yolo isn't supposed to license.
+        if Rubino::Modes.skip_approvals?
+          return :deny if @doom_detector.record(tool_name: tool.name, arguments: arguments)
+          return :allow
+        end
+
+        # 4. Doom loop guard.
+        if @doom_detector.record(tool_name: tool.name, arguments: arguments)
+          return :deny # Break the loop
+        end
+
+        # 5. Remaining explicit pattern rules (allow / ask). deny was already
+        #    handled in step 2.
+        return pattern_result if pattern_result
+
+        # 6. Config allowlist of pre-approved commands. Checked AFTER deny
+        #    patterns (deny always wins) but BEFORE mode-based decision so a
+        #    listed command never triggers a manual prompt.
+        return :allow if command_pre_approved?(command_str)
+
+        # 7-8. confirm_policy gate for a shell command not otherwise resolved.
+        #    NOT under config "skip" (nor runtime yolo, handled at step 3) —
+        #    those are the explicit operator overrides that mean "stop
+        #    prompting me".
+        #
+        #    confirm_all (DEFAULT, == legacy require_confirmation_for_shell:true)
+        #      every such shell command -> :ask. shell is :high risk so manual
+        #      mode would ask anyway; this also keeps it gated under auto mode.
+        #
+        #    dangerous_only (reference-faithful, == legacy alias:false)
+        #      prompt ONLY when the command matches a DangerousPattern
+        #      (git push --force, curl|sh, recursive rm of a non-root path,
+        #      ...). Safe commands run unprompted. Mirrors approval.py:475
+        #      where detect_dangerous_command is the sole prompt trigger.
+        #      The hardline floor (step 1) and permissions:deny (step 2) already
+        #      ran, so dangerous_only NEVER weakens the non-bypassable floor.
+        if tool.name == "shell" && @mode != "skip"
+          case @confirm_policy
+          when :dangerous_only
+            return :ask if dangerous?(command_str)
+            return :allow
+          else # :confirm_all
+            return :ask
+          end
+        end
+
+
+        # 9. Fall back to mode-based decision
+        mode_based_decision(tool)
+      end
+
+      # True when a command matches a recoverable-but-risky DangerousPattern
+      # (distinct from the hardline floor). Computed signal for the structured
+      # ask context and for S4's dangerous_only confirm policy; #decide does
+      # not yet branch on it (see step 7). Mirrors detect_dangerous_command.
+      def dangerous?(command)
+        DangerousPatterns.dangerous?(command)
+      end
+
+
+      # Returns true if a specific command is pre-approved by the config
+      # allowlist. An empty allowlist pre-approves NOTHING.
+      def command_pre_approved?(command)
+        CommandAllowlist.new(config: @config).allowed?(command)
+      end
+
+      # Builds the string representation of a tool call used both for
+      # pattern-rule matching here and for the UI's session-approval scope
+      # in ToolExecutor. One builder so the granularity stays identical:
+      # approving `shell ls` never auto-approves `shell rm -rf /`.
+      def self.command_string(tool, arguments)
+        args = arguments || {}
+        case tool.name
+        when "shell"
+          (args["command"] || args[:command]).to_s
+        when "read", "write", "edit", "multi_edit", "attach_file"
+          (args["file_path"] || args[:file_path]).to_s
+        when "shell_output", "shell_kill", "shell_input"
+          (args["run_id"] || args[:run_id]).to_s
+        else
+          args.values.first.to_s
+        end
+      end
+
+      # Resets doom loop detector (call on new user input)
+      def reset_turn!
+        @doom_detector.reset!
+      end
+
+      private
+
+      def mode_based_decision(tool)
+        case @mode
+        when "skip"
+          :allow
+        when "auto"
+          tool.risk_level == :high ? :ask : :allow
+        when "manual"
+          tool.risky? ? :ask : :allow
+        else
+          tool.risky? ? :ask : :allow
+        end
+      end
+
+      def load_permission_rules(agent_overrides)
+        base_rules = @config.dig("permissions") || {}
+
+        if agent_overrides.is_a?(Hash)
+          base_rules.merge(agent_overrides)
+        else
+          base_rules
+        end
+      end
+    end
+  end
+end

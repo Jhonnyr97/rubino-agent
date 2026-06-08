@@ -1,0 +1,121 @@
+# Repro scenario for the CLI streaming-table live-region trail/accumulation bug.
+# Streams a WIDE (5-column) markdown table emitted as MANY small content deltas
+# so the per-chunk live-region repaint cascade appears. Each data ROW is wider
+# than a narrow terminal AND carries double-width emoji (✅ 🔄 ⚠️) spread across
+# cells so the CLAMPED tail of the in-flight row still contains an emoji — whose
+# display width (2) exceeds its char length (1). With the buggy char-count clamp
+# that emoji pushes the "fits in one row" line past the real terminal width, so
+# it wraps and the single-row clear leaves residue that accumulates downward.
+events:
+  - type: content
+    text: "Here is the status table:\n\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Feature | Status | Priority | Owner | Notes |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| --- | --- | --- | --- | --- |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| HTTP API ✅ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Done ✅ | High ⚠️ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Backend ✅ | Stable in prod ✅ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "since release v0.2 ✅ ✅ ✅ |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| CLI Chat ✅ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Done ✅ | High ⚠️ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Frontend ✅ | Live md blocks ✅ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "committed and styled ✅ ✅ ✅ |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| TUI Mode 🔄 "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| In Progress 🔄 | Medium ⚠️ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Platform 🔄 | Live region 🔄 "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "repaint work ongoing 🔄 🔄 🔄 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| MCP Bridge 🔄 "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| In Progress 🔄 | Medium ⚠️ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Integrations 🔄 | Tool schema 🔄 "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "negotiation pending 🔄 🔄 🔄 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Web UI ✅ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Done ✅ | Low ⚠️ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Frontend ✅ | Rails DOM ✅ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "token streaming live ✅ ✅ ✅ |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Memory 🔄 "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| In Progress 🔄 | High ⚠️ "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| Core 🔄 | SQLite tiny-Zep 🔄 "
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "recall backend 🔄 🔄 🔄 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "\nAll tracked features above."
+  - type: delay_seconds
+    value: 0.30

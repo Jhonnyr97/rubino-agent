@@ -1,0 +1,29 @@
+# Agent-creates-cron-failure scenario: the LLM registers a cron job that
+# is wired to the with-cron-failure scenario, so "Run now" exercises the
+# failure path in the real pipeline (run.failed, no delivery).
+#
+# Ported from the reference agent-creates-cron-failure scenario. The fake
+# provider only produces what the LLM would say or call; the cron registration,
+# token expansion, tracing and run accounting all happen downstream once the
+# real `cronjob` tool runs.
+events:
+  - type: thinking
+    text: "User wants a cron that will fail when triggered — useful to test the failure UI."
+  - type: delay_seconds
+    value: 0.05
+
+  - type: content
+    text: "Scheduled **Flaky Job** (every 1m) — Run now will exercise the failure path."
+  - type: delay_seconds
+    value: 0.05
+
+  - type: tool_call
+    id: "call_fake_cron_failure_1"
+    name: "cronjob"
+    arguments:
+      action: "create"
+      name: "Flaky Job"
+      schedule: "every 1m"
+      prompt: "Run a flaky job that fails deterministically."
+      deliver: "web"
+      scenario: "with-cron-failure"

@@ -1,0 +1,9 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "rubino"
+
+# Load .env before anything else so ENV vars are available immediately
+Rubino::Config::Loader.new.load
+
+Rubino::CLI::Commands.start(ARGV)

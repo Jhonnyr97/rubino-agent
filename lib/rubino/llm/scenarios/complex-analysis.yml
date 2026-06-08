@@ -1,0 +1,598 @@
+# Complex-analysis scenario: interleaved content + token-streamed reasoning +
+# multi-tool. Ported from the reference complex-analysis scenario.
+# Each `message.delta` → content, each `reasoning.available` → thinking,
+# each tool.started/tool.completed pair collapses into one tool_call,
+# `__delay` → delay_seconds, `artifact.created` becomes a real `write`
+# tool_call so the downstream pipeline actually persists the artifact.
+events:
+  - type: content
+    text: "Let me analyze the codebase.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "First,"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " I"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " need"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " understand"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " current"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " architecture."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Let"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " me"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " check"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " models"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " first."
+  - type: delay_seconds
+    value: 0.02
+
+  - type: tool_call
+    id: "call_complex_read_1"
+    name: "read"
+    arguments:
+      file_path: "app/models/run.rb"
+  - type: delay_seconds
+    value: 0.25
+
+  - type: content
+    text: "I found the core model. The Run class defines the execution lifecycle with status transitions and event relationships.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "Now"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " checking"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " presenter"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " layer"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " —"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " this"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " is"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " where"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " timeline"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " items"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " are"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " built."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_read_2"
+    name: "read"
+    arguments:
+      file_path: "app/presenters/run_timeline_presenter.rb"
+  - type: delay_seconds
+    value: 0.3
+
+  - type: content
+    text: "The presenter builds timeline items from RunEvents. It currently handles tool, reasoning, and message types — but not artifact yet.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "I"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " can"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " see"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " pattern"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " is"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " clear"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " —"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " add"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " an"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " :artifact"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " type"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " for"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " artifact.created"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " events."
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Also"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " need"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " update"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " view"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " template."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_read_3"
+    name: "read"
+    arguments:
+      file_path: "app/views/chats/_timeline_item.html.erb"
+  - type: delay_seconds
+    value: 0.3
+
+  - type: content
+    text: "Got it. The view renders each timeline item with conditional formatting. I'll need to add artifact rendering there too.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "Ready"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " apply"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " changes"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " —"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " starting"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " with"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " presenter."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_patch_1"
+    name: "apply_patch"
+    arguments:
+      patch: |
+        --- a/app/presenters/run_timeline_presenter.rb
+        +++ b/app/presenters/run_timeline_presenter.rb
+        @@ -1,2 +1,3 @@
+         # presenter
+        +# adds :artifact handling for artifact.created events
+  - type: delay_seconds
+    value: 0.5
+
+  - type: content
+    text: "Presenter updated. Now emits :artifact items for artifact.created events.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "Next"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " up:"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " update"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " view"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " template"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " render"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " artifacts"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " inline."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_patch_2"
+    name: "apply_patch"
+    arguments:
+      patch: |
+        --- a/app/views/chats/_timeline_item.html.erb
+        +++ b/app/views/chats/_timeline_item.html.erb
+        @@ -1,2 +1,3 @@
+         <%# timeline item %>
+        +<%# renders artifacts inline with download links %>
+  - type: delay_seconds
+    value: 0.4
+
+  - type: content
+    text: "View updated. Artifacts now render inline with download links.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "Now"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " I"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " need"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " wire"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " download"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " logic"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " in"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " job."
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "The"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " artifact.created"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " handler"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " must"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " store"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " blob"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " reference"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " on"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " RunEvent."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_write_1"
+    name: "write"
+    arguments:
+      file_path: "app/jobs/acme_run_job.rb"
+      content: |
+        # frozen_string_literal: true
+
+        # AcmeRunJob orchestrates the run lifecycle.
+        # The download handler saves blob_signed_id directly on the RunEvent payload.
+        class AcmeRunJob < ApplicationJob
+          queue_as :default
+
+          def perform(run_id)
+            # ... existing orchestration ...
+          end
+        end
+  - type: delay_seconds
+    value: 0.6
+
+  - type: content
+    text: "Job updated. The download handler now saves blob_signed_id directly on the RunEvent payload.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "Verifying"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " complete"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " pipeline"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " before"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " finishing."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_read_4"
+    name: "read"
+    arguments:
+      file_path: "app/jobs/acme_run_job.rb"
+  - type: delay_seconds
+    value: 0.3
+
+  - type: content
+    text: "All changes verified. Let me generate the summary report.\n\n"
+  - type: delay_seconds
+    value: 0.05
+
+  - type: thinking
+    text: "Everything"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " looks"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " correct."
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Ready"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " produce"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " final"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " report."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_complex_artifact_1"
+    name: "write"
+    arguments:
+      file_path: "/tmp/acme-refactor-report.md"
+      content: |
+        # Acme Timeline Refactor Report
+
+        ## Summary
+        Added inline artifact rendering to the run timeline.
+
+        ## Changes
+        - `app/presenters/run_timeline_presenter.rb` — emits `:artifact` items for `artifact.created` events.
+        - `app/views/chats/_timeline_item.html.erb` — renders artifacts inline with download links.
+        - `app/jobs/acme_run_job.rb` — download handler stores `blob_signed_id` on the RunEvent payload.
+
+        ## Verification
+        Re-read the job file end-to-end; pipeline wires up cleanly from `artifact.created` → presenter → view.
+  - type: delay_seconds
+    value: 0.3
+
+  - type: content
+    text: "Done! The refactored timeline now shows artifacts inline with download links.\n\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "Here's a report summarizing all changes.\n"
+  - type: delay_seconds
+    value: 0.05

@@ -1,0 +1,104 @@
+# Scenario with file upload. Mirrors the reference with-uploads but uses the
+# FakeProvider event vocabulary. The agent "reads" an uploaded file and
+# emits a fake analysis as the final assistant message. {{input}} is the
+# user's text plus the uploaded file names/content types.
+events:
+  - type: thinking
+    text: "I"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " received"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " uploaded"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " file."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Analyzing"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " its"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " contents..."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: delay_seconds
+    value: 0.4
+
+  - type: thinking
+    text: "The"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " file"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " appears"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " contain"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " valid"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " data."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Processing..."
+  - type: delay_seconds
+    value: 0.06
+
+  - type: delay_seconds
+    value: 0.3
+
+  - type: content
+    text: "File analysis complete:\n\n"
+  - type: delay_seconds
+    value: 0.05
+  # `{{input}}` is the web UI's already-prefixed text (e.g. "uploaded file:
+  # report.pdf" when the user attached a file with no message). Echo it
+  # straight so the agent reply always names the file the user sent.
+  - type: content
+    text: "Received {{input}}.\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "- Content validated\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "- No issues detected\n"
+  - type: delay_seconds
+    value: 0.05

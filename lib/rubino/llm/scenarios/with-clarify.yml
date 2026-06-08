@@ -1,0 +1,32 @@
+# With-clarify scenario: the LLM emits a question tool_call so the real
+# question pipeline gathers user input; afterwards it streams a short
+# confirmation. __pause_for_clarify is dropped — the question tool_call
+# triggers the clarify flow naturally.
+events:
+  - type: thinking
+    text: "Let"
+  - type: thinking
+    text: " me"
+  - type: thinking
+    text: " ask"
+  - type: thinking
+    text: " you."
+  - type: delay_seconds
+    value: 0.04
+  - type: tool_call
+    id: "call_fake_clarify_1"
+    name: "question"
+    arguments:
+      question: "Which approach do you prefer for the API layer?"
+      options:
+        - label: "Option A: REST API"
+        - label: "Option B: GraphQL"
+        - label: "Option C: gRPC"
+  - type: thinking
+    text: "Great"
+  - type: thinking
+    text: " choice."
+  - type: delay_seconds
+    value: 0.04
+  - type: content
+    text: "Proceeding with your selection."

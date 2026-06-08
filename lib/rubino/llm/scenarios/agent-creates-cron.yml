@@ -1,0 +1,36 @@
+# Agent-creates-cron scenario: the LLM emits a single tool_call to the real
+# `cronjob` tool (action="create"), exactly as the reference does in its
+# cronjob tooling. Everything downstream (approval,
+# scheduler registration, artifacts, trace token) runs on the real pipeline
+# once the tool_call is consumed.
+#
+# Translated from the reference agent-creates-cron scenario — see the
+# translation rules in the fake-provider scenario spec.
+events:
+  - type: thinking
+    text: "User wants a recurring task."
+  - type: delay_seconds
+    value: 0.05
+  - type: thinking
+    text: " I'll create a cron job with a 1-minute interval so it's easy to see in dev."
+  - type: delay_seconds
+    value: 0.05
+
+  - type: content
+    text: "Scheduling **Daily Summary** (every 1m). "
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "Look for the trace token in the Cron Jobs index entry and in every session title produced by Run now."
+  - type: delay_seconds
+    value: 0.05
+
+  - type: tool_call
+    id: "call_fake_cronjob_1"
+    name: "cronjob"
+    arguments:
+      action: "create"
+      name: "Daily Summary"
+      schedule: "every 1m"
+      prompt: "Summarize yesterday's activity and produce a 3-bullet recap."
+      deliver: "web"

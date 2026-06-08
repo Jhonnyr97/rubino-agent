@@ -1,0 +1,65 @@
+# Failure scenario: model reasons, tries to read a nonexistent file via the
+# real `read` tool (which returns an error), then explains it cannot proceed.
+# No terminal tool_call — the fake provider stops when events run out.
+events:
+  - type: thinking
+    text: "Attempting"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " process"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " request"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: "..."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    name: read
+    arguments:
+      file_path: "/tmp/nonexistent-file.txt"
+  - type: delay_seconds
+    value: 0.3
+
+  - type: thinking
+    text: "File"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " not"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " found."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Cannot"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " proceed."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: content
+    text: "File not found: /tmp/nonexistent-file.txt. "
+  - type: content
+    text: "The requested operation cannot be completed."

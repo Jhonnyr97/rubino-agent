@@ -1,0 +1,1340 @@
+# frozen_string_literal: true
+
+require "stringio"
+
+RSpec.describe Rubino::CLI::ChatCommand do
+  let(:db)      { test_database }
+  let(:null_ui) { Rubino::UI::Null.new }
+
+  let(:fake_runner) do
+    instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT")
+  end
+
+  before do
+    allow(Rubino::Agent::Runner).to receive(:new).and_return(fake_runner)
+    allow(Rubino).to receive(:database).and_return(db)
+    allow(db).to receive(:healthy?).and_return(true)
+    # These specs exercise boot/session/render paths, not the credential gate;
+    # treat the model as configured so #ensure_model_configured! (the #93 gate,
+    # covered by its own specs below) doesn't short-circuit them.
+    allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+    Rubino.ui = null_ui
+  end
+
+  # Regression: a previous version did `Commands::BuiltIns::NAMES` from
+  # inside Rubino::CLI::ChatCommand. Zeitwerk resolves `Commands` to
+  # `Rubino::CLI::Commands` (the Thor class) there, which raises
+  # NameError on first interactive boot. The chat_command suite used to
+  # mock setup_readline_completions, so this slipped past. The mock is
+  # gone; this spec exercises the real call.
+  describe "#setup_readline_completions" do
+    it "configures completion without raising (Zeitwerk constant resolution)" do
+      cmd_loader = Rubino::Commands::Loader.new
+      line_input = Rubino::UI::LineInput.new
+      expect {
+        described_class.new({}).send(:setup_readline_completions, cmd_loader, line_input)
+      }.not_to raise_error
+    end
+
+    it "feeds built-in slash commands to the line input" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
+      line_input = instance_double(Rubino::UI::LineInput, configure_completion: nil)
+
+      described_class.new({}).send(:setup_readline_completions, cmd_loader, line_input)
+
+      expect(line_input).to have_received(:configure_completion).with(
+        commands: include("/help", "/exit"),
+        files: kind_of(Proc)
+      )
+    end
+
+    it "passes a lazy files proc resolving to the workspace cwd" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
+      captured   = nil
+      line_input = instance_double(Rubino::UI::LineInput)
+      allow(line_input).to receive(:configure_completion) { |**kw| captured = kw[:files] }
+
+      described_class.new({}).send(:setup_readline_completions, cmd_loader, line_input)
+
+      expect(captured.call).to eq(Rubino.configuration.dig("terminal", "cwd") || Dir.pwd)
+    end
+  end
+
+  # Regression: ensure_setup! must populate the tool registry. If it doesn't,
+  # Lifecycle#load_tools returns []; RubyLLMAdapter#build_chat never calls
+  # chat.with_tool; the request body sent to the provider has no `tools`
+  # field; the model can only roleplay bash in markdown. Verified against
+  # real wire traffic via RUBYLLM_DEBUG=1 before this fix.
+  describe "#ensure_setup!" do
+    it "registers default tools when the registry is empty" do
+      Rubino::Tools::Registry.reset!
+      expect(Rubino::Tools::Registry.all.size).to eq(0)
+
+      described_class.new({}).send(:ensure_setup!)
+
+      expect(Rubino::Tools::Registry.all.size).to be > 0
+      expect(Rubino::Tools::Registry.find("shell")).not_to be_nil
+      expect(Rubino::Tools::Registry.find("read")).not_to be_nil
+      expect(Rubino::Tools::Registry.find("write")).not_to be_nil
+    end
+
+    it "does not re-register if the registry is already populated" do
+      Rubino::Tools::Registry.reset!
+      Rubino::Tools::Registry.register(Rubino::Tools::ShellTool.new)
+      before_count = Rubino::Tools::Registry.all.size
+
+      described_class.new({}).send(:ensure_setup!)
+
+      # Idempotent: a pre-populated registry (e.g. injected by tests or
+      # by a plugin during boot) is left alone.
+      expect(Rubino::Tools::Registry.all.size).to eq(before_count)
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # One-shot detection
+  # -----------------------------------------------------------------------
+
+  describe "#execute — one-shot detection" do
+    it "calls run_oneshot when :query given" do
+      cmd = described_class.new(query: "hello")
+      expect(cmd).to receive(:run_oneshot).with("hello")
+      cmd.execute
+    end
+
+    it "calls run_oneshot when 'query' string key given (Thor)" do
+      cmd = described_class.new("query" => "hello")
+      expect(cmd).to receive(:run_oneshot).with("hello")
+      cmd.execute
+    end
+
+    it "calls run_interactive when no query" do
+      cmd = described_class.new({})
+      expect(cmd).to receive(:run_interactive)
+      cmd.execute
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # One-shot output
+  # -----------------------------------------------------------------------
+
+  describe "#run_oneshot output" do
+    it "prints response to stdout" do
+      expect { described_class.new("query" => "ping").execute }.to output("RESPONSE_TEXT\n").to_stdout
+    end
+
+    it "prints response in quiet mode" do
+      expect { described_class.new("query" => "ping", "quiet" => true).execute }.to output("RESPONSE_TEXT\n").to_stdout
+    end
+
+    it "prints response in scripted mode" do
+      expect { described_class.new("query" => "ping", "z" => true).execute }.to output("RESPONSE_TEXT\n").to_stdout
+    end
+
+    it "passes Null UI to Runner" do
+      described_class.new("query" => "ping").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(ui: an_instance_of(Rubino::UI::Null))
+      )
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # Model / provider
+  # -----------------------------------------------------------------------
+
+  describe "model and provider options" do
+    it "passes model override to Runner (symbol key)" do
+      described_class.new(query: "hi", model: "claude-3-5-sonnet-20241022").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(model_override: "claude-3-5-sonnet-20241022")
+      )
+    end
+
+    it "passes model override to Runner (string key / Thor)" do
+      described_class.new("query" => "hi", "model" => "claude-3-5-sonnet-20241022").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(model_override: "claude-3-5-sonnet-20241022")
+      )
+    end
+
+    it "passes -m alias to Runner" do
+      described_class.new("query" => "hi", "m" => "gpt-4o").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(model_override: "gpt-4o")
+      )
+    end
+
+    it "passes provider override to Runner" do
+      described_class.new("query" => "hi", "provider" => "anthropic").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(provider_override: "anthropic")
+      )
+    end
+
+    it "uses default model when no override" do
+      described_class.new("query" => "hi").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(model_override: Rubino.configuration.model_default)
+      )
+    end
+
+    # #141: --max-turns must reach the Runner (which threads it into the budget).
+    it "passes --max-turns to the Runner as max_turns" do
+      described_class.new("query" => "hi", "max_turns" => 3.0).execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(max_turns: 3.0)
+      )
+    end
+
+    it "passes max_turns: nil when the flag is absent" do
+      described_class.new("query" => "hi").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(max_turns: nil)
+      )
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # #142: one-shot model echo + unknown-model warning
+  # -----------------------------------------------------------------------
+  describe "resolved-model echo & unknown-model warning (#142)" do
+    it "echoes the resolved model to stderr in -q mode when -m is given (known model)" do
+      expect {
+        described_class.new("query" => "hi", "model" => "gpt-4o").execute
+      }.to output(/model: gpt-4o/).to_stderr
+    end
+
+    it "warns to stderr when the -m model id is not in the known catalog" do
+      expect {
+        described_class.new("query" => "hi", "model" => "zzz-nonexistent-9999").execute
+      }.to output(/warning: model 'zzz-nonexistent-9999' is not in the known model catalog/).to_stderr
+    end
+
+    it "still proceeds (prints the answer) on an unknown model id" do
+      expect {
+        described_class.new("query" => "hi", "model" => "zzz-nonexistent-9999").execute
+      }.to output("RESPONSE_TEXT\n").to_stdout
+    end
+
+    it "does NOT echo the model when no -m override is given" do
+      expect {
+        described_class.new("query" => "hi").execute
+      }.not_to output(/^model: /).to_stderr
+    end
+
+    it "does not warn for a fake/ model id (dev provider)" do
+      expect {
+        described_class.new("query" => "hi", "model" => "fake/with-tools").execute
+      }.not_to output(/not in the known model catalog/).to_stderr
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # Session management
+  # -----------------------------------------------------------------------
+
+  describe "session management" do
+    let(:repo) { instance_double(Rubino::Session::Repository) }
+    let(:session) { { id: "abc123ef", title: "my session", status: "active" } }
+
+    before { allow(Rubino::Session::Repository).to receive(:new).and_return(repo) }
+
+    it "passes --session ID to Runner" do
+      described_class.new("query" => "hi", "session" => "abc123ef").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: "abc123ef")
+      )
+    end
+
+    it "passes --resume to Runner" do
+      described_class.new("query" => "hi", "resume" => "xyz789").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: "xyz789")
+      )
+    end
+
+    it "--continue fetches latest active session" do
+      allow(repo).to receive(:latest_active).and_return(session)
+      described_class.new("query" => "hi", "continue" => true).execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: "abc123ef")
+      )
+    end
+
+    it "--continue passes nil when no active session" do
+      allow(repo).to receive(:latest_active).and_return(nil)
+      described_class.new("query" => "hi", "continue" => true).execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: nil)
+      )
+    end
+
+    it "passes nil session_id when no session option" do
+      described_class.new("query" => "hi").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: nil)
+      )
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # #99 / #100 / #103: bare-chat auto-resume, end-on-teardown, auto-title.
+  # Drives the real interactive REPL with a faked runner; the line input
+  # immediately returns "/exit" so a single teardown is exercised.
+  # -----------------------------------------------------------------------
+  describe "bare-chat resume + teardown (#99/#100)" do
+    let(:repo) { Rubino::Session::Repository.new(db: db.db) }
+
+    let(:resumed_session) { { id: "deadbeefcafef00d", title: "add modulo op", status: "active" } }
+    let(:new_session)     { { id: "00000000fresh000", title: nil, status: "active" } }
+
+    before do
+      allow(Rubino::Session::Repository).to receive(:new).and_return(repo)
+      # Drive the REPL: first prompt read exits immediately.
+      allow_any_instance_of(Rubino::UI::LineInput).to receive(:readline).and_return("/exit")
+      # No TTY composer in the test environment.
+      allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+      allow(fake_runner).to receive(:end_session!)
+      allow(fake_runner).to receive(:cancel!)
+      # Avoid touching git in the banner.
+      allow_any_instance_of(described_class).to receive(:git_context).and_return(nil)
+    end
+
+    it "auto-resumes the most recent resumable session on a bare chat" do
+      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(fake_runner).to receive(:session).and_return(resumed_session)
+
+      described_class.new({}).execute
+
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: resumed_session[:id])
+      )
+    end
+
+    it "prints the resume one-liner so the continuation is never silent" do
+      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(fake_runner).to receive(:session).and_return(resumed_session)
+
+      described_class.new({}).execute
+
+      line = null_ui.messages.find { |m| m[:message].to_s.include?("resuming") }
+      expect(line).not_to be_nil
+      expect(line[:message]).to include("/new for a fresh session")
+    end
+
+    it "starts a fresh session (and welcomes) on a true first run" do
+      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+
+      described_class.new({}).execute
+
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: nil)
+      )
+      welcome = null_ui.messages.find { |m| m[:message].to_s.include?("ask in plain language") }
+      expect(welcome).not_to be_nil
+    end
+
+    it "--new forces a fresh session even when one is resumable" do
+      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+
+      described_class.new("new" => true).execute
+
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(session_id: nil)
+      )
+    end
+
+    it "marks the session ended on a clean teardown (#100)" do
+      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+
+      described_class.new({}).execute
+
+      expect(fake_runner).to have_received(:end_session!)
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # --yolo
+  # -----------------------------------------------------------------------
+
+  describe "--yolo flag" do
+    it "switches Rubino::Modes to :yolo (ApprovalPolicy short-circuits from there)" do
+      described_class.new("query" => "hi", "yolo" => true).execute
+      expect(Rubino::Modes.current).to eq(:yolo)
+    end
+
+    it "leaves Modes at :default without --yolo" do
+      described_class.new("query" => "hi").execute
+      expect(Rubino::Modes.current).to eq(:default)
+    end
+  end
+
+  # Regression: text typed into the bottom composer DURING a turn but never
+  # submitted (no Enter) was lost when the turn ended — the composer is torn
+  # down and the next prompt is a fresh, empty Reline read. The draft is now
+  # carried over: stop_composer stashes the leftover buffer and next_input
+  # pre-fills the following prompt with it.
+  describe "un-submitted composer draft carryover" do
+    let(:cmd)         { described_class.new({}) }
+    let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+    def fake_composer(buffer)
+      Class.new do
+        def initialize(buf) = @buf = buf
+        def buffer = @buf
+        def stop; end
+      end.new(buffer)
+    end
+
+    it "stashes a non-empty leftover buffer as the pending draft" do
+      cmd.send(:stop_composer, fake_composer("ciao"), nil)
+      expect(cmd.instance_variable_get(:@pending_draft)).to eq("ciao")
+    end
+
+    it "leaves a prior draft untouched when the buffer is blank (survives steering turns)" do
+      cmd.instance_variable_set(:@pending_draft, "earlier")
+      cmd.send(:stop_composer, fake_composer("   "), nil)
+      expect(cmd.instance_variable_get(:@pending_draft)).to eq("earlier")
+    end
+
+    it "pre-fills the next prompt with the pending draft and consumes it once" do
+      cmd.instance_variable_set(:@pending_draft, "half typed")
+      line_input = instance_double(Rubino::UI::LineInput)
+      expect(line_input).to receive(:readline).with(anything, initial: "half typed").and_return("done")
+
+      expect(cmd.send(:next_input, input_queue, line_input)).to eq("done")
+      expect(cmd.instance_variable_get(:@pending_draft)).to be_nil
+    end
+
+    it "prefers queued (submitted) lines over the draft, leaving the draft pending" do
+      cmd.instance_variable_set(:@pending_draft, "draft")
+      input_queue.push("submitted line")
+      line_input = instance_double(Rubino::UI::LineInput)
+
+      expect(cmd.send(:next_input, input_queue, line_input)).to eq("submitted line")
+      expect(cmd.instance_variable_get(:@pending_draft)).to eq("draft")
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # ensure_setup!
+  # -----------------------------------------------------------------------
+
+  # F2: a fresh user who runs `chat` before `setup` used to hit a raw
+  # `no such table: sessions` backtrace — `healthy?` only runs SELECT 1, which
+  # passes the moment SQLite lazily creates an empty file (no schema). The
+  # first-run guard now auto-initializes (mkdir + migrate, both idempotent),
+  # and only falls back to a friendly message if that itself fails.
+  describe "ensure_setup! (first-run auto-init)" do
+    it "auto-initializes an un-migrated database instead of crashing" do
+      allow(db).to receive(:healthy?).and_return(false)
+      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
+      allow(Rubino).to receive(:ensure_directories!)
+      expect(migrator).to receive(:migrate!)
+
+      expect { described_class.new("query" => "hi").execute }.not_to raise_error
+    end
+
+    it "runs pending migrations on a healthy-but-stale database" do
+      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
+      allow(Rubino).to receive(:ensure_directories!)
+      expect(migrator).to receive(:migrate!)
+
+      described_class.new("query" => "hi").execute
+    end
+
+    it "exits with a friendly message (not a backtrace) when auto-init fails" do
+      allow(db).to receive(:healthy?).and_return(false)
+      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
+      allow(Rubino).to receive(:ensure_directories!)
+      allow(migrator).to receive(:migrate!).and_raise(StandardError, "disk full")
+
+      expect {
+        described_class.new("query" => "hi").execute
+      }.to raise_error(SystemExit).and output(/rubino setup/).to_stderr
+    end
+  end
+
+  # Regression: --resume <id> reloaded the history into the backend
+  # (PromptAssembler reads Session::Store.for_session) but never printed
+  # the prior turns through the inline UI. The terminal looked empty even
+  # though the model had full context. print_session_history replays
+  # user / assistant / tool messages through the existing UI methods.
+  describe "#print_session_history" do
+    let(:repo)  { Rubino::Session::Repository.new }
+    let(:store) { Rubino::Session::Store.new }
+    let(:session) { repo.create(source: "spec", model: "test", provider: "test") }
+
+    before do
+      allow(Rubino::Session::Repository).to receive(:new).and_call_original
+      allow(Rubino::Session::Store).to receive(:new).and_call_original
+    end
+
+    it "no-ops when session_id is nil" do
+      ui = Rubino::UI::Null.new
+      described_class.new({}).send(:print_session_history, ui, nil)
+      expect(ui.messages).to be_empty
+    end
+
+    it "no-ops when the session has no messages" do
+      ui = Rubino::UI::Null.new
+      described_class.new({}).send(:print_session_history, ui, session[:id])
+      expect(ui.messages).to be_empty
+    end
+
+    it "replays user, assistant and tool messages through the UI" do
+      store.create(session_id: session[:id], role: "user",      content: "hello")
+      store.create(session_id: session[:id], role: "assistant", content: "hi there")
+      store.create(session_id: session[:id], role: "tool",      content: "out",
+                   tool_name: "shell", tool_call_id: "call_1",
+                   metadata: { arguments: { "command" => "ls" } })
+
+      ui = Rubino::UI::Null.new
+      described_class.new({}).send(:print_session_history, ui, session[:id])
+
+      levels = ui.messages.map { |m| m[:level] }
+      # Replay matches the live rendering: user → replay_user_input, assistant →
+      # assistant_text (markdown, same as a live reply — NOT the old box, which
+      # the M2 redesign repurposed into a "● running" tool-style row), tool →
+      # tool_started + tool_finished.
+      expect(levels).to include(:replay_user_input, :assistant_text,
+                                 :tool_started, :tool_finished)
+      expect(levels).not_to include(:box_open, :box_close)
+
+      # Tool replay must carry an `at:` timestamp so historical tool boxes
+      # show the original time of the call, not "now". Previously the tool
+      # branch dropped `at:` and every replayed tool showed the current
+      # clock — confusing on long-resumed sessions.
+      started = ui.messages.find { |m| m[:level] == :tool_started }
+      expect(started[:at]).not_to be_nil
+      expect(ui.messages.find { |m| m[:level] == :replay_user_input }[:message]).to eq("hello")
+      started = ui.messages.find { |m| m[:level] == :tool_started }
+      expect(started[:message]).to eq("shell")
+      # Store#hydrate deserialises metadata_json with symbolize_names: true,
+       # so the string key persisted by Loop comes back as a symbol. The UI
+       # treats both transparently — what matters is that the args survive.
+      expect(started[:arguments]).to eq({ command: "ls" })
+    end
+
+    it "skips assistant messages whose content is blank" do
+      store.create(session_id: session[:id], role: "user",      content: "ping")
+      store.create(session_id: session[:id], role: "assistant", content: "")
+
+      ui = Rubino::UI::Null.new
+      described_class.new({}).send(:print_session_history, ui, session[:id])
+
+      bodies = ui.messages.select { |m| m[:level] == :body }
+      expect(bodies).to be_empty
+    end
+  end
+
+  # Regression: with the fullscreen TUI gone, Ctrl+C during a turn must
+  # cancel the in-flight generation and drop back to the prompt instead
+  # of killing the whole REPL. Aider-style double-tap: a SECOND Ctrl+C
+  # within DOUBLE_TAP_SECONDS exits. The SIGINT handler is trap-safe (it
+  # only flips the mutex-free CancelToken) and is restored in ensure.
+  # Driven via run_turn directly to avoid readline.
+  describe "#run_turn (Ctrl+C semantics)" do
+    let(:runner) { instance_double(Rubino::Agent::Runner) }
+    let(:ui)     { Rubino::UI::Null.new }
+    let(:cmd)    { described_class.new({}) }
+
+    # Captures the SIGINT handler the trap installs so the test can fire it
+    # synchronously, the way the kernel would on Ctrl+C, without sending a
+    # real signal (which would be flaky under the RSpec runner).
+    def run_turn_firing_int(runner, taps:, gap: 0.0)
+      installed = nil
+      allow(runner).to receive(:run) do
+        installed = Signal.trap("INT", "DEFAULT")          # read what run_turn installed
+        Signal.trap("INT", installed)                      # put it back
+        taps.times do |i|
+          sleep gap if i.positive? && gap.positive?
+          installed.call
+        end
+        "ok"
+      end
+      cmd.send(:run_turn, runner, "hello", ui)
+    end
+
+    it "first Ctrl+C flips the token, warns the user, and stays in the REPL" do
+      allow(runner).to receive(:cancel!)
+      warned = nil
+      allow($stderr).to receive(:write) { |s| warned = s }
+
+      expect { run_turn_firing_int(runner, taps: 1) }.not_to raise_error
+
+      expect(runner).to have_received(:cancel!).at_least(:once)
+      expect(warned).to include("Ctrl+C again to exit")
+    end
+
+    it "second Ctrl+C within the window re-raises so the REPL exits" do
+      allow(runner).to receive(:cancel!)
+      allow($stderr).to receive(:write)
+      # The second tap restores prev and re-kills INT; in-process that lands
+      # as an Interrupt out of runner.run, which run_turn re-raises.
+      expect { run_turn_firing_int(runner, taps: 2) }.to raise_error(Interrupt)
+      expect(runner).to have_received(:cancel!).at_least(:once)
+    end
+
+    it "calls runner.cancel! and warns when Interrupt escapes mid-turn" do
+      allow(runner).to receive(:run).and_raise(Interrupt)
+      allow(runner).to receive(:cancel!)
+
+      expect { cmd.send(:run_turn, runner, "hello", ui) }.to raise_error(Interrupt)
+
+      expect(runner).to have_received(:cancel!).at_least(:once)
+      expect(ui.messages.map { |m| m[:level] }).to include(:warning)
+    end
+
+    it "returns normally when the turn completes without interruption" do
+      allow(runner).to receive(:run).and_return("ok")
+
+      expect { cmd.send(:run_turn, runner, "hello", ui) }.not_to raise_error
+      expect(runner).to have_received(:run).with("hello", image_paths: [], input_queue: nil)
+    end
+
+    it "restores the previous SIGINT handler in ensure" do
+      before = Signal.trap("INT", "DEFAULT")
+      Signal.trap("INT", before)
+      allow(runner).to receive(:run).and_return("ok")
+
+      cmd.send(:run_turn, runner, "hello", ui)
+
+      after = Signal.trap("INT", before)
+      Signal.trap("INT", before)
+      expect(after).to eq(before)
+    end
+  end
+
+  # Steering — "talk to the agent while it works". A background reader keeps
+  # accepting keystrokes while a turn runs; completed lines are parked in an
+  # InputQueue and become the NEXT prompt at the turn boundary (never injected
+  # mid-tool). Combined with the existing Ctrl+C cancel, this gives both
+  # "queue while working" and "interrupt then redirect".
+  describe "steering (type-while-busy queue)" do
+    let(:cmd) { described_class.new({}) }
+    let(:ui)  { Rubino::UI::Null.new }
+
+    describe "#next_input (turn-boundary consumption)" do
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+      let(:line_input)  { instance_double(Rubino::UI::LineInput) }
+
+      it "consumes queued lines as the next prompt INSTEAD of readline" do
+        input_queue.push("steered message")
+        allow(line_input).to receive(:readline)
+
+        result = cmd.send(:next_input, input_queue, line_input)
+
+        expect(result).to eq("steered message")
+        # A fresh readline must NOT be called when the queue is non-empty.
+        expect(line_input).not_to have_received(:readline)
+      end
+
+      it "coalesces multiple queued lines into one next-turn message" do
+        input_queue.push("first")
+        input_queue.push("second")
+        allow(line_input).to receive(:readline)
+
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("first\nsecond")
+        expect(line_input).not_to have_received(:readline)
+      end
+
+      it "falls back to readline when the queue is empty" do
+        allow(line_input).to receive(:readline).and_return("typed at prompt")
+
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("typed at prompt")
+        expect(line_input).to have_received(:readline)
+      end
+    end
+
+    # F1 — the idle prompt hosts the collapsed live cards while a background
+    # subagent runs. The bug was that #set_subagent_cards is a no-op between
+    # turns (no BottomComposer.current), so a `task` running ~15-20s ENTIRELY
+    # between turns showed zero cards in a real session. The fix routes the idle
+    # line read through a BottomComposer (so BottomComposer.current is set and
+    # the same child repaints land above the idle prompt), and falls back to the
+    # plain Reline prompt once the last child finishes.
+    describe "#next_input idle-prompt cards (F1)" do
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+      let(:line_input)  { instance_double(Rubino::UI::LineInput) }
+      let(:registry)    { Rubino::Tools::BackgroundTasks.instance }
+
+      before do
+        Rubino::Tools::BackgroundTasks.reset!
+        # Both ends look like a TTY so the idle-card path is eligible.
+        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
+      end
+
+      after { Rubino::Tools::BackgroundTasks.reset! }
+
+      it "reads the next line through the idle-card composer (NOT plain readline) while a child runs" do
+        registry.reserve(subagent: "explore", prompt: "scan the repo")
+        allow(line_input).to receive(:readline)
+        expect(cmd).to receive(:read_idle_line_with_cards).and_return("typed with cards up")
+
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("typed with cards up")
+        # The card path replaced — did not fall through to — the plain prompt.
+        expect(line_input).not_to have_received(:readline)
+      end
+
+      it "falls back to the plain Reline prompt when NO background child is running" do
+        allow(line_input).to receive(:readline).and_return("plain line")
+        expect(cmd).not_to receive(:read_idle_line_with_cards)
+
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("plain line")
+        expect(line_input).to have_received(:readline)
+      end
+
+      it "falls back to the plain prompt (carrying the draft) when the idle composer hands back nil" do
+        registry.reserve(subagent: "general", prompt: "do work")
+        # nil ⇒ the last child finished before the user submitted; the half-typed
+        # draft was stashed for the fallback prompt.
+        allow(cmd).to receive(:read_idle_line_with_cards) do
+          cmd.instance_variable_set(:@pending_draft, "half typed at idle")
+          nil
+        end
+        allow(line_input).to receive(:readline).and_return("eventually typed")
+
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("eventually typed")
+        expect(line_input).to have_received(:readline).with(anything, initial: "half typed at idle")
+      end
+
+      # F1-residual: the half-typed idle draft was INTERMITTENTLY lost (~1/3) when
+      # the last child finished AND a long completion turn intervened. Mechanism:
+      # the child's completion notice drains on the SAME InputQueue the idle
+      # composer polls, so #read_idle_line_with_cards returns the NOTICE (not nil),
+      # a completion turn runs, and only THEN does the draft pre-fill the fallback
+      # prompt. The draft must survive that whole detour. This spec forces exactly
+      # that ordering deterministically (no sleeps/threads) and asserts the draft
+      # is preserved into @pending_draft and pre-fills the eventual prompt.
+      it "preserves the idle draft across a completion turn (completion notice + long turn)" do
+        registry.reserve(subagent: "explore", prompt: "scan")
+
+        # The idle reader deterministically captures the half-typed buffer into
+        # @pending_draft (its real #ensure does composer.buffer -> @pending_draft)
+        # and hands back the child's completion NOTICE as the next line — exactly
+        # what happens when the notice wins the race onto the shared queue.
+        allow(cmd).to receive(:read_idle_line_with_cards) do
+          cmd.instance_variable_set(:@pending_draft, "half typed survivor")
+          "[background-task] Task sa_x completed."
+        end
+
+        # First boundary: the notice is returned and becomes the completion turn.
+        notice = cmd.send(:next_input, input_queue, line_input)
+        expect(notice).to start_with("[background-task]")
+        # The draft was NOT clobbered by surfacing the notice.
+        expect(cmd.instance_variable_get(:@pending_draft)).to eq("half typed survivor")
+
+        # The (possibly long) completion turn runs. Its turn-scoped composer is
+        # empty (user typed nothing during it), so #stop_composer must NOT clobber
+        # the parked draft.
+        composer = Rubino::UI::BottomComposer.new(
+          input_queue: input_queue, input: StringIO.new, output: StringIO.new
+        )
+        cmd.send(:stop_composer, composer, $stdout)
+        expect(cmd.instance_variable_get(:@pending_draft)).to eq("half typed survivor")
+
+        # Second boundary: child is done, no notice queued -> the draft must
+        # pre-fill the fallback Reline prompt (not vanish).
+        Rubino::Tools::BackgroundTasks.reset!
+        allow(line_input).to receive(:readline).and_return("resumed message")
+
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("resumed message")
+        expect(line_input).to have_received(:readline)
+          .with(anything, initial: "half typed survivor")
+        expect(cmd.instance_variable_get(:@pending_draft)).to be_nil
+      end
+    end
+
+    # The card region at the idle prompt is hosted by the SAME machinery a turn
+    # uses (BottomComposer + the registry + the render mutex), so it is NOT gated
+    # to an active turn. #paint_idle_cards renders the registry's live snapshot
+    # onto whatever BottomComposer currently owns the screen, and clears it when
+    # nothing runs.
+    describe "#paint_idle_cards (live region at the idle prompt)" do
+      let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+      let(:queue)    { Rubino::Interaction::InputQueue.new }
+      # A non-TTY StringIO composer: #set_cards runs the real render path under
+      # the mutex without touching terminal modes.
+      let(:composer) do
+        Rubino::UI::BottomComposer.new(
+          input_queue: queue, input: StringIO.new, output: StringIO.new
+        )
+      end
+
+      before { Rubino::Tools::BackgroundTasks.reset! }
+
+      after do
+        Rubino::Tools::BackgroundTasks.reset!
+        Rubino::UI::BottomComposer.current = nil
+      end
+
+      it "renders a card per running child onto the current composer (idle, no turn)" do
+        registry.reserve(subagent: "explore", prompt: "find the bug")
+        Rubino::UI::BottomComposer.current = composer
+
+        cmd.send(:paint_idle_cards)
+
+        # The card block is live ABOVE the idle prompt — proof the region is not
+        # gated to an active turn.
+        expect(composer.cards).not_to be_empty
+        expect(composer.cards.join).to include("explore", "running")
+      end
+
+      it "clears the card region when no child is running" do
+        Rubino::UI::BottomComposer.current = composer
+        composer.set_cards(["▸ sa_old · running"])
+
+        cmd.send(:paint_idle_cards) # registry empty ⇒ SubagentCards returns []
+
+        expect(composer.cards).to eq([])
+      end
+
+      it "is a quiet no-op when no composer owns the screen" do
+        registry.reserve(subagent: "explore", prompt: "x")
+        Rubino::UI::BottomComposer.current = nil
+
+        expect { cmd.send(:paint_idle_cards) }.not_to raise_error
+      end
+    end
+
+    # End-to-end of the idle reader against a REAL BottomComposer (non-TTY
+    # StringIO so no raw termios): a child is running, the user "types" a line
+    # via the composer's keystroke handler, and read_idle_line_with_cards returns
+    # it — with the live cards having been painted above the prompt. Proves the
+    # region renders at the idle prompt AND that a submit returns the line.
+    describe "#read_idle_line_with_cards (real composer, idle child running)" do
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+      let(:registry)    { Rubino::Tools::BackgroundTasks.instance }
+      let(:output)      { StringIO.new }
+      let(:fake_composer) do
+        Rubino::UI::BottomComposer.new(
+          input_queue: input_queue, input: StringIO.new, output: output
+        )
+      end
+
+      before do
+        Rubino::Tools::BackgroundTasks.reset!
+        # Avoid spawning the real raw reader thread (no TTY here); we feed
+        # keystrokes synchronously through #handle_key instead.
+        allow(fake_composer).to receive(:start_reader).and_return(Thread.new { nil })
+        allow(Rubino::UI::BottomComposer).to receive(:new).and_return(fake_composer)
+      end
+
+      after { Rubino::Tools::BackgroundTasks.reset! }
+
+      it "paints the live cards above the idle prompt and returns the submitted line" do
+        registry.reserve(subagent: "explore", prompt: "scan")
+
+        # Drive a user submit from another thread once the reader is parked, then
+        # let the poll loop pick it up off the queue.
+        typist = Thread.new do
+          sleep 0.05
+          "hi there".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
+        end
+
+        line = cmd.send(:read_idle_line_with_cards, input_queue, nil)
+        typist.join
+
+        expect(line).to eq("hi there")
+        # A card was rendered above the idle prompt (the F1 fix): the running
+        # child's collapsed row hit the composer's output.
+        expect(output.string).to include("explore")
+        expect(output.string).to include("running")
+      end
+
+      it "returns nil (handing control back) when the last child finishes before a submit" do
+        entry = registry.reserve(subagent: "general", prompt: "work")
+        # The child finishes mid-wait: drop it from the registry so the poll loop
+        # sees no live child and hands control back to the plain prompt.
+        finisher = Thread.new do
+          sleep 0.05
+          registry.remove(entry.id)
+        end
+
+        line = cmd.send(:read_idle_line_with_cards, input_queue, nil)
+        finisher.join
+
+        expect(line).to be_nil
+      end
+    end
+
+    # Drives run_turn with a runner that blocks on a latch until the test has
+    # pushed input mid-turn, proving the queued text is consumed as the NEXT
+    # prompt after the turn returns.
+    describe "#run_turn reader → next_input round-trip" do
+      let(:runner)      { instance_double(Rubino::Agent::Runner) }
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+      let(:line_input)  { instance_double(Rubino::UI::LineInput) }
+
+      it "input parked during the turn becomes the next prompt" do
+        # Simulate the reader: while the turn 'runs', a line lands in the queue.
+        latch = Queue.new
+        allow(runner).to receive(:run) do
+          input_queue.push("while it worked")
+          latch << :done
+          "ok"
+        end
+        allow(line_input).to receive(:readline)
+
+        cmd.send(:run_turn, runner, "hello", ui, input_queue)
+        latch.pop
+
+        # Next boundary: queued text is consumed, readline is skipped.
+        expect(cmd.send(:next_input, input_queue, line_input)).to eq("while it worked")
+        expect(line_input).not_to have_received(:readline)
+      end
+    end
+
+    # The composer (and any termios mutation / $stdout swap) must be gated
+    # entirely on a real TTY: piped / -q / server input is a no-op so nothing
+    # touches terminal modes, no thread is spawned, and $stdout is untouched.
+    describe "composer tty-gating" do
+      let(:runner) { instance_double(Rubino::Agent::Runner, run: "ok") }
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+      it "does not start a composer when $stdin is not a TTY" do
+        allow($stdin).to receive(:tty?).and_return(false)
+        expect(Thread).not_to receive(:new)
+
+        before = $stdout
+        cmd.send(:run_turn, runner, "hello", ui, input_queue)
+        expect($stdout).to be(before) # $stdout not swapped for a proxy
+      end
+
+      it "start_composer returns [nil, nil] for non-TTY stdin" do
+        allow($stdin).to receive(:tty?).and_return(false)
+        expect(cmd.send(:start_composer, input_queue)).to eq([nil, nil])
+      end
+
+      it "start_composer returns [nil, nil] when no queue is wired" do
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:tty?).and_return(true)
+        expect(cmd.send(:start_composer, nil)).to eq([nil, nil])
+      end
+    end
+
+    # Raw mode must never leak and $stdout must be restored: even if the turn
+    # raises, the ensure tears down the composer (cooked mode + real $stdout).
+    describe "terminal restore on raise" do
+      let(:runner)      { instance_double(Rubino::Agent::Runner) }
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+      it "restores cooked mode and $stdout in ensure when the turn raises (TTY path)" do
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:winsize).and_return([24, 80])
+        # Stub the raw read loop so no real termios mutation happens, but the
+        # reader thread is still created and must be cleaned up.
+        allow($stdin).to receive(:raw).and_yield
+        allow($stdin).to receive(:getc).and_return(nil) # immediate EOF, reader exits
+        allow($stdin).to receive(:cooked!)
+        allow($stdout).to receive(:print)
+        allow($stdout).to receive(:flush)
+        allow(runner).to receive(:cancel!)
+        allow(runner).to receive(:run).and_raise(RuntimeError, "boom")
+
+        before = $stdout
+        expect {
+          cmd.send(:run_turn, runner, "hello", ui, input_queue)
+        }.to raise_error(RuntimeError, "boom")
+
+        expect($stdin).to have_received(:cooked!).at_least(:once)
+        expect($stdout).to be(before) # real $stdout restored after the swap
+      end
+
+      it "stop_composer restores cooked mode even with a nil composer" do
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdin).to receive(:cooked!)
+
+        expect { cmd.send(:stop_composer, nil, nil) }.not_to raise_error
+      end
+    end
+  end
+
+  # Regression: --resume <nonexistent> used to bubble a raw SessionError /
+  # AmbiguousSessionError stack trace out of Thor. Both are now rendered as
+  # a clean stderr message + non-zero exit so the user sees what went wrong
+  # without parsing a backtrace.
+  describe "--resume error rendering" do
+    it "exits with a stderr message when the session does not exist" do
+      allow(Rubino::Agent::Runner).to receive(:new)
+        .and_raise(Rubino::SessionError, "Session not found: deadbeef")
+
+      expect {
+        described_class.new("query" => "hi", "resume" => "deadbeef").execute
+      }.to raise_error(SystemExit).and output(/Session not found/).to_stderr
+    end
+
+    it "exits with the candidate list when --resume is ambiguous" do
+      err = Rubino::AmbiguousSessionError.new("feature", [
+        { id: "11111111-aaaa-bbbb-cccc-dddddddddddd", title: "feature spike", status: "active" },
+        { id: "22222222-eeee-ffff-0000-111111111111", title: "feature tests", status: "active" }
+      ])
+      allow(Rubino::Agent::Runner).to receive(:new).and_raise(err)
+
+      expect {
+        described_class.new("query" => "hi", "resume" => "feature").execute
+      }.to raise_error(SystemExit).and output(/Ambiguous.*feature spike.*feature tests/m).to_stderr
+    end
+  end
+
+  # Live readline prompt is agent-composer style — `default ❯ ` — not shell.
+  # Mode is the only live context shown; workspace, git, model, and session
+  # are printed once at startup in run_interactive. The chip uses the canonical
+  # mode name "default" (matching /mode and the transition banner), not the old
+  # second label "general" (F9).
+  describe "#build_prompt" do
+    subject(:cmd) { described_class.new({}) }
+
+    around do |ex|
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) { ex.run }
+      end
+    end
+
+    def strip_ansi(s) = s.gsub(/\e\[[0-9;]*m/, "")
+
+    it "returns mode + ❯ (no git/workspace context in prompt)" do
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+    end
+
+    it "in a git checkout: still returns mode + ❯ only" do
+      system("git init -q -b main && git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init")
+      # build_prompt no longer includes git info — that's in the startup banner
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+    end
+
+    it "in plan mode: returns plan ❯ " do
+      Rubino::Modes.set(:plan)
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("plan ❯ ")
+    ensure
+      Rubino::Modes.set(:default)
+    end
+
+    it "in yolo mode: returns yolo ❯ " do
+      Rubino::Modes.set(:yolo)
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
+    ensure
+      Rubino::Modes.set(:default)
+    end
+  end
+
+  # Regression: rubino chat used to exit with only "Session ended." and
+  # leave the user no way to find this conversation again — the session id
+  # lives in SQLite, not on screen. print_resume_hint emits the exact
+  # `rubino chat --resume <handle>` line, preferring the title when set.
+  describe "#print_resume_hint" do
+    let(:ui) { Rubino::UI::Null.new }
+    subject(:cmd) { described_class.new({}) }
+
+    it "prefers the title when one is set" do
+      cmd.send(:print_resume_hint, ui, { id: "abc-123", title: "audit work" })
+      msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
+      expect(msg[:message]).to eq(%(Resume with: rubino chat --resume "audit work"))
+    end
+
+    it "falls back to the id when the title is missing or blank" do
+      cmd.send(:print_resume_hint, ui, { id: "abc-123", title: nil })
+      msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
+      expect(msg[:message]).to eq("Resume with: rubino chat --resume abc-123")
+    end
+
+    it "no-ops when session is nil" do
+      cmd.send(:print_resume_hint, ui, nil)
+      expect(ui.messages.select { |m| m[:level] == :info }).to be_empty
+    end
+  end
+
+  # Image input — attach an image from the terminal (@image, dropped/quoted
+  # path, clipboard) so it reaches the turn's image_paths (the native vision
+  # slot) instead of being sent as literal text.
+  describe "image input" do
+    let(:cmd) { described_class.new({}) }
+    let(:ui)  { Rubino::UI::Null.new }
+
+    around do |ex|
+      Dir.mktmpdir do |dir|
+        @dir = dir
+        ex.run
+      end
+    end
+
+    def make(name)
+      path = File.join(@dir, name)
+      File.binwrite(path, "x")
+      path
+    end
+
+    describe "#extract_images!" do
+      it "moves an @image into pending_image_paths and strips it from the text" do
+        img = make("pic.png")
+
+        text = cmd.send(:extract_images!, "look at @#{img}", ui)
+
+        expect(text).to eq("look at")
+        expect(cmd.send(:pending_image_paths)).to eq([img])
+      end
+
+      it "keeps a non-image @file in the text and attaches nothing" do
+        doc = make("notes.md")
+
+        text = cmd.send(:extract_images!, "read @#{doc}", ui)
+
+        expect(text).to include("@#{doc}")
+        expect(cmd.send(:pending_image_paths)).to be_empty
+      end
+
+      it "accumulates across calls and de-dups" do
+        a = make("a.png")
+        b = make("b.png")
+
+        cmd.send(:extract_images!, "@#{a}", ui)
+        cmd.send(:extract_images!, "@#{b} @#{a}", ui)
+
+        expect(cmd.send(:pending_image_paths)).to eq([a, b])
+      end
+    end
+
+    describe "#handle_image_command" do
+      it "/clear-images drops all pending attachments and returns true" do
+        cmd.send(:extract_images!, "@#{make('x.png')}", ui)
+        expect(cmd.send(:pending_image_paths)).not_to be_empty
+
+        expect(cmd.send(:handle_image_command, "/clear-images", ui)).to be(true)
+        expect(cmd.send(:pending_image_paths)).to be_empty
+      end
+
+      it "/paste attaches a clipboard image when capture succeeds" do
+        clip = make("clip.png")
+        allow(Rubino::Interaction::ClipboardImage).to receive(:save_to_tempfile).and_return(clip)
+
+        expect(cmd.send(:handle_image_command, "/paste", ui)).to be(true)
+        expect(cmd.send(:pending_image_paths)).to eq([clip])
+      end
+
+      it "/paste warns (and attaches nothing) when capture fails" do
+        allow(Rubino::Interaction::ClipboardImage).to receive(:save_to_tempfile).and_return(nil)
+
+        cmd.send(:handle_image_command, "/paste", ui)
+
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(ui.messages.map { |m| m[:level] }).to include(:warning)
+      end
+
+      it "returns false for a non-image command (falls through to the dispatcher)" do
+        expect(cmd.send(:handle_image_command, "/help", ui)).to be(false)
+      end
+    end
+
+    # Headless / scripted attachment: `-q` (and `prompt` / `chat "..."`) must be
+    # able to attach an image too, not just the interactive REPL. Both @image
+    # tokens in the prompt AND explicit --image PATH flags are routed to the
+    # native vision slot (image_paths) and the tokens stripped from the text.
+    describe "#run_oneshot → image_paths (headless)" do
+      it "honours an @image token in the one-shot prompt" do
+        img = make("shot.png")
+        described_class.new("query" => "extract the number from @#{img}").execute
+        expect(fake_runner).to have_received(:run!).with(
+          "extract the number from", image_paths: [img]
+        )
+      end
+
+      it "honours --image flag paths and merges them ahead of in-line tokens" do
+        a = make("flag.png")
+        b = make("inline.png")
+        described_class.new("query" => "compare @#{b}", "image" => [a]).execute
+        expect(fake_runner).to have_received(:run!).with(
+          "compare", image_paths: [a, b]
+        )
+      end
+
+      it "passes empty image_paths for a plain prompt" do
+        described_class.new("query" => "just text").execute
+        expect(fake_runner).to have_received(:run!).with("just text", image_paths: [])
+      end
+
+      it "skips (and reports) a --image path that is not a readable image" do
+        doc = make("notes.txt")
+        expect {
+          described_class.new("query" => "hi", "image" => [doc]).execute
+        }.to output(/ignoring --image.*not a readable image/).to_stderr
+        expect(fake_runner).to have_received(:run!).with("hi", image_paths: [])
+      end
+    end
+
+    describe "#run_turn → image_paths" do
+      let(:runner) { instance_double(Rubino::Agent::Runner) }
+
+      it "passes pending images to runner.run and clears them after the turn" do
+        img = make("send.png")
+        cmd.send(:extract_images!, "@#{img}", ui)
+        allow(runner).to receive(:run)
+
+        cmd.send(:run_turn, runner, "describe it", ui)
+
+        expect(runner).to have_received(:run).with(
+          "describe it", image_paths: [img], input_queue: nil
+        )
+        # Sent exactly once: the next turn starts with no attachments.
+        expect(cmd.send(:pending_image_paths)).to be_empty
+      end
+
+      it "passes an empty image_paths when nothing is attached" do
+        allow(runner).to receive(:run)
+
+        cmd.send(:run_turn, runner, "hi", ui)
+
+        expect(runner).to have_received(:run).with("hi", image_paths: [], input_queue: nil)
+      end
+    end
+  end
+
+  # Regression: cancel! used to be a no-op when called before the first
+  # run() because @cancel_token was nil until run() built it. A Ctrl+C in
+  # the microsecond between Signal.trap install and runner.run was lost,
+  # and the next turn started normally — user pressed cancel, saw nothing
+  # happen, and the model ran anyway.
+  describe "Runner cancel_token lifecycle" do
+    it "honours a cancel! that arrived before the first run" do
+      # Top-level before stubs Runner.new to return fake_runner; this test
+      # needs the real class to verify the cancel_token lifecycle.
+      allow(Rubino::Agent::Runner).to receive(:new).and_call_original
+
+      repo = Rubino::Session::Repository.new
+      session = repo.create(source: "spec", model: "test", provider: "test")
+      runner = Rubino::Agent::Runner.new(session_id: session[:id], ui: null_ui)
+
+      runner.cancel!
+      token = runner.instance_variable_get(:@cancel_token)
+      expect(token).not_to be_nil
+      expect(token.cancelled?).to be true
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # #93 — first-run credential gate: no silent-empty failure.
+  # ---------------------------------------------------------------------------
+  describe "first-run credential gate (#93)" do
+    context "when no usable model/key is configured (non-interactive)" do
+      before do
+        allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
+        allow(Rubino::LLM::CredentialCheck).to receive(:missing_key_message)
+          .and_return("No API key configured for provider 'openai' (model openai/gpt-4.1). run `rubino setup`")
+      end
+
+      it "surfaces a clear actionable error to stderr and exits non-zero (no silent empty success)" do
+        expect {
+          described_class.new("query" => "hi").execute
+        }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+          .and output(/No API key configured.*rubino setup/m).to_stderr
+      end
+
+      it "never reaches the model runner" do
+        expect(fake_runner).not_to receive(:run!)
+        expect { described_class.new("query" => "hi").execute }.to raise_error(SystemExit)
+      end
+    end
+
+    context "when a model/key IS configured (already set-up user)" do
+      before do
+        allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+      end
+
+      it "is unaffected: the one-shot turn runs and prints the response" do
+        expect { described_class.new("query" => "hi").execute }
+          .to output("RESPONSE_TEXT\n").to_stdout
+      end
+    end
+
+    context "with an explicit --model/--provider override" do
+      it "bypasses the config preflight (user is steering deliberately)" do
+        allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
+        expect(Rubino::LLM::CredentialCheck).not_to receive(:missing_key_message)
+
+        expect { described_class.new("query" => "hi", "provider" => "fake").execute }
+          .to output("RESPONSE_TEXT\n").to_stdout
+      end
+    end
+
+    context "runtime model failure on the one-shot path" do
+      before do
+        allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+      end
+
+      it "surfaces the error to stderr and exits non-zero instead of a silent empty exit-0" do
+        allow(fake_runner).to receive(:run!)
+          .and_raise(Rubino::Error.new("Authentication failed (401). Token may have expired"))
+
+        expect {
+          described_class.new("query" => "hi").execute
+        }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+          .and output(/Authentication failed/).to_stderr
+      end
+    end
+  end
+
+  # #125: during an interactive session the structured logger must NOT write to
+  # the terminal $stdout the raw-mode TUI renders into. #redirect_logger_to_file
+  # reopens the logger onto a file in the logs dir; #restore_logger puts it back.
+  describe "interactive logger routing (#125)" do
+    around do |example|
+      Dir.mktmpdir { |dir| @logs_dir = dir; example.run }
+    end
+
+    before do
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig).with("paths", "logs").and_return(@logs_dir)
+      Rubino.logger = Rubino::Logger.new(io: $stdout, format: "json")
+    end
+
+    after { Rubino.logger = Rubino::Logger.new }
+
+    it "redirects the logger to a file so JSON lines never reach $stdout, then logs land in the file" do
+      cmd = described_class.new({})
+
+      out = capture_stdout do
+        prev = cmd.send(:redirect_logger_to_file)
+        expect(prev).not_to be_nil
+        Rubino.logger.warn(event: "llm.stream.partial_interrupted", error: "TCP blip")
+        cmd.send(:restore_logger, prev)
+      end
+
+      expect(out).to eq("")  # no JSON leaked into the TUI's stdout
+
+      log = File.read(File.join(@logs_dir, "rubino.log"))
+      expect(log).to include("llm.stream.partial_interrupted")
+    end
+
+    it "restores the logger sink after the session" do
+      sink = StringIO.new
+      Rubino.logger = Rubino::Logger.new(io: sink, format: "json")
+      cmd  = described_class.new({})
+
+      prev = cmd.send(:redirect_logger_to_file)
+      expect(prev).to be(sink)            # captured the original sink
+      cmd.send(:restore_logger, prev)
+
+      Rubino.logger.info(event: "after.restore")
+      expect(sink.string).to include("after.restore")  # back on the original sink
+    end
+  end
+
+  def capture_stdout
+    old = $stdout
+    $stdout = StringIO.new
+    yield
+    $stdout.string
+  ensure
+    $stdout = old
+  end
+end

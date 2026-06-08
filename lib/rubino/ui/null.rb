@@ -1,0 +1,157 @@
+# frozen_string_literal: true
+
+module Rubino
+  module UI
+    # Null UI adapter that discards all output.
+    # Used in testing and background job execution
+    # where no terminal output is needed.
+    class Null < Base
+      attr_reader :messages
+
+      def initialize
+        @messages = []
+      end
+
+      def info(message)
+        @messages << { level: :info, message: message }
+      end
+
+      def success(message)
+        @messages << { level: :success, message: message }
+      end
+
+      def warning(message)
+        @messages << { level: :warning, message: message }
+      end
+
+      def error(message)
+        @messages << { level: :error, message: message }
+      end
+
+      def status(message)
+        @messages << { level: :status, message: message }
+      end
+
+      def box_open(*pieces, at: nil, color: nil)
+        @messages << { level: :box_open, pieces: pieces, at: at, color: color }
+      end
+
+      def box_close(*pieces, color: nil)
+        @messages << { level: :box_close, pieces: pieces, color: color }
+      end
+
+      def body(text)
+        @messages << { level: :body, message: text }
+      end
+
+      def assistant_text(text)
+        @messages << { level: :assistant_text, message: text }
+      end
+
+      def note(text)
+        @messages << { level: :note, message: text }
+      end
+
+      def stream(chunk)
+        # Every adapter yields the common chunk contract:
+        #   { type: :content | :thinking, text: String, message_id: Integer }
+        text = chunk[:text].to_s
+        type = chunk[:type] || :content
+        @messages << { level: :stream, message: text, stream_type: type }
+      end
+
+      def stream_end
+        @messages << { level: :stream_end, message: "" }
+      end
+
+      def replay_user_input(text, at: nil)
+        @messages << { level: :replay_user_input, message: text, at: at }
+      end
+
+      def thinking_started
+        @messages << { level: :thinking_started, message: "" }
+      end
+
+      def table(headers:, rows:)
+        @messages << { level: :table, message: { headers: headers, rows: rows } }
+      end
+
+      def ask(_prompt)
+        nil
+      end
+
+      # No interactive selection off a real terminal; callers fall back to a
+      # non-interactive path (e.g. the static /sessions table + shortcut).
+      def select(_prompt, _choices)
+        nil
+      end
+
+      # `scope:` is part of the shared UI contract (ToolExecutor always
+      # passes it); the Null adapter auto-approves and ignores it.
+      def confirm(_question, scope: nil, **_context)
+        true
+      end
+
+      def tool_started(name, arguments: nil, at: nil)
+        @messages << { level: :tool_started, message: name, arguments: arguments, at: at }
+      end
+
+      def tool_finished(name, result: nil)
+        @messages << { level: :tool_finished, message: name }
+      end
+
+      def tool_body(text, kind: :plain)
+        @messages << { level: :tool_body, message: text, kind: kind }
+      end
+
+      def tool_chunk(name, chunk)
+        @messages << { level: :tool_chunk, name: name, chunk: chunk }
+      end
+
+      def compression_started(at: nil)
+        @messages << { level: :compression_started, message: "", at: at }
+      end
+
+      def compression_finished(metadata, at: nil)
+        @messages << { level: :compression_finished, message: metadata, at: at }
+      end
+
+      def job_enqueued(type)
+        @messages << { level: :job_enqueued, message: type }
+      end
+
+      def job_started(type)
+        @messages << { level: :job_started, message: type }
+      end
+
+      def job_finished(type)
+        @messages << { level: :job_finished, message: type }
+      end
+
+      def separator
+        @messages << { level: :separator, message: "" }
+      end
+
+      def blank_line
+        @messages << { level: :blank_line, message: "" }
+      end
+
+      def mode_changed(name, previous: nil)
+        @messages << { level: :mode_changed, message: name, previous: previous }
+      end
+
+      def queued(text)
+        @messages << { level: :queued, message: text }
+      end
+
+      def input_injected(text)
+        @messages << { level: :input_injected, message: text }
+      end
+
+      # Resets captured messages (useful between test cases)
+      def reset!
+        @messages = []
+      end
+    end
+  end
+end

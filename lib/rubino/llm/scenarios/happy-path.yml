@@ -1,0 +1,24 @@
+# Default scenario used by the FakeProvider when no keyword routes to a
+# more specific scenario. Ports the reference happy-path scenario into
+# the FakeProvider event vocabulary (type/text/value).
+events:
+  - type: thinking
+    text: "Processing"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " your"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " request"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "..."
+  - type: delay_seconds
+    value: 0.04
+  - type: content
+    text: "Request processed successfully. This is a test response from the Fake provider."
+  - type: delay_seconds
+    value: 0.02

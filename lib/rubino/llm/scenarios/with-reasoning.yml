@@ -1,0 +1,175 @@
+# With-reasoning scenario: multi-step reasoning with tool calls and
+# streaming output. Best for exercising the timeline rendering and
+# live-streaming UI — reasoning is emitted token-by-token to mimic a
+# real LLM, and real tools (read, shell) are invoked so the downstream
+# pipeline (approvals, output capture) runs end-to-end.
+events:
+  - type: thinking
+    text: "Let"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " me"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " analyze"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " request"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " step"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " by"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " step."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "First"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " I"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " need"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " check"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " the"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " current"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " state."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_fake_reasoning_1"
+    name: "read"
+    arguments:
+      file_path: "/tmp/example.txt"
+
+  - type: delay_seconds
+    value: 0.5
+
+  - type: thinking
+    text: "Found"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " relevant"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " data."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Now"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " running"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " tests"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " to"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " validate."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_fake_reasoning_2"
+    name: "shell"
+    arguments:
+      command: "npm test"
+
+  - type: delay_seconds
+    value: 0.8
+
+  - type: thinking
+    text: "Tests"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " pass."
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "\n"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: "Formulating"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " final"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " response."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: content
+    text: "Here are the results of my analysis:\n\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "- File content analyzed\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "- Tests passed\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "- All checks complete\n\n"
+  - type: delay_seconds
+    value: 0.05
+  - type: content
+    text: "The system is running normally. No issues detected."
+  - type: delay_seconds
+    value: 0.05

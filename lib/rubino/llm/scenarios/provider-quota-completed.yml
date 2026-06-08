@@ -1,0 +1,14 @@
+# Provider quota failure scenario:
+# Simulates the real provider failure shape observed in production where
+# the run is emitted as completed, but the output is a provider quota error and
+# usage is zero. The fake provider emits plain content chunks explaining the
+# failure; no terminal tool_call.
+events:
+  - type: thinking
+    text: "Attempting to call the provider..."
+  - type: content
+    text: "API call failed after 3 retries: "
+  - type: content
+    text: "You exceeded your current quota, please check your plan and billing details. "
+  - type: content
+    text: "For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors."

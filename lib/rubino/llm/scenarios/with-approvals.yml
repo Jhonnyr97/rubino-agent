@@ -1,0 +1,50 @@
+# With-approvals scenario: tokenized reasoning, then a shell tool_call that
+# the real ApprovalPolicy will gate on. Once approval lands and the tool
+# executes, the next agent turn re-enters the provider — but for THIS turn
+# the provider just emits thinking + the tool_call.
+#
+# Translation from the reference with-approvals scenario:
+#   - reasoning.available {text} → thinking chunks (token-by-token)
+#   - __pause_for_approval       → DROPPED; the shell tool_call below
+#                                  triggers approval via ApprovalPolicy
+#   - tool.started/completed     → collapsed into one tool_call
+#   - message.delta {delta}      → content chunks (will be emitted on the
+#                                  follow-up turn after tool result; here
+#                                  we keep them so the fake turn is rich)
+#   - run.completed              → DROPPED; fake provider terminates when
+#                                  events are exhausted
+events:
+  - type: thinking
+    text: "I"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " need"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " your"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " approval"
+  - type: delay_seconds
+    value: 0.04
+  - type: thinking
+    text: " for"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " this"
+  - type: delay_seconds
+    value: 0.02
+  - type: thinking
+    text: " command."
+  - type: delay_seconds
+    value: 0.04
+
+  - type: tool_call
+    id: "call_fake_approve_1"
+    name: "shell"
+    arguments:
+      command: "rm -rf /tmp/cache"

@@ -1,0 +1,258 @@
+# frozen_string_literal: true
+
+RSpec.describe Rubino::Session::Repository do
+  # Each example gets a fresh in-memory database
+  let(:db_connection) { test_database }
+  let(:repo) { described_class.new(db: db_connection.db) }
+
+  before do
+    db = db_connection.db
+    db[:events].delete
+    db[:tool_calls].delete
+    db[:messages].delete
+    db[:session_summaries].delete
+    db[:runs].delete if db.table_exists?(:runs)
+    db[:sessions].delete
+  end
+
+  describe "#create" do
+    it "creates a session with default values" do
+      session = repo.create(source: "cli", model: "gpt-4o")
+      expect(session[:id]).not_to be_nil
+      expect(session[:source]).to eq("cli")
+      expect(session[:model]).to eq("gpt-4o")
+      expect(session[:status]).to eq("active")
+      expect(session[:message_count]).to eq(0)
+    end
+  end
+
+  # #144: lazy session creation — build() makes an in-memory record with a
+  # real id but no DB row; persist! inserts it on demand.
+  describe "lazy creation (#build / #persist! / #persisted?)" do
+    it "#build returns an unsaved record with a real id and no DB row" do
+      session = repo.build(source: "cli", model: "gpt-4o")
+      expect(session[:id]).not_to be_nil
+      expect(session[:persisted]).to be(false)
+      expect(repo.persisted?(session[:id])).to be(false)
+      expect(repo.list).to be_empty
+    end
+
+    it "#persist! inserts the row and is idempotent" do
+      session = repo.build(source: "cli", model: "gpt-4o", title: "later")
+      repo.persist!(session)
+      expect(repo.persisted?(session[:id])).to be(true)
+      expect(session[:persisted]).to be(true)
+      persisted = repo.find(session[:id])
+      expect(persisted[:model]).to eq("gpt-4o")
+      expect(persisted[:title]).to eq("later")
+
+      # Idempotent: a second call neither raises nor double-inserts.
+      expect { repo.persist!(session) }.not_to raise_error
+      expect(repo.list.size).to eq(1)
+    end
+
+    it "#persisted? is false for an unknown id" do
+      expect(repo.persisted?("does-not-exist")).to be(false)
+      expect(repo.persisted?(nil)).to be(false)
+    end
+  end
+
+  describe "#find" do
+    it "finds a session by full ID" do
+      session = repo.create(source: "cli")
+      expect(repo.find(session[:id])[:id]).to eq(session[:id])
+    end
+
+    it "finds a session by prefix" do
+      session = repo.create(source: "cli")
+      expect(repo.find(session[:id][0..7])[:id]).to eq(session[:id])
+    end
+
+    it "returns nil for unknown ID" do
+      expect(repo.find("nonexistent-id-00000000")).to be_nil
+    end
+  end
+
+  describe "#find_by_id_or_title" do
+    it "matches an exact ID" do
+      s = repo.create(source: "cli")
+      expect(repo.find_by_id_or_title(s[:id])[:id]).to eq(s[:id])
+    end
+
+    it "matches an ID prefix" do
+      s = repo.create(source: "cli")
+      expect(repo.find_by_id_or_title(s[:id][0..7])[:id]).to eq(s[:id])
+    end
+
+    it "falls back to a case-insensitive title substring" do
+      s = repo.create(source: "cli", title: "Payments feature spike")
+      expect(repo.find_by_id_or_title("payments")[:id]).to eq(s[:id])
+    end
+
+    # #103: a session auto-titled from its first user message must be
+    # resolvable via --resume <title> — the title that auto-titling produces
+    # is exactly the one resume looks up.
+    it "matches a title produced by .derive_title (auto-title is resumable)" do
+      title = described_class.derive_title("Add a modulo operation with tests")
+      s = repo.create(source: "cli", title: title)
+      expect(repo.find_by_id_or_title("modulo")[:id]).to eq(s[:id])
+    end
+
+    it "returns nil when nothing matches" do
+      expect(repo.find_by_id_or_title("absolutely-not-a-session")).to be_nil
+    end
+
+    it "returns nil for nil / empty input" do
+      expect(repo.find_by_id_or_title(nil)).to be_nil
+      expect(repo.find_by_id_or_title("")).to be_nil
+    end
+
+    # Regression: silently picking the first match meant --resume "feature"
+    # could load either of two sessions titled "feature spike" / "feature
+    # work" depending on creation order, with no warning. Same for short
+    # ID prefixes that happen to collide. Now we raise with the candidates.
+    context "ambiguous query" do
+      it "raises with the candidates when an ID prefix matches more than one session" do
+        # Two sessions whose IDs share a prefix are statistically rare with
+        # full UUIDs but trivially collidable with a short prefix.
+        allow(SecureRandom).to receive(:uuid).and_return(
+          "abc11111-2222-3333-4444-555555555555",
+          "abc22222-2222-3333-4444-666666666666"
+        )
+        repo.create(source: "cli", title: "a")
+        repo.create(source: "cli", title: "b")
+        allow(SecureRandom).to receive(:uuid).and_call_original
+
+        expect { repo.find_by_id_or_title("abc") }
+          .to raise_error(Rubino::AmbiguousSessionError) do |e|
+            expect(e.matches.size).to eq(2)
+          end
+      end
+
+      it "raises with the candidates when a title substring matches more than one session" do
+        repo.create(source: "cli", title: "feature spike")
+        repo.create(source: "cli", title: "feature tests")
+
+        expect { repo.find_by_id_or_title("feature") }
+          .to raise_error(Rubino::AmbiguousSessionError) do |e|
+            expect(e.matches.size).to eq(2)
+            expect(e.message).to include("Ambiguous")
+            expect(e.message).to include("feature spike")
+            expect(e.message).to include("feature tests")
+          end
+      end
+    end
+  end
+
+  describe "#list" do
+    it "returns sessions ordered by creation (newest first)" do
+      repo.create(source: "cli", title: "first")
+      repo.create(source: "cli", title: "second")
+      sessions = repo.list
+      expect(sessions.size).to eq(2)
+      expect(sessions.first[:title]).to eq("second")
+    end
+
+    it "filters by status" do
+      repo.create(source: "cli")
+      ended = repo.create(source: "cli")
+      repo.end_session!(ended[:id])
+
+      expect(repo.list(status: "active").size).to eq(1)
+      expect(repo.list(status: "ended").size).to eq(1)
+    end
+  end
+
+  describe "#increment_message_count!" do
+    it "increments the count" do
+      session = repo.create(source: "cli")
+      repo.increment_message_count!(session[:id])
+      repo.increment_message_count!(session[:id])
+      expect(repo.find(session[:id])[:message_count]).to eq(2)
+    end
+  end
+
+  describe "#end_session!" do
+    it "marks session as ended with timestamp" do
+      session = repo.create(source: "cli")
+      repo.end_session!(session[:id])
+      updated = repo.find(session[:id])
+      expect(updated[:status]).to eq("ended")
+      expect(updated[:ended_at]).not_to be_nil
+    end
+  end
+
+  describe "#latest_active" do
+    it "returns the most recently updated active session" do
+      repo.create(source: "cli")
+      second = repo.create(source: "cli")
+      expect(repo.latest_active[:id]).to eq(second[:id])
+    end
+
+    it "returns nil when no active sessions" do
+      s = repo.create(source: "cli")
+      repo.end_session!(s[:id])
+      expect(repo.latest_active).to be_nil
+    end
+  end
+
+  describe "#latest_resumable" do
+    it "returns the most recent session that has messages" do
+      old = repo.create(source: "cli")
+      repo.increment_message_count!(old[:id])
+      recent = repo.create(source: "cli")
+      repo.increment_message_count!(recent[:id])
+      expect(repo.latest_resumable[:id]).to eq(recent[:id])
+    end
+
+    it "skips empty (0-message) sessions so they never shadow real work" do
+      with_msgs = repo.create(source: "cli")
+      repo.increment_message_count!(with_msgs[:id])
+      repo.create(source: "cli") # newer but empty
+      expect(repo.latest_resumable[:id]).to eq(with_msgs[:id])
+    end
+
+    it "resumes an ended session too (a closed terminal still continues)" do
+      s = repo.create(source: "cli")
+      repo.increment_message_count!(s[:id])
+      repo.end_session!(s[:id])
+      expect(repo.latest_resumable[:id]).to eq(s[:id])
+    end
+
+    it "returns nil on a true first run (no sessions with messages)" do
+      repo.create(source: "cli")
+      expect(repo.latest_resumable).to be_nil
+    end
+  end
+
+  describe ".derive_title" do
+    it "derives a clean one-line title from the first user message" do
+      expect(described_class.derive_title("Add a modulo operation")).to eq("Add a modulo operation")
+    end
+
+    it "collapses whitespace and uses only the first line" do
+      expect(described_class.derive_title("  fix\tthe   bug\nand more")).to eq("fix the bug")
+    end
+
+    it "strips a leading slash command" do
+      expect(described_class.derive_title("/review the auth change")).to eq("the auth change")
+    end
+
+    it "truncates long messages on a word boundary with an ellipsis" do
+      long = "please add a fully tested modulo operation to the calculator gem with edge cases"
+      title = described_class.derive_title(long, max: 30)
+      expect(title.length).to be <= 31
+      expect(title).to end_with("…")
+      # Broke on a word boundary: the text before the ellipsis is a run of
+      # whole words from the source, not a word sliced in half.
+      body = title.delete_suffix("…")
+      expect(long).to start_with(body)
+      expect(long[body.length]).to eq(" ") # next source char is a space, i.e. we cut between words
+    end
+
+    it "returns nil for blank input" do
+      expect(described_class.derive_title("   ")).to be_nil
+      expect(described_class.derive_title(nil)).to be_nil
+    end
+  end
+end
