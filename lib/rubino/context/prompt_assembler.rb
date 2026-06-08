@@ -42,11 +42,17 @@ module Rubino
         end
       end
 
-      def initialize(session:, memory_context:, config:, agent_definition: nil)
+      def initialize(session:, memory_context:, config:, agent_definition: nil,
+                     ignore_rules: false)
         @session = session
         @memory_context = memory_context
         @config = config
         @agent_definition = agent_definition
+        # --ignore-rules suppresses project-context discovery
+        # (AGENTS.md/CLAUDE.md/.rubino.md/.cursorrules). The flag is threaded
+        # from Lifecycle so the CLI option genuinely skips discovery (#47), not
+        # just the trust gate.
+        @ignore_rules = ignore_rules
         @message_store = Session::Store.new
       end
 
@@ -298,6 +304,7 @@ module Rubino
       end
 
       def load_project_context
+        return nil if @ignore_rules
         return nil unless @config.dig("memory", "project_context_enabled")
         return nil unless project_local_trusted?
 

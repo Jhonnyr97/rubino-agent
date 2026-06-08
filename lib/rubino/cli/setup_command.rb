@@ -56,7 +56,18 @@ module Rubino
         maybe_run_onboarding(ui)
 
         ui.blank_line
-        ui.success("Setup complete! Run 'rubino doctor' to verify.")
+        # Tell the truth about the end state (#31). A green "Setup complete!" is
+        # only honest when a usable credential is actually configured — printing
+        # it after a skipped/abandoned onboarding (no provider, no key) directly
+        # contradicts the state. Re-check the credential after onboarding so the
+        # final line reflects reality on both the interactive and the
+        # non-interactive (files-only) paths.
+        if LLM::CredentialCheck.usable?
+          ui.success("Setup complete! Run 'rubino doctor' to verify.")
+        else
+          ui.warning("Setup files created, but no model is configured yet.")
+          ui.status("Run 'rubino setup' again or add an API key, then 'rubino doctor' to verify.")
+        end
       end
 
       private

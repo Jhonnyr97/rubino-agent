@@ -22,6 +22,19 @@ module Rubino
         :chat
       end
 
+      # Intercept `--version`/`-v` at dispatch (#32). Thor otherwise routes a
+      # bare `rubino --version` to the default `chat` task, which treats the
+      # flag as a prompt and fails with an API-key error. Handle it here —
+      # print the version and exit — before any chat/credential handling.
+      def self.start(given_args = ARGV, config = {})
+        if given_args.first == "--version" || given_args.first == "-v"
+          puts "rubino v#{Rubino::VERSION}"
+          return
+        end
+
+        super
+      end
+
       desc "setup", "Initialize rubino configuration and database"
       def setup
         SetupCommand.new.execute
