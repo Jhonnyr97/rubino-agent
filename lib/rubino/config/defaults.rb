@@ -451,8 +451,21 @@ module Rubino
       }.freeze
 
       class << self
+        # Deep copy so a Configuration#set on a never-overridden nested section
+        # (e.g. display.reasoning) mutates the per-config hash, NOT the shared
+        # MODULE_DEFAULTS constant. A shallow .dup left nested section hashes
+        # aliased to the constant, so the first /reasoning or /think write
+        # poisoned the process-wide default.
         def to_hash
-          MODULE_DEFAULTS.dup
+          deep_dup(MODULE_DEFAULTS)
+        end
+
+        def deep_dup(obj)
+          case obj
+          when Hash  then obj.each_with_object({}) { |(k, v), h| h[k] = deep_dup(v) }
+          when Array then obj.map { |v| deep_dup(v) }
+          else            obj
+          end
         end
 
         def to_yaml

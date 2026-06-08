@@ -105,6 +105,9 @@ module Rubino
         when "mode"
           handle_mode(arguments)
           :handled
+        when "reasoning"
+          handle_reasoning(arguments)
+          :handled
         when "status"
           show_status
           :handled
@@ -176,6 +179,33 @@ module Rubino
           marker = m == current ? "▸" : " "
           @ui.info("  #{marker} /mode #{m} — #{Rubino::Modes.description(m)}")
         end
+      end
+
+      # `/reasoning`         → show current render mode
+      # `/reasoning <mode>`  → switch (hidden | collapsed | full)
+      #
+      # Writes the new mode to display.reasoning on the live configuration so the
+      # LLM adapter gate (which reads config) and the CLI render path share one
+      # source of truth — no separate per-UI override to drift. An unknown value
+      # is rejected with the valid list.
+      def handle_reasoning(arguments)
+        name = arguments.to_s.strip.downcase.split(/\s+/).first
+        previous = Config::ReasoningPrefs.mode(Rubino.configuration)
+
+        if name.nil? || name.empty?
+          @ui.reasoning_status(previous) if @ui.respond_to?(:reasoning_status)
+          return
+        end
+
+        sym = name.to_sym
+        unless Config::ReasoningPrefs::RENDER_MODES.include?(sym)
+          @ui.error("unknown reasoning mode: #{name}")
+          @ui.info("Available: #{Config::ReasoningPrefs::RENDER_MODES.join(', ')}")
+          return
+        end
+
+        Rubino.configuration.set("display", "reasoning", sym.to_s)
+        @ui.reasoning_changed(sym, previous: previous) if @ui.respond_to?(:reasoning_changed)
       end
 
       # --- /status & welcome -------------------------------------------------

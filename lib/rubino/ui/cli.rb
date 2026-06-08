@@ -48,9 +48,6 @@ module Rubino
         # ctrl-o even after the answer has streamed. Reset per turn.
         @last_reasoning     = nil
         @last_reasoning_seconds = nil
-        # Session override for the render mode / effort (set by /reasoning, /think).
-        # nil means "fall through to config".
-        @reasoning_mode_override = nil
         @activity_open      = false
         @activity_name      = nil
         @session_id         = session_id || SecureRandom.uuid
@@ -499,11 +496,12 @@ module Rubino
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
-      # The active reasoning render mode (:hidden | :collapsed | :full). A session
-      # override (set by /reasoning) wins over config; the config resolver handles
-      # the legacy show_reasoning back-compat mapping.
+      # The active reasoning render mode (:hidden | :collapsed | :full), resolved
+      # from config (which /reasoning writes to, so the adapter gate and this
+      # render path share one source of truth). Handles the legacy show_reasoning
+      # back-compat mapping.
       def reasoning_mode
-        @reasoning_mode_override || Config::ReasoningPrefs.mode(Rubino.configuration)
+        Config::ReasoningPrefs.mode(Rubino.configuration)
       end
 
       # Whole seconds the current/last thinking phase ran, for the collapse cue.
@@ -572,6 +570,23 @@ module Rubino
       def compression_finished(metadata, at: nil)
         saved = metadata[:saved_tokens] || metadata["saved_tokens"] || 0
         $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok ┄")
+      end
+
+      # `/reasoning` with no arg: confirm the current render mode in house style.
+      #   ┄ reasoning: collapsed ┄
+      def reasoning_status(mode)
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ reasoning: #{mode} ┄")
+      end
+
+      # `/reasoning <mode>`: confirm the session render-mode switch. The actual
+      #   state change is written to config by the executor so the adapter gate
+      #   (which reads config) and this render path stay on one source of truth.
+      #   ┄ reasoning collapsed → full ┄
+      def reasoning_changed(mode, previous: nil)
+        arrow = previous && previous != mode ? "#{previous} → #{mode}" : mode.to_s
+        $stdout.puts
+        $stdout.puts @pastel.dim("┄ reasoning #{arrow} ┄")
       end
 
       def mode_changed(name, previous: nil)

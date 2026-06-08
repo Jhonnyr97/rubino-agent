@@ -76,6 +76,8 @@ module Rubino
       def separator;                          emit_event(:separator); end
       def blank_line;                         emit_event(:blank_line); end
       def mode_changed(name, previous: nil);  emit_event(:mode_changed, mode: name, previous: previous); end
+      def reasoning_status(mode);             emit_event(:reasoning_status, mode: mode); end
+      def reasoning_changed(mode, previous: nil); emit_event(:reasoning_changed, mode: mode, previous: previous); end
 
       # Emits `approval.required` and blocks on the ApprovalGate until an
       # HTTP client posts a decision for the generated approval_id.

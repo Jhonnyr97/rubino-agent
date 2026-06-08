@@ -59,6 +59,35 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("musing")
     end
 
+    it "renders reasoning as a dim ┊ aside in full mode" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "full")
+      out = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "Let me check the failing test first.\n")
+        ui.stream(type: :content, text: "done")
+        ui.stream_end
+      end
+      expect(out).to match(/┄ thinking ┄/)
+      expect(out).to include("┊  Let me check the failing test first.")
+      expect(out).to match(/┄ thought for \d+s · ctrl-o to hide ┄/)
+      expect(out).to include("done")
+    end
+
+    it "commits nothing for reasoning in hidden mode" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "hidden")
+      out = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "secret musing")
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(out).not_to include("thought for")
+      expect(out).not_to include("secret musing")
+      expect(out).to include("answer")
+    end
+
     it "clears thinking indicator when first content chunk arrives" do
       out = capture_stdout do
         ui.thinking_started
