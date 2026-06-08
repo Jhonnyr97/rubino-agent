@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "reline"
+require_relative "idle_key_actions"
 
 module Rubino
   module UI
@@ -123,6 +124,32 @@ module Rubino
         return unless line.start_with?("/")
 
         set_current_line("", 0)
+      rescue StandardError
+        nil
+      end
+
+      # Shift+Tab at the idle prompt: cycle the agent mode. The editor action
+      # runs in the LineEditor instance context (no view of the CLI), so it
+      # delegates to the app callback registered in IdleKeyActions — the SAME
+      # handler the in-turn BottomComposer uses, so both input paths share one
+      # "cycle mode" implementation. The handler persists the new mode and
+      # prints the transient `┄ mode · … ┄` footer itself (so the change is
+      # confirmed on screen); the visible prompt chip then reflects the new mode
+      # on the NEXT prompt. We do NOT poke Reline's @prompt/rerender internals
+      # mid-line — that path is fragile in 0.6.3 and the footer already confirms
+      # the switch. Fully guarded so a raising handler never crashes the prompt.
+      def rubino_cycle_mode(_key)
+        IdleKeyActions.cycle_mode if defined?(IdleKeyActions)
+        nil
+      rescue StandardError
+        nil
+      end
+
+      # Ctrl+O at the idle prompt: reveal the last retained reasoning aside.
+      # Same registry bridge + guarded style as rubino_cycle_mode.
+      def rubino_reveal_reasoning(_key)
+        IdleKeyActions.reveal_reasoning if defined?(IdleKeyActions)
+        nil
       rescue StandardError
         nil
       end

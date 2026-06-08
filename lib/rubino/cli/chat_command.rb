@@ -165,6 +165,7 @@ module Rubino
         line_input   = Rubino::UI::LineInput.new
 
         setup_readline_completions(cmd_loader, line_input)
+        register_idle_key_actions
 
         if resuming_session?
           # On a bare-chat auto-resume (#99) tell the user, clearly and once,
@@ -896,6 +897,20 @@ module Rubino
       # holds no mode logic — it just adopts the returned prompt.
       def mode_cycle_handler
         -> { cycle_mode }
+      end
+
+      # Route Shift+Tab / Ctrl+O at the IDLE Reline prompt to the SAME handlers
+      # the in-turn BottomComposer uses. The idle prompt's custom editor actions
+      # (RelineDropdownNav#rubino_cycle_mode / #rubino_reveal_reasoning) run in
+      # the LineEditor context and can't see this ChatCommand, so they delegate
+      # through the IdleKeyActions module-level registry. Set once before the
+      # readline loop; leaving it set for the session is fine (the procs close
+      # over this instance, which lives for the whole REPL).
+      def register_idle_key_actions
+        UI::IdleKeyActions.on_mode_cycle      = mode_cycle_handler
+        UI::IdleKeyActions.on_reveal_reasoning = ctrl_o_handler
+      rescue StandardError
+        nil
       end
 
       def cycle_mode

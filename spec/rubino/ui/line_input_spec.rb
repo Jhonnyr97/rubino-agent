@@ -95,6 +95,23 @@ RSpec.describe Rubino::UI::LineInput do
     end
   end
 
+  describe "idle Shift+Tab / Ctrl+O bindings" do
+    it "binds Shift+Tab (\\e[Z) and Ctrl+O (\\C-o) without raising" do
+      expect { described_class.new.configure_completion(commands: commands) }.not_to raise_error
+    end
+
+    it "lands the keys in @additional_key_bindings after configure" do
+      described_class.new.configure_completion(commands: commands)
+
+      kb = Reline.core.config
+             .instance_variable_get(:@additional_key_bindings)[:emacs]
+             .instance_variable_get(:@key_bindings)
+
+      expect(kb[[27, 91, 90]]).to eq(:rubino_cycle_mode)      # \e[Z (Shift+Tab)
+      expect(kb[[15]]).to eq(:rubino_reveal_reasoning)        # \C-o (Ctrl+O)
+    end
+  end
+
   # The nav actions live in the prepended module; exercise them on a stub that
   # mimics the relevant LineEditor ivars/methods so we don't drive a real TTY.
   describe Rubino::UI::RelineDropdownNav do
@@ -279,6 +296,69 @@ RSpec.describe Rubino::UI::LineInput do
       editor.completion_journey_state = Object.new
       editor.dialogs = [dialog]
       expect(editor.dropdown_open?).to be(false)
+    end
+
+    # Idle-prompt Shift+Tab / Ctrl+O: the editor actions delegate to the
+    # IdleKeyActions registry (no view of the CLI from the LineEditor context).
+    describe "idle key actions (#rubino_cycle_mode / #rubino_reveal_reasoning)" do
+      after { Rubino::UI::IdleKeyActions.reset! }
+
+      it "rubino_cycle_mode invokes the registered mode-cycle callback" do
+        called = false
+        Rubino::UI::IdleKeyActions.on_mode_cycle = -> { called = true }
+        editor.rubino_cycle_mode(:key)
+        expect(called).to be(true)
+      end
+
+      it "rubino_reveal_reasoning invokes the registered reveal callback" do
+        called = false
+        Rubino::UI::IdleKeyActions.on_reveal_reasoning = -> { called = true }
+        editor.rubino_reveal_reasoning(:key)
+        expect(called).to be(true)
+      end
+
+      it "rubino_cycle_mode is a safe no-op when nothing is registered" do
+        Rubino::UI::IdleKeyActions.reset!
+        expect { editor.rubino_cycle_mode(:key) }.not_to raise_error
+      end
+
+      it "rubino_reveal_reasoning is a safe no-op when nothing is registered" do
+        Rubino::UI::IdleKeyActions.reset!
+        expect { editor.rubino_reveal_reasoning(:key) }.not_to raise_error
+      end
+
+      it "swallows a raising callback so the prompt never crashes" do
+        Rubino::UI::IdleKeyActions.on_mode_cycle = -> { raise "boom" }
+        expect { editor.rubino_cycle_mode(:key) }.not_to raise_error
+      end
+    end
+  end
+
+  describe Rubino::UI::IdleKeyActions do
+    after { described_class.reset! }
+
+    it "calls the mode-cycle proc and returns its value" do
+      described_class.on_mode_cycle = -> { "new-chip" }
+      expect(described_class.cycle_mode).to eq("new-chip")
+    end
+
+    it "calls the reveal-reasoning proc" do
+      seen = []
+      described_class.on_reveal_reasoning = -> { seen << :revealed }
+      described_class.reveal_reasoning
+      expect(seen).to eq([:revealed])
+    end
+
+    it "no-ops (nil) when no callback is registered" do
+      described_class.reset!
+      expect(described_class.cycle_mode).to be_nil
+      expect(described_class.reveal_reasoning).to be_nil
+    end
+
+    it "guards against a raising callback" do
+      described_class.on_mode_cycle = -> { raise "boom" }
+      expect { described_class.cycle_mode }.not_to raise_error
+      expect(described_class.cycle_mode).to be_nil
     end
   end
 

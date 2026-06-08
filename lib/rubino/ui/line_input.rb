@@ -138,6 +138,14 @@ module Rubino
         # candidate (L8). A bare ESC is the CSI prefix, but Reline resolves a
         # lone ESC (no following bytes) to this action.
         cfg.bind_key('"\e"', "dismiss_completion_dialog")
+        # Shift+Tab cycles the agent mode and Ctrl+O reveals the last reasoning
+        # at the idle prompt too — additive bindings routed through the
+        # IdleKeyActions registry to the SAME handlers the in-turn composer uses.
+        # Shift+Tab is the CSI "back-tab" sequence \e[Z; Ctrl+O is byte 0x0f
+        # (the \C-o token Reline parses to [15]). Both are additive: Tab
+        # (native `complete`), Enter, editing, and history stay untouched.
+        cfg.bind_key('"\e[Z"', "rubino_cycle_mode")
+        cfg.bind_key('"\C-o"', "rubino_reveal_reasoning")
       rescue StandardError
         # Never let a binding hiccup take down the prompt — without it the
         # arrows simply fall back to native history navigation.
