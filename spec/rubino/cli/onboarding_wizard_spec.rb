@@ -93,4 +93,27 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     wizard("1\nsk-super-secret\n").run
     expect(output.string).not_to include("sk-super-secret")
   end
+
+  # #31: a single invalid (out-of-range) choice must re-prompt rather than
+  # abandon the wizard. Here "7" is out of range, then "1" (OpenAI) + a key.
+  it "re-prompts on an invalid choice instead of abandoning setup" do
+    n = described_class::PROVIDERS.size
+    ok = wizard("#{n + 5}\n1\nsk-openai-test\n").run
+    expect(ok).to be true
+
+    # The provider prompt was shown twice (initial + re-prompt after the typo).
+    prompts = output.string.scan("Choose a provider").size
+    expect(prompts).to be >= 2
+
+    loader = Rubino::Config::Loader.new(home_path: home)
+    raw    = YAML.safe_load(File.read(loader.config_path))
+    expect(raw.dig("model", "provider")).to eq("openai")
+  end
+
+  # #31: an explicit skip (Enter) at the provider prompt still bails cleanly —
+  # the re-prompt loop must not trap the user when they genuinely want out.
+  it "still honours an explicit skip after the loop change" do
+    ok = wizard("\n").run
+    expect(ok).to be false
+  end
 end

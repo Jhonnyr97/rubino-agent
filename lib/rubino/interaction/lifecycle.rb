@@ -145,7 +145,8 @@ module Rubino
           session: @session,
           memory_context: memory_context,
           config: @config,
-          agent_definition: @agent_definition
+          agent_definition: @agent_definition,
+          ignore_rules: @ignore_rules
         )
         assembler.build
       end
@@ -185,7 +186,8 @@ module Rubino
             session: @session,
             memory_context: {},
             config: @config,
-            agent_definition: @agent_definition
+            agent_definition: @agent_definition,
+            ignore_rules: @ignore_rules
           )
           assembler.build
         else
