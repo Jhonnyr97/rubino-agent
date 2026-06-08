@@ -19,6 +19,8 @@ module Rubino
         "/tasks"        => "Alias for /agents",
         "/reply"        => "Answer a subagent that is blocked waiting on you (ask_parent)",
         "/skills"       => "List available skills",
+        "/add-dir"      => "Add an extra allowed workspace directory (write/edit can reach it)",
+        "/dirs"         => "List the current workspace roots",
         "/mode"         => "Show or switch mode (default | plan | yolo)",
         "/commands"     => "List custom commands (and how to make them)",
         "/help"         => "Show this help",

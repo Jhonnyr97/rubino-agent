@@ -52,6 +52,10 @@ module Rubino
         # we don't add noise to the default-model happy path.
         announce_resolved_model
 
+        # Seed --add-dir roots; one-shot mode is non-interactive so the trust
+        # prompt is skipped (an untrusted dir simply runs in restricted mode).
+        setup_workspace_and_trust!(Rubino.ui, interactive: false)
+
         # Headless/scripted attachment: honour @image tokens in the prompt AND
         # explicit --image PATH flags, both routed to the native vision slot
         # (image_paths) — the same path the interactive REPL uses. Without this,
@@ -127,6 +131,11 @@ module Rubino
         ui.status("model      #{model_name}")
         warn_unknown_model if model_override_given?
         ui.blank_line
+
+        # Seed --add-dir roots and run the folder-trust gate before any turn
+        # assembles a system prompt that could pull in an untrusted dir's
+        # AGENTS.md / skills.
+        setup_workspace_and_trust!(ui, interactive: true)
 
         runner = Agent::Runner.new(
           session_id:        resolve_session_id(auto_resume: true),
@@ -935,7 +944,7 @@ module Rubino
         # `@` is a workspace file picker (subagent mentions are dormant). The
         # proc is lazy — LineInput only resolves the root + shells out on the
         # first `@`, then caches. Same root rule as Tools::Base#workspace_root.
-        files  = -> { Rubino.configuration.dig("terminal", "cwd") || Dir.pwd }
+        files  = -> { Rubino::Workspace.primary_root }
         line_input.configure_completion(commands: names.uniq, files: files)
       end
 
@@ -951,6 +960,25 @@ module Rubino
 
       def opt(key)
         @options[key] || @options[key.to_s]
+      end
+
+      # Seeds extra workspace roots from --add-dir and runs the folder-trust
+      # gate for the primary root and each added dir, BEFORE any turn assembles
+      # a system prompt (so an untrusted dir's AGENTS.md/skills are withheld).
+      # +interactive+ false (one-shot/-q) skips the prompt entirely.
+      def setup_workspace_and_trust!(ui, interactive:)
+        gate = TrustGate.new(ui: ui, interactive: interactive, ignore_rules: opt(:ignore_rules) || false)
+
+        # Primary root first — the dir rubino was launched in.
+        gate.ensure_trust(Rubino::Workspace.primary_root)
+
+        Array(opt(:add_dir)).each do |dir|
+          real = Rubino::Workspace.add(dir)
+          ui.status("added workspace #{collapse_home(real)}") if ui.respond_to?(:status)
+          gate.ensure_trust(real)
+        rescue ArgumentError => e
+          ui.error("--add-dir #{dir}: #{e.message}") if ui.respond_to?(:error)
+        end
       end
 
       def model_name

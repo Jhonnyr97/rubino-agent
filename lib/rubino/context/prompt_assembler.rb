@@ -214,7 +214,10 @@ module Rubino
         return nil unless skill_tool_available?
 
         Skills::PromptIndex.new(
-          registry: Skills::Registry.new(config: @config)
+          registry: Skills::Registry.new(
+            config: @config,
+            include_project_local: project_local_trusted?
+          )
         ).render
       rescue StandardError
         nil
@@ -296,11 +299,29 @@ module Rubino
 
       def load_project_context
         return nil unless @config.dig("memory", "project_context_enabled")
+        return nil unless project_local_trusted?
 
-        discovery = Context::FileDiscovery.new
+        # Discover from the PRIMARY workspace root (not just Dir.pwd) so project
+        # context tracks terminal.cwd and the dir the trust gate vouched for.
+        discovery = Context::FileDiscovery.new(base_path: Rubino::Workspace.primary_root)
         discovery.load_project_context
       rescue StandardError
         nil
+      end
+
+      # Folder-trust gate (proportionate; see Rubino::Trust). The cwd's
+      # AGENTS.md/etc. and its .rubino/skills are auto-injected into the system
+      # prompt, so a hostile repo could STEER the agent the moment you start
+      # there. We withhold that project-local context until the primary root is
+      # trusted — the CLI prompts once at boot / on /add-dir and remembers the
+      # answer. An already-trusted dir (or one the user never gated, e.g. a bare
+      # scratch dir with no context files) loads normally.
+      def project_local_trusted?
+        Rubino::Trust.trusted?(Rubino::Workspace.primary_root)
+      rescue StandardError
+        # Never let the trust check itself drop context on a real error; the
+        # boot-time prompt is the authoritative gate, this is defence-in-depth.
+        true
       end
 
     end

@@ -96,6 +96,12 @@ module Rubino
         when "skills"
           show_skills
           :handled
+        when "add-dir"
+          handle_add_dir(arguments)
+          :handled
+        when "dirs"
+          show_dirs
+          :handled
         when "mode"
           handle_mode(arguments)
           :handled
@@ -981,6 +987,39 @@ module Rubino
       def custom_desc(cmd)
         desc = cmd.description.to_s.strip
         desc.empty? ? "" : "  - #{desc}"
+      end
+
+      # --- /add-dir & /dirs --------------------------------------------------
+      #
+      # Mid-session workspace management, mirroring Claude Code's --add-dir.
+      # `/add-dir <path>` adds an extra allowed root (write/edit can then reach
+      # files under it) and runs the folder-trust gate so its AGENTS.md/skills
+      # are only honored once vouched for. `/dirs` lists the current roots.
+
+      def handle_add_dir(arguments)
+        path = arguments.to_s.strip
+        if path.empty?
+          @ui.info("Usage: /add-dir <path> — adds an extra allowed workspace directory.")
+          return
+        end
+
+        real = Rubino::Workspace.add(path)
+        @ui.success("Added workspace root: #{real}")
+        # Gate the freshly-added dir interactively (same one-time prompt as boot).
+        CLI::TrustGate.new(ui: @ui, interactive: true).ensure_trust(real)
+      rescue ArgumentError => e
+        @ui.error("/add-dir #{path}: #{e.message}")
+      end
+
+      def show_dirs
+        roots = Rubino::Workspace.canonical_roots
+        @ui.info("Workspace roots (#{roots.size}):")
+        roots.each_with_index do |dir, i|
+          marker = i.zero? ? "▸" : " "
+          trust  = Rubino::Trust.trusted?(dir) ? "" : "  (untrusted — context/skills withheld)"
+          @ui.info("  #{marker} #{dir}#{trust}")
+        end
+        @ui.info("Add more with /add-dir <path>")
       end
 
       def show_skills
