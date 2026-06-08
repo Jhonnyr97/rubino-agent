@@ -8,13 +8,16 @@ RSpec.describe Rubino::Tools::Base do
 
   let(:workspace) { Dir.mktmpdir("workspace-root") }
   let(:outside)   { Dir.mktmpdir("outside-root") }
+  let(:added)     { Dir.mktmpdir("added-root") }
 
   before { Rubino.configuration.set("terminal", "cwd", workspace) }
 
   after do
     Rubino.configuration.set("terminal", "cwd", nil)
+    Rubino::Workspace.reset!
     FileUtils.rm_rf(workspace)
     FileUtils.rm_rf(outside)
+    FileUtils.rm_rf(added)
   end
 
   describe "#within_workspace?" do
@@ -73,6 +76,31 @@ RSpec.describe Rubino::Tools::Base do
       expect(tool.send(:within_workspace?, "/etc/passwd")).to be(true)
     ensure
       Rubino.configuration.set("tools", "workspace_strict", nil)
+    end
+
+    context "with extra roots added via Workspace.add (--add-dir / /add-dir)" do
+      before { Rubino::Workspace.add(added) }
+
+      it "accepts a file under the primary root" do
+        path = File.join(workspace, "a.txt")
+        File.write(path, "")
+        expect(tool.send(:within_workspace?, path)).to be(true)
+      end
+
+      it "accepts a file under an added root" do
+        path = File.join(added, "b.txt")
+        File.write(path, "")
+        expect(tool.send(:within_workspace?, path)).to be(true)
+      end
+
+      it "accepts a new-file path under an added root" do
+        path = File.join(added, "nested", "c.txt")
+        expect(tool.send(:within_workspace?, path)).to be(true)
+      end
+
+      it "still rejects a path outside every root" do
+        expect(tool.send(:within_workspace?, File.join(outside, "evil.txt"))).to be(false)
+      end
     end
   end
 end

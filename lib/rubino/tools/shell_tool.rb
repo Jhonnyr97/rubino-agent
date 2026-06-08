@@ -153,7 +153,7 @@ module Rubino
       # Resolves cwd via realpath so symlinks and "../" are fully expanded;
       # returns nil if the directory does not exist or is unreadable.
       def resolve_cwd(cwd)
-        candidate = cwd || Rubino.configuration.dig("terminal", "cwd") || Dir.pwd
+        candidate = cwd || Rubino::Workspace.primary_root
         path = File.realpath(File.expand_path(candidate))
         File.directory?(path) ? path : nil
       rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP

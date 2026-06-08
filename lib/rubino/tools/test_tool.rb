@@ -109,7 +109,7 @@ module Rubino
       # Same cwd resolution as ruby_tool/shell_tool: terminal.cwd or Dir.pwd,
       # fully resolved through symlinks. nil if it can't be reached.
       def resolve_workspace
-        candidate = Rubino.configuration.dig("terminal", "cwd") || Dir.pwd
+        candidate = Rubino::Workspace.primary_root
         path = File.realpath(File.expand_path(candidate))
         File.directory?(path) ? path : nil
       rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP

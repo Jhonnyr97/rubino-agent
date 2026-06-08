@@ -59,6 +59,11 @@ module Rubino
       option :max_turns,               type: :numeric, desc: "Max tool iterations per turn"
       option :ignore_rules,            type: :boolean, desc: "Skip AGENTS.md and context files"
 
+      # Add extra allowed workspace roots at launch (repeatable), like Claude
+      # Code's --add-dir. Write/edit tools then accept files under any added
+      # root; an added dir's project context/skills are gated by folder-trust.
+      option :add_dir,                 type: :string, repeatable: true, desc: "Add an extra allowed workspace directory (repeatable)"
+
       def chat(prompt = nil)
         # Support: rubino chat "prompt" as shorthand for -q
         opts = options.to_h.merge(prompt ? { query: prompt } : {})
@@ -78,6 +83,7 @@ module Rubino
       option :yolo,                        type: :boolean, desc: "Skip approval prompts"
       option :max_turns,                   type: :numeric, desc: "Max tool iterations"
       option :ignore_rules,                type: :boolean, desc: "Skip AGENTS.md/context files"
+      option :add_dir,                     type: :string, repeatable: true, desc: "Add an extra allowed workspace directory (repeatable)"
       def prompt(*args)
         query = args.join(" ")
         opts = options.to_h.merge(query: query)

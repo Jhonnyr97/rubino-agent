@@ -112,27 +112,48 @@ module Rubino
       # File API operations can root their Workspace at the SAME place
       # (otherwise produced artifacts under this root look like traversal
       # escapes relative to paths_home and the download 422s).
+      # The PRIMARY root — terminal.cwd or the launch cwd. Kept as the single
+      # source of truth for "the" directory: the @-picker, shell/test cwd, the
+      # File API workspace and the attachment downloader all root here so they
+      # agree. The write/edit SANDBOX, however, spans every root (see
+      # #within_workspace?) so an added dir is also writable.
       def self.workspace_root
-        Rubino.configuration.dig("terminal", "cwd") || Dir.pwd
+        Workspace.primary_root
+      end
+
+      # Every allowed root (primary + any --add-dir / /add-dir dirs). The
+      # sandbox accepts a target under ANY of these.
+      def self.workspace_roots
+        Workspace.roots
       end
 
       def workspace_root
         self.class.workspace_root
       end
 
+      def workspace_roots
+        self.class.workspace_roots
+      end
+
       def workspace_strict?
         Rubino.configuration.dig("tools", "workspace_strict") != false
       end
 
+      # True when +expanded+ resolves under ANY allowed root. Generalised from
+      # the old single-root check so a write/edit/multi_edit under a dir added
+      # via --add-dir / /add-dir is accepted, while a path outside every root
+      # is still refused. Symlinks are resolved (canonical_path) before the
+      # comparison so an in-workspace symlink to /etc can't escape.
       def within_workspace?(expanded)
         return true unless workspace_strict?
 
-        root_real   = canonical_path(workspace_root)
         target_real = canonical_path(expanded)
-        return false unless root_real && target_real
+        return false unless target_real
 
-        target_real == root_real ||
-          target_real.start_with?("#{root_real}#{File::SEPARATOR}")
+        Workspace.canonical_roots.any? do |root_real|
+          target_real == root_real ||
+            target_real.start_with?("#{root_real}#{File::SEPARATOR}")
+        end
       end
 
       # Resolves `path` through every symlink to its canonical destination.
@@ -163,7 +184,9 @@ module Rubino
       end
 
       def workspace_violation_message(path)
-        "Error: refusing to access '#{path}' — outside workspace #{workspace_root}. " \
+        roots = workspace_roots
+        where = roots.length == 1 ? roots.first : "any allowed root (#{roots.join(', ')})"
+        "Error: refusing to access '#{path}' — outside #{where}. " \
           "Set tools.workspace_strict=false in config.yml to disable this check."
       end
 
