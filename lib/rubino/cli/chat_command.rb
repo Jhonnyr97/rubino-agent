@@ -130,6 +130,13 @@ module Rubino
         end
         ui.status("model      #{model_name}")
         warn_unknown_model if model_override_given?
+        # Update-available notice (interactive only): one dim line, sourced
+        # purely from the local cache so it never slows boot. The network
+        # refresh below is detached/rescued and only freshens the cache for the
+        # NEXT boot. No-ops entirely until rubino-agent is published.
+        note = Rubino::UpdateCheck.notice_from_cache
+        ui.status(note) if note
+        Rubino::UpdateCheck.refresh_async_if_stale
         ui.blank_line
 
         # Seed --add-dir roots and run the folder-trust gate before any turn

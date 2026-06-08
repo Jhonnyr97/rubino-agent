@@ -18,8 +18,34 @@ Two surfaces: **CLI subcommands** (run from your shell) and **slash commands** (
 | `rubino tls-cert` | Print the agent's self-signed TLS certificate PEM (generating it if absent) |
 | `rubino doctor` | Check system health (config, resolved provider, credentials, database) |
 | `rubino version` | Show the version |
+| `rubino update` | Update rubino to the latest published version (via RubyGems) |
 
 A bare `rubino "my prompt"` is shorthand for `chat` with that prompt.
+
+### update + the boot "update available" notice
+
+`rubino update` runs `gem update rubino-agent` under the active interpreter
+(`Gem.ruby -S gem update rubino-agent` — argv form, no shell, multi-Ruby safe),
+then reports the new version (or "already up to date"). If rubino was built from
+source / a dev checkout (not installed from RubyGems), it prints installer
+guidance instead of attempting a gem update.
+
+On interactive (TTY) boot, rubino shows a single dim line when a newer version
+is available:
+
+```
+▸ rubino v0.4.1 available — run `rubino update`
+```
+
+This notice is sourced purely from a local cache (`<RUBINO_HOME>/update_check.json`)
+so it never slows startup; the RubyGems check that refreshes the cache runs
+out-of-band on a detached, short-timeout thread (gated to once / 24h) and only
+affects the *next* boot. It is silent offline and prints nothing until the gem
+is actually published.
+
+Set `RUBINO_NO_UPDATE_CHECK=1` to disable the check entirely (no network, no
+notice, no thread). It is also auto-disabled when stdout is not a TTY or `CI`
+is set.
 
 ### chat / prompt flags
 

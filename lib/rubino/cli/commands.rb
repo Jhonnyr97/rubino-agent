@@ -129,6 +129,35 @@ module Rubino
       def version
         Rubino.ui.info("rubino v#{Rubino::VERSION}")
       end
+
+      desc "update", "Update rubino to the latest published version"
+      def update
+        ui = Rubino.ui
+        current = Rubino::VERSION
+
+        case Rubino::UpdateCheck.install_method
+        when :gem
+          ok = system(*Rubino::UpdateCheck.gem_update_command)
+          unless ok
+            ui.warning("gem update failed. If this is a permission error, re-run the installer or try `gem update --user-install #{Rubino::UpdateCheck::GEM_NAME}`.")
+            return
+          end
+          new_v = Rubino::UpdateCheck.installed_gem_version(Rubino::UpdateCheck::GEM_NAME)
+          if new_v && Gem::Version.new(new_v) > Gem::Version.new(current)
+            ui.info("rubino is now on v#{new_v} (was v#{current}).")
+            ui.status("Restart any running rubino sessions to pick up the new version.")
+          else
+            ui.info("rubino is already up to date (v#{current}).")
+          end
+        else
+          ui.warning("rubino wasn't installed from RubyGems (built from source / dev checkout).")
+          ui.status("Re-run the installer to update:")
+          ui.status("  curl -fsSL https://raw.githubusercontent.com/Jhonnyr97/rubino-agent/main/install.sh | bash")
+        end
+      ensure
+        # Drop the cached notice so the boot footer doesn't linger after update.
+        Rubino::UpdateCheck.clear_cache!
+      end
     end
   end
 end
