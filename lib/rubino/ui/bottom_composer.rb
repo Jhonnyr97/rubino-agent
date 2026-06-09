@@ -100,6 +100,11 @@ module Rubino
         # candidate :items, the :selected index, and the :token span being
         # completed (so accept can splice the replacement at the cursor).
         @menu          = nil
+        # Sticky ESC-dismiss: once the user presses ESC on an open menu, keep it
+        # closed for the CURRENT token instead of re-opening on the next
+        # keystroke. Cleared when the token is cleared / on submit / on accept /
+        # on an explicit Tab, so a fresh token (or a deliberate Tab) reopens.
+        @menu_suppressed = false
         @prompt      = prompt.to_s.empty? ? PROMPT : prompt
         # Visible width ignores ANSI color escapes so the one-row clamp math is
         # correct for a colored mode prompt.
@@ -621,9 +626,11 @@ module Rubino
 
       # --- Cursor-aware editing primitives -------------------------------------
       # All mutate @buffer at @cursor (a codepoint index, 0..length) under the
-      # render mutex and redraw. The menu is re-filtered after any buffer change
-      # so an open completion list tracks the typed token; history navigation is
-      # reset on any direct edit so a fresh ↑ starts from the newest entry.
+      # render mutex and redraw. The completion menu is auto-opened/updated/closed
+      # after any buffer change (see #auto_update_menu) so it tracks the typed
+      # token the way the old Reline autocompletion did — typing a leading `/` or
+      # `@` opens it with no Tab needed; history navigation is reset on any direct
+      # edit so a fresh ↑ starts from the newest entry.
 
       # Insert printable text at the cursor (typed char or single-line paste).
       def insert(str)
@@ -633,7 +640,7 @@ module Rubino
           @buffer.replace(chars.join)
           @cursor += str.chars.length
           @history.reset!
-          refresh_menu
+          auto_update_menu
           redraw
         end
       end
@@ -648,7 +655,7 @@ module Rubino
             @cursor -= 1
           end
           @history.reset!
-          refresh_menu
+          auto_update_menu
           redraw
         end
       end
@@ -662,7 +669,7 @@ module Rubino
             @buffer.replace(chars.join)
           end
           @history.reset!
-          refresh_menu
+          auto_update_menu
           redraw
         end
       end
@@ -672,7 +679,7 @@ module Rubino
         @render.synchronize do
           @buffer.replace(@buffer.chars.first(@cursor).join)
           @history.reset!
-          refresh_menu
+          auto_update_menu
           redraw
         end
       end
@@ -683,7 +690,7 @@ module Rubino
           @buffer.replace(@buffer.chars.drop(@cursor).join)
           @cursor = 0
           @history.reset!
-          refresh_menu
+          auto_update_menu
           redraw
         end
       end
@@ -692,6 +699,7 @@ module Rubino
       def move_by(delta)
         @render.synchronize do
           @cursor = (@cursor + delta).clamp(0, @buffer.length)
+          auto_update_menu # moving off the token closes the menu
           redraw
         end
       end
@@ -700,6 +708,7 @@ module Rubino
       def move_to(index)
         @render.synchronize do
           @cursor = index.clamp(0, @buffer.length)
+          auto_update_menu # moving off the token closes the menu
           redraw
         end
       end
@@ -771,8 +780,10 @@ module Rubino
       # --- /command + @file completion menu ------------------------------------
       # An inline navigable list rendered in the multi-row region above the
       # prompt (the same substrate as the subagent cards). Candidates come from
-      # the shared CompletionSource. Tab opens/accepts, ↑/↓ navigate, Enter
-      # accepts, ESC dismisses immediately leaving the typed buffer untouched.
+      # the shared CompletionSource. The menu auto-opens as you type a `/` or `@`
+      # token (Reline parity); Tab also opens/accepts, ↑/↓ navigate, Enter
+      # accepts, ESC dismisses immediately (and STICKS for the token) leaving the
+      # typed buffer untouched.
 
       # Most candidate rows shown at once (the list scrolls within this window
       # for longer candidate sets so the prompt is never pushed off-screen).
@@ -785,6 +796,7 @@ module Rubino
         if menu_open?
           accept_completion
         else
+          @menu_suppressed = false # an explicit Tab always reopens a dismissed menu
           open_menu
         end
       end
@@ -819,27 +831,38 @@ module Rubino
         end
       end
 
-      # Re-filter an already-open menu after a buffer edit so the list tracks the
-      # typed token; close it when the token no longer completes or has no
-      # candidates. No-op when the menu is closed (typing doesn't auto-open it —
-      # Tab does, matching a deliberate, discoverable completion gesture).
-      def refresh_menu
-        return unless @menu
-
+      # Open / update / close the completion menu on every edit and cursor move,
+      # matching the old Reline autocompletion: typing a leading `/` or `@` token
+      # AUTO-opens the dropdown (no Tab needed), refining as the token grows and
+      # closing when it no longer completes. Called from every buffer-edit and
+      # cursor-move path so the list always tracks the token under the cursor.
+      #
+      #   * no token under the cursor → close the menu AND clear the sticky
+      #     ESC-dismiss flag (a fresh token may auto-open again);
+      #   * token present but ESC-dismissed for it → stay closed;
+      #   * token with candidates → OPEN a new menu, or UPDATE an open one
+      #     (preserving the clamped selection); no candidates → close.
+      #
+      # The selected index is preserved (clamped) across an update so refining the
+      # token doesn't jump the highlight back to the top mid-navigation.
+      def auto_update_menu
         tok = current_token
         if tok.nil?
           @menu = nil
+          @menu_suppressed = false # token cleared: a fresh token can auto-open
           return
         end
+        return if @menu_suppressed # ESC stuck this token closed
+
         token, start = tok
         items = candidates(token)
         if items.empty?
           @menu = nil
-        else
-          sel = @menu[:selected].clamp(0, items.size - 1)
-          @menu = { items: items, selected: sel, top: menu_top(sel, items.size),
-                    start: start, token_len: token.length }
+          return
         end
+        sel = (@menu ? @menu[:selected] : 0).clamp(0, items.size - 1)
+        @menu = { items: items, selected: sel, top: menu_top(sel, items.size),
+                  start: start, token_len: token.length }
       end
 
       def candidates(token)
@@ -881,12 +904,16 @@ module Rubino
           @buffer.replace(chars.join)
           @cursor = start + replacement.chars.length
           @menu = nil
+          @menu_suppressed = false # accepting ends this token; a new one can auto-open
           redraw # repaint to CLEAR the now-closed menu rows above the prompt
         end
       end
 
+      # Close the menu and clear the sticky ESC-dismiss flag (submit / accept):
+      # the next token starts fresh and is free to auto-open again.
       def close_menu
         @menu = nil
+        @menu_suppressed = false
       end
 
       # The visible window's top index so the selected row stays in view.
@@ -1039,7 +1066,11 @@ module Rubino
         return unless menu_open?
 
         @render.synchronize do
-          close_menu
+          @menu = nil
+          # STICKY: keep the menu closed for the current token so it doesn't pop
+          # back on the next keystroke. Cleared when the token changes to nil, on
+          # submit/accept, or on an explicit Tab (see #auto_update_menu/#close_menu).
+          @menu_suppressed = true
           redraw # repaint to CLEAR the now-closed menu rows above the prompt
         end
       end

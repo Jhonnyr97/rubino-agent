@@ -344,26 +344,56 @@ RSpec.describe Rubino::UI::BottomComposer do
       c.handle_key("\e")
     end
 
-    it "Tab opens a menu of matching slash commands" do
+    it "shows a menu of matching slash commands as the token is typed" do
       "/re".each_char { |ch| composer.handle_key(ch) }
-      tab(composer)
+      expect(composer.menu_open?).to be(true)
+      # The final frame (after the last \e[2K full-region clear) shows only the
+      # matches for "/re" — /help has been filtered out.
+      final_frame = output.string.split("\r\e[2K").last(4).join
+      expect(final_frame).to include("/reasoning")
+      expect(final_frame).to include("/reset")
+      expect(final_frame).not_to include("/help")
+    end
+
+    # Reline parity: the dropdown appears AUTOMATICALLY as the user types a
+    # leading `/`/`@` token — no Tab needed. (Replaces the old "Tab-only, typing
+    # doesn't auto-open" contract.)
+    it "auto-opens populated with ALL slash commands when a bare / is typed" do
+      composer.handle_key("/")
+      expect(composer.menu_open?).to be(true)
+      expect(output.string).to include("/help")
+      expect(output.string).to include("/exit")
+      expect(output.string).to include("/reasoning")
+      expect(output.string).to include("/reset")
+    end
+
+    it "auto-filters as the token grows (no Tab)" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
       expect(composer.menu_open?).to be(true)
       expect(output.string).to include("/reasoning")
       expect(output.string).to include("/reset")
-      expect(output.string).not_to include("/help")
+    end
+
+    it "auto-closes when the token stops matching, and when a trailing space ends it" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      expect(composer.menu_open?).to be(true)
+      composer.handle_key("z") # "/rez" → no candidates
+      expect(composer.menu_open?).to be(false)
+      composer.handle_key("\b") # back to "/re" → reopens (a fresh, un-dismissed token)
+      expect(composer.menu_open?).to be(true)
+      composer.handle_key(" ")  # trailing space ends the token
+      expect(composer.menu_open?).to be(false)
     end
 
     it "Tab accepts the highlighted candidate (token replaced + trailing space)" do
-      "/re".each_char { |ch| composer.handle_key(ch) }
-      tab(composer) # open
+      "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
       tab(composer) # accept the first (/reasoning)
       expect(composer.buffer).to eq("/reasoning ")
       expect(composer.menu_open?).to be(false)
     end
 
     it "↓ then Enter accepts the SECOND candidate" do
-      "/re".each_char { |ch| composer.handle_key(ch) }
-      tab(composer)
+      "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
       arrow(composer, "B") # ↓ → /reset
       composer.handle_key("\r")
       expect(composer.buffer).to eq("/reset ")
@@ -371,33 +401,78 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
 
     it "Esc dismisses the menu IMMEDIATELY leaving exactly what was typed (D6)" do
-      "/re".each_char { |ch| composer.handle_key(ch) }
-      tab(composer)
+      "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
       expect(composer.menu_open?).to be(true)
       esc(composer)
       expect(composer.menu_open?).to be(false)
       expect(composer.buffer).to eq("/re") # no fused candidate, no fragment
     end
 
-    it "dismiss-then-retype-then-submit is clean (the classic D6 corruption case)" do
-      "/re".each_char { |ch| composer.handle_key(ch) }
-      tab(composer)
+    it "Esc STICKS: the menu stays closed while the same token is typed further" do
+      composer.handle_key("/") # auto-opens
+      expect(composer.menu_open?).to be(true)
       esc(composer)
-      "set".each_char { |ch| composer.handle_key(ch) } # "/reset" (no menu)
+      expect(composer.menu_open?).to be(false)
+      "re".each_char { |ch| composer.handle_key(ch) } # still the same /-token
+      expect(composer.menu_open?).to be(false)         # dismiss stuck — no pop-back
+    end
+
+    it "after Esc, clearing the token (or Tab) lets the menu open again" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      esc(composer)
+      expect(composer.menu_open?).to be(false)
+      # Backspace down to nothing clears the token → suppression lifts.
+      3.times { composer.handle_key("\b") }
+      expect(composer.buffer).to eq("")
+      composer.handle_key("/") # a fresh token auto-opens
+      expect(composer.menu_open?).to be(true)
+      esc(composer)
+      expect(composer.menu_open?).to be(false)
+      tab(composer) # an explicit Tab reopens even while suppressed
+      expect(composer.menu_open?).to be(true)
+    end
+
+    it "auto-opens the @file picker as you type, and filters (no Tab)" do
+      src = Rubino::UI::CompletionSource.new
+      files = %w[@lib/a.rb @src/b.rb]
+      # Filter by prefix like the real source does, so every intermediate token
+      # ("@", "@s", "@sr", "@src") returns the right slice as we type.
+      allow(src).to receive(:candidates_for) do |token|
+        files.select { |f| f.downcase.start_with?(token.downcase) }
+      end
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              completion_source: src)
+      c.handle_key("@")
+      expect(c.menu_open?).to be(true)
+      expect(output.string).to include("@lib/a.rb")
+      "src".each_char { |ch| c.handle_key(ch) }
+      expect(c.menu_open?).to be(true)
+      expect(c.instance_variable_get(:@menu)[:items]).to eq(%w[@src/b.rb])
+    end
+
+    it "closes the menu when the cursor moves off the token" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      expect(composer.menu_open?).to be(true)
+      composer.handle_key("\x01") # Ctrl+A → cursor to line start, off the token
+      expect(composer.menu_open?).to be(false)
+    end
+
+    it "dismiss-then-retype-then-submit is clean (the classic D6 corruption case)" do
+      "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
+      esc(composer)                                    # dismissed (sticks)
+      "set".each_char { |ch| composer.handle_key(ch) } # "/reset" (stays closed)
       composer.handle_key("\r")
       expect(queue.drain).to eq(["/reset"])
     end
 
     it "re-filters the open menu as more of the token is typed" do
-      "/r".each_char { |ch| composer.handle_key(ch) }
-      tab(composer) # menu: /reasoning /reset
+      "/r".each_char { |ch| composer.handle_key(ch) } # menu auto-opens: /reasoning /reset
       "ea".each_char { |ch| composer.handle_key(ch) } # "/rea" → only /reasoning
       expect(composer.menu_open?).to be(true)
     end
 
     it "closes the menu when the token stops matching anything" do
-      "/re".each_char { |ch| composer.handle_key(ch) }
-      tab(composer)
+      "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
       composer.handle_key("z") # "/rez" → no candidates
       expect(composer.menu_open?).to be(false)
       expect(composer.buffer).to eq("/rez") # buffer intact
