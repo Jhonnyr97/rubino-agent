@@ -1,12 +1,14 @@
 # Tools Reference
 
-rubino ships **29 built-in tools** plus support for MCP tools (planned) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model.
+rubino ships **33 built-in tools** plus support for MCP tools (machinery present, not yet auto-started at boot) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list: `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`.
+The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
+
+Several tools share one config gate, so `rubino tools` shows **26 rows** (config groups), not 33: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
-- **Config flag** — `tools.<config_key>`. Most tools key on their own name; both `webfetch` and `websearch` share `tools.web`; the file tools and `github` ship no default and are on unless set to `false`. `rubino tools` prints the effective state.
+- **Config flag** — `tools.<config_key>`. Most tools key on their own name; `webfetch`/`websearch` share `tools.web`; the delegation family shares `tools.task`; absent keys default to enabled. `rubino tools` prints the effective state per config group.
 - **Mode** — `plan` mode pares the registry down to read-only tools (no `edit`/`shell`/`git`/…); `default` and `yolo` expose everything (their difference is on the approval path).
 - **Approval** — see [security.md](security.md). Shell commands are confirmation-gated by default; a non-bypassable hardline floor blocks catastrophic commands regardless of mode.
 - **Workspace sandbox** — with `tools.workspace_strict: true` (default), write/edit/delete tools are confined to the workspace root (`terminal.cwd` or `Dir.pwd`).
@@ -251,11 +253,11 @@ Parameters: action, name, file_path, description, body
 
 ### task
 
-Delegate a sub-task to an isolated subagent run (default: a background subagent). Gated by `tools.task`. Subagents never receive the `task` tool themselves, so they can't spawn further subagents (no nesting).
+Delegate a sub-task to an isolated subagent run (default: a background subagent that returns a task id immediately; `background: false` runs it inline). Gated by `tools.task`. Subagents keep the `task` tool, so they CAN spawn their own subagents — scoped nesting, bounded by three caps enforced in one place (`BackgroundTasks#reserve`): `tasks.max_depth` (default 2), `tasks.max_children_per_node` (default 3), and `tasks.max_concurrent_total` (default 8). See [agents.md](agents.md).
 
 ```
-Risk: medium
-Parameters: agent, prompt, (background)
+Risk: low (the nested run's tools carry their own approval/risk gates)
+Parameters: subagent, prompt, (background)
 ```
 
 ### task_result
@@ -274,6 +276,42 @@ Stop a running background subagent (companion to `task`, mirrors `shell_kill`). 
 ```
 Risk: medium
 Parameters: task_id
+```
+
+### ask_parent
+
+Child→parent escalation: a subagent asks its parent a question it cannot resolve from its sealed prompt. `blocking: true` pauses the child until the answer arrives; `blocking: false` (default) lets it keep working and folds the answer in later as a note. The parent (agent or human) answers via `answer_child` / `/reply`. Only available to subagents — a top-level agent has no parent to ask. Gated by `tools.task`.
+
+```
+Risk: low
+Parameters: question, blocking
+```
+
+### steer
+
+Parent→child steering note: park a short note on one of YOUR OWN running subagents; it is folded into the child's context at its next turn boundary and persists (it changes the child's trajectory). Ownership-scoped at call time — only your direct children. The model counterpart of the human `/agents <id> steer "…"`. Gated by `tools.task`.
+
+```
+Risk: low
+Parameters: task_id, note
+```
+
+### probe
+
+Parent→child ephemeral peek: check on one of YOUR OWN running subagents without disturbing it (read-only — nothing is saved to the child). `live: false` (default) returns a free registry snapshot (status, tool count, last activity, recent lines); `live: true` runs a billed one-shot model peek over the child's transcript, budgeted per child (`tasks.max_live_probes_per_child`, default 5). The model counterpart of the human `/agents <id> probe "…"`. Gated by `tools.task`.
+
+```
+Risk: low
+Parameters: task_id, question, live
+```
+
+### answer_child
+
+Parent→child answer to an `ask_parent` question: delivers the answer into the asking child's context (unblocks a blocking ask; folds in for a non-blocking one). Ownership-scoped — only a direct child that is actually waiting. The model counterpart of the human `/reply <id> <answer>`. Gated by `tools.task`.
+
+```
+Risk: low
+Parameters: task_id, answer
 ```
 
 ---
