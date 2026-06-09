@@ -55,10 +55,13 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
 
     it "truncates a buffer wider than the row with a leading ellipsis" do
-      # avail = 40 - PROMPT.length - 1. Type more than that.
+      # avail = 40 - PROMPT.length - 1. Type more than that. The cursor is at the
+      # end, so the scroll-window keeps the tail in view with a leading "…"; the
+      # frame then re-homes (\r) and steps the caret right to park it. Read the
+      # VISIBLE segment (prompt + window) before that caret re-home.
       50.times { |i| composer.handle_key((97 + (i % 26)).chr) }
       last_frame = output.string.split("\r\e[2K").last
-      visible = last_frame.sub(PROMPT, "")
+      visible = last_frame.split("\r").first.sub(PROMPT, "")
       expect(visible.length).to be <= 40 - PROMPT.length - 1 + 1 # incl. the "…"
       expect(visible).to start_with("…")
     end
@@ -155,6 +158,238 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "drops a blank submit (only redraws, nothing queued)" do
       composer.handle_key("\r")
       expect(queue.drain).to eq([])
+    end
+  end
+
+  # Slice 1: cursor-aware editing. The buffer is edited at an internal cursor
+  # index, driven by arrows/Home/End/word-jump + insert/delete-at-cursor. Drive
+  # the CSI sequences the way the paste/Shift+Tab specs do: preload the bytes
+  # after ESC on the input IO, then call handle_key("\e").
+  describe "cursor-aware editing" do
+    def type(c, str)
+      str.each_char { |ch| c.handle_key(ch) }
+    end
+
+    def cursor(c) = c.instance_variable_get(:@cursor)
+
+    def esc_seq(c, bytes)
+      c.instance_variable_set(:@input, StringIO.new(bytes))
+      c.handle_key("\e")
+    end
+
+    it "inserts a typed char AT the cursor, not at the end" do
+      type(composer, "abc")
+      esc_seq(composer, "[D") # Left
+      esc_seq(composer, "[D") # Left → cursor between a and b
+      composer.handle_key("X")
+      expect(composer.buffer).to eq("aXbc")
+    end
+
+    it "←/→ move the cursor and Home/End jump to the ends" do
+      type(composer, "abcd")
+      esc_seq(composer, "[D") # Left → 3
+      expect(cursor(composer)).to eq(3)
+      esc_seq(composer, "[C") # Right → 4
+      expect(cursor(composer)).to eq(4)
+      esc_seq(composer, "OH") # SS3 Home → 0
+      expect(cursor(composer)).to eq(0)
+      esc_seq(composer, "OF") # SS3 End → 4
+      expect(cursor(composer)).to eq(4)
+    end
+
+    it "backspace deletes BEFORE the cursor mid-line" do
+      type(composer, "abc")
+      esc_seq(composer, "[D") # Left → between b and c
+      composer.handle_key("\b") # delete b
+      expect(composer.buffer).to eq("ac")
+    end
+
+    it "Delete key (ESC[3~) deletes AT the cursor (forward)" do
+      type(composer, "abc")
+      esc_seq(composer, "OH")  # Home → 0
+      esc_seq(composer, "[3~") # Delete → removes 'a'
+      expect(composer.buffer).to eq("bc")
+    end
+
+    it "Ctrl+D quits on an empty buffer and deletes forward otherwise" do
+      expect(composer.handle_key("\x04")).to eq(:quit)
+      type(composer, "ab")
+      composer.handle_key("\x01") # Ctrl+A → start
+      composer.handle_key("\x04") # delete 'a'
+      expect(composer.buffer).to eq("b")
+    end
+
+    it "Ctrl+A / Ctrl+E / Ctrl+B / Ctrl+F move like emacs" do
+      type(composer, "abc")
+      composer.handle_key("\x01") # start
+      expect(cursor(composer)).to eq(0)
+      composer.handle_key("\x06") # forward
+      expect(cursor(composer)).to eq(1)
+      composer.handle_key("\x05") # end
+      expect(cursor(composer)).to eq(3)
+      composer.handle_key("\x02") # back
+      expect(cursor(composer)).to eq(2)
+    end
+
+    it "Ctrl+K kills to end, Ctrl+U kills to start" do
+      type(composer, "hello world")
+      composer.handle_key("\x01")             # start
+      5.times { composer.handle_key("\x06") } # → after "hello"
+      composer.handle_key("\x0b")             # kill to end
+      expect(composer.buffer).to eq("hello")
+      composer.handle_key("\x15")             # kill to start
+      expect(composer.buffer).to eq("")
+    end
+
+    it "word-jump left/right (ESC b / ESC f) lands on word boundaries" do
+      type(composer, "alpha beta")
+      esc_seq(composer, "b") # ESC b → start of "beta" (6)
+      expect(cursor(composer)).to eq(6)
+      esc_seq(composer, "b") # ESC b → start of "alpha" (0)
+      expect(cursor(composer)).to eq(0)
+      esc_seq(composer, "f") # ESC f → skip "alpha" + space → 6
+      expect(cursor(composer)).to eq(6)
+    end
+
+    it "Ctrl+Left (ESC[1;5D) is a word-jump (modified arrow)" do
+      type(composer, "one two")
+      esc_seq(composer, "[1;5D") # Ctrl+Left → start of "two" (4)
+      expect(cursor(composer)).to eq(4)
+    end
+
+    it "is multi-byte safe: cursor and delete count codepoints, not bytes" do
+      type(composer, "aé中")
+      esc_seq(composer, "[D")   # Left → between é and 中
+      composer.handle_key("\b") # delete é
+      expect(composer.buffer).to eq("a中")
+    end
+  end
+
+  describe "↑/↓ history navigation" do
+    let(:store) { [] }
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output,
+                          history: Rubino::UI::InputHistory.new(store: store))
+    end
+
+    def arrow(c, final)
+      c.instance_variable_set(:@input, StringIO.new("[#{final}"))
+      c.handle_key("\e")
+    end
+
+    before do
+      "first".each_char { |ch| composer.handle_key(ch) }
+      composer.handle_key("\r")
+      "second".each_char { |ch| composer.handle_key(ch) }
+      composer.handle_key("\r")
+    end
+
+    it "↑ recalls the most recent entry, then older ones" do
+      arrow(composer, "A")
+      expect(composer.buffer).to eq("second")
+      arrow(composer, "A")
+      expect(composer.buffer).to eq("first")
+    end
+
+    it "↓ walks back toward the live draft" do
+      "dr".each_char { |ch| composer.handle_key(ch) }
+      arrow(composer, "A") # stashes "dr", shows "second"
+      arrow(composer, "B") # back to the draft
+      expect(composer.buffer).to eq("dr")
+    end
+
+    it "de-dups consecutive duplicate submits in history" do
+      "second".each_char { |ch| composer.handle_key(ch) } # same as last
+      composer.handle_key("\r")
+      expect(store).to eq(%w[first second]) # not [first second second]
+    end
+  end
+
+  describe "/command + @file completion menu" do
+    let(:source) do
+      Rubino::UI::CompletionSource.new(commands: %w[/help /exit /reasoning /reset])
+    end
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output,
+                          completion_source: source)
+    end
+
+    def tab(c) = c.handle_key("\t")
+
+    def esc(c)
+      c.instance_variable_set(:@input, StringIO.new("")) # lone ESC
+      c.handle_key("\e")
+    end
+
+    def arrow(c, final)
+      c.instance_variable_set(:@input, StringIO.new("[#{final}"))
+      c.handle_key("\e")
+    end
+
+    it "Tab opens a menu of matching slash commands" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      tab(composer)
+      expect(composer.menu_open?).to be(true)
+      expect(output.string).to include("/reasoning")
+      expect(output.string).to include("/reset")
+      expect(output.string).not_to include("/help")
+    end
+
+    it "Tab accepts the highlighted candidate (token replaced + trailing space)" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      tab(composer) # open
+      tab(composer) # accept the first (/reasoning)
+      expect(composer.buffer).to eq("/reasoning ")
+      expect(composer.menu_open?).to be(false)
+    end
+
+    it "↓ then Enter accepts the SECOND candidate" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      tab(composer)
+      arrow(composer, "B") # ↓ → /reset
+      composer.handle_key("\r")
+      expect(composer.buffer).to eq("/reset ")
+      expect(composer.menu_open?).to be(false)
+    end
+
+    it "Esc dismisses the menu IMMEDIATELY leaving exactly what was typed (D6)" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      tab(composer)
+      expect(composer.menu_open?).to be(true)
+      esc(composer)
+      expect(composer.menu_open?).to be(false)
+      expect(composer.buffer).to eq("/re") # no fused candidate, no fragment
+    end
+
+    it "dismiss-then-retype-then-submit is clean (the classic D6 corruption case)" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      tab(composer)
+      esc(composer)
+      "set".each_char { |ch| composer.handle_key(ch) } # "/reset" (no menu)
+      composer.handle_key("\r")
+      expect(queue.drain).to eq(["/reset"])
+    end
+
+    it "re-filters the open menu as more of the token is typed" do
+      "/r".each_char { |ch| composer.handle_key(ch) }
+      tab(composer) # menu: /reasoning /reset
+      "ea".each_char { |ch| composer.handle_key(ch) } # "/rea" → only /reasoning
+      expect(composer.menu_open?).to be(true)
+    end
+
+    it "closes the menu when the token stops matching anything" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      tab(composer)
+      composer.handle_key("z") # "/rez" → no candidates
+      expect(composer.menu_open?).to be(false)
+      expect(composer.buffer).to eq("/rez") # buffer intact
+    end
+
+    it "Tab on non-completable text is a no-op (no literal tab inserted)" do
+      "hello".each_char { |ch| composer.handle_key(ch) }
+      tab(composer)
+      expect(composer.menu_open?).to be(false)
+      expect(composer.buffer).to eq("hello")
     end
   end
 

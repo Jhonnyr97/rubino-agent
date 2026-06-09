@@ -2,6 +2,7 @@
 
 require "io/console"
 require "unicode/display_width"
+require "pastel"
 
 module Rubino
   module UI
@@ -74,17 +75,33 @@ module Rubino
       #   chip), which the composer adopts and redraws. The composer holds no mode
       #   knowledge itself. nil = Shift+Tab is a no-op.
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
-                     on_ctrl_o: nil, on_mode_cycle: nil)
+                     on_ctrl_o: nil, on_mode_cycle: nil,
+                     completion_source: nil, history: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
         @on_ctrl_o     = on_ctrl_o
         @on_mode_cycle = on_mode_cycle
+        # Shared completion discovery (slash commands + @file picker) extracted
+        # from LineInput. nil ⇒ the `/`+`@` completion menu is inert (steering /
+        # standalone use), so the composer degrades to a plain editor.
+        @completion    = completion_source
+        # History ring, backed by Reline::HISTORY by default for continuity with
+        # the old idle prompt. nil keeps a private ring (tests / standalone).
+        @history       = history || InputHistory.new
+        # Open completion menu state: nil when closed, else a Hash with the
+        # candidate :items, the :selected index, and the :token span being
+        # completed (so accept can splice the replacement at the cursor).
+        @menu          = nil
         @prompt      = prompt.to_s.empty? ? PROMPT : prompt
         # Visible width ignores ANSI color escapes so the one-row clamp math is
         # correct for a colored mode prompt.
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
         @buffer      = +""
+        # Insertion point, measured in CHARACTERS (codepoints) into @buffer.
+        # Always in 0..@buffer.length; the terminal cursor is parked here on
+        # every redraw. Replaces the old append-only model.
+        @cursor      = 0
         @partial     = +"" # live, un-committed streamed line shown above the prompt
         # Subagent CARD block (Variant A): zero or more collapsed live rows shown
         # ABOVE the streamed partial and the prompt, redrawn in place each frame.
@@ -273,23 +290,70 @@ module Rubino
       # The card rows currently shown (test/inspection helper).
       attr_reader :cards
 
+      # True when the /command + @file completion menu is open (inspection
+      # helper; the reader/specs check it to branch Tab/Enter/Esc handling).
+      def menu_open?
+        !@menu.nil?
+      end
+
       # Redraws the bottom input line from @buffer and parks the terminal cursor
-      # after the last typed char. The visible buffer is clamped to the terminal
-      # width (one row) — a longer line is shown left-truncated with a leading
-      # "…" so the caret stays put and our one-line model never desyncs. Must be
-      # called under @render (callers below already hold it).
+      # at the insertion point (@cursor). The visible buffer is clamped to the
+      # terminal width (one row): when it fits, the highlighted buffer is drawn
+      # whole and the caret moved to the cursor column; when it's wider than the
+      # row we scroll a WINDOW that keeps the cursor visible (a leading "…" marks
+      # text scrolled off the left, a trailing "…" text scrolled off the right),
+      # so editing mid-line never desyncs the one-row model. Must be called under
+      # @render (callers below already hold it).
       def draw_input
         avail = @cols - @prompt_width - 1
         avail = 1 if avail < 1
-        # Clamp by DISPLAY width (wide CJK/emoji = 2 cols), matching #clamp: a
-        # char-count clamp let a wide-glyph buffer render past the row and wrap,
-        # leaving residue and desyncing the one-row model.
-        shown = @buffer
-        if display_width(@buffer) > avail
-          shown = "…" + take_last_columns(@buffer, avail - 1)
+
+        chars  = @buffer.chars
+        cursor = @cursor.clamp(0, chars.length)
+
+        if display_width(@buffer) <= avail
+          # Whole buffer fits: draw it highlighted, then move the caret left from
+          # the line end to the cursor's display column.
+          @output.print("\r\e[2K#{@prompt}#{highlight_line(@buffer)}")
+          tail_cols = display_width(chars[cursor..].join)
+          @output.print("\e[#{tail_cols}D") if tail_cols.positive?
+        else
+          window, caret_col = scroll_window(chars, cursor, avail)
+          @output.print("\r\e[2K#{@prompt}#{window}")
+          # Park the caret: window starts at column @prompt_width; move to the
+          # cursor's column within it. We re-home with \r then step right so the
+          # math is independent of any trailing "…".
+          @output.print("\r")
+          @output.print("\e[#{@prompt_width + caret_col}C") if (@prompt_width + caret_col).positive?
         end
-        @output.print("\r\e[2K#{@prompt}#{shown}")
         @output.flush
+      end
+
+      # Builds the visible WINDOW of a buffer wider than the row, keeping the
+      # cursor in view. Returns [window_string, caret_display_col] where
+      # caret_display_col is the cursor's display column WITHIN the window
+      # (0-based). A leading/trailing "…" marks elided text and each costs one
+      # column. Plain text only (no token highlight): the leading `/`+`@` token
+      # has scrolled off by the time a line is this long, so highlighting a
+      # partial window would be both useless and miscolor mid-line content.
+      def scroll_window(chars, cursor, avail)
+        # Show as much as fits ENDING at the cursor (keep a column of right
+        # context when possible), reserving one column for a trailing "…".
+        lead_budget  = avail - 1               # leave room for a trailing "…"
+        right        = [cursor + 1, chars.length].min
+        # Walk left from the window's right edge until the slice fills the budget.
+        left = right
+        left -= 1 while left.positive? && display_width(chars[(left - 1)...right].join) <= (lead_budget - 1)
+        lead  = left.positive?
+        trail = right < chars.length
+        # Re-trim from the left for the leading "…" cost so the row never wraps.
+        room = avail - (lead ? 1 : 0) - (trail ? 1 : 0)
+        left += 1 while left < right && display_width(chars[left...right].join) > room
+
+        body = chars[left...right].join
+        window = "#{'…' if lead}#{body}#{'…' if trail}"
+        caret_col = (lead ? 1 : 0) + display_width(chars[left...cursor].join)
+        [window, caret_col]
       end
 
       # The current editable buffer (test/inspection helper).
@@ -298,32 +362,44 @@ module Rubino
       # Feeds a single character through the edit logic. Public so the PTY/unit
       # tests can drive editing without a live raw read. Returns :submit when the
       # key committed a line, :quit on EOF/empty-Ctrl+D, otherwise nil.
+      #
+      # The buffer is edited at @cursor (a codepoint index), so insert/delete and
+      # the arrow/Home/End/word-jump moves all act mid-line, not just at the end.
       def handle_key(ch)
         case ch
         when nil
           return :quit
         when "\r", "\n"
+          # Enter while a completion menu is open ACCEPTS the selection rather
+          # than submitting (matches the old Reline dropdown). Otherwise submit.
+          if menu_open?
+            accept_completion
+            return nil
+          end
           submit_line
           return :submit
-        when "", "\b" # DEL / Backspace
-          @render.synchronize do
-            @buffer.chop! # codepoint-aware → safe for multi-byte UTF-8
-            draw_input
-          end
+        when "\t" # Tab: accept the menu selection, or open the menu if a token is typed.
+          handle_tab
+        when "", "\b" # DEL / Backspace: delete the char BEFORE the cursor.
+          delete_back
+        when "\x04" # Ctrl+D: delete forward; on an empty buffer it's EOF/quit.
+          return :quit if @buffer.empty?
+
+          delete_forward
+        when "\x01" then move_to(0)              # Ctrl+A → line start
+        when "\x05" then move_to(@buffer.length) # Ctrl+E → line end
+        when "\x02" then move_by(-1)             # Ctrl+B → left
+        when "\x06" then move_by(1)              # Ctrl+F → right
+        when "\x0b" then kill_to_end             # Ctrl+K → delete to end of line
+        when "\x15" then kill_to_start           # Ctrl+U → delete to start of line
         when "\x0f" # Ctrl+O: reveal the last retained reasoning aside.
           @on_ctrl_o&.call
         when "\e"
-          # ESC: start of a CSI escape (arrow keys etc.). Swallow the rest of a
-          # short sequence so it never lands in the buffer. Live editing of these
-          # is deferred (see class docs).
+          # ESC: start of a CSI/SS3 escape (arrows, Home/End, word-jump,
+          # Shift+Tab, bracketed paste) OR a lone ESC that dismisses the menu.
           consume_escape_sequence
         else
-          if printable?(ch)
-            @render.synchronize do
-              @buffer << ch
-              draw_input
-            end
-          end
+          insert(ch) if printable?(ch)
           # Other control bytes (incl. \x03 Ctrl+C, which the kernel turns into
           # SIGINT before it reaches here under raw(intr: true)) are ignored.
         end
@@ -437,6 +513,13 @@ module Rubino
           @output.print("\r\e[2K#{clamp(card, @cols - 1)}\r\n")
           @live_rows_above += 1
         end
+        # The completion menu (when open) sits below the cards and above the
+        # streamed partial / prompt — a navigable list redrawn in place each
+        # frame, exactly like the card block, so it never scrolls or smears.
+        menu_rows.each do |row|
+          @output.print("\r\e[2K#{clamp(row, @cols - 1)}\r\n")
+          @live_rows_above += 1
+        end
         unless @partial.empty?
           @output.print("\r\e[2K#{clamp(@partial, @cols - 1)}\r\n")
           @live_rows_above += 1
@@ -496,16 +579,340 @@ module Rubino
       def submit_line
         line = nil
         @render.synchronize do
+          close_menu
           line = @buffer.dup
           @buffer.clear
-          draw_input
+          @cursor = 0
+          redraw # clears any open-menu rows above the prompt on submit
         end
         return if line.strip.empty?
 
+        @history.remember(line)
         @input_queue&.push(line)
         # Echo the captured line into scrollback so the keystrokes don't vanish
         # into the streaming output. Mirrors the old UI#queued affordance.
         print_above("queued ▸ #{line}")
+      end
+
+      # Redraw the prompt, repainting the FULL live region (cards + menu +
+      # partial) when anything lives above the prompt, else just the prompt row.
+      # Must be called under @render. This is what lets the completion menu —
+      # which renders ABOVE the prompt — appear/clear/track as it changes, the
+      # same way the streamed partial and the subagent cards do.
+      def redraw
+        if @menu || @cards.any? || !@partial.empty? || @live_rows_above.positive?
+          render_frame(committed: nil)
+        else
+          draw_input
+        end
+      end
+
+      # --- Cursor-aware editing primitives -------------------------------------
+      # All mutate @buffer at @cursor (a codepoint index, 0..length) under the
+      # render mutex and redraw. The menu is re-filtered after any buffer change
+      # so an open completion list tracks the typed token; history navigation is
+      # reset on any direct edit so a fresh ↑ starts from the newest entry.
+
+      # Insert printable text at the cursor (typed char or single-line paste).
+      def insert(str)
+        @render.synchronize do
+          chars = @buffer.chars
+          chars.insert(@cursor, *str.chars)
+          @buffer.replace(chars.join)
+          @cursor += str.chars.length
+          @history.reset!
+          refresh_menu
+          redraw
+        end
+      end
+
+      # Backspace: remove the char before the cursor.
+      def delete_back
+        @render.synchronize do
+          if @cursor.positive?
+            chars = @buffer.chars
+            chars.delete_at(@cursor - 1)
+            @buffer.replace(chars.join)
+            @cursor -= 1
+          end
+          @history.reset!
+          refresh_menu
+          redraw
+        end
+      end
+
+      # Delete-forward (Ctrl+D / the Delete key): remove the char AT the cursor.
+      def delete_forward
+        @render.synchronize do
+          chars = @buffer.chars
+          if @cursor < chars.length
+            chars.delete_at(@cursor)
+            @buffer.replace(chars.join)
+          end
+          @history.reset!
+          refresh_menu
+          redraw
+        end
+      end
+
+      # Delete from the cursor to the end of the line (Ctrl+K).
+      def kill_to_end
+        @render.synchronize do
+          @buffer.replace(@buffer.chars.first(@cursor).join)
+          @history.reset!
+          refresh_menu
+          redraw
+        end
+      end
+
+      # Delete from the start of the line to the cursor (Ctrl+U).
+      def kill_to_start
+        @render.synchronize do
+          @buffer.replace(@buffer.chars.drop(@cursor).join)
+          @cursor = 0
+          @history.reset!
+          refresh_menu
+          redraw
+        end
+      end
+
+      # Move the cursor by +delta+ codepoints, clamped to the buffer.
+      def move_by(delta)
+        @render.synchronize do
+          @cursor = (@cursor + delta).clamp(0, @buffer.length)
+          redraw
+        end
+      end
+
+      # Move the cursor to an absolute codepoint index, clamped.
+      def move_to(index)
+        @render.synchronize do
+          @cursor = index.clamp(0, @buffer.length)
+          redraw
+        end
+      end
+
+      # Word-jump LEFT (Alt/Ctrl + ←): skip any whitespace immediately left, then
+      # the word characters, landing at the start of the previous word.
+      def word_left
+        @render.synchronize do
+          chars = @buffer.chars
+          i = @cursor
+          i -= 1 while i.positive? && chars[i - 1] =~ /\s/
+          i -= 1 while i.positive? && chars[i - 1] !~ /\s/
+          @cursor = i
+          redraw
+        end
+      end
+
+      # Word-jump RIGHT (Alt/Ctrl + →): skip the current word then trailing
+      # whitespace, landing at the start of the next word.
+      def word_right
+        @render.synchronize do
+          chars = @buffer.chars
+          i = @cursor
+          i += 1 while i < chars.length && chars[i] !~ /\s/
+          i += 1 while i < chars.length && chars[i] =~ /\s/
+          @cursor = i
+          redraw
+        end
+      end
+
+      # ↑: navigate the completion menu when open, else walk history back to an
+      # older entry (cursor parked at its end). No-op when there's nothing older.
+      def history_up
+        return menu_up if menu_open?
+
+        @render.synchronize do
+          entry = @history.up(@buffer)
+          next if entry.nil?
+
+          @buffer.replace(entry)
+          @cursor = @buffer.length
+          redraw
+        end
+      end
+
+      # ↓: navigate the menu when open, else walk history forward (newer entry,
+      # or back to the stashed draft). No-op when not navigating history.
+      def history_down
+        return menu_down if menu_open?
+
+        @render.synchronize do
+          entry = @history.down(@buffer)
+          next if entry.nil?
+
+          @buffer.replace(entry)
+          @cursor = @buffer.length
+          redraw
+        end
+      end
+
+      # Cyan the leading /command / @mention token (shared with the old prompt).
+      # Plain when no completion source is wired.
+      def highlight_line(line)
+        return line.to_s unless @completion
+
+        @completion.highlight_line(line.to_s)
+      end
+
+      # --- /command + @file completion menu ------------------------------------
+      # An inline navigable list rendered in the multi-row region above the
+      # prompt (the same substrate as the subagent cards). Candidates come from
+      # the shared CompletionSource. Tab opens/accepts, ↑/↓ navigate, Enter
+      # accepts, ESC dismisses immediately leaving the typed buffer untouched.
+
+      # Most candidate rows shown at once (the list scrolls within this window
+      # for longer candidate sets so the prompt is never pushed off-screen).
+      MENU_MAX_ROWS = 8
+
+      # Tab: with the menu open, accept the highlighted candidate; otherwise try
+      # to open the menu for the token under the cursor. A plain Tab on
+      # non-completable text is a no-op (we never insert a literal tab).
+      def handle_tab
+        if menu_open?
+          accept_completion
+        else
+          open_menu
+        end
+      end
+
+      # The completion TOKEN under the cursor: the leading run of non-space chars
+      # from the start of the line up to the cursor, when it begins with / or @.
+      # Returns [token, start_index] or nil when the cursor isn't on a token.
+      def current_token
+        return nil unless @completion
+
+        prefix = @buffer.chars.first(@cursor).join
+        # Only the FIRST token on the line completes (a leading /command, or an
+        # @mention anywhere the run back to a space starts with @).
+        m = prefix.match(%r{(?:\A|\s)([/@]\S*)\z})
+        return nil unless m
+
+        [m[1], m.begin(1)]
+      end
+
+      # Open the menu for the current token if it has candidates.
+      def open_menu
+        tok = current_token
+        return unless tok
+
+        token, start = tok
+        items = candidates(token)
+        return if items.empty?
+
+        @render.synchronize do
+          @menu = { items: items, selected: 0, top: 0, start: start, token_len: token.length }
+          redraw
+        end
+      end
+
+      # Re-filter an already-open menu after a buffer edit so the list tracks the
+      # typed token; close it when the token no longer completes or has no
+      # candidates. No-op when the menu is closed (typing doesn't auto-open it —
+      # Tab does, matching a deliberate, discoverable completion gesture).
+      def refresh_menu
+        return unless @menu
+
+        tok = current_token
+        if tok.nil?
+          @menu = nil
+          return
+        end
+        token, start = tok
+        items = candidates(token)
+        if items.empty?
+          @menu = nil
+        else
+          sel = @menu[:selected].clamp(0, items.size - 1)
+          @menu = { items: items, selected: sel, top: menu_top(sel, items.size),
+                    start: start, token_len: token.length }
+        end
+      end
+
+      def candidates(token)
+        @completion.candidates_for(token)
+      rescue StandardError
+        []
+      end
+
+      # ↑/↓ within the menu (routed from history_up/down when the menu is open).
+      def menu_up
+        @render.synchronize do
+          @menu[:selected] = [@menu[:selected] - 1, 0].max
+          @menu[:top] = menu_top(@menu[:selected], @menu[:items].size)
+          redraw
+        end
+      end
+
+      def menu_down
+        @render.synchronize do
+          @menu[:selected] = [@menu[:selected] + 1, @menu[:items].size - 1].min
+          @menu[:top] = menu_top(@menu[:selected], @menu[:items].size)
+          redraw
+        end
+      end
+
+      # Accept the highlighted candidate: splice it in for the token span, add a
+      # trailing space (so the next token starts clean, like Reline's append
+      # char), park the cursor after it, and close the menu.
+      def accept_completion
+        return unless @menu
+
+        @render.synchronize do
+          choice = @menu[:items][@menu[:selected]].to_s
+          start  = @menu[:start]
+          len    = @menu[:token_len]
+          chars  = @buffer.chars
+          replacement = "#{choice} "
+          chars[start, len] = replacement.chars
+          @buffer.replace(chars.join)
+          @cursor = start + replacement.chars.length
+          @menu = nil
+          redraw # repaint to CLEAR the now-closed menu rows above the prompt
+        end
+      end
+
+      def close_menu
+        @menu = nil
+      end
+
+      # The visible window's top index so the selected row stays in view.
+      def menu_top(selected, size)
+        return 0 if size <= MENU_MAX_ROWS
+
+        top = @menu ? @menu[:top] : 0
+        top = selected if selected < top
+        top = selected - MENU_MAX_ROWS + 1 if selected >= top + MENU_MAX_ROWS
+        top.clamp(0, size - MENU_MAX_ROWS)
+      end
+
+      # The rendered menu rows (the slice in view, the selected one marked with a
+      # cyan ❯ and inverse highlight), or [] when no menu is open. House grammar:
+      # a dim aside bar leads each row.
+      def menu_rows
+        return [] unless @menu
+
+        items = @menu[:items]
+        top   = @menu[:top]
+        sel   = @menu[:selected]
+        slice = items[top, MENU_MAX_ROWS] || []
+        rows = slice.each_with_index.map do |item, i|
+          idx = top + i
+          if idx == sel
+            "#{menu_pastel.cyan('❯')} #{menu_pastel.inverse(" #{item} ")}"
+          else
+            "#{menu_pastel.dim('┊')} #{item}"
+          end
+        end
+        if items.size > MENU_MAX_ROWS
+          rows << menu_pastel.dim("┄ #{sel + 1}/#{items.size} ┄")
+        end
+        rows
+      end
+
+      def menu_pastel
+        @menu_pastel ||= Pastel.new
       end
 
       # Handle a bracketed-paste body. A SINGLE-LINE paste is appended to the
@@ -525,40 +932,103 @@ module Rubino
           n = stripped.count("\n") + 1
           print_above("queued ▸ #{stripped.lines.first.to_s.chomp} … (#{n} lines pasted)")
         else
-          @render.synchronize do
-            @buffer << normalized
-            draw_input
-          end
+          insert(normalized) # at the cursor, like fast typing
         end
       end
 
-      # After ESC, consume a CSI sequence ("[" + params + final byte in
-      # 0x40..0x7E) so arrow keys etc. don't leak into the buffer. Non-blocking
-      # reads so a lone ESC doesn't hang. No-op when reads aren't available
-      # (tests drive handle_key directly).
+      # After ESC, parse and ACT on the escape sequence so arrows / Home / End /
+      # word-jump / Delete drive the cursor instead of leaking into the buffer.
+      # Non-blocking reads so a lone ESC doesn't hang. A lone ESC (no following
+      # bytes) dismisses an open completion menu immediately — the composer owns
+      # its reader, so there is no keyseq_timeout race (D6).
       #
-      # A bracketed-paste START (ESC[200~) is special: the bytes that follow are
-      # PASTED, not typed, so we accumulate them verbatim (newlines included)
-      # until the END marker (ESC[201~) and submit the whole block at once —
-      # preserving multi-line structure instead of letting each \n fire a
-      # half-line submit (L1).
+      # Three escape families are handled:
+      #   * CSI  — ESC '[' params final  (arrows, Home/End, Delete, Shift+Tab,
+      #            xterm modified keys like ESC[1;5C for Ctrl+→, bracketed paste)
+      #   * SS3  — ESC 'O' final          (application-cursor arrows / Home/End)
+      #   * Meta — ESC b / ESC f          (Alt+b / Alt+f word-jump on many terms)
       def consume_escape_sequence
         nxt = read_nonblock_char
-        return unless nxt == "["
+        case nxt
+        when nil      then dismiss_menu_or_noop # lone ESC
+        when "["      then dispatch_csi(read_csi)
+        when "O"      then dispatch_final(read_nonblock_char, modifier: 1)
+        when "b"      then word_left
+        when "f"      then word_right
+        end
+      end
 
+      # Reads the remainder of a CSI sequence: params (digits + ';') up to and
+      # including the final byte in 0x40..0x7E. Returns the raw param/final
+      # string, e.g. "A", "3~", "1;5C".
+      def read_csi
         seq = +""
         loop do
           c = read_nonblock_char
           break if c.nil?
 
           seq << c
-          # Final byte of a CSI sequence terminates it.
           break if c.ord.between?(0x40, 0x7E)
         end
-        if seq == "200~"
-          consume_paste
-        elsif seq == "Z"
-          cycle_mode # Shift+Tab arrives as ESC[Z
+        seq
+      end
+
+      # Acts on a parsed CSI sequence. Bracketed paste and Shift+Tab are special;
+      # everything else splits into "params;…final" so a modified arrow
+      # (ESC[1;5C = Ctrl+→) routes to the same move as the bare arrow plus the
+      # modifier that promotes it to a word-jump.
+      def dispatch_csi(seq)
+        case seq
+        when "200~" then return consume_paste
+        when "Z"    then return cycle_mode # Shift+Tab arrives as ESC[Z
+        end
+
+        final = seq[-1]
+        params = seq[0...-1].split(";")
+        # The modifier param is the 2nd field for xterm "1;mod<final>" form; the
+        # numpad/edit keys (Home/End/Delete) carry "<n>;mod~". Default mod 1.
+        modifier = (params[1] || params[0] || "1").to_i
+        modifier = 1 if modifier.zero?
+        if final == "~"
+          dispatch_tilde(params.first.to_i, modifier)
+        else
+          dispatch_final(final, modifier: modifier)
+        end
+      end
+
+      # Final-byte cursor keys (and SS3 arrows). A modifier > 1 (Ctrl=5, Alt=3,
+      # Shift=2, etc.) promotes ←/→ to a word-jump, matching how terminals encode
+      # Ctrl/Alt + arrow.
+      def dispatch_final(final, modifier:)
+        word = modifier > 1
+        case final
+        when "A" then history_up           # ↑
+        when "B" then history_down         # ↓
+        when "C" then word ? word_right : move_by(1)   # →
+        when "D" then word ? word_left : move_by(-1)   # ←
+        when "H" then move_to(0)           # Home
+        when "F" then move_to(@buffer.length) # End
+        end
+      end
+
+      # Tilde-terminated edit keys: 1/7 = Home, 4/8 = End, 3 = Delete-forward.
+      def dispatch_tilde(code, _modifier)
+        case code
+        when 1, 7 then move_to(0)
+        when 4, 8 then move_to(@buffer.length)
+        when 3    then delete_forward
+        end
+      end
+
+      # Lone ESC: dismiss an open completion menu (immediate — no keyseq_timeout),
+      # leaving the buffer exactly as the user typed it (no fused candidate). When
+      # no menu is open it's a harmless no-op.
+      def dismiss_menu_or_noop
+        return unless menu_open?
+
+        @render.synchronize do
+          close_menu
+          redraw # repaint to CLEAR the now-closed menu rows above the prompt
         end
       end
 
@@ -574,7 +1044,7 @@ module Rubino
         @render.synchronize do
           @prompt = new_prompt.to_s.empty? ? PROMPT : new_prompt.to_s
           @prompt_width = @prompt.gsub(ANSI_RE, "").length
-          draw_input
+          redraw
         end
       end
 
@@ -683,6 +1153,7 @@ module Rubino
         @live_rows_above = 0
         @partial = +""
         @cards = []
+        @menu = nil
         @output.flush
       end
 
