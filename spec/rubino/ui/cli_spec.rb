@@ -36,12 +36,138 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to match(/┌─/)
     end
 
-    it "streams thinking text dimmed" do
+    it "buffers thinking text instead of raw-printing it (bug #2)" do
       out = capture_stdout do
         ui.stream(type: :thinking, text: "musing")
+      end
+      # Reasoning is NEVER raw-printed — it accumulates in the buffer so the
+      # collapse cue / full aside / ctrl-o reveal can render it in house style.
+      expect(out).not_to include("musing")
+      expect(ui.instance_variable_get(:@reasoning_buffer)).to eq("musing")
+    end
+
+    it "collapses buffered reasoning into a dim cue when the answer arrives" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      out = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "musing")
+        ui.stream(type: :content, text: "hello")
         ui.stream_end
       end
-      expect(out).to include("musing")
+      expect(out).to match(/┄ ✻ thought for \d+s · ctrl-o to show ┄/)
+      expect(out).to include("hello")
+      expect(out).not_to include("musing")
+    end
+
+    it "renders reasoning as a dim ┊ aside in full mode" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "full")
+      out = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "Let me check the failing test first.\n")
+        ui.stream(type: :content, text: "done")
+        ui.stream_end
+      end
+      expect(out).to match(/┄ thinking ┄/)
+      expect(out).to include("┊  Let me check the failing test first.")
+      # A shown aside is append-only scrollback that can't be un-shown, so its
+      # close line carries NO toggle promise (neither "to hide" nor "to show").
+      expect(out).to match(/┄ thought for \d+s ┄/)
+      expect(out).not_to include("ctrl-o to hide")
+      expect(out).not_to include("ctrl-o to show")
+      expect(out).to include("done")
+    end
+
+    it "commits nothing for reasoning in hidden mode" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "hidden")
+      out = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "secret musing")
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(out).not_to include("thought for")
+      expect(out).not_to include("secret musing")
+      expect(out).to include("answer")
+    end
+
+    it "reveals the last retained reasoning buffer via ctrl-o (one-way)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      # Collapse a reasoning phase (collapsed mode) so the buffer is retained.
+      capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "Let me check the failing test first.\n")
+        ui.stream(type: :content, text: "ok")
+        ui.stream_end
+      end
+      out = capture_stdout { ui.reveal_last_reasoning }
+      expect(out).to match(/┄ thinking ┄/)
+      expect(out).to include("┊  Let me check the failing test first.")
+      # The reveal JUST showed the reasoning, so its close line must NOT promise
+      # "to show" (redundant) nor "to hide" (a scrollback aside can't be hidden).
+      expect(out).to match(/┄ thought for \d+s ┄/)
+      expect(out).not_to include("ctrl-o to show")
+      expect(out).not_to include("ctrl-o to hide")
+    end
+
+    it "ctrl-o reveal is idempotent — a second press is a SILENT no-op (D2)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "first thought.\n")
+        ui.stream(type: :content, text: "ok")
+        ui.stream_end
+      end
+      first  = capture_stdout { ui.reveal_last_reasoning }
+      second = capture_stdout { ui.reveal_last_reasoning }
+      third  = capture_stdout { ui.reveal_last_reasoning }
+      expect(first).to include("┊  first thought.")
+      # Every subsequent press prints NOTHING — no aside, and no ack line
+      # ("┄ already shown ┄" was scrollback spam; D2 removed it). True silence.
+      expect(second).not_to include("┊  first thought.")
+      expect(second).not_to match(/┄ thinking ┄/)
+      expect(second).not_to include("already shown")
+      expect(second).to eq("")
+      expect(third).to eq("")
+    end
+
+    it "a NEW retained thought resets the reveal guard so its first ctrl-o works" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "thought one.\n")
+        ui.stream(type: :content, text: "a")
+        ui.stream_end
+      end
+      capture_stdout { ui.reveal_last_reasoning } # reveal first thought
+      # A fresh turn retains a NEW thought — the guard resets.
+      capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "thought two.\n")
+        ui.stream(type: :content, text: "b")
+        ui.stream_end
+      end
+      out = capture_stdout { ui.reveal_last_reasoning }
+      expect(out).to include("┊  thought two.")
+      expect(out).not_to include("┄ already shown ┄")
+    end
+
+    it "ctrl-o reveal is a no-op when nothing is retained" do
+      expect { ui.reveal_last_reasoning }.not_to output.to_stdout
+    end
+
+    it "acknowledges hiding reasoning with an explanatory line (→ hidden)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      out = capture_stdout { ui.reasoning_changed(:hidden, previous: :full) }
+      expect(out).to include("┄ reasoning hidden — won't be shown (ctrl-o or /reasoning to bring it back) ┄")
+      expect(out).not_to include("full → hidden")
+    end
+
+    it "keeps the terse arrow for transitions that are not → hidden" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      out = capture_stdout { ui.reasoning_changed(:full, previous: :collapsed) }
+      expect(out).to include("┄ reasoning collapsed → full ┄")
     end
 
     it "clears thinking indicator when first content chunk arrives" do
@@ -54,6 +180,37 @@ RSpec.describe Rubino::UI::CLI do
 
     it "ignores empty chunk text" do
       expect { ui.stream(type: :content, text: "") }.not_to output.to_stdout
+    end
+
+    it "animates the thinking row through #live and stops the timer cleanly" do
+      # A live-capable stdout double drives the animated path (not the static
+      # plain-mode print). The timer thread must start, then be joined/killed by
+      # clear_thinking_indicator with no leak.
+      live = Class.new(StringIO) do
+        def live(str) = print(str)
+      end.new
+      old = $stdout
+      $stdout = live
+      begin
+        ui.thinking_started
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_a(Thread)
+        sleep 0.15 # let at least one frame paint
+        ui.send(:clear_thinking_indicator)
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+        expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+        expect(live.string).to match(/thinking…/)
+      ensure
+        $stdout = old
+      end
+    end
+
+    it "thinking_started/clear are safe to call repeatedly" do
+      expect do
+        ui.thinking_started
+        ui.thinking_started
+        ui.send(:clear_thinking_indicator)
+        ui.send(:clear_thinking_indicator)
+      end.not_to raise_error
     end
 
     it "handles multi-line streamed text" do

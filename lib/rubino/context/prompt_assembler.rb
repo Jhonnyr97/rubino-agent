@@ -195,6 +195,13 @@ module Rubino
         skills_index = skills_index_block
         parts << skills_index if skills_index
 
+        # The user-PINNED active skill (the `/skills <name>` picker): force-load
+        # its full SKILL.md into the prompt EACH turn so the model actually uses
+        # it, not just shows a chip. Sits after the skills index so the pinned
+        # skill is the most concrete, last-read instruction in the skills region.
+        active_skill = active_skill_block
+        parts << active_skill if active_skill
+
         project_ctx = load_project_context
         parts << "[Project Context]\n#{project_ctx}" if project_ctx
 
@@ -225,6 +232,45 @@ module Rubino
             include_project_local: project_local_trusted?
           )
         ).render
+      rescue StandardError
+        nil
+      end
+
+      # The user-PINNED active skill block. When the user has activated a skill
+      # via the `/skills <name>` picker (Rubino::ActiveSkill), we force-load its
+      # FULL SKILL.md content into the system prompt every turn and prepend a
+      # strong directive naming it — so the model treats it as active and follows
+      # it without having to discover/load it via the `skill` tool. This is the
+      # load-bearing half of the picker: the chip is cosmetic, THIS is what makes
+      # the skill actually take effect.
+      #
+      # Gated on the skills feature being enabled (same gate as the index). A
+      # pinned-but-now-missing/disabled skill (deleted on disk, or toggled off)
+      # silently drops out rather than injecting an empty block. Never raises —
+      # a load failure must not take down prompt assembly.
+      def active_skill_block
+        return nil unless skills_feature_enabled?
+
+        name = Rubino::ActiveSkill.current
+        return nil unless name
+
+        registry = Skills::Registry.new(
+          config: @config,
+          include_project_local: project_local_trusted?
+        )
+        return nil unless registry.enabled?(name)
+
+        content = registry.load_skill(name)
+        return nil if content.nil? || content.to_s.strip.empty?
+
+        <<~PROMPT.strip
+          ## Active skill (pinned): #{name}
+          The user has PINNED the "#{name}" skill active for this session. You MUST follow its instructions for this and every subsequent turn until it is changed. Its full content is loaded below — treat it as authoritative; you do not need to load it again with the `skill` tool.
+
+          <active_skill name="#{name}">
+          #{content.to_s.strip}
+          </active_skill>
+        PROMPT
       rescue StandardError
         nil
       end

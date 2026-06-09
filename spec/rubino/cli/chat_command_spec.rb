@@ -24,39 +24,27 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # Regression: a previous version did `Commands::BuiltIns::NAMES` from
   # inside Rubino::CLI::ChatCommand. Zeitwerk resolves `Commands` to
   # `Rubino::CLI::Commands` (the Thor class) there, which raises
-  # NameError on first interactive boot. The chat_command suite used to
-  # mock setup_readline_completions, so this slipped past. The mock is
-  # gone; this spec exercises the real call.
-  describe "#setup_readline_completions" do
-    it "configures completion without raising (Zeitwerk constant resolution)" do
+  # NameError on first interactive boot. build_completion_source exercises
+  # the real constant resolution.
+  describe "#build_completion_source" do
+    it "builds a CompletionSource without raising (Zeitwerk constant resolution)" do
       cmd_loader = Rubino::Commands::Loader.new
-      line_input = Rubino::UI::LineInput.new
       expect {
-        described_class.new({}).send(:setup_readline_completions, cmd_loader, line_input)
+        described_class.new({}).send(:build_completion_source, cmd_loader)
       }.not_to raise_error
     end
 
-    it "feeds built-in slash commands to the line input" do
+    it "feeds built-in slash commands into the completion source" do
       cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
-      line_input = instance_double(Rubino::UI::LineInput, configure_completion: nil)
-
-      described_class.new({}).send(:setup_readline_completions, cmd_loader, line_input)
-
-      expect(line_input).to have_received(:configure_completion).with(
-        commands: include("/help", "/exit"),
-        files: kind_of(Proc)
-      )
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+      expect(source.candidates_for("/")).to include("/help", "/exit")
     end
 
-    it "passes a lazy files proc resolving to the workspace cwd" do
+    it "uses a lazy files proc resolving to the workspace primary root" do
       cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
-      captured   = nil
-      line_input = instance_double(Rubino::UI::LineInput)
-      allow(line_input).to receive(:configure_completion) { |**kw| captured = kw[:files] }
-
-      described_class.new({}).send(:setup_readline_completions, cmd_loader, line_input)
-
-      expect(captured.call).to eq(Rubino.configuration.dig("terminal", "cwd") || Dir.pwd)
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+      files_proc = source.instance_variable_get(:@files_root_proc)
+      expect(files_proc.call).to eq(Rubino::Workspace.primary_root)
     end
   end
 
@@ -297,9 +285,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     before do
       allow(Rubino::Session::Repository).to receive(:new).and_return(repo)
       # Drive the REPL: first prompt read exits immediately.
-      allow_any_instance_of(Rubino::UI::LineInput).to receive(:readline).and_return("/exit")
-      # No TTY composer in the test environment.
+      # No TTY composer in the test environment → the cooked fallback reads the
+      # next line; make it submit /exit so the REPL loop terminates.
       allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+      allow_any_instance_of(described_class).to receive(:cooked_input).and_return("/exit")
       allow(fake_runner).to receive(:end_session!)
       allow(fake_runner).to receive(:cancel!)
       # Avoid touching git in the banner.
@@ -440,20 +429,58 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "pre-fills the next prompt with the pending draft and consumes it once" do
       cmd.instance_variable_set(:@pending_draft, "half typed")
-      line_input = instance_double(Rubino::UI::LineInput)
-      expect(line_input).to receive(:readline).with(anything, initial: "half typed").and_return("done")
+      # Non-TTY → cooked fallback: it pre-pends the carried-over draft to the
+      # typed line.
+      allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+      allow($stdin).to receive(:gets).and_return(" rest\n")
+      allow($stdout).to receive(:print)
+      allow($stdout).to receive(:flush)
 
-      expect(cmd.send(:next_input, input_queue, line_input)).to eq("done")
+      expect(cmd.send(:next_input, input_queue)).to eq("half typed rest")
       expect(cmd.instance_variable_get(:@pending_draft)).to be_nil
     end
 
     it "prefers queued (submitted) lines over the draft, leaving the draft pending" do
       cmd.instance_variable_set(:@pending_draft, "draft")
       input_queue.push("submitted line")
-      line_input = instance_double(Rubino::UI::LineInput)
 
-      expect(cmd.send(:next_input, input_queue, line_input)).to eq("submitted line")
+      expect(cmd.send(:next_input, input_queue)).to eq("submitted line")
       expect(cmd.instance_variable_get(:@pending_draft)).to eq("draft")
+    end
+  end
+
+  # Interrupt-by-default / queue plumbing: a line that came off the input queue
+  # (typed during the previous turn — interrupt-by-default Enter, Alt+Enter, or
+  # /queued) is flagged so run_turn commits its normal "<prompt><line>" echo and
+  # removes any "⏳ queued:" indicator. An idle submit (read_idle_line) is NOT
+  # flagged, so it isn't double-echoed.
+  describe "queued-prompt commit (#input_from_queue / #commit_queued_prompt)" do
+    let(:cmd) { described_class.new({}) }
+    let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+    it "flags a drained-from-queue line for run_turn to echo" do
+      input_queue.push("interrupt-sent")
+      cmd.send(:next_input, input_queue)
+      expect(cmd.instance_variable_get(:@input_from_queue)).to eq(["interrupt-sent"])
+    end
+
+    it "commit_queued_prompt echoes <prompt><line> and clears the matching indicator" do
+      cmd.instance_variable_set(:@input_from_queue, ["do later"])
+      composer = instance_spy(Rubino::UI::BottomComposer)
+      allow(cmd).to receive(:build_prompt).and_return("default ❯ ")
+
+      cmd.send(:commit_queued_prompt, composer)
+
+      expect(composer).to have_received(:commit_queued).with("do later")
+      expect(composer).to have_received(:print_above).with("default ❯ do later")
+      expect(cmd.instance_variable_get(:@input_from_queue)).to be_nil
+    end
+
+    it "is a no-op when the prompt was an idle submit (not flagged)" do
+      cmd.instance_variable_set(:@input_from_queue, nil)
+      composer = instance_spy(Rubino::UI::BottomComposer)
+      cmd.send(:commit_queued_prompt, composer)
+      expect(composer).not_to have_received(:print_above)
     end
   end
 
@@ -661,132 +688,75 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     describe "#next_input (turn-boundary consumption)" do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
-      let(:line_input)  { instance_double(Rubino::UI::LineInput) }
 
-      it "consumes queued lines as the next prompt INSTEAD of readline" do
-        input_queue.push("steered message")
-        allow(line_input).to receive(:readline)
-
-        result = cmd.send(:next_input, input_queue, line_input)
-
-        expect(result).to eq("steered message")
-        # A fresh readline must NOT be called when the queue is non-empty.
-        expect(line_input).not_to have_received(:readline)
+      before do
+        # Non-TTY in the suite → the cooked fallback handles the idle read.
+        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
       end
 
-      it "coalesces multiple queued lines into one next-turn message" do
+      it "consumes queued lines as the next prompt INSTEAD of reading a fresh line" do
+        input_queue.push("steered message")
+        expect(cmd).not_to receive(:cooked_input)
+
+        expect(cmd.send(:next_input, input_queue)).to eq("steered message")
+      end
+
+      it "runs each queued line as its OWN turn, in submission order (B4)" do
         input_queue.push("first")
         input_queue.push("second")
-        allow(line_input).to receive(:readline)
+        expect(cmd).not_to receive(:cooked_input)
 
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("first\nsecond")
-        expect(line_input).not_to have_received(:readline)
+        # First boundary takes only "first" (NOT "first\nsecond"); "second"
+        # stays parked and is taken as its own next turn.
+        expect(cmd.send(:next_input, input_queue)).to eq("first")
+        expect(cmd.send(:next_input, input_queue)).to eq("second")
+        expect(input_queue.pending?).to be(false)
       end
 
-      it "falls back to readline when the queue is empty" do
-        allow(line_input).to receive(:readline).and_return("typed at prompt")
+      it "reads a fresh line when the queue is empty" do
+        allow(cmd).to receive(:cooked_input).and_return("typed at prompt")
 
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("typed at prompt")
-        expect(line_input).to have_received(:readline)
+        expect(cmd.send(:next_input, input_queue)).to eq("typed at prompt")
+        expect(cmd).to have_received(:cooked_input)
       end
     end
 
-    # F1 — the idle prompt hosts the collapsed live cards while a background
-    # subagent runs. The bug was that #set_subagent_cards is a no-op between
-    # turns (no BottomComposer.current), so a `task` running ~15-20s ENTIRELY
-    # between turns showed zero cards in a real session. The fix routes the idle
-    # line read through a BottomComposer (so BottomComposer.current is set and
-    # the same child repaints land above the idle prompt), and falls back to the
-    # plain Reline prompt once the last child finishes.
-    describe "#next_input idle-prompt cards (F1)" do
+    # The composer is the single idle input path on a TTY: it pins the prompt,
+    # owns its raw reader, and hosts the collapsed subagent card region (F1) when
+    # children are live. Off a TTY (the suite), #next_input takes the cooked
+    # fallback. These specs assert the TTY routing chooses the composer.
+    describe "#next_input idle composer routing (TTY)" do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
-      let(:line_input)  { instance_double(Rubino::UI::LineInput) }
       let(:registry)    { Rubino::Tools::BackgroundTasks.instance }
 
       before do
         Rubino::Tools::BackgroundTasks.reset!
-        # Both ends look like a TTY so the idle-card path is eligible.
+        # Both ends look like a TTY so the composer idle path is eligible.
         allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
       end
 
       after { Rubino::Tools::BackgroundTasks.reset! }
 
-      it "reads the next line through the idle-card composer (NOT plain readline) while a child runs" do
+      it "reads the next line through the bottom composer (NOT the cooked fallback)" do
+        expect(cmd).to receive(:read_idle_line).and_return("typed at the composer")
+        expect(cmd).not_to receive(:cooked_input)
+
+        expect(cmd.send(:next_input, input_queue)).to eq("typed at the composer")
+      end
+
+      it "still routes through the composer while a background child runs (hosts the cards)" do
         registry.reserve(subagent: "explore", prompt: "scan the repo")
-        allow(line_input).to receive(:readline)
-        expect(cmd).to receive(:read_idle_line_with_cards).and_return("typed with cards up")
+        expect(cmd).to receive(:read_idle_line).and_return("typed with cards up")
 
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("typed with cards up")
-        # The card path replaced — did not fall through to — the plain prompt.
-        expect(line_input).not_to have_received(:readline)
+        expect(cmd.send(:next_input, input_queue)).to eq("typed with cards up")
       end
 
-      it "falls back to the plain Reline prompt when NO background child is running" do
-        allow(line_input).to receive(:readline).and_return("plain line")
-        expect(cmd).not_to receive(:read_idle_line_with_cards)
+      it "uses the cooked fallback when NOT a TTY" do
+        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+        allow(cmd).to receive(:cooked_input).and_return("plain line")
+        expect(cmd).not_to receive(:read_idle_line)
 
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("plain line")
-        expect(line_input).to have_received(:readline)
-      end
-
-      it "falls back to the plain prompt (carrying the draft) when the idle composer hands back nil" do
-        registry.reserve(subagent: "general", prompt: "do work")
-        # nil ⇒ the last child finished before the user submitted; the half-typed
-        # draft was stashed for the fallback prompt.
-        allow(cmd).to receive(:read_idle_line_with_cards) do
-          cmd.instance_variable_set(:@pending_draft, "half typed at idle")
-          nil
-        end
-        allow(line_input).to receive(:readline).and_return("eventually typed")
-
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("eventually typed")
-        expect(line_input).to have_received(:readline).with(anything, initial: "half typed at idle")
-      end
-
-      # F1-residual: the half-typed idle draft was INTERMITTENTLY lost (~1/3) when
-      # the last child finished AND a long completion turn intervened. Mechanism:
-      # the child's completion notice drains on the SAME InputQueue the idle
-      # composer polls, so #read_idle_line_with_cards returns the NOTICE (not nil),
-      # a completion turn runs, and only THEN does the draft pre-fill the fallback
-      # prompt. The draft must survive that whole detour. This spec forces exactly
-      # that ordering deterministically (no sleeps/threads) and asserts the draft
-      # is preserved into @pending_draft and pre-fills the eventual prompt.
-      it "preserves the idle draft across a completion turn (completion notice + long turn)" do
-        registry.reserve(subagent: "explore", prompt: "scan")
-
-        # The idle reader deterministically captures the half-typed buffer into
-        # @pending_draft (its real #ensure does composer.buffer -> @pending_draft)
-        # and hands back the child's completion NOTICE as the next line — exactly
-        # what happens when the notice wins the race onto the shared queue.
-        allow(cmd).to receive(:read_idle_line_with_cards) do
-          cmd.instance_variable_set(:@pending_draft, "half typed survivor")
-          "[background-task] Task sa_x completed."
-        end
-
-        # First boundary: the notice is returned and becomes the completion turn.
-        notice = cmd.send(:next_input, input_queue, line_input)
-        expect(notice).to start_with("[background-task]")
-        # The draft was NOT clobbered by surfacing the notice.
-        expect(cmd.instance_variable_get(:@pending_draft)).to eq("half typed survivor")
-
-        # The (possibly long) completion turn runs. Its turn-scoped composer is
-        # empty (user typed nothing during it), so #stop_composer must NOT clobber
-        # the parked draft.
-        composer = Rubino::UI::BottomComposer.new(
-          input_queue: input_queue, input: StringIO.new, output: StringIO.new
-        )
-        cmd.send(:stop_composer, composer, $stdout)
-        expect(cmd.instance_variable_get(:@pending_draft)).to eq("half typed survivor")
-
-        # Second boundary: child is done, no notice queued -> the draft must
-        # pre-fill the fallback Reline prompt (not vanish).
-        Rubino::Tools::BackgroundTasks.reset!
-        allow(line_input).to receive(:readline).and_return("resumed message")
-
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("resumed message")
-        expect(line_input).to have_received(:readline)
-          .with(anything, initial: "half typed survivor")
-        expect(cmd.instance_variable_get(:@pending_draft)).to be_nil
+        expect(cmd.send(:next_input, input_queue)).to eq("plain line")
       end
     end
 
@@ -843,11 +813,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     # End-to-end of the idle reader against a REAL BottomComposer (non-TTY
-    # StringIO so no raw termios): a child is running, the user "types" a line
-    # via the composer's keystroke handler, and read_idle_line_with_cards returns
-    # it — with the live cards having been painted above the prompt. Proves the
-    # region renders at the idle prompt AND that a submit returns the line.
-    describe "#read_idle_line_with_cards (real composer, idle child running)" do
+    # StringIO so no raw termios): the user "types" a line via the composer's
+    # keystroke handler and #read_idle_line returns it — with the live subagent
+    # cards (F1) painted above the prompt while a child runs. Proves the region
+    # renders at the idle prompt AND that a submit returns the line.
+    describe "#read_idle_line (real composer)" do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
       let(:registry)    { Rubino::Tools::BackgroundTasks.instance }
       let(:output)      { StringIO.new }
@@ -867,40 +837,104 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       after { Rubino::Tools::BackgroundTasks.reset! }
 
-      it "paints the live cards above the idle prompt and returns the submitted line" do
-        registry.reserve(subagent: "explore", prompt: "scan")
-
-        # Drive a user submit from another thread once the reader is parked, then
-        # let the poll loop pick it up off the queue.
+      it "returns the submitted line typed at the idle prompt" do
         typist = Thread.new do
           sleep 0.05
           "hi there".each_char { |c| fake_composer.handle_key(c) }
           fake_composer.handle_key("\r")
         end
 
-        line = cmd.send(:read_idle_line_with_cards, input_queue, nil)
+        line = cmd.send(:read_idle_line, input_queue, nil)
         typist.join
 
         expect(line).to eq("hi there")
-        # A card was rendered above the idle prompt (the F1 fix): the running
-        # child's collapsed row hit the composer's output.
+      end
+
+      it "paints the live subagent cards above the idle prompt while a child runs (F1)" do
+        registry.reserve(subagent: "explore", prompt: "scan")
+
+        typist = Thread.new do
+          sleep 0.05
+          "go".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
+        end
+
+        cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        # The running child's collapsed row hit the composer's output.
         expect(output.string).to include("explore")
         expect(output.string).to include("running")
       end
 
-      it "returns nil (handing control back) when the last child finishes before a submit" do
-        entry = registry.reserve(subagent: "general", prompt: "work")
-        # The child finishes mid-wait: drop it from the registry so the poll loop
-        # sees no live child and hands control back to the plain prompt.
-        finisher = Thread.new do
+      it "seeds a carried-over draft into the composer before reading" do
+        typist = Thread.new do
           sleep 0.05
-          registry.remove(entry.id)
+          " world".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
         end
 
-        line = cmd.send(:read_idle_line_with_cards, input_queue, nil)
-        finisher.join
+        line = cmd.send(:read_idle_line, input_queue, "hello")
+        typist.join
 
-        expect(line).to be_nil
+        expect(line).to eq("hello world")
+      end
+
+      # BH-2 wiring: a real SIGINT at the idle prompt is routed THROUGH the
+      # composer (not the session-end / default handler), so a typed draft is
+      # never silently discarded. With text in the buffer, the first Ctrl+C
+      # CLEARS the line and the read keeps going — proven by then submitting a
+      # fresh line, which returns normally. The draft is gone (cleared), the
+      # session did NOT exit.
+      it "idle Ctrl+C with a non-empty draft clears the line and does NOT exit" do
+        typist = Thread.new do
+          sleep 0.05
+          "to be cleared".each_char { |c| fake_composer.handle_key(c) }
+          Process.kill("INT", Process.pid) # the real idle Ctrl+C
+          sleep 0.1                          # let the loop drain the trap + clear
+          expect(fake_composer.buffer).to eq("") # draft cleared, not lost to exit
+          "after clear".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
+        end
+
+        line = cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        expect(line).to eq("after clear") # read continued past the Ctrl+C
+      end
+
+      # With an EMPTY buffer, a SINGLE idle Ctrl+C must NOT exit — it arms the
+      # transient hint and keeps reading. Proven by then submitting a line.
+      it "idle Ctrl+C on an empty buffer does NOT exit on the first tap" do
+        typist = Thread.new do
+          sleep 0.05
+          Process.kill("INT", Process.pid) # first (and only) Ctrl+C, empty buffer
+          sleep 0.1
+          "still alive".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
+        end
+
+        line = cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        expect(line).to eq("still alive")
+        expect(output.string).to include("press Ctrl+C again to exit")
+      end
+
+      # Two empty Ctrl+C in quick succession DO exit cleanly: #read_idle_line
+      # returns nil (which #run_interactive treats as end-of-session).
+      it "a double idle Ctrl+C on an empty buffer exits (returns nil)" do
+        typist = Thread.new do
+          sleep 0.05
+          Process.kill("INT", Process.pid)
+          sleep 0.1
+          Process.kill("INT", Process.pid) # second tap within the window
+        end
+
+        line = cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        expect(line).to be_nil # exit
       end
     end
 
@@ -910,7 +944,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
     describe "#run_turn reader → next_input round-trip" do
       let(:runner)      { instance_double(Rubino::Agent::Runner) }
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
-      let(:line_input)  { instance_double(Rubino::UI::LineInput) }
 
       it "input parked during the turn becomes the next prompt" do
         # Simulate the reader: while the turn 'runs', a line lands in the queue.
@@ -920,14 +953,14 @@ RSpec.describe Rubino::CLI::ChatCommand do
           latch << :done
           "ok"
         end
-        allow(line_input).to receive(:readline)
 
         cmd.send(:run_turn, runner, "hello", ui, input_queue)
         latch.pop
 
-        # Next boundary: queued text is consumed, readline is skipped.
-        expect(cmd.send(:next_input, input_queue, line_input)).to eq("while it worked")
-        expect(line_input).not_to have_received(:readline)
+        # Next boundary: queued text is consumed, no fresh read happens.
+        expect(cmd).not_to receive(:cooked_input)
+        expect(cmd).not_to receive(:read_idle_line)
+        expect(cmd.send(:next_input, input_queue)).to eq("while it worked")
       end
     end
 
@@ -949,13 +982,72 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       it "start_composer returns [nil, nil] for non-TTY stdin" do
         allow($stdin).to receive(:tty?).and_return(false)
-        expect(cmd.send(:start_composer, input_queue)).to eq([nil, nil])
+        expect(cmd.send(:start_composer, input_queue, runner)).to eq([nil, nil])
       end
 
       it "start_composer returns [nil, nil] when no queue is wired" do
         allow($stdin).to receive(:tty?).and_return(true)
         allow($stdout).to receive(:tty?).and_return(true)
-        expect(cmd.send(:start_composer, nil)).to eq([nil, nil])
+        expect(cmd.send(:start_composer, nil, runner)).to eq([nil, nil])
+      end
+    end
+
+    # BH-1 (the crash that shipped): the in-turn composer's on_interrupt lambda
+    # is wired by the REAL #start_composer, where `runner` was NOT in scope (a
+    # parameter of #run_turn, no @runner ivar). So the instant the user pressed
+    # Enter during a turn — the documented interrupt gesture — the lambda raised
+    # `NameError: undefined local variable or method 'runner'`, dumping a
+    # backtrace into the chat, NOT cancelling the turn, and killing the reader.
+    #
+    # The existing bottom_composer specs inject their OWN on_interrupt stub, so
+    # they never exercised this wiring — which is why it shipped broken. This
+    # drives the REAL ChatCommand seam: build the composer via #start_composer
+    # (the production wiring), then submit a line via the composer's keystroke
+    # handler while a turn is active, and assert the interrupt resolves `runner`
+    # and calls #cancel! with NO NameError.
+    describe "interrupt-by-default wiring (BH-1)" do
+      let(:runner)      { instance_double(Rubino::Agent::Runner, run: "ok") }
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+      before do
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:winsize).and_return([24, 80])
+        # No real raw reader thread / termios: the test drives keystrokes
+        # synchronously through the composer's #handle_key instead.
+        allow_any_instance_of(Rubino::UI::BottomComposer)
+          .to receive(:start_reader).and_return(Thread.new { nil })
+        allow($stdin).to receive(:cooked!)
+        allow(runner).to receive(:cancel!)
+      end
+
+      # Drive the WHOLE production seam: #run_turn builds the composer via the
+      # real #start_composer and runs the runner. We stand in for the reader by
+      # pressing Enter (the documented interrupt gesture) mid-turn on the SAME
+      # composer #start_composer wired — so the real on_interrupt lambda fires.
+      # Against the buggy code this raised `NameError: undefined local variable
+      # or method 'runner'` (BH-1); after the fix it resolves `runner` and
+      # cancels. NO hand-built on_interrupt stub anywhere — that is the whole
+      # point (the prior specs stubbed it and never caught the crash).
+      it "an Enter-during-turn submit resolves `runner` and calls cancel! (no NameError)" do
+        raised = nil
+        allow(runner).to receive(:run) do
+          composer = Rubino::UI::BottomComposer.current
+          composer.begin_turn
+          "interrupt me".each_char { |ch| composer.handle_key(ch) }
+          begin
+            composer.handle_key("\r") # fires the REAL on_interrupt lambda
+          rescue NameError => e
+            raised = e # capture so the turn still unwinds and we can assert
+          end
+          "ok"
+        end
+
+        cmd.send(:run_turn, runner, "hello", ui, input_queue)
+
+        expect(raised).to be_nil, "on_interrupt raised: #{raised&.message}" # BH-1
+        expect(runner).to have_received(:cancel!)        # the turn was cancelled
+        expect(input_queue.shift).to eq("interrupt me")  # line parked to run next
       end
     end
 

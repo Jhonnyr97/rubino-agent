@@ -49,7 +49,7 @@ module Rubino
 
           write_skill(candidate)
         rescue StandardError => e
-          warn "DistillSkillJob: #{e.class}: #{e.message}"
+          Rubino.logger.warn(event: "jobs.distill_skill.error", error_class: e.class.name, message: e.message)
           nil
         end
 

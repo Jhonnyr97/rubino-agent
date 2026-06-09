@@ -103,6 +103,16 @@ module Rubino
               next
             end
 
+            # User cancellation that arrived MID-STREAM may not surface as a raise:
+            # once a chunk has flowed the adapter RETURNS the buffered (possibly
+            # empty) partial instead of raising, so a Ctrl+C right as the stream
+            # drained lands here as an "empty" response. Re-check the cancel token
+            # BEFORE validation so the interrupt is terminal — otherwise the empty
+            # partial is classified :empty_response and the recovery ladder prints
+            # a spurious "Empty response — retrying (1/2)" before the cancel is
+            # acknowledged (D4). The interrupt is the correct terminal outcome.
+            @cancel_token&.check!
+
             ok, reason = @validator.valid?(response)
 
             # Structurally invalid AND not an empty turn (nil / interrupted

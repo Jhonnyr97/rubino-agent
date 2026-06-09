@@ -129,8 +129,10 @@ module Rubino
           rescue Rubino::Interrupted
             # The streaming callback (or the per-iteration check above)
             # observed cancellation. Close any open stream box on the UI
-            # and bail out — Lifecycle will not persist a turn that never
-            # completed, but the user already saw the partial output.
+            # (commits the partial answer streamed so far) and bail out — the
+            # standardized `⎿ interrupted` marker is appended once by the Runner's
+            # rescue, right after this kept partial. Lifecycle will not persist a
+            # turn that never completed, but the user already saw the partial.
             @ui.stream_end if streaming?
             raise
           end

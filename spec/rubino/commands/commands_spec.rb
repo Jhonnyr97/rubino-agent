@@ -563,19 +563,20 @@ RSpec.describe "ChatCommand slash command integration" do
     allow(Rubino::Commands::Executor).to receive(:new).and_return(fake_executor)
     allow(Rubino).to receive(:database).and_return(db)
     allow(db).to receive(:healthy?).and_return(true)
-    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:setup_readline_completions)
+    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:build_completion_source)
     Rubino.ui = null_ui
   end
 
-  # Simulates interactive input sequence by stubbing readline_input
+  # Simulates an interactive input sequence by stubbing the idle line read
+  # (#next_input — the single seam the REPL pulls each prompt from), avoiding the
+  # raw-mode composer / Reline entirely in tests.
   def with_input(*inputs)
     call_count = -1
-    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:readline_input) do
+    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:next_input) do
       call_count += 1
       inputs[call_count]
     end
-    # Also stub setup_readline_completions to avoid Readline issues in test
-    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:setup_readline_completions)
+    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:build_completion_source)
   end
 
   describe "slash command routing in interactive mode" do

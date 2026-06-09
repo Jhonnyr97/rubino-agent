@@ -40,6 +40,27 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
     end
 
+    it "appends a dim (skill: <name>) segment when a skill is active" do
+      Rubino::ActiveSkill.set("ruby-expert")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default (skill: ruby-expert) ❯ ")
+    ensure
+      Rubino::ActiveSkill.reset!
+    end
+
+    it "drops the skill segment when no skill is active" do
+      Rubino::ActiveSkill.reset!
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+    end
+
+    it "composes the skill segment alongside a non-default mode" do
+      Rubino::Modes.set(:yolo)
+      Rubino::ActiveSkill.set("react-pro")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo (skill: react-pro) ❯ ")
+    ensure
+      Rubino::Modes.set(:default)
+      Rubino::ActiveSkill.reset!
+    end
+
     it "colours :default dim, :plan cyan, :yolo bold yellow" do
       pastel = Pastel.new(enabled: true)
       cmd.instance_variable_set(:@pastel, pastel)
@@ -59,5 +80,61 @@ RSpec.describe Rubino::CLI::ChatCommand do
     ensure
       Rubino::Modes.set(:default)
     end
+  end
+
+  describe "#cycle_mode (Shift+Tab)" do
+    def strip_ansi(s) = s.gsub(/\e\[[0-9;]*m/, "")
+
+    it "cycles default→plan→yolo→default, persisting via Modes" do
+      Rubino::Modes.set(:default)
+      cmd.send(:cycle_mode)
+      expect(Rubino::Modes.current).to eq(:plan)
+      cmd.send(:cycle_mode)
+      expect(Rubino::Modes.current).to eq(:yolo)
+      cmd.send(:cycle_mode)
+      expect(Rubino::Modes.current).to eq(:default)
+    ensure
+      Rubino::Modes.set(:default)
+    end
+
+    it "returns the freshly-built prompt chip and prints the transition footer" do
+      Rubino::Modes.set(:default)
+      out = capture_stdout { @new_prompt = cmd.send(:cycle_mode) }
+      expect(strip_ansi(@new_prompt)).to eq("plan ❯ ")
+      expect(strip_ansi(out)).to include("┄ mode · plan — #{Rubino::Modes.description(:plan)}, shift+tab to cycle ┄")
+    ensure
+      Rubino::Modes.set(:default)
+    end
+
+    # D2/D3: with a live composer the confirmation is a TRANSIENT toast routed
+    # through composer#announce (live region, never committed), NOT print_above.
+    # So cycling N times never stacks scrollback banners — each press just
+    # REPLACES the transient line; only the prompt chip reflects the mode.
+    it "shows the confirmation via the composer's transient #announce (no committed scrollback)" do
+      Rubino::Modes.set(:default)
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      announced = []
+      allow(composer).to receive(:announce) { |s| announced << s }
+      # If the implementation ever regressed to committing the banner, this would
+      # catch it: print_above must NOT be used for the mode confirmation.
+      allow(composer).to receive(:print_above) { raise "mode banner must not be committed via print_above" }
+
+      cmd.send(:cycle_mode) # → plan
+      cmd.send(:cycle_mode) # → yolo
+      expect(strip_ansi(announced.last)).to include("mode · yolo")
+      expect(announced.size).to eq(2) # one transient toast per press, replaced not stacked
+    ensure
+      Rubino::Modes.set(:default)
+    end
+  end
+
+  def capture_stdout
+    old = $stdout
+    $stdout = StringIO.new
+    yield
+    $stdout.string
+  ensure
+    $stdout = old
   end
 end

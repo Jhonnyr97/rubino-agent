@@ -156,7 +156,7 @@ module Rubino
         emit = lambda do |type, text|
           next if text.nil? || text.empty?
           buffered << text if type == :content
-          next if type == :thinking && !show_reasoning?
+          next if type == :thinking && reasoning_hidden?
 
           begin
             block.call({ type: type, text: text, message_id: message_block_id })
@@ -494,12 +494,16 @@ module Rubino
       end
 
       # Thinking/reasoning budget in tokens. 0 / nil disables thinking entirely.
-      # providers.<name>.thinking_budget wins, then model.thinking_budget, then
-      # a medium default (8000 — the same value the reference THINKING_BUDGET maps
-      # "medium" to). Only meaningful for the anthropic-compatible path; other
-      # providers ignore with_thinking or never see it (we still set it, ruby_llm
-      # only renders thinking for providers that support it).
+      # thinking.effort wins when set (off→0, low→4000, medium→8000, high→16000);
+      # otherwise providers.<name>.thinking_budget, then model.thinking_budget,
+      # then a medium default (8000 — the same value the reference THINKING_BUDGET
+      # maps "medium" to). Only meaningful for the anthropic-compatible path;
+      # other providers ignore with_thinking or never see it (we still set it,
+      # ruby_llm only renders thinking for providers that support it).
       def thinking_budget
+        effort = Config::ReasoningPrefs.effort(@config)
+        return Config::ReasoningPrefs.effort_budget(effort).to_i if effort
+
         raw = provider_cfg.key?("thinking_budget") ? provider_cfg["thinking_budget"] : nil
         raw = @config.dig("model", "thinking_budget") if raw.nil?
         raw = 8000 if raw.nil?
@@ -543,9 +547,11 @@ module Rubino
         provider_cfg["anthropic_compatible"] == true
       end
 
-      # True when display.show_reasoning is enabled — streams thinking tokens.
-      def show_reasoning?
-        @config.dig("display", "show_reasoning") == true
+      # True when reasoning is suppressed at the adapter gate. Only the "hidden"
+      # render mode drops :thinking chunks; "collapsed" and "full" both let them
+      # through so the UI can buffer them (collapse cue / full aside).
+      def reasoning_hidden?
+        Config::ReasoningPrefs.mode(@config) == :hidden
       end
 
       # ── Streaming resilience helpers (issues #12, #22) ────────────────────
@@ -584,7 +590,7 @@ module Rubino
           api_key:        ENV["BEDROCK_API_KEY"],
           region:         ENV["BEDROCK_REGION"] || "us-east-1",
           model_id:       @model_id,
-          show_reasoning: show_reasoning?,
+          show_reasoning: !reasoning_hidden?,
           event_bus:      @event_bus
         )
       end

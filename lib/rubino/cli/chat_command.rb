@@ -162,9 +162,15 @@ module Rubino
 
         cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
         cmd_loader   = Rubino::Commands::Loader.new
-        line_input   = Rubino::UI::LineInput.new
 
-        setup_readline_completions(cmd_loader, line_input)
+        # The bottom composer is now the SINGLE input path (idle AND in-turn): one
+        # pinned-bottom editor with full editing parity, so output/reasoning/
+        # footers commit ABOVE the prompt and out-of-band keys can't smear the
+        # stream. Build its shared completion source + history once; #next_input
+        # routes the idle prompt through a composer wired with them. A plain
+        # cooked readline remains the fallback for non-TTY / piped / -q input.
+        @completion_source = build_completion_source(cmd_loader)
+        @input_history     = Rubino::UI::InputHistory.new
 
         if resuming_session?
           # On a bare-chat auto-resume (#99) tell the user, clearly and once,
@@ -184,6 +190,11 @@ module Rubino
         # no copy/paste — instead of blocking on a fresh readline.
         input_queue = Rubino::Interaction::InputQueue.new
 
+        # Reset the shared explicit-queue stack for this interactive session (see
+        # #pending_queued): live "⏳ queued: <msg>" rows the composers render and
+        # the loop commits as normal messages when their turn runs.
+        @pending_queued = []
+
         # Keep structured JSON log lines OUT of the raw-mode TUI (#125): for the
         # whole interactive session the logger writes to a file in the logs dir
         # instead of the terminal $stdout the renderer owns. A warn/info event
@@ -196,7 +207,7 @@ module Rubino
         interacted = false
         begin
           loop do
-            input = next_input(input_queue, line_input)
+            input = next_input(input_queue)
             break if input.nil? || exit_command?(input)
             next if input.strip.empty?
 
@@ -319,6 +330,26 @@ module Rubino
         nil
       end
 
+      # Install the idle-prompt SIGINT trap (BH-2). The block is the whole
+      # handler body and MUST be trap-safe — the caller passes one that only
+      # flips a plain flag (no Mutex, no I/O), exactly like the during-turn INT
+      # trap. Returns the previous handler so #restore_idle_int can put it back.
+      # nil (no trap installed) on a platform without SIGINT.
+      def trap_idle_int(&handler)
+        Signal.trap("INT", &handler)
+      rescue ArgumentError
+        nil
+      end
+
+      # Restore whatever INT handler was in place before the idle read armed its
+      # own (the session-end / default handler), so the trap never leaks past the
+      # idle prompt into a turn (which installs its own double-tap INT trap).
+      def restore_idle_int(prev)
+        Signal.trap("INT", prev || "DEFAULT")
+      rescue ArgumentError
+        nil
+      end
+
       # Routes the structured logger to a file for the interactive session so
       # JSON log lines never reach the terminal $stdout the TUI renders into
       # (#125). Returns the previous sink IO to restore on exit; nil (no-op,
@@ -345,46 +376,54 @@ module Rubino
         nil
       end
 
+      # Shared stack of EXPLICITLY-queued messages (Alt+Enter / "/queued"),
+      # rendered as live "⏳ queued: <msg>" rows above whichever composer is
+      # current (idle or in-turn) and removed — the item committed as a normal
+      # "<prompt><msg>" message — when its turn actually runs (see #run_turn).
+      # Memoized so it survives the per-turn composer teardown AND so unit tests
+      # that drive #read_idle_line / #start_composer directly (without going
+      # through #run_interactive) still get a real list, not nil.
+      def pending_queued
+        @pending_queued ||= []
+      end
+
       # Next prompt for the REPL. If the user typed while the previous turn
       # ran, those lines were parked in the InputQueue; consume them as the
-      # next prompt INSTEAD of blocking on a fresh readline. Multiple lines are
-      # coalesced (newline-joined) into one next-turn user message — the MVP
-      # keeps steering at the turn boundary, not mid-tool. When nothing was
-      # queued, fall back to the normal readline prompt.
-      def next_input(input_queue, line_input)
-        queued = input_queue.drain
-        return queued.join("\n") unless queued.empty?
+      # next prompt INSTEAD of blocking on a fresh readline. Each parked line is
+      # taken ONE at a time (FIFO) and run as its OWN turn (B4) — an
+      # interrupt-by-default Enter, an Alt+Enter, or a "/queued" each get their
+      # own turn in submission order, never coalesced into a single
+      # newline-joined message. The remaining queued items stay parked (their
+      # "⏳ queued:" indicators remain) and each runs on a later #next_input.
+      # When nothing is queued, fall back to the normal readline prompt.
+      def next_input(input_queue)
+        # Take the OLDEST parked line (FIFO). Mark it so #run_turn commits the
+        # normal "<prompt><line>" echo (and clears any "⏳ queued:" indicator)
+        # when this line runs. The rest stay queued for their own later turns.
+        queued = input_queue.shift
+        unless queued.nil?
+          @input_from_queue = [queued]
+          return queued
+        end
+        @input_from_queue = nil
 
         # Carry over any draft the user typed into the bottom composer during the
-        # previous turn but never submitted (no Enter): the composer is torn down
-        # at turn end, so without this the in-progress text would vanish. Consume
-        # it once — the next cooked prompt starts empty again.
+        # previous turn but never submitted (no Enter): the turn-scoped composer
+        # is torn down at turn end, so without this the in-progress text would
+        # vanish. Consume it once — the next idle prompt starts empty again.
         draft = @pending_draft
         @pending_draft = nil
 
-        # F1: a `task` is background-by-default, so the model ends its turn the
-        # instant it gets the handle and the child runs ~15-20s ENTIRELY BETWEEN
-        # turns — at THIS idle prompt. The turn-scoped composer is already torn
-        # down here, so the collapsed live cards (driven by the child EventBus
-        # taps → #set_subagent_cards, which key off BottomComposer.current) had
-        # nowhere to render and were never seen in a real session. Host them at
-        # the idle prompt too: while any background child is live AND both ends
-        # are a TTY, read the next line through a BottomComposer that owns the
-        # card region, so the same child repaints land above the prompt and
-        # update in place. The moment the last child finishes the region clears
-        # and we fall back to the normal Reline prompt (carrying any draft).
-        if background_children_live? && UI::BottomComposer.active?
-          line = read_idle_line_with_cards(input_queue, draft)
-          return line unless line.nil?
-
-          # The card composer handed control back because the children finished
-          # (not because the user submitted): carry the draft into the normal
-          # prompt below so nothing the user typed is lost.
-          draft = @pending_draft
-          @pending_draft = nil
+        # The bottom composer is the single idle input path on a real TTY: it
+        # pins the prompt at the bottom, owns its own raw reader (so keys can't
+        # smear the stream), redraws the mode chip LIVE on Shift+Tab, and hosts
+        # the background-subagent card region (F1) when children are live. The
+        # plain cooked readline is the fallback for non-TTY / piped / -q input.
+        if UI::BottomComposer.active?
+          read_idle_line(input_queue, draft)
+        else
+          cooked_input(build_prompt, draft)
         end
-
-        readline_input(line_input, build_prompt, initial: draft)
       end
 
       # True when at least one background subagent (the `task` tool's default)
@@ -403,58 +442,105 @@ module Rubino
       # covers the quiet gaps.
       IDLE_CARD_TICK = 1.0
 
-      # Reads the user's next line at the IDLE prompt while background subagents
-      # run, hosting the collapsed live cards above it (F1). Reuses the SAME
-      # machinery a parent turn uses: a BottomComposer (so BottomComposer.current
-      # is set and the child EventBus taps' #set_subagent_cards repaints land in
-      # its card region), the registry snapshot, and the render mutex + explicit
-      # row-count clear #129 added.
+      # Reads the user's next line at the IDLE prompt through the bottom composer
+      # — the single input path. The composer pins the prompt at the bottom and
+      # owns its own raw reader (full editing parity: arrows/Home/End/word-jump,
+      # ↑↓ history, /command + @file completion menu with immediate-Esc dismiss,
+      # cyan token highlight), redraws the mode chip LIVE on Shift+Tab, reveals
+      # reasoning on Ctrl+O, and hosts the collapsed subagent card region (F1)
+      # when background children are live — repaints land above the prompt and
+      # update in place, serialized through the composer's render mutex.
       #
-      # Returns the submitted line (already pushed by the composer's reader and
-      # drained here), or nil when the LAST child finished before the user
-      # submitted — in which case the caller falls back to the normal Reline
-      # prompt, and any half-typed draft is preserved in @pending_draft.
-      #
-      # Concurrency: the card region is repainted from child worker threads while
-      # the user may be typing. Every repaint and every keystroke serialize on the
-      # composer's render mutex (the exact path the #129 verifier confirmed safe
-      # for 3 cards + typing + resize), so a tick or a child event can never
-      # corrupt the input buffer or desync the frame.
-      def read_idle_line_with_cards(input_queue, draft)
-        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt)
+      # We seed the carried-over draft, then BLOCK until the user submits a line,
+      # polling the same InputQueue the composer's reader pushes into (reusing the
+      # turn loop's hand-off). A half-typed, un-submitted draft is preserved in
+      # @pending_draft on teardown so it survives into the next prompt.
+      def read_idle_line(input_queue, draft)
+        composer = UI::BottomComposer.new(
+          input_queue:       input_queue,
+          prompt:            build_prompt,
+          on_ctrl_o:         ctrl_o_handler,
+          on_mode_cycle:     mode_cycle_handler,
+          completion_source: @completion_source,
+          history:           @input_history,
+          echo:              :prompt,
+          pending_queued:    pending_queued
+        )
         composer.start
-        # Seed the carried-over draft char-by-char so backspace stays
-        # codepoint-granular (handle_key chops one codepoint at a time).
-        draft.to_s.each_char { |c| composer.handle_key(c) } if draft && !draft.to_s.empty?
+        seed_draft(composer, draft)
         paint_idle_cards
-        ticker = start_idle_card_ticker(composer)
+        ticker = background_children_live? ? start_idle_card_ticker(composer) : nil
 
-        # Block until the user submits a line OR the last child finishes. The
-        # composer's own raw reader pushes the submitted line into the queue; we
-        # poll the queue (not a bespoke condvar) so this reuses the same hand-off
-        # the turn loop already drains.
+        # Gate idle Ctrl+C through the composer (BH-2): the composer runs under
+        # raw(intr: true), so a single Ctrl+C still raises SIGINT — which would
+        # otherwise hit the session-end / default handler and quit, silently
+        # discarding a typed draft. Trap INT here so a draft is never nuked: the
+        # trap body stays trap-safe (flip a flag only — Mutex#lock is forbidden
+        # in a trap, Ruby #14222), and the poll loop below performs the actual
+        # clear/hint/exit through the composer OUTSIDE trap context. Restored in
+        # the ensure so the trap never leaks past the idle read.
+        int_pending = false
+        prev_int    = trap_idle_int { int_pending = true }
+
         line = nil
         loop do
-          queued = input_queue.drain
-          unless queued.empty?
-            line = queued.join("\n")
+          # Drained the idle Ctrl+C the trap recorded: clear the draft (non-empty)
+          # or arm/confirm the two-tap exit (empty). Done here, not in the trap,
+          # so the render mutex is safe.
+          if int_pending
+            int_pending = false
+            break if composer.idle_interrupt(window: DOUBLE_TAP_SECONDS) == :exit
+          end
+
+          # Take ONE parked line (FIFO) so several items queued at idle each run
+          # as their OWN turn (B4), in submission order — never coalesced. The
+          # rest stay parked for the next #next_input / loop pass.
+          queued = input_queue.shift
+          unless queued.nil?
+            # An idle plain submit already echoed "<prompt><line>" at submit time;
+            # only an EXPLICITLY-queued item (Alt+Enter / "/queued" at idle, which
+            # carries a "⏳ queued:" indicator and no echo yet) needs run_turn to
+            # commit it as a normal message. Flag just that so a plain submit is
+            # never double-echoed.
+            @input_from_queue = pending_queued.include?(queued) ? [queued] : nil
+            line = queued
             break
           end
-          break unless background_children_live?
-
           sleep(0.05)
         end
         line
       ensure
+        restore_idle_int(prev_int)
         ticker&.kill
         ticker&.join
-        # Preserve a half-typed, un-submitted draft so the fallback prompt
-        # pre-fills it (same contract as the turn-scoped composer teardown).
         if composer
           pending = composer.buffer.to_s
           @pending_draft = pending unless pending.strip.empty?
         end
         composer&.stop
+      end
+
+      # Seed a carried-over draft into the composer char-by-char so cursor/delete
+      # stay codepoint-granular (handle_key edits one codepoint at a time).
+      def seed_draft(composer, draft)
+        return if draft.nil? || draft.to_s.empty?
+
+        draft.to_s.each_char { |c| composer.handle_key(c) }
+      end
+
+      # Plain cooked prompt for non-TTY / piped / scripted interactive input,
+      # where the raw-mode composer can't run. Prints the prompt, reads one line,
+      # and pre-pends any carried-over draft so it isn't lost. nil on EOF.
+      def cooked_input(prompt, draft)
+        $stdout.print(prompt)
+        $stdout.flush
+        line = $stdin.gets
+        return nil if line.nil?
+
+        line = line.chomp
+        draft && !draft.to_s.empty? ? "#{draft}#{line}" : line
+      rescue IOError
+        nil
       end
 
       # Repaints the idle card region from the registry's current snapshot. Mirrors
@@ -622,6 +708,11 @@ module Rubino
         image_paths = pending_image_paths
         @pending_image_paths = []
 
+        # The interim idle-key GATE is retired: the bottom composer is now the
+        # single input path and serializes every above-line write through its
+        # render mutex, so Shift+Tab (mode footer) and Ctrl+O (reveal reasoning)
+        # commit cleanly ABOVE the pinned prompt even DURING a turn — no
+        # out-of-band $stdout race to smear the stream (the old D1/D3/D4 cause).
         last_int_at = nil
         in_trap     = false
 
@@ -638,9 +729,9 @@ module Rubino
               else
                 last_int_at = now
                 runner.cancel!
-                # The runner emits the "⚠ interrupted by user" line once it
-                # unwinds the cancelled turn; here we only add the actionable
-                # double-tap hint so the two messages don't restate the same
+                # The runner commits the standardized dim "⎿ interrupted" marker
+                # once it unwinds the cancelled turn; here we only add the
+                # actionable double-tap hint so the two don't restate the same
                 # "interrupted" wording (L10). Single ASCII write —
                 # async-signal-safe enough for a trap.
                 $stderr.write("\n(press Ctrl+C again to exit)\n")
@@ -651,7 +742,23 @@ module Rubino
           end
         end
 
-        composer, real_stdout = start_composer(input_queue)
+        composer, real_stdout = start_composer(input_queue, runner)
+
+        # Mark the composer "in a turn" for the WHOLE turn — covering the THINKING
+        # phase AND the content stream — so a "queued ▸" type-ahead echo submitted
+        # before the first content token is deferred too, not stranded above the
+        # thought line and the answer (D7e). Cleared (and the deferred echoes
+        # flushed, after the footer) in the ensure below.
+        composer.begin_turn if composer.respond_to?(:begin_turn)
+
+        # If this turn's prompt came off the input queue (interrupt-by-default
+        # Enter, Alt+Enter, or "/queued" during the previous turn), commit it now
+        # as a NORMAL "<prompt><line>" message above the input — the same echo an
+        # idle submit gets — and remove its "⏳ queued:" indicator so it visibly
+        # MOVES from the above-input pending row to a transcript message at send
+        # time. An idle-submitted prompt already echoed at submit, so it isn't
+        # marked and is skipped here (no double echo).
+        commit_queued_prompt(composer)
 
         # Pass the SAME queue the composer pushes into through to the agent loop:
         # the loop drains it at each iteration boundary (Phase-2 mid-turn
@@ -668,8 +775,34 @@ module Rubino
         ui.warning("turn cancelled")
         raise
       ensure
+        # End the turn BEFORE tearing the composer down: the runner has fully
+        # unwound here, so the turn-summary footer is already in scrollback. This
+        # clears the turn-active flag and flushes any deferred "queued ▸" echoes
+        # via the still-live composer's print_above, so they land AFTER the footer
+        # (answer → reveal → `↳ turn` → `queued ▸`). A no-content/aborted turn
+        # still flushes here, so a mid-turn type-ahead is never stranded.
+        composer.end_turn if composer.respond_to?(:end_turn)
         stop_composer(composer, real_stdout)
         Signal.trap("INT", prev) if prev
+      end
+
+      # Commits the just-dequeued prompt as a normal "<prompt><line>" transcript
+      # message and removes its "⏳ queued:" indicator. Each line the previous
+      # turn parked (set in #next_input as @input_from_queue) is echoed in the
+      # mode-aware prompt, so a queued/interrupt-sent message reads back exactly
+      # like an idle submit. No-op when the prompt was an idle submit (already
+      # echoed) or there's no composer (piped / -q). Clears the marker after.
+      def commit_queued_prompt(composer)
+        lines = @input_from_queue
+        @input_from_queue = nil
+        return unless lines && composer
+
+        lines.each do |line|
+          # Drop the live "⏳ queued:" row first (explicit-queue items), then
+          # commit the normal echo above the input.
+          composer.commit_queued(line) if composer.respond_to?(:commit_queued)
+          composer.print_above("#{build_prompt}#{line}")
+        end
       end
 
       # Starts the bottom-pinned composer for the duration of a turn and swaps
@@ -691,12 +824,20 @@ module Rubino
       # the runner or the agent loop, so it cannot race the turn own work — the
       # parked text is consumed by the loop at a safe iteration boundary (atomic
       # #drain), or by #next_input between turns for anything typed in the gap.
-      def start_composer(input_queue)
+      def start_composer(input_queue, runner)
         return [nil, nil] unless input_queue && UI::BottomComposer.active?
 
         # Use the SAME mode-aware prompt as the between-turns Reline prompt
         # (default / plan / yolo ❯) so the bottom composer doesn't drop the mode.
-        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt)
+        # `runner` is threaded in (not captured from an enclosing scope) so the
+        # interrupt lambda resolves it — it is a parameter of #run_turn, not in
+        # scope here, and there is no @runner ivar, so capturing it implicitly
+        # raised NameError the instant an Enter-during-turn fired (BH-1).
+        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
+                                          on_ctrl_o: ctrl_o_handler,
+                                          on_mode_cycle: mode_cycle_handler,
+                                          on_interrupt: -> { runner.cancel! },
+                                          pending_queued: pending_queued)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
@@ -875,10 +1016,70 @@ module Rubino
       #
       # After a `/branch`, the chip leads with `branch:<id>` so the user always
       # knows they're in a fork (and which one), composing with the mode chip.
+      # The Ctrl+O callback for the composer: reveal the last retained reasoning
+      # aside via the UI adapter (the CLI keeps the buffer). The reveal commits
+      # through the composer's serialized print_above, so it lands cleanly above
+      # the prompt idle OR mid-turn. nil when the adapter can't reveal, so the
+      # composer treats Ctrl+O as a no-op.
+      def ctrl_o_handler
+        ui = Rubino.ui
+        return nil unless ui.respond_to?(:reveal_last_reasoning)
+
+        -> { ui.reveal_last_reasoning }
+      end
+
+      # The Shift+Tab callback for the composer: cycle the mode to the next in
+      # Modes::ALL (default→plan→yolo→default), PERSIST it via Modes.set, commit a
+      # transition footer above the pinned prompt, and RETURN the freshly-built
+      # prompt chip so the composer redraws the chip LIVE. The composer holds no
+      # mode logic — it just adopts the returned prompt.
+      def mode_cycle_handler
+        -> { cycle_mode }
+      end
+
+      # Shift+Tab: cycle the mode, show a SINGLE TRANSIENT confirmation banner,
+      # and RETURN the freshly-built prompt chip so the composer adopts it and
+      # redraws the chip LIVE (fixes the stale-chip D7). The persistent indicator
+      # is the prompt CHIP; the banner is a one-shot toast rendered in the
+      # composer's live region via #announce — redrawn in place, cleared on the
+      # next keystroke, NEVER committed to scrollback. So cycling N times leaves
+      # ZERO stacked banner lines (D3) and a mid-stream Shift+Tab can't wedge a
+      # banner between answer chunks (D2). With no composer (cooked fallback) it
+      # falls back to a plain dim line.
+      def cycle_mode
+        previous = Rubino::Modes.current
+        idx      = Rubino::Modes::ALL.index(previous) || 0
+        nxt      = Rubino::Modes::ALL[(idx + 1) % Rubino::Modes::ALL.length]
+        Rubino::Modes.set(nxt)
+        footer = pastel.dim("┄ mode · #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        composer = UI::BottomComposer.current
+        if composer
+          composer.announce(footer)
+        else
+          $stdout.print "\n#{footer}\n"
+          $stdout.flush
+        end
+        build_prompt
+      end
+
       def build_prompt
         chip = mode_label
         chip = "#{pastel.cyan("branch:#{@branch_short_id}")} #{chip}" if @branch_short_id
+        chip = "#{chip}#{skill_label}"
         "#{chip} #{PROMPT_CARET} "
+      end
+
+      # The active-skill segment of the prompt chip: a dim ` (skill: <name>)`
+      # appended after the mode chip, e.g. `default (skill: ruby-expert) ❯`. Empty
+      # when no skill is pinned (Rubino::ActiveSkill), so the chip returns to a
+      # plain `default ❯`. Styled dim to match the mode chip's quiet register.
+      # The chip refreshes live: each idle prompt rebuilds the composer with a
+      # freshly-built prompt, so activating/clearing a skill updates it next turn.
+      def skill_label
+        skill = Rubino::ActiveSkill.current
+        return "" unless skill
+
+        pastel.dim(" (skill: #{skill})")
       end
 
       def mode_label
@@ -945,22 +1146,31 @@ module Rubino
       # resolves to `Rubino::CLI::Commands` (the Thor class), which has
       # no `BuiltIns` constant and raises NameError at first interactive
       # boot.
-      def setup_readline_completions(cmd_loader, line_input = Rubino::UI::LineInput.new)
+      # Builds the shared UI::CompletionSource the bottom composer's /command +
+      # @file completion menu consults. The command list is built the same way
+      # the old Reline completion was fed (built-ins + loaded custom commands);
+      # `@` is a workspace file picker (lazy — discovered + cached on the first
+      # `@`, same root rule as Tools::Base#workspace_root).
+      #
+      # Note: must use `::Rubino::Commands` (or the equivalent absolute path) —
+      # inside `Rubino::CLI::ChatCommand` a bare `Commands` resolves to
+      # `Rubino::CLI::Commands` (the Thor class), which has no `BuiltIns` constant
+      # and raises NameError at first interactive boot.
+      def build_completion_source(cmd_loader)
         custom = cmd_loader.names rescue []
-        names  = ::Rubino::Commands::BuiltIns::NAMES + custom
-        # `@` is a workspace file picker (subagent mentions are dormant). The
-        # proc is lazy — LineInput only resolves the root + shells out on the
-        # first `@`, then caches. Same root rule as Tools::Base#workspace_root.
+        names  = (::Rubino::Commands::BuiltIns::NAMES + custom).uniq
         files  = -> { Rubino::Workspace.primary_root }
-        line_input.configure_completion(commands: names.uniq, files: files)
-      end
-
-      def readline_input(line_input_or_prompt, prompt = nil, initial: nil)
-        if prompt.nil?
-          Rubino::UI::LineInput.new.readline(line_input_or_prompt, initial: initial)
-        else
-          line_input_or_prompt.readline(prompt, initial: initial)
-        end
+        # ARGUMENT sources: the dropdown completes the argument of these commands
+        # the same way it completes `/command` and `@file`. `/skills <partial>`
+        # picks a skill name (lazily re-read each open so a freshly-authored skill
+        # appears). Structured as a generic command→names map so `/agents` can
+        # reuse the same mechanism later — register an "agents" entry here and the
+        # composer/CompletionSource need no change (agent picker is out of scope).
+        arg_sources = {
+          "skills" => -> { Rubino::Skills::Registry.new.names }
+        }
+        Rubino::UI::CompletionSource.new(commands: names, files: files,
+                                         arg_sources: arg_sources)
       end
 
       # --- Helpers ---

@@ -179,10 +179,26 @@ module Rubino
         },
         "display" => {
           "streaming" => true,
+          # Tri-state reasoning render: "hidden" suppresses thinking entirely,
+          # "collapsed" buffers it and commits a one-liner cue ("thought for Ns"),
+          # "full" renders the whole reasoning as a dim aside above the answer.
+          # The legacy boolean display.show_reasoning still maps in for back-compat
+          # (true→full, false→hidden) when display.reasoning is unset.
+          "reasoning" => "collapsed",
           "show_reasoning" => true,
           "language" => "en",
           "runtime_footer" => { "enabled" => false },
           "interim_assistant_messages" => false
+        },
+        "thinking" => {
+          # Reasoning effort: off | low | medium | high. Mapped to an Anthropic
+          # thinking-token budget (off→0, low→4000, medium→8000, high→16000) on
+          # the anthropic-family path. "off" disables thinking. When SET it wins
+          # over the model/provider thinking_budget chain; left nil (the default)
+          # the budget falls through that chain, whose own default is 8000 — i.e.
+          # the effective default effort is already "medium". /think reports
+          # "medium" for the nil case.
+          "effort" => nil
         },
         "streaming" => {
           "enabled" => true,
@@ -438,8 +454,21 @@ module Rubino
       }.freeze
 
       class << self
+        # Deep copy so a Configuration#set on a never-overridden nested section
+        # (e.g. display.reasoning) mutates the per-config hash, NOT the shared
+        # MODULE_DEFAULTS constant. A shallow .dup left nested section hashes
+        # aliased to the constant, so the first /reasoning or /think write
+        # poisoned the process-wide default.
         def to_hash
-          MODULE_DEFAULTS.dup
+          deep_dup(MODULE_DEFAULTS)
+        end
+
+        def deep_dup(obj)
+          case obj
+          when Hash  then obj.each_with_object({}) { |(k, v), h| h[k] = deep_dup(v) }
+          when Array then obj.map { |v| deep_dup(v) }
+          else            obj
+          end
         end
 
         def to_yaml
