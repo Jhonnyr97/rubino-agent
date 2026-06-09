@@ -118,7 +118,11 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
     end
 
     it "drops the mandatory catalogue but keeps the create nudge when no skills are discovered" do
-      prompt = system_prompt(config: config_with(skills: { "enabled" => true, "paths" => [] }))
+      # include_builtin: false simulates the empty case — gem-bundled skills
+      # (e.g. ruby-expert) otherwise always populate the catalogue.
+      prompt = system_prompt(
+        config: config_with(skills: { "enabled" => true, "paths" => [], "include_builtin" => false })
+      )
       # No catalogue (no skills to list)...
       expect(prompt).not_to include("## Skills (mandatory)")
       # ...but a fresh install is still told how to author one.

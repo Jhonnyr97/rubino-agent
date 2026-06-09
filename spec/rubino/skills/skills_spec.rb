@@ -13,10 +13,46 @@ RSpec.describe "Skills (directory layout + disclosure)" do
   before { with_test_db }
 
   describe Rubino::Skills::Registry do
-    subject(:registry) { described_class.new(config: config) }
+    # include_builtin: false isolates the assertions in this block from the
+    # gem-bundled skills shipped under skills/ (e.g. ruby-expert), which are
+    # otherwise always discovered. Built-in discovery has its own block below.
+    subject(:registry) { described_class.new(config: config, include_builtin: false) }
 
     it "discovers both flat-file and directory (<name>/SKILL.md) skills" do
       expect(registry.names).to contain_exactly("legacy-flat", "data-helper")
+    end
+
+    # Built-in (gem-bundled) skills under skills/<name>/SKILL.md ship with every
+    # install and are discovered regardless of skills.paths / folder-trust, so a
+    # fresh user gets them without any copy step.
+    describe "gem-bundled built-in skills" do
+      it "discovers the shipped ruby-expert skill even with no configured paths" do
+        reg = described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+        expect(reg.names).to include("ruby-expert")
+        expect(reg.find("ruby-expert")).to be_directory
+      end
+
+      it "exposes ruby-expert's bundled reference files" do
+        reg = described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+        expect(reg.find("ruby-expert").linked_files).to include("references/rails.md", "references/testing.md")
+      end
+
+      it "lets a user skill override a same-named built-in (user scanned last)" do
+        Dir.mktmpdir do |dir|
+          FileUtils.mkdir_p(File.join(dir, "ruby-expert"))
+          File.write(File.join(dir, "ruby-expert", "SKILL.md"),
+                     "---\nname: ruby-expert\ndescription: my override\n---\nbody")
+          reg = described_class.new(config: test_configuration("skills" => { "paths" => [dir] }))
+          expect(reg.find("ruby-expert").description).to eq("my override")
+        end
+      end
+
+      it "omits built-ins when include_builtin: false" do
+        reg = described_class.new(
+          config: test_configuration("skills" => { "paths" => [] }), include_builtin: false
+        )
+        expect(reg.names).not_to include("ruby-expert")
+      end
     end
 
     it "names a directory skill after its directory" do
@@ -411,7 +447,7 @@ RSpec.describe "Skills (directory layout + disclosure)" do
     context "with no skills discovered" do
       let(:registry) do
         Rubino::Skills::Registry.new(
-          config: test_configuration("skills" => { "paths" => [] })
+          config: test_configuration("skills" => { "paths" => [] }), include_builtin: false
         )
       end
 

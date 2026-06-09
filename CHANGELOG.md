@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added — built-in `ruby-expert` skill
+
+Rubino now ships a built-in **`ruby-expert`** skill so every install makes the
+agent a Ruby/Rails expert out of the box — no setup or copy step.
+
+- **New skill source: gem-bundled skills.** The skill registry now always scans
+  the gem's own `skills/` directory in addition to the user paths
+  (`.rubino/skills`, `~/.rubino/skills`). Built-ins are scanned **first**, so a
+  same-named user skill still overrides them. Toggle with the new
+  `skills.include_builtin` config key (default `true`).
+- **The `ruby-expert` skill** (`skills/ruby-expert/`) is a router `SKILL.md` plus
+  twelve bundled references covering: language idioms, metaprogramming, OO design,
+  errors & type checking, concurrency, Rails, testing, performance, security,
+  tooling, gem authoring, and dates/times/encoding. The agent loads only the
+  reference a task needs (3-level progressive disclosure).
+
 ### Changed — BREAKING: project renamed `ruby-agent` → Rubino
 
 The project was rebranded from `ruby-agent` to **Rubino**. This is a clean break with **no backward-compatibility fallbacks** — the old names no longer work and must be updated everywhere they are referenced.

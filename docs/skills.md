@@ -41,6 +41,24 @@ the **directory** layout wins over the flat-file layout (it is the richer unit).
 The directory layout matches the Claude skill format and is preferred
 because it can carry bundled references, scripts, and assets.
 
+### Built-in (gem-bundled) skills
+
+On top of the configured user paths, the registry **always** scans the
+`skills/` directory shipped *inside the gem*. This is how a skill reaches every
+install with no copy step and updates automatically on `gem update`. The bundled
+**`ruby-expert`** skill (deep Ruby/Rails knowledge across idioms, OO design,
+concurrency, Rails, testing, performance, security, and more) ships this way.
+
+Built-ins are scanned **before** the user paths, so a user skill of the same
+name placed in `.rubino/skills` or `~/.rubino/skills` transparently overrides the
+built-in (last writer wins on the name-indexed merge). To run with only your own
+skills, set:
+
+```yaml
+skills:
+  include_builtin: false   # default true
+```
+
 ### Authoring a `SKILL.md`
 
 A `SKILL.md` is YAML frontmatter followed by the instruction body:

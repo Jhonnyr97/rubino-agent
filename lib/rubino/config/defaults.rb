@@ -410,6 +410,12 @@ module Rubino
           # number of LLM turns — can keep skills usable while turning off the
           # extra background aux call.
           "auto_distill" => true,
+          # Discover the skills shipped *inside the gem* (skills/<name>/SKILL.md),
+          # so every install gets the built-in catalogue (e.g. ruby-expert) with
+          # no copy step, on top of the user paths below. Built-ins are scanned
+          # first, so a same-named user skill still overrides them. Set false to
+          # run with only your own skills.
+          "include_builtin" => true,
           "paths" => [
             ".rubino/skills",
             "~/.rubino/skills"
