@@ -451,7 +451,7 @@ module Rubino
       # The UI the child loop renders through.
       #
       # Interactive CLI → UI::SubagentView: the subagent's tool activity shows
-      # INLINE, nested + colored under the parent's "● delegato → X" row (the
+      # INLINE, nested + colored under the parent's "● delegated → X" row (the
       # only "watch live" that fits our scroll-native + bottom-composer model).
       # It is DISPLAY-ONLY — it writes to $stdout and never touches the parent
       # loop's messages or recorder, so the result-only contract holds.

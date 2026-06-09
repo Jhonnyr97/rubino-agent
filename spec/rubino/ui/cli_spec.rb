@@ -511,6 +511,14 @@ RSpec.describe Rubino::UI::CLI do
       end
     end
 
+    # #105: the delegation header label is user-facing UI and must be English
+    # ("delegated", not the Italian "delegato").
+    it "renders an English 'delegated →' header for the delegation row (#105)" do
+      out = capture_stdout { ui.tool_started("task", arguments: { subagent: "explore", prompt: "hi" }) }
+      expect(out).to include("● delegated → explore")
+      expect(out).not_to include("delegato")
+    end
+
     it "renders ✓ when the delegation succeeded" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1", output: "Started background subagent 'explore' as task sa_1."

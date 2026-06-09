@@ -187,7 +187,7 @@ module Rubino
         payload = { name: name, arguments: sanitized }
         # Boundary event for delegation: tag the `task` call with the target
         # subagent name (+ the task prompt) so an SSE consumer (the web UI)
-        # can render "delegato a X" without parsing the raw arguments. The
+        # can render "delegated to X" without parsing the raw arguments. The
         # subagent's own inner events are NOT streamed in Phase 1 — boundary only.
         payload.merge!(subagent_tag(arguments)) if name == "task"
         @event_bus&.emit(Interaction::Events::TOOL_STARTED, **payload)

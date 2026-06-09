@@ -548,7 +548,7 @@ module Rubino
 
       # Tool started renders as compact `● running  name · hint`.
       # The `task` (delegation) tool gets a dedicated row so the timeline reads
-      # as a hand-off, not a generic tool call: `● delegato → <subagent>  <prompt>`.
+      # as a hand-off, not a generic tool call: `● delegated → <subagent>  <prompt>`.
       def tool_started(name, arguments: nil, at: nil)
         return delegation_started(arguments) if name == "task"
 
@@ -1079,7 +1079,7 @@ module Rubino
 
       # --- Subagent delegation rows (the `task` tool) ---
 
-      # `● delegato → <subagent>  <prompt-preview>`. Stashes the subagent name so
+      # `● delegated → <subagent>  <prompt-preview>`. Stashes the subagent name so
       # the matching #delegation_finished can label the close row even though
       # tool_finished only receives the result, not the arguments.
       def delegation_started(arguments)
@@ -1089,7 +1089,7 @@ module Rubino
         @delegation_subagent = sub
         preview = prompt ? "  #{truncate_inline(prompt, 60)}" : ""
         $stdout.puts
-        $stdout.puts @pastel.cyan("● delegato → #{sub}#{preview}")
+        $stdout.puts @pastel.cyan("● delegated → #{sub}#{preview}")
         @activity_open = true
         @activity_name = "task"
       end
