@@ -23,7 +23,7 @@ module Rubino
     class SubagentProbe
       # The instruction prepended to the one-shot so the child\'s model answers AS
       # the subagent, from its context-so-far, without trying to continue the task.
-      PREAMBLE = "You are the subagent above. Answer the following question from "                  "your current context ONLY — do not take any action or continue "                  "your task; this is a read-only check. Be brief."
+      PREAMBLE = "You are the subagent above. Answer the following question from " + "your current context ONLY — do not take any action or continue " + "your task; this is a read-only check. Be brief."
 
       # @param adapter_factory [#call] test seam: a callable taking the resolved
       #   model id and returning an LLM adapter (anything responding to #chat).

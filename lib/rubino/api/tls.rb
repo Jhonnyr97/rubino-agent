@@ -72,7 +72,7 @@ module Rubino
       # Generates a fresh self-signed RSA-2048 cert+key for +host+. Returns
       # [cert_pem, key_pem]. Not persisted — callers persist via ensure_cert!.
       def generate(host: nil)
-        cn = (host.nil? || host.empty? || host == "0.0.0.0") ? "rubino" : host
+        cn = host.nil? || host.empty? || host == "0.0.0.0" ? "rubino" : host
         key = OpenSSL::PKey::RSA.new(2048)
 
         cert = OpenSSL::X509::Certificate.new

@@ -12,10 +12,10 @@ RSpec.describe Rubino::Agent::DegenerateResponseRecovery do
 
   def state(response:, streamed: "", messages: [], prior_content: nil, prior_hk: false)
     described_class::RecoveryState.new(
-      response:                     response,
-      streamed_text:                streamed,
-      messages:                     messages,
-      prior_turn_content:           prior_content,
+      response: response,
+      streamed_text: streamed,
+      messages: messages,
+      prior_turn_content: prior_content,
       prior_tools_all_housekeeping: prior_hk
     )
   end

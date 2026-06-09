@@ -67,7 +67,7 @@ module Rubino
       #
       # If +first_response+ is not applicable? this returns it untouched, so the
       # Loop can call #continue unconditionally.
-      def continue(request, first_response, &block)
+      def continue(request, first_response, &)
         return first_response unless applicable?(first_response)
 
         parts    = collect_part(first_response)
@@ -84,7 +84,7 @@ module Rubino
           messages << { role: "user", content: CONTINUATION_NUDGE }
 
           request  = reissue(request, messages, retries)
-          response = @boundary.call(request, &block)
+          response = @boundary.call(request, &)
           parts.concat(collect_part(response))
         end
 
@@ -96,14 +96,14 @@ module Rubino
       # Build the next request: same shape, continued history, boosted budget.
       def reissue(request, messages, retries)
         LLM::Request.new(
-          messages:    messages,
-          tools:       request.tools,
+          messages: messages,
+          tools: request.tools,
           temperature: request.temperature,
-          max_tokens:  boosted_max_tokens(retries),
-          thinking:    request.thinking,
-          prefill:     request.prefill,
+          max_tokens: boosted_max_tokens(retries),
+          thinking: request.thinking,
+          prefill: request.prefill,
           image_paths: request.image_paths,
-          stream:      request.stream?
+          stream: request.stream?
         )
       end
 
@@ -124,12 +124,12 @@ module Rubino
       # final stop_reason tells the caller whether it ever completed cleanly).
       def stitch(last_response, parts)
         LLM::AdapterResponse.new(
-          content:       parts.join,
-          tool_calls:    last_response.tool_calls,
-          input_tokens:  last_response.input_tokens,
+          content: parts.join,
+          tool_calls: last_response.tool_calls,
+          input_tokens: last_response.input_tokens,
           output_tokens: last_response.output_tokens,
-          model_id:      last_response.model_id,
-          stop_reason:   last_response.stop_reason
+          model_id: last_response.model_id,
+          stop_reason: last_response.stop_reason
         )
       end
     end

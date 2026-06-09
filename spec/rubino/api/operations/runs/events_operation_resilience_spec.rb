@@ -8,6 +8,7 @@ require "spec_helper"
 # proxy timeouts and broken pipes without sleeping in real wall-clock time.
 RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
   before { with_test_db }
+
   let(:session_repo) { Rubino::Session::Repository.new }
   let(:run_repo)     { Rubino::Run::Repository.new }
   let(:event_store)  { Rubino::Run::EventStore.new }
@@ -34,9 +35,9 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
       operation = described_class.new(repository: run_repo, event_store: store_spy)
       _status, _headers, body = operation.call(make_request(params: { id: run[:id] }))
 
-      expect {
+      expect do
         body.each { |_chunk| raise Errno::EPIPE, "broken pipe" }
-      }.not_to raise_error
+      end.not_to raise_error
       # One replay call only; no polling after the simulated disconnect.
       expect(store_spy).to have_received(:for_run).once
     end
@@ -47,11 +48,11 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
                          type: "message.delta", payload: { text: "hi" })
 
       _, _, body1 = described_class.new(repository: run_repo, event_store: event_store)
-                    .call(make_request(params: { id: run[:id] }))
+                                   .call(make_request(params: { id: run[:id] }))
       expect { body1.each { |_| raise IOError, "closed stream" } }.not_to raise_error
 
       _, _, body2 = described_class.new(repository: run_repo, event_store: event_store)
-                    .call(make_request(params: { id: run[:id] }))
+                                   .call(make_request(params: { id: run[:id] }))
       expect { body2.each { |_| raise Errno::ECONNRESET, "reset" } }.not_to raise_error
     end
   end
@@ -198,7 +199,6 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
     end
 
     it "is disabled when idle_event_timeout is nil — long-silent runs stay running" do
-
       run = create_queued_run
 
       ticks = [0.0, 600.0, 601.0]

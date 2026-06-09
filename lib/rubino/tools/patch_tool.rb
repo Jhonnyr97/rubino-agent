@@ -12,7 +12,7 @@ module Rubino
 
       def description
         "Apply a unified diff patch to one or more files. " \
-        "Accepts standard unified diff format (like output from 'git diff')."
+          "Accepts standard unified diff format (like output from 'git diff')."
       end
 
       def input_schema
@@ -68,22 +68,20 @@ module Rubino
 
           unless within_workspace?(file_path)
             return [nil, workspace_violation_message(hunk[:file]) +
-                        " (no changes applied — apply_patch is two-phase)"]
+                         " (no changes applied — apply_patch is two-phase)"]
           end
 
           if hunk[:new_file]
-            pending << { kind:    :create,
-                         path:    file_path,
+            pending << { kind: :create,
+                         path: file_path,
                          display: hunk[:file],
                          content: hunk[:additions].join("\n") + "\n" }
           elsif hunk[:delete_file]
-            pending << { kind:    :delete,
-                         path:    file_path,
+            pending << { kind: :delete,
+                         path: file_path,
                          display: hunk[:file] }
           else
-            unless File.exist?(file_path)
-              return [nil, "Error: File not found: #{hunk[:file]} (no changes applied)"]
-            end
+            return [nil, "Error: File not found: #{hunk[:file]} (no changes applied)"] unless File.exist?(file_path)
 
             content                   = File.read(file_path)
             new_content, drift, fuzzy = apply_hunk(content, hunk)
@@ -92,14 +90,14 @@ module Rubino
                            "context mismatch (no changes applied)"]
             end
 
-            pending << { kind:    :patch,
-                         path:    file_path,
+            pending << { kind: :patch,
+                         path: file_path,
                          display: hunk[:file],
                          content: new_content,
-                         drift:   drift,
-                         fuzzy:   fuzzy,
-                         adds:    hunk[:additions].size,
-                         dels:    hunk[:deletions].size }
+                         drift: drift,
+                         fuzzy: fuzzy,
+                         adds: hunk[:additions].size,
+                         dels: hunk[:deletions].size }
           end
         end
 
@@ -143,7 +141,7 @@ module Rubino
         return base unless op[:fuzzy]
 
         offset = op[:drift]
-        signed = "#{offset.positive? ? '+' : ''}#{offset}"
+        signed = "#{"+" if offset.positive?}#{offset}"
         "#{base} [fuzzy match: applied #{signed} line(s) from requested position]"
       end
 
@@ -156,29 +154,29 @@ module Rubino
 
         patch.each_line do |line|
           case line
-          when /^--- \/dev\/null/
+          when %r{^--- /dev/null}
             # New file: source is /dev/null
             pending_new_file = true
-          when /^--- a\/(.*)/
+          when %r{^--- a/(.*)}
             # Normal source file — set current_file and reset pending flags
             current_file        = Regexp.last_match(1).strip
             pending_new_file    = false
             pending_delete_file = false
-          when /^\+\+\+ \/dev\/null/
+          when %r{^\+\+\+ /dev/null}
             # Delete file: destination is /dev/null; current_file already set by --- a/
             pending_delete_file = true
-          when /^\+\+\+ b\/(.*)/
+          when %r{^\+\+\+ b/(.*)}
             current_file = Regexp.last_match(1).strip
           when /^@@ -(\d+),?\d* \+(\d+),?\d* @@/
             hunk = {
-              file:        current_file,
-              start_line:  Regexp.last_match(1).to_i,
-              new_start:   Regexp.last_match(2).to_i,
-              context:     [],
-              additions:   [],
-              deletions:   [],
-              lines:       [],
-              new_file:    pending_new_file,
+              file: current_file,
+              start_line: Regexp.last_match(1).to_i,
+              new_start: Regexp.last_match(2).to_i,
+              context: [],
+              additions: [],
+              deletions: [],
+              lines: [],
+              new_file: pending_new_file,
               delete_file: pending_delete_file
             }
             hunks << hunk

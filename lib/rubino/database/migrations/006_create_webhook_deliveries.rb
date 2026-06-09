@@ -13,7 +13,7 @@ Sequel.migration do
       String :request_id, null: false, unique: true
       String :payload_sha256, null: false
       Integer :attempt_count, null: false, default: 0
-      String :status, null: false, default: "pending"   # pending|delivered|failed|dead
+      String :status, null: false, default: "pending" # pending|delivered|failed|dead
       Text :last_error
       Text :payload_json, null: false
       String :scheduled_at, null: false

@@ -241,7 +241,8 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
 
     it "retires the contradicted fact and inserts the replacement" do
       old = backend.store(kind: "env", content: "User uses npm as the package manager.")
-      stub_llm(%Q({"add":[],"supersede":[{"id":"#{old[:id][0, 8]}","by_text":"User uses bun as the package manager.","kind":"env"}]}))
+      stub_llm(%({"add":[],"supersede":[{"id":"#{old[:id][0,
+                                                          8]}","by_text":"User uses bun as the package manager.","kind":"env"}]}))
 
       backend.extract("s1")
 
@@ -254,7 +255,8 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
 
     it "does NOT recall the superseded fact (temporal correctness)" do
       old = backend.store(kind: "env", content: "User uses npm as the package manager.")
-      stub_llm(%Q({"add":[],"supersede":[{"id":"#{old[:id][0, 8]}","by_text":"User uses bun as the package manager.","kind":"env"}]}))
+      stub_llm(%({"add":[],"supersede":[{"id":"#{old[:id][0,
+                                                          8]}","by_text":"User uses bun as the package manager.","kind":"env"}]}))
       backend.extract("s1")
 
       out = backend.retrieve(session_id: "s1", query: "package manager")

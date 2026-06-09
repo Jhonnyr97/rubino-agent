@@ -42,11 +42,10 @@ module Rubino
           actual_input = match[2]
 
           agent = @registry.find(agent_name)
-          if agent && (agent.subagent? || agent.primary?)
-            return [agent, actual_input]
-          else
-            @ui.warning("Unknown agent '#{agent_name}', using current agent")
-          end
+          return [agent, actual_input] if agent && (agent.subagent? || agent.primary?)
+
+          @ui.warning("Unknown agent '#{agent_name}', using current agent")
+
         end
 
         [@current_agent, input]

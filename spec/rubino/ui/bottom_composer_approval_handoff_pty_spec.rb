@@ -28,7 +28,10 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
   DOWN = "\e[B" # CSI cursor-down — one arrow-down keystroke
 
   def pty_available?
-    PTY.open { |m, s| m.close; s.close }
+    PTY.open do |m, s|
+      m.close
+      s.close
+    end
     true
   rescue StandardError
     false
@@ -130,15 +133,13 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
   def read_to_eof(master)
     buf = (+"").force_encoding(Encoding::UTF_8)
     loop do
-      begin
-        chunk = master.read_nonblock(4096)
-        buf << chunk.force_encoding(Encoding::UTF_8)
-      rescue IO::WaitReadable
-        IO.select([master], nil, nil, 0.5) or break
-        next
-      rescue Errno::EIO, EOFError
-        break
-      end
+      chunk = master.read_nonblock(4096)
+      buf << chunk.force_encoding(Encoding::UTF_8)
+    rescue IO::WaitReadable
+      IO.select([master], nil, nil, 0.5) or break
+      next
+    rescue Errno::EIO, EOFError
+      break
     end
     buf
   end

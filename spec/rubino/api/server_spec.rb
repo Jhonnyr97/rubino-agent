@@ -13,8 +13,8 @@ RSpec.describe Rubino::API::Server do
       url = described_class.bind_url(host: "0.0.0.0", port: 4820,
                                      tls_cert: "/h/tls/cert.pem", tls_key: "/h/tls/key.pem")
       expect(url).to start_with("ssl://0.0.0.0:4820?")
-      expect(url).to include("cert=#{CGI.escape('/h/tls/cert.pem')}")
-      expect(url).to include("key=#{CGI.escape('/h/tls/key.pem')}")
+      expect(url).to include("cert=#{CGI.escape("/h/tls/cert.pem")}")
+      expect(url).to include("key=#{CGI.escape("/h/tls/key.pem")}")
     end
 
     it "stays plain tcp:// if only one of cert/key is given" do

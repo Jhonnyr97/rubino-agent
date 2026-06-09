@@ -61,12 +61,12 @@ RSpec.describe Rubino::Memory::Backends::Default do
   let(:db_connection) { test_database }
   let(:config) do
     test_configuration("memory" => {
-      "enabled" => true,
-      "user_profile_enabled" => true,
-      "project_context_enabled" => true,
-      "memory_char_limit" => 2200,
-      "user_char_limit" => 1375
-    })
+                         "enabled" => true,
+                         "user_profile_enabled" => true,
+                         "project_context_enabled" => true,
+                         "memory_char_limit" => 2200,
+                         "user_char_limit" => 1375
+                       })
   end
   let(:store) { Rubino::Memory::Store.new(db: db_connection.db, config: config) }
   let(:backend) { described_class.new(config: config, store: store) }

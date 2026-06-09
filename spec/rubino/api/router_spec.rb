@@ -4,10 +4,6 @@ require "spec_helper"
 require "json"
 
 RSpec.describe Rubino::API::Router do
-  let(:hello_op) { Class.new { def self.call(req) = { hello: req.params["name"] } } }
-  let(:show_op)  { Class.new { def self.call(req) = { id: req.params["id"] } } }
-  let(:tuple_op) { Class.new { def self.call(_req) = [201, { created: true }] } }
-
   subject(:router) do
     described_class.new.tap do |r|
       r.get  "/v1/hello/:name", to: hello_op
@@ -15,6 +11,10 @@ RSpec.describe Rubino::API::Router do
       r.post "/v1/items",       to: tuple_op
     end
   end
+
+  let(:hello_op) { Class.new { def self.call(req) = { hello: req.params["name"] } } }
+  let(:show_op)  { Class.new { def self.call(req) = { id: req.params["id"] } } }
+  let(:tuple_op) { Class.new { def self.call(_req) = [201, { created: true }] } }
 
   def env(method:, path:)
     { "REQUEST_METHOD" => method, "PATH_INFO" => path, "rubino.json" => {}, "QUERY_STRING" => "" }

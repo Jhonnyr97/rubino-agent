@@ -18,7 +18,7 @@ module Rubino
         def self.display_name  = "Google"
         def self.site          = "https://accounts.google.com"
         def self.authorize_path = "/o/oauth2/v2/auth"
-        def self.token_path    = "https://oauth2.googleapis.com/token"
+        def self.token_path = "https://oauth2.googleapis.com/token"
         def self.default_scopes = %w[openid email profile]
 
         USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"

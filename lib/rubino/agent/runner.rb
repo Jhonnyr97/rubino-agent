@@ -104,7 +104,7 @@ module Rubino
       def end_session!
         # Nothing to end for a session that was never persisted (the user opened
         # chat and left without sending a message, #144) — there's no row.
-        return if @session.nil? || @session[:persisted] == false && !@session_repo.persisted?(@session[:id])
+        return if @session.nil? || (@session[:persisted] == false && !@session_repo.persisted?(@session[:id]))
 
         @session_repo.end_session!(@session[:id])
       rescue StandardError

@@ -6,11 +6,11 @@
 # returns the SIGNAL the REPL acts on; the actual inference/fork is verified in
 # the ChatCommand spec.
 RSpec.describe "Rubino::Commands::Executor probe & branch" do
+  subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui) }
+
   let(:db)     { test_database }
   let(:ui)     { Rubino::UI::Null.new }
   let(:loader) { Rubino::Commands::Loader.new(config: test_configuration) }
-
-  subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui) }
 
   before do
     allow(Rubino).to receive(:database).and_return(db)

@@ -40,13 +40,13 @@ module Rubino
 
       def description
         "Run the workspace project's test suite and return a structured result " \
-        "(framework, command, exit status, example/failure counts, and the " \
-        "failing examples with file:line and message). Auto-detects RSpec, " \
-        "Minitest, or a Rakefile default task; prefers `bundle exec` when a " \
-        "Gemfile is present and falls back to the bare runner if the bundle is " \
-        "broken. Optional `path` runs a single file or pattern; optional " \
-        "`framework` (rspec/minitest/rake) overrides detection. Use this " \
-        "instead of driving `shell` by hand to run tests."
+          "(framework, command, exit status, example/failure counts, and the " \
+          "failing examples with file:line and message). Auto-detects RSpec, " \
+          "Minitest, or a Rakefile default task; prefers `bundle exec` when a " \
+          "Gemfile is present and falls back to the bare runner if the bundle is " \
+          "broken. Optional `path` runs a single file or pattern; optional " \
+          "`framework` (rspec/minitest/rake) overrides detection. Use this " \
+          "instead of driving `shell` by hand to run tests."
       end
 
       def input_schema
@@ -185,7 +185,7 @@ module Rubino
       # the model watch a bundler backtrace scroll by. Capped tight so a slow
       # `bundle check` never dominates the call.
       def bundle_usable?(root)
-        out, status = Open3.capture2e(
+        _, status = Open3.capture2e(
           { "BUNDLE_GEMFILE" => File.join(root, "Gemfile") },
           "bundle", "check",
           chdir: root
@@ -214,16 +214,14 @@ module Rubino
 
         buf = +""
         reader = Thread.new do
-          begin
-            rd.each_line do |line|
-              buf << line
-              emit_chunk(line)
-            end
-          rescue IOError, Errno::EBADF
-            # pipe closed — process exited
-          ensure
-            rd.close unless rd.closed?
+          rd.each_line do |line|
+            buf << line
+            emit_chunk(line)
           end
+        rescue IOError, Errno::EBADF
+          # pipe closed — process exited
+        ensure
+          rd.close unless rd.closed?
         end
 
         started  = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -237,8 +235,16 @@ module Rubino
           if cancellation_requested?
             terminate_group(pgid)
             reader.join(0.5)
-            Process.kill("KILL", -pgid) rescue nil
-            Process.waitpid2(pid) rescue nil
+            begin
+              Process.kill("KILL", -pgid)
+            rescue StandardError
+              nil
+            end
+            begin
+              Process.waitpid2(pid)
+            rescue StandardError
+              nil
+            end
             return { output: buf.dup, exit_code: nil, cancelled: true, timed_out: false,
                      duration_ms: elapsed_ms(started) }
           end
@@ -248,7 +254,11 @@ module Rubino
             _, status = Process.waitpid2(pid, Process::WNOHANG)
             unless status
               reader.join(2)
-              Process.kill("KILL", -pgid) rescue nil
+              begin
+                Process.kill("KILL", -pgid)
+              rescue StandardError
+                nil
+              end
               _, status = Process.waitpid2(pid)
             end
             reader.join(0.5)
@@ -294,20 +304,20 @@ module Rubino
         body    = [summary, "", "--- raw output (tail) ---", tail].join("\n")
 
         {
-          output:     body,
-          body:       summary,
-          body_kind:  :plain,
-          metrics:    "#{outcome} · #{format_ms(run[:duration_ms])}",
+          output: body,
+          body: summary,
+          body_kind: :plain,
+          metrics: "#{outcome} · #{format_ms(run[:duration_ms])}",
           error_code: error_code,
           # Structured fields, so the executor / future contract tests can
           # branch without re-parsing the text.
-          framework:  framework,
-          command:    command,
-          exit_code:  run[:exit_code],
-          ran:        ran,
-          examples:   parsed[:examples],
-          failures:   parsed[:failures],
-          failing:    parsed[:failing]
+          framework: framework,
+          command: command,
+          exit_code: run[:exit_code],
+          ran: ran,
+          examples: parsed[:examples],
+          failures: parsed[:failures],
+          failing: parsed[:failing]
         }
       end
 
@@ -327,11 +337,11 @@ module Rubino
         lines = []
         lines << "framework: #{framework}"
         lines << "command:   #{command}"
-        lines << "exit:      #{run[:exit_code].nil? ? '(none)' : run[:exit_code]}"
+        lines << "exit:      #{run[:exit_code].nil? ? "(none)" : run[:exit_code]}"
         lines << "outcome:   #{outcome}"
         if parsed[:ran]
-          lines << "examples:  #{parsed[:examples].nil? ? '?' : parsed[:examples]}"
-          lines << "failures:  #{parsed[:failures].nil? ? '?' : parsed[:failures]}"
+          lines << "examples:  #{parsed[:examples].nil? ? "?" : parsed[:examples]}"
+          lines << "failures:  #{parsed[:failures].nil? ? "?" : parsed[:failures]}"
           unless parsed[:failing].empty?
             lines << "failing:"
             parsed[:failing].each do |f|
@@ -352,7 +362,7 @@ module Rubino
         lines = raw.lines.map(&:chomp)
         return raw.chomp if lines.size <= RAW_TAIL_LINES
 
-        ["… [#{lines.size - RAW_TAIL_LINES} earlier lines omitted] …"] \
+        ["… [#{lines.size - RAW_TAIL_LINES} earlier lines omitted] …"]
           .concat(lines.last(RAW_TAIL_LINES)).join("\n")
       end
 
@@ -392,8 +402,8 @@ module Rubino
         return [] unless section
 
         section.split(/^\s*\d+\)\s/).reject(&:empty?).map do |block|
-          msg = block[/Failure\/Error:.*?\n\s*\n?\s*(.+)/m, 1] ||
-                block[/Failure\/Error:\s*(.+)/, 1]
+          msg = block[%r{Failure/Error:.*?\n\s*\n?\s*(.+)}m, 1] ||
+                block[%r{Failure/Error:\s*(.+)}, 1]
           msg.to_s.lines.first.to_s.strip
         end
       end

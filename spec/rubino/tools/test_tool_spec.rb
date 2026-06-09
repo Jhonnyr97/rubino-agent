@@ -57,7 +57,7 @@ RSpec.describe Rubino::Tools::TestTool do
       in_workspace(@dir) do
         res = tool.call({})
         expect(res[:framework]).to eq("rspec")
-        expect(res[:command]).to eq("rspec")        # no Gemfile -> bare runner
+        expect(res[:command]).to eq("rspec") # no Gemfile -> bare runner
         expect(res[:ran]).to be(true)
         expect(res[:exit_code]).to eq(0)
         expect(res[:examples]).to eq(2)
@@ -165,7 +165,7 @@ RSpec.describe Rubino::Tools::TestTool do
         expect(res[:framework]).to eq("minitest")
         expect(res[:command]).to eq("ruby -Itest -Ilib test/thing_test.rb")
         expect(res[:ran]).to be(true)
-        expect(res[:examples]).to eq(2)           # runs
+        expect(res[:examples]).to eq(2) # runs
         expect(res[:failures]).to eq(1)
         expect(res[:error_code]).to eq(:tests_failed)
         expect(res[:failing].first[:description]).to include("test_fails")

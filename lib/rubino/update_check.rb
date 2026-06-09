@@ -30,7 +30,7 @@ module Rubino
     GEM_NAME      = "rubino-agent"
     CACHE_FILE    = "update_check.json"
     CHECK_INTERVAL = 24 * 60 * 60 # 24h, like gh/Homebrew
-    NET_TIMEOUT   = 1.5
+    NET_TIMEOUT = 1.5
 
     module_function
 

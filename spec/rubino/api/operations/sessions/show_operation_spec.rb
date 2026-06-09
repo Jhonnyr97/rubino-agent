@@ -4,6 +4,7 @@ require "spec_helper"
 
 RSpec.describe Rubino::API::Operations::Sessions::ShowOperation do
   before { with_test_db }
+
   let(:repo) { Rubino::Session::Repository.new }
 
   it "returns 200 with session details and empty messages" do

@@ -56,7 +56,7 @@ module Rubino
           if token
             ["auth:#{token}", auth_limit]
           else
-            ["ip:#{env['REMOTE_ADDR'] || 'unknown'}", unauth_limit]
+            ["ip:#{env["REMOTE_ADDR"] || "unknown"}", unauth_limit]
           end
         end
 
@@ -110,7 +110,7 @@ module Rubino
 
         def enabled?
           value = config_dig("api", "rate_limit_enabled")
-          value.nil? ? true : value == true
+          value.nil? || value == true
         end
 
         def unauth_limit

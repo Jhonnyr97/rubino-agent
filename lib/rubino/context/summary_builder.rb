@@ -52,19 +52,19 @@ module Rubino
         content = format_messages_for_summary(messages)
 
         prompt = build_summary_prompt(content, previous_summary)
-        max_tokens = @config.compression_max_summary_tokens
+        @config.compression_max_summary_tokens
 
         # Use the auxiliary compression model if configured
         model = compression_model
         adapter = LLM::RubyLLMAdapter.new(model_id: model)
 
         response = adapter.chat(messages: [
-          { role: "system", content: summary_system_prompt },
-          { role: "user", content: prompt }
-        ])
+                                  { role: "system", content: summary_system_prompt },
+                                  { role: "user", content: prompt }
+                                ])
 
         response&.content || fallback_summary(messages, previous_summary)
-      rescue StandardError => e
+      rescue StandardError
         # If LLM fails, produce a basic extractive summary
         fallback_summary(messages, previous_summary)
       end
@@ -97,9 +97,7 @@ module Rubino
       def build_summary_prompt(content, previous_summary)
         parts = []
 
-        if previous_summary
-          parts << "Previous summary to incorporate:\n#{previous_summary}\n\n---\n"
-        end
+        parts << "Previous summary to incorporate:\n#{previous_summary}\n\n---\n" if previous_summary
 
         parts << "New conversation segment to summarize:\n#{content}"
         parts.join("\n")

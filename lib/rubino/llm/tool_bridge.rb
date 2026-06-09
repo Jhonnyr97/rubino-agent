@@ -19,8 +19,8 @@ module Rubino
       def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
-                  ui:            ui            || Rubino.ui,
-                  event_bus:     event_bus     || Rubino.event_bus,
+                  ui: ui || Rubino.ui,
+                  event_bus: event_bus || Rubino.event_bus,
                   tool_executor: tool_executor)
       end
 
@@ -50,9 +50,9 @@ module Rubino
             if @tool_executor
               # Full pipeline: approval check → tool.call → truncation → audit record
               result = @tool_executor.execute(
-                name:      name,
+                name: name,
                 arguments: args,
-                call_id:   nil
+                call_id: nil
               )
               result.output
             else

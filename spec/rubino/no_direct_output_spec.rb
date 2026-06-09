@@ -17,7 +17,7 @@ RSpec.describe "No direct output in core modules" do
     lib/rubino/tools
   ].freeze
 
-  FORBIDDEN_PATTERNS = /^\s*(puts|print|warn|STDOUT|STDERR|pp )\b/.freeze
+  FORBIDDEN_PATTERNS = /^\s*(puts|print|warn|STDOUT|STDERR|pp )\b/
 
   CORE_PATHS.each do |dir_path|
     full_path = File.expand_path("../../#{dir_path}", __dir__)
@@ -32,7 +32,7 @@ RSpec.describe "No direct output in core modules" do
 
         offending = lines_with_output.map { |line, num| "  line #{num}: #{line.strip}" }
         expect(offending).to be_empty,
-          "Found direct output in #{relative}:\n#{offending.join("\n")}"
+                             "Found direct output in #{relative}:\n#{offending.join("\n")}"
       end
     end
   end

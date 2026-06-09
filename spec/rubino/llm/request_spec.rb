@@ -40,14 +40,14 @@ RSpec.describe Rubino::LLM::Request do
   describe "full construction" do
     subject(:request) do
       described_class.new(
-        messages:    [{ role: "user", content: "hi" }],
-        tools:       [:a_tool],
+        messages: [{ role: "user", content: "hi" }],
+        tools: [:a_tool],
         temperature: 0.2,
-        max_tokens:  2048,
-        thinking:    { enabled: true, budget: 8000 },
-        prefill:     "Sure, ",
+        max_tokens: 2048,
+        thinking: { enabled: true, budget: 8000 },
+        prefill: "Sure, ",
         image_paths: ["/tmp/cat.png"],
-        stream:      true
+        stream: true
       )
     end
 
@@ -63,14 +63,14 @@ RSpec.describe Rubino::LLM::Request do
 
     it "round-trips through to_h" do
       expect(request.to_h).to eq(
-        messages:    [{ role: "user", content: "hi" }],
-        tools:       [:a_tool],
+        messages: [{ role: "user", content: "hi" }],
+        tools: [:a_tool],
         temperature: 0.2,
-        max_tokens:  2048,
-        thinking:    { enabled: true, budget: 8000 },
-        prefill:     "Sure, ",
+        max_tokens: 2048,
+        thinking: { enabled: true, budget: 8000 },
+        prefill: "Sure, ",
         image_paths: ["/tmp/cat.png"],
-        stream:      true
+        stream: true
       )
     end
   end

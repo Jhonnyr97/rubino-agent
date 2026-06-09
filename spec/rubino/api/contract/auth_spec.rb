@@ -46,11 +46,15 @@ RSpec.describe "API contract: bearer auth" do
     it "rejects wrong token with 401" do
       get "/v1/sessions/abc", {}, { "HTTP_AUTHORIZATION" => "Bearer wrong-token" }
       expect(last_response.status).to eq(401)
-      expect(json_body.dig("error", "message")).to match(/invalid bearer token/)
+      expect(json_body.dig("error", "message")).to include("invalid bearer token")
     end
 
     it "accepts a lowercase 'bearer' scheme (case-insensitive)" do
-      get "/v1/sessions/no-such-id", {}, { "HTTP_AUTHORIZATION" => "bearer #{described_class::API_KEY rescue APIContractHelper::API_KEY}" }
+      get "/v1/sessions/no-such-id", {}, { "HTTP_AUTHORIZATION" => "bearer #{begin
+        described_class::API_KEY
+      rescue StandardError
+        APIContractHelper::API_KEY
+      end}" }
       # auth passes -> operation runs -> NotFoundError -> 404 (NOT 401)
       expect(last_response.status).to eq(404)
     end

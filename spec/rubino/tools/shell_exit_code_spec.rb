@@ -32,8 +32,12 @@ RSpec.describe Rubino::Tools::ShellTool do
 
     it "marks cancelled=true when cancel_token flips mid-run" do
       token = Class.new do
-        def initialize; @polls = 0; end
-        def cancelled?; @polls += 1; @polls > 3; end # flip after a few polls
+        def initialize = @polls = 0
+
+        def cancelled?
+          @polls += 1
+          @polls > 3
+        end # flip after a few polls
       end.new
       tool.cancel_token = token
 

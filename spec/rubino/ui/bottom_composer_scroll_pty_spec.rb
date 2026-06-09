@@ -119,7 +119,10 @@ RSpec.describe "BottomComposer scroll-boundary PTY" do
   PROMPT = Rubino::UI::BottomComposer::PROMPT
 
   def pty_available?
-    PTY.open { |m, s| m.close; s.close }
+    PTY.open do |m, s|
+      m.close
+      s.close
+    end
     true
   rescue StandardError
     false

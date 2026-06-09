@@ -21,9 +21,9 @@ RSpec.describe Rubino::API::Operations::Skills::ListOperation do
     status, body = operation.call(make_request)
     expect(status).to eq(200)
     expect(body).to eq([
-      { name: "git",  description: "Git ops",   enabled: true },
-      { name: "ruby", description: "Ruby exec", enabled: true }
-    ])
+                         { name: "git",  description: "Git ops", enabled: true },
+                         { name: "ruby", description: "Ruby exec", enabled: true }
+                       ])
   end
 
   it "reflects stored state overrides" do

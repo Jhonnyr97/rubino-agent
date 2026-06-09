@@ -21,18 +21,18 @@ module Rubino
 
       def description
         "Read a text file from the filesystem with line numbers (cat -n style). " \
-        "Supports offset (1-based start line) and limit (max lines returned). " \
-        "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
-        "Default window: first #{DEFAULT_LIMIT} lines."
+          "Supports offset (1-based start line) and limit (max lines returned). " \
+          "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
+          "Default window: first #{DEFAULT_LIMIT} lines."
       end
 
       def input_schema
         {
           type: "object",
           properties: {
-            file_path:   { type: "string",  description: "Absolute or relative file path" },
-            offset:      { type: "integer", description: "1-based line to start at (default 1)" },
-            limit:       { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
+            file_path: { type: "string", description: "Absolute or relative file path" },
+            offset: { type: "integer", description: "1-based line to start at (default 1)" },
+            limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
           },
           required: %w[file_path]
         }
@@ -52,11 +52,12 @@ module Rubino
         expanded = File.expand_path(file_path)
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
+
         if binary?(expanded)
           size = File.size(expanded)
-          return { output:     "Error: #{file_path} appears to be a binary file (#{size} bytes). " \
-                               "Reading it as text would corrupt the buffer. " \
-                               "Use the shell tool with xxd/file/strings for inspection.",
+          return { output: "Error: #{file_path} appears to be a binary file (#{size} bytes). " \
+                           "Reading it as text would corrupt the buffer. " \
+                           "Use the shell tool with xxd/file/strings for inspection.",
                    error_code: :binary_file }
         end
 
@@ -75,9 +76,9 @@ module Rubino
         # content twice. A real edit bumps mtime, so legitimate re-reads pass.
         dup = @read_tracker&.register_window(expanded, offset, limit, mtime)
         if dup && dup > 1
-          return { output:  "[DUPLICATE READ] Exact repeat of an earlier read of #{file_path} " \
-                            "(lines #{offset}-#{offset + limit - 1}) this turn — reuse that result " \
-                            "instead of re-reading.",
+          return { output: "[DUPLICATE READ] Exact repeat of an earlier read of #{file_path} " \
+                           "(lines #{offset}-#{offset + limit - 1}) this turn — reuse that result " \
+                           "instead of re-reading.",
                    metrics: "duplicate" }
         end
 
@@ -156,9 +157,7 @@ module Rubino
             break if total_lines > last_line
 
             chomped = line.chomp
-            if chomped.bytesize > MAX_LINE_WIDTH
-              chomped = chomped.byteslice(0, MAX_LINE_WIDTH) + "… [line truncated]"
-            end
+            chomped = chomped.byteslice(0, MAX_LINE_WIDTH) + "… [line truncated]" if chomped.bytesize > MAX_LINE_WIDTH
             out << format("%6d\t%s\n", total_lines, chomped)
             printed   += 1
             last_shown = total_lines
@@ -191,9 +190,9 @@ module Rubino
                      ""
                    end
           full = out + footer
-          { output:    full,
-            metrics:   "#{printed} line#{'s' if printed != 1}",
-            body:      Util::Output.preview(full),
+          { output: full,
+            metrics: "#{printed} line#{"s" if printed != 1}",
+            body: Util::Output.preview(full),
             body_kind: :plain }
         end
       end

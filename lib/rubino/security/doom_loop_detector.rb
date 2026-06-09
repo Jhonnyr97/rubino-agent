@@ -20,9 +20,7 @@ module Rubino
         # Check if the last N calls are identical
         if @history.size >= @threshold
           recent = @history.last(@threshold)
-          if recent.uniq.size == 1
-            return true
-          end
+          return true if recent.uniq.size == 1
         end
 
         false

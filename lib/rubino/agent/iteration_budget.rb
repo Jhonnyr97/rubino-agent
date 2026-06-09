@@ -29,7 +29,7 @@ module Rubino
       def positive_int(value)
         return nil if value.nil?
 
-        n = Integer(value, exception: false) || (Float(value, exception: false)&.to_i)
+        n = Integer(value, exception: false) || Float(value, exception: false)&.to_i
         n if n && n.positive?
       end
 

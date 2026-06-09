@@ -20,13 +20,14 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
   end
 
   describe "Modes.yolo short-circuit" do
+    subject(:policy) { described_class.new(config: config) }
+
     let(:config) do
       test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "shell rm *" => "deny" }
       )
     end
-    subject(:policy) { described_class.new(config: config) }
 
     it "allows a risky shell call that would otherwise be :ask" do
       expect(policy.decide(risky_tool, arguments: { "command" => "ls" })).to eq(:ask)

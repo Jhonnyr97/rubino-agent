@@ -50,7 +50,7 @@ RSpec.describe "API contract: files" do
   describe "POST /v1/files (multipart)" do
     it "201 + descriptor when a 'file' part is present" do
       boundary = "AaB03x"
-      body = +"--#{boundary}\r\n"
+      body = "--#{boundary}\r\n"
       body << "content-disposition: form-data; name=\"file\"; filename=\"upload.txt\"\r\n"
       body << "content-type: text/plain\r\n\r\n"
       body << "uploaded bytes\r\n"
@@ -59,7 +59,8 @@ RSpec.describe "API contract: files" do
       post "/v1/files", body,
            { "CONTENT_TYPE" => "multipart/form-data; boundary=#{boundary}", "CONTENT_LENGTH" => body.bytesize.to_s }.merge(auth_headers)
       expect(last_response.status).to eq(201)
-      expect(json_body).to include("id" => kind_of(String), "filename" => "upload.txt", "size" => "uploaded bytes".bytesize)
+      expect(json_body).to include("id" => kind_of(String), "filename" => "upload.txt",
+                                   "size" => "uploaded bytes".bytesize)
     end
 
     it "422 when content-type is not multipart" do

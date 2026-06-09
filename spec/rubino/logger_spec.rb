@@ -61,8 +61,8 @@ RSpec.describe Rubino::Logger do
       logger.reopen(file_like)
       logger.warn(event: "llm.stream.partial_interrupted", error: "TCP blip")
 
-      expect(stdout_like.string).to eq("")           # nothing leaked to the old (TUI) sink
-      payload = JSON.parse(file_like.string)          # log preserved on the new sink
+      expect(stdout_like.string).to eq("") # nothing leaked to the old (TUI) sink
+      payload = JSON.parse(file_like.string) # log preserved on the new sink
       expect(payload["event"]).to eq("llm.stream.partial_interrupted")
     end
 

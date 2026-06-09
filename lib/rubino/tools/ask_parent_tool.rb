@@ -43,7 +43,7 @@ module Rubino
     class AskParentTool < Base
       # Sentinel head used when a non-blocking ask returns to the child: the
       # child keeps working and the real answer arrives later as a steer note.
-      NONBLOCKING_ACK = "Question sent to your parent. Keep working with your best "                         "judgement; the answer will be delivered to you as a note "                         "at your next turn if/when it arrives."
+      NONBLOCKING_ACK = "Question sent to your parent. Keep working with your best " + "judgement; the answer will be delivered to you as a note " + "at your next turn if/when it arrives."
 
       # Fallback bound (seconds) for a blocking ask when no configuration is
       # reachable (a bare tool in a unit test). The live value comes from
@@ -62,7 +62,7 @@ module Rubino
       end
 
       def description
-        "Ask YOUR PARENT agent a question when you hit a decision you cannot "         "resolve from the task you were given (e.g. a missing preference, an "         "ambiguous requirement, sqlite-vs-postgres). Your parent answers from "         "its own context if it can, otherwise it asks the human. Use "         "blocking:true when you CANNOT proceed without the answer (you will "         "pause until it arrives); blocking:false (default) when you can keep "         "working and fold the answer in later. Only available to subagents."
+        "Ask YOUR PARENT agent a question when you hit a decision you cannot " + "resolve from the task you were given (e.g. a missing preference, an " + "ambiguous requirement, sqlite-vs-postgres). Your parent answers from " + "its own context if it can, otherwise it asks the human. Use " + "blocking:true when you CANNOT proceed without the answer (you will " + "pause until it arrives); blocking:false (default) when you can keep " + "working and fold the answer in later. Only available to subagents."
       end
 
       def input_schema
@@ -72,7 +72,7 @@ module Rubino
             question: { type: "string", description: "The question for your parent. Be specific and self-contained." },
             blocking: {
               type: "boolean",
-              description: "true = pause until answered (you cannot proceed without it). "                            "false (default) = keep working; the answer is delivered later as a note."
+              description: "true = pause until answered (you cannot proceed without it). " + "false (default) = keep working; the answer is delivered later as a note."
             }
           },
           required: %w[question]
@@ -91,7 +91,7 @@ module Rubino
         id = Rubino.current_subagent_id
         entry = id && BackgroundTasks.instance.find(id)
         unless entry
-          return "Error: ask_parent is only available to a background subagent "                  "(no parent to ask). Resolve this from your task instead."
+          return "Error: ask_parent is only available to a background subagent " + "(no parent to ask). Resolve this from your task instead."
         end
 
         escalate(entry, question, blocking)
@@ -124,7 +124,7 @@ module Rubino
         owner_id = entry.owner_subagent_id
         BackgroundTasks.instance.begin_ask(
           entry.id, gate: gate, ask_id: ask_id, question: question,
-          blocking: blocking, owner_id: owner_id
+                    blocking: blocking, owner_id: owner_id
         )
         if owner_id
           notify_agent_parent(owner_id, entry, question)
@@ -189,9 +189,9 @@ module Rubino
 
       def agent_parent_notice(entry, question)
         "[subagent-question] Your subagent #{entry.id} ('#{entry.subagent}') is asking you:\n" \
-        "#{question}\n" \
-        "Answer it with answer_child(task_id: \"#{entry.id}\", answer: \"…\") if you can. " \
-        "If you cannot answer from your own context, escalate by calling ask_parent yourself."
+          "#{question}\n" \
+          "Answer it with answer_child(task_id: \"#{entry.id}\", answer: \"…\") if you can. " \
+          "If you cannot answer from your own context, escalate by calling ask_parent yourself."
       end
 
       # Surfaces the blocked state on the parent CLI (a committed banner in
@@ -212,7 +212,7 @@ module Rubino
       end
 
       def parent_notice(entry, question)
-        "[subagent-question] Task #{entry.id} (subagent \'#{entry.subagent}\') is asking you:\n"         "#{question}\n"         "If you can answer from your own context, reply to it with "         "/reply #{entry.id} <answer> (or tell the user). If not, the human will be asked."
+        "[subagent-question] Task #{entry.id} (subagent '#{entry.subagent}') is asking you:\n" + "#{question}\n" + "If you can answer from your own context, reply to it with " + "/reply #{entry.id} <answer> (or tell the user). If not, the human will be asked."
       end
     end
   end

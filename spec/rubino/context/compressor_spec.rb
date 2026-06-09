@@ -20,9 +20,9 @@ RSpec.describe Rubino::Context::Compressor do
 
     it "raises CompactionError when the session is missing" do
       allow(session_repo).to receive(:find).with(session_id).and_return(nil)
-      expect {
+      expect do
         described_class.new(session_id: session_id, config: config, db: double).compact!
-      }.to raise_error(Rubino::CompactionError, /Session not found/)
+      end.to raise_error(Rubino::CompactionError, /Session not found/)
     end
 
     it "returns a skipped result when message count is below the minimum" do
@@ -83,11 +83,11 @@ RSpec.describe Rubino::Context::Compressor do
       # Small protect windows so a modest message count yields a non-empty middle.
       lineage_config = test_configuration(
         "compression" => Rubino::Config::Defaults.to_hash["compression"]
-          .merge("protect_first_n" => 1, "protect_last_n" => 1)
+                                                 .merge("protect_first_n" => 1, "protect_last_n" => 1)
       )
 
       prior_id = Rubino::Session::SummaryStore.new(db: db)
-                                                 .insert(session_id: parent[:id], content: "PRIOR")
+                                              .insert(session_id: parent[:id], content: "PRIOR")
 
       # Enough messages to clear the minimum + a non-empty middle.
       15.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }

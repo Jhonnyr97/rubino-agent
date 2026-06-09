@@ -35,7 +35,7 @@ module Rubino
         if passed == total
           ui.success("All #{total} checks passed!")
           if optional_unconfigured.positive?
-            ui.info("(#{optional_unconfigured} optional server check#{'s' if optional_unconfigured != 1} not configured — only needed to run the API/OAuth server)")
+            ui.info("(#{optional_unconfigured} optional server check#{"s" if optional_unconfigured != 1} not configured — only needed to run the API/OAuth server)")
           end
         else
           ui.warning("#{passed}/#{total} required checks passed")

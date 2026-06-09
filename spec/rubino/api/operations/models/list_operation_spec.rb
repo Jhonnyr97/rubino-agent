@@ -12,9 +12,9 @@ RSpec.describe Rubino::API::Operations::Models::ListOperation do
     status, body = operation.call(make_request)
     expect(status).to eq(200)
     expect(body).to eq([
-      { id: "openai/gpt-4o",     provider: "openai",    context_window: 128_000 },
-      { id: "anthropic/claude",  provider: "anthropic", context_window: 200_000 }
-    ])
+                         { id: "openai/gpt-4o", provider: "openai", context_window: 128_000 },
+                         { id: "anthropic/claude", provider: "anthropic", context_window: 200_000 }
+                       ])
   end
 
   it "tolerates plain hash entries" do

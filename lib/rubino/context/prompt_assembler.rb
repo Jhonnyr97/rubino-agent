@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "set"
-
 module Rubino
   module Context
     # Assembles the complete prompt from all context sources.
@@ -65,9 +63,7 @@ module Rubino
 
         # Session summary (if compacted)
         summary = load_summary
-        if summary
-          messages << { role: "system", content: "[Session Summary]\n#{summary}" }
-        end
+        messages << { role: "system", content: "[Session Summary]\n#{summary}" } if summary
 
         # Conversation history. Repair tool pairing across the FULL list before
         # mapping to wire format — this is the defensive "net" that recovers
@@ -101,21 +97,22 @@ module Rubino
 
         # All tool_call ids declared by assistant messages anywhere in history.
         declared_ids = history
-                         .select { |m| sanitizer.assistant_tool_call?(m) }
-                         .flat_map { |m| sanitizer.tool_call_ids(m) }
-                         .to_set
+                       .select { |m| sanitizer.assistant_tool_call?(m) }
+                       .flat_map { |m| sanitizer.tool_call_ids(m) }
+                       .to_set
 
         # All ids actually answered by a tool result anywhere in history.
         answered_ids = history
-                         .select { |m| m.role == "tool" && m.tool_call_id }
-                         .map(&:tool_call_id)
-                         .to_set
+                       .select { |m| m.role == "tool" && m.tool_call_id }
+                       .map(&:tool_call_id)
+                       .to_set
 
         repaired = []
         history.each do |msg|
           if msg.role == "tool" && msg.tool_call_id
             # Drop a result whose triggering assistant call is gone.
             next unless declared_ids.include?(msg.tool_call_id)
+
             repaired << msg
           elsif sanitizer.assistant_tool_call?(msg)
             ids = sanitizer.tool_call_ids(msg)
@@ -147,15 +144,15 @@ module Rubino
         metadata.delete("tool_calls")
 
         Session::Message.new(
-          id:           msg.id,
-          session_id:   msg.session_id,
-          role:         msg.role,
-          content:      msg.content,
-          tool_name:    msg.tool_name,
+          id: msg.id,
+          session_id: msg.session_id,
+          role: msg.role,
+          content: msg.content,
+          tool_name: msg.tool_name,
           tool_call_id: msg.tool_call_id,
-          token_count:  msg.token_count,
-          metadata:     metadata,
-          created_at:   msg.created_at
+          token_count: msg.token_count,
+          metadata: metadata,
+          created_at: msg.created_at
         )
       end
 
@@ -277,7 +274,7 @@ module Rubino
 
       def skills_feature_enabled?
         value = @config.dig("skills", "enabled")
-        value.nil? ? true : value == true
+        value.nil? || value == true
       end
 
       # True when the `skill` tool is exposed to the model this turn. Honors the
@@ -376,7 +373,6 @@ module Rubino
         # boot-time prompt is the authoritative gate, this is defence-in-depth.
         true
       end
-
     end
   end
 end

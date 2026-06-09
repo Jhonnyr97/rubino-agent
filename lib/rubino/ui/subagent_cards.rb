@@ -80,8 +80,8 @@ module Rubino
         glyph    = @pastel.red(BLOCKED)
         question = entry.ask_question.to_s
         "  #{glyph} #{entry.id} · #{entry.subagent} · " +
-          @pastel.red("waiting on you") + ": #{first_line(question, 60)}" \
-          " · /reply #{entry.id}"
+          @pastel.red("waiting on you") + ": #{first_line(question, 60)} " \
+                                          "· /reply #{entry.id}"
       end
 
       # A card for a child parked on a human approval — the approval is the most
@@ -91,15 +91,14 @@ module Rubino
         command = entry.approval_command.to_s
         command = entry.approval_question.to_s if command.empty?
         "  #{glyph} #{entry.id} · #{entry.subagent} · " +
-          @pastel.yellow("needs approval") + ": #{first_line(command, 60)}" \
-          " · /agents #{entry.id}"
+          @pastel.yellow("needs approval") + ": #{first_line(command, 60)} " \
+                                             "· /agents #{entry.id}"
       end
 
       private
 
       def live?(entry)
-        entry.status == :running || entry.status == :needs_approval ||
-          entry.status == :blocked_on_human
+        %i[running needs_approval blocked_on_human].include?(entry.status)
       end
 
       # Shared hint under the block. When something needs approval the hint leads

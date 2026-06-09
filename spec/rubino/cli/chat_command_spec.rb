@@ -29,9 +29,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "#build_completion_source" do
     it "builds a CompletionSource without raising (Zeitwerk constant resolution)" do
       cmd_loader = Rubino::Commands::Loader.new
-      expect {
+      expect do
         described_class.new({}).send(:build_completion_source, cmd_loader)
-      }.not_to raise_error
+      end.not_to raise_error
     end
 
     it "feeds built-in slash commands into the completion source" do
@@ -189,33 +189,33 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # -----------------------------------------------------------------------
   describe "resolved-model echo & unknown-model warning (#142)" do
     it "echoes the resolved model to stderr in -q mode when -m is given (known model)" do
-      expect {
+      expect do
         described_class.new("query" => "hi", "model" => "gpt-4o").execute
-      }.to output(/model: gpt-4o/).to_stderr
+      end.to output(/model: gpt-4o/).to_stderr
     end
 
     it "warns to stderr when the -m model id is not in the known catalog" do
-      expect {
+      expect do
         described_class.new("query" => "hi", "model" => "zzz-nonexistent-9999").execute
-      }.to output(/warning: model 'zzz-nonexistent-9999' is not in the known model catalog/).to_stderr
+      end.to output(/warning: model 'zzz-nonexistent-9999' is not in the known model catalog/).to_stderr
     end
 
     it "still proceeds (prints the answer) on an unknown model id" do
-      expect {
+      expect do
         described_class.new("query" => "hi", "model" => "zzz-nonexistent-9999").execute
-      }.to output("RESPONSE_TEXT\n").to_stdout
+      end.to output("RESPONSE_TEXT\n").to_stdout
     end
 
     it "does NOT echo the model when no -m override is given" do
-      expect {
+      expect do
         described_class.new("query" => "hi").execute
-      }.not_to output(/^model: /).to_stderr
+      end.not_to output(/^model: /).to_stderr
     end
 
     it "does not warn for a fake/ model id (dev provider)" do
-      expect {
+      expect do
         described_class.new("query" => "hi", "model" => "fake/with-tools").execute
-      }.not_to output(/not in the known model catalog/).to_stderr
+      end.not_to output(/not in the known model catalog/).to_stderr
     end
   end
 
@@ -247,16 +247,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
       )
     end
 
-    it "--continue fetches latest active session" do
-      allow(repo).to receive(:latest_active).and_return(session)
+    it "--continue fetches latest resumable session" do
+      allow(repo).to receive(:latest_resumable).and_return(session)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: "abc123ef")
       )
     end
 
-    it "--continue passes nil when no active session" do
-      allow(repo).to receive(:latest_active).and_return(nil)
+    it "--continue passes nil when no resumable session" do
+      allow(repo).to receive(:latest_resumable).and_return(nil)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: nil)
@@ -520,9 +520,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(Rubino).to receive(:ensure_directories!)
       allow(migrator).to receive(:migrate!).and_raise(StandardError, "disk full")
 
-      expect {
+      expect do
         described_class.new("query" => "hi").execute
-      }.to raise_error(SystemExit).and output(/rubino setup/).to_stderr
+      end.to raise_error(SystemExit).and output(/rubino setup/).to_stderr
     end
   end
 
@@ -569,7 +569,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       # the M2 redesign repurposed into a "● running" tool-style row), tool →
       # tool_started + tool_finished.
       expect(levels).to include(:replay_user_input, :assistant_text,
-                                 :tool_started, :tool_finished)
+                                :tool_started, :tool_finished)
       expect(levels).not_to include(:box_open, :box_close)
 
       # Tool replay must carry an `at:` timestamp so historical tool boxes
@@ -582,8 +582,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
       started = ui.messages.find { |m| m[:level] == :tool_started }
       expect(started[:message]).to eq("shell")
       # Store#hydrate deserialises metadata_json with symbolize_names: true,
-       # so the string key persisted by Loop comes back as a symbol. The UI
-       # treats both transparently — what matters is that the args survive.
+      # so the string key persisted by Loop comes back as a symbol. The UI
+      # treats both transparently — what matters is that the args survive.
       expect(started[:arguments]).to eq({ command: "ls" })
     end
 
@@ -891,7 +891,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
           sleep 0.05
           "to be cleared".each_char { |c| fake_composer.handle_key(c) }
           Process.kill("INT", Process.pid) # the real idle Ctrl+C
-          sleep 0.1                          # let the loop drain the trap + clear
+          sleep 0.1 # let the loop drain the trap + clear
           expect(fake_composer.buffer).to eq("") # draft cleared, not lost to exit
           "after clear".each_char { |c| fake_composer.handle_key(c) }
           fake_composer.handle_key("\r")
@@ -1072,9 +1072,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
         allow(runner).to receive(:run).and_raise(RuntimeError, "boom")
 
         before = $stdout
-        expect {
+        expect do
           cmd.send(:run_turn, runner, "hello", ui, input_queue)
-        }.to raise_error(RuntimeError, "boom")
+        end.to raise_error(RuntimeError, "boom")
 
         expect($stdin).to have_received(:cooked!).at_least(:once)
         expect($stdout).to be(before) # real $stdout restored after the swap
@@ -1098,21 +1098,23 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(Rubino::Agent::Runner).to receive(:new)
         .and_raise(Rubino::SessionError, "Session not found: deadbeef")
 
-      expect {
+      expect do
         described_class.new("query" => "hi", "resume" => "deadbeef").execute
-      }.to raise_error(SystemExit).and output(/Session not found/).to_stderr
+      end.to raise_error(SystemExit).and output(/Session not found/).to_stderr
     end
 
     it "exits with the candidate list when --resume is ambiguous" do
       err = Rubino::AmbiguousSessionError.new("feature", [
-        { id: "11111111-aaaa-bbbb-cccc-dddddddddddd", title: "feature spike", status: "active" },
-        { id: "22222222-eeee-ffff-0000-111111111111", title: "feature tests", status: "active" }
-      ])
+                                                { id: "11111111-aaaa-bbbb-cccc-dddddddddddd", title: "feature spike",
+                                                  status: "active" },
+                                                { id: "22222222-eeee-ffff-0000-111111111111", title: "feature tests",
+                                                  status: "active" }
+                                              ])
       allow(Rubino::Agent::Runner).to receive(:new).and_raise(err)
 
-      expect {
+      expect do
         described_class.new("query" => "hi", "resume" => "feature").execute
-      }.to raise_error(SystemExit).and output(/Ambiguous.*feature spike.*feature tests/m).to_stderr
+      end.to raise_error(SystemExit).and output(/Ambiguous.*feature spike.*feature tests/m).to_stderr
     end
   end
 
@@ -1142,14 +1144,14 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
     end
 
-    it "in plan mode: returns plan ❯ " do
+    it "in plan mode: returns plan ❯" do
       Rubino::Modes.set(:plan)
       expect(strip_ansi(cmd.send(:build_prompt))).to eq("plan ❯ ")
     ensure
       Rubino::Modes.set(:default)
     end
 
-    it "in yolo mode: returns yolo ❯ " do
+    it "in yolo mode: returns yolo ❯" do
       Rubino::Modes.set(:yolo)
       expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
     ensure
@@ -1162,8 +1164,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # lives in SQLite, not on screen. print_resume_hint emits the exact
   # `rubino chat --resume <handle>` line, preferring the title when set.
   describe "#print_resume_hint" do
-    let(:ui) { Rubino::UI::Null.new }
     subject(:cmd) { described_class.new({}) }
+
+    let(:ui) { Rubino::UI::Null.new }
 
     it "prefers the title when one is set" do
       cmd.send(:print_resume_hint, ui, { id: "abc-123", title: "audit work" })
@@ -1235,7 +1238,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     describe "#handle_image_command" do
       it "/clear-images drops all pending attachments and returns true" do
-        cmd.send(:extract_images!, "@#{make('x.png')}", ui)
+        cmd.send(:extract_images!, "@#{make("x.png")}", ui)
         expect(cmd.send(:pending_image_paths)).not_to be_empty
 
         expect(cmd.send(:handle_image_command, "/clear-images", ui)).to be(true)
@@ -1293,9 +1296,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       it "skips (and reports) a --image path that is not a readable image" do
         doc = make("notes.txt")
-        expect {
+        expect do
           described_class.new("query" => "hi", "image" => [doc]).execute
-        }.to output(/ignoring --image.*not a readable image/).to_stderr
+        end.to output(/ignoring --image.*not a readable image/).to_stderr
         expect(fake_runner).to have_received(:run!).with("hi", image_paths: [])
       end
     end
@@ -1361,9 +1364,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
 
       it "surfaces a clear actionable error to stderr and exits non-zero (no silent empty success)" do
-        expect {
+        expect do
           described_class.new("query" => "hi").execute
-        }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+        end.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
           .and output(/No API key configured.*rubino setup/m).to_stderr
       end
 
@@ -1403,9 +1406,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
         allow(fake_runner).to receive(:run!)
           .and_raise(Rubino::Error.new("Authentication failed (401). Token may have expired"))
 
-        expect {
+        expect do
           described_class.new("query" => "hi").execute
-        }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+        end.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
           .and output(/Authentication failed/).to_stderr
       end
     end
@@ -1416,7 +1419,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # reopens the logger onto a file in the logs dir; #restore_logger puts it back.
   describe "interactive logger routing (#125)" do
     around do |example|
-      Dir.mktmpdir { |dir| @logs_dir = dir; example.run }
+      Dir.mktmpdir do |dir|
+        @logs_dir = dir
+        example.run
+      end
     end
 
     before do
@@ -1437,7 +1443,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:restore_logger, prev)
       end
 
-      expect(out).to eq("")  # no JSON leaked into the TUI's stdout
+      expect(out).to eq("") # no JSON leaked into the TUI's stdout
 
       log = File.read(File.join(@logs_dir, "rubino.log"))
       expect(log).to include("llm.stream.partial_interrupted")
@@ -1449,11 +1455,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd  = described_class.new({})
 
       prev = cmd.send(:redirect_logger_to_file)
-      expect(prev).to be(sink)            # captured the original sink
+      expect(prev).to be(sink) # captured the original sink
       cmd.send(:restore_logger, prev)
 
       Rubino.logger.info(event: "after.restore")
-      expect(sink.string).to include("after.restore")  # back on the original sink
+      expect(sink.string).to include("after.restore") # back on the original sink
     end
   end
 

@@ -39,7 +39,7 @@ module Rubino
         raw =
           if File.exist?(@config_path)
             begin
-              YAML.safe_load(File.read(@config_path), permitted_classes: [Symbol]) || {}
+              YAML.safe_load_file(@config_path, permitted_classes: [Symbol]) || {}
             rescue Psych::SyntaxError => e
               raise ConfigError,
                     "Invalid YAML in #{@config_path} at line #{e.line}, column #{e.column}: #{e.problem}"
@@ -87,7 +87,7 @@ module Rubino
 
         first = value[0]
         last  = value[-1]
-        return value[1..-2] if (first == '"' || first == "'") && first == last
+        return value[1..-2] if ['"', "'"].include?(first) && first == last
 
         value
       end

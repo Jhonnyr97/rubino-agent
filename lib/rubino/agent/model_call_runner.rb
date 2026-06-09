@@ -46,7 +46,7 @@ module Rubino
     class ModelCallRunner
       def initialize(llm:, config:, ui:, event_bus:, cancel_token: nil,
                      fallback_chain: nil, validator: ResponseValidator.new)
-        @llm          = llm
+        @llm = llm
         # SLICE-7: the provider/model fallback chain. When present, the live
         # adapter for each attempt is the chain's CURRENT adapter (so a rotation
         # takes effect on the very next call), and a fallback-worthy failure
@@ -67,7 +67,7 @@ module Rubino
       #
       # `iteration` is purely for the warning/telemetry text (which loop turn this
       # call belongs to); it has no control-flow role.
-      def call!(request, iteration: nil, &block)
+      def call!(request, iteration: nil, &)
         # Error-path budget — distinct from the empty/degenerate budgets, which
         # the recovery ladder owns (see #recovery). Kept here so a transient API
         # error can't bleed into the empty-retry count.
@@ -84,7 +84,7 @@ module Rubino
         # Visible text streamed to the user this call — fuels rung 1
         # (partial-stream recovery). The caller's block still sees every chunk.
         streamed = +""
-        wrapped  = capture_streamed(streamed, &block)
+        wrapped  = capture_streamed(streamed, &)
 
         # :recovered is thrown by the ladder's rung-1/2 ":use" directive — the
         # recovered final content, wrapped as a synthetic text response.
@@ -142,11 +142,11 @@ module Rubino
             # SLICE-7 rung 6: the ladder rotated to a fallback. Reset
             # the per-call counters (fresh recovery, zeroed error budget) and retry
             # on the new adapter — the reference zeroes _empty_content_retries here.
-            if switched
-              error_attempts = 0
-              recovery = recovery_for(iteration)
-              streamed.clear
-            end
+            next unless switched
+
+            error_attempts = 0
+            recovery = recovery_for(iteration)
+            streamed.clear
           end
         end
       end
@@ -178,10 +178,10 @@ module Rubino
       # :use it returns from the whole call! via a thrown result.
       def apply_recovery!(recovery, response, request, streamed, iteration)
         state = DegenerateResponseRecovery::RecoveryState.new(
-          response:                     response,
-          streamed_text:                streamed.dup,
-          messages:                     request.messages,
-          prior_turn_content:           nil,
+          response: response,
+          streamed_text: streamed.dup,
+          messages: request.messages,
+          prior_turn_content: nil,
           prior_tools_all_housekeeping: false
         )
 
@@ -218,9 +218,9 @@ module Rubino
       # here so they behave per-turn, as the reference zeroes them on success.
       def recovery_for(_iteration)
         DegenerateResponseRecovery.new(
-          validator:   @validator,
-          ui:          @ui,
-          empty_max:   empty_response_max_retries
+          validator: @validator,
+          ui: @ui,
+          empty_max: empty_response_max_retries
         )
       end
 
@@ -230,14 +230,14 @@ module Rubino
       # message on the wire (RubyLLMAdapter#apply_prefill).
       def with_prefill(request, seed)
         LLM::Request.new(
-          messages:    request.messages,
-          tools:       request.tools,
+          messages: request.messages,
+          tools: request.tools,
           temperature: request.temperature,
-          max_tokens:  request.max_tokens,
-          thinking:    request.thinking,
-          prefill:     seed,
+          max_tokens: request.max_tokens,
+          thinking: request.thinking,
+          prefill: seed,
           image_paths: request.image_paths,
-          stream:      request.stream?
+          stream: request.stream?
         )
       end
 
@@ -249,9 +249,7 @@ module Rubino
         return nil unless block
 
         lambda do |chunk|
-          if chunk.is_a?(Hash) && chunk[:type] == :content
-            buffer << chunk[:text].to_s
-          end
+          buffer << chunk[:text].to_s if chunk.is_a?(Hash) && chunk[:type] == :content
           block.call(chunk)
         end
       end
@@ -261,12 +259,12 @@ module Rubino
       # usage is copied from the degenerate response (the spend already happened).
       def synthetic_text_response(response, content)
         LLM::AdapterResponse.new(
-          content:       content,
-          tool_calls:    [],
-          input_tokens:  response.input_tokens,
+          content: content,
+          tool_calls: [],
+          input_tokens: response.input_tokens,
           output_tokens: response.output_tokens,
-          model_id:      response.model_id,
-          stop_reason:   response.stop_reason
+          model_id: response.model_id,
+          stop_reason: response.stop_reason
         )
       end
 

@@ -23,9 +23,9 @@ module Rubino
 
       def description
         "Fetch the status and result of a background subagent started by `task`. " \
-        "Returns `running` (still working), `completed` (with the full final " \
-        "result), or `failed` (with the error). Call without a task_id to list " \
-        "all tracked background subagents."
+          "Returns `running` (still working), `completed` (with the full final " \
+          "result), or `failed` (with the error). Call without a task_id to list " \
+          "all tracked background subagents."
       end
 
       def input_schema

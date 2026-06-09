@@ -211,12 +211,14 @@ module Rubino
       # Emits one colored, indented, name-prefixed activity row.
       def row(text)
         return if text.nil? || text.to_s.strip.empty?
+
         @out.puts @pastel.public_send(@color, "#{INDENT}#{GLYPH} #{@agent_name} · #{text}")
       end
 
       # Dim variant for low-priority annotations (note/status/info).
       def dim_row(text)
         return if text.nil? || text.to_s.strip.empty?
+
         @out.puts @pastel.dim("#{INDENT}#{GLYPH} #{@agent_name} · #{first_line(text, 80)}")
       end
 

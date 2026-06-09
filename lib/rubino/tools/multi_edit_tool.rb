@@ -16,8 +16,8 @@ module Rubino
 
       def description
         "Apply multiple exact string replacements to a single file atomically. " \
-        "Edits are applied sequentially in the given order; later edits see " \
-        "the result of earlier ones. If any edit fails, NO changes are written."
+          "Edits are applied sequentially in the given order; later edits see " \
+          "the result of earlier ones. If any edit fails, NO changes are written."
       end
 
       def input_schema
@@ -34,8 +34,8 @@ module Rubino
               items: {
                 type: "object",
                 properties: {
-                  old_string:  { type: "string",  description: "Exact text to find" },
-                  new_string:  { type: "string",  description: "Replacement text" },
+                  old_string: { type: "string",  description: "Exact text to find" },
+                  new_string: { type: "string",  description: "Replacement text" },
                   replace_all: { type: "boolean", description: "Replace all occurrences (default false)" }
                 },
                 required: %w[old_string new_string]
@@ -79,12 +79,8 @@ module Rubino
           new_s       = edit["new_string"]  || edit[:new_string]
           replace_all = edit["replace_all"] || edit[:replace_all] || false
 
-          if old_s.nil? || new_s.nil?
-            return "Error: edit ##{idx + 1} is missing old_string or new_string"
-          end
-          if old_s == new_s
-            return "Error: edit ##{idx + 1}: old_string and new_string are identical"
-          end
+          return "Error: edit ##{idx + 1} is missing old_string or new_string" if old_s.nil? || new_s.nil?
+          return "Error: edit ##{idx + 1}: old_string and new_string are identical" if old_s == new_s
           unless working.include?(old_s)
             return "Error: edit ##{idx + 1}: old_string not found (check whitespace; " \
                    "remember edits see the result of prior edits)"

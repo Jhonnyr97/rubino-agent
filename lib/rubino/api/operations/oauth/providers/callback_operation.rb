@@ -46,12 +46,12 @@ module Rubino
                   )
                 rescue StandardError => e
                   ::Rubino::Metrics.counter(:oauth_token_exchanges_total,
-                                               provider: provider.id, outcome: "error").increment
+                                            provider: provider.id, outcome: "error").increment
                   raise UpstreamError.new("token exchange failed: #{e.class.name}", service: provider.id)
                 end
 
               ::Rubino::Metrics.counter(:oauth_token_exchanges_total,
-                                           provider: provider.id, outcome: "ok").increment
+                                        provider: provider.id, outcome: "ok").increment
 
               info = provider.fetch_account_info(token[:access_token])
 

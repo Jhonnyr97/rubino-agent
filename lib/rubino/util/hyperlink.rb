@@ -41,6 +41,7 @@ module Rubino
       # cached per process because env vars don't change mid-run.
       def self.supported?
         return @supported if defined?(@supported)
+
         @supported = compute_support
       end
 
@@ -58,6 +59,7 @@ module Rubino
         return label.to_s if label.nil?
         return label.to_s unless supported?
         return label.to_s if uri.nil? || uri.to_s.empty?
+
         "#{OPEN_PREFIX}#{uri}#{ST}#{label}#{CLOSE_SUFFIX}"
       end
 
@@ -67,8 +69,10 @@ module Rubino
       # — callers should fall back to the raw label in that case.
       def self.file_uri(path)
         return nil if path.nil? || path.to_s.empty?
+
         abs = File.expand_path(path.to_s)
         return nil unless File.exist?(abs)
+
         "file://#{abs}"
       end
 
@@ -80,6 +84,7 @@ module Rubino
         uri  = file_uri(path)
         text = (label || path).to_s
         return text if uri.nil?
+
         wrap(text, uri: uri)
       end
 
@@ -91,7 +96,8 @@ module Rubino
           return true  if ENV["RUBINO_HYPERLINKS"] == "1"
           return false if ENV["RUBINO_HYPERLINKS"] == "0"
           return true  if ENV["TERM"] == "xterm-kitty"
-          KNOWN_TERM_PROGRAMS.include?(ENV["TERM_PROGRAM"])
+
+          KNOWN_TERM_PROGRAMS.include?(ENV.fetch("TERM_PROGRAM", nil))
         end
       end
     end

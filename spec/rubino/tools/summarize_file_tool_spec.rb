@@ -10,7 +10,9 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
   let(:fake_aux) do
     Class.new do
       attr_reader :prompts
+
       def initialize = @prompts = []
+
       def call(task:, messages:)
         @prompts << { task: task, content: messages.first[:content] }
         text = messages.first[:content].start_with?("Combine these partial") ? "COMBINED" : "map#{@prompts.size}"
@@ -18,10 +20,10 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
       end
     end.new
   end
+  let(:tmp_dir) { Dir.mktmpdir("summarize_spec") }
 
   def payload(result) = result.is_a?(Hash) ? result[:output] : result
 
-  let(:tmp_dir) { Dir.mktmpdir("summarize_spec") }
   after { FileUtils.rm_rf(tmp_dir) }
 
   it "has name 'summarize_file' and :low risk (usable by read-only agents)" do
@@ -41,7 +43,7 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
 
   it "map-reduces a multi-chunk file: a map per chunk, then one combine" do
     # Force several chunks by exceeding CHUNK_BYTES.
-    big = ("x" * 1000 + "\n") * 80 # ~80KB → 4 chunks of 24KB
+    big = (("x" * 1000) + "\n") * 80 # ~80KB → 4 chunks of 24KB
     path = File.join(tmp_dir, "big.txt")
     File.write(path, big)
 
@@ -64,8 +66,8 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
     path = File.join(tmp_dir, "b.bin")
     File.binwrite(path, "PDF\x00\x01\x02binary")
     result = tool.call("file_path" => path)
-    expect(result).to match(/looks binary/)
-    expect(result).to match(/markitdown/)
+    expect(result).to include("looks binary")
+    expect(result).to include("markitdown")
     expect(fake_aux.prompts).to be_empty
   end
 
@@ -73,11 +75,11 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
     path = File.join(tmp_dir, "empty.txt")
     File.write(path, "")
     result = tool.call("file_path" => path)
-    expect(result).to match(/empty/)
+    expect(result).to include("empty")
     expect(fake_aux.prompts).to be_empty
   end
 
   it "errors clearly when the file does not exist" do
-    expect(tool.call("file_path" => "/no/such/file.txt")).to match(/File not found/)
+    expect(tool.call("file_path" => "/no/such/file.txt")).to include("File not found")
   end
 end

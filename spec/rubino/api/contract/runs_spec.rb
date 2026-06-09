@@ -30,7 +30,7 @@ RSpec.describe "API contract: runs" do
       session_repository: session_repo, message_store: message_store,
       run_repository: run_repo, executor: executor
     )
-    undo   = Rubino::API::Operations::Sessions::UndoOperation.new(
+    undo = Rubino::API::Operations::Sessions::UndoOperation.new(
       session_repository: session_repo, message_store: message_store
     )
 

@@ -11,8 +11,8 @@ module Rubino
 
       def description
         "Search file contents using regular expressions. " \
-        "Returns matching file paths and line numbers. " \
-        "Supports include patterns to filter by file type."
+          "Returns matching file paths and line numbers. " \
+          "Supports include patterns to filter by file type."
       end
 
       def input_schema
@@ -71,9 +71,7 @@ module Rubino
         after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
 
         expanded_path = File.expand_path(path)
-        unless File.exist?(expanded_path)
-          return "Error: Path not found: #{path}"
-        end
+        return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?
           search_with_ripgrep(pattern, expanded_path, include_pattern, max_results, before, after)
@@ -106,7 +104,7 @@ module Rubino
         argv += ["-A", after.to_s]  if after.positive?
         argv += [pattern, path]
 
-        output = IO.popen(argv, err: [:child, :out], &:read)
+        output = IO.popen(argv, err: %i[child out], &:read)
         status = $?.exitstatus
 
         if status == 0
@@ -114,11 +112,11 @@ module Rubino
           lines     = all_lines.first(max_results)
           more      = all_lines.size - lines.size
           header    = "#{lines.size} match(es) shown" \
-                      "#{more.positive? ? " (#{more} more — raise max_results or narrow the pattern)" : ''}"
+                      "#{" (#{more} more — raise max_results or narrow the pattern)" if more.positive?}"
           full      = "#{header}:\n\n#{lines.join}"
-          { output:    full,
-            metrics:   "#{lines.size} match#{'es' if lines.size != 1}#{'+' if more.positive?}",
-            body:      Util::Output.preview(full),
+          { output: full,
+            metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more.positive?}",
+            body: Util::Output.preview(full),
             body_kind: :plain }
         elsif status == 1
           "No matches found for pattern: #{pattern}"
@@ -151,9 +149,7 @@ module Rubino
               if matched
                 # Emit `before` lines of context (skipping any already in results).
                 first_ctx = [idx - before, last_idx + 1].max
-                if separator_pending && first_ctx > last_idx + 1
-                  results << "--"
-                end
+                results << "--" if separator_pending && first_ctx > last_idx + 1
                 (first_ctx...idx).each do |ci|
                   results << "#{relative}:#{ci + 1}- #{lines[ci].rstrip}"
                   last_idx = ci
@@ -186,18 +182,23 @@ module Rubino
           capped       = results.size >= max_results
           match_count  = results.count { |l| l.include?(":") && l !~ /:\d+- / && l != "--" }
           header       = "#{match_count} match(es) shown" \
-                         "#{capped ? ' (more may exist — raise max_results or narrow the pattern)' : ''}"
+                         "#{" (more may exist — raise max_results or narrow the pattern)" if capped}"
           full = "#{header}:\n\n#{results.join("\n")}"
-          { output:    full,
-            metrics:   "#{match_count} match#{'es' if match_count != 1}#{'+' if capped}",
-            body:      Util::Output.preview(full),
+          { output: full,
+            metrics: "#{match_count} match#{"es" if match_count != 1}#{"+" if capped}",
+            body: Util::Output.preview(full),
             body_kind: :plain }
         end
       end
 
       def binary_file?(path)
-        sample = File.read(path, 512) rescue nil
+        sample = begin
+          File.read(path, 512)
+        rescue StandardError
+          nil
+        end
         return true unless sample
+
         sample.include?("\x00")
       end
     end

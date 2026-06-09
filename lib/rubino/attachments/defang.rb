@@ -15,8 +15,8 @@ module Rubino
       BIDI_AND_ZERO_WIDTH = Regexp.union(
         "​", "‌", "‍", "‎", "‏", # ZWSP/ZWNJ/ZWJ/LRM/RLM
         "‪", "‫", "‬", "‭", "‮", # LRE/RLE/PDF/LRO/RLO
-        "⁦", "⁧", "⁨", "⁩",           # LRI/RLI/FSI/PDI
-        "⁠", "﻿"                                # WJ / BOM
+        "⁦", "⁧", "⁨", "⁩", # LRI/RLI/FSI/PDI
+        "⁠", "﻿" # WJ / BOM
       ).freeze
 
       module_function

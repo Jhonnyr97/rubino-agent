@@ -11,9 +11,7 @@ module Rubino
 
       # Registers a hook handler
       def on(event, &block)
-        unless HOOKS.include?(event.to_sym)
-          raise Error, "Unknown hook: #{event}. Valid: #{HOOKS.join(', ')}"
-        end
+        raise Error, "Unknown hook: #{event}. Valid: #{HOOKS.join(", ")}" unless HOOKS.include?(event.to_sym)
 
         @hooks[event.to_sym] << block
       end

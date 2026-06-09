@@ -23,6 +23,7 @@ module Rubino
       # parsing the human-facing message.
       class ThreatDetectedError < Rubino::Error
         attr_reader :threat
+
         def initialize(threat)
           @threat = threat
           super("memory threat detected: #{threat}")
@@ -35,6 +36,7 @@ module Rubino
       # everything else shares the general "memory" budget.
       class BudgetExceededError < Rubino::Error
         attr_reader :group, :limit, :current, :requested
+
         def initialize(group:, limit:, current:, requested:)
           @group     = group
           @limit     = limit
@@ -132,14 +134,15 @@ module Rubino
       # Returns all memories within the character limit
       def within_limit(char_limit:)
         memories = @db[:memories]
-                     .order(Sequel.desc(:confidence), Sequel.desc(:updated_at))
-                     .all
+                   .order(Sequel.desc(:confidence), Sequel.desc(:updated_at))
+                   .all
 
         selected = []
         total_chars = 0
 
         memories.each do |m|
           break if total_chars + m[:content].length > char_limit
+
           selected << m
           total_chars += m[:content].length
         end
@@ -171,9 +174,9 @@ module Rubino
       private
 
       def validate_kind!(kind)
-        unless VALID_KINDS.include?(kind)
-          raise Error, "Invalid memory kind: #{kind}. Valid: #{VALID_KINDS.join(', ')}"
-        end
+        return if VALID_KINDS.include?(kind)
+
+        raise Error, "Invalid memory kind: #{kind}. Valid: #{VALID_KINDS.join(", ")}"
       end
 
       def enforce_threat_scan!(content)
@@ -212,7 +215,7 @@ module Rubino
         limit = group == "user" ? cfg.memory_user_char_limit : cfg.memory_char_limit
         return unless limit && limit > 0
 
-        current  = total_chars_for_group(group) - existing[:content].to_s.length
+        current = total_chars_for_group(group) - existing[:content].to_s.length
         requested = new_content.to_s.length
         return if current + requested <= limit
 

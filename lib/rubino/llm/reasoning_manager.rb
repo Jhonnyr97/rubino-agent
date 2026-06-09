@@ -49,9 +49,9 @@ module Rubino
         enabled = budget.positive?
 
         Rendered.new(
-          thinking:    enabled ? { type: :enabled, budget_tokens: budget } : nil,
+          thinking: enabled ? { type: :enabled, budget_tokens: budget } : nil,
           temperature: render_temperature(enabled, temperature),
-          max_tokens:  apply_max_tokens ? render_max_tokens(enabled, budget, max_tokens, text_headroom) : nil
+          max_tokens: apply_max_tokens ? render_max_tokens(enabled, budget, max_tokens, text_headroom) : nil
         )
       end
 

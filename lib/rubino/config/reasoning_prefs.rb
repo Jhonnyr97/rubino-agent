@@ -21,10 +21,10 @@ module Rubino
 
       # Effort → Anthropic thinking-token budget. off disables thinking (0).
       EFFORT_BUDGETS = {
-        off:    0,
-        low:    4_000,
+        off: 0,
+        low: 4_000,
         medium: 8_000,
-        high:   16_000
+        high: 16_000
       }.freeze
 
       module_function

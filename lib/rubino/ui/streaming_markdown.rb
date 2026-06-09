@@ -33,13 +33,13 @@ module Rubino
     #                                 (an unclosed fence is returned so the caller
     #                                 can emit it as plain text — never lost)
     class StreamingMarkdown
-      FENCE_RE = /\A\s*```/.freeze
+      FENCE_RE = /\A\s*```/
       # An ordered ("1. ", "2) ") or unordered ("- ", "* ", "+ ") list item.
       # Used so a loose list (blank lines BETWEEN items) is kept as ONE block
       # instead of being split per-item: each split item was re-rendered on its
       # own, and kramdown restarts ordered numbering at 1 for every block, which
       # produced the "1. Mercury / 1. Venus / 1. Earth" off-by-one (B4).
-      LIST_ITEM_RE = /\A\s*(?:[-*+]|\d+[.)])\s/.freeze
+      LIST_ITEM_RE = /\A\s*(?:[-*+]|\d+[.)])\s/
 
       def initialize
         @pending = +""   # un-newlined remainder (the live tail-in-progress line)

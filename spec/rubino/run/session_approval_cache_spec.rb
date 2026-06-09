@@ -30,7 +30,7 @@ RSpec.describe Rubino::Run::SessionApprovalCache do
     end
 
     it "treats different scopes within the same session independently" do
-      cache.remember("sess-1", "shell:ls",       "session")
+      cache.remember("sess-1", "shell:ls", "session")
       expect(cache.allowed?("sess-1", "shell:rm")).to be(false)
     end
 
@@ -99,7 +99,7 @@ RSpec.describe Rubino::Run::SessionApprovalCache do
     end
 
     it "can be reset for test isolation" do
-      first  = described_class.instance
+      first = described_class.instance
       described_class.reset_singleton!
       second = described_class.instance
       expect(first).not_to equal(second)

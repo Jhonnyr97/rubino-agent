@@ -181,6 +181,8 @@ RSpec.describe "Skills (directory layout + disclosure)" do
     # is snapshotted) and a read. A teardown mid-read must surface as a clean
     # miss, and the LIVE listing must not still advertise the vanished file.
     describe "concurrent dir mutation (W3 TOCTOU)" do
+      subject(:skill) { Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md")) }
+
       around do |example|
         Dir.mktmpdir do |dir|
           @skill_dir = File.join(dir, "torque-skill")
@@ -192,8 +194,6 @@ RSpec.describe "Skills (directory layout + disclosure)" do
           example.run
         end
       end
-
-      subject(:skill) { Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md")) }
 
       it "reads the bundled file when it is present" do
         expect(skill.read_file("references/torque.md")).to eq("TORQUE-5582")
@@ -214,8 +214,9 @@ RSpec.describe "Skills (directory layout + disclosure)" do
   end
 
   describe Rubino::Skills::SkillTool do
-    let(:registry) { Rubino::Skills::Registry.new(config: config) }
     subject(:tool) { described_class.new(registry: registry) }
+
+    let(:registry) { Rubino::Skills::Registry.new(config: config) }
 
     it "Level 2: returns the body plus a list of bundled linked_files" do
       out = tool.call("name" => "data-helper")
@@ -236,7 +237,10 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       around do |example|
         Rubino::Metrics.reset!
         bus = Rubino::Interaction::EventBus.new
-        Rubino.with_event_bus(bus) { @bus = bus; example.run }
+        Rubino.with_event_bus(bus) do
+          @bus = bus
+          example.run
+        end
         Rubino::Metrics.reset!
       end
 
@@ -432,7 +436,7 @@ RSpec.describe "Skills (directory layout + disclosure)" do
 
       it "renders the mandatory-scan header" do
         expect(index.render).to include("## Skills (mandatory)")
-        expect(index.render).to match(/you MUST load it with skill\(name\)/)
+        expect(index.render).to include("you MUST load it with skill(name)")
       end
 
       it "lists each skill as `- name: description` inside <available_skills>" do

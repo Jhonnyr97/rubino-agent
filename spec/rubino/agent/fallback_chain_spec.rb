@@ -28,8 +28,8 @@ RSpec.describe Rubino::Agent::FallbackChain do
   def build_chain(fallbacks)
     described_class.new(
       primary_adapter: primary,
-      config:          test_configuration("agent" => { "fallback_models" => fallbacks }),
-      ui:              ui,
+      config: test_configuration("agent" => { "fallback_models" => fallbacks }),
+      ui: ui,
       adapter_builder: builder
     )
   end
@@ -75,7 +75,7 @@ RSpec.describe Rubino::Agent::FallbackChain do
       expect(chain.current_adapter.provider).to eq("anthropic")
       expect(chain.activate_next!).to be(true)
       expect(chain.current_adapter.provider).to eq("gemini")
-      expect(chain.activate_next!).to be(false)        # exhausted
+      expect(chain.activate_next!).to be(false) # exhausted
       expect(chain.current_adapter.provider).to eq("gemini") # stays on last
     end
   end

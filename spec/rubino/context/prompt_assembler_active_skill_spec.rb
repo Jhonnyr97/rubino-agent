@@ -36,7 +36,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "active skill" do
     expect(prompt).to include("## Active skill (pinned): data-helper")
     expect(prompt).to include('<active_skill name="data-helper">')
     # The directive that makes the model treat it as authoritative.
-    expect(prompt).to match(/MUST follow its instructions/)
+    expect(prompt).to include("MUST follow its instructions")
     # The actual SKILL.md body is loaded (its frontmatter description mentions
     # "data wrangling"; the body content is present too).
     full_content = Rubino::Skills::Registry.new(config: config).load_skill("data-helper")

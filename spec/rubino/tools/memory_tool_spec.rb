@@ -4,14 +4,14 @@ RSpec.describe Rubino::Tools::MemoryTool do
   let(:db_connection) { test_database }
   let(:config) do
     test_configuration("memory" => {
-      "enabled" => true,
-      "memory_char_limit" => 200,
-      "user_char_limit" => 100
-    })
+                         "enabled" => true,
+                         "memory_char_limit" => 200,
+                         "user_char_limit" => 100
+                       })
   end
   let(:store) { Rubino::Memory::Store.new(db: db_connection.db, config: config) }
   let(:backend) { Rubino::Memory::Backends::Default.new(config: config, store: store) }
-  let(:tool)  { described_class.new(backend: backend) }
+  let(:tool) { described_class.new(backend: backend) }
 
   before { db_connection.db[:memories].delete }
 
@@ -36,7 +36,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
 
     it "stores into user_profile for target=user" do
       result = tool.call("action" => "add", "target" => "user", "content" => "prefers terse replies")
-      expect(result).to match(/kind=user_profile/)
+      expect(result).to include("kind=user_profile")
       expect(store.by_kind("user_profile").size).to eq(1)
     end
 
@@ -55,7 +55,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
         "old_text" => "Rome",
         "content" => "the user lives in Milan"
       )
-      expect(result).to match(/Memory replaced/)
+      expect(result).to include("Memory replaced")
       expect(store.by_kind("fact").first[:content]).to eq("the user lives in Milan")
     end
 
@@ -66,7 +66,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
         "old_text" => "nope",
         "content" => "x"
       )
-      expect(result).to match(/no fact memory matched/)
+      expect(result).to include("no fact memory matched")
     end
   end
 
@@ -74,7 +74,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
     it "deletes the first matching memory by substring" do
       store.create(kind: "user_profile", content: "loves Ruby")
       result = tool.call("action" => "remove", "target" => "user", "old_text" => "Ruby")
-      expect(result).to match(/Memory removed/)
+      expect(result).to include("Memory removed")
       expect(store.by_kind("user_profile")).to be_empty
     end
   end

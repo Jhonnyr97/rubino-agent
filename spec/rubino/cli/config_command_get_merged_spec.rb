@@ -12,7 +12,7 @@ RSpec.describe "Rubino::CLI::ConfigCommand#get effective (merged) value" do
   let(:custom_home) { Dir.mktmpdir("rubino-home") }
 
   around do |example|
-    prev = ENV["RUBINO_HOME"]
+    prev = ENV.fetch("RUBINO_HOME", nil)
     ENV["RUBINO_HOME"] = custom_home
     Rubino.reload_configuration!
     example.run
@@ -40,7 +40,7 @@ RSpec.describe "Rubino::CLI::ConfigCommand#get effective (merged) value" do
     default = Rubino.configuration.dig("model", "default")
     expect(default).not_to be_nil
     expect(info_messages.join("\n")).to include("model.default = #{default}")
-    expect(warning_messages.join("\n")).not_to match(/not found/)
+    expect(warning_messages.join("\n")).not_to include("not found")
   end
 
   it "agrees with `config show` for a default-valued key" do
@@ -51,11 +51,11 @@ RSpec.describe "Rubino::CLI::ConfigCommand#get effective (merged) value" do
     Rubino.ui = (ui2 = Rubino::UI::Null.new)
     Rubino::CLI::ConfigCommand.new.get("model.default")
     got = ui2.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }.join("\n")
-    expect(got).to include("model.default = #{shown.dig('model', 'default')}")
+    expect(got).to include("model.default = #{shown.dig("model", "default")}")
   end
 
   it "still reports a genuinely absent key as not found" do
     Rubino::CLI::ConfigCommand.new.get("definitely.absent.key")
-    expect(warning_messages.join("\n")).to match(/not found/)
+    expect(warning_messages.join("\n")).to include("not found")
   end
 end

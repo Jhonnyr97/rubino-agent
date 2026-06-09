@@ -10,7 +10,7 @@ module Rubino
 
       def description
         "Execute git commands to inspect repository state. " \
-        "Supports status, diff, log, branch, and show operations."
+          "Supports status, diff, log, branch, and show operations."
       end
 
       def input_schema
@@ -61,7 +61,7 @@ module Rubino
         # Split cmd into tokens and append sanitised args to avoid shell injection.
         # IO.popen with an argv array never passes the arguments through a shell.
         argv = ["git"] + cmd.split + args.split
-        result = IO.popen(argv, err: [:child, :out], &:read)
+        result = IO.popen(argv, err: %i[child out], &:read)
         result.empty? ? "(no output)" : result
       rescue StandardError => e
         "Git error: #{e.message}"

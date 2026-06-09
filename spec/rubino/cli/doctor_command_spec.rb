@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::CLI::DoctorCommand do
-  let(:ui) { Rubino::UI::Null.new }
-
   subject(:doctor) { described_class.new }
+
+  let(:ui) { Rubino::UI::Null.new }
 
   before { Rubino.ui = ui }
 
@@ -88,7 +88,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     # allowlist ignored that and warned "No API keys found" on a healthy tenant.
     it "is :ok when an openai_compatible provider carries its key in config" do
       with_config(
-        "model"     => { "default" => "my-local-model", "provider" => "gateway" },
+        "model" => { "default" => "my-local-model", "provider" => "gateway" },
         "providers" => { "gateway" => { "openai_compatible" => true, "api_key" => "tenant-key" } }
       )
 
@@ -100,7 +100,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "is :ok for an openai_compatible provider falling back to OPENAI_API_KEY" do
       with_config(
-        "model"     => { "default" => "local", "provider" => "vllm" },
+        "model" => { "default" => "local", "provider" => "vllm" },
         "providers" => { "vllm" => { "openai_compatible" => true } }
       )
       ENV["OPENAI_API_KEY"] = "sk-openai"
@@ -145,7 +145,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     # credential, not warn "no credentials for openai".
     it "is :ok for an anthropic_compatible provider carrying its key in config (MiniMax)" do
       with_config(
-        "model"     => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
         "providers" => { "minimax" => { "anthropic_compatible" => true, "api_key" => "mm-key" } }
       )
 
@@ -161,7 +161,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
   # default install with no RUBINO_ENCRYPTION_KEY still reports all-green.
   describe "#execute headline verdict" do
     around do |example|
-      saved = ENV["RUBINO_ENCRYPTION_KEY"]
+      saved = ENV.fetch("RUBINO_ENCRYPTION_KEY", nil)
       ENV.delete("RUBINO_ENCRYPTION_KEY")
       example.run
     ensure
@@ -182,7 +182,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       doctor.execute
 
       verdict = ui.messages.last
-      expect(verdict[:level]).to eq(:info)  # informational note about optional check
+      expect(verdict[:level]).to eq(:info) # informational note about optional check
       success = ui.messages.find { |m| m[:level] == :success }
       expect(success[:message]).to include("All 6 checks passed!")
       # The summary must NOT contain a "6/7" warning verdict.
@@ -205,7 +205,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
   # still a real :fail.
   describe "#check_encryption_key" do
     around do |example|
-      saved = ENV["RUBINO_ENCRYPTION_KEY"]
+      saved = ENV.fetch("RUBINO_ENCRYPTION_KEY", nil)
       ENV.delete("RUBINO_ENCRYPTION_KEY")
       example.run
     ensure

@@ -35,7 +35,7 @@ module Rubino
         @temperature   = @config.model_temperature
         @ui            = ui || Rubino.ui
         @event_bus     = event_bus || Rubino.event_bus
-        @tool_executor = tool_executor   # nil = ToolBridge falls back to direct tool.call
+        @tool_executor = tool_executor # nil = ToolBridge falls back to direct tool.call
         @cancel_token  = cancel_token
 
         # SLICE-7: when built as a FallbackChain entry, scope provider config
@@ -59,10 +59,10 @@ module Rubino
       # variant yields chunks to the block then returns the same Response. This
       # is the front door the conversation loop depends on; #chat / #stream
       # remain as the underlying transports and stay valid for existing callers.
-      def call(request, &block)
+      def call(request, &)
         if request.stream?
           stream(messages: request.messages, tools: request.tools,
-                 image_paths: request.image_paths, prefill: request.prefill, &block)
+                 image_paths: request.image_paths, prefill: request.prefill, &)
         else
           chat(messages: request.messages, tools: request.tools,
                image_paths: request.image_paths, prefill: request.prefill)
@@ -89,13 +89,13 @@ module Rubino
       # sentinels are routed to the :thinking channel. Buffered partial content
       # is preserved across mid-stream parse errors so downstream code can show
       # whatever the model produced before the failure.
-      def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil, &block)
+      def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil, &)
         if bedrock_bearer_mode?
           # BedrockBearerClient#stream buffers the whole /converse response before
           # its first emit, so a transport error can only fire pre-first-chunk —
           # no token reached the UI. It raises straight through to the runner,
           # which re-issues a fresh request (safe, no double output).
-          return bedrock_bearer_client.stream(messages: messages, tools: tools, &block)
+          return bedrock_bearer_client.stream(messages: messages, tools: tools, &)
         end
 
         # No retry wrapper here — retry ownership moved to Agent::ModelCallRunner
@@ -109,7 +109,7 @@ module Rubino
         # streaming-specific safety) stays here; the actual retrying is the
         # runner's job.
         stream_once(messages: messages, tools: tools, response_format: response_format,
-                    image_paths: image_paths, prefill: prefill, &block)
+                    image_paths: image_paths, prefill: prefill, &)
       end
 
       # Returns model information (context window, etc.)
@@ -155,6 +155,7 @@ module Rubino
 
         emit = lambda do |type, text|
           next if text.nil? || text.empty?
+
           buffered << text if type == :content
           next if type == :thinking && reasoning_hidden?
 
@@ -212,9 +213,7 @@ module Rubino
               thinking_text = chunk.thinking.respond_to?(:text) ? chunk.thinking.text : chunk.thinking.to_s
               emit.call(:thinking, thinking_text)
             end
-            if chunk.content.is_a?(String) && !chunk.content.empty?
-              think_filter.feed(chunk.content, &emit)
-            end
+            think_filter.feed(chunk.content, &emit) if chunk.content.is_a?(String) && !chunk.content.empty?
           end
         rescue Rubino::Interrupted
           # Flush whatever the filter has buffered, then re-raise. Loop will
@@ -364,7 +363,7 @@ module Rubino
       end
 
       def compatible_api_key!(prov_cfg, env_fallback:)
-        key = prov_cfg["api_key"] || ENV[env_fallback]
+        key = prov_cfg["api_key"] || ENV.fetch(env_fallback, nil)
         return key if key && !key.empty?
 
         raise Rubino::Error,
@@ -420,7 +419,7 @@ module Rubino
         # bridge calls tool.call() directly (used in tests/one-shot mode).
         Array(tools).each do |tool|
           chat.with_tool(ToolBridge.for(tool, ui: @ui, event_bus: @event_bus,
-                                        tool_executor: @tool_executor))
+                                              tool_executor: @tool_executor))
         end
 
         chat
@@ -455,22 +454,20 @@ module Rubino
         anthropic_family = anthropic_generation_path?
 
         rendered = reasoning_manager.render(
-          budget:           anthropic_family ? thinking_budget : 0,
-          temperature:      @temperature,
-          max_tokens:       max_output_tokens,
-          text_headroom:    text_headroom_tokens,
+          budget: anthropic_family ? thinking_budget : 0,
+          temperature: @temperature,
+          max_tokens: max_output_tokens,
+          text_headroom: text_headroom_tokens,
           apply_max_tokens: anthropic_family
         )
 
         if rendered.thinking_enabled? && chat.respond_to?(:with_thinking)
           chat.with_thinking(budget: rendered.thinking[:budget_tokens])
         end
-        if !rendered.temperature.nil? && chat.respond_to?(:with_temperature)
-          chat.with_temperature(rendered.temperature)
-        end
-        if !rendered.max_tokens.nil? && chat.respond_to?(:with_params)
-          chat.with_params(max_tokens: rendered.max_tokens)
-        end
+        chat.with_temperature(rendered.temperature) if !rendered.temperature.nil? && chat.respond_to?(:with_temperature)
+        return unless !rendered.max_tokens.nil? && chat.respond_to?(:with_params)
+
+        chat.with_params(max_tokens: rendered.max_tokens)
       end
 
       def reasoning_manager
@@ -519,7 +516,7 @@ module Rubino
       # Returns true when using Bedrock Bearer token (short-term API key, no secret)
       def bedrock_bearer_mode?
         %w[bedrock anthropic].include?(@provider) &&
-          ENV["BEDROCK_API_KEY"] && !ENV["BEDROCK_SECRET_KEY"]
+          ENV.fetch("BEDROCK_API_KEY", nil) && !ENV["BEDROCK_SECRET_KEY"]
       end
 
       # Provider config hash from the config file (e.g. providers.ollama.*)
@@ -587,11 +584,11 @@ module Rubino
       # Returns a memoized BedrockBearerClient instance
       def bedrock_bearer_client
         @bedrock_bearer_client ||= BedrockBearerClient.new(
-          api_key:        ENV["BEDROCK_API_KEY"],
-          region:         ENV["BEDROCK_REGION"] || "us-east-1",
-          model_id:       @model_id,
+          api_key: ENV.fetch("BEDROCK_API_KEY", nil),
+          region: ENV["BEDROCK_REGION"] || "us-east-1",
+          model_id: @model_id,
           show_reasoning: !reasoning_hidden?,
-          event_bus:      @event_bus
+          event_bus: @event_bus
         )
       end
 
@@ -631,14 +628,14 @@ module Rubino
             chat_instance.messages << RubyLLM::Message.new(role: role, content: content)
           when :assistant
             chat_instance.messages << RubyLLM::Message.new(
-              role:       role,
-              content:    content,
+              role: role,
+              content: content,
               tool_calls: rebuild_tool_calls(msg[:tool_calls] || msg["tool_calls"])
             )
           when :tool
             chat_instance.messages << RubyLLM::Message.new(
-              role:         role,
-              content:      content,
+              role: role,
+              content: content,
               tool_call_id: msg[:tool_call_id] || msg["tool_call_id"]
             )
           end
@@ -672,8 +669,8 @@ module Rubino
           h = tc.transform_keys(&:to_sym) if tc.is_a?(Hash)
           h ||= tc
           RubyLLM::ToolCall.new(
-            id:        h[:id],
-            name:      h[:name],
+            id: h[:id],
+            name: h[:name],
             arguments: h[:arguments] || {}
           )
         end

@@ -12,7 +12,7 @@ RSpec.describe Rubino::Modes do
   end
 
   around do |example|
-    previous = ENV["RUBINO_BOOT_MODE"]
+    previous = ENV.fetch("RUBINO_BOOT_MODE", nil)
     example.run
     ENV["RUBINO_BOOT_MODE"] = previous
     described_class.reset!

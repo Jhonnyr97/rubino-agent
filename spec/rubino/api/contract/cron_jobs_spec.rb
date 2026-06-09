@@ -79,7 +79,7 @@ RSpec.describe "API contract: cron jobs" do
   describe "GET /v1/jobs/:id" do
     it "200 + the same shape as create returns" do
       job = create_job("name" => "show-me")
-      get_json "/v1/jobs/#{job['id']}"
+      get_json "/v1/jobs/#{job["id"]}"
       expect(last_response.status).to eq(200)
       expect(json_body).to include("id" => job["id"], "name" => "show-me", "skills" => [])
     end
@@ -93,7 +93,7 @@ RSpec.describe "API contract: cron jobs" do
   describe "DELETE /v1/jobs/:id" do
     it "204 + unschedules the job" do
       job = create_job
-      delete "/v1/jobs/#{job['id']}", {}, auth_headers
+      delete "/v1/jobs/#{job["id"]}", {}, auth_headers
       expect(last_response.status).to eq(204)
       expect(last_response.body).to be_empty
       expect(Rubino::Jobs::Scheduler.instance).to have_received(:unschedule).with(job["id"])
@@ -108,7 +108,7 @@ RSpec.describe "API contract: cron jobs" do
   describe "POST /v1/jobs/:id/pause" do
     it "200 + enabled=false" do
       job = create_job
-      post_json "/v1/jobs/#{job['id']}/pause", {}
+      post_json "/v1/jobs/#{job["id"]}/pause", {}
       expect(last_response.status).to eq(200)
       expect(json_body["enabled"]).to be(false)
       expect(Rubino::Jobs::Scheduler.instance).to have_received(:unschedule).with(job["id"])
@@ -124,8 +124,8 @@ RSpec.describe "API contract: cron jobs" do
   describe "POST /v1/jobs/:id/resume" do
     it "200 + enabled=true + reschedules" do
       job = create_job
-      post_json "/v1/jobs/#{job['id']}/pause", {}
-      post_json "/v1/jobs/#{job['id']}/resume", {}
+      post_json "/v1/jobs/#{job["id"]}/pause", {}
+      post_json "/v1/jobs/#{job["id"]}/resume", {}
       expect(last_response.status).to eq(200)
       expect(json_body["enabled"]).to be(true)
       expect(Rubino::Jobs::Scheduler.instance).to have_received(:schedule).at_least(:twice)
@@ -144,7 +144,7 @@ RSpec.describe "API contract: cron jobs" do
       run_ref = { id: "run-x", session_id: "sess-x" }
       allow(Rubino::Jobs::Scheduler.instance).to receive(:trigger).and_return(run_ref)
 
-      post_json "/v1/jobs/#{job['id']}/trigger", {}
+      post_json "/v1/jobs/#{job["id"]}/trigger", {}
       expect(last_response.status).to eq(202)
       expect(json_body).to eq("job_id" => job["id"], "run_id" => "run-x", "session_id" => "sess-x")
     end

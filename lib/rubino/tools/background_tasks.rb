@@ -125,19 +125,19 @@ module Rubino
           return nil if @last_refusal_reason
 
           entry = Entry.new(
-            id:                new_id,
-            subagent:          subagent.to_s,
-            prompt:            prompt.to_s,
-            status:            :running,
-            started_at:        Time.now,
-            tool_count:        0,
-            activity_log:      [],
+            id: new_id,
+            subagent: subagent.to_s,
+            prompt: prompt.to_s,
+            status: :running,
+            started_at: Time.now,
+            tool_count: 0,
+            activity_log: [],
             # Every background child gets its OWN steering queue at reserve time
             # so the parent can `/agents <id> steer "..."` it the instant it is
             # listed — no separate wiring step, no nil window.
-            steer_queue:       Interaction::InputQueue.new,
+            steer_queue: Interaction::InputQueue.new,
             owner_subagent_id: owner_subagent_id,
-            depth:             effective_depth
+            depth: effective_depth
           )
           @entries[entry.id] = entry
           entry

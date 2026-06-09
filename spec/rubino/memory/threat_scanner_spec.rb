@@ -50,7 +50,7 @@ RSpec.describe Rubino::Memory::ThreatScanner do
       end
 
       it "does not flag short base64-ish strings" do
-        expect(described_class.scan("token: #{'a' * 50}")).to be_nil
+        expect(described_class.scan("token: #{"a" * 50}")).to be_nil
       end
     end
 

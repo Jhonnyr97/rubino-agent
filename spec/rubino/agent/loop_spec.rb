@@ -20,46 +20,44 @@ RSpec.describe Rubino::Agent::Loop do
   let(:approval_policy) do
     Rubino::Security::ApprovalPolicy.new(config: config)
   end
-
-  # Registry is a class-level singleton; reset it before each test and restore after
-  before  { Rubino::Tools::Registry.reset! }
-  after   { Rubino::Tools::Registry.reset! }
-
   let(:tool_executor) do
     Rubino::Agent::ToolExecutor.new(
-      registry:        Rubino::Tools::Registry,
+      registry: Rubino::Tools::Registry,
       approval_policy: approval_policy,
-      ui:              null_ui,
-      config:          config,
-      event_bus:       event_bus
+      ui: null_ui,
+      config: config,
+      event_bus: event_bus
     )
   end
-
   let(:budget) do
     Rubino::Agent::IterationBudget.new(config: config)
   end
 
+  # Registry is a class-level singleton; reset it before each test and restore after
+  before do
+    Rubino::Tools::Registry.reset!
+    allow(Rubino).to receive(:database).and_return(db)
+  end
+
+  after { Rubino::Tools::Registry.reset! }
+
   def build_loop(llm: fake_llm, cancel_token: nil, input_queue: nil)
     described_class.new(
-      session:       session,
-      llm_adapter:   llm,
+      session: session,
+      llm_adapter: llm,
       tool_executor: tool_executor,
       message_store: message_store,
-      budget:        budget,
-      ui:            null_ui,
-      event_bus:     event_bus,
-      config:        config,
-      cancel_token:  cancel_token,
-      input_queue:   input_queue
+      budget: budget,
+      ui: null_ui,
+      event_bus: event_bus,
+      config: config,
+      cancel_token: cancel_token,
+      input_queue: input_queue
     )
   end
 
   def user_messages(text = "hello")
     [{ role: "user", content: text }]
-  end
-
-  before do
-    allow(Rubino).to receive(:database).and_return(db)
   end
 
   # ---------------------------------------------------------------------------
@@ -126,9 +124,9 @@ RSpec.describe Rubino::Agent::Loop do
       token.cancel!
 
       fake_llm.enqueue_text("should never be reached")
-      expect {
+      expect do
         build_loop(cancel_token: token).run(messages: user_messages, tools: [])
-      }.to raise_error(Rubino::Interrupted)
+      end.to raise_error(Rubino::Interrupted)
       # Bailed before any model call.
       expect(fake_llm.call_count).to eq(0)
     end
@@ -283,7 +281,8 @@ RSpec.describe Rubino::Agent::Loop do
         def name        = "echo"
         def description = "Echoes input"
         def input_schema = { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
-        def risk_level  = :low
+        def risk_level = :low
+
         def call(args)
           "echo: #{args["text"] || args[:text]}"
         end
@@ -360,10 +359,10 @@ RSpec.describe Rubino::Agent::Loop do
 
       expect(events.size).to eq(1)
       expect(events.first).to include(
-        path:         "/tmp/report.pdf",
-        filename:     "report.pdf",
+        path: "/tmp/report.pdf",
+        filename: "report.pdf",
         content_type: "application/pdf",
-        byte_size:    42
+        byte_size: 42
       )
     end
 
@@ -428,13 +427,13 @@ RSpec.describe Rubino::Agent::Loop do
   describe "iteration budget exhaustion" do
     let(:tight_config) do
       test_configuration("agent" => {
-        "max_turns" => 90,
-        "max_tool_iterations" => 2,
-        "max_turn_seconds" => 120,
-        "api_max_retries" => 1,
-        "disabled_toolsets" => [],
-        "tool_use_enforcement" => "auto"
-      })
+                           "max_turns" => 90,
+                           "max_tool_iterations" => 2,
+                           "max_turn_seconds" => 120,
+                           "api_max_retries" => 1,
+                           "disabled_toolsets" => [],
+                           "tool_use_enforcement" => "auto"
+                         })
     end
 
     let(:tight_budget) { Rubino::Agent::IterationBudget.new(config: tight_config) }
@@ -534,9 +533,9 @@ RSpec.describe Rubino::Agent::Loop do
     it "raises ToolError when the tool is not registered" do
       fake_llm.enqueue_tool_call("nonexistent_tool", { "x" => 1 })
 
-      expect {
+      expect do
         build_loop.run(messages: user_messages, tools: [])
-      }.to raise_error(Rubino::ToolError, /Unknown tool/)
+      end.to raise_error(Rubino::ToolError, /Unknown tool/)
     end
   end
 
@@ -549,9 +548,9 @@ RSpec.describe Rubino::Agent::Loop do
       test_configuration("streaming" => { "enabled" => true, "transport" => "off",
                                           "edit_interval" => 0.3, "buffer_threshold" => 40,
                                           "cursor" => " ▉" },
-                         "display"   => { "streaming" => true, "show_reasoning" => false,
-                                          "language" => "en", "runtime_footer" => { "enabled" => false },
-                                          "interim_assistant_messages" => false })
+                         "display" => { "streaming" => true, "show_reasoning" => false,
+                                        "language" => "en", "runtime_footer" => { "enabled" => false },
+                                        "interim_assistant_messages" => false })
     end
 
     def build_streaming_loop
@@ -810,6 +809,7 @@ RSpec.describe Rubino::Agent::Loop do
     let(:recording_llm) do
       Class.new do
         attr_reader :modes
+
         def initialize = @modes = []
         def enqueue_text(t) = (@responses ||= []) << t
         def model_info = nil
@@ -857,17 +857,8 @@ RSpec.describe Rubino::Agent::Loop do
 
     let(:streaming_config) do
       test_configuration("streaming" => { "enabled" => true, "transport" => "off" },
-                         "display"   => { "streaming" => true, "show_reasoning" => false })
+                         "display" => { "streaming" => true, "show_reasoning" => false })
     end
-
-    def loop_with(ui:, tools:, config: streaming_config)
-      described_class.new(
-        session: session, llm_adapter: recording_llm, tool_executor: tool_executor,
-        message_store: message_store, budget: budget, ui: ui,
-        event_bus: event_bus, config: config
-      ).run(messages: user_messages, tools: tools)
-    end
-
     let(:question_tool) do
       Class.new(Rubino::Tools::Base) do
         def name = "question"
@@ -876,6 +867,14 @@ RSpec.describe Rubino::Agent::Loop do
         def risk_level = :low
         def call(_args) = "answer"
       end.new
+    end
+
+    def loop_with(ui:, tools:, config: streaming_config)
+      described_class.new(
+        session: session, llm_adapter: recording_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: budget, ui: ui,
+        event_bus: event_bus, config: config
+      ).run(messages: user_messages, tools: tools)
     end
 
     it "uses the non-streaming path when a gate-backed UI has the question tool" do
@@ -943,4 +942,3 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 end
-

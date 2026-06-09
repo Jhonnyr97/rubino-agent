@@ -58,7 +58,7 @@ RSpec.describe "Rubino::API::Operations::CronJobs" do
     it "unschedules and deletes a job" do
       job = repo.create(name: "a", schedule: "* * * * *", prompt: "x")
       status, = described_class.new(repository: repo, scheduler: scheduler)
-        .call(make_request(params: { id: job[:id] }))
+                               .call(make_request(params: { id: job[:id] }))
       expect(status).to eq(204)
       expect(repo.find(job[:id])).to be_nil
       expect(scheduler).to have_received(:unschedule).with(job[:id])
@@ -69,7 +69,7 @@ RSpec.describe "Rubino::API::Operations::CronJobs" do
     it "disables and unschedules" do
       job = repo.create(name: "a", schedule: "* * * * *", prompt: "x")
       status, body = described_class.new(repository: repo, scheduler: scheduler)
-        .call(make_request(params: { id: job[:id] }))
+                                    .call(make_request(params: { id: job[:id] }))
       expect(status).to eq(200)
       expect(body[:enabled]).to be(false)
       expect(scheduler).to have_received(:unschedule).with(job[:id])
@@ -80,7 +80,7 @@ RSpec.describe "Rubino::API::Operations::CronJobs" do
     it "enables and reschedules" do
       job = repo.create(name: "a", schedule: "* * * * *", prompt: "x", enabled: false)
       status, body = described_class.new(repository: repo, scheduler: scheduler)
-        .call(make_request(params: { id: job[:id] }))
+                                    .call(make_request(params: { id: job[:id] }))
       expect(status).to eq(200)
       expect(body[:enabled]).to be(true)
       expect(scheduler).to have_received(:schedule)
@@ -93,7 +93,7 @@ RSpec.describe "Rubino::API::Operations::CronJobs" do
       run = { id: "run-1", session_id: "sess-1" }
       allow(scheduler).to receive(:trigger).and_return(run)
       status, body = described_class.new(repository: repo, scheduler: scheduler)
-        .call(make_request(params: { id: job[:id] }))
+                                    .call(make_request(params: { id: job[:id] }))
       expect(status).to eq(202)
       expect(body).to eq(job_id: job[:id], run_id: "run-1", session_id: "sess-1")
     end

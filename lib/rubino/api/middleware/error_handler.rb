@@ -14,12 +14,12 @@ module Rubino
       # Observability still sees the final status code on the way out.
       class ErrorHandler
         STATUS_MAP = {
-          Rubino::NotFoundError        => 404,
-          Rubino::ValidationError      => 422,
-          Rubino::UnauthorizedError    => 401,
-          Rubino::ConflictError        => 409,
+          Rubino::NotFoundError => 404,
+          Rubino::ValidationError => 422,
+          Rubino::UnauthorizedError => 401,
+          Rubino::ConflictError => 409,
           Rubino::PayloadTooLargeError => 413,
-          Rubino::UpstreamError        => 502
+          Rubino::UpstreamError => 502
         }.freeze
 
         def initialize(app, logger:)
@@ -34,7 +34,8 @@ module Rubino
           status = base.last
           render(status, code(e, base.first), e.message, details(e))
         rescue StandardError => e
-          @logger.error(event: "api.error.unhandled", error: e.class.name, message: e.message, backtrace: e.backtrace&.first(10))
+          @logger.error(event: "api.error.unhandled", error: e.class.name, message: e.message,
+                        backtrace: e.backtrace&.first(10))
           render(500, "internal_error", "internal server error")
         end
 

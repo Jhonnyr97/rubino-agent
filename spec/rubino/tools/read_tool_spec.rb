@@ -9,6 +9,7 @@ RSpec.describe Rubino::Tools::ReadTool do
   def payload(result) = result.is_a?(Hash) ? result[:output] : result
 
   let(:tmp_dir) { Dir.mktmpdir("read_tool_spec") }
+
   after { FileUtils.rm_rf(tmp_dir) }
 
   it "has name 'read' and :low risk" do
@@ -85,6 +86,7 @@ RSpec.describe Rubino::Tools::ReadTool do
 
   describe "duplicate-read nudge" do
     let(:tracker) { Rubino::Tools::ReadTracker.new }
+
     before { tool.read_tracker = tracker }
 
     it "returns a [DUPLICATE READ] nudge on an exact repeat instead of re-emitting content" do

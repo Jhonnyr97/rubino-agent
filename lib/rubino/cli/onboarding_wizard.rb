@@ -24,51 +24,51 @@ module Rubino
       # fail-fast guidance.
       PROVIDERS = [
         {
-          key:      "openai",
-          label:    "OpenAI (GPT) — recommended default",
+          key: "openai",
+          label: "OpenAI (GPT) — recommended default",
           provider: "openai",
-          model:    "gpt-4.1",
-          env_var:  "OPENAI_API_KEY",
-          config:   {}
+          model: "gpt-4.1",
+          env_var: "OPENAI_API_KEY",
+          config: {}
         },
         {
-          key:      "minimax",
-          label:    "MiniMax (Anthropic-compatible)",
+          key: "minimax",
+          label: "MiniMax (Anthropic-compatible)",
           provider: "minimax",
-          model:    "MiniMax-M2.7",
-          env_var:  "MINIMAX_API_KEY",
-          config:   {
+          model: "MiniMax-M2.7",
+          env_var: "MINIMAX_API_KEY",
+          config: {
             "anthropic_compatible" => true,
-            "base_url"             => "https://api.minimax.io/anthropic",
-            "api_key"              => "${MINIMAX_API_KEY}"
+            "base_url" => "https://api.minimax.io/anthropic",
+            "api_key" => "${MINIMAX_API_KEY}"
           }
         },
         {
-          key:      "anthropic",
-          label:    "Anthropic (Claude)",
+          key: "anthropic",
+          label: "Anthropic (Claude)",
           provider: "anthropic",
-          model:    "claude-sonnet-4-5",
-          env_var:  "ANTHROPIC_API_KEY",
-          config:   {}
+          model: "claude-sonnet-4-5",
+          env_var: "ANTHROPIC_API_KEY",
+          config: {}
         },
         {
-          key:      "gemini",
-          label:    "Google (Gemini)",
+          key: "gemini",
+          label: "Google (Gemini)",
           provider: "google",
-          model:    "gemini-2.5-pro",
-          env_var:  "GEMINI_API_KEY",
-          config:   {}
+          model: "gemini-2.5-pro",
+          env_var: "GEMINI_API_KEY",
+          config: {}
         },
         {
-          key:      "gateway",
-          label:    "OpenAI-compatible gateway",
+          key: "gateway",
+          label: "OpenAI-compatible gateway",
           provider: "gateway",
-          model:    "auto",
-          env_var:  "OPENAI_API_KEY",
-          config:   {
-            "openai_compatible"   => true,
+          model: "auto",
+          env_var: "OPENAI_API_KEY",
+          config: {
+            "openai_compatible" => true,
             "assume_model_exists" => true,
-            "base_url"            => nil # filled in interactively
+            "base_url" => nil # filled in interactively
           }
         }
       ].freeze
@@ -156,7 +156,7 @@ module Rubino
         writer.set("model.provider", choice[:provider])
 
         choice[:config].each do |k, v|
-          value = (k == "base_url" && (v.nil? || v.empty?)) ? base_url : v
+          value = k == "base_url" && (v.nil? || v.empty?) ? base_url : v
           next if value.nil?
 
           writer.set("providers.#{choice[:provider]}.#{k}", value)

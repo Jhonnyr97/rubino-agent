@@ -13,8 +13,8 @@ RSpec.describe Rubino::Tools::ShellTailTool do
     # Drain any background entries the test left in the registry so a
     # subsequent example doesn't observe stale state.
     Rubino::Tools::ShellRegistry.instance.instance_variable_get(:@entries)
-                                           .keys
-                                           .each { |id| Rubino::Tools::ShellRegistry.instance.remove(id) }
+                                .keys
+                                .each { |id| Rubino::Tools::ShellRegistry.instance.remove(id) }
   end
 
   it "returns immediately when bytes are already buffered" do

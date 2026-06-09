@@ -183,14 +183,14 @@ RSpec.describe Rubino::Tools::TaskTool do
 
     def build_parent_loop(tool_executor)
       Rubino::Agent::Loop.new(
-        session:       session,
-        llm_adapter:   parent_llm,
+        session: session,
+        llm_adapter: parent_llm,
         tool_executor: tool_executor,
         message_store: message_store,
-        budget:        Rubino::Agent::IterationBudget.new(config: config),
-        ui:            null_ui,
-        event_bus:     event_bus,
-        config:        config
+        budget: Rubino::Agent::IterationBudget.new(config: config),
+        ui: null_ui,
+        event_bus: event_bus,
+        config: config
       )
     end
 
@@ -204,15 +204,16 @@ RSpec.describe Rubino::Tools::TaskTool do
     end
 
     it "feeds the subagent result back to the parent and the loop continues" do
-      parent_llm.enqueue_tool_call("task", { "subagent" => "explore", "prompt" => "find the bug", "background" => false })
+      parent_llm.enqueue_tool_call("task",
+                                   { "subagent" => "explore", "prompt" => "find the bug", "background" => false })
       parent_llm.enqueue_text("Final answer based on the subagent result.")
 
       tool_executor = Rubino::Agent::ToolExecutor.new(
-        registry:        Rubino::Tools::Registry,
+        registry: Rubino::Tools::Registry,
         approval_policy: approval_policy,
-        ui:              null_ui,
-        config:          config,
-        event_bus:       event_bus
+        ui: null_ui,
+        config: config,
+        event_bus: event_bus
       )
 
       result = build_parent_loop(tool_executor).run(messages: [{ role: "user", content: "hi" }], tools: [])
@@ -225,15 +226,16 @@ RSpec.describe Rubino::Tools::TaskTool do
     end
 
     it "records only the boundary task events on the parent — not the subagent's inner tools" do
-      parent_llm.enqueue_tool_call("task", { "subagent" => "explore", "prompt" => "find the bug", "background" => false })
+      parent_llm.enqueue_tool_call("task",
+                                   { "subagent" => "explore", "prompt" => "find the bug", "background" => false })
       parent_llm.enqueue_text("ok")
 
       tool_executor = Rubino::Agent::ToolExecutor.new(
-        registry:        Rubino::Tools::Registry,
+        registry: Rubino::Tools::Registry,
         approval_policy: approval_policy,
-        ui:              null_ui,
-        config:          config,
-        event_bus:       event_bus
+        ui: null_ui,
+        config: config,
+        event_bus: event_bus
       )
 
       build_parent_loop(tool_executor).run(messages: [{ role: "user", content: "hi" }], tools: [])
@@ -245,15 +247,16 @@ RSpec.describe Rubino::Tools::TaskTool do
     end
 
     it "tags the task start/finish events with the subagent name + prompt" do
-      parent_llm.enqueue_tool_call("task", { "subagent" => "explore", "prompt" => "find the bug", "background" => false })
+      parent_llm.enqueue_tool_call("task",
+                                   { "subagent" => "explore", "prompt" => "find the bug", "background" => false })
       parent_llm.enqueue_text("ok")
 
       tool_executor = Rubino::Agent::ToolExecutor.new(
-        registry:        Rubino::Tools::Registry,
+        registry: Rubino::Tools::Registry,
         approval_policy: approval_policy,
-        ui:              null_ui,
-        config:          config,
-        event_bus:       event_bus
+        ui: null_ui,
+        config: config,
+        event_bus: event_bus
       )
 
       build_parent_loop(tool_executor).run(messages: [{ role: "user", content: "hi" }], tools: [])
@@ -328,7 +331,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       factory = lambda do |definition|
         view = Rubino::UI::SubagentView.new(agent_name: definition.name, out: out)
         Class.new do
-          define_method(:run!) do |input, **_opts|
+          define_method(:run!) do |_input, **_opts|
             view.tool_started("grep", arguments: { "pattern" => "needle" })
             result = Rubino::Tools::Result.success(
               name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
@@ -362,26 +365,27 @@ RSpec.describe Rubino::Tools::TaskTool do
       event_bus.on(Rubino::Interaction::Events::TOOL_STARTED) { |p| recorded_tool_events << [:started, p] }
       event_bus.on(Rubino::Interaction::Events::TOOL_FINISHED) { |p| recorded_tool_events << [:finished, p] }
 
-      parent_llm.enqueue_tool_call("task", { "subagent" => "explore", "prompt" => "find needle", "background" => false })
+      parent_llm.enqueue_tool_call("task",
+                                   { "subagent" => "explore", "prompt" => "find needle", "background" => false })
       parent_llm.enqueue_text("ok")
 
       tool_executor = Rubino::Agent::ToolExecutor.new(
-        registry:        Rubino::Tools::Registry,
+        registry: Rubino::Tools::Registry,
         approval_policy: approval_policy,
-        ui:              null_ui,
-        config:          config,
-        event_bus:       event_bus
+        ui: null_ui,
+        config: config,
+        event_bus: event_bus
       )
 
       Rubino::Agent::Loop.new(
-        session:       session,
-        llm_adapter:   parent_llm,
+        session: session,
+        llm_adapter: parent_llm,
         tool_executor: tool_executor,
         message_store: message_store,
-        budget:        Rubino::Agent::IterationBudget.new(config: config),
-        ui:            null_ui,
-        event_bus:     event_bus,
-        config:        config
+        budget: Rubino::Agent::IterationBudget.new(config: config),
+        ui: null_ui,
+        event_bus: event_bus,
+        config: config
       ).run(messages: [{ role: "user", content: "hi" }], tools: [])
 
       # Only the boundary `task` events reach the parent — the child's `grep`
@@ -426,7 +430,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       end
 
       # Child is still parked on the latch, yet the call already returned.
-      expect(out).to match(/Started background subagent 'explore' as task sa_/)
+      expect(out).to include("Started background subagent 'explore' as task sa_")
       expect(elapsed).to be < 1.0
 
       latch << :go # let the child finish so the thread doesn't leak
@@ -515,7 +519,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       ids = Array.new(Rubino::Tools::BackgroundTasks::MAX_CONCURRENT) do
         tool.call("subagent" => "explore", "prompt" => "p")
       end
-      expect(ids).to all(match(/sa_/))
+      expect(ids).to all(include("sa_"))
 
       over = tool.call("subagent" => "explore", "prompt" => "one too many")
       expect(over).to include("At capacity")
@@ -597,6 +601,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       Rubino::Tools::BackgroundTasks.reset!
       Rubino.ui = Rubino::UI::CLI.new
     end
+
     after do
       Rubino::Tools::BackgroundTasks.reset!
       Rubino.ui = nil
@@ -726,7 +731,10 @@ RSpec.describe Rubino::Tools::TaskTool do
     it "reports the full result of a completed background subagent" do
       latch  = Queue.new
       runner = Class.new do
-        define_method(:run!) { |_i, **_opts| latch.pop; "FINAL DETAIL" }
+        define_method(:run!) do |_i, **_opts|
+          latch.pop
+          "FINAL DETAIL"
+        end
         define_method(:cancel!) {}
       end.new
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
@@ -758,7 +766,10 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch     = Queue.new
       cancelled = []
       runner = Class.new do
-        define_method(:run!) { |_i, **_opts| latch.pop; "x" }
+        define_method(:run!) do |_i, **_opts|
+          latch.pop
+          "x"
+        end
         define_method(:cancel!) { cancelled << true }
       end.new
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })

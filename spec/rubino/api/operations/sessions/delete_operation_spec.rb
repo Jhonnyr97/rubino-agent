@@ -4,6 +4,7 @@ require "spec_helper"
 
 RSpec.describe Rubino::API::Operations::Sessions::DeleteOperation do
   before { with_test_db }
+
   let(:repo) { Rubino::Session::Repository.new }
 
   it "deletes a session and returns 204" do

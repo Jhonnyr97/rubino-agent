@@ -47,10 +47,10 @@ RSpec.describe Rubino::Session::Store do
         ["assistant", "follow-up"]
       ].each do |role, content|
         db_connection.db[:messages].insert(
-          id:         SecureRandom.uuid,
+          id: SecureRandom.uuid,
           session_id: session[:id],
-          role:       role,
-          content:    content,
+          role: role,
+          content: content,
           created_at: same_ts
         )
       end

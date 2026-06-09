@@ -35,8 +35,8 @@ module Rubino
 
     DESCRIPTIONS = {
       DEFAULT => "all tools, approvals from config",
-      PLAN    => "read-only tools only, no edits/shell/git",
-      YOLO    => "all tools, approvals skipped",
+      PLAN => "read-only tools only, no edits/shell/git",
+      YOLO => "all tools, approvals skipped"
     }.freeze
 
     class << self
@@ -49,7 +49,8 @@ module Rubino
       # rather than silently leaving the previous mode in place.
       def set(name)
         sym = name.to_s.downcase.to_sym
-        raise ArgumentError, "unknown mode: #{name.inspect} (valid: #{ALL.join(', ')})" unless ALL.include?(sym)
+        raise ArgumentError, "unknown mode: #{name.inspect} (valid: #{ALL.join(", ")})" unless ALL.include?(sym)
+
         @current = sym
       end
 
@@ -57,7 +58,7 @@ module Rubino
       # external supervisor can pin the mode across a restart without any
       # on-disk state; an unset or unknown value falls back to DEFAULT.
       def boot_default
-        raw = ENV["RUBINO_BOOT_MODE"]
+        raw = ENV.fetch("RUBINO_BOOT_MODE", nil)
         return DEFAULT if raw.nil? || raw.strip.empty?
 
         sym = raw.strip.downcase.to_sym
@@ -76,6 +77,7 @@ module Rubino
       # filters; default and yolo both pass everything through.
       def allows_tool?(tool_name)
         return true unless current == PLAN
+
         READ_ONLY_TOOLS.include?(tool_name.to_s)
       end
 

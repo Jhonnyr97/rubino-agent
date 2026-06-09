@@ -12,8 +12,8 @@ RSpec.describe Rubino::OAuth::Registry do
       def self.display_name  = "Dummy"
       def self.site          = "https://dummy.test"
       def self.authorize_path = "/auth"
-      def self.token_path    = "/token"
-      def fetch_account_info(_token); { account_id: "1" }; end
+      def self.token_path = "/token"
+      def fetch_account_info(_token) = { account_id: "1" }
     end
   end
 

@@ -130,7 +130,8 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     end
 
     it "reads the caps from config (config-driven, not just the constants)" do
-      cfg = test_configuration("tasks" => { "max_depth" => 5, "max_children_per_node" => 1, "max_concurrent_total" => 50 })
+      cfg = test_configuration("tasks" => { "max_depth" => 5, "max_children_per_node" => 1,
+                                            "max_concurrent_total" => 50 })
       allow(Rubino).to receive(:configuration).and_return(cfg)
 
       parent = reserve
@@ -156,7 +157,8 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     #     │   └─ a1 (depth2)
     #     └─ b (depth1)
     before do
-      cfg = test_configuration("tasks" => { "max_depth" => 10, "max_children_per_node" => 10, "max_concurrent_total" => 50 })
+      cfg = test_configuration("tasks" => { "max_depth" => 10, "max_children_per_node" => 10,
+                                            "max_concurrent_total" => 50 })
       allow(Rubino).to receive(:configuration).and_return(cfg)
     end
 

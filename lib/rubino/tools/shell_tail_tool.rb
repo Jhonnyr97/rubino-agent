@@ -23,18 +23,19 @@ module Rubino
 
       def description
         "Follow a background shell — block until new stdout/stderr bytes " \
-        "arrive on its run_id, the process exits, or `timeout` seconds " \
-        "elapse. Default timeout #{DEFAULT_TIMEOUT}s (max #{MAX_TIMEOUT}s). " \
-        "Returns the new bytes plus a status header. Use for `tail -F`-style " \
-        "following; use shell_output for a one-shot read."
+          "arrive on its run_id, the process exits, or `timeout` seconds " \
+          "elapse. Default timeout #{DEFAULT_TIMEOUT}s (max #{MAX_TIMEOUT}s). " \
+          "Returns the new bytes plus a status header. Use for `tail -F`-style " \
+          "following; use shell_output for a one-shot read."
       end
 
       def input_schema
         {
           type: "object",
           properties: {
-            run_id:  { type: "string",  description: "run_id from shell run_in_background:true" },
-            timeout: { type: "integer", description: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})" }
+            run_id: { type: "string", description: "run_id from shell run_in_background:true" },
+            timeout: { type: "integer",
+                       description: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})" }
           },
           required: %w[run_id]
         }
@@ -45,7 +46,7 @@ module Rubino
       end
 
       def call(arguments)
-        run_id  = arguments["run_id"]  || arguments[:run_id]
+        run_id  = arguments["run_id"] || arguments[:run_id]
         timeout = (arguments["timeout"] || arguments[:timeout] || DEFAULT_TIMEOUT).to_i
         timeout = timeout.clamp(1, MAX_TIMEOUT)
 
@@ -69,7 +70,7 @@ module Rubino
           # User pressed Ctrl+C during a tail. Don't keep blocking — return
           # an empty body with a "cancelled" hint so the model can react.
           if cancellation_requested?
-            return { output:     tail_header(run_id, registry, entry, body, cancelled: true),
+            return { output: tail_header(run_id, registry, entry, body, cancelled: true),
                      error_code: :cancelled }
           end
 
@@ -82,10 +83,13 @@ module Rubino
         exit_code = registry.exit_code(entry)
         registry.remove(run_id) unless status == :running
 
-        text = body.empty? ? tail_header(run_id, registry, entry, body) :
-                              "#{tail_header(run_id, registry, entry, body)}\n#{body}"
-        { output:    text,
-          metrics:   "#{body.bytesize}B · #{status}",
+        text = if body.empty?
+                 tail_header(run_id, registry, entry, body)
+               else
+                 "#{tail_header(run_id, registry, entry, body)}\n#{body}"
+               end
+        { output: text,
+          metrics: "#{body.bytesize}B · #{status}",
           exit_code: exit_code,
           error_code: tail_error_code(status, exit_code) }
       end
@@ -104,7 +108,7 @@ module Rubino
       end
 
       def tail_error_code(status, exit_code)
-        return nil if status == :running || status == :completed
+        return nil if %i[running completed].include?(status)
         return :exit_nonzero if exit_code && exit_code != 0
 
         :shell_error

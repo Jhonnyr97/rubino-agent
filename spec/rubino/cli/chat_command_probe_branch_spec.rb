@@ -8,18 +8,13 @@
 #     when present), leaves the parent untouched, and the returned runner is
 #     switched onto the child.
 RSpec.describe Rubino::CLI::ChatCommand do
+  subject(:cmd) { described_class.new(provider: "fake", model: "fake/test") }
+
   let(:db)     { test_database }
   let(:config) { test_configuration }
   let(:ui)     { Rubino::UI::Null.new }
   let(:store)  { Rubino::Session::Store.new(db: db.db) }
   let(:repo)   { Rubino::Session::Repository.new(db: db.db) }
-
-  before do
-    allow(Rubino).to receive(:database).and_return(db)
-    allow(Rubino).to receive(:configuration).and_return(config)
-    Rubino.ui = ui
-  end
-
   # A real runner over the test DB, switched onto a persisted parent session
   # that already has a couple of turns.
   let(:parent_session) do
@@ -29,12 +24,15 @@ RSpec.describe Rubino::CLI::ChatCommand do
     store.create(session_id: s[:id], role: "assistant", content: "On it.")
     s
   end
-
   let(:parent_runner) do
     instance_double(Rubino::Agent::Runner, session: parent_session)
   end
 
-  subject(:cmd) { described_class.new(provider: "fake", model: "fake/test") }
+  before do
+    allow(Rubino).to receive(:database).and_return(db)
+    allow(Rubino).to receive(:configuration).and_return(config)
+    Rubino.ui = ui
+  end
 
   describe "#probe_question" do
     it "extracts the side-question from a leading `? ` line" do

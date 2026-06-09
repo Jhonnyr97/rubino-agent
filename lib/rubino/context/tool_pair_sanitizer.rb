@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "set"
-
 module Rubino
   module Context
     # Ensures tool_call and tool_result pairs are not split during compaction.
@@ -20,16 +18,12 @@ module Rubino
         adjusted = middle_messages.dup
 
         # Leading orphan: a tool RESULT whose call lives in the head section.
-        while adjusted.first&.role == "tool"
-          adjusted.shift
-        end
+        adjusted.shift while adjusted.first&.role == "tool"
 
         # Trailing orphan: an assistant tool call whose results are NOT all
         # present after it in this slice (e.g. interrupted turn, or results
         # landed in the tail section). A fully-PAIRED trailing call is kept.
-        while adjusted.last && trailing_unanswered_tool_call?(adjusted)
-          adjusted.pop
-        end
+        adjusted.pop while adjusted.last && trailing_unanswered_tool_call?(adjusted)
 
         adjusted
       end

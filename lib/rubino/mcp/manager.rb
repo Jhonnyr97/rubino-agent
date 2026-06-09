@@ -100,7 +100,11 @@ module Rubino
       # Checks health of all connected servers
       def health_check
         @clients.map do |name, client|
-          alive = client.alive? rescue false
+          alive = begin
+            client.alive?
+          rescue StandardError
+            false
+          end
           { name: name, alive: alive }
         end
       end
@@ -136,15 +140,11 @@ module Rubino
             url: server_config["url"],
             headers: server_config["headers"] || {}
           }
-          if server_config["oauth"]
-            opts[:config][:oauth] = server_config["oauth"]
-          end
+          opts[:config][:oauth] = server_config["oauth"] if server_config["oauth"]
         end
 
         # Optional: request timeout
-        if server_config["timeout"]
-          opts[:request_timeout] = server_config["timeout"]
-        end
+        opts[:request_timeout] = server_config["timeout"] if server_config["timeout"]
 
         opts
       end

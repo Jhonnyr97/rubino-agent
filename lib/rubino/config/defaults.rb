@@ -337,9 +337,9 @@ module Rubino
           # Fail closed: oversize / unsafe / disallowed-kind => warn + skip.
           "policy" => {
             # Hard cap on accepted file size, enforced via lstat BEFORE reading.
-            "max_file_bytes" => 26_214_400,         # 25 MB
+            "max_file_bytes" => 26_214_400, # 25 MB
             # Inline budget for text files; over budget => head + read-rest note.
-            "inline_text_budget_bytes" => 100_000,  # ~25k tokens
+            "inline_text_budget_bytes" => 100_000, # ~25k tokens
             # Kinds the handler will process. Deny one by removing it.
             "allow_kinds" => %w[image text document archive binary],
             # Documents are hint-only by default (cost / injection blast radius);

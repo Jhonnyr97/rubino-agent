@@ -32,9 +32,7 @@ module Rubino
             entry = @registry.find(id)
             raise NotFoundError.new("task", id) unless entry
 
-            unless entry.status == :running
-              raise ConflictError, "task #{id} already #{entry.status} — nothing to stop"
-            end
+            raise ConflictError, "task #{id} already #{entry.status} — nothing to stop" unless entry.status == :running
 
             entry.runner&.cancel!
             # Stop-cascade (S5a): wake any descendant parked on a blocking

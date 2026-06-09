@@ -26,15 +26,15 @@ module Rubino
         explicit = config&.model_provider if explicit.nil?
         resolved = ProviderResolver.resolve(model_id, explicit_provider: explicit)
 
-        klass = (resolved == "fake") ? FakeProvider : RubyLLMAdapter
+        klass = resolved == "fake" ? FakeProvider : RubyLLMAdapter
         kwargs = {
-          model_id:      model_id,
-          provider:      resolved,
-          config:        config,
-          ui:            ui,
-          event_bus:     event_bus,
+          model_id: model_id,
+          provider: resolved,
+          config: config,
+          ui: ui,
+          event_bus: event_bus,
           tool_executor: tool_executor,
-          cancel_token:  cancel_token
+          cancel_token: cancel_token
         }
         # SLICE-7: only the real adapter understands per-call config isolation
         # (RubyLLM::Context). FakeProvider has no global to protect, so it never

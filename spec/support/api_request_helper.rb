@@ -6,7 +6,7 @@ module APIRequestHelper
       "rubino.json" => body,
       "QUERY_STRING" => ""
     }
-    headers.each { |k, v| env["HTTP_#{k.upcase.tr('-', '_')}"] = v }
+    headers.each { |k, v| env["HTTP_#{k.upcase.tr("-", "_")}"] = v }
     Rubino::API::Request.new(env, params.transform_keys(&:to_s))
   end
 

@@ -20,8 +20,8 @@ module Rubino
 
       def description
         "Search the web for information. Returns relevant results with titles, " \
-        "URLs, and snippets. Useful for finding documentation, researching " \
-        "dependencies, and answering questions about external topics."
+          "URLs, and snippets. Useful for finding documentation, researching " \
+          "dependencies, and answering questions about external topics."
       end
 
       def input_schema
@@ -66,7 +66,7 @@ module Rubino
       def search_tavily(query, max_results)
         uri = URI("https://api.tavily.com/search")
         body = {
-          api_key: ENV["TAVILY_API_KEY"],
+          api_key: ENV.fetch("TAVILY_API_KEY", nil),
           query: query,
           max_results: max_results,
           include_answer: true,
@@ -77,9 +77,7 @@ module Rubino
         data = JSON.parse(response)
 
         results = []
-        if data["answer"]
-          results << "**Answer:** #{data["answer"]}\n"
-        end
+        results << "**Answer:** #{data["answer"]}\n" if data["answer"]
 
         (data["results"] || []).each do |r|
           results << format_result(r["title"], r["url"], r["content"])
@@ -127,14 +125,18 @@ module Rubino
         results = []
 
         # Extract result blocks
-        html.scan(/<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>(.+?)<\/a>.*?<a class="result__snippet"[^>]*>(.+?)<\/a>/m) do |url, title, snippet|
+        html.scan(%r{<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>(.+?)</a>.*?<a class="result__snippet"[^>]*>(.+?)</a>}m) do |url, title, snippet|
           clean_title = title.gsub(/<[^>]+>/, "").strip
           clean_snippet = snippet.gsub(/<[^>]+>/, "").strip
           clean_url = url.strip
 
           # DuckDuckGo wraps URLs in redirects
           if clean_url.include?("uddg=")
-            clean_url = URI.decode_www_form_component(clean_url.match(/uddg=([^&]+)/)[1]) rescue clean_url
+            clean_url = begin
+              URI.decode_www_form_component(clean_url.match(/uddg=([^&]+)/)[1])
+            rescue StandardError
+              clean_url
+            end
           end
 
           results << format_result(clean_title, clean_url, clean_snippet)

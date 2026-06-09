@@ -24,7 +24,7 @@ module Rubino
                      "with-cron-success"],
           scenario: "agent-creates-cron" },
 
-        { keywords: ["approve", "approval", "autorizza", "conferma", "permit", "allow"],
+        { keywords: %w[approve approval autorizza conferma permit allow],
           scenario: "with-approvals" },
 
         { keywords: ["artifact", "generate report", "create file", "crea file",
@@ -35,7 +35,7 @@ module Rubino
                      "read this file", "analizza file"],
           scenario: "with-uploads" },
 
-        { keywords: ["fail", "error", "errore", "fallito", "broken", "crash", "crash"],
+        { keywords: %w[fail error errore fallito broken crash crash],
           scenario: "failure" },
 
         { keywords: ["complex-analysis", "report", "analysis report", "comprehensive",

@@ -4,6 +4,7 @@ RSpec.describe Rubino::Tools::VisionTool do
   subject(:tool) { described_class.new }
 
   let(:tmp_dir) { Dir.mktmpdir("vision_tool_spec") }
+
   after { FileUtils.rm_rf(tmp_dir) }
 
   it "has name 'vision' and :low risk" do
@@ -35,6 +36,7 @@ RSpec.describe Rubino::Tools::VisionTool do
 
   describe "happy path" do
     let(:png_path) { File.join(tmp_dir, "img.png") }
+
     before { File.binwrite(png_path, "\x89PNG\r\n\x1A\nfake-image-bytes") }
 
     it "delegates to AuxiliaryClient and returns the response content" do
