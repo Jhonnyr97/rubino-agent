@@ -330,6 +330,50 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # BH-2: idle Ctrl+C must never silently discard a typed draft. A non-empty
+  # buffer is CLEARED on the first Ctrl+C (no exit); an empty buffer arms a
+  # transient "(press Ctrl+C again to exit)" hint and only a SECOND Ctrl+C
+  # within the window exits.
+  describe "#idle_interrupt (BH-2)" do
+    it "clears a non-empty draft and stays (does NOT exit)" do
+      "half typed".each_char { |c| composer.handle_key(c) }
+      expect(composer.buffer).to eq("half typed")
+
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:cleared)
+      expect(composer.buffer).to eq("") # draft cleared, not lost to an exit
+    end
+
+    it "clearing the draft also closes an open completion menu" do
+      "/he".each_char { |c| composer.handle_key(c) } # opens the menu on a token
+      composer.idle_interrupt(window: 2.0)
+      expect(composer.menu_open?).to be(false)
+      expect(composer.buffer).to eq("")
+    end
+
+    it "on an empty buffer the FIRST Ctrl+C hints and does NOT exit" do
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:hint)
+      expect(output.string).to include("press Ctrl+C again to exit")
+    end
+
+    it "a SECOND empty Ctrl+C within the window exits" do
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:hint)
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:exit)
+    end
+
+    it "a slow second tap (outside the window) re-arms instead of exiting" do
+      expect(composer.idle_interrupt(window: 0)).to eq(:hint)
+      # window: 0 means the prior tap is already stale → a fresh hint, no exit.
+      expect(composer.idle_interrupt(window: 0)).to eq(:hint)
+    end
+
+    it "clearing a draft resets the exit timer (no accidental exit next tap)" do
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:hint) # arm
+      "oops".each_char { |c| composer.handle_key(c) }
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:cleared) # clears draft, resets
+      expect(composer.idle_interrupt(window: 2.0)).to eq(:hint) # back to a fresh first tap
+    end
+  end
+
   # Slice 1: cursor-aware editing. The buffer is edited at an internal cursor
   # index, driven by arrows/Home/End/word-jump + insert/delete-at-cursor. Drive
   # the CSI sequences the way the paste/Shift+Tab specs do: preload the bytes

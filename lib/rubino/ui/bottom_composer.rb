@@ -433,6 +433,46 @@ module Rubino
         end
       end
 
+      # Handle a Ctrl+C pressed at the IDLE prompt (BH-2). Mirrors the industry
+      # norm (Claude Code / Codex / readline) and the during-turn double-tap so a
+      # single Ctrl+C never silently discards a typed draft:
+      #
+      #   * buffer NON-EMPTY → CLEAR the line (and any open completion menu) and
+      #     stay (returns :cleared). The draft-clear resets the exit timer, so a
+      #     subsequent empty Ctrl+C starts the two-tap exit fresh.
+      #   * buffer EMPTY, first tap → show a transient "(press Ctrl+C again to
+      #     exit)" hint and stay (returns :hint).
+      #   * buffer EMPTY, second tap within +window+ seconds → exit (returns
+      #     :exit); the caller ends the session.
+      #
+      # Called by the idle reader OUTSIDE trap context (the SIGINT trap only flips
+      # a flag — Mutex#lock is forbidden in a trap), so the render mutex is safe
+      # here. +window+ is the double-tap window in seconds (the chat loop passes
+      # its DOUBLE_TAP_SECONDS so idle and in-turn behave identically).
+      def idle_interrupt(window: 2.0)
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        unless @buffer.empty?
+          @last_idle_int_at = nil
+          @render.synchronize do
+            close_menu
+            @buffer.clear
+            @cursor = 0
+            @announce = +""
+            redraw
+          end
+          return :cleared
+        end
+
+        if @last_idle_int_at && (now - @last_idle_int_at) <= window
+          return :exit
+        end
+
+        @last_idle_int_at = now
+        announce("(press Ctrl+C again to exit)")
+        :hint
+      end
+
       # The card rows currently shown (test/inspection helper).
       attr_reader :cards
 
