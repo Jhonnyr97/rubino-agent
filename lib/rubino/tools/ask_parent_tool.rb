@@ -45,6 +45,11 @@ module Rubino
       # child keeps working and the real answer arrives later as a steer note.
       NONBLOCKING_ACK = "Question sent to your parent. Keep working with your best "                         "judgement; the answer will be delivered to you as a note "                         "at your next turn if/when it arrives."
 
+      # Fallback bound (seconds) for a blocking ask when no configuration is
+      # reachable (a bare tool in a unit test). The live value comes from
+      # tasks.ask_parent_timeout; this matches the approvals wait-timeout default.
+      DEFAULT_ASK_TIMEOUT = 900
+
       def name
         "ask_parent"
       end
@@ -140,13 +145,15 @@ module Rubino
         end
       end
 
-      # Parks the child\'s OWN thread on the gate, indefinitely (timeout: nil —
-      # the owner constraint: wait forever, no auto-default). Returns the answer
-      # (from /reply or answer_child, both via gate.decide) as the tool result so
-      # it enters the child\'s context. A cancel raises Interrupted (handled in
-      # #call).
+      # Parks the child\'s OWN thread on the gate, BOUNDED by
+      # tasks.ask_parent_timeout (S5a — default 900s). On EXPIRED (no answer
+      # within the bound) the child self-heals: it stops waiting and proceeds with
+      # its best judgement instead of hanging forever. The answer (from /reply or
+      # answer_child, both via gate.decide) returns as the tool result so it
+      # enters the child\'s context. A cancel (/agents <id> --stop or a
+      # stop-cascade from an ancestor) raises Interrupted, handled in #call.
       def await_human(entry, gate, ask_id)
-        decision = gate.await(ask_id, timeout: nil)
+        decision = gate.await(ask_id, timeout: ask_timeout)
         answer   = decision.equal?(Run::ApprovalGate::EXPIRED) ? nil : decision.to_s
         BackgroundTasks.instance.end_ask(entry.id)
         if answer.nil? || answer.empty?
@@ -154,6 +161,18 @@ module Rubino
         else
           "Your parent answered: #{answer}"
         end
+      end
+
+      # The bounded wait for a blocking ask, from config (tasks.ask_parent_timeout)
+      # when wired, else the built-in default. Reuses the approval-gate timeout
+      # convention (a sane upper bound, never "forever") so an abandoned ask
+      # self-heals rather than parking the child\'s thread indefinitely.
+      def ask_timeout
+        cfg = Rubino.configuration if defined?(Rubino) && Rubino.respond_to?(:configuration)
+        val = cfg&.respond_to?(:tasks_ask_parent_timeout) ? cfg.tasks_ask_parent_timeout : nil
+        Integer(val)
+      rescue StandardError, TypeError, ArgumentError
+        DEFAULT_ASK_TIMEOUT
       end
 
       # Notifies the AGENT-parent (owner) of a child question by pushing the

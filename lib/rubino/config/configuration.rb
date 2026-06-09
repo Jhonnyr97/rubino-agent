@@ -123,6 +123,14 @@ module Rubino
         dig("tasks", "max_live_probes_per_child") || Defaults.dig("tasks", "max_live_probes_per_child")
       end
 
+      # Bound (seconds) a BLOCKING ask_parent waits for an answer before the child
+      # self-heals and proceeds with its best judgement (S5a). Reuses the
+      # approval-gate timeout convention — a sane upper bound, never "forever" —
+      # so an abandoned ask never parks the child's thread indefinitely. Default 900.
+      def tasks_ask_parent_timeout
+        dig("tasks", "ask_parent_timeout") || Defaults.dig("tasks", "ask_parent_timeout")
+      end
+
       # -- Prompts section --
       # The customer-facing preamble prepended to every assembled system
       # prompt. nil/empty disables the layer.

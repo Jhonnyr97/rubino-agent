@@ -719,15 +719,19 @@ module Rubino
           return
         end
 
-        unless %i[running needs_approval].include?(entry.status)
+        unless %i[running needs_approval blocked_on_human blocked_on_parent].include?(entry.status)
           @ui.info("#{id} already #{entry.status} — nothing to stop.")
           return
         end
 
-        # A child parked on a human approval is blocked in its gate's wait;
-        # cancel the gate so it wakes (Interrupted → deny) and unwinds instead of
-        # holding its thread until the 15-min bound.
+        # A child parked on a human approval or an ask_parent is blocked in its
+        # gate's wait; cancel the gates so it wakes (Interrupted → deny/cancel) and
+        # unwinds instead of holding its thread until the bound. The stop-cascade
+        # then wakes every DESCENDANT parked on a blocking ask too, so the whole
+        # subtree unwinds at once (S5a — no orphaned blocked grandchild).
         entry.approval_gate&.cancel!
+        entry.ask_gate&.cancel!
+        registry.cancel_descendant_ask_gates(id)
         entry.runner&.cancel!
         @ui.success("Stop requested for #{id} (#{entry.subagent}); it unwinds at its next checkpoint.")
       end

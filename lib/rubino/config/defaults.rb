@@ -254,7 +254,11 @@ module Rubino
           # times an owner may run a one-shot model peek over a single child's
           # transcript. Over budget → the model is told to use the FREE
           # live:false snapshot instead. Free snapshots are unlimited.
-          "max_live_probes_per_child" => 5
+          "max_live_probes_per_child" => 5,
+          # Bound (seconds) a BLOCKING ask_parent waits before the child
+          # self-heals and proceeds with its best judgement (S5a). Matches the
+          # approvals wait-timeout default — never "forever".
+          "ask_parent_timeout" => 900
         },
         "tools" => {
           # Sandbox write/edit/delete tools to workspace_root (terminal.cwd

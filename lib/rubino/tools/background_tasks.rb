@@ -411,6 +411,17 @@ module Rubino
         end
       end
 
+      # Stop-cascade (S5a): when a node is stopped, cancel the ask-gates of ALL
+      # its descendants so a blocking ask anywhere in the subtree unwinds at once
+      # (Run::ApprovalGate#cancel! wakes the parked child thread with Interrupted)
+      # instead of leaving an orphaned grandchild parked until its bound elapses.
+      # The descendant runners' CancelTokens are flipped by the caller's cancel!
+      # of the node; this just makes the gate-parked ones wake immediately. Safe
+      # to call on a node with no descendants or no blocked descendants.
+      def cancel_descendant_ask_gates(id)
+        descendants_of(id).each { |e| e.ask_gate&.cancel! }
+      end
+
       # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
       # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
       def owned_by?(parent_id, child_id)
