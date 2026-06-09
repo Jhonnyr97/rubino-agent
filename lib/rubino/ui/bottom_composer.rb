@@ -1061,6 +1061,11 @@ module Rubino
       # The completion TOKEN under the cursor: the leading run of non-space chars
       # from the start of the line up to the cursor, when it begins with / or @.
       # Returns [token, start_index] or nil when the cursor isn't on a token.
+      #
+      # Kept for the highlight path and the `/`+`@` cases; the menu plumbing now
+      # goes through {#completion_context}, which ALSO covers the
+      # command-argument context (e.g. completing the skill name in
+      # `/skills <partial>`) that has no leading `/`/`@` sigil.
       def current_token
         return nil unless @completion
 
@@ -1073,17 +1078,62 @@ module Rubino
         [m[1], m.begin(1)]
       end
 
-      # Open the menu for the current token if it has candidates.
-      def open_menu
+      # Resolve what to complete at the cursor: returns [items, start, len] where
+      # +items+ are the candidate strings, +start+ the codepoint index where the
+      # splice begins, and +len+ the length of the text the accepted choice
+      # replaces — or nil when nothing completes here.
+      #
+      # Two shapes, in priority order:
+      #   1. COMMAND ARGUMENT — the buffer is `/<cmd> <partial>` and <cmd> has a
+      #      registered argument source (e.g. `/skills ruby` → skill names). The
+      #      partial (possibly empty) is the splice span; this is what lets the
+      #      SAME dropdown pick a skill name as it picks a /command or @file.
+      #   2. LEADING TOKEN — a `/command` or `@file` token under the cursor
+      #      (the original behavior), spliced over the whole token.
+      def completion_context
+        return nil unless @completion
+
+        if (arg = command_arg_context)
+          command, partial, start = arg
+          items = arg_candidates(command, partial)
+          return nil if items.empty?
+
+          return [items, start, partial.chars.length]
+        end
+
         tok = current_token
-        return unless tok
+        return nil unless tok
 
         token, start = tok
         items = candidates(token)
-        return if items.empty?
+        return nil if items.empty?
 
+        [items, start, token.chars.length]
+      end
+
+      # When the buffer is the ARGUMENT position of a slash command — i.e.
+      # `/<cmd> <partial>` with the cursor in the (single) argument — returns
+      # [command, partial, partial_start] so {#completion_context} can complete
+      # the argument; nil otherwise. Only the first argument completes (MVP: one
+      # skill at a time), and only when the cursor is within/at the end of that
+      # argument run (no second space). Generic by command name so `/agents`
+      # could reuse it with no change here.
+      def command_arg_context
+        prefix = @buffer.chars.first(@cursor).join
+        m = prefix.match(%r{\A/(\S+)[ \t]+(\S*)\z})
+        return nil unless m
+
+        [m[1], m[2], m.begin(2)]
+      end
+
+      # Open the menu for the current completion context if it has candidates.
+      def open_menu
+        ctx = completion_context
+        return unless ctx
+
+        items, start, len = ctx
         @render.synchronize do
-          @menu = { items: items, selected: 0, top: 0, start: start, token_len: token.length }
+          @menu = { items: items, selected: 0, top: 0, start: start, token_len: len }
           redraw
         end
       end
@@ -1103,27 +1153,33 @@ module Rubino
       # The selected index is preserved (clamped) across an update so refining the
       # token doesn't jump the highlight back to the top mid-navigation.
       def auto_update_menu
-        tok = current_token
-        if tok.nil?
+        ctx = completion_context
+        if ctx.nil?
           @menu = nil
           @menu_suppressed = false # token cleared: a fresh token can auto-open
           return
         end
-        return if @menu_suppressed # ESC stuck this token closed
+        return if @menu_suppressed # ESC stuck this token/argument closed
 
-        token, start = tok
-        items = candidates(token)
-        if items.empty?
-          @menu = nil
-          return
-        end
+        items, start, len = ctx
         sel = (@menu ? @menu[:selected] : 0).clamp(0, items.size - 1)
         @menu = { items: items, selected: sel, top: menu_top(sel, items.size),
-                  start: start, token_len: token.length }
+                  start: start, token_len: len }
       end
 
       def candidates(token)
         @completion.candidates_for(token)
+      rescue StandardError
+        []
+      end
+
+      # Argument candidates for a slash command (e.g. skill names for `/skills`),
+      # via the CompletionSource. Guarded so a registry hiccup degrades the menu
+      # to closed rather than crashing the prompt — same contract as #candidates.
+      def arg_candidates(command, partial)
+        return [] unless @completion.respond_to?(:arg_candidates_for)
+
+        @completion.arg_candidates_for(command, partial)
       rescue StandardError
         []
       end

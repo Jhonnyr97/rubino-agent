@@ -1065,7 +1065,21 @@ module Rubino
       def build_prompt
         chip = mode_label
         chip = "#{pastel.cyan("branch:#{@branch_short_id}")} #{chip}" if @branch_short_id
+        chip = "#{chip}#{skill_label}"
         "#{chip} #{PROMPT_CARET} "
+      end
+
+      # The active-skill segment of the prompt chip: a dim ` (skill: <name>)`
+      # appended after the mode chip, e.g. `default (skill: ruby-expert) ❯`. Empty
+      # when no skill is pinned (Rubino::ActiveSkill), so the chip returns to a
+      # plain `default ❯`. Styled dim to match the mode chip's quiet register.
+      # The chip refreshes live: each idle prompt rebuilds the composer with a
+      # freshly-built prompt, so activating/clearing a skill updates it next turn.
+      def skill_label
+        skill = Rubino::ActiveSkill.current
+        return "" unless skill
+
+        pastel.dim(" (skill: #{skill})")
       end
 
       def mode_label
@@ -1146,7 +1160,17 @@ module Rubino
         custom = cmd_loader.names rescue []
         names  = (::Rubino::Commands::BuiltIns::NAMES + custom).uniq
         files  = -> { Rubino::Workspace.primary_root }
-        Rubino::UI::CompletionSource.new(commands: names, files: files)
+        # ARGUMENT sources: the dropdown completes the argument of these commands
+        # the same way it completes `/command` and `@file`. `/skills <partial>`
+        # picks a skill name (lazily re-read each open so a freshly-authored skill
+        # appears). Structured as a generic command→names map so `/agents` can
+        # reuse the same mechanism later — register an "agents" entry here and the
+        # composer/CompletionSource need no change (agent picker is out of scope).
+        arg_sources = {
+          "skills" => -> { Rubino::Skills::Registry.new.names }
+        }
+        Rubino::UI::CompletionSource.new(commands: names, files: files,
+                                         arg_sources: arg_sources)
       end
 
       # --- Helpers ---

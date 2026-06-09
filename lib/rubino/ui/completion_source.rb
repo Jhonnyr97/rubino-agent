@@ -37,11 +37,26 @@ module Rubino
       # prompt while we walk it.
       GLOB_MAX_FILES = 5000
 
+      # The `✗ none` clear entry shown at the TOP of an argument list whose
+      # command supports clearing its active selection (e.g. `/skills`). Picking
+      # it submits the bare sentinel so the command handler clears the slot.
+      NONE_ENTRY = "✗ none"
+
       # @param commands [Array<String>] the slash-command names (incl. leading /)
       # @param files [#call, nil] lazy proc returning the workspace root to scan
-      def initialize(commands: [], files: nil)
+      # @param arg_sources [Hash{String=>#call}] maps a BARE command name (no
+      #   leading slash, e.g. "skills") to a no-arg proc returning that command's
+      #   argument candidates (e.g. the skill names). When the buffer is an
+      #   argument to such a command (`/skills <partial>`), the dropdown completes
+      #   from these instead of the commands/files. Structured as a generic map so
+      #   the SAME mechanism can later serve `/agents` — just register another
+      #   entry; nothing here is skills-specific. The candidate set is prefixed
+      #   with a `✗ none` clear entry (NONE_ENTRY) so the picker can clear the
+      #   active selection from the top of the list.
+      def initialize(commands: [], files: nil, arg_sources: {})
         @commands        = Array(commands).uniq
         @files_root_proc = files
+        @arg_sources     = arg_sources || {}
         @pastel          = Pastel.new
       end
 
@@ -59,6 +74,36 @@ module Rubino
           []
         end
       end
+
+      # Candidates for the ARGUMENT of a command, e.g. the skill names when the
+      # buffer is `/skills <partial>`. +command+ is the bare command name (no
+      # leading slash); +partial+ is the text typed so far for the argument (may
+      # be empty). Returns [] when the command has no registered argument source.
+      #
+      # The list leads with the `✗ none` clear entry (so the picker can clear the
+      # active selection from the top), then the source's candidates filtered by
+      # case-insensitive prefix and capped at MAX_CANDIDATES — the SAME cap the
+      # `/command` and `@file` lists honor.
+      #
+      # Generic by command name so the same dropdown can later serve `/agents`:
+      # register an "agents" => names_proc entry and nothing else changes here.
+      def arg_candidates_for(command, partial)
+        source = @arg_sources[command.to_s]
+        return [] unless source
+
+        down  = partial.to_s.downcase
+        names = Array(source.call)
+        # The `✗ none` clear entry matches an empty partial or a "n"/"no…"/"none"
+        # prefix, so typing toward "none" keeps it in view.
+        list = []
+        list << NONE_ENTRY if down.empty? || NONE.start_with?(down)
+        list.concat(names.select { |n| n.to_s.downcase.start_with?(down) })
+        list.first(MAX_CANDIDATES)
+      end
+
+      # The sentinel a `✗ none` selection resolves to once spliced + submitted —
+      # the command handler treats this argument as "clear the active selection".
+      NONE = "none"
 
       # Subtly colorize a leading /command or @mention token (cyan). Plain text
       # and non-strings are returned unchanged. Matches LineInput#highlight_line.

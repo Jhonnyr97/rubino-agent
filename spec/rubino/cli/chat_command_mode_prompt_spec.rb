@@ -40,6 +40,27 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
     end
 
+    it "appends a dim (skill: <name>) segment when a skill is active" do
+      Rubino::ActiveSkill.set("ruby-expert")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default (skill: ruby-expert) ❯ ")
+    ensure
+      Rubino::ActiveSkill.reset!
+    end
+
+    it "drops the skill segment when no skill is active" do
+      Rubino::ActiveSkill.reset!
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+    end
+
+    it "composes the skill segment alongside a non-default mode" do
+      Rubino::Modes.set(:yolo)
+      Rubino::ActiveSkill.set("react-pro")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo (skill: react-pro) ❯ ")
+    ensure
+      Rubino::Modes.set(:default)
+      Rubino::ActiveSkill.reset!
+    end
+
     it "colours :default dim, :plan cyan, :yolo bold yellow" do
       pastel = Pastel.new(enabled: true)
       cmd.instance_variable_set(:@pastel, pastel)
