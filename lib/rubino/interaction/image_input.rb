@@ -89,11 +89,10 @@ module Rubino
 
         if (reason = attachment_error(path))
           rejected << { path: path, reason: reason }
-          ""
         else
           paths << path unless paths.include?(path)
-          ""
         end
+        ""
       end
 
       # Gates one candidate image through the universal attachment layer —
