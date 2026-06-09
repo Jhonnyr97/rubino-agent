@@ -103,13 +103,25 @@ module Rubino
         [true, "true", 1, "1"].include?(raw)
       end
 
+      # A probe is a snapshot at this instant: a child probed right after
+      # spawn has run nothing yet and honestly reports an empty/confused
+      # context, which reads as broken without this hint (#112).
+      JUST_STARTED_HINT = "(snapshot at this instant — the child just started and its " \
+                          "context is still empty; probe again in a moment)"
+
+      def just_started?(entry)
+        entry.tool_count.to_i.zero?
+      end
+
       # FREE path: render the live-progress fields only. NO model call.
       def probe_cheap(entry)
         recent = Array(entry.activity_log).last(RECENT_MAX)
         lines  = recent.empty? ? "(none yet)" : recent.join("\n")
-        "probe #{entry.id} · #{entry.subagent} · #{entry.status} · " \
-          "#{entry.tool_count.to_i} tools · last: #{entry.last_activity || "—"}\n" \
-          "recent:\n#{lines}"
+        out = "probe #{entry.id} · #{entry.subagent} · #{entry.status} · " \
+              "#{entry.tool_count.to_i} tools · last: #{entry.last_activity || "—"}\n" \
+              "recent:\n#{lines}"
+        out += "\n#{JUST_STARTED_HINT}" if just_started?(entry)
+        out
       end
 
       # BILLED path: enforce the per-child budget, then run the one-shot peek.
@@ -123,7 +135,9 @@ module Rubino
 
         registry.record_live_probe(entry.id)
         answer = probe_engine.peek(entry: entry, question: question)
-        "probe #{entry.id} (live) ⟵ #{answer}"
+        out    = "probe #{entry.id} (live) ⟵ #{answer}"
+        out += "\n#{JUST_STARTED_HINT}" if just_started?(entry)
+        out
       end
 
       def probe_engine

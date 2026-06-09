@@ -108,13 +108,31 @@ RSpec.describe Rubino::Tools::ProbeTool do
       out = call_as(parent.id, tool, "task_id" => child.id, "question" => "?")
       expect(out).to include("0 tools · last: —")
       expect(out).to include("recent:\n(none yet)")
+      # #112: an empty snapshot of a just-spawned child reads as broken
+      # without the at-this-instant hint.
+      expect(out).to include("snapshot at this instant")
+      expect(out).to include("child just started")
     end
   end
 
   describe "live:true (billed, budgeted)" do
+    # #112: a live peek of a just-spawned child (no tools run yet) carries the
+    # at-this-instant hint, so its honest empty-context answer isn't read as
+    # the subagent being broken.
+    it "appends the just-started hint when the child has run no tools yet (#112)" do
+      parent = reserve
+      child  = reserve(owner: parent.id)
+      out = call_as(parent.id, tool, "task_id" => child.id, "question" => "what are you doing?", "live" => true)
+
+      expect(out).to start_with("probe #{child.id} (live) ⟵")
+      expect(out).to include("snapshot at this instant")
+      expect(out).to include("child just started")
+    end
+
     it "calls peek ONCE and returns the live answer" do
       parent = reserve
       child  = reserve(owner: parent.id)
+      registry.record_tool_started(child.id, "read lib/auth.rb")
       out = call_as(parent.id, tool, "task_id" => child.id, "question" => "what are you doing?", "live" => true)
 
       expect(out).to eq("probe #{child.id} (live) ⟵ the child says: working on auth")
@@ -178,6 +196,7 @@ RSpec.describe Rubino::Tools::ProbeTool do
       real_probe = Rubino::Tools::SubagentProbe.new(adapter_factory: ->(_m) { fake }, message_store: store)
       live_tool  = described_class.new(probe: real_probe)
 
+      registry.record_tool_started(child.id, "read lib/auth.rb")
       out = call_as(parent.id, live_tool, "task_id" => child.id, "question" => "progress?", "live" => true)
 
       expect(out).to eq("probe #{child.id} (live) ⟵ still on it")

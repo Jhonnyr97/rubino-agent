@@ -524,6 +524,13 @@ module Rubino
         end
 
         @ui.info(pastel.dim("┄┄ probe → #{id} ┄┄  (ephemeral · not saved · child trajectory unchanged)"))
+        # A probe answers from the child's context AT THIS INSTANT; right after
+        # spawn that context is still empty and the child honestly says it isn't
+        # working on anything yet — hint so that doesn't read as broken (#112).
+        if entry.tool_count.to_i.zero?
+          @ui.info(pastel.dim("   (snapshot at this instant — the child just started and its " \
+                              "context is still empty; probe again in a moment)"))
+        end
         @ui.info("?  #{question}")
         answer = Tools::SubagentProbe.new.peek(entry: entry, question: question)
         @ui.info("⟵  #{answer}")
