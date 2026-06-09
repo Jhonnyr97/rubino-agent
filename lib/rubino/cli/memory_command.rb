@@ -13,12 +13,15 @@ module Rubino
         true
       end
 
-      desc "list", "List all stored memories"
+      desc "list", "List stored memories (live facts only; --all includes superseded)"
       option :kind, type: :string, desc: "Filter by memory kind"
       option :limit, type: :numeric, default: 20, desc: "Max results"
+      option :all, type: :boolean, default: false,
+                   desc: "Include superseded (soft-retired) facts"
       def list
         Rubino.ensure_database_ready!
-        memories = backend_store.list(kind: options[:kind], limit: options[:limit])
+        memories = backend_store.list(kind: options[:kind], limit: options[:limit],
+                                      include_retired: options[:all])
 
         if memories.empty?
           Rubino.ui.info("No memories found.")
@@ -48,6 +51,12 @@ module Rubino
         Rubino.ui.info("Kind: #{memory[:kind]}")
         Rubino.ui.info("Confidence: #{memory[:confidence]}")
         Rubino.ui.info("Created: #{memory[:created_at]}")
+        # The temporal chain (#88): a soft-retired fact shows when it stopped
+        # being true and which fact replaced it.
+        if memory[:valid_to]
+          Rubino.ui.info("Retired: #{memory[:valid_to]}")
+          Rubino.ui.info("Superseded by: #{memory[:superseded_by]}") if memory[:superseded_by]
+        end
         Rubino.ui.separator
         Rubino.ui.info(memory[:content])
       end

@@ -59,6 +59,45 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       described_class.new.show(row[:id][0..7])
     end
 
+    it "hides superseded facts from list by default and includes them with --all (#82)" do
+      backend.store(kind: "preference", content: "User prefers tabs over spaces.")
+      backend.replace(kind: "preference", old_text: "tabs over spaces",
+                      content: "User prefers spaces over tabs.")
+
+      expect(Rubino.ui).to receive(:table) do |rows:, **|
+        contents = rows.map { |r| r[2] }.join(" ")
+        expect(contents).to include("spaces over tabs")
+        expect(contents).not_to include("tabs over spaces")
+      end
+      described_class.new([], { "limit" => 20 }).list
+
+      expect(Rubino.ui).to receive(:table) do |rows:, **|
+        expect(rows.size).to eq(2)
+      end
+      described_class.new([], { "limit" => 20, "all" => true }).list
+    end
+
+    it "show prints the temporal chain of a retired fact (#88)" do
+      old = backend.store(kind: "fact", content: "User works at Acme.")
+      backend.replace(kind: "fact", old_text: "Acme", content: "User works at Globex.")
+
+      described_class.new.show(old[:id][0..7])
+
+      infos = Rubino.ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message] }.join("\n")
+      expect(infos).to match(/Retired: \S+/)
+      expect(infos).to match(/Superseded by: \S+/)
+    end
+
+    it "show omits the temporal chain for a live fact (#88)" do
+      row = backend.store(kind: "fact", content: "User works at Acme.")
+
+      described_class.new.show(row[:id][0..7])
+
+      infos = Rubino.ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message] }.join("\n")
+      expect(infos).not_to include("Retired:")
+      expect(infos).not_to include("Superseded by:")
+    end
+
     it "deletes (forgets) a fact from the active backend" do
       row = backend.store(kind: "fact", content: "User's deploy port is 7788.")
       expect(backend.count).to eq(1)
