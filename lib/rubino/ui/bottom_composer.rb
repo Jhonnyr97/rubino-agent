@@ -130,6 +130,13 @@ module Rubino
         # once the stream ends so the `┊` aside renders cleanly AFTER the answer
         # instead of between chunks (D1). nil ⇒ nothing deferred.
         @deferred_reveal = false
+        # Type-ahead echoes ("queued ▸ <line>") for NEXT-turn lines the user
+        # submitted WHILE the current answer was streaming, queued (in submission
+        # order) to flush once the stream ends so each echo renders AFTER the
+        # finished answer instead of above the still-streaming chunks (D7). The
+        # line itself is pushed to @input_queue immediately — only its VISIBLE
+        # echo is deferred. Empty ⇒ nothing deferred.
+        @deferred_echoes = []
         # Subagent CARD block (Variant A): zero or more collapsed live rows shown
         # ABOVE the streamed partial and the prompt, redrawn in place each frame.
         # Driven by UI::CLI#set_subagent_cards from the BackgroundTasks registry.
@@ -328,15 +335,27 @@ module Rubino
         @content_streaming = true
       end
 
-      # Marks the end of the content stream (CLI stream_end / finalize). Flushes
-      # any reveal deferred during the stream so the `┊` aside renders AFTER the
-      # finished answer block instead of between its chunks (D1).
+      # Marks the end of the content stream (CLI stream_end / finalize). Flushes,
+      # in order, anything deferred during the stream so it renders AFTER the
+      # finished answer block instead of between its chunks:
+      #   1) the Ctrl+O reveal (`┊` aside) — it belongs to the JUST-finished turn,
+      #      so it comes first (D1);
+      #   2) the "queued ▸" type-ahead echoes — they belong to the NEXT input the
+      #      user lined up mid-stream, so they come AFTER the answer (and after the
+      #      reveal), each committed via print_above in submission order (D7).
+      # Flushing on this lifecycle hook (not on first-content) guarantees the
+      # echoes are never stranded even if the turn ended with no content stream.
       def end_content_stream
         @content_streaming = false
-        return unless @deferred_reveal
+        if @deferred_reveal
+          @deferred_reveal = false
+          @on_ctrl_o&.call
+        end
+        return if @deferred_echoes.empty?
 
-        @deferred_reveal = false
-        @on_ctrl_o&.call
+        echoes = @deferred_echoes
+        @deferred_echoes = []
+        echoes.each { |echo| print_above(echo) }
       end
 
       # Sets the TRANSIENT announcement row (the Shift+Tab mode confirmation).
@@ -671,6 +690,15 @@ module Rubino
         # :queued (during a turn) marks it as a steer parked for the next turn.
         if @echo == :prompt
           print_above("#{@prompt}#{line}")
+        elsif @content_streaming
+          # D7: this line was typed AHEAD, while the current turn's answer is
+          # still streaming. Committing its "queued ▸" echo now would land it
+          # ABOVE the still-streaming answer, so it reads as if the next question
+          # was asked before the first was answered. DEFER the visible echo (the
+          # line is already queued above) and flush it after the answer block ends
+          # via #end_content_stream, preserving submission order across several
+          # type-ahead lines.
+          @deferred_echoes << "queued ▸ #{line}"
         else
           print_above("queued ▸ #{line}")
         end

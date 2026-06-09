@@ -176,6 +176,69 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(output.string).not_to include("queued ▸")
         expect(queue.drain).to eq(["hi"]) # still pushed for the REPL to consume
       end
+
+      # D7: an idle (:prompt) submit is NEVER deferred — it's the user's actual
+      # message, not a mid-stream type-ahead steer — so it commits immediately
+      # even if (defensively) a stream flag were set. Idle echo is unchanged.
+      it "commits the idle echo immediately even while content is streaming" do
+        composer.begin_content_stream
+        "hi".each_char { |c| composer.handle_key(c) }
+        composer.handle_key("\r")
+        expect(output.string).to include("default ❯ hi\r\n")
+      end
+    end
+
+    # D7: a NEXT-turn line typed AHEAD, while the current answer is still
+    # streaming, must not commit its "queued ▸" echo above the live answer — it
+    # would read as if the second question was asked before the first answered.
+    # The echo is DEFERRED and flushed after the answer block ends; the line
+    # itself is still queued immediately so the steered turn still runs.
+    context "with echo: :queued during an active content stream (D7)" do
+      it "defers the echo but still queues the line, flushing on stream end" do
+        composer.begin_content_stream
+        "ping".each_char { |c| composer.handle_key(c) }
+        composer.handle_key("\r")
+        expect(queue.drain).to eq(["ping"]) # line queued IMMEDIATELY
+        expect(output.string).not_to include("queued ▸ ping") # echo NOT yet committed
+        composer.end_content_stream
+        expect(output.string).to include("queued ▸ ping") # flushed AFTER the answer
+      end
+
+      it "flushes multiple type-ahead echoes in submission order" do
+        composer.begin_content_stream
+        "one".each_char  { |c| composer.handle_key(c) }
+        composer.handle_key("\r")
+        "two".each_char  { |c| composer.handle_key(c) }
+        composer.handle_key("\r")
+        expect(output.string).not_to include("queued ▸") # both deferred
+        expect(queue.drain).to eq(%w[one two]) # both queued immediately, in order
+        composer.end_content_stream
+        idx_one = output.string.index("queued ▸ one")
+        idx_two = output.string.index("queued ▸ two")
+        expect(idx_one).not_to be_nil
+        expect(idx_two).not_to be_nil
+        expect(idx_one).to be < idx_two # order preserved
+      end
+
+      it "flushes a pending reveal BEFORE the deferred echoes" do
+        order = []
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_ctrl_o: -> { order << :reveal })
+        c.begin_content_stream
+        c.handle_key("\x0f") # Ctrl+O reveal deferred (belongs to the finished turn)
+        "next".each_char { |ch| c.handle_key(ch) } # type-ahead for the NEXT turn
+        c.handle_key("\r")
+        c.end_content_stream
+        order << :echo if output.string.include?("queued ▸ next")
+        expect(order).to eq(%i[reveal echo]) # reveal first, then the echo
+      end
+    end
+
+    # D7: when NOT streaming, a :queued submit is unchanged — immediate echo.
+    it "echoes a :queued submit immediately when not streaming" do
+      "ping".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\r")
+      expect(output.string).to include("queued ▸ ping")
     end
   end
 
