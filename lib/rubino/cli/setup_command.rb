@@ -14,13 +14,11 @@ module Rubino
         ui.blank_line
 
         # Create home directory (0700 — only the owner sees stored secrets)
+        # and subdirectories. ensure_directories! owns the mkdir + chmod so
+        # every entry point that materializes the home agrees on 0700 (#65).
         home = Rubino.home_path
-        FileUtils.mkdir_p(home)
-        File.chmod(0o700, home)
-        ui.success("Home directory: #{home}")
-
-        # Create subdirectories
         Rubino.ensure_directories!
+        ui.success("Home directory: #{home}")
         ui.success("Subdirectories created")
 
         # Create config file if it doesn't exist

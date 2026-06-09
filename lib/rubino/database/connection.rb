@@ -52,9 +52,15 @@ module Rubino
       end
 
       def connect!
+        existed = memory? || File.exist?(@db_path)
         FileUtils.mkdir_p(File.dirname(@db_path)) unless memory?
 
         connection = Sequel.sqlite(@db_path)
+
+        # A freshly-created database holds session content — owner-only, like
+        # the rest of the home's secrets (#65). Creation-only so an operator
+        # who deliberately re-chmods an existing file is respected.
+        File.chmod(0o600, @db_path) unless existed
 
         # WAL has no meaning for :memory: and triggers a warning; only apply on disk.
         unless memory?

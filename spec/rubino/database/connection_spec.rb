@@ -70,5 +70,32 @@ RSpec.describe Rubino::Database::Connection do
         conn&.close
       end
     end
+
+    # #65: the database holds session content; an auto-created file used to
+    # land at the umask's 0644 (world-readable).
+    it "creates a new database file owner-only (0600)" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "test.db")
+        conn = described_class.new(path)
+        conn.db
+        expect(File.stat(path).mode & 0o777).to eq(0o600)
+      ensure
+        conn&.close
+      end
+    end
+
+    it "leaves the mode of an existing database file alone" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "test.db")
+        described_class.new(path).tap(&:db).close
+        File.chmod(0o640, path)
+
+        conn = described_class.new(path)
+        conn.db
+        expect(File.stat(path).mode & 0o777).to eq(0o640)
+      ensure
+        conn&.close
+      end
+    end
   end
 end
