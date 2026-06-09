@@ -81,6 +81,41 @@ RSpec.describe Rubino::UI::CompletionSource do
     end
   end
 
+  describe "#arg_candidates_for (command argument: skills)" do
+    let(:names) { %w[ruby-expert react-pro rust-guru python-pro] }
+    subject(:source) do
+      described_class.new(commands: commands, arg_sources: { "skills" => -> { names } })
+    end
+
+    it "returns the ✗ none entry plus all skill names for an empty partial" do
+      expect(source.arg_candidates_for("skills", "")).to eq(
+        [described_class::NONE_ENTRY, *names]
+      )
+    end
+
+    it "prefix-matches skill names case-insensitively" do
+      expect(source.arg_candidates_for("skills", "R")).to eq(%w[ruby-expert react-pro rust-guru])
+    end
+
+    it "keeps the ✗ none entry while typing toward 'none'" do
+      expect(source.arg_candidates_for("skills", "no")).to eq([described_class::NONE_ENTRY])
+    end
+
+    it "drops the ✗ none entry once the partial diverges from 'none'" do
+      expect(source.arg_candidates_for("skills", "ru")).to eq(%w[ruby-expert rust-guru])
+    end
+
+    it "caps the candidates at MAX_CANDIDATES" do
+      many = Array.new(50) { |i| "skill-#{i}" }
+      s = described_class.new(arg_sources: { "skills" => -> { many } })
+      expect(s.arg_candidates_for("skills", "skill").size).to eq(described_class::MAX_CANDIDATES)
+    end
+
+    it "returns [] for a command with no registered argument source" do
+      expect(source.arg_candidates_for("agents", "")).to eq([])
+    end
+  end
+
   describe "#highlight_line" do
     subject(:source) { described_class.new(commands: commands) }
 

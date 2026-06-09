@@ -719,6 +719,55 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(composer.menu_open?).to be(false)
       end
     end
+
+    # The SAME dropdown picks the ARGUMENT of /skills (a skill name), reusing the
+    # menu/accept plumbing — not a new widget. The CompletionSource resolves the
+    # argument via its registered arg_sources entry.
+    describe "/skills argument completion (skill picker)" do
+      let(:source) do
+        Rubino::UI::CompletionSource.new(
+          commands: %w[/skills /help],
+          arg_sources: { "skills" => -> { %w[ruby-expert react-pro] } }
+        )
+      end
+
+      it "auto-opens the SAME menu on the argument once '/skills ' is typed" do
+        "/skills".each_char { |ch| composer.handle_key(ch) }
+        # While typing the command itself the command menu shows /skills.
+        expect(composer.menu_open?).to be(true)
+        composer.handle_key(" ") # cross into the argument position
+        expect(composer.menu_open?).to be(true)
+        frame = output.string
+        expect(frame).to include("ruby-expert")
+        expect(frame).to include("react-pro")
+        expect(frame).to include("✗ none")
+      end
+
+      it "filters skill names as the argument partial grows" do
+        "/skills re".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true)
+        frame = output.string.split("\r\e[2K").last(5).join
+        expect(frame).to include("react-pro")
+        expect(frame).not_to include("ruby-expert")
+      end
+
+      it "Tab accepts the skill name into the argument (splice + trailing space)" do
+        "/skills ru".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        expect(composer.buffer).to eq("/skills ruby-expert ")
+        expect(composer.menu_open?).to be(false)
+      end
+
+      it "↓+Enter selects a skill name and submits /skills <name>" do
+        "/skills ".each_char { |ch| composer.handle_key(ch) }
+        # Items: ["✗ none", "ruby-expert", "react-pro"]. ↓ → ruby-expert.
+        arrow(composer, "B")
+        composer.handle_key("\r") # accept (not an exact command)
+        expect(composer.buffer).to eq("/skills ruby-expert ")
+        composer.handle_key("\r") # submit (trailing accept-space preserved, as /command does)
+        expect(queue.drain).to eq(["/skills ruby-expert "])
+      end
+    end
   end
 
   describe "#handle_key Ctrl+O (reveal reasoning)" do

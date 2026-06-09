@@ -94,7 +94,7 @@ module Rubino
           show_commands
           :handled
         when "skills"
-          show_skills
+          handle_skills(arguments)
           :handled
         when "add-dir"
           handle_add_dir(arguments)
@@ -1084,6 +1084,61 @@ module Rubino
         @ui.info("Add more with /add-dir <path>")
       end
 
+      # `/skills`            → list (unchanged behavior).
+      # `/skills <name>`     → ACTIVATE that skill for the session (sticky). The
+      #                        name is validated against the registry; an unknown
+      #                        name errors and leaves the active skill unchanged.
+      # `/skills none`       → CLEAR the active skill (also the `✗ none` picker
+      #                        entry, whose spliced label is normalized here).
+      #
+      # The active skill is stored in Rubino::ActiveSkill (a process-level slot,
+      # mirroring Rubino::Modes) so it survives across turns and is force-loaded
+      # into the system prompt each turn (Context::PromptAssembler).
+      def handle_skills(arguments)
+        arg = normalize_skill_arg(arguments)
+
+        return show_skills if arg.nil?
+
+        if clear_skill_arg?(arg)
+          previous = Rubino::ActiveSkill.current
+          Rubino::ActiveSkill.clear
+          if previous
+            @ui.success("Cleared active skill (was: #{previous}).")
+          else
+            @ui.info("No active skill.")
+          end
+          return
+        end
+
+        registry = Skills::Registry.new
+        skill = registry.find(arg)
+        unless skill
+          @ui.error("Unknown skill: #{arg}")
+          available = registry.names
+          @ui.info("Available: #{available.join(', ')}") unless available.empty?
+          return
+        end
+
+        Rubino::ActiveSkill.set(skill.name)
+        @ui.success("Active skill: #{skill.name} (loaded into context for this session).")
+      end
+
+      # The single argument to `/skills`, trimmed; nil when no argument was
+      # given (bare `/skills` → list). The picker splices the `✗ none` label, so
+      # the leading `✗ ` marker is stripped here to recover the bare token.
+      def normalize_skill_arg(arguments)
+        raw = arguments.to_s.strip.sub(/\A✗\s+/, "")
+        # Only the FIRST token is the skill name (skill names are single tokens).
+        token = raw.split(/\s+/).first
+        token unless token.nil? || token.empty?
+      end
+
+      # True when the argument means "clear the active skill" (the `none`
+      # sentinel, case-insensitive — the `✗ ` marker was already stripped).
+      def clear_skill_arg?(arg)
+        arg.casecmp?(Rubino::ActiveSkill::NONE)
+      end
+
       def show_skills
         registry = Skills::Registry.new
         skills = registry.all
@@ -1091,8 +1146,10 @@ module Rubino
           @ui.info("No skills found.")
           @ui.info("Add .md files to .rubino/skills/ to create skills.")
         else
+          active = Rubino::ActiveSkill.current
           skills.each do |skill|
             status = registry.enabled?(skill.name) ? "" : " (disabled)"
+            status += " (active)" if active && active == skill.name
             head   = "  #{skill.name}#{status} - "
             # Word-wrap the description so a long one breaks on spaces instead of
             # being hard-wrapped mid-word by the terminal at the right edge
