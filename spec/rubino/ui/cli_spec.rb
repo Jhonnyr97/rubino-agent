@@ -558,6 +558,18 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # #106/#107: off a real terminal TTY::Prompt would leak raw cursor-control
+  # escapes (ESC[4A / ESC[2K / ESC[1G) into the piped stream and read whatever
+  # ambient stdin held. #ask must fail closed: deterministic nil, zero output.
+  describe "#ask off a TTY" do
+    it "returns nil and emits nothing when stdout is not a TTY (#106)" do
+      out = capture_stdout do
+        expect(ui.ask("Red or blue?")).to be_nil
+      end
+      expect(out).to eq("")
+    end
+  end
+
   describe "#replay_user_input" do
     it "renders the past user turn as plain text" do
       out = capture_stdout { ui.replay_user_input("hello again") }

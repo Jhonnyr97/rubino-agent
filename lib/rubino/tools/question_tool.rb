@@ -48,6 +48,16 @@ module Rubino
         :low
       end
 
+      # Deterministic result when no user answer is available — the UI's #ask
+      # returned nil (non-interactive / piped session, or the user gave no
+      # response). Fail closed instead of reading ambient stdin or silently
+      # picking an option (#107): never assume a choice on the user's behalf.
+      NO_ANSWER = "No answer: no interactive user input available " \
+                  "(non-interactive session, or the user gave no response). " \
+                  "Do not assume a choice on the user's behalf; proceed with the " \
+                  "safest option and state the assumption, or finish and report " \
+                  "the open question."
+
       def call(arguments)
         question = arguments["question"] || arguments[:question]
         options = arguments["options"] || arguments[:options]
@@ -85,6 +95,7 @@ module Rubino
         lines << "Your choice#{"(s)" if multiple} (number or custom answer):"
 
         answer = ui.ask(lines.join("\n"))
+        return NO_ANSWER if answer.nil?
 
         # Parse single or multiple numeric selections
         if multiple && answer&.match?(/\A[\d,\s]+\z/)
@@ -108,7 +119,9 @@ module Rubino
 
       def ask_freeform(ui, question)
         answer = ui.ask(question)
-        "User answered: #{answer || "(no response)"}"
+        return NO_ANSWER if answer.nil?
+
+        "User answered: #{answer}"
       end
     end
   end

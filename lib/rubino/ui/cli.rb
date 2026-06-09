@@ -114,11 +114,26 @@ module Rubino
       end
 
       def ask(prompt)
+        # Off a real terminal (piped / non-interactive) there is no user who
+        # can answer, TTY::Prompt would leak raw cursor-control escapes into
+        # the stream (#106), and it would read whatever ambient stdin happens
+        # to hold (#107). Fail closed: no prompt, deterministic nil.
+        return nil unless interactive_terminal?
+
         # A mid-turn prompt must own the real terminal: pause the bottom composer
         # so TTY::Prompt reads the real $stdin and tty-screen probes the real
         # $stdout (not the write-only StdoutProxy). No-op when no composer is
         # active (between-turns / piped input).
         BottomComposer.run_in_terminal { @prompt.ask(prompt) }
+      end
+
+      # True when both ends are a real interactive terminal — the shared gate
+      # for every interactive prompt/menu (#ask / #select): off a TTY they
+      # return nil instead of rendering ANSI into a pipe.
+      def interactive_terminal?
+        $stdin.respond_to?(:tty?) && $stdin.tty? && $stdout.respond_to?(:tty?) && $stdout.tty?
+      rescue StandardError
+        false
       end
 
       # Arrow-key single-select menu — the SAME TTY::Prompt component the tool
@@ -129,7 +144,7 @@ module Rubino
       # non-interactive shortcut). Esc/Ctrl-C cancels and returns nil.
       def select(prompt, choices)
         return nil if choices.nil? || choices.empty?
-        return nil unless $stdin.respond_to?(:tty?) && $stdin.tty? && $stdout.respond_to?(:tty?) && $stdout.tty?
+        return nil unless interactive_terminal?
 
         BottomComposer.run_in_terminal do
           @prompt.select(prompt, cycle: false, filter: true) do |menu|
