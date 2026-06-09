@@ -2,10 +2,10 @@
 
 # Dispatch + output for the workspace slash verbs /add-dir and /dirs.
 RSpec.describe "Rubino::Commands::Executor workspace verbs" do
-  let(:ui)     { Rubino::UI::Null.new }
-  let(:loader) { Rubino::Commands::Loader.new(config: test_configuration) }
   subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui) }
 
+  let(:ui)     { Rubino::UI::Null.new }
+  let(:loader) { Rubino::Commands::Loader.new(config: test_configuration) }
   let(:primary) { Dir.mktmpdir("ws-primary") }
   let(:extra)   { Dir.mktmpdir("ws-extra") }
 
@@ -21,7 +21,7 @@ RSpec.describe "Rubino::Commands::Executor workspace verbs" do
 
   def info_lines
     ui.messages.select { |m| %i[info status success error].include?(m[:level]) }
-      .map { |m| m[:message].to_s }
+               .map { |m| m[:message].to_s }
   end
 
   describe "/add-dir" do
@@ -32,8 +32,8 @@ RSpec.describe "Rubino::Commands::Executor workspace verbs" do
     end
 
     it "reports an error for a non-existent dir" do
-      expect(exec.try_execute("/add-dir #{File.join(extra, 'nope')}")).to eq(:handled)
-      expect(info_lines.join("\n")).to match(/no such directory/)
+      expect(exec.try_execute("/add-dir #{File.join(extra, "nope")}")).to eq(:handled)
+      expect(info_lines.join("\n")).to include("no such directory")
     end
 
     it "teaches usage when called bare" do

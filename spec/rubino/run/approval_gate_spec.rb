@@ -78,7 +78,6 @@ RSpec.describe Rubino::Run::ApprovalGate do
     end
   end
 
-
   describe "#cancel!" do
     # W1: a run cancelled while parked on a human approval must wake the gate
     # so the worker thread unwinds (via Interrupted) instead of blocking on
@@ -161,7 +160,10 @@ RSpec.describe Rubino::Run::ApprovalGate do
       # Pool is free: a fresh run can still be served promptly.
       fresh = described_class.new
       fresh.register("after")
-      decider = Thread.new { sleep 0.02; fresh.decide("after", "once") }
+      decider = Thread.new do
+        sleep 0.02
+        fresh.decide("after", "once")
+      end
       expect(fresh.await("after", timeout: 2)).to eq("once")
       decider.join
     end

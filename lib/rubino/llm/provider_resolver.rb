@@ -11,15 +11,15 @@ module Rubino
     # the concrete provider to RubyLLMAdapter, which no longer re-resolves.
     class ProviderResolver
       PROVIDER_PATTERNS = {
-        "fake"      => /\Afake/i,
-        "openai"    => /\A(openai|gpt|o1|o3|o4)/i,
+        "fake" => /\Afake/i,
+        "openai" => /\A(openai|gpt|o1|o3|o4)/i,
         "anthropic" => /\A(anthropic(?!\.)|claude)/i,
-        "google"    => /\A(google|gemini)/i,
-        "bedrock"   => /\A(anthropic\.|amazon\.|meta\.|mistral\.|cohere\.|ai21\.)/i,
-        "deepseek"  => /\Adeepseek/i,
-        "mistral"   => /\A(mistral|mixtral)/i,
-        "minimax"   => /\A(minimax|abab)/i,
-        "qwen"      => /\Aqwen/i
+        "google" => /\A(google|gemini)/i,
+        "bedrock" => /\A(anthropic\.|amazon\.|meta\.|mistral\.|cohere\.|ai21\.)/i,
+        "deepseek" => /\Adeepseek/i,
+        "mistral" => /\A(mistral|mixtral)/i,
+        "minimax" => /\A(minimax|abab)/i,
+        "qwen" => /\Aqwen/i
       }.freeze
 
       def self.resolve(model_id, explicit_provider: nil)

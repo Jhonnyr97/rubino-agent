@@ -37,7 +37,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
       # the built-in build prompt (the override is verified via
       # AgentRegistry below).
       prompt = system_prompt(config: test_configuration)
-      expect(prompt).to match(/Smallest change that solves the task/)
+      expect(prompt).to include("Smallest change that solves the task")
     end
   end
 

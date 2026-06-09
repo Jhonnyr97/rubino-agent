@@ -17,7 +17,7 @@ module Rubino
 
       def description
         "Stop a running background subagent started by `task`. Cancels the " \
-        "subagent's nested run; its task_result will then report failed/cancelled."
+          "subagent's nested run; its task_result will then report failed/cancelled."
       end
 
       def input_schema
@@ -45,16 +45,14 @@ module Rubino
         entry    = registry.find(task_id)
         return "Error: no background subagent with task_id=#{task_id}" unless entry
 
-        unless entry.status == :running
-          return "[#{task_id}] already #{entry.status} — nothing to stop."
-        end
+        return "[#{task_id}] already #{entry.status} — nothing to stop." unless entry.status == :running
 
         entry.runner&.cancel!
         # Stop-cascade (S5a): wake any descendant parked on a blocking ask_parent
         # so the whole subtree unwinds at once (no orphaned blocked grandchild).
         registry.cancel_descendant_ask_gates(task_id)
         "[#{task_id}] stop requested (subagent '#{entry.subagent}'). " \
-        "It will unwind at its next checkpoint; check task_result(\"#{task_id}\")."
+          "It will unwind at its next checkpoint; check task_result(\"#{task_id}\")."
       end
     end
   end

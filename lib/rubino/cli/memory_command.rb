@@ -67,7 +67,7 @@ module Rubino
 
         unless Memory::Backends.registered?(name)
           Rubino.ui.error(
-            "Unknown memory backend: #{name}. Available: #{Memory::Backends.names.join(', ')}"
+            "Unknown memory backend: #{name}. Available: #{Memory::Backends.names.join(", ")}"
           )
           return
         end
@@ -90,7 +90,7 @@ module Rubino
       def show_backend
         active = Rubino.configuration.dig("memory", "backend") || Memory::Backends::DEFAULT_NAME
         Rubino.ui.info("Active backend: #{active}")
-        Rubino.ui.info("Available: #{Memory::Backends.names.join(', ')}")
+        Rubino.ui.info("Available: #{Memory::Backends.names.join(", ")}")
       end
 
       def config_path

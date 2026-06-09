@@ -89,7 +89,7 @@ module Rubino
         @prefill_attempts = 0
         @empty_attempts   = 0
         # _post_tool_empty_retried — the nudge fires at most once per turn.
-        @nudged       = false
+        @nudged = false
       end
 
       # Walk the ladder for one degenerate response and return a Directive.
@@ -174,8 +174,8 @@ module Rubino
       # reference implementation.
       def append_nudge!(messages, response)
         messages << {
-          role:       "assistant",
-          content:    response.content.to_s.empty? ? "(empty)" : response.content,
+          role: "assistant",
+          content: response.content.to_s.empty? ? "(empty)" : response.content,
           tool_calls: response.has_tool_calls? ? response.tool_calls : nil
         }
         messages << { role: "user", content: NUDGE_TEXT }

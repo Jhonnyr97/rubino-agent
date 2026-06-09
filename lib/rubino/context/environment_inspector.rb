@@ -152,7 +152,7 @@ module Rubino
       end
 
       def shellescape(str)
-        str.to_s.gsub(/([^A-Za-z0-9_\-.,:\/@\n])/, "\\\\\\1")
+        str.to_s.gsub(%r{([^A-Za-z0-9_\-.,:/@\n])}, "\\\\\\1")
       end
     end
   end

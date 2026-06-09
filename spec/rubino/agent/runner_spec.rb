@@ -49,9 +49,9 @@ RSpec.describe Rubino::Agent::Runner do
     end
 
     it "raises SessionError for unknown session ID" do
-      expect {
+      expect do
         described_class.new(session_id: "nonexistent-0000-0000", model_override: "gpt-4o", ui: null_ui)
-      }.to raise_error(Rubino::SessionError)
+      end.to raise_error(Rubino::SessionError)
     end
 
     it "stores provider override in session" do

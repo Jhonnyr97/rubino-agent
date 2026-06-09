@@ -31,15 +31,15 @@ RSpec.describe "LIVE MiniMax prefill-to-continue cure", :live do
     adapter = Rubino::LLM::RubyLLMAdapter.new(
       model_id: config.model_default,
       provider: config.model_provider,
-      config:   config,
-      ui:       Rubino::UI::Null.new,
+      config: config,
+      ui: Rubino::UI::Null.new,
       event_bus: Rubino::Interaction::EventBus.new
     )
 
     runner = Rubino::Agent::ModelCallRunner.new(
-      llm:       adapter,
-      config:    config,
-      ui:        Rubino::UI::Null.new,
+      llm: adapter,
+      config: config,
+      ui: Rubino::UI::Null.new,
       event_bus: Rubino::Interaction::EventBus.new
     )
 
@@ -57,8 +57,8 @@ RSpec.describe "LIVE MiniMax prefill-to-continue cure", :live do
     response = runner.call!(request, iteration: 1)
     visible  = Rubino::Agent::ResponseValidator.new
     expect(visible.degenerate?(response)).to be(false),
-      "expected a non-degenerate final response after the prefill ladder, " \
-      "got content=#{response.content.inspect}"
-    expect(response.content.to_s).to match(/391/)
+                                             "expected a non-degenerate final response after the prefill ladder, " \
+                                             "got content=#{response.content.inspect}"
+    expect(response.content.to_s).to include("391")
   end
 end

@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::LLM::BedrockBearerClient do
-  let(:api_key)  { "test-bearer-key" }
-  let(:region)   { "us-east-1" }
-  let(:model_id) { "us.anthropic.claude-sonnet-4-20250514-v1:0" }
-
   subject(:client) do
     described_class.new(api_key: api_key, region: region, model_id: model_id)
   end
+
+  let(:api_key)  { "test-bearer-key" }
+  let(:region)   { "us-east-1" }
+  let(:model_id) { "us.anthropic.claude-sonnet-4-20250514-v1:0" }
 
   # -----------------------------------------------------------------------
   # build_body
@@ -87,7 +87,7 @@ RSpec.describe Rubino::LLM::BedrockBearerClient do
     let(:bedrock_response) do
       {
         "output" => { "message" => { "content" => [{ "text" => "Hello! " }, { "text" => "How are you?" }] } },
-        "usage"  => { "inputTokens" => 15, "outputTokens" => 7 }
+        "usage" => { "inputTokens" => 15, "outputTokens" => 7 }
       }
     end
 
@@ -141,7 +141,7 @@ RSpec.describe Rubino::LLM::BedrockBearerClient do
     let(:success_body) do
       {
         "output" => { "message" => { "content" => [{ "text" => "Hi!" }] } },
-        "usage"  => { "inputTokens" => 5, "outputTokens" => 3 }
+        "usage" => { "inputTokens" => 5, "outputTokens" => 3 }
       }
     end
 
@@ -168,9 +168,9 @@ RSpec.describe Rubino::LLM::BedrockBearerClient do
 
     it "raises error on non-200 response" do
       stub_http({ "message" => "model not found" }, code: "404")
-      expect {
+      expect do
         client.chat(messages: [{ role: "user", content: "hi" }])
-      }.to raise_error(Rubino::Error, /Bedrock error 404/)
+      end.to raise_error(Rubino::Error, /Bedrock error 404/)
     end
   end
 
@@ -186,14 +186,14 @@ RSpec.describe Rubino::LLM::BedrockBearerClient do
     let(:success_body) do
       {
         "output" => { "message" => { "content" => [{ "text" => "Hello world" }] } },
-        "usage"  => { "inputTokens" => 5, "outputTokens" => 3 }
+        "usage" => { "inputTokens" => 5, "outputTokens" => 3 }
       }
     end
 
     def think_body(text)
       {
         "output" => { "message" => { "content" => [{ "text" => text }] } },
-        "usage"  => { "inputTokens" => 5, "outputTokens" => 3 }
+        "usage" => { "inputTokens" => 5, "outputTokens" => 3 }
       }
     end
 

@@ -46,10 +46,10 @@ module Rubino
       # LLM boundary entry: dispatch an LLM::Request to the
       # streaming vs non-streaming transport. Mirrors RubyLLMAdapter#call so Loop
       # can drive the fake through the same seam.
-      def call(request, &block)
+      def call(request, &)
         if request.stream?
           stream(messages: request.messages, tools: request.tools,
-                 image_paths: request.image_paths, &block)
+                 image_paths: request.image_paths, &)
         else
           chat(messages: request.messages, tools: request.tools,
                image_paths: request.image_paths)
@@ -100,21 +100,21 @@ module Rubino
         end
 
         AdapterResponse.new(
-          content:       buffered,
-          tool_calls:    tool_calls,
-          input_tokens:  0,
+          content: buffered,
+          tool_calls: tool_calls,
+          input_tokens: 0,
           output_tokens: 0,
-          model_id:      @model_id
+          model_id: @model_id
         )
       rescue Rubino::Interrupted
         # Mirror RubyLLMAdapter: surface whatever was buffered as a clean
         # AdapterResponse instead of swallowing the partial output.
-        return AdapterResponse.new(
-          content:       buffered || "",
-          tool_calls:    tool_calls || [],
-          input_tokens:  0,
+        AdapterResponse.new(
+          content: buffered || "",
+          tool_calls: tool_calls || [],
+          input_tokens: 0,
           output_tokens: 0,
-          model_id:      @model_id
+          model_id: @model_id
         )
       end
 
@@ -140,6 +140,7 @@ module Rubino
         when "content"
           text = interpolate(event["text"] || event[:text])
           return if text.nil? || text.empty?
+
           buffered << text
           # Single buffered scenario turn ⇒ one content block ⇒ message_id 0,
           # matching the uniform chunk contract every adapter emits.
@@ -148,6 +149,7 @@ module Rubino
           text = interpolate(event["text"] || event[:text])
           return if text.nil? || text.empty?
           return if reasoning_hidden?
+
           safe_yield(block, type: :thinking, text: text, message_id: 0)
         when "tool_call"
           tool_calls << build_tool_call(event)
@@ -164,13 +166,16 @@ module Rubino
       # static and templated chunks freely.
       def interpolate(text)
         return text if text.nil? || text.empty? || @scenario_vars.nil?
+
         @scenario_vars.reduce(text) { |acc, (k, v)| acc.gsub("{{#{k}}}", v.to_s) }
       end
 
       def extract_last_user_text(messages)
         return "" unless messages.is_a?(Array)
+
         last = messages.reverse.find { |m| (m[:role] || m["role"]).to_s == "user" }
         return "" unless last
+
         content = last[:content] || last["content"]
         case content
         when String then content
@@ -183,6 +188,7 @@ module Rubino
 
       def safe_yield(block, payload)
         return unless block
+
         block.call(payload)
       rescue StandardError => e
         # UI hiccups must not abort the stream. Mirror RubyLLMAdapter#emit.
@@ -222,15 +228,17 @@ module Rubino
       # does. Checking just the tail handles both cases.
       def post_tool_turn?(messages)
         return false unless messages.is_a?(Array)
+
         last = messages.last
         return false unless last.is_a?(Hash)
+
         (last[:role] || last["role"]).to_s == "tool"
       end
 
       # A minimal closing turn: a short content chunk and nothing else. Returns
       # the events array the scenario dispatcher expects.
       def closing_events
-        [ { "type" => "content", "text" => "Done." } ]
+        [{ "type" => "content", "text" => "Done." }]
       end
 
       def last_user_message_content(messages)
@@ -260,6 +268,7 @@ module Rubino
 
       def cancellable_sleep(seconds)
         return if seconds <= 0
+
         deadline = monotonic_now + seconds
         while (remaining = deadline - monotonic_now).positive?
           @cancel_token&.check!

@@ -11,9 +11,9 @@ module Rubino
 
       def description
         "Perform exact string replacement in a file. " \
-        "Specify the old text to find and the new text to replace it with. " \
-        "The old text must match exactly (including whitespace/indentation). " \
-        "Use replace_all to replace all occurrences."
+          "Specify the old text to find and the new text to replace it with. " \
+          "The old text must match exactly (including whitespace/indentation). " \
+          "Use replace_all to replace all occurrences."
       end
 
       def input_schema
@@ -54,9 +54,7 @@ module Rubino
         expanded = File.expand_path(file_path)
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
-        unless File.exist?(expanded)
-          return "Error: File not found: #{file_path}"
-        end
+        return "Error: File not found: #{file_path}" unless File.exist?(expanded)
 
         if (gate = read_gate_error(expanded, file_path, verb: "edit"))
           return gate
@@ -90,10 +88,10 @@ module Rubino
         replaced_count = replace_all ? count : 1
         added   = new_string.to_s.lines.size
         removed = old_string.to_s.lines.size
-        { output:    "Edit applied: #{replaced_count} replacement(s) in #{file_path}",
-          metrics:   "#{replaced_count} replacement#{'s' if replaced_count != 1} · " \
-                     "+#{added * replaced_count} −#{removed * replaced_count}",
-          body:      build_diff_preview(old_string, new_string, replaced_count),
+        { output: "Edit applied: #{replaced_count} replacement(s) in #{file_path}",
+          metrics: "#{replaced_count} replacement#{"s" if replaced_count != 1} · " \
+                   "+#{added * replaced_count} −#{removed * replaced_count}",
+          body: build_diff_preview(old_string, new_string, replaced_count),
           body_kind: :diff }
       end
 

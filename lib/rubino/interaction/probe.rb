@@ -40,7 +40,7 @@ module Rubino
         adapter  = LLM::AdapterFactory.build(
           model_id: @model_override || @session[:model],
           provider: @provider_override || @config.model_provider,
-          config:   @config
+          config: @config
         )
         response = adapter.chat(messages: messages, tools: nil)
 
@@ -55,9 +55,9 @@ module Rubino
       # memory snapshot keeps it cheap and side-effect-free.
       def snapshot_messages
         Context::PromptAssembler.new(
-          session:        @session,
+          session: @session,
           memory_context: {},
-          config:         @config
+          config: @config
         ).build
       end
     end

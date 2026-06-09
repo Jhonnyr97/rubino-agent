@@ -6,7 +6,7 @@ require "tmpdir"
 RSpec.describe Rubino::UpdateCheck do
   around do |example|
     Dir.mktmpdir("rubino_update_check") do |dir|
-      orig = ENV["RUBINO_HOME"]
+      orig = ENV.fetch("RUBINO_HOME", nil)
       ENV["RUBINO_HOME"] = dir
       @home = dir
       example.run

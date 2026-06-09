@@ -30,12 +30,13 @@ module Rubino
     def build_message
       lines = ["Ambiguous --resume '#{@query}': #{@matches.size} sessions match."]
       @matches.first(10).each do |s|
-        lines << "  #{s[:id][0, 8]}  #{s[:title] || '(no title)'}  [#{s[:status]}]"
+        lines << "  #{s[:id][0, 8]}  #{s[:title] || "(no title)"}  [#{s[:status]}]"
       end
       lines << "Use --resume <full-id> (8+ chars) to pick one."
       lines.join("\n")
     end
   end
+
   class ToolError < Error; end
   class CompactionError < Error; end
   class JobError < Error; end
@@ -44,7 +45,6 @@ end
 require_relative "rubino/errors"
 
 module Rubino
-
   class << self
     # Returns the Zeitwerk loader for autoloading
     def loader
@@ -52,26 +52,26 @@ module Rubino
         loader = Zeitwerk::Loader.for_gem
         loader.inflector.inflect(
           # Acronym modules
-          "cli"                    => "CLI",
-          "llm"                    => "LLM",
-          "ui"                     => "UI",
-          "api"                    => "API",
-          "tls"                    => "TLS",
-          "mcp"                    => "MCP",
-          "oauth"                  => "OAuth",
+          "cli" => "CLI",
+          "llm" => "LLM",
+          "ui" => "UI",
+          "api" => "API",
+          "tls" => "TLS",
+          "mcp" => "MCP",
+          "oauth" => "OAuth",
           # Files with compound names that need exact mapping
-          "ruby_llm_adapter"       => "RubyLLMAdapter",
-          "mcp_tool_wrapper"       => "MCPToolWrapper",
-          "bedrock_bearer_client"  => "BedrockBearerClient",
-          "adapter_response"       => "AdapterResponse",
-          "webfetch_tool"          => "WebFetchTool",
-          "websearch_tool"         => "WebSearchTool",
-          "github_tool"            => "GitHubTool",
-          "skill_tool"             => "SkillTool",
-          "custom_tool_loader"     => "CustomToolLoader",
-          "custom_tool_builder"    => "CustomToolBuilder",
-          "tool_pair_sanitizer"    => "ToolPairSanitizer",
-          "degenerate_recovery"    => "DegenerateResponseRecovery"
+          "ruby_llm_adapter" => "RubyLLMAdapter",
+          "mcp_tool_wrapper" => "MCPToolWrapper",
+          "bedrock_bearer_client" => "BedrockBearerClient",
+          "adapter_response" => "AdapterResponse",
+          "webfetch_tool" => "WebFetchTool",
+          "websearch_tool" => "WebSearchTool",
+          "github_tool" => "GitHubTool",
+          "skill_tool" => "SkillTool",
+          "custom_tool_loader" => "CustomToolLoader",
+          "custom_tool_builder" => "CustomToolBuilder",
+          "tool_pair_sanitizer" => "ToolPairSanitizer",
+          "degenerate_recovery" => "DegenerateResponseRecovery"
         )
         # Migrations are plain SQL files, not Ruby constants
         loader.ignore(
@@ -121,9 +121,7 @@ module Rubino
     end
 
     # Sets the process-global UI adapter (CLI boot, tests).
-    def ui=(adapter)
-      @ui = adapter
-    end
+    attr_writer :ui
 
     # Runs the block with +adapter+ as the thread-scoped UI, restoring the
     # previous value afterwards (nested-safe). Used by Run::Executor to bind
@@ -265,8 +263,8 @@ module Rubino
     end
 
     # DSL for defining plugins
-    def plugin(&block)
-      Plugins.registry.instance_eval(&block)
+    def plugin(&)
+      Plugins.registry.instance_eval(&)
     end
 
     # Resets all memoized state (useful for testing)

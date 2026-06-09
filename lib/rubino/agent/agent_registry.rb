@@ -47,57 +47,57 @@ module Rubino
 
       def register_defaults!
         register(Definition.new(
-          name:          "build",
-          type:          :primary,
-          description:   "Full-access development agent with all tools",
-          system_prompt: load_prompt("build"),
-          tools:         :all
-        ))
+                   name: "build",
+                   type: :primary,
+                   description: "Full-access development agent with all tools",
+                   system_prompt: load_prompt("build"),
+                   tools: :all
+                 ))
 
         register(Definition.new(
-          name:          "plan",
-          type:          :primary,
-          description:   "Read-only analysis and planning agent",
-          system_prompt: load_prompt("plan"),
-          tools:         :read_only,
-          permissions:   { "edit *" => "ask", "shell *" => "ask" }
-        ))
+                   name: "plan",
+                   type: :primary,
+                   description: "Read-only analysis and planning agent",
+                   system_prompt: load_prompt("plan"),
+                   tools: :read_only,
+                   permissions: { "edit *" => "ask", "shell *" => "ask" }
+                 ))
 
         register(Definition.new(
-          name:          "explore",
-          type:          :subagent,
-          description:   "Fast read-only codebase exploration",
-          system_prompt: load_prompt("explore"),
-          tools:         :read_only,
-          max_turns:     20
-        ))
+                   name: "explore",
+                   type: :subagent,
+                   description: "Fast read-only codebase exploration",
+                   system_prompt: load_prompt("explore"),
+                   tools: :read_only,
+                   max_turns: 20
+                 ))
 
         register(Definition.new(
-          name:          "general",
-          type:          :subagent,
-          description:   "General-purpose agent for complex multi-step tasks",
-          system_prompt: load_prompt("general"),
-          tools:         :all,
-          max_turns:     50
-        ))
+                   name: "general",
+                   type: :subagent,
+                   description: "General-purpose agent for complex multi-step tasks",
+                   system_prompt: load_prompt("general"),
+                   tools: :all,
+                   max_turns: 50
+                 ))
 
         register(Definition.new(
-          name:          "compaction",
-          type:          :utility,
-          description:   "Compresses long contexts",
-          system_prompt: load_prompt("compaction"),
-          hidden:        true,
-          tools:         []
-        ))
+                   name: "compaction",
+                   type: :utility,
+                   description: "Compresses long contexts",
+                   system_prompt: load_prompt("compaction"),
+                   hidden: true,
+                   tools: []
+                 ))
 
         register(Definition.new(
-          name:          "title",
-          type:          :utility,
-          description:   "Generates session titles",
-          system_prompt: "Generate a concise title (max 6 words) for this conversation based on the first user message.",
-          hidden:        true,
-          tools:         []
-        ))
+                   name: "title",
+                   type: :utility,
+                   description: "Generates session titles",
+                   system_prompt: "Generate a concise title (max 6 words) for this conversation based on the first user message.",
+                   hidden: true,
+                   tools: []
+                 ))
       end
 
       # Loads a prompt for a role. Checks the customer config for an

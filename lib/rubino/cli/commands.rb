@@ -27,7 +27,7 @@ module Rubino
       # flag as a prompt and fails with an API-key error. Handle it here —
       # print the version and exit — before any chat/credential handling.
       def self.start(given_args = ARGV, config = {})
-        if given_args.first == "--version" || given_args.first == "-v"
+        if ["--version", "-v"].include?(given_args.first)
           puts "rubino v#{Rubino::VERSION}"
           return
         end
@@ -46,7 +46,7 @@ module Rubino
       desc "chat [PROMPT]", "Chat with the agent (interactive or one-shot with -q)"
 
       # One-shot / non-interactive
-      option :query,    aliases: "-q", type: :string,  desc: "One-shot prompt (non-interactive)"
+      option :query,    aliases: "-q", type: :string, desc: "One-shot prompt (non-interactive)"
 
       # Attach image(s) to the turn's native vision slot. Repeatable:
       #   --image a.png --image b.jpg.
@@ -55,16 +55,18 @@ module Rubino
       # instead of being swallowed as a second image. Works in both one-shot
       # (-q) and interactive mode; @image tokens in the prompt itself are also
       # honoured. Aligns with `llm`'s -a/--attachment.
-      option :image,    aliases: "-i", type: :string, repeatable: true, desc: "Attach image file to the prompt (repeatable)"
+      option :image,    aliases: "-i", type: :string, repeatable: true,
+                        desc: "Attach image file to the prompt (repeatable)"
 
       # Session management
       option :session,  aliases: "-s", type: :string,  desc: "Resume session by ID"
       option :resume,   aliases: "-r", type: :string,  desc: "Resume session by ID or title"
       option :continue, aliases: "-c", type: :boolean, desc: "Resume most recent session"
-      option :new,                     type: :boolean, desc: "Start a fresh session (bare `chat` resumes the last one by default)"
+      option :new,                     type: :boolean,
+                                       desc: "Start a fresh session (bare `chat` resumes the last one by default)"
 
       # Model / provider
-      option :model,    aliases: "-m", type: :string,  desc: "Override model (e.g. claude-sonnet-4-5)"
+      option :model, aliases: "-m", type: :string, desc: "Override model (e.g. claude-sonnet-4-5)"
       option :provider,                type: :string,  desc: "Override provider (e.g. bedrock, anthropic)"
 
       # Behavior
@@ -75,7 +77,8 @@ module Rubino
       # Add extra allowed workspace roots at launch (repeatable), like Claude
       # Code's --add-dir. Write/edit tools then accept files under any added
       # root; an added dir's project context/skills are gated by folder-trust.
-      option :add_dir,                 type: :string, repeatable: true, desc: "Add an extra allowed workspace directory (repeatable)"
+      option :add_dir,                 type: :string, repeatable: true,
+                                       desc: "Add an extra allowed workspace directory (repeatable)"
 
       def chat(prompt = nil)
         # Support: rubino chat "prompt" as shorthand for -q
@@ -96,7 +99,8 @@ module Rubino
       option :yolo,                        type: :boolean, desc: "Skip approval prompts"
       option :max_turns,                   type: :numeric, desc: "Max tool iterations"
       option :ignore_rules,                type: :boolean, desc: "Skip AGENTS.md/context files"
-      option :add_dir,                     type: :string, repeatable: true, desc: "Add an extra allowed workspace directory (repeatable)"
+      option :add_dir,                     type: :string, repeatable: true,
+                                           desc: "Add an extra allowed workspace directory (repeatable)"
       def prompt(*args)
         query = args.join(" ")
         opts = options.to_h.merge(query: query)

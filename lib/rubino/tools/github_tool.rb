@@ -15,7 +15,7 @@ module Rubino
 
       def description
         "Interact with GitHub: create/list PRs, issues, reviews, check status. " \
-        "Requires GITHUB_TOKEN or gh CLI authenticated."
+          "Requires GITHUB_TOKEN or gh CLI authenticated."
       end
 
       def input_schema
@@ -121,10 +121,8 @@ module Rubino
       end
 
       def execute_api(action, args)
-        token = ENV["GITHUB_TOKEN"] || ENV["GH_TOKEN"]
-        unless token
-          return "Error: No GitHub authentication. Set GITHUB_TOKEN or install gh CLI."
-        end
+        token = ENV["GITHUB_TOKEN"] || ENV.fetch("GH_TOKEN", nil)
+        return "Error: No GitHub authentication. Set GITHUB_TOKEN or install gh CLI." unless token
 
         repo = args["repo"] || args[:repo] || detect_repo
 
@@ -145,14 +143,14 @@ module Rubino
           base = args["base"] || args[:base] || "main"
           head = current_branch
           api_post("/repos/#{repo}/pulls", token, {
-            title: title, body: body_text, head: head, base: base
-          })
+                     title: title, body: body_text, head: head, base: base
+                   })
         when "issue_create"
           title = args["title"] || args[:title]
           body_text = args["body"] || args[:body] || ""
           api_post("/repos/#{repo}/issues", token, {
-            title: title, body: body_text
-          })
+                     title: title, body: body_text
+                   })
         else
           "Action '#{action}' requires gh CLI"
         end

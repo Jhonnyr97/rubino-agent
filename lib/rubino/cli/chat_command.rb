@@ -34,7 +34,7 @@ module Rubino
         # Render session-resolution errors as a clean stderr message + non-zero
         # exit, not a Ruby stack trace. AmbiguousSessionError's message
         # already includes the candidate list, so just print it.
-        $stderr.puts e.message
+        warn e.message
         exit(1)
       end
 
@@ -64,12 +64,12 @@ module Rubino
         text, image_paths = resolve_oneshot_images(query)
 
         runner = Agent::Runner.new(
-          session_id:        resolve_session_id,
-          model_override:    model_name,
+          session_id: resolve_session_id,
+          model_override: model_name,
           provider_override: opt(:provider),
-          max_turns:         max_turns_override,
-          ignore_rules:      opt(:ignore_rules) || false,
-          ui:                UI::Null.new
+          max_turns: max_turns_override,
+          ignore_rules: opt(:ignore_rules) || false,
+          ui: UI::Null.new
         )
 
         # Use run! (not run) so a model/credential failure PROPAGATES instead of
@@ -85,7 +85,7 @@ module Rubino
       rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
         raise
       rescue Exception => e # rubocop:disable Lint/RescueException
-        $stderr.puts "rubino: #{e.message}"
+        warn "rubino: #{e.message}"
         exit(1)
       end
 
@@ -99,7 +99,7 @@ module Rubino
         flag_paths.each do |p|
           next if LLM::ContentBuilder.image_file?(p) && File.file?(p)
 
-          $stderr.puts "rubino: ignoring --image #{p} (not a readable image file)"
+          warn "rubino: ignoring --image #{p} (not a readable image file)"
         end
         valid_flags = flag_paths.select { |p| LLM::ContentBuilder.image_file?(p) && File.file?(p) }
 
@@ -145,12 +145,12 @@ module Rubino
         setup_workspace_and_trust!(ui, interactive: true)
 
         runner = Agent::Runner.new(
-          session_id:        resolve_session_id(auto_resume: true),
-          model_override:    model_name,
+          session_id: resolve_session_id(auto_resume: true),
+          model_override: model_name,
           provider_override: opt(:provider),
-          max_turns:         max_turns_override,
-          ignore_rules:      opt(:ignore_rules) || false,
-          ui:                ui
+          max_turns: max_turns_override,
+          ignore_rules: opt(:ignore_rules) || false,
+          ui: ui
         )
 
         # The runner already announced the session ("New/Resuming session: <id>");
@@ -223,6 +223,7 @@ module Rubino
             # line into image_paths (the native vision slot); the rest stays text.
             input = extract_images!(input, ui)
             next if input.empty? && pending_image_paths.empty?
+
             # An image with no accompanying words still needs a user turn; give
             # the model a default question so it has something to answer.
             input = "What do you see in this image?" if input.empty?
@@ -278,8 +279,10 @@ module Rubino
                   interacted = false
                   next
                 end
-                interacted = true; run_turn(runner, result[:prompt], ui, input_queue)
-              else               interacted = true; run_turn(runner, input, ui, input_queue)
+                interacted = true
+                run_turn(runner, result[:prompt], ui, input_queue)
+              else interacted = true
+                   run_turn(runner, input, ui, input_queue)
               end
             else
               interacted = true
@@ -335,8 +338,8 @@ module Rubino
       # flips a plain flag (no Mutex, no I/O), exactly like the during-turn INT
       # trap. Returns the previous handler so #restore_idle_int can put it back.
       # nil (no trap installed) on a platform without SIGINT.
-      def trap_idle_int(&handler)
-        Signal.trap("INT", &handler)
+      def trap_idle_int(&)
+        Signal.trap("INT", &)
       rescue ArgumentError
         nil
       end
@@ -356,7 +359,7 @@ module Rubino
       # logger untouched) if the file can't be opened — a logging-destination
       # detail must never break the chat boot.
       def redirect_logger_to_file
-        dir  = File.expand_path(Rubino.configuration.dig("paths", "logs") || "~/.rubino/logs")
+        dir = File.expand_path(Rubino.configuration.dig("paths", "logs") || "~/.rubino/logs")
         FileUtils.mkdir_p(dir)
         file = File.open(File.join(dir, "rubino.log"), "a")
         file.sync = true
@@ -457,14 +460,14 @@ module Rubino
       # @pending_draft on teardown so it survives into the next prompt.
       def read_idle_line(input_queue, draft)
         composer = UI::BottomComposer.new(
-          input_queue:       input_queue,
-          prompt:            build_prompt,
-          on_ctrl_o:         ctrl_o_handler,
-          on_mode_cycle:     mode_cycle_handler,
+          input_queue: input_queue,
+          prompt: build_prompt,
+          on_ctrl_o: ctrl_o_handler,
+          on_mode_cycle: mode_cycle_handler,
           completion_source: @completion_source,
-          history:           @input_history,
-          echo:              :prompt,
-          pending_queued:    pending_queued
+          history: @input_history,
+          echo: :prompt,
+          pending_queued: pending_queued
         )
         composer.start
         seed_draft(composer, draft)
@@ -639,7 +642,7 @@ module Rubino
       def show_image_indicator(ui, newly)
         newly.each { |p| ui.status("[image: #{File.basename(p)}]") }
         total = pending_image_paths.size
-        ui.status("#{total} image#{'s' if total != 1} attached — sent with your next message (/clear-images to drop).")
+        ui.status("#{total} image#{"s" if total != 1} attached — sent with your next message (/clear-images to drop).")
       end
 
       # On exit, hand the user back the exact command to return to this chat.
@@ -659,6 +662,7 @@ module Rubino
 
       def print_resume_hint(ui, session)
         return unless session
+
         id    = session[:id]
         title = session[:title]
         handle = title && !title.to_s.strip.empty? ? %("#{title}") : id
@@ -722,20 +726,19 @@ module Rubino
             in_trap = true
             begin
               now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-              if last_int_at && (now - last_int_at) <= DOUBLE_TAP_SECONDS
-                # Second tap in the window: raise to the main thread so the
-                # REPL unwinds and exits — a real Ctrl+C now quits.
-                raise Interrupt
-              else
-                last_int_at = now
-                runner.cancel!
-                # The runner commits the standardized dim "⎿ interrupted" marker
-                # once it unwinds the cancelled turn; here we only add the
-                # actionable double-tap hint so the two don't restate the same
-                # "interrupted" wording (L10). Single ASCII write —
-                # async-signal-safe enough for a trap.
-                $stderr.write("\n(press Ctrl+C again to exit)\n")
-              end
+              raise Interrupt if last_int_at && (now - last_int_at) <= DOUBLE_TAP_SECONDS
+
+              # Second tap in the window: raise to the main thread so the
+              # REPL unwinds and exits — a real Ctrl+C now quits.
+
+              last_int_at = now
+              runner.cancel!
+              # The runner commits the standardized dim "⎿ interrupted" marker
+              # once it unwinds the cancelled turn; here we only add the
+              # actionable double-tap hint so the two don't restate the same
+              # "interrupted" wording (L10). Single ASCII write —
+              # async-signal-safe enough for a trap.
+              $stderr.write("\n(press Ctrl+C again to exit)\n")
             ensure
               in_trap = false
             end
@@ -889,7 +892,7 @@ module Rubino
         messages = ::Rubino::Session::Store.new.for_session(session_id)
         return if messages.empty?
 
-        ui.status("Loaded #{messages.size} prior message#{'s' if messages.size != 1}")
+        ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
         ui.separator
 
         messages.each do |msg|
@@ -899,6 +902,7 @@ module Rubino
             ui.replay_user_input(msg.content, at: at)
           when "assistant"
             next if msg.content.nil? || msg.content.to_s.empty?
+
             # Render the prior assistant turn as markdown, same as a live reply —
             # not the old box (which the M2 redesign repurposed into a "● running"
             # tool-style row, so resume showed assistant turns as fake tool runs
@@ -911,9 +915,9 @@ module Rubino
             ui.tool_finished(
               name,
               result: ::Rubino::Tools::Result.success(
-                name:    name,
+                name: name,
                 call_id: msg.tool_call_id,
-                output:  msg.content.to_s
+                output: msg.content.to_s
               )
             )
           end
@@ -941,8 +945,8 @@ module Rubino
       # it into the fork seed (the "actually, let's pursue this" move).
       def run_probe(runner, question, ui)
         result = Interaction::Probe.new(
-          session:           runner.session,
-          model_override:    model_name,
+          session: runner.session,
+          model_override: model_name,
           provider_override: opt(:provider)
         ).ask(question)
         ui.probe_aside(result.answer)
@@ -972,10 +976,10 @@ module Rubino
         Session::Repository.new.persist!(parent) if parent[:persisted] == false
 
         child = Session::Repository.new.create(
-          source:            "cli",
-          model:             parent[:model],
-          provider:          parent[:provider],
-          title:             title,
+          source: "cli",
+          model: parent[:model],
+          provider: parent[:provider],
+          title: title,
           parent_session_id: parent[:id]
         )
 
@@ -987,9 +991,9 @@ module Rubino
         Session::Repository.new.update(child[:id], message_count: store.count(child[:id]))
 
         ui.branch_confirmation(
-          new_id:         child[:id],
-          parent_id:      parent[:id],
-          title:          title,
+          new_id: child[:id],
+          parent_id: parent[:id],
+          title: title,
           included_probe: included_probe
         )
 
@@ -1092,11 +1096,11 @@ module Rubino
         # else — Modes::DEFAULT, `/mode default | plan | yolo`, and the
         # `mode default → plan` transition banner — instead of inventing a
         # second label "general" for the same mode (F9).
-        else                             p.dim("default")
+        else p.dim("default")
         end
       end
 
-      PROMPT_CARET = "❯".freeze
+      PROMPT_CARET = "❯"
 
       def pastel
         @pastel ||= Pastel.new
@@ -1157,7 +1161,11 @@ module Rubino
       # `Rubino::CLI::Commands` (the Thor class), which has no `BuiltIns` constant
       # and raises NameError at first interactive boot.
       def build_completion_source(cmd_loader)
-        custom = cmd_loader.names rescue []
+        custom = begin
+          cmd_loader.names
+        rescue StandardError
+          []
+        end
         names  = (::Rubino::Commands::BuiltIns::NAMES + custom).uniq
         files  = -> { Rubino::Workspace.primary_root }
         # ARGUMENT sources: the dropdown completes the argument of these commands
@@ -1213,7 +1221,7 @@ module Rubino
       def announce_resolved_model
         return unless model_override_given?
 
-        $stderr.puts "model: #{model_name}"
+        warn "model: #{model_name}"
         warn_unknown_model
       end
 
@@ -1226,8 +1234,8 @@ module Rubino
         return if id.nil? || id.to_s.empty?
         return if model_known?(id)
 
-        $stderr.puts "rubino: warning: model '#{id}' is not in the known model catalog " \
-                     "(accepted unverified; a typo here will hit the provider as-is)."
+        warn "rubino: warning: model '#{id}' is not in the known model catalog " \
+             "(accepted unverified; a typo here will hit the provider as-is)."
       end
 
       # True when the model id resolves in ruby_llm's registry. A fake/* id (the
@@ -1280,7 +1288,7 @@ module Rubino
           @auto_resumed_session = Session::Repository.new.latest_resumable
           return @auto_resumed_session[:id] if @auto_resumed_session
 
-          $stderr.puts pastel.yellow("No previous session to continue — starting a new one.")
+          warn pastel.yellow("No previous session to continue — starting a new one.")
           return nil
         end
 
@@ -1306,12 +1314,12 @@ module Rubino
       # and replays its history so the transcript matches what was there before.
       def resume_runner(ui, session_id)
         runner = Agent::Runner.new(
-          session_id:        session_id,
-          model_override:    model_name,
+          session_id: session_id,
+          model_override: model_name,
           provider_override: opt(:provider),
-          max_turns:         max_turns_override,
-          ignore_rules:      opt(:ignore_rules) || false,
-          ui:                ui
+          max_turns: max_turns_override,
+          ignore_rules: opt(:ignore_rules) || false,
+          ui: ui
         )
         print_session_history(ui, runner.session[:id])
         runner
@@ -1321,12 +1329,12 @@ module Rubino
       # passing any session_id so the runner creates a fresh one.
       def fresh_runner(ui)
         Agent::Runner.new(
-          session_id:        nil,
-          model_override:    model_name,
+          session_id: nil,
+          model_override: model_name,
           provider_override: opt(:provider),
-          max_turns:         max_turns_override,
-          ignore_rules:      opt(:ignore_rules) || false,
-          ui:                ui
+          max_turns: max_turns_override,
+          ignore_rules: opt(:ignore_rules) || false,
+          ui: ui
         )
       end
 
@@ -1344,7 +1352,7 @@ module Rubino
         # must not be reachable without RUBINO_ALLOW_FAKE=1.
         if Rubino.configuration.model_provider.to_s == "fake" &&
            ENV["RUBINO_ALLOW_FAKE"] != "1"
-          $stderr.puts "fake provider is dev-only — set RUBINO_ALLOW_FAKE=1 to opt in."
+          warn "fake provider is dev-only — set RUBINO_ALLOW_FAKE=1 to opt in."
           exit(1)
         end
 
@@ -1385,7 +1393,7 @@ module Rubino
           return if ok && LLM::CredentialCheck.usable?
         end
 
-        $stderr.puts LLM::CredentialCheck.missing_key_message
+        warn LLM::CredentialCheck.missing_key_message
         exit(1)
       end
 
@@ -1414,7 +1422,7 @@ module Rubino
       def ensure_database_ready!
         return if Rubino.ensure_database_ready!
 
-        $stderr.puts "rubino isn't set up yet — run `rubino setup` first."
+        warn "rubino isn't set up yet — run `rubino setup` first."
         exit(1)
       end
     end

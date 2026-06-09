@@ -28,7 +28,10 @@ RSpec.describe Rubino::Tools::QuestionTool do
 
     it "passes a single combined prompt to ui.ask containing the question and option labels" do
       captured = nil
-      allow(ui).to receive(:ask) { |prompt| captured = prompt; "1" }
+      allow(ui).to receive(:ask) { |prompt|
+        captured = prompt
+        "1"
+      }
 
       tool.call("question" => "Which datastore?", "options" => options)
 
@@ -70,7 +73,10 @@ RSpec.describe Rubino::Tools::QuestionTool do
     context "with multiple: true" do
       it "includes the multiple-select hint in the combined prompt" do
         captured = nil
-        allow(ui).to receive(:ask) { |prompt| captured = prompt; "1,2" }
+        allow(ui).to receive(:ask) { |prompt|
+          captured = prompt
+          "1,2"
+        }
 
         tool.call("question" => "Which datastores?", "options" => options, "multiple" => true)
 
@@ -91,7 +97,10 @@ RSpec.describe Rubino::Tools::QuestionTool do
   describe "#call without options (ask_freeform)" do
     it "passes the bare question to ui.ask" do
       captured = nil
-      allow(ui).to receive(:ask) { |prompt| captured = prompt; "blue" }
+      allow(ui).to receive(:ask) { |prompt|
+        captured = prompt
+        "blue"
+      }
 
       result = tool.call("question" => "Favourite colour?")
 

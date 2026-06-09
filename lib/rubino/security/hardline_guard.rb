@@ -33,11 +33,12 @@ module Rubino
       # normalized command. KEEP TINY — unrecoverable only.
       HARDLINE_PATTERNS = [
         # rm -r/-rf targeting the root filesystem (/ or /*)
-        [/\brm\s+(?:-\S*\s+)*(?:\/|\/\*)(?:\s|$)/, "recursive delete of root filesystem"],
+        [%r{\brm\s+(?:-\S*\s+)*(?:/|/\*)(?:\s|$)}, "recursive delete of root filesystem"],
         # rm -r/-rf targeting a protected system directory
-        [%r{\brm\s+(?:-\S*\s+)*(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/\*)?(?:\s|$)}, "recursive delete of system directory"],
+        [%r{\brm\s+(?:-\S*\s+)*(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/\*)?(?:\s|$)},
+         "recursive delete of system directory"],
         # rm targeting the home directory (~ or $HOME)
-        [/\brm\s+(?:-\S*\s+)*(?:~|\$home)(?:\/?|\/\*)?(?:\s|$)/, "recursive delete of home directory"],
+        [%r{\brm\s+(?:-\S*\s+)*(?:~|\$home)(?:/?|/\*)?(?:\s|$)}, "recursive delete of home directory"],
         # Filesystem format
         [/\bmkfs(?:\.[a-z0-9]+)?\b/, "format filesystem (mkfs)"],
         # dd to a raw block device

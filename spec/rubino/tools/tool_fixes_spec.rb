@@ -30,7 +30,6 @@ RSpec.describe Rubino::Tools::Registry do
       Rubino.configuration.set("tools", "shell", true)
     end
 
-
     it "never returns an empty list when tools are registered and config is default" do
       described_class.register(Rubino::Tools::GlobTool.new)
       described_class.register(Rubino::Tools::GrepTool.new)
@@ -77,7 +76,6 @@ RSpec.describe "Tools config_key resolution" do
     expect(Rubino::Tools::WebFetchTool.new.config_key).to eq("web")
     expect(Rubino::Tools::WebSearchTool.new.config_key).to eq("web")
   end
-
 end
 
 # ---------------------------------------------------------------------------
@@ -268,9 +266,9 @@ RSpec.describe Rubino::Tools::RubyTool do
     allow(Rubino.configuration).to receive(:agent_max_turn_seconds).and_return(nil)
     # Should use default 30 s and complete well within that
     result = nil
-    expect {
+    expect do
       Timeout.timeout(5) { result = tool.call("code" => "42") }
-    }.not_to raise_error
+    end.not_to raise_error
     expect(result).to eq("42")
   end
 
@@ -307,6 +305,7 @@ RSpec.describe Rubino::Tools::GrepTool do
   subject(:tool) { described_class.new }
 
   let(:tmp_dir) { Dir.mktmpdir("grep_fix_spec") }
+
   after { FileUtils.rm_rf(tmp_dir) }
 
   before do
@@ -374,7 +373,7 @@ RSpec.describe Rubino::Tools::QuestionTool do
     it "returns the selected option label" do
       result = tool.call(
         "question" => "Pick one?",
-        "options"  => [{ "label" => "Alpha" }, { "label" => "Beta" }]
+        "options" => [{ "label" => "Alpha" }, { "label" => "Beta" }]
       )
       expect(result).to include("Alpha")
     end
@@ -386,7 +385,7 @@ RSpec.describe Rubino::Tools::QuestionTool do
     it "returns all selected labels when multiple is true" do
       result = tool.call(
         "question" => "Pick many?",
-        "options"  => [{ "label" => "Alpha" }, { "label" => "Beta" }],
+        "options" => [{ "label" => "Alpha" }, { "label" => "Beta" }],
         "multiple" => true
       )
       expect(result).to include("Alpha")

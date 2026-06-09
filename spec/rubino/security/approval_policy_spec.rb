@@ -69,7 +69,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
     it "denies when permissions config denies the tool (wildcard)" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "dangerous_tool *" => "deny" }
       )
       pol = described_class.new(config: cfg)
@@ -85,7 +85,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "auto-allows a command on the config allowlist (would otherwise :ask)" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => ["git status"] }
+        "security" => { "command_allowlist" => ["git status"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "git status -s" })).to eq(:allow)
@@ -94,7 +94,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "still :asks for a command NOT on the allowlist" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => ["git status"] }
+        "security" => { "command_allowlist" => ["git status"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "cat README.md" })).to eq(:ask)
@@ -102,9 +102,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
     it "deny patterns win over the allowlist" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "shell rm *" => "deny" },
-        "security"    => { "command_allowlist" => ["rm"] }
+        "security" => { "command_allowlist" => ["rm"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "rm -rf /tmp/x" })).to eq(:deny)
@@ -113,7 +113,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "an empty allowlist auto-approves nothing" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => [] }
+        "security" => { "command_allowlist" => [] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "anything not listed" })).to eq(:ask)
@@ -150,7 +150,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
   describe "#decide with pattern rules" do
     it "returns :allow when pattern matches allow rule" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "git *" => "allow" }
       )
       pol = described_class.new(config: cfg)
@@ -160,7 +160,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
     it "returns :deny when pattern matches deny rule" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "shell *" => "deny" }
       )
       pol = described_class.new(config: cfg)
@@ -192,7 +192,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
     it "denies even when a permissions:allow rule matches the same command" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "shell *" => "allow" }
       )
       pol = described_class.new(config: cfg)
@@ -205,7 +205,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "denies even when a command_allowlist entry matches the same command" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => ["rm -rf /"] }
+        "security" => { "command_allowlist" => ["rm -rf /"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => hardline })).to eq(:deny)
@@ -216,7 +216,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "denies even when a command_allowlist PREFIX pre-approves the hardline command" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => ["rm"] }
+        "security" => { "command_allowlist" => ["rm"] }
       )
       pol = described_class.new(config: cfg)
       # The prefix WOULD pre-approve a benign sibling...
@@ -228,9 +228,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "denies under yolo AND a permissions:allow rule combined" do
       Rubino::Modes.set(:yolo)
       cfg = test_configuration(
-        "approvals"   => { "mode" => "skip" },
+        "approvals" => { "mode" => "skip" },
         "permissions" => { "shell *" => "allow" },
-        "security"    => { "command_allowlist" => ["rm -rf /"] }
+        "security" => { "command_allowlist" => ["rm -rf /"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => hardline })).to eq(:deny)
@@ -248,7 +248,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     # --- Hardline beats EVERYTHING ---
     it "hardline beats a permissions:allow rule on the same command" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "skip" },
+        "approvals" => { "mode" => "skip" },
         "permissions" => { "shell *" => "allow" }
       )
       pol = described_class.new(config: cfg)
@@ -258,9 +258,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "hardline beats yolo + allowlist + permissions:allow combined" do
       Rubino::Modes.set(:yolo)
       cfg = test_configuration(
-        "approvals"   => { "mode" => "skip" },
+        "approvals" => { "mode" => "skip" },
         "permissions" => { "shell *" => "allow" },
-        "security"    => { "command_allowlist" => ["rm -rf /"] }
+        "security" => { "command_allowlist" => ["rm -rf /"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => "rm -rf /" })).to eq(:deny)
@@ -270,7 +270,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "permissions:deny beats yolo" do
       Rubino::Modes.set(:yolo)
       cfg = test_configuration(
-        "approvals"   => { "mode" => "skip" },
+        "approvals" => { "mode" => "skip" },
         "permissions" => { "shell rm *" => "deny" }
       )
       pol = described_class.new(config: cfg)
@@ -279,9 +279,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
     it "permissions:deny beats the command_allowlist" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "shell rm *" => "deny" },
-        "security"    => { "command_allowlist" => ["rm"] }
+        "security" => { "command_allowlist" => ["rm"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => "rm -rf /tmp/x" })).to eq(:deny)
@@ -289,7 +289,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
     it "permissions:deny beats a permissions:allow on the same tool (specificity)" do
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         # More specific deny + broad allow: deny must win for the rm command.
         "permissions" => { "shell rm *" => "deny", "shell *" => "allow" }
       )
@@ -303,7 +303,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "yolo still allows a command with a permissions:allow rule" do
       Rubino::Modes.set(:yolo)
       cfg = test_configuration(
-        "approvals"   => { "mode" => "manual" },
+        "approvals" => { "mode" => "manual" },
         "permissions" => { "shell *" => "allow" }
       )
       pol = described_class.new(config: cfg)
@@ -320,7 +320,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "command_allowlist beats the manual-mode :ask fallback" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => ["git status"] }
+        "security" => { "command_allowlist" => ["git status"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => "git status -s" })).to eq(:allow)
@@ -345,7 +345,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "a dangerous command on the allowlist is still :allow (S2 keeps allowlist precedence)" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "command_allowlist" => ["git push"] }
+        "security" => { "command_allowlist" => ["git push"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.dangerous?("git push --force origin main")).to be(true)
@@ -387,7 +387,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       let(:pol) do
         described_class.new(config: test_configuration(
           "approvals" => { "mode" => "manual" },
-          "security"  => { "confirm_policy" => "dangerous_only" }
+          "security" => { "confirm_policy" => "dangerous_only" }
         ))
       end
 
@@ -408,7 +408,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       it "still honors an explicit permissions:deny before the policy" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
-          "security"  => { "confirm_policy" => "dangerous_only" },
+          "security" => { "confirm_policy" => "dangerous_only" },
           "permissions" => { "shell rm *" => "deny" }
         )
         p = described_class.new(config: cfg)
@@ -420,7 +420,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       it "require_confirmation_for_shell:false coerces to dangerous_only" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
-          "security"  => { "require_confirmation_for_shell" => false }
+          "security" => { "require_confirmation_for_shell" => false }
         )
         pol = described_class.new(config: cfg)
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
@@ -430,7 +430,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       it "require_confirmation_for_shell:true keeps confirm_all" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
-          "security"  => { "require_confirmation_for_shell" => true }
+          "security" => { "require_confirmation_for_shell" => true }
         )
         pol = described_class.new(config: cfg)
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:ask)
@@ -439,7 +439,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       it "confirm_policy wins over the alias when BOTH are set" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
-          "security"  => {
+          "security" => {
             "confirm_policy" => "dangerous_only",
             "require_confirmation_for_shell" => true
           }
@@ -465,7 +465,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "ALLOWS memory ops without a prompt in manual mode + shell confirmation" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security"  => { "require_confirmation_for_shell" => true }
+        "security" => { "require_confirmation_for_shell" => true }
       )
       policy = described_class.new(config: cfg)
 

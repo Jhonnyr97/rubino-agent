@@ -20,8 +20,11 @@ module Rubino
       IV_LEN = 12
       TAG_LEN = 16
 
-      KeyMissingError = Class.new(Rubino::Error)
-      InvalidCiphertextError = Class.new(Rubino::Error)
+      class KeyMissingError < Rubino::Error
+      end
+
+      class InvalidCiphertextError < Rubino::Error
+      end
 
       # Build an encryptor using the key in RUBINO_ENCRYPTION_KEY.
       #

@@ -48,7 +48,7 @@ module Rubino
         STOPWORDS = %w[
           the a an of to in on at for and or is are was were be been being do does did
           how what where when which who whom whose why this that these those it its
-          use uses used user users project projects right now does
+          use uses used user users project projects right now
         ].to_set.freeze
 
         # Maps the backend's fact `kind` onto Memory::Store's budget group so a
@@ -61,8 +61,8 @@ module Rubino
         # one-off facts on ties.
         KIND_WEIGHT = Hash.new(1.0).merge(
           "user_profile" => 1.3,
-          "preference"   => 1.2,
-          "env"          => 1.1
+          "preference" => 1.2,
+          "env" => 1.1
         ).freeze
 
         def self.backend_name
@@ -448,7 +448,7 @@ module Rubino
         end
 
         def enforce_char_budget!(kind, text)
-          group = (kind == USER_KIND) ? "user" : "memory"
+          group = kind == USER_KIND ? "user" : "memory"
           # INGEST cap, decoupled from the injection budget. `memory_char_limit`
           # bounds only what `retrieve` packs into the prompt; storing facts is
           # gated by `memory_ingest_char_limit` (nil => unbounded) so long
@@ -574,7 +574,7 @@ module Rubino
           dot = a.zip(b).sum { |x, y| x * y }
           na = Math.sqrt(a.sum { |x| x * x })
           nb = Math.sqrt(b.sum { |x| x * x })
-          (na.zero? || nb.zero?) ? 0.0 : dot / (na * nb)
+          na.zero? || nb.zero? ? 0.0 : dot / (na * nb)
         end
 
         # ---- helpers ----

@@ -85,7 +85,8 @@ RSpec.describe Rubino::Memory::SqliteGraph do
     before do
       # "app" --uses--> "redis"; query mentions only "app", must reach redis fact.
       backend.store(kind: "project", content: "The app is a Rails service.", metadata: { entities: %w[app rails] })
-      @redis_fact = backend.store(kind: "fact", content: "Redis stores the cache.", metadata: { entities: %w[redis cache] })
+      @redis_fact = backend.store(kind: "fact", content: "Redis stores the cache.",
+                                  metadata: { entities: %w[redis cache] })
       app = backend.resolve_entity("app")
       redis = backend.resolve_entity("redis")
       backend.upsert_edge(app, redis, "uses", nil)
@@ -106,7 +107,8 @@ RSpec.describe Rubino::Memory::SqliteGraph do
       # FACT-1 ties query 'app' to entity app; FACT-2 (redis) is connected only
       # by a 1-hop 'uses' edge and shares NO keyword with the probe.
       backend.store(kind: "project", content: "The app deploys to Fly.", metadata: { entities: %w[app fly] })
-      backend.store(kind: "fact", content: "Sidekiq processes background work.", metadata: { entities: %w[redis sidekiq] })
+      backend.store(kind: "fact", content: "Sidekiq processes background work.",
+                    metadata: { entities: %w[redis sidekiq] })
       app = backend.resolve_entity("app")
       redis = backend.resolve_entity("redis")
       backend.upsert_edge(app, redis, "uses", nil)

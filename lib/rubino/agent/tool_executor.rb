@@ -122,7 +122,12 @@ module Rubino
           error_code = raw[:error_code] || raw["error_code"]
           artifact   = raw[:artifact]   || raw["artifact"]
         else
-          text, metrics, body, body_kind, error_code, artifact = raw, nil, nil, :plain, nil, nil
+          text = raw
+          metrics = nil
+          body = nil
+          body_kind = :plain
+          error_code = nil
+          artifact = nil
         end
         # Skip the body block when the tool already streamed its output line by
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
@@ -131,12 +136,12 @@ module Rubino
         # (read, grep, edit, glob, github) still render their body here.
         @ui.tool_body(body, kind: body_kind.to_sym) if body && !body.to_s.empty? && !streamed
         result = Tools::Result.success(
-          name:       name,
-          call_id:    call_id,
-          output:     truncate_output(text, call_id: call_id),
-          metrics:    metrics,
+          name: name,
+          call_id: call_id,
+          output: truncate_output(text, call_id: call_id),
+          metrics: metrics,
           error_code: error_code&.to_sym,
-          artifact:   artifact
+          artifact: artifact
         )
         @tool_call_repository.record(name: name, call_id: call_id, arguments: arguments,
                                      result: result, status: "completed")
@@ -191,10 +196,10 @@ module Rubino
       def emit_finished(name, result: nil, duration_ms: nil, arguments: nil)
         @ui.tool_finished(name, result: result) if @ui.respond_to?(:tool_finished)
         payload = {
-          name:        name,
-          output:      truncate_for_event(result&.output.to_s),
+          name: name,
+          output: truncate_for_event(result&.output.to_s),
           duration_ms: duration_ms,
-          error_code:  result.respond_to?(:error_code) ? result&.error_code : nil
+          error_code: result.respond_to?(:error_code) ? result&.error_code : nil
         }
         # On completion the `output` already carries the subagent's returned
         # summary; tag the subagent name (recovered from the call arguments) so
@@ -249,12 +254,12 @@ module Rubino
 
       def record_denied(name:, call_id:, arguments:, reason:)
         @tool_call_repository.record(
-          name:      name,
-          call_id:   call_id,
+          name: name,
+          call_id: call_id,
           arguments: arguments,
-          result:    Tools::Result.denied(name: name, call_id: call_id),
-          status:    "denied",
-          error:     reason
+          result: Tools::Result.denied(name: name, call_id: call_id),
+          status: "denied",
+          error: reason
         )
       rescue StandardError
         # Don't fail the user's request just because the audit write failed.
@@ -265,9 +270,9 @@ module Rubino
         _hit, pattern_key, description = Security::DangerousPatterns.detect(command)
         @ui.confirm(
           approval_question(tool, arguments),
-          scope:       approval_scope(tool, arguments),
-          tool:        tool.name,
-          command:     command,
+          scope: approval_scope(tool, arguments),
+          tool: tool.name,
+          command: command,
           pattern_key: pattern_key,
           description: description
         )

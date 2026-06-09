@@ -112,9 +112,7 @@ module Rubino
                   # it is deliberately waiting. Suspend the watchdog while the
                   # run's gate has a pending decision and keep the clock fresh so
                   # the timer doesn't fire the instant the answer arrives.
-                  if gate_pending?(run_id)
-                    last_real_event_at = clock.call
-                  end
+                  last_real_event_at = clock.call if gate_pending?(run_id)
 
                   # Watchdog: if the run says "running" but the executor has
                   # gone silent for too long, escalate. Marks the row as
@@ -159,7 +157,6 @@ module Rubino
           end
 
           def configured_idle_timeout
-
             cfg = Rubino.configuration if defined?(Rubino) && Rubino.respond_to?(:configuration)
             value = cfg && cfg.respond_to?(:run_idle_event_timeout) ? cfg.run_idle_event_timeout : nil
             value.nil? ? DEFAULT_IDLE_EVENT_TIMEOUT : value
@@ -184,7 +181,8 @@ module Rubino
               payload: { error: error_message, reason: "idle_timeout" }
             )
           rescue StandardError => e
-            Rubino.logger.error(event: "run.idle_timeout_error", run_id: run_id, error: e.class.name, message: e.message)
+            Rubino.logger.error(event: "run.idle_timeout_error", run_id: run_id, error: e.class.name,
+                                message: e.message)
           end
 
           def format_event(event)

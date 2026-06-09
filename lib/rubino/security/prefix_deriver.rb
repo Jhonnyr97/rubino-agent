@@ -39,11 +39,11 @@ module Rubino
       # `bundle install` into the same `bundle` rule.
       WRAPPERS = {
         "bundle" => %w[exec].freeze,
-        "npm"    => %w[run].freeze,
-        "yarn"   => %w[run].freeze,
-        "pnpm"   => %w[run].freeze,
-        "rake"   => [].freeze,
-        "cargo"  => %w[run].freeze
+        "npm" => %w[run].freeze,
+        "yarn" => %w[run].freeze,
+        "pnpm" => %w[run].freeze,
+        "rake" => [].freeze,
+        "cargo" => %w[run].freeze
       }.freeze
 
       module_function

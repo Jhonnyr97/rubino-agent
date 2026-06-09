@@ -42,7 +42,7 @@ RSpec.describe Rubino::Memory::Extractor do
     it "truncates extracted content to 500 chars" do
       # Use whitespace so the slice avoids tripping ThreatScanner's
       # contiguous-base64 heuristic (>=200 a/b/c/.../0-9/+/ chars).
-      long = "I prefer " + (("word " * 250).strip)
+      long = "I prefer " + ("word " * 250).strip
       memories = extractor.extract_from_content(long)
       expect(memories.first[:content].length).to be <= 501
     end

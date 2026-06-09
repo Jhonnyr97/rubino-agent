@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "set"
-
 module Rubino
   # The set of directory roots the agent is allowed to work in.
   #

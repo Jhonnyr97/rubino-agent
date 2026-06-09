@@ -83,7 +83,8 @@ RSpec.describe Rubino::Tools::RubyTool do
   end
 
   it "restores $stdout/$stderr after evaluation" do
-    before_out, before_err = $stdout, $stderr
+    before_out = $stdout
+    before_err = $stderr
     tool.call("code" => "puts 'tmp'")
     expect($stdout).to equal(before_out)
     expect($stderr).to equal(before_err)

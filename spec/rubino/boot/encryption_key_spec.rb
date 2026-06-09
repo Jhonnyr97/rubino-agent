@@ -6,7 +6,7 @@ require "stringio"
 
 RSpec.describe Rubino::Boot::EncryptionKey do
   around do |ex|
-    previous = ENV["RUBINO_ENCRYPTION_KEY"]
+    previous = ENV.fetch("RUBINO_ENCRYPTION_KEY", nil)
     ex.run
     ENV["RUBINO_ENCRYPTION_KEY"] = previous
   end
@@ -17,18 +17,18 @@ RSpec.describe Rubino::Boot::EncryptionKey do
     before { ENV.delete("RUBINO_ENCRYPTION_KEY") }
 
     it "writes a clear message and exits 1" do
-      expect {
+      expect do
         described_class.validate!(stderr: stderr)
-      }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+      end.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
 
       expect(stderr.string).to include("RUBINO_ENCRYPTION_KEY invalid")
       expect(stderr.string).to include("not set")
     end
 
     it "hints at how to generate a key" do
-      expect {
+      expect do
         described_class.validate!(stderr: stderr)
-      }.to raise_error(SystemExit)
+      end.to raise_error(SystemExit)
 
       expect(stderr.string).to include("SecureRandom.random_bytes(32)")
     end
@@ -38,9 +38,9 @@ RSpec.describe Rubino::Boot::EncryptionKey do
     before { ENV["RUBINO_ENCRYPTION_KEY"] = "" }
 
     it "exits 1" do
-      expect {
+      expect do
         described_class.validate!(stderr: stderr)
-      }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+      end.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     end
   end
 
@@ -48,9 +48,9 @@ RSpec.describe Rubino::Boot::EncryptionKey do
     before { ENV["RUBINO_ENCRYPTION_KEY"] = Base64.strict_encode64("short") }
 
     it "exits 1 with a length-specific message" do
-      expect {
+      expect do
         described_class.validate!(stderr: stderr)
-      }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+      end.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
 
       expect(stderr.string).to include("32 bytes")
     end
@@ -60,9 +60,9 @@ RSpec.describe Rubino::Boot::EncryptionKey do
     before { ENV["RUBINO_ENCRYPTION_KEY"] = "!!!not base64!!!" }
 
     it "exits 1 rather than letting a Base64 ArgumentError bubble" do
-      expect {
+      expect do
         described_class.validate!(stderr: stderr)
-      }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+      end.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
 
       expect(stderr.string).to include("RUBINO_ENCRYPTION_KEY invalid")
     end

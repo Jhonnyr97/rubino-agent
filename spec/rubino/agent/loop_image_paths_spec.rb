@@ -17,14 +17,14 @@ RSpec.describe Rubino::Agent::Loop do
 
   def build_loop(adapter, image_paths: nil)
     described_class.new(
-      session:             session,
-      llm_adapter:         adapter,
-      tool_executor:       tool_executor,
-      message_store:       message_store,
-      budget:              budget,
-      ui:                  ui,
-      event_bus:           event_bus,
-      config:              config,
+      session: session,
+      llm_adapter: adapter,
+      tool_executor: tool_executor,
+      message_store: message_store,
+      budget: budget,
+      ui: ui,
+      event_bus: event_bus,
+      config: config,
       initial_image_paths: image_paths || []
     )
   end
@@ -43,8 +43,8 @@ RSpec.describe Rubino::Agent::Loop do
 
   it "does not re-pass image_paths on follow-up iterations after a tool call" do
     adapter = FakeLLMAdapter.new
-      .enqueue_tool_call("noop", {}, call_id: "tc-1")
-      .enqueue_text("done")
+                            .enqueue_tool_call("noop", {}, call_id: "tc-1")
+                            .enqueue_text("done")
 
     allow(tool_executor).to receive(:execute).and_return(
       Struct.new(:output).new("noop result")

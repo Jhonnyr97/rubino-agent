@@ -29,9 +29,9 @@ RSpec.describe Rubino::OAuth::TokenEncryptor do
     bytes = Base64.strict_decode64(cipher)
     tampered = bytes.dup
     tampered[20] = (tampered.bytes[20] ^ 0xFF).chr
-    expect {
+    expect do
       encryptor.decrypt(Base64.strict_encode64(tampered))
-    }.to raise_error(Rubino::OAuth::TokenEncryptor::InvalidCiphertextError)
+    end.to raise_error(Rubino::OAuth::TokenEncryptor::InvalidCiphertextError)
   end
 
   it "rejects a key with wrong size" do
@@ -40,16 +40,16 @@ RSpec.describe Rubino::OAuth::TokenEncryptor do
 
   describe ".from_env" do
     around do |ex|
-      prev = ENV["RUBINO_ENCRYPTION_KEY"]
+      prev = ENV.fetch("RUBINO_ENCRYPTION_KEY", nil)
       ex.run
       ENV["RUBINO_ENCRYPTION_KEY"] = prev
     end
 
     it "raises when the env var is missing" do
       ENV.delete("RUBINO_ENCRYPTION_KEY")
-      expect {
+      expect do
         described_class.from_env
-      }.to raise_error(Rubino::OAuth::TokenEncryptor::KeyMissingError)
+      end.to raise_error(Rubino::OAuth::TokenEncryptor::KeyMissingError)
     end
 
     it "loads a base64-encoded 32-byte key" do
@@ -60,9 +60,9 @@ RSpec.describe Rubino::OAuth::TokenEncryptor do
 
     it "rejects keys that decode to the wrong size" do
       ENV["RUBINO_ENCRYPTION_KEY"] = Base64.strict_encode64("short")
-      expect {
+      expect do
         described_class.from_env
-      }.to raise_error(Rubino::OAuth::TokenEncryptor::KeyMissingError, /32 bytes/)
+      end.to raise_error(Rubino::OAuth::TokenEncryptor::KeyMissingError, /32 bytes/)
     end
   end
 end

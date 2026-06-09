@@ -134,9 +134,7 @@ module Rubino
         # A genuine local Ruby bug (NoMethodError, ArgumentError, …) is NOT a
         # retryable provider blip — propagate it immediately instead of letting
         # the unknown→retryable default mask it behind a backoff storm.
-        if local_programming_error?(error)
-          return result_for(FailoverReason::UNKNOWN, status, error, retryable: false)
-        end
+        return result_for(FailoverReason::UNKNOWN, status, error, retryable: false) if local_programming_error?(error)
 
         result_for(FailoverReason::UNKNOWN, status, error, retryable: true)
       end
@@ -166,7 +164,7 @@ module Rubino
 
       def classify_missing_credential(error)
         is_config_error =
-          (defined?(RubyLLM::ConfigurationError) && error.is_a?(RubyLLM::ConfigurationError))
+          defined?(RubyLLM::ConfigurationError) && error.is_a?(RubyLLM::ConfigurationError)
         msg = error.message.to_s.downcase
         return unless is_config_error || MISSING_CREDENTIAL_PATTERNS.any? { |p| msg.include?(p) }
 
@@ -271,13 +269,13 @@ module Rubino
       def result_for(reason, status, error, retryable:, should_compress: false,
                      should_rotate_credential: false, should_fallback: false)
         ClassifiedError.new(
-          reason:                   reason,
-          status_code:              status,
-          message:                  error.respond_to?(:message) ? error.message.to_s[0, 500] : error.to_s[0, 500],
-          retryable:                retryable,
-          should_compress:          should_compress,
+          reason: reason,
+          status_code: status,
+          message: error.respond_to?(:message) ? error.message.to_s[0, 500] : error.to_s[0, 500],
+          retryable: retryable,
+          should_compress: should_compress,
           should_rotate_credential: should_rotate_credential,
-          should_fallback:          should_fallback
+          should_fallback: should_fallback
         )
       end
 

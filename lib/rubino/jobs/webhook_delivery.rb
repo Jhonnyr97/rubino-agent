@@ -39,7 +39,8 @@ module Rubino
       MAX_ATTEMPTS = 3
       RESUME_SCAN_LIMIT = 1000
 
-      def initialize(url: nil, logger: nil, timeout: DEFAULT_TIMEOUT, conn: nil, db: nil, secret: nil, clock: nil, sleeper: nil)
+      def initialize(url: nil, logger: nil, timeout: DEFAULT_TIMEOUT, conn: nil, db: nil, secret: nil, clock: nil,
+                     sleeper: nil)
         @url = url || ENV.fetch("RUBINO_WEBHOOK_URL", nil)
         @logger = logger || Rubino.logger
         @conn = conn || build_conn(timeout)
@@ -71,11 +72,11 @@ module Rubino
 
         now = @clock.call.iso8601
         rows = db[:webhook_deliveries]
-                 .where(status: "pending")
-                 .where { scheduled_at <= now }
-                 .order(:scheduled_at)
-                 .limit(RESUME_SCAN_LIMIT)
-                 .all
+               .where(status: "pending")
+               .where { scheduled_at <= now }
+               .order(:scheduled_at)
+               .limit(RESUME_SCAN_LIMIT)
+               .all
         rows.each do |row|
           Thread.new { attempt_with_retries(row_id: row[:id], body: row[:payload_json]) }
         end
@@ -96,6 +97,7 @@ module Rubino
           attempts_done += 1
           ok = post_once(row_id: row_id, body: body, attempt_count: attempts_done)
           return true if ok
+
           if attempts_done >= max
             mark_dead(row_id) if row_id
             return false
@@ -110,9 +112,7 @@ module Rubino
         response = @conn.post(@url) do |req|
           req.headers["content-type"] = "application/json"
           req.headers["X-Rubino-Delivery-Id"] = request_id
-          if @secret && !@secret.empty?
-            req.headers["X-Rubino-Signature"] = "sha256=#{sign(body)}"
-          end
+          req.headers["X-Rubino-Signature"] = "sha256=#{sign(body)}" if @secret && !@secret.empty?
           req.body = body
         end
         success = response.success?

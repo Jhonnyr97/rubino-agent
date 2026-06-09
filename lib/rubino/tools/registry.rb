@@ -130,7 +130,7 @@ module Rubino
           value = config.dig("tools", tool.config_key)
           # If the key is absent from config, default to enabled (opt-out model).
           # Only disable when explicitly set to false.
-          value.nil? ? true : value == true
+          value.nil? || value == true
         rescue StandardError
           true
         end

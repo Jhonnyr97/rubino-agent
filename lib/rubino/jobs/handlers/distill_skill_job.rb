@@ -110,7 +110,7 @@ module Rubino
             when "user"
               parts << "USER TASK:\n#{m.content}"
             when "tool"
-              parts << "TOOL #{m.respond_to?(:tool_name) ? m.tool_name : ''}: #{m.content.to_s[0, 400]}"
+              parts << "TOOL #{m.tool_name if m.respond_to?(:tool_name)}: #{m.content.to_s[0, 400]}"
             when "assistant"
               next if m.content.to_s.strip.empty?
 
@@ -147,7 +147,7 @@ module Rubino
           dir = File.join(skills_write_dir, name)
           FileUtils.mkdir_p(dir)
           path = File.join(dir, "SKILL.md")
-          content = +"---\nname: #{name}\ndescription: #{yaml_scalar(desc)}\n---\n\n#{body}"
+          content = "---\nname: #{name}\ndescription: #{yaml_scalar(desc)}\n---\n\n#{body}"
           content << "\n" unless content.end_with?("\n")
           File.write(path, content)
 
@@ -179,8 +179,6 @@ module Rubino
     end
   end
 end
-
-require "set"
 
 # Register the handler
 Rubino::Jobs::Registry.register(

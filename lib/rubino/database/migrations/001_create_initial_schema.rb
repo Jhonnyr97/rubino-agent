@@ -113,7 +113,7 @@ Sequel.migration do
 
     add_index :jobs, :status
     add_index :jobs, :run_at
-    add_index :jobs, [:status, :run_at]
+    add_index :jobs, %i[status run_at]
 
     create_table(:job_runs) do
       String :id, primary_key: true

@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Commands::Loader do
+  subject(:loader) { described_class.new(config: config) }
+
   let(:tmp_dir) { Dir.mktmpdir("rubino_loader_test") }
   let(:config) do
     test_configuration("commands" => { "paths" => [tmp_dir] })
   end
-
-  subject(:loader) { described_class.new(config: config) }
 
   after { FileUtils.rm_rf(tmp_dir) }
 
@@ -143,7 +143,6 @@ RSpec.describe Rubino::Commands::Loader do
     end
   end
 end
-
 
 RSpec.describe Rubino::Commands::Command do
   let(:tmp_dir) { Dir.mktmpdir("rubino_command_test") }
@@ -284,12 +283,11 @@ RSpec.describe Rubino::Commands::Command do
   end
 end
 
-
 RSpec.describe Rubino::Commands::Executor do
+  subject(:executor) { described_class.new(loader: loader, ui: null_ui) }
+
   let(:null_ui) { Rubino::UI::Null.new }
   let(:loader)  { instance_double(Rubino::Commands::Loader) }
-
-  subject(:executor) { described_class.new(loader: loader, ui: null_ui) }
 
   before do
     allow(loader).to receive(:slash_command?).and_return(true)
@@ -540,7 +538,6 @@ RSpec.describe Rubino::Commands::Executor do
   end
 end
 
-
 RSpec.describe "ChatCommand slash command integration" do
   let(:db)      { test_database }
   let(:null_ui) { Rubino::UI::Null.new }
@@ -550,8 +547,8 @@ RSpec.describe "ChatCommand slash command integration" do
     # print_session_history(ui, runner.session[:id]) right before the loop, and
     # end_session! is called on the clean teardown path (#100).
     instance_double(Rubino::Agent::Runner, run: "LLM response",
-                                              session: { id: "spec-session-id" },
-                                              end_session!: nil)
+                                           session: { id: "spec-session-id" },
+                                           end_session!: nil)
   end
 
   let(:fake_executor) do
@@ -591,7 +588,7 @@ RSpec.describe "ChatCommand slash command integration" do
     end
 
     it "breaks loop when executor returns :exit for /stop command" do
-      # Note: /exit and /quit are caught by exit_command? before reaching executor.
+      # NOTE: /exit and /quit are caught by exit_command? before reaching executor.
       # Other slash commands that return :exit would be custom ones.
       with_input("/stop")
       allow(fake_executor).to receive(:try_execute).with("/stop").and_return(:exit)

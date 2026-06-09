@@ -11,7 +11,7 @@ module Rubino
 
       def description
         "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
-        "Returns matching file paths sorted by modification time."
+          "Returns matching file paths sorted by modification time."
       end
 
       def input_schema
@@ -45,9 +45,7 @@ module Rubino
         max_results = arguments["max_results"] || arguments[:max_results] || 100
 
         expanded_path = File.expand_path(path)
-        unless File.directory?(expanded_path)
-          return "Error: Directory not found: #{path}"
-        end
+        return "Error: Directory not found: #{path}" unless File.directory?(expanded_path)
 
         full_pattern = File.join(expanded_path, pattern)
         files = Dir.glob(full_pattern)
@@ -60,9 +58,9 @@ module Rubino
         else
           relative_files = files.map { |f| f.sub("#{expanded_path}/", "") }
           full = "#{relative_files.size} file(s) found:\n\n#{relative_files.join("\n")}"
-          { output:    full,
-            metrics:   "#{relative_files.size} file#{'s' if relative_files.size != 1}",
-            body:      Util::Output.preview(full),
+          { output: full,
+            metrics: "#{relative_files.size} file#{"s" if relative_files.size != 1}",
+            body: Util::Output.preview(full),
             body_kind: :plain }
         end
       end

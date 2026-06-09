@@ -8,8 +8,12 @@ require "securerandom"
 # framing + budget truncation.
 RSpec.describe Rubino::Attachments do
   around do |ex|
-    Dir.mktmpdir { |d| @dir = d; ex.run }
+    Dir.mktmpdir do |d|
+      @dir = d
+      ex.run
+    end
   end
+
   attr_reader :dir
 
   # PK\x03\x04 = ZIP local-file-header magic.
@@ -73,7 +77,7 @@ RSpec.describe Rubino::Attachments do
       File.symlink(secret, link)
       c = described_class::Classify.call(link, confine_dir: conf)
       expect(c.safe).to be(false)
-      expect(c.reason).to match(/regular file/)
+      expect(c.reason).to include("regular file")
     end
 
     it "rejects a FIFO (non-regular file)" do
@@ -82,7 +86,7 @@ RSpec.describe Rubino::Attachments do
       skip "mkfifo unavailable" unless File.exist?(fifo)
       c = described_class::Classify.call(fifo)
       expect(c.safe).to be(false)
-      expect(c.reason).to match(/regular file/)
+      expect(c.reason).to include("regular file")
     end
 
     it "rejects an oversize file (over max_file_bytes)" do
@@ -91,11 +95,11 @@ RSpec.describe Rubino::Attachments do
       cfg = Marshal.load(Marshal.dump(Rubino.configuration))
       allow(cfg).to receive(:dig).and_call_original
       allow(cfg).to receive(:dig).with("attachments", "policy")
-        .and_return("max_file_bytes" => 16)
+                                 .and_return("max_file_bytes" => 16)
       allow(Rubino).to receive(:configuration).and_return(cfg)
       c = described_class::Classify.call(p)
       expect(c.safe).to be(false)
-      expect(c.reason).to match(/max_file_bytes/)
+      expect(c.reason).to include("max_file_bytes")
     end
 
     it "rejects a path resolving outside the confine dir" do
@@ -105,7 +109,7 @@ RSpec.describe Rubino::Attachments do
       FileUtils.mkdir_p(conf)
       c = described_class::Classify.call(outside, confine_dir: conf)
       expect(c.safe).to be(false)
-      expect(c.reason).to match(/outside/)
+      expect(c.reason).to include("outside")
     end
   end
 
@@ -143,8 +147,10 @@ RSpec.describe Rubino::Attachments do
     end
 
     it "uses a fresh nonce per attachment" do
-      p1 = File.join(dir, "a.txt"); File.write(p1, "one")
-      p2 = File.join(dir, "b.txt"); File.write(p2, "two")
+      p1 = File.join(dir, "a.txt")
+      File.write(p1, "one")
+      p2 = File.join(dir, "b.txt")
+      File.write(p2, "two")
       n1 = described_class::Preamble.for(classify(p1))[/--BEGIN ([0-9a-f]{16})--/, 1]
       n2 = described_class::Preamble.for(classify(p2))[/--BEGIN ([0-9a-f]{16})--/, 1]
       expect(n1).not_to eq(n2)
@@ -156,12 +162,12 @@ RSpec.describe Rubino::Attachments do
       cfg = Marshal.load(Marshal.dump(Rubino.configuration))
       allow(cfg).to receive(:dig).and_call_original
       allow(cfg).to receive(:dig).with("attachments", "policy")
-        .and_return("inline_text_budget_bytes" => 100, "max_file_bytes" => 26_214_400)
+                                 .and_return("inline_text_budget_bytes" => 100, "max_file_bytes" => 26_214_400)
       allow(Rubino).to receive(:configuration).and_return(cfg)
       out = described_class::Preamble.for(classify(p))
       expect(out).to include("truncated")
       expect(out).to include("showing first 100 of 500 bytes")
-      expect(out).to match(/Truncated\. Read the rest/)
+      expect(out).to include("Truncated. Read the rest")
       body = out[/--BEGIN [0-9a-f]{16}--\n(.*)\n--END/m, 1]
       expect(body).to eq("A" * 100)
     end
@@ -202,7 +208,7 @@ RSpec.describe Rubino::Attachments do
     it "produces the no-multimodal warning for an image with no MM model [Gap A]" do
       out = described_class::Preamble.no_multimodal_warning("/x/img.png", "image/png")
       expect(out).to include("no multimodal model is configured")
-      expect(out).not_to match(/vision` tool/)
+      expect(out).not_to include("vision` tool")
     end
   end
 

@@ -25,9 +25,7 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       el.call(:tr, nil, cells.map { |c| el.call(cell_type, nil, [el.call(:text, c)]) })
     end
     sections = []
-    if header_rows
-      sections << el.call(:thead, nil, header_rows.map { |r| tr_for.call(r, :th) })
-    end
+    sections << el.call(:thead, nil, header_rows.map { |r| tr_for.call(r, :th) }) if header_rows
     sections << el.call(:tbody, nil, body_rows.map { |r| tr_for.call(r, :td) })
     el.call(:table, nil, sections)
   end
@@ -176,10 +174,10 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       MD
       texts = blocks.map { |l| text_of(l) }
       expect(texts.first).to match(/┌─.*ruby/)
-      expect(texts).to include(match(/│ def hi/))
-      expect(texts).to include(match(/│   1/))
-      expect(texts).to include(match(/│ end/))
-      expect(texts.last).to match(/└/)
+      expect(texts).to include(include("│ def hi"))
+      expect(texts).to include(include("│   1"))
+      expect(texts).to include(include("│ end"))
+      expect(texts.last).to include("└")
     end
 
     it "renders an unordered list with bullet markers" do
@@ -236,7 +234,7 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       # Header row carries both column labels with a vertical border between.
       expect(texts).to include(match(/a.*│.*b/))
       # A header/body separator with the unicode cross junction.
-      expect(texts).to include(match(/┼/))
+      expect(texts).to include(include("┼"))
       # Body row carries both values.
       expect(texts).to include(match(/1.*│.*2/))
       # Top and bottom box-drawing borders.

@@ -150,7 +150,9 @@ module Rubino
           metric.each { |labels, value| lines << "#{metric.name}#{format_labels(labels)} #{value}" }
         when :histogram
           metric.each do |labels, data|
-            data[:counts].each { |bucket, count| lines << "#{metric.name}_bucket#{format_labels(labels.merge(le: bucket.to_s))} #{count}" }
+            data[:counts].each do |bucket, count|
+              lines << "#{metric.name}_bucket#{format_labels(labels.merge(le: bucket.to_s))} #{count}"
+            end
             lines << "#{metric.name}_sum#{format_labels(labels)} #{data[:sum]}"
             lines << "#{metric.name}_count#{format_labels(labels)} #{data[:count]}"
           end
@@ -166,7 +168,7 @@ module Rubino
       end
 
       def self.escape(value)
-        value.to_s.gsub("\\", '\\\\').gsub('"', '\\"').gsub("\n", '\n')
+        value.to_s.gsub("\\", "\\\\").gsub('"', '\\"').gsub("\n", '\n')
       end
     end
   end

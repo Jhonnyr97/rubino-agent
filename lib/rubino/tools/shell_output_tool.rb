@@ -15,8 +15,8 @@ module Rubino
 
       def description
         "Read output from a background shell started via `shell` with " \
-        "run_in_background: true. By default returns only new bytes since " \
-        "the previous read. Pass mode: 'all' for the full buffered output."
+          "run_in_background: true. By default returns only new bytes since " \
+          "the previous read. Pass mode: 'all' for the full buffered output."
       end
 
       def input_schema

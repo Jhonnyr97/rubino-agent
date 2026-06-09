@@ -24,22 +24,22 @@ module Rubino
       # filename. Add entries here only when a real run needs a specific
       # type signalled (e.g. inline PDF preview).
       CONTENT_TYPES = {
-        "pdf"  => "application/pdf",
-        "csv"  => "text/csv",
-        "txt"  => "text/plain",
-        "md"   => "text/markdown",
+        "pdf" => "application/pdf",
+        "csv" => "text/csv",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
         "json" => "application/json",
         "html" => "text/html",
-        "htm"  => "text/html",
-        "xml"  => "application/xml",
-        "png"  => "image/png",
-        "jpg"  => "image/jpeg",
+        "htm" => "text/html",
+        "xml" => "application/xml",
+        "png" => "image/png",
+        "jpg" => "image/jpeg",
         "jpeg" => "image/jpeg",
-        "gif"  => "image/gif",
-        "svg"  => "image/svg+xml",
-        "zip"  => "application/zip",
-        "tar"  => "application/x-tar",
-        "gz"   => "application/gzip",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -51,10 +51,10 @@ module Rubino
 
       def description
         "Attach a previously-written file to the current turn as a downloadable artifact " \
-        "for the user. Call this AFTER you have already created the file with write/edit/shell. " \
-        "Pass the absolute or workspace-relative path. The tool does not copy or move the file — " \
-        "it just registers it as a deliverable. Use for final user-facing outputs " \
-        "(PDF, CSV, ZIP, reports) and not for intermediate helper scripts."
+          "for the user. Call this AFTER you have already created the file with write/edit/shell. " \
+          "Pass the absolute or workspace-relative path. The tool does not copy or move the file — " \
+          "it just registers it as a deliverable. Use for final user-facing outputs " \
+          "(PDF, CSV, ZIP, reports) and not for intermediate helper scripts."
       end
 
       def input_schema
@@ -62,11 +62,11 @@ module Rubino
           type: "object",
           properties: {
             file_path: {
-              type:        "string",
+              type: "string",
               description: "Path to the file to attach. Must exist and live inside the workspace."
             },
             filename: {
-              type:        "string",
+              type: "string",
               description: "Optional display name; defaults to the basename of file_path."
             }
           },
@@ -92,15 +92,15 @@ module Rubino
 
         size = File.size(expanded)
         artifact = {
-          path:         expanded,
-          filename:     display,
+          path: expanded,
+          filename: display,
           content_type: content_type_for(expanded),
-          byte_size:    size
+          byte_size: size
         }
 
         {
-          output:   "Attached #{display} (#{size} bytes) as a downloadable artifact.",
-          metrics:  "#{size} bytes",
+          output: "Attached #{display} (#{size} bytes) as a downloadable artifact.",
+          metrics: "#{size} bytes",
           artifact: artifact
         }
       end

@@ -10,9 +10,9 @@ RSpec.describe Rubino::OAuth::Provider do
       def self.id            = :dummy
       def self.site          = "https://provider.test"
       def self.authorize_path = "/oauth/authorize"
-      def self.token_path    = "/oauth/token"
+      def self.token_path = "/oauth/token"
       def self.default_scopes = %w[read write]
-      def fetch_account_info(_token); { account_id: "1" }; end
+      def fetch_account_info(_token) = { account_id: "1" }
     end
   end
 

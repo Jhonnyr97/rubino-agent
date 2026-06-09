@@ -31,7 +31,7 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
 
     it "consumes the blank separator (it is not part of either block)" do
       done = feed_all("a\n\nb\n\n")
-      expect(done).to eq(["a", "b"])
+      expect(done).to eq(%w[a b])
     end
 
     it "keeps a multi-line prose block together until the blank line" do

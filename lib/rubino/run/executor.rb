@@ -45,7 +45,9 @@ module Rubino
       def initialize(repository: nil, recorder_factory: nil, vision_describer: nil)
         @repository = repository || Repository.new
         @recorder_factory = recorder_factory ||
-                            ->(run_id:, session_id:, event_bus:) { Recorder.new(run_id: run_id, session_id: session_id, event_bus: event_bus) }
+                            lambda { |run_id:, session_id:, event_bus:|
+                              Recorder.new(run_id: run_id, session_id: session_id, event_bus: event_bus)
+                            }
         # Callable(path) -> description String (or an "Error…" String on
         # failure). Injectable so unit tests don't hit the aux model.
         @vision_describer = vision_describer || method(:default_vision_describe)
@@ -97,12 +99,12 @@ module Rubino
               "[Image attached at: #{p}]"
             elsif descriptions[p]
               "[The user attached an image. Here's what it contains:\n#{descriptions[p]}]\n" \
-              "[If you need a closer look, call the `vision` tool with file_path: #{p}.]"
+                "[If you need a closer look, call the `vision` tool with file_path: #{p}.]"
             elsif aux_vision
               # Aux configured but pre-description failed: keep the on-demand
               # `vision` imperative (the tool stays exposed in this case).
               "[The user attached an image at #{p}. Call the `vision` tool with " \
-              "file_path: #{p} to see it — do not use shell/ls.]"
+                "file_path: #{p} to see it — do not use shell/ls.]"
             else
               # Gap A: no native vision, no aux vision => the `vision` tool is
               # HIDDEN from the model (Registry#aux_dependency_satisfied?). Do
@@ -122,8 +124,8 @@ module Rubino
         end
 
         "[Uploaded files — already in your workspace. Do not re-fetch the URLs.]\n" \
-        "#{blocks.join("\n\n")}\n\n" \
-        "#{user_text}"
+          "#{blocks.join("\n\n")}\n\n" \
+          "#{user_text}"
       end
 
       # True only when a file that LOOKS like an image by extension ALSO sniffs
@@ -153,7 +155,7 @@ module Rubino
         end
         unless Attachments::Policy.allow_kind?(cls.kind)
           Rubino.logger.warn(event: "run.attachment_skipped", path: path.to_s,
-                                reason: "kind #{cls.kind} not in allow_kinds")
+                             reason: "kind #{cls.kind} not in allow_kinds")
           return nil
         end
         Attachments::Preamble.for(cls)
@@ -213,7 +215,7 @@ module Rubino
             # (and the web UI would enqueue two title-generation jobs).
             downloaded_paths = AttachmentDownloader.new.fetch_all(
               run_id: run_id,
-              urls:   parse_attachment_urls(run[:attachments_json])
+              urls: parse_attachment_urls(run[:attachments_json])
             )
             # Emit a recorded event so SSE consumers (and post-hoc forensics)
             # can confirm the augment fired and which paths the model saw.
@@ -317,7 +319,7 @@ module Rubino
           # A DB hiccup in the watcher must never take down the run; the worst
           # case is the stop is observed a tick later or not at all.
           Rubino.logger.error(event: "run.stop_watcher_error", run_id: run_id,
-                                 error: e.class.name, message: e.message)
+                              error: e.class.name, message: e.message)
         end
       end
 

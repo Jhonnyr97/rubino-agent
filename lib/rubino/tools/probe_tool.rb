@@ -46,21 +46,22 @@ module Rubino
 
       def description
         "Check on one of YOUR OWN running subagents WITHOUT disturbing it (this " \
-        "is read-only — it changes nothing about what the child does). By default " \
-        "(live:false) it returns a FREE instant snapshot: the child's status, how " \
-        "many tools it has run, its last activity, and a few recent lines — no " \
-        "model call. Set live:true to ask the child a specific question answered " \
-        "from its current context by a one-shot model peek (this costs a billed " \
-        "round-trip and is budgeted per child; prefer the free snapshot). You can " \
-        "ONLY probe subagents you started (your direct children)."
+          "is read-only — it changes nothing about what the child does). By default " \
+          "(live:false) it returns a FREE instant snapshot: the child's status, how " \
+          "many tools it has run, its last activity, and a few recent lines — no " \
+          "model call. Set live:true to ask the child a specific question answered " \
+          "from its current context by a one-shot model peek (this costs a billed " \
+          "round-trip and is budgeted per child; prefer the free snapshot). You can " \
+          "ONLY probe subagents you started (your direct children)."
       end
 
       def input_schema
         {
           type: "object",
           properties: {
-            task_id:  { type: "string", description: "The id (sa_…) of YOUR subagent to probe." },
-            question: { type: "string", description: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context." },
+            task_id: { type: "string", description: "The id (sa_…) of YOUR subagent to probe." },
+            question: { type: "string",
+                        description: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context." },
             live: {
               type: "boolean",
               description: "false (default) = FREE instant snapshot from the registry, no model call. " \
@@ -107,8 +108,8 @@ module Rubino
         recent = Array(entry.activity_log).last(RECENT_MAX)
         lines  = recent.empty? ? "(none yet)" : recent.join("\n")
         "probe #{entry.id} · #{entry.subagent} · #{entry.status} · " \
-        "#{entry.tool_count.to_i} tools · last: #{entry.last_activity || '—'}\n" \
-        "recent:\n#{lines}"
+          "#{entry.tool_count.to_i} tools · last: #{entry.last_activity || "—"}\n" \
+          "recent:\n#{lines}"
       end
 
       # BILLED path: enforce the per-child budget, then run the one-shot peek.

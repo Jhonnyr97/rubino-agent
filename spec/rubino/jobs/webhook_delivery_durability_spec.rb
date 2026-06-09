@@ -69,21 +69,21 @@ RSpec.describe Rubino::Jobs::WebhookDelivery do
       stub_request(:post, url).to_return(status: 200, body: "ok")
       payload = { run_id: "r1" }
       expected_body = JSON.generate(payload)
-      expected_sig = "sha256=#{OpenSSL::HMAC.hexdigest('SHA256', secret, expected_body)}"
+      expected_sig = "sha256=#{OpenSSL::HMAC.hexdigest("SHA256", secret, expected_body)}"
 
       build.deliver(payload)
 
-      expect(WebMock).to have_requested(:post, url).with { |req|
+      expect(WebMock).to(have_requested(:post, url).with do |req|
         req.headers["X-Rubino-Signature"] == expected_sig
-      }
+      end)
     end
 
     it "omits the signature header when no secret is configured" do
       stub_request(:post, url).to_return(status: 200, body: "ok")
       build(secret: nil).deliver({ a: 1 })
-      expect(WebMock).to have_requested(:post, url).with { |req|
+      expect(WebMock).to(have_requested(:post, url).with do |req|
         !req.headers.key?("X-Rubino-Signature")
-      }
+      end)
     end
   end
 

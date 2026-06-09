@@ -34,7 +34,7 @@ module Rubino
         command = @loader.find(name)
         unless command
           @ui.error("Unknown command: /#{name}")
-          @ui.info("Available: #{available_commands.join(', ')}")
+          @ui.info("Available: #{available_commands.join(", ")}")
           return :handled # Signal that it was handled (even if failed)
         end
 
@@ -146,8 +146,6 @@ module Rubino
           # eventual teardown), so /new is the in-chat counterpart to `--new`.
           @ui.success("Starting a fresh session.")
           { new_session: true }
-        else
-          nil
         end
       end
 
@@ -171,7 +169,7 @@ module Rubino
         @ui.mode_changed(Rubino::Modes.current, previous: previous)
       rescue ArgumentError => e
         @ui.error(e.message)
-        @ui.info("Available: #{Rubino::Modes::ALL.join(', ')}")
+        @ui.info("Available: #{Rubino::Modes::ALL.join(", ")}")
       end
 
       def show_modes
@@ -203,7 +201,7 @@ module Rubino
         sym = name.to_sym
         unless Config::ReasoningPrefs::RENDER_MODES.include?(sym)
           @ui.error("unknown reasoning mode: #{name}")
-          @ui.info("Available: #{Config::ReasoningPrefs::RENDER_MODES.join(', ')}")
+          @ui.info("Available: #{Config::ReasoningPrefs::RENDER_MODES.join(", ")}")
           return
         end
 
@@ -230,7 +228,7 @@ module Rubino
         sym = name.to_sym
         unless Config::ReasoningPrefs::EFFORTS.include?(sym)
           @ui.error("unknown effort: #{name}")
-          @ui.info("Available: #{Config::ReasoningPrefs::EFFORTS.join(', ')}")
+          @ui.info("Available: #{Config::ReasoningPrefs::EFFORTS.join(", ")}")
           return
         end
 
@@ -331,7 +329,7 @@ module Rubino
         title = session[:title].to_s.strip
         title = title.empty? ? "(untitled)" : %("#{title}")
         msgs  = session[:message_count]
-        "#{id}  #{title}#{msgs ? " · #{msgs} msgs" : ""}"
+        "#{id}  #{title}#{" · #{msgs} msgs" if msgs}"
       end
 
       def status_memory_line
@@ -403,14 +401,14 @@ module Rubino
       def search_memory(query)
         needle  = query.downcase
         matches = memory_backend.list(limit: 200)
-                              .select { |m| m[:content].to_s.downcase.include?(needle) }
+                                .select { |m| m[:content].to_s.downcase.include?(needle) }
         if matches.empty?
           @ui.info("No facts matching #{query.inspect}.")
           return
         end
 
         shown = matches.first(20)
-        @ui.info(%(#{shown.length} match#{'es' if shown.length != 1} for #{query.inspect}))
+        @ui.info(%(#{shown.length} match#{"es" if shown.length != 1} for #{query.inspect}))
         # A targeted search must SHOW the matched fact in full — the list-view's
         # narrow truncation hides exactly the part the user searched for (#85).
         # Print each match's full content, wrapping to the terminal width.
@@ -611,7 +609,9 @@ module Rubino
       # argument so `steer "be terse"` lands as `be terse`, not `"be terse"`.
       def dequote(text)
         t = text.to_s.strip
-        return t[1..-2] if t.length >= 2 && ((t.start_with?(%(")) && t.end_with?(%("))) || (t.start_with?("\'") && t.end_with?("\'")))
+        if t.length >= 2 && ((t.start_with?(%(")) && t.end_with?(%("))) || (t.start_with?("'") && t.end_with?("'")))
+          return t[1..-2]
+        end
 
         t
       end
@@ -688,7 +688,7 @@ module Rubino
         @ui.info("recent:")
         Array(entry.activity_log).last(5).each { |line| @ui.info("  #{line}") }
         last = entry.last_activity.to_s
-        @ui.info("  #{pastel.yellow('●')} #{last}") unless last.empty?
+        @ui.info("  #{pastel.yellow("●")} #{last}") unless last.empty?
       end
 
       # The live refresh loop for #watch_agent. Polls the registry and re-renders
@@ -729,7 +729,8 @@ module Rubino
 
         decision =
           case answer
-          when "a", "always"      then persist_agent_always(entry); true
+          when "a", "always"      then persist_agent_always(entry)
+                                       true
           when "o", "once", "y"   then true
           else                         false
           end
@@ -742,7 +743,8 @@ module Rubino
       # and future identical calls (parent or child) skip the prompt.
       def persist_agent_always(entry)
         scope = "#{entry.subagent}:#{entry.approval_command}"
-        Run::SessionApprovalCache.instance.remember(@ui.respond_to?(:session_id) ? @ui.session_id : nil, scope, "session")
+        Run::SessionApprovalCache.instance.remember(@ui.respond_to?(:session_id) ? @ui.session_id : nil, scope,
+                                                    "session")
       rescue StandardError
         nil
       end
@@ -802,12 +804,12 @@ module Rubino
       def agent_status_icon(status)
         glyph, word, color =
           case status
-          when :running          then ["●", "running",        :yellow]
-          when :needs_approval   then ["●", "approval",        :yellow]
-          when :blocked_on_human then ["⛔", "waiting on you",   :red]
+          when :running          then ["●", "running", :yellow]
+          when :needs_approval   then ["●", "approval", :yellow]
+          when :blocked_on_human then ["⛔", "waiting on you", :red]
           when :blocked_on_parent then ["◷", "waiting on parent", :cyan]
-          when :failed           then ["✗", "failed",          :red]
-          else                        ["✓", "done",            :green]
+          when :failed then ["✗", "failed", :red]
+          else ["✓", "done", :green]
           end
         "#{pastel.public_send(color, glyph)} #{word}"
       end
@@ -920,7 +922,7 @@ module Rubino
         id    = session[:id].to_s[0..7]
         title = session_title(session)
         msgs  = session[:message_count]
-        "#{id}  #{title}#{msgs ? "  (#{msgs} msg#{'s' if msgs != 1})" : ""}"
+        "#{id}  #{title}#{"  (#{msgs} msg#{"s" if msgs != 1})" if msgs}"
       end
 
       def resume_session(query)
@@ -947,7 +949,11 @@ module Rubino
       # "Available:" hint on an unknown command (L6 — previously listed only
       # custom commands, which is usually empty).
       def available_commands
-        custom = @loader.names rescue []
+        custom = begin
+          @loader.names
+        rescue StandardError
+          []
+        end
         (BuiltIns::NAMES + custom).uniq
       end
 
@@ -1033,7 +1039,7 @@ module Rubino
         @ui.blank_line
         @ui.info("No custom commands found yet.")
         @ui.blank_line
-        @ui.info("Searched: #{command_dirs.join(', ')}")
+        @ui.info("Searched: #{command_dirs.join(", ")}")
         @ui.info("Create one, e.g. .rubino/commands/review.md:")
         @ui.blank_line
         @ui.info("    ---")
@@ -1126,7 +1132,7 @@ module Rubino
         unless skill
           @ui.error("Unknown skill: #{arg}")
           available = registry.names
-          @ui.info("Available: #{available.join(', ')}") unless available.empty?
+          @ui.info("Available: #{available.join(", ")}") unless available.empty?
           return
         end
 

@@ -23,7 +23,7 @@ RSpec.describe "API contract: health + metrics" do
       expect(last_response.headers["content-type"]).to eq("application/json")
       body = json_body
       expect(body).to include(
-        "status"  => "ok",
+        "status" => "ok",
         "version" => Rubino::VERSION
       )
       expect(body.dig("deps", "db", "status")).to eq("ok")

@@ -15,8 +15,8 @@ module Rubino
 
       def description
         "Write content to a file, overwriting any existing content. " \
-        "Creates parent directories if they do not exist. " \
-        "Use `edit` or `multi_edit` to modify an existing file in place."
+          "Creates parent directories if they do not exist. " \
+          "Use `edit` or `multi_edit` to modify an existing file in place."
       end
 
       def input_schema
@@ -24,7 +24,7 @@ module Rubino
           type: "object",
           properties: {
             file_path: { type: "string", description: "Absolute or relative file path" },
-            content:   { type: "string", description: "Full file content to write" }
+            content: { type: "string", description: "Full file content to write" }
           },
           required: %w[file_path content]
         }
@@ -51,8 +51,8 @@ module Rubino
         verb  = existed ? "overwrote" : "created"
         bytes = content.to_s.bytesize
         lines = content.to_s.lines.size
-        { output:  "#{verb} #{file_path} (#{bytes} bytes)",
-          metrics: "#{lines} line#{'s' if lines != 1} · #{bytes}B" }
+        { output: "#{verb} #{file_path} (#{bytes} bytes)",
+          metrics: "#{lines} line#{"s" if lines != 1} · #{bytes}B" }
       rescue StandardError => e
         "Error writing #{file_path}: #{e.message}"
       end

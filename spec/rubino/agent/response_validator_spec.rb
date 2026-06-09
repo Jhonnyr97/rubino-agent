@@ -8,10 +8,10 @@ RSpec.describe Rubino::Agent::ResponseValidator do
   def response(content: nil, tool_calls: [], interrupted: false)
     instance_double(
       Rubino::LLM::AdapterResponse,
-      content:        content,
-      tool_calls:     tool_calls,
+      content: content,
+      tool_calls: tool_calls,
       has_tool_calls?: !tool_calls.empty?,
-      interrupted?:   interrupted
+      interrupted?: interrupted
     )
   end
 

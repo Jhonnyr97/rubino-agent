@@ -21,7 +21,7 @@ RSpec.describe Rubino::API::Operations::Sessions::UndoOperation do
     expect(body[:removed_messages]).to eq(2)
 
     remaining = message_store.for_session(session[:id])
-    expect(remaining.map(&:content)).to eq(["q1", "a1"])
+    expect(remaining.map(&:content)).to eq(%w[q1 a1])
   end
 
   it "raises ConflictError when there is nothing to undo" do

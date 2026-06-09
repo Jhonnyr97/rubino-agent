@@ -18,10 +18,10 @@ RSpec.describe Rubino::Run::Executor do
 
   before do
     allow(runner).to receive(:cancel!) { token.cancel! }
+    stub_const("#{described_class}::STOP_POLL_INTERVAL", 0.01)
   end
 
   # Drain the watcher fast in tests.
-  before { stub_const("#{described_class}::STOP_POLL_INTERVAL", 0.01) }
 
   describe "#spawn_stop_watcher" do
     it "flips the runner's token once the stop flag is observed" do

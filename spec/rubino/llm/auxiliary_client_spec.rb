@@ -4,6 +4,8 @@ RSpec.describe Rubino::LLM::AuxiliaryClient do
   # test_configuration#to_hash does a shallow dup, so direct `set` on nested
   # keys would mutate MODULE_DEFAULTS and pollute other specs. Build a deep
   # clone of the defaults and overlay the test-specific values up front.
+  subject(:client) { described_class.new(config: config) }
+
   let(:raw) do
     base = Marshal.load(Marshal.dump(Rubino::Config::Defaults.to_hash))
     base["model"]["default"]  = "fake/happy-path"
@@ -13,13 +15,12 @@ RSpec.describe Rubino::LLM::AuxiliaryClient do
     base
   end
   let(:config) { Rubino::Config::Configuration.new(raw: raw, home_path: TEST_HOME) }
-  subject(:client) { described_class.new(config: config) }
 
   describe "#call" do
     it "raises ArgumentError when the task has no aux block" do
-      expect {
+      expect do
         client.call(task: :nonexistent, messages: [{ role: "user", content: "hi" }])
-      }.to raise_error(ArgumentError, /nonexistent/)
+      end.to raise_error(ArgumentError, /nonexistent/)
     end
 
     it "falls back to the primary model when aux.model is empty" do
@@ -34,7 +35,8 @@ RSpec.describe Rubino::LLM::AuxiliaryClient do
     end
 
     it "uses the aux model when set and resolves provider via the override" do
-      config.set("auxiliary", "vision", { "provider" => "openai", "model" => "gpt-4o-mini", "base_url" => nil, "timeout" => 60 })
+      config.set("auxiliary", "vision",
+                 { "provider" => "openai", "model" => "gpt-4o-mini", "base_url" => nil, "timeout" => 60 })
 
       adapter = instance_double(Rubino::LLM::FakeProvider, chat: build_response("ok"))
       expect(Rubino::LLM::AdapterFactory).to receive(:build).with(
@@ -45,7 +47,8 @@ RSpec.describe Rubino::LLM::AuxiliaryClient do
     end
 
     it "treats provider: 'main' as the primary's provider" do
-      config.set("auxiliary", "vision", { "provider" => "main", "model" => "vision-x", "base_url" => nil, "timeout" => 60 })
+      config.set("auxiliary", "vision",
+                 { "provider" => "main", "model" => "vision-x", "base_url" => nil, "timeout" => 60 })
 
       adapter = instance_double(Rubino::LLM::FakeProvider, chat: build_response("ok"))
       expect(Rubino::LLM::AdapterFactory).to receive(:build).with(
@@ -56,7 +59,8 @@ RSpec.describe Rubino::LLM::AuxiliaryClient do
     end
 
     it "passes a transient base_url overlay through provider_config" do
-      config.set("auxiliary", "vision", { "provider" => "openai", "model" => "vx", "base_url" => "http://aux.local/v1", "timeout" => 60 })
+      config.set("auxiliary", "vision",
+                 { "provider" => "openai", "model" => "vx", "base_url" => "http://aux.local/v1", "timeout" => 60 })
 
       adapter = instance_double(Rubino::LLM::FakeProvider, chat: build_response("ok"))
       expect(Rubino::LLM::AdapterFactory).to receive(:build) do |kwargs|

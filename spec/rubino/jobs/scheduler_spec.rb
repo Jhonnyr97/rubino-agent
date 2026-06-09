@@ -3,15 +3,6 @@
 require "spec_helper"
 
 RSpec.describe Rubino::Jobs::Scheduler do
-  let(:db) { test_database.db }
-
-  let(:cron_repo)    { Rubino::Jobs::CronJobRepository.new(db: db) }
-  let(:run_repo)     { Rubino::Run::Repository.new(db: db) }
-  let(:session_repo) { Rubino::Session::Repository.new(db: db) }
-  let(:executor)     { instance_double(Rubino::Run::Executor, start: nil) }
-  let(:webhook)      { instance_double(Rubino::Jobs::WebhookDelivery) }
-  let(:rufus)        { instance_double(Rufus::Scheduler) }
-
   subject(:scheduler) do
     described_class.new(
       rufus: rufus,
@@ -23,6 +14,15 @@ RSpec.describe Rubino::Jobs::Scheduler do
       logger: Rubino.logger
     )
   end
+
+  let(:db) { test_database.db }
+
+  let(:cron_repo)    { Rubino::Jobs::CronJobRepository.new(db: db) }
+  let(:run_repo)     { Rubino::Run::Repository.new(db: db) }
+  let(:session_repo) { Rubino::Session::Repository.new(db: db) }
+  let(:executor)     { instance_double(Rubino::Run::Executor, start: nil) }
+  let(:webhook)      { instance_double(Rubino::Jobs::WebhookDelivery) }
+  let(:rufus)        { instance_double(Rufus::Scheduler) }
 
   describe "#scheduled_count" do
     it "reports the number of registered handles without leaking private state" do

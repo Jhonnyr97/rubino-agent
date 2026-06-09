@@ -31,11 +31,11 @@ module Rubino
 
       def description
         "Persist facts across sessions. Use action=add to record a new fact, " \
-        "replace to update an existing fact (substring match on old_text), " \
-        "or remove to delete one. target=user writes to the user profile; " \
-        "target=memory writes to general memory. " \
-        "Content is scanned for prompt-injection / exfiltration patterns and " \
-        "subject to a character budget — refusals are reported in the output."
+          "replace to update an existing fact (substring match on old_text), " \
+          "or remove to delete one. target=user writes to the user profile; " \
+          "target=memory writes to general memory. " \
+          "Content is scanned for prompt-injection / exfiltration patterns and " \
+          "subject to a character budget — refusals are reported in the output."
       end
 
       def input_schema
@@ -86,9 +86,9 @@ module Rubino
         action = args[:action].to_s
         target = args[:target].to_s
 
-        return error("invalid action '#{action}'; expected one of #{VALID_ACTIONS.join(', ')}") \
+        return error("invalid action '#{action}'; expected one of #{VALID_ACTIONS.join(", ")}") \
           unless VALID_ACTIONS.include?(action)
-        return error("invalid target '#{target}'; expected one of #{VALID_TARGETS.join(', ')}") \
+        return error("invalid target '#{target}'; expected one of #{VALID_TARGETS.join(", ")}") \
           unless VALID_TARGETS.include?(target)
 
         kind = TARGET_TO_KIND.fetch(target)

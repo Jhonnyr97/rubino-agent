@@ -13,15 +13,15 @@ RSpec.describe Rubino::UI::BottomComposer do
     def winsize = [24, 40]
   end
 
+  subject(:composer) do
+    described_class.new(input_queue: queue, input: input, output: output)
+  end
+
   let(:queue)  { Rubino::Interaction::InputQueue.new }
   let(:output) { FakeTermIO.new }
   # A fake input that is "not a tty" so #start's cooked!/raw paths stay inert
   # when a test constructs but never starts.
   let(:input)  { StringIO.new }
-
-  subject(:composer) do
-    described_class.new(input_queue: queue, input: input, output: output)
-  end
 
   # Convenience: the prompt prefix the composer draws.
   PROMPT = Rubino::UI::BottomComposer::PROMPT
@@ -252,7 +252,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(interrupts).to eq(0)               # NOT interrupted
         expect(queue.drain).to eq(["hold-this"])  # queued
         expect(output.string).to include("⏳ queued: hold-this") # live indicator shown
-        expect(c.buffer).to eq("")                # buffer cleared
+        expect(c.buffer).to eq("") # buffer cleared
       end
 
       it "Alt+Enter via \\e\\n (LF form) also queues" do
@@ -479,11 +479,12 @@ RSpec.describe Rubino::UI::BottomComposer do
   end
 
   describe "↑/↓ history navigation" do
-    let(:store) { [] }
     subject(:composer) do
       described_class.new(input_queue: queue, input: input, output: output,
                           history: Rubino::UI::InputHistory.new(store: store))
     end
+
+    let(:store) { [] }
 
     def arrow(c, final)
       c.instance_variable_set(:@input, StringIO.new("[#{final}"))
@@ -519,12 +520,13 @@ RSpec.describe Rubino::UI::BottomComposer do
   end
 
   describe "/command + @file completion menu" do
-    let(:source) do
-      Rubino::UI::CompletionSource.new(commands: %w[/help /exit /reasoning /reset])
-    end
     subject(:composer) do
       described_class.new(input_queue: queue, input: input, output: output,
                           completion_source: source)
+    end
+
+    let(:source) do
+      Rubino::UI::CompletionSource.new(commands: %w[/help /exit /reasoning /reset])
     end
 
     def tab(c) = c.handle_key("\t")
@@ -609,7 +611,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       esc(composer)
       expect(composer.menu_open?).to be(false)
       "re".each_char { |ch| composer.handle_key(ch) } # still the same /-token
-      expect(composer.menu_open?).to be(false)         # dismiss stuck — no pop-back
+      expect(composer.menu_open?).to be(false) # dismiss stuck — no pop-back
     end
 
     it "after Esc, clearing the token (or Tab) lets the menu open again" do
@@ -828,7 +830,10 @@ RSpec.describe Rubino::UI::BottomComposer do
       cycles = 0
       io = StringIO.new("[Z")
       c = described_class.new(input_queue: queue, input: io, output: output,
-                              on_mode_cycle: -> { cycles += 1; "yolo ❯ " })
+                              on_mode_cycle: lambda {
+                                cycles += 1
+                                "yolo ❯ "
+                              })
       c.handle_key("\e")
       expect(cycles).to eq(1)
       expect(output.string).to include("yolo ❯ ") # the new chip was redrawn
@@ -836,7 +841,10 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "is a quiet no-op when no callback is wired" do
       io = StringIO.new("[Z")
-      expect { composer.handle_key("\e"); composer.send(:read_nonblock_char) }.not_to raise_error
+      expect do
+        composer.handle_key("\e")
+        composer.send(:read_nonblock_char)
+      end.not_to raise_error
       composer2 = described_class.new(input_queue: queue, input: io, output: output)
       expect { composer2.handle_key("\e") }.not_to raise_error
     end
@@ -855,7 +863,8 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "REPLACES (does not stack) the banner when cycled again" do
       composer.announce("┄ mode · plan ┄")
-      output.truncate(0); output.rewind
+      output.truncate(0)
+      output.rewind
       composer.announce("┄ mode · yolo ┄")
       # The prior banner row is cleared in place (cursor-up), not scrolled — the
       # new frame shows only the latest banner.
@@ -941,7 +950,8 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "erases the input line, writes the output, then redraws the input" do
       composer.handle_key("h")
       composer.handle_key("i")
-      output.truncate(0); output.rewind
+      output.truncate(0)
+      output.rewind
       composer.print_above("agent line")
       frame = output.string
       # 1) clear-line, 2) the output + CRLF, 3) the redrawn input
@@ -957,7 +967,8 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "an empty argument just repaints the prompt" do
       composer.handle_key("x")
-      output.truncate(0); output.rewind
+      output.truncate(0)
+      output.rewind
       composer.print_above("")
       expect(output.string).to end_with("#{PROMPT}x")
     end
@@ -1001,7 +1012,8 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "updates the block IN PLACE (walks up to clear the prior rows, no flood)" do
       composer.set_cards(["▸ sa_1 · running · 1 tool"])
-      output.truncate(0); output.rewind
+      output.truncate(0)
+      output.rewind
       composer.set_cards(["▸ sa_1 · running · 2 tools"])
       # The prior card row is cleared via cursor-up (\e[1A\e[2K) rather than a
       # fresh line scrolling the old one up — the in-place card contract.
@@ -1063,14 +1075,16 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "recomputes width and redraws under the mutex" do
       composer.handle_key("z")
       allow(output).to receive(:winsize).and_return([24, 10])
-      output.truncate(0); output.rewind
+      output.truncate(0)
+      output.rewind
       composer.resize
       expect(output.string).to end_with("#{PROMPT}z")
     end
 
     it "repaints the live streamed partial on resize so mid-stream output isn't wiped (X1)" do
       composer.set_partial("streaming answer in progress")
-      output.truncate(0); output.rewind
+      output.truncate(0)
+      output.rewind
       composer.resize
       # The partial text is re-emitted (not left blank until the turn commits).
       expect(output.string).to include("streaming answer in progress")
@@ -1094,6 +1108,10 @@ RSpec.describe Rubino::UI::BottomComposer do
     # the reader, and the byte must still be readable afterwards — i.e. the
     # reader exited WITHOUT consuming it. Termios calls are stubbed so the real
     # select/getc seam runs without a TTY.
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: read_io, output: output)
+    end
+
     let(:reader_pipe) { IO.pipe }
     let(:read_io)  { reader_pipe.first }
     let(:write_io) { reader_pipe.last }
@@ -1108,10 +1126,6 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     after do
       [read_io, write_io].each { |io| io.close unless io.closed? }
-    end
-
-    subject(:composer) do
-      described_class.new(input_queue: queue, input: read_io, output: output)
     end
 
     it "exits on the stop signal WITHOUT consuming a pending $stdin byte (the first key survives the handoff)" do
@@ -1188,7 +1202,10 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "just yields when no composer is active (off-turn / piped input)" do
       Rubino::UI::BottomComposer.current = nil
       yielded = false
-      result = described_class.run_in_terminal { yielded = true; :done }
+      result = described_class.run_in_terminal do
+        yielded = true
+        :done
+      end
       expect(yielded).to be(true)
       expect(result).to eq(:done)
     end

@@ -8,13 +8,16 @@ RSpec.describe Rubino::Jobs::Queue do
         "mode" => "manual",
         "max_attempts" => 3,
         "poll_interval" => 1,
-        "retry_backoff_seconds" => 0  # no backoff so dequeue finds it immediately
+        "retry_backoff_seconds" => 0 # no backoff so dequeue finds it immediately
       }
     )
   end
   let(:queue) { described_class.new(db: db_connection.db, config: config) }
 
-  before { db_connection.db[:job_runs].delete; db_connection.db[:jobs].delete }
+  before do
+    db_connection.db[:job_runs].delete
+    db_connection.db[:jobs].delete
+  end
 
   describe "#enqueue" do
     it "creates a job with queued status" do
@@ -113,7 +116,7 @@ RSpec.describe Rubino::Jobs::Queue do
   describe "#list" do
     it "filters by status" do
       queue.enqueue("Job1", {})
-      id2 = queue.enqueue("Job2", {})
+      queue.enqueue("Job2", {})
       queue.dequeue(worker_id: "w1")
       # Job2 is now "running", Job1 is still "queued"
       # (dequeue picks first by priority/run_at)

@@ -39,7 +39,7 @@ module Rubino
       # Saves the clipboard image to a temp PNG and returns its path, or nil.
       def save_to_tempfile
         dest = File.join(Dir.tmpdir, "rubino_clip_#{Process.pid}_#{rand(1_000_000)}.png")
-        return capture(dest) ? dest : nil
+        capture(dest) ? dest : nil
       end
 
       # Runs the first available tool. macOS pngpaste writes the file directly;
@@ -49,7 +49,7 @@ module Rubino
           next unless which(tool)
 
           if tool == "pngpaste"
-            _out, status = Open3.capture2e(tool, *args)
+            _out, = Open3.capture2e(tool, *args)
           else
             out, status = Open3.capture2(tool, *args)
             File.binwrite(dest, out) if status.success? && !out.empty?

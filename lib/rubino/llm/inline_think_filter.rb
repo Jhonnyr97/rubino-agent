@@ -11,7 +11,7 @@ module Rubino
     # chunks (e.g. "<thi" + "nk>") still gets matched. Call #flush at end of
     # stream to drain any tail.
     class InlineThinkFilter
-      OPEN_RE  = %r{<think>}i
+      OPEN_RE  = /<think>/i
       CLOSE_RE = %r{</think>}i
       TAG_MAX_LEN = "</think>".length
 

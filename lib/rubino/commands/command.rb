@@ -52,7 +52,7 @@ module Rubino
       def process_shell_injections!(prompt)
         return unless shell_injection_enabled?
 
-        prompt.gsub!(/!\`([^`]+)\`/) do
+        prompt.gsub!(/!`([^`]+)`/) do
           command = Regexp.last_match(1)
           `#{command} 2>&1`.strip
         end
@@ -60,7 +60,7 @@ module Rubino
 
       # Replace @path/to/file references with file content.
       def process_file_references!(prompt)
-        prompt.gsub!(/@([\w\/.\_\-]+)/) do
+        prompt.gsub!(%r{@([\w/._-]+)}) do
           file_path = Regexp.last_match(1)
           expanded  = File.expand_path(file_path)
           if File.exist?(expanded)

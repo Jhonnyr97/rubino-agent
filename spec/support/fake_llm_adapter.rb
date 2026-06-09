@@ -58,11 +58,11 @@ class FakeLLMAdapter
       { id: "call_#{idx}_#{SecureRandom.hex(4)}", name: name, arguments: args }
     end
     @queue << Rubino::LLM::AdapterResponse.new(
-      content:       content || "",
-      tool_calls:    tool_calls,
-      input_tokens:  input_tokens,
+      content: content || "",
+      tool_calls: tool_calls,
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      model_id:      "fake-model"
+      model_id: "fake-model"
     )
     self
   end
@@ -97,11 +97,11 @@ class FakeLLMAdapter
   # as completed. (MiniMax-M2.7 "completed but empty" symptom.)
   def enqueue_empty(content: nil, input_tokens: 5, output_tokens: 0)
     @queue << Rubino::LLM::AdapterResponse.new(
-      content:       content,
-      tool_calls:    [],
-      input_tokens:  input_tokens,
+      content: content,
+      tool_calls: [],
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      model_id:      "fake-model"
+      model_id: "fake-model"
     )
     self
   end
@@ -111,12 +111,12 @@ class FakeLLMAdapter
   # the raw body when the model hit max_tokens. Drives Agent::TruncationContinuation.
   def enqueue_truncated(content, input_tokens: 10, output_tokens: 20)
     @queue << Rubino::LLM::AdapterResponse.new(
-      content:       content,
-      tool_calls:    [],
-      input_tokens:  input_tokens,
+      content: content,
+      tool_calls: [],
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      model_id:      "fake-model",
-      stop_reason:   :length
+      model_id: "fake-model",
+      stop_reason: :length
     )
     self
   end
@@ -126,12 +126,12 @@ class FakeLLMAdapter
   # fail the turn on it, never report it as a completed answer.
   def enqueue_interrupted(content = "partial", input_tokens: 5, output_tokens: 3)
     @queue << Rubino::LLM::AdapterResponse.new(
-      content:       content,
-      tool_calls:    [],
-      input_tokens:  input_tokens,
+      content: content,
+      tool_calls: [],
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      model_id:      "fake-model",
-      interrupted:   true
+      model_id: "fake-model",
+      interrupted: true
     )
     self
   end
@@ -143,10 +143,10 @@ class FakeLLMAdapter
   # LLM boundary entry: dispatch an LLM::Request to chat
   # or stream so specs that build a Loop drive the fake through the same seam
   # the real adapter exposes.
-  def call(request, &block)
+  def call(request, &)
     if request.stream?
       stream(messages: request.messages, tools: request.tools,
-             image_paths: request.image_paths, &block)
+             image_paths: request.image_paths, &)
     else
       chat(messages: request.messages, tools: request.tools,
            image_paths: request.image_paths)
@@ -189,7 +189,7 @@ class FakeLLMAdapter
   # ---------------------------------------------------------------------------
 
   def call_count = @calls.size
-  def exhausted?  = @queue.empty?
+  def exhausted? = @queue.empty?
 
   # Returns all messages arrays passed to chat/stream calls
   def received_messages = @calls.map { |c| c[:messages] }
@@ -218,21 +218,21 @@ class FakeLLMAdapter
 
   def build_text_response(content, input_tokens, output_tokens)
     Rubino::LLM::AdapterResponse.new(
-      content:       content,
-      tool_calls:    [],
-      input_tokens:  input_tokens,
+      content: content,
+      tool_calls: [],
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      model_id:      "fake-model"
+      model_id: "fake-model"
     )
   end
 
   def build_tool_call_response(tool_name, arguments, call_id, content, input_tokens, output_tokens)
     Rubino::LLM::AdapterResponse.new(
-      content:       content || "",
-      tool_calls:    [{ id: call_id || "call_#{SecureRandom.hex(6)}", name: tool_name, arguments: arguments }],
-      input_tokens:  input_tokens,
+      content: content || "",
+      tool_calls: [{ id: call_id || "call_#{SecureRandom.hex(6)}", name: tool_name, arguments: arguments }],
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      model_id:      "fake-model"
+      model_id: "fake-model"
     )
   end
 end

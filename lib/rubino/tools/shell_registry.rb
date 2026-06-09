@@ -48,17 +48,17 @@ module Rubino
         in_rd.close
 
         entry = Entry.new(
-          id:          new_id,
-          command:     command,
-          cwd:         cwd,
-          pid:         pid,
-          pgid:        pid,
-          wait_thr:    Process.detach(pid),
-          buffer:      +"",
-          mutex:       Mutex.new,
-          started_at:  Time.now,
+          id: new_id,
+          command: command,
+          cwd: cwd,
+          pid: pid,
+          pgid: pid,
+          wait_thr: Process.detach(pid),
+          buffer: +"",
+          mutex: Mutex.new,
+          started_at: Time.now,
           read_offset: 0,
-          stdin:       in_wr
+          stdin: in_wr
         )
         entry.reader_thr = Thread.new { drain_into(entry, rd) }
 
@@ -121,6 +121,7 @@ module Rubino
 
       def exit_code(entry)
         return nil if entry.wait_thr.alive?
+
         entry.wait_thr.value.exitstatus
       end
 
@@ -138,7 +139,7 @@ module Rubino
             entry.buffer << chunk
             overflow = entry.buffer.bytesize - RING_BYTES
             if overflow.positive?
-              entry.buffer  = entry.buffer.byteslice(overflow..) || +""
+              entry.buffer = entry.buffer.byteslice(overflow..) || +""
               # Reset read_offset proportionally so the next read still sees
               # only fresh bytes, not whatever survived the trim.
               entry.read_offset = [entry.read_offset - overflow, 0].max

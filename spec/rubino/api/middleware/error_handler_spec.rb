@@ -27,7 +27,7 @@ RSpec.describe Rubino::API::Middleware::ErrorHandler do
   it "maps ValidationError to 422 with details" do
     error = Rubino::ValidationError.new("bad", details: { field: "missing" })
     status, _, body = described_class.new(->(_e) { raise error }, logger: logger)
-      .call("REQUEST_METHOD" => "POST", "PATH_INFO" => "/v1/x")
+                                     .call("REQUEST_METHOD" => "POST", "PATH_INFO" => "/v1/x")
     expect(status).to eq(422)
     payload = JSON.parse(body.first)
     expect(payload["error"]["code"]).to eq("validation")
@@ -47,7 +47,7 @@ RSpec.describe Rubino::API::Middleware::ErrorHandler do
   it "maps UpstreamError to 502" do
     error = Rubino::UpstreamError.new("timeout", service: "openai")
     status, _, body = described_class.new(->(_e) { raise error }, logger: logger)
-      .call("REQUEST_METHOD" => "POST", "PATH_INFO" => "/v1/x")
+                                     .call("REQUEST_METHOD" => "POST", "PATH_INFO" => "/v1/x")
     expect(status).to eq(502)
     payload = JSON.parse(body.first)
     expect(payload["error"]["code"]).to eq("upstream")
@@ -57,7 +57,7 @@ RSpec.describe Rubino::API::Middleware::ErrorHandler do
   it "preserves UpstreamError messages raised idiomatically (raise Class, 'msg')" do
     app = ->(_e) { raise Rubino::UpstreamError, "boom" }
     status, _, body = described_class.new(app, logger: logger)
-      .call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/v1/x")
+                                     .call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/v1/x")
     expect(status).to eq(502)
     expect(JSON.parse(body.first)["error"]["message"]).to eq("boom")
   end

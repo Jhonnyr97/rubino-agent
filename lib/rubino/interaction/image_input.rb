@@ -60,7 +60,7 @@ module Rubino
         text = text.gsub(BARE_PATH) { capture_if_image(Regexp.last_match(1), Regexp.last_match(0), paths) }
 
         Result.new(
-          text:        text.gsub(/[ \t]{2,}/, " ").strip,
+          text: text.gsub(/[ \t]{2,}/, " ").strip,
           image_paths: (Array(existing) + paths).uniq
         )
       end

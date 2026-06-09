@@ -36,7 +36,7 @@ module Rubino
 
       # Contiguous base64 of 200+ chars. Reasonable prose never has this;
       # encoded payloads (binaries, encrypted blobs) do.
-      BASE64_BLOB_PATTERN = /[A-Za-z0-9+\/]{200,}={0,2}/
+      BASE64_BLOB_PATTERN = %r{[A-Za-z0-9+/]{200,}={0,2}}
 
       # curl/wget piped to a shell — remote code execution recipe.
       PIPE_TO_SHELL_PATTERN = /\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+)?(?:bash|sh|zsh)\b/i

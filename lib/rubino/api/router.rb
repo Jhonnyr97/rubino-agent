@@ -61,7 +61,7 @@ module Rubino
 
       def add(method, path, operation)
         keys = []
-        pattern = path.gsub(%r{:([a-z_]+)}) do
+        pattern = path.gsub(/:([a-z_]+)/) do
           keys << ::Regexp.last_match(1)
           "([^/]+)"
         end

@@ -6,11 +6,12 @@
 # Rubino::Modes), `/skills none` (and the `✗ none` picker entry) clears, and an
 # unknown name errors without changing the active skill.
 RSpec.describe Rubino::Commands::Executor do
+  subject(:exec)     { described_class.new(loader: loader, ui: ui) }
+
   let(:ui)           { Rubino::UI::Null.new }
   let(:loader)       { Rubino::Commands::Loader.new(config: test_configuration) }
   let(:fixtures_dir) { File.expand_path("../../fixtures/skills_dir", __dir__) }
   let(:config)       { test_configuration("skills" => { "paths" => [fixtures_dir] }) }
-  subject(:exec)     { described_class.new(loader: loader, ui: ui) }
 
   before do
     with_test_db
@@ -29,7 +30,7 @@ RSpec.describe Rubino::Commands::Executor do
       expect(result).to eq(:handled)
       expect(Rubino::ActiveSkill.current).to eq("data-helper")
       msg = ui.messages.find { |m| m[:level] == :success }
-      expect(msg[:message]).to match(/Active skill: data-helper/)
+      expect(msg[:message]).to include("Active skill: data-helper")
     end
 
     it "errors on an unknown skill and leaves the active skill untouched" do
@@ -38,7 +39,7 @@ RSpec.describe Rubino::Commands::Executor do
 
       expect(Rubino::ActiveSkill.current).to eq("data-helper")
       err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to match(/Unknown skill: nope-not-real/)
+      expect(err[:message]).to include("Unknown skill: nope-not-real")
     end
   end
 

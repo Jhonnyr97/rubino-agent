@@ -11,8 +11,8 @@ module Rubino
 
       def description
         "Ask the user a question with optional predefined choices. " \
-        "Use this when you need clarification, user preferences, or a decision. " \
-        "The user can select from options or type a custom answer."
+          "Use this when you need clarification, user preferences, or a decision. " \
+          "The user can select from options or type a custom answer."
       end
 
       def input_schema
@@ -81,10 +81,8 @@ module Rubino
         formatted.each_with_index do |opt, i|
           lines << "  #{i + 1}. #{opt}"
         end
-        if multiple
-          lines << "  (Select multiple numbers separated by commas, or type a custom answer)"
-        end
-        lines << "Your choice#{multiple ? '(s)' : ''} (number or custom answer):"
+        lines << "  (Select multiple numbers separated by commas, or type a custom answer)" if multiple
+        lines << "Your choice#{"(s)" if multiple} (number or custom answer):"
 
         answer = ui.ask(lines.join("\n"))
 
@@ -110,7 +108,7 @@ module Rubino
 
       def ask_freeform(ui, question)
         answer = ui.ask(question)
-        "User answered: #{answer || '(no response)'}"
+        "User answered: #{answer || "(no response)"}"
       end
     end
   end

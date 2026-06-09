@@ -35,21 +35,23 @@ module Rubino
 
       def description
         "Summarize a large text file WITHOUT loading it into this conversation. " \
-        "The file is read and map-reduced by a separate summarization model; only the " \
-        "final summary returns here, so the raw bytes never enter context. " \
-        "PREFER this over `read` whenever you need the gist of a big document — converted " \
-        "PDFs, logs, transcripts, anything more than a few hundred lines. For binary docs " \
-        "(PDF/DOCX) convert to text first (e.g. markitdown), then summarize the text file. " \
-        "Use `focus` to steer what the summary must preserve."
+          "The file is read and map-reduced by a separate summarization model; only the " \
+          "final summary returns here, so the raw bytes never enter context. " \
+          "PREFER this over `read` whenever you need the gist of a big document — converted " \
+          "PDFs, logs, transcripts, anything more than a few hundred lines. For binary docs " \
+          "(PDF/DOCX) convert to text first (e.g. markitdown), then summarize the text file. " \
+          "Use `focus` to steer what the summary must preserve."
       end
 
       def input_schema
         {
           type: "object",
           properties: {
-            file_path: { type: "string",  description: "Absolute or relative path to a text file" },
-            focus:     { type: "string",  description: "What the summary must preserve, e.g. 'chapter titles and page numbers' or 'API errors with timestamps'. Optional." },
-            max_words: { type: "integer", description: "Approximate length of the final summary in words (default 500)." }
+            file_path: { type: "string", description: "Absolute or relative path to a text file" },
+            focus: { type: "string",
+                     description: "What the summary must preserve, e.g. 'chapter titles and page numbers' or 'API errors with timestamps'. Optional." },
+            max_words: { type: "integer",
+                         description: "Approximate length of the final summary in words (default 500)." }
           },
           required: %w[file_path]
         }
@@ -95,8 +97,8 @@ module Rubino
 
         summary = reduce(summaries, focus, max_words)
         {
-          output:  summary,
-          metrics: "#{chunks.size} chunk#{'s' if chunks.size != 1} → summary"
+          output: summary,
+          metrics: "#{chunks.size} chunk#{"s" if chunks.size != 1} → summary"
         }
       rescue Rubino::Interrupted
         raise

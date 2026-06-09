@@ -33,12 +33,12 @@ module Rubino
 
       def description
         "Execute a shell command. " \
-        "Foreground: blocks until the command exits or `timeout` seconds elapse " \
-        "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
-        "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
-        "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
-        "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
-        "and `shell_kill` to terminate it."
+          "Foreground: blocks until the command exits or `timeout` seconds elapse " \
+          "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
+          "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
+          "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
+          "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
+          "and `shell_kill` to terminate it."
       end
 
       def input_schema
@@ -80,9 +80,9 @@ module Rubino
         return "Error: command is required" if command.nil? || command.to_s.empty?
 
         if (denied = destructive_pattern_match(command))
-          return { output:     "Error: refusing to run #{denied} — this is hardcoded as " \
-                               "destructive and not overridable by --yolo. " \
-                               "If you genuinely need this, run it manually outside the agent.",
+          return { output: "Error: refusing to run #{denied} — this is hardcoded as " \
+                           "destructive and not overridable by --yolo. " \
+                           "If you genuinely need this, run it manually outside the agent.",
                    error_code: :denied_command }
         end
 
@@ -98,13 +98,13 @@ module Rubino
           # `[Exit code: N]` out of free-form text to know whether the
           # command succeeded. The text suffix stays for visual continuity
           # in the scrollback and for tests that grep for it.
-          { output:     run[:text],
-            metrics:    foreground_metric(run),
-            body:       Util::Output.preview(run[:text]),
-            body_kind:  :plain,
-            exit_code:  run[:exit_code],
-            timed_out:  run[:timed_out],
-            cancelled:  run[:cancelled],
+          { output: run[:text],
+            metrics: foreground_metric(run),
+            body: Util::Output.preview(run[:text]),
+            body_kind: :plain,
+            exit_code: run[:exit_code],
+            timed_out: run[:timed_out],
+            cancelled: run[:cancelled],
             error_code: shell_error_code(run) }
         end
       end
@@ -162,9 +162,9 @@ module Rubino
 
       def spawn_background(command, cwd)
         entry = ShellRegistry.instance.spawn(command: command, cwd: cwd)
-        "Started background shell #{entry.id} (pid #{entry.pid})\n" \
-          "  command: #{command}\n" \
-          "  cwd:     #{cwd}\n" \
+        "Started background shell #{entry.id} (pid #{entry.pid})\n  " \
+          "command: #{command}\n  " \
+          "cwd:     #{cwd}\n" \
           "Read output:  shell_output run_id=#{entry.id}\n" \
           "Send input:   shell_input  run_id=#{entry.id} text=...\n" \
           "Terminate:    shell_kill   run_id=#{entry.id}"
@@ -216,12 +216,20 @@ module Rubino
             if cancellation_requested?
               terminate_group(pgid)
               sleep 0.5
-              Process.kill("KILL", -pgid) rescue nil
-              Process.waitpid2(pid) rescue nil
+              begin
+                Process.kill("KILL", -pgid)
+              rescue StandardError
+                nil
+              end
+              begin
+                Process.waitpid2(pid)
+              rescue StandardError
+                nil
+              end
               return foreground_result(
-                stdout:      output_thr.value,
-                suffix:      "[Command cancelled by user — SIGTERM sent]",
-                cancelled:   true,
+                stdout: output_thr.value,
+                suffix: "[Command cancelled by user — SIGTERM sent]",
+                cancelled: true,
                 duration_ms: elapsed_ms(started_at)
               )
             end
@@ -234,13 +242,17 @@ module Rubino
                 _, status = Process.waitpid2(pid, Process::WNOHANG)
               end
               unless status
-                Process.kill("KILL", -pgid) rescue nil
+                begin
+                  Process.kill("KILL", -pgid)
+                rescue StandardError
+                  nil
+                end
                 _, status = Process.waitpid2(pid)
               end
               return foreground_result(
-                stdout:      output_thr.value,
-                suffix:      "[Command timed out after #{timeout}s — SIGTERM sent]",
-                timed_out:   true,
+                stdout: output_thr.value,
+                suffix: "[Command timed out after #{timeout}s — SIGTERM sent]",
+                timed_out: true,
                 duration_ms: elapsed_ms(started_at)
               )
             end
@@ -248,13 +260,13 @@ module Rubino
           end
 
           code   = status&.exitstatus
-          suffix = (code && code != 0) ? "[Exit code: #{code}]" : nil
-          foreground_result(stdout:      output_thr.value,
-                            suffix:      suffix,
-                            exit_code:   code,
+          suffix = code && code != 0 ? "[Exit code: #{code}]" : nil
+          foreground_result(stdout: output_thr.value,
+                            suffix: suffix,
+                            exit_code: code,
                             duration_ms: elapsed_ms(started_at))
         rescue Errno::ECHILD
-          foreground_result(stdout:      output_thr.value,
+          foreground_result(stdout: output_thr.value,
                             duration_ms: elapsed_ms(started_at))
         end
       rescue StandardError => e
@@ -268,10 +280,10 @@ module Rubino
                             exit_code: nil, timed_out: false, cancelled: false)
         text = stdout.to_s
         text = "#{text}\n#{suffix}" if suffix
-        { text:        text,
-          exit_code:   exit_code,
-          timed_out:   timed_out,
-          cancelled:   cancelled,
+        { text: text,
+          exit_code: exit_code,
+          timed_out: timed_out,
+          cancelled: cancelled,
           shell_error: false,
           duration_ms: duration_ms }
       end

@@ -21,8 +21,9 @@ RSpec.describe Rubino::Run::ApprovalGate, "idempotency + id validation" do
   let(:recorder) do
     Class.new do
       attr_reader :events
-      def initialize; @events = []; end
-      def emit(type, payload); @events << [type, payload]; end
+
+      def initialize = @events = []
+      def emit(type, payload) = @events << [type, payload]
     end.new
   end
 

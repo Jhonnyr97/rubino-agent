@@ -18,10 +18,10 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   describe "#thinking_budget (private)" do
     it "maps effort levels to token budgets" do
       {
-        "off"    => 0,
-        "low"    => 4_000,
+        "off" => 0,
+        "low" => 4_000,
         "medium" => 8_000,
-        "high"   => 16_000
+        "high" => 16_000
       }.each do |effort, budget|
         expect(adapter_with(effort: effort).send(:thinking_budget)).to eq(budget)
       end

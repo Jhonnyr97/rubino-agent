@@ -57,6 +57,7 @@ RSpec.describe "Shell background tools" do
       # wait for the process to exit
       30.times do
         break if registry.status(registry.find(run_id) || next) != :running
+
         sleep 0.1
       end
 

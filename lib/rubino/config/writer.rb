@@ -20,11 +20,11 @@ module Rubino
         keys[0..-2].each_with_index do |k, i|
           hash[k] ||= {}
           hash = hash[k]
-          unless hash.is_a?(Hash)
-            traversed = keys[0..i].join(".")
-            raise ConfigurationError,
-                  "cannot set '#{key_path}': '#{traversed}' is a scalar value, not a section"
-          end
+          next if hash.is_a?(Hash)
+
+          traversed = keys[0..i].join(".")
+          raise ConfigurationError,
+                "cannot set '#{key_path}': '#{traversed}' is a scalar value, not a section"
         end
 
         hash[keys.last] = coerce_value(value)
@@ -46,7 +46,7 @@ module Rubino
 
       def load_raw
         if File.exist?(@config_path)
-          YAML.safe_load(File.read(@config_path), permitted_classes: [Symbol]) || {}
+          YAML.safe_load_file(@config_path, permitted_classes: [Symbol]) || {}
         else
           {}
         end

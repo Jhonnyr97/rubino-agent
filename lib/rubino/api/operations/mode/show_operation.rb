@@ -15,11 +15,11 @@ module Rubino
           def call(_request)
             current = Rubino::Modes.current
             [200, {
-              mode:        current,
+              mode: current,
               description: Rubino::Modes.description(current),
-              available:   Rubino::Modes::ALL.map { |m|
+              available: Rubino::Modes::ALL.map do |m|
                 { mode: m, description: Rubino::Modes.description(m) }
-              },
+              end
             }]
           end
         end

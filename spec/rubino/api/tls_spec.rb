@@ -25,7 +25,7 @@ RSpec.describe Rubino::API::TLS do
       expect(cert.issuer.to_s).to eq(cert.subject.to_s)
       expect(cert.verify(cert.public_key)).to be true
       # long-lived (~10y)
-      expect((cert.not_after - cert.not_before)).to be > (9 * 365 * 24 * 60 * 60)
+      expect(cert.not_after - cert.not_before).to be > (9 * 365 * 24 * 60 * 60)
     end
 
     it "is idempotent — reuses the same cert+key across calls/boots" do
