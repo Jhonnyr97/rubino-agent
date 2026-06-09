@@ -23,10 +23,19 @@ module Rubino
     # are attached; anything else is preserved verbatim in the returned text so
     # we never silently eat a word that merely looked path-ish.
     #
+    # Every candidate attachment is then gated through the SAME secure-by-default
+    # attachment layer the server/run path uses (Attachments::Classify + Policy:
+    # lstat/realpath safety pipeline, max_file_bytes cap, magic-byte kind check)
+    # — the CLI used to bypass it entirely, shipping oversize/spoofed files to
+    # the provider and burning the retry budget on the permanent error (#98).
+    # A rejected candidate is consumed from the text and reported in
+    # Result#rejected so the caller can surface a clean one-line error.
+    #
     # Returns a Result with the cleaned text (image tokens removed, whitespace
-    # collapsed) and the de-duplicated, expanded absolute image paths in order.
+    # collapsed), the de-duplicated, expanded absolute image paths in order, and
+    # any policy rejections as { path:, reason: } hashes.
     module ImageInput
-      Result = Struct.new(:text, :image_paths, keyword_init: true) do
+      Result = Struct.new(:text, :image_paths, :rejected, keyword_init: true) do
         def images? = !image_paths.empty?
       end
 
@@ -51,17 +60,19 @@ module Rubino
       def parse(input, existing: [])
         text = input.to_s
         paths = []
+        rejected = []
 
-        text = text.gsub(AT_TOKEN) { capture_if_image(Regexp.last_match(1), Regexp.last_match(0), paths) }
+        text = text.gsub(AT_TOKEN) { capture_if_image(Regexp.last_match(1), Regexp.last_match(0), paths, rejected) }
         text = text.gsub(QUOTED_PATH) do
           token = Regexp.last_match(1) || Regexp.last_match(2)
-          capture_if_image(token, Regexp.last_match(0), paths)
+          capture_if_image(token, Regexp.last_match(0), paths, rejected)
         end
-        text = text.gsub(BARE_PATH) { capture_if_image(Regexp.last_match(1), Regexp.last_match(0), paths) }
+        text = text.gsub(BARE_PATH) { capture_if_image(Regexp.last_match(1), Regexp.last_match(0), paths, rejected) }
 
         Result.new(
           text: text.gsub(/[ \t]{2,}/, " ").strip,
-          image_paths: (Array(existing) + paths).uniq
+          image_paths: (Array(existing) + paths).uniq,
+          rejected: rejected.uniq
         )
       end
 
@@ -69,15 +80,39 @@ module Rubino
       # and drop it from the text (returns ""); otherwise leave the original
       # match (+original+) untouched. +original+ is captured by the caller before
       # any path work, because #expand runs its own gsub and would clobber
-      # Regexp.last_match here.
-      def capture_if_image(token, original, paths)
+      # Regexp.last_match here. A candidate that LOOKS like an image but fails
+      # the attachment policy is consumed too — never shipped, never left as a
+      # path the model would chase with tools — and recorded in +rejected+.
+      def capture_if_image(token, original, paths, rejected)
         path = expand(token)
-        if LLM::ContentBuilder.image_file?(path) && File.file?(path)
-          paths << path unless paths.include?(path)
-          ""
+        return original unless LLM::ContentBuilder.image_file?(path) && File.file?(path)
+
+        if (reason = attachment_error(path))
+          rejected << { path: path, reason: reason }
         else
-          original
+          paths << path unless paths.include?(path)
         end
+        ""
+      end
+
+      # Gates one candidate image through the universal attachment layer —
+      # Attachments::Classify (lstat/realpath safety pipeline, max_file_bytes
+      # cap, magic-byte classification) + Policy.allow_kind? — the SAME checks
+      # the server/run path applies (#98). Returns a one-line human reason when
+      # the file must NOT be attached, nil when it is safe to send.
+      def attachment_error(path)
+        cls = Attachments::Classify.call(path)
+        unless cls.safe
+          if cls.reason.to_s.start_with?("exceeds max_file_bytes")
+            return "exceeds the #{Attachments::Policy.max_file_bytes / 1_048_576} MB attachment limit"
+          end
+
+          return cls.reason
+        end
+        return "not a valid image (content is #{cls.mime})" unless cls.kind == :image
+        return "image attachments are disabled by policy (allow_kinds)" unless Attachments::Policy.allow_kind?(:image)
+
+        nil
       end
 
       # Normalises a raw token into an absolute filesystem path: strips

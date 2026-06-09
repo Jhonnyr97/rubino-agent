@@ -1328,6 +1328,149 @@ RSpec.describe Rubino::CLI::ChatCommand do
         expect(runner).to have_received(:run).with("hi", image_paths: [], input_queue: nil)
       end
     end
+
+    # Regression #98: CLI image attachments must pass the SAME secure-by-default
+    # attachment gate as the server/run path. An oversize/spoofed image used to
+    # ship to the provider unchecked and burn 5 retries (~80s) on the permanent
+    # rejection; now it is a clean one-line stderr error BEFORE any model call.
+    describe "attachment policy gate (#98)" do
+      def make_spoof(name)
+        path = File.join(@dir, name)
+        File.binwrite(path, "PK\x03\x04\x14\x00\x00\x00\x08\x00#{" " * 50}")
+        path
+      end
+
+      it "one-shot @image that violates the policy fails fast with a clean error" do
+        spoof = make_spoof("fake.png")
+
+        expect do
+          expect { described_class.new("query" => "hi @#{spoof}").execute }.to raise_error(SystemExit)
+        end.to output(/rubino: .*not a valid image/).to_stderr
+
+        expect(fake_runner).not_to have_received(:run!)
+      end
+
+      it "one-shot --image flag path that violates the policy fails fast" do
+        spoof = make_spoof("flag.png")
+
+        expect do
+          expect { described_class.new("query" => "hi", "image" => [spoof]).execute }
+            .to raise_error(SystemExit)
+        end.to output(/rubino: --image .*not a valid image/).to_stderr
+
+        expect(fake_runner).not_to have_received(:run!)
+      end
+
+      it "interactive extract_images! warns and drops a rejected candidate" do
+        spoof = make_spoof("bad.png")
+
+        text = cmd.send(:extract_images!, "look @#{spoof}", ui)
+
+        expect(text).to eq("look")
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        warning = ui.messages.find { |m| m[:level] == :warning }
+        expect(warning[:message]).to include("bad.png").and include("not a valid image")
+      end
+
+      it "/paste runs the clipboard capture through the same gate" do
+        spoof = make_spoof("clip.png")
+        allow(Rubino::Interaction::ClipboardImage).to receive(:save_to_tempfile).and_return(spoof)
+
+        cmd.send(:handle_image_command, "/paste", ui)
+
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(ui.messages.map { |m| m[:level] }).to include(:warning)
+      end
+    end
+
+    # Regression #100: an image-only line used to auto-submit a turn (with a
+    # default question), consuming the attachment on the same Enter — so the
+    # promised "sent with your next message (/clear-images to drop)" window
+    # never existed for @image/dropped-path attachments. It now STAGES the
+    # image; /clear-images is reachable and the next real message carries it.
+    describe "image-only line stages the attachment (#100)" do
+      before do
+        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+        allow(Rubino::Commands::Executor).to receive(:welcome)
+        allow(fake_runner).to receive_messages(session: { id: "sess-100", title: nil }, end_session!: nil)
+        allow(cmd).to receive_messages(setup_workspace_and_trust!: nil, git_context: nil,
+                                       redirect_logger_to_file: nil)
+      end
+
+      def feed(*lines)
+        allow($stdin).to receive(:gets).and_return(*lines.map { |l| "#{l}\n" }, nil)
+      end
+
+      it "does not run a turn for an image-only line, so /clear-images is reachable" do
+        img = make("solo.png")
+        feed("@#{img}", "/clear-images", "exit")
+
+        expect { cmd.send(:run_interactive) }.to output.to_stdout
+
+        expect(fake_runner).not_to have_received(:run)
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        cleared = null_ui.messages.find { |m| m[:message].to_s.include?("Cleared 1 attached image") }
+        expect(cleared).not_to be_nil
+      end
+
+      it "sends the staged image with the next message" do
+        img = make("solo.png")
+        feed("@#{img}", "describe it", "exit")
+
+        expect { cmd.send(:run_interactive) }.to output.to_stdout
+
+        expect(fake_runner).to have_received(:run).with(
+          "describe it", image_paths: [img], input_queue: kind_of(Rubino::Interaction::InputQueue)
+        )
+      end
+    end
+
+    # Regression #99: structured llm.retry JSON lines used to land on STDOUT in
+    # one-shot mode, corrupting the pipeable answer. The one-shot path now
+    # routes the logger to stderr for the duration of the run.
+    describe "one-shot structured logs go to stderr (#99)" do
+      it "keeps stdout clean and emits log lines on stderr" do
+        allow(fake_runner).to receive(:run!) do
+          Rubino.logger.warn(event: "llm.retry", attempt: 1, sleep: 2)
+          "ANSWER"
+        end
+
+        expect do
+          expect { described_class.new("query" => "ping").execute }
+            .to output("ANSWER\n").to_stdout
+        end.to output(/llm\.retry/).to_stderr
+      end
+
+      it "restores the logger sink after the run" do
+        sink = StringIO.new
+        prev = Rubino.logger.reopen(sink)
+        begin
+          described_class.new("query" => "ping").execute
+          Rubino.logger.warn(event: "after.oneshot")
+          expect(sink.string).to include("after.oneshot")
+        ensure
+          Rubino.logger.reopen(prev)
+        end
+      end
+    end
+
+    # #101: a deterministic status line before an upload-carrying request, so a
+    # multi-MB attachment doesn't look like a freeze in non-interactive mode.
+    describe "sending-image status line (#101)" do
+      it "announces 'sending image (N MB)…' on stderr when attachments are present" do
+        img = make("pic.png")
+
+        expect do
+          described_class.new("query" => "see @#{img}").execute
+        end.to output(/sending image \(\d+(\.\d+)? MB\)…/).to_stderr
+      end
+
+      it "prints nothing extra for a plain text prompt" do
+        expect do
+          described_class.new("query" => "just text").execute
+        end.not_to output(/sending/).to_stderr
+      end
+    end
   end
 
   # Regression: cancel! used to be a no-op when called before the first

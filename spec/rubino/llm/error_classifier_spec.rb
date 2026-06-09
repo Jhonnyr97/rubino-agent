@@ -118,6 +118,29 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
     end
   end
 
+  # Regression #98: a provider's media/image validation rejection is PERMANENT
+  # (the same attachment fails identically on every retry) but arrives
+  # statusless from the MiniMax Anthropic-compat endpoint, so it used to fall
+  # through to the unknown→retryable default and burn all 5 retries (~80s).
+  describe ".classify — invalid media rejection is not retryable (#98)" do
+    [
+      "media exceeds size limit: max 10485760 bytes",
+      "invalid param: invalid image content: decode image config: image: unknown format"
+    ].each do |message|
+      it "no-status #{message[0, 30].inspect}… -> format_error, not retryable" do
+        c = described_class.classify(RubyLLM::Error.new(nil, message))
+        expect(c.reason).to eq(FR::FORMAT_ERROR)
+        expect(c.retryable).to be false
+        expect(c.should_fallback).to be true
+      end
+    end
+
+    it "stays non-retryable even when wrapped in a 5xx-class error" do
+      err = ruby_llm_error(RubyLLM::ServerError, 500, "media exceeds size limit: max 10485760 bytes")
+      expect(described_class.retryable?(err)).to be false
+    end
+  end
+
   describe ".classify — MiniMax unknown-provider blip (folds Slice 0b)" do
     it "no-status 'unknown error' -> unknown, retryable" do
       c = described_class.classify(RubyLLM::Error.new(nil, "unknown error"))
