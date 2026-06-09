@@ -126,6 +126,7 @@ module Rubino
 
         result = classify_missing_credential(error) ||
                  classify_transport(error) ||
+                 classify_invalid_media(error) ||
                  classify_typed(error) ||
                  (status && classify_by_status(status, error)) ||
                  classify_statusless(error)
@@ -179,6 +180,27 @@ module Rubino
         return unless STREAM_DROP_ERRORS.any? { |klass| error.is_a?(klass) }
 
         result_for(FailoverReason::TIMEOUT, nil, error, retryable: true)
+      end
+
+      # Provider media/image validation rejections — a PERMANENT 4xx-class
+      # complaint about the attachment itself, which some providers (MiniMax
+      # Anthropic-compat) surface statusless so it used to fall through to the
+      # unknown→retryable default and burn the whole retry budget (~80s) on a
+      # bad image (#98). The same attachment fails identically on every retry,
+      # so fail fast. Patterns are the literal provider phrasings, kept narrow.
+      INVALID_MEDIA_PATTERNS = [
+        "media exceeds size limit",
+        "invalid image content",
+        "image: unknown format",
+        "could not process image"
+      ].freeze
+
+      def classify_invalid_media(error)
+        msg = error.message.to_s.downcase
+        return unless INVALID_MEDIA_PATTERNS.any? { |p| msg.include?(p) }
+
+        result_for(FailoverReason::FORMAT_ERROR, http_status(error), error,
+                   retryable: false, should_fallback: true)
       end
 
       # Typed ruby_llm errors we can name without a status lookup.
