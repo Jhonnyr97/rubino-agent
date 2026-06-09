@@ -27,15 +27,19 @@ module Rubino
     #     chars and pushes completed lines into the shared
     #     {Interaction::InputQueue} the steering logic already consumes
     #
-    # MVP scope / known limitations (verify live, then iterate):
+    # Known limitations (verify live, then iterate):
     #   * ONE-ROW composer: a buffer longer than the terminal width is shown
     #     left-truncated with a leading "…" instead of wrapping to a second row.
-    #     True multi-row wrap is deferred.
-    #   * Arrow-key editing is deferred: CSI escape sequences (arrows, Home/End)
-    #     are read and discarded so they don't corrupt the buffer; only append
-    #     and backspace edit the line.
-    #   * Wide CJK glyphs count as one column here (String#length), so a line of
-    #     wide characters truncates slightly early — cosmetic, not corrupting.
+    #     True multi-row wrap is deferred. A multi-line PASTE is therefore
+    #     collapsed onto the single row — its newlines become single spaces
+    #     (see #flatten_paste_lines); preserving pasted newlines is tracked
+    #     in issue #57.
+    #
+    # (Two earlier MVP limitations no longer apply: arrows/Home/End/Delete/
+    # word-jump now drive the cursor via #consume_escape_sequence, and the
+    # draw/scroll/clamp paths all measure by DISPLAY width — a wide CJK/emoji
+    # glyph counts as two columns — so long fullwidth lines truncate at the
+    # right column instead of "slightly early".)
     class BottomComposer
       PROMPT = "❯ "
       ANSI_RE = /\e\[[0-9;]*m/
@@ -49,9 +53,12 @@ module Rubino
 
       # Bracketed paste (DEC 2004): the terminal wraps pasted text in
       # ESC[200~ … ESC[201~ so we can tell a PASTE from typed keystrokes and
-      # preserve its newlines instead of letting each embedded \n submit a
-      # half-line (L1 — "pasteline2" glue). We enable it on start, disable on
-      # stop/suspend, and accumulate the body between the markers.
+      # keep each embedded \n from submitting a half-line (L1 — "pasteline2"
+      # glue). The body is inserted as ONE editable string with its newlines
+      # currently COLLAPSED to single spaces — the one-row composer cannot hold
+      # a literal newline (see #submit_paste; preserving them is issue #57). We
+      # enable it on start, disable on stop/suspend, and accumulate the body
+      # between the markers.
       PASTE_ON   = "\e[?2004h"
       PASTE_OFF  = "\e[?2004l"
       PASTE_END  = "201~"

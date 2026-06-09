@@ -75,7 +75,7 @@ API's `parent_session_id` path.
 - `Base` — Abstract tool interface (name, description, input_schema, risk_level, call)
 - `Registry` — Singleton registry with enable/disable
 - `Result` — Structured result (success/error/denied)
-- 23 built-in tools + custom tool loader + formatter integration
+- The built-in tools (authoritative, drift-checked count and list in [tools.md](tools.md)) + custom tool loader + formatter integration
 - `CustomToolLoader` — DSL for user-defined tools
 
 ### `llm/`
