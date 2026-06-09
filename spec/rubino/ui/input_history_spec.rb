@@ -35,6 +35,13 @@ RSpec.describe Rubino::UI::InputHistory do
       history.remember("  padded  ")
       expect(store).to eq(["padded"])
     end
+
+    it "does not record slash commands (H1: ↑ surfaces prompts, not commands)" do
+      history.remember("/new")
+      history.remember("  /help  ")
+      history.remember("a real prompt")
+      expect(store).to eq(["a real prompt"])
+    end
   end
 
   describe "navigation (↑ / ↓)" do

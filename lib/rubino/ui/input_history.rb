@@ -35,6 +35,9 @@ module Rubino
 
         stripped = line.strip
         return if stripped.empty? || last == stripped
+        # Slash commands (/new, /help, …) are control input, not prompts — keep
+        # them out of recall so ↑ surfaces real messages, not commands (H1).
+        return if stripped.start_with?("/")
 
         @store.push(stripped)
       end
