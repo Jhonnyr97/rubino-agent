@@ -11,16 +11,33 @@ module Rubino
       # Directory skills: <dir>/<name>/SKILL.md (Claude skill layout).
       DIR_GLOB = File.join("*", "SKILL.md")
 
+      # Skills shipped *inside the gem* (skills/<name>/SKILL.md at the gem
+      # root, packaged via the gemspec's git-ls-files list). These are
+      # ALWAYS discovered — they don't depend on the user's skills.paths
+      # config (which `setup` freezes into config.yml) and they survive the
+      # folder-trust filter because this is an absolute path under the
+      # installed gem, owned by the user, not anything a visited repo can
+      # influence. This is how built-in skills (e.g. ruby-expert) reach every
+      # install with no copy step and update automatically on gem upgrade.
+      BUILTIN_SKILLS_DIR = File.expand_path("../../../skills", __dir__)
+
       # +include_project_local+ controls whether the cwd `.rubino/skills`
       # catalogue is discovered. Folder-trust passes false for an UNtrusted
       # primary root so a hostile repo's skill descriptions can't be auto-
       # injected into the system prompt before the user vouches for the folder
       # (the home `~/.rubino/skills` catalogue is always loaded — it's the
       # user's own, not attacker-controllable by cd-ing into a repo).
-      def initialize(config: nil, state_repository: nil, include_project_local: true)
+      # +include_builtin+ controls whether the gem-bundled BUILTIN_SKILLS_DIR is
+      # scanned. Always on in production (built-ins ship with every install).
+      # When left nil it falls back to the `skills.include_builtin` config key
+      # (default true), so a caller that only has the config — like the prompt
+      # assembler, which builds its own Registry — can still opt out; tests that
+      # assert an exact catalogue pass false to isolate from the shipped skills.
+      def initialize(config: nil, state_repository: nil, include_project_local: true, include_builtin: nil)
         @config = config || Rubino.configuration
         @state_repository = state_repository
         @include_project_local = include_project_local
+        @include_builtin = include_builtin.nil? ? (@config.dig("skills", "include_builtin") != false) : include_builtin
         @skills = {}
         @discovered = false
       end
@@ -129,11 +146,18 @@ module Rubino
           ".rubino/skills",
           "~/.rubino/skills"
         ]
-        return paths if @include_project_local
+        unless @include_project_local
+          # Untrusted primary root: drop the project-local (cwd-relative) skill
+          # dirs, keeping only absolute / home (~) paths the user controls.
+          paths = paths.reject { |p| project_local_path?(p) }
+        end
 
-        # Untrusted primary root: drop the project-local (cwd-relative) skill
-        # dirs, keeping only absolute / home (~) paths the user controls.
-        paths.reject { |p| project_local_path?(p) }
+        # Built-in (gem-bundled) skills are scanned FIRST so a user skill of the
+        # same name — discovered later in .rubino/skills or ~/.rubino/skills —
+        # overrides the built-in on the registry's name-indexed merge (last
+        # writer wins in #add_skills). That lets a user shadow/customize a
+        # shipped skill while still getting the built-ins for free by default.
+        @include_builtin ? [BUILTIN_SKILLS_DIR, *paths] : paths
       end
 
       # A skill path is "project-local" when it resolves under the primary
