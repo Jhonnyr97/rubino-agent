@@ -284,6 +284,8 @@ Actions: `allow`, `ask`, `deny`
 
 SSRF guard + secure-by-default file-attachment policy. See [security.md](security.md).
 
+The policy is enforced on **every** attachment surface: API/server run attachments and CLI image attachments (`-i`/`--image`, `@image` tokens, dropped paths, `/paste`) all pass the same classification (magic bytes win over extension) and `max_file_bytes` cap **before** anything is sent to a provider. A rejected CLI attachment is a clean one-line error, never a provider call.
+
 ```yaml
 attachments:
   allowed_hosts: []          # hosts allowed for URL attachments (loopback always allowed; ALLOWED_FILE_URL_HOSTS env merged in)
