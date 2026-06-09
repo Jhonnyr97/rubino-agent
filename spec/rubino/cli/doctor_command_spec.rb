@@ -8,7 +8,9 @@ RSpec.describe Rubino::CLI::DoctorCommand do
   before { Rubino.ui = ui }
 
   describe "#check_migrations" do
-    let(:db) { instance_double(Rubino::Database::Connection) }
+    # memory?: true short-circuits the read-only on-disk guard (#68) so these
+    # examples keep exercising the migrator logic itself.
+    let(:db) { instance_double(Rubino::Database::Connection, memory?: true) }
 
     before { allow(Rubino).to receive(:database).and_return(db) }
 
@@ -189,13 +191,55 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(ui.messages.none? { |m| m[:level] == :warning && m[:message].to_s.match?(%r{\d/\d}) }).to be(true)
     end
 
-    it "warns only when a REQUIRED check fails" do
+    it "warns and exits non-zero when a REQUIRED check fails (#67)" do
       allow(doctor).to receive(:check_model_configured).and_return(name: "model", status: :fail)
 
-      doctor.execute
+      expect { doctor.execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
 
       warning = ui.messages.find { |m| m[:level] == :warning && m[:message].to_s.include?("required checks passed") }
       expect(warning[:message]).to include("5/6 required checks passed")
+    end
+
+    # #67: scripts/CI gate on doctor, so the all-green path must stay exit 0
+    # (no exit call at all) and any non-:ok required check must exit 1.
+    it "does not exit when every required check passes" do
+      expect { doctor.execute }.not_to raise_error
+    end
+
+    it "exits non-zero when a required check only warns (not fully passing)" do
+      allow(doctor).to receive(:check_provider_keys).and_return(name: "provider_keys", status: :warn)
+
+      expect { doctor.execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+    end
+  end
+
+  # #68: doctor is a READ-ONLY diagnosis. On a never-setup home it must not
+  # create the home directory or the database file (SQLite lazily creates the
+  # file on the first connection — and the old code then reported that empty,
+  # unmigrated database as "accessible"). It reports "run 'rubino setup'" and
+  # exits non-zero (#67) instead.
+  describe "#execute on a never-setup home" do
+    around do |example|
+      Dir.mktmpdir("rubino_doctor") do |dir|
+        orig = ENV.fetch("RUBINO_HOME", nil)
+        ENV["RUBINO_HOME"] = File.join(dir, "never-setup-home")
+        Rubino.reset!
+        example.run
+      ensure
+        orig.nil? ? ENV.delete("RUBINO_HOME") : ENV["RUBINO_HOME"] = orig
+        Rubino.reset!
+      end
+    end
+
+    it "creates nothing, points at setup, and exits non-zero" do
+      home = ENV.fetch("RUBINO_HOME")
+
+      expect { doctor.execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(File).not_to exist(home)
+      errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
+      expect(errors.join("\n")).to include("rubino setup")
+      expect(errors.join("\n")).to include("Database not initialized")
     end
   end
 
