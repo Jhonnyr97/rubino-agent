@@ -393,7 +393,7 @@ module Rubino
         width = @width.to_i
         return [line] if width <= 0 || line_length(line) <= width
 
-        words  = words_of(line) # [[word, style], ...] — whitespace collapsed to single breaks
+        words  = words_of(line) # word groups: [[[frag, style], ...], ...]
         return [line] if words.empty?
 
         indent = " " * hang
@@ -401,31 +401,60 @@ module Rubino
         cur    = []
         cur_len = 0
 
-        words.each do |word, style|
+        words.each do |word|
+          word_len = word.sum { |frag, _| display_width(frag) }
           sp = cur.empty? ? 0 : 1
-          if cur_len + sp + display_width(word) > width && !cur.empty?
+          if cur_len + sp + word_len > width && !cur.empty?
             out << cur
             cur = hang.zero? ? [] : [[indent, nil]]
             cur_len = hang
             sp = 0
           end
           cur << [" ", nil] if sp == 1
-          cur << [word, style]
-          cur_len += sp + display_width(word)
+          cur.concat(word)
+          cur_len += sp + word_len
         end
         out << cur unless cur.empty?
         out.empty? ? [line] : out
       end
 
-      # Flatten a LineTokens to a list of [word, style] pairs, collapsing runs of
-      # whitespace (which the wrapper re-inserts as single spaces at break
-      # points). Styles are carried per-word so bold/italic survive wrapping.
+      # Flatten a LineTokens to a list of WORD GROUPS — each an array of styled
+      # fragments [[text, style], ...] — splitting ONLY at real whitespace
+      # (collapsed to single breaks the wrapper re-inserts as spaces). Adjacent
+      # inline tokens with NO whitespace between them stay glued in ONE group:
+      # kramdown emits `don’t` as three tokens ("don", :smart_quote ’, "t"),
+      # and treating each token as its own word made the wrapper re-join them
+      # with injected spaces ("don ’ t", #104). Styles are carried per-fragment
+      # so bold/italic survive wrapping.
       def words_of(line)
-        line.flat_map do |text, style|
-          next [] if text == :br
+        words = []
+        glue  = false # the previous fragment did NOT end in whitespace
+        line.each do |text, style|
+          if text == :br
+            glue = false
+            next
+          end
 
-          text.to_s.split(/\s+/).reject(&:empty?).map { |w| [w, style] }
+          str = text.to_s
+          next if str.empty?
+
+          parts = str.split(/\s+/).reject(&:empty?)
+          if parts.empty? # whitespace-only token: a break, never a word
+            glue = false
+            next
+          end
+
+          leading = str.match?(/\A\s/)
+          parts.each_with_index do |w, i|
+            if i.zero? && glue && !leading
+              words.last << [w, style]
+            else
+              words << [[w, style]]
+            end
+          end
+          glue = !str.match?(/\s\z/)
         end
+        words
       end
 
       def line_length(line)
