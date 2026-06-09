@@ -22,6 +22,8 @@ module Rubino
         "/add-dir"      => "Add an extra allowed workspace directory (write/edit can reach it)",
         "/dirs"         => "List the current workspace roots",
         "/mode"         => "Show or switch mode (default | plan | yolo)",
+        "/reasoning"    => "Show or switch how reasoning is shown (hidden | collapsed | full)",
+        "/think"        => "Show or switch thinking effort (off | low | medium | high)",
         "/commands"     => "List custom commands (and how to make them)",
         "/help"         => "Show this help",
         "/paste"        => "Attach an image from the clipboard",

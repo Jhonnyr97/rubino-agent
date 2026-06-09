@@ -94,7 +94,7 @@ module Rubino
           show_commands
           :handled
         when "skills"
-          show_skills
+          handle_skills(arguments)
           :handled
         when "add-dir"
           handle_add_dir(arguments)
@@ -104,6 +104,12 @@ module Rubino
           :handled
         when "mode"
           handle_mode(arguments)
+          :handled
+        when "reasoning"
+          handle_reasoning(arguments)
+          :handled
+        when "think"
+          handle_think(arguments)
           :handled
         when "status"
           show_status
@@ -176,6 +182,60 @@ module Rubino
           marker = m == current ? "▸" : " "
           @ui.info("  #{marker} /mode #{m} — #{Rubino::Modes.description(m)}")
         end
+      end
+
+      # `/reasoning`         → show current render mode
+      # `/reasoning <mode>`  → switch (hidden | collapsed | full)
+      #
+      # Writes the new mode to display.reasoning on the live configuration so the
+      # LLM adapter gate (which reads config) and the CLI render path share one
+      # source of truth — no separate per-UI override to drift. An unknown value
+      # is rejected with the valid list.
+      def handle_reasoning(arguments)
+        name = arguments.to_s.strip.downcase.split(/\s+/).first
+        previous = Config::ReasoningPrefs.mode(Rubino.configuration)
+
+        if name.nil? || name.empty?
+          @ui.reasoning_status(previous) if @ui.respond_to?(:reasoning_status)
+          return
+        end
+
+        sym = name.to_sym
+        unless Config::ReasoningPrefs::RENDER_MODES.include?(sym)
+          @ui.error("unknown reasoning mode: #{name}")
+          @ui.info("Available: #{Config::ReasoningPrefs::RENDER_MODES.join(', ')}")
+          return
+        end
+
+        Rubino.configuration.set("display", "reasoning", sym.to_s)
+        @ui.reasoning_changed(sym, previous: previous) if @ui.respond_to?(:reasoning_changed)
+      end
+
+      # `/think`         → show current effort
+      # `/think <level>` → switch (off | low | medium | high)
+      #
+      # Writes thinking.effort on the live configuration; the adapter derives the
+      # thinking-token budget from it on the next turn. An unknown value is
+      # rejected with the valid list.
+      def handle_think(arguments)
+        name = arguments.to_s.strip.downcase.split(/\s+/).first
+        previous = Config::ReasoningPrefs.effort(Rubino.configuration) ||
+                   Config::ReasoningPrefs::DEFAULT_EFFORT
+
+        if name.nil? || name.empty?
+          @ui.think_status(previous) if @ui.respond_to?(:think_status)
+          return
+        end
+
+        sym = name.to_sym
+        unless Config::ReasoningPrefs::EFFORTS.include?(sym)
+          @ui.error("unknown effort: #{name}")
+          @ui.info("Available: #{Config::ReasoningPrefs::EFFORTS.join(', ')}")
+          return
+        end
+
+        Rubino.configuration.set("thinking", "effort", sym.to_s)
+        @ui.think_changed(sym, previous: previous) if @ui.respond_to?(:think_changed)
       end
 
       # --- /status & welcome -------------------------------------------------
@@ -1024,6 +1084,61 @@ module Rubino
         @ui.info("Add more with /add-dir <path>")
       end
 
+      # `/skills`            → list (unchanged behavior).
+      # `/skills <name>`     → ACTIVATE that skill for the session (sticky). The
+      #                        name is validated against the registry; an unknown
+      #                        name errors and leaves the active skill unchanged.
+      # `/skills none`       → CLEAR the active skill (also the `✗ none` picker
+      #                        entry, whose spliced label is normalized here).
+      #
+      # The active skill is stored in Rubino::ActiveSkill (a process-level slot,
+      # mirroring Rubino::Modes) so it survives across turns and is force-loaded
+      # into the system prompt each turn (Context::PromptAssembler).
+      def handle_skills(arguments)
+        arg = normalize_skill_arg(arguments)
+
+        return show_skills if arg.nil?
+
+        if clear_skill_arg?(arg)
+          previous = Rubino::ActiveSkill.current
+          Rubino::ActiveSkill.clear
+          if previous
+            @ui.success("Cleared active skill (was: #{previous}).")
+          else
+            @ui.info("No active skill.")
+          end
+          return
+        end
+
+        registry = Skills::Registry.new
+        skill = registry.find(arg)
+        unless skill
+          @ui.error("Unknown skill: #{arg}")
+          available = registry.names
+          @ui.info("Available: #{available.join(', ')}") unless available.empty?
+          return
+        end
+
+        Rubino::ActiveSkill.set(skill.name)
+        @ui.success("Active skill: #{skill.name} (loaded into context for this session).")
+      end
+
+      # The single argument to `/skills`, trimmed; nil when no argument was
+      # given (bare `/skills` → list). The picker splices the `✗ none` label, so
+      # the leading `✗ ` marker is stripped here to recover the bare token.
+      def normalize_skill_arg(arguments)
+        raw = arguments.to_s.strip.sub(/\A✗\s+/, "")
+        # Only the FIRST token is the skill name (skill names are single tokens).
+        token = raw.split(/\s+/).first
+        token unless token.nil? || token.empty?
+      end
+
+      # True when the argument means "clear the active skill" (the `none`
+      # sentinel, case-insensitive — the `✗ ` marker was already stripped).
+      def clear_skill_arg?(arg)
+        arg.casecmp?(Rubino::ActiveSkill::NONE)
+      end
+
       def show_skills
         registry = Skills::Registry.new
         skills = registry.all
@@ -1031,8 +1146,10 @@ module Rubino
           @ui.info("No skills found.")
           @ui.info("Add .md files to .rubino/skills/ to create skills.")
         else
+          active = Rubino::ActiveSkill.current
           skills.each do |skill|
             status = registry.enabled?(skill.name) ? "" : " (disabled)"
+            status += " (active)" if active && active == skill.name
             head   = "  #{skill.name}#{status} - "
             # Word-wrap the description so a long one breaks on spaces instead of
             # being hard-wrapped mid-word by the terminal at the right edge

@@ -152,6 +152,22 @@ module Rubino
         @messages << { level: :mode_changed, message: name, previous: previous }
       end
 
+      def reasoning_status(mode)
+        @messages << { level: :reasoning_status, message: mode }
+      end
+
+      def reasoning_changed(mode, previous: nil)
+        @messages << { level: :reasoning_changed, message: mode, previous: previous }
+      end
+
+      def think_status(effort)
+        @messages << { level: :think_status, message: effort }
+      end
+
+      def think_changed(effort, previous: nil)
+        @messages << { level: :think_changed, message: effort, previous: previous }
+      end
+
       def queued(text)
         @messages << { level: :queued, message: text }
       end

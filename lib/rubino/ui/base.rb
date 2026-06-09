@@ -205,6 +205,13 @@ module Rubino
       # INPUT_INJECTED bus event, not this echo.
       def input_injected(text); end
 
+      # Commits the standardized `⎿ interrupted` marker right after the partial
+      # answer that's kept when a turn is cancelled (Ctrl+C, or the interrupt-by-
+      # default Enter on a type-ahead line). Concrete no-op by default; only the
+      # CLI renders the dim marker. API surfaces the cancel via its own events;
+      # Null records nothing.
+      def turn_interrupted; end
+
       # True when this adapter parks the run on a cross-thread gate for human
       # approvals/clarifications (the HTTP/API path) rather than prompting
       # inline on a terminal. The agent loop uses this to run an interactive
