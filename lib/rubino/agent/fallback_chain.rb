@@ -111,9 +111,9 @@ module Rubino
 
           Entry.new(
             provider: fetch(raw, "provider"),
-            model:    fetch(raw, "model"),
+            model: fetch(raw, "model"),
             base_url: fetch(raw, "base_url"),
-            api_key:  fetch(raw, "api_key")
+            api_key: fetch(raw, "api_key")
           )
         end
       end
@@ -130,9 +130,7 @@ module Rubino
         cur_provider = @active.provider.to_s.strip.downcase
         cur_model    = @active.model_id.to_s.strip
 
-        if resolved.to_s.strip.downcase == cur_provider && entry.model.to_s.strip == cur_model
-          return true
-        end
+        return true if resolved.to_s.strip.downcase == cur_provider && entry.model.to_s.strip == cur_model
 
         entry_base = normalize_url(entry.base_url)
         cur_base   = normalize_url(current_base_url)
@@ -156,13 +154,13 @@ module Rubino
       # process-global RubyLLM.configure is never mutated.
       def build_adapter(entry)
         @adapter_builder.build(
-          model_id:       entry.model,
-          provider:       entry.provider,
-          config:         config_for(entry),
-          ui:             @ui,
-          event_bus:      @event_bus,
-          tool_executor:  @tool_executor,
-          cancel_token:   @cancel_token,
+          model_id: entry.model,
+          provider: entry.provider,
+          config: config_for(entry),
+          ui: @ui,
+          event_bus: @event_bus,
+          tool_executor: @tool_executor,
+          cancel_token: @cancel_token,
           isolate_config: true
         )
       end

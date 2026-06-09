@@ -62,11 +62,11 @@ module Rubino
 
             klass = Object.const_get(klass_name)
             register(id, klass.new(
-              client_id: cfg["client_id"],
-              client_secret: cfg["client_secret"],
-              scopes: cfg["scopes"],
-              metadata: cfg.reject { |k, _| %w[client_id client_secret scopes].include?(k) }
-            ))
+                           client_id: cfg["client_id"],
+                           client_secret: cfg["client_secret"],
+                           scopes: cfg["scopes"],
+                           metadata: cfg.reject { |k, _| %w[client_id client_secret scopes].include?(k) }
+                         ))
           end
           all
         end

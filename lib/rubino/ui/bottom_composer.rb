@@ -38,7 +38,7 @@ module Rubino
     #     wide characters truncates slightly early — cosmetic, not corrupting.
     class BottomComposer
       PROMPT = "❯ "
-      ANSI_RE = /\e\[[0-9;]*m/.freeze
+      ANSI_RE = /\e\[[0-9;]*m/
 
       # Hard ceiling on the subagent card block (rows ABOVE the partial + prompt).
       # The registry caps live children at MAX_CONCURRENT (3) and the formatter
@@ -123,7 +123,7 @@ module Rubino
         # keystroke. Cleared when the token is cleared / on submit / on accept /
         # on an explicit Tab, so a fresh token (or a deliberate Tab) reopens.
         @menu_suppressed = false
-        @prompt      = prompt.to_s.empty? ? PROMPT : prompt
+        @prompt = prompt.to_s.empty? ? PROMPT : prompt
         # Visible width ignores ANSI color escapes so the one-row clamp math is
         # correct for a colored mode prompt.
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
@@ -167,7 +167,7 @@ module Rubino
         # Subagent CARD block (Variant A): zero or more collapsed live rows shown
         # ABOVE the streamed partial and the prompt, redrawn in place each frame.
         # Driven by UI::CLI#set_subagent_cards from the BackgroundTasks registry.
-        @cards       = []
+        @cards = []
         # How many rows the live region currently occupies ABOVE the prompt row
         # (the drawn cards + a partial row when one is shown). The clear walks up
         # exactly this many rows, so a multi-line card block clears cleanly
@@ -180,7 +180,7 @@ module Rubino
         @running     = false
         @suspended   = false
         @saved_stdout = nil
-        @cols        = compute_cols
+        @cols = compute_cols
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -464,9 +464,7 @@ module Rubino
           return :cleared
         end
 
-        if @last_idle_int_at && (now - @last_idle_int_at) <= window
-          return :exit
-        end
+        return :exit if @last_idle_int_at && (now - @last_idle_int_at) <= window
 
         @last_idle_int_at = now
         announce("(press Ctrl+C again to exit)")
@@ -525,7 +523,7 @@ module Rubino
       def scroll_window(chars, cursor, avail)
         # Show as much as fits ENDING at the cursor (keep a column of right
         # context when possible), reserving one column for a trailing "…".
-        lead_budget  = avail - 1               # leave room for a trailing "…"
+        lead_budget  = avail - 1 # leave room for a trailing "…"
         right        = [cursor + 1, chars.length].min
         # Walk left from the window's right edge until the slice fills the budget.
         left = right
@@ -537,7 +535,7 @@ module Rubino
         left += 1 while left < right && display_width(chars[left...right].join) > room
 
         body = chars[left...right].join
-        window = "#{'…' if lead}#{body}#{'…' if trail}"
+        window = "#{"…" if lead}#{body}#{"…" if trail}"
         caret_col = (lead ? 1 : 0) + display_width(chars[left...cursor].join)
         [window, caret_col]
       end
@@ -1269,14 +1267,12 @@ module Rubino
         rows = slice.each_with_index.map do |item, i|
           idx = top + i
           if idx == sel
-            "#{menu_pastel.cyan('❯')} #{menu_pastel.inverse(" #{item} ")}"
+            "#{menu_pastel.cyan("❯")} #{menu_pastel.inverse(" #{item} ")}"
           else
-            "#{menu_pastel.dim('┊')} #{item}"
+            "#{menu_pastel.dim("┊")} #{item}"
           end
         end
-        if items.size > MENU_MAX_ROWS
-          rows << menu_pastel.dim("┄ #{sel + 1}/#{items.size} ┄")
-        end
+        rows << menu_pastel.dim("┄ #{sel + 1}/#{items.size} ┄") if items.size > MENU_MAX_ROWS
         rows
       end
 
@@ -1398,7 +1394,7 @@ module Rubino
         when "B" then history_down         # ↓
         when "C" then word ? word_right : move_by(1)   # →
         when "D" then word ? word_left : move_by(-1)   # ←
-        when "H" then move_to(0)           # Home
+        when "H" then move_to(0) # Home
         when "F" then move_to(@buffer.length) # End
         end
       end
@@ -1530,6 +1526,7 @@ module Rubino
 
               ch = @input.getc
               break if ch.nil? # EOF / stdin closed
+
               result = handle_key(ch)
               break if result == :quit
             end
@@ -1602,8 +1599,16 @@ module Rubino
       # window — treat anything non-positive as "unknown" and fall back, never
       # return <= 0 (the clamp/slice math would otherwise crash the turn).
       def compute_cols
-        cols = positive_int(@output.winsize.last) rescue nil
-        cols ||= (positive_int(IO.console&.winsize&.last) rescue nil)
+        cols = begin
+          positive_int(@output.winsize.last)
+        rescue StandardError
+          nil
+        end
+        cols ||= begin
+          positive_int(IO.console&.winsize&.last)
+        rescue StandardError
+          nil
+        end
         cols || 80
       end
 
@@ -1624,11 +1629,10 @@ module Rubino
           # Trap-context: resize takes the mutex, which is allowed here because
           # the handler runs on its own and never re-enters under the same lock.
           # Wrapped in rescue so a redraw failure never crashes the process.
-          begin
-            resize
-          rescue StandardError
-            nil
-          end
+
+          resize
+        rescue StandardError
+          nil
         end
       rescue ArgumentError
         @prev_winch = nil

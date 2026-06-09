@@ -20,7 +20,7 @@ RSpec.describe Rubino::API::Middleware::Auth, "bearer scheme enforcement" do
     {
       "REQUEST_METHOD" => method,
       "PATH_INFO" => path
-    }.merge(headers.transform_keys { |k| "HTTP_#{k.upcase.tr('-', '_')}" })
+    }.merge(headers.transform_keys { |k| "HTTP_#{k.upcase.tr("-", "_")}" })
   end
 
   def parse(body)

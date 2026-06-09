@@ -49,7 +49,10 @@ module Rubino
       #
       # @raise [ConfigurationError] if RUBINO_API_KEY is missing/empty
       def start!
-        raise ConfigurationError, "RUBINO_API_KEY must be set to start the API server" if @api_key.nil? || @api_key.empty?
+        if @api_key.nil? || @api_key.empty?
+          raise ConfigurationError,
+                "RUBINO_API_KEY must be set to start the API server"
+        end
 
         app = self.class.build_app(router: @router, api_key: @api_key, logger: @logger)
         @logger.info(event: "api.server.starting", host: @host, port: @port, tls: tls?)

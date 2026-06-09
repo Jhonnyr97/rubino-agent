@@ -10,6 +10,10 @@
 # network / DB is touched.
 RSpec.describe Rubino::Run::Executor do
   # Records (run_id, type, payload) for every persisted event.
+  subject(:executor) do
+    described_class.new(repository: repository, recorder_factory: recorder_factory)
+  end
+
   let(:store) do
     Class.new do
       attr_reader :rows
@@ -37,10 +41,6 @@ RSpec.describe Rubino::Run::Executor do
     instance_double(Rubino::Run::Repository,
                     mark_running!: nil, mark_completed!: nil,
                     stop_requested?: false)
-  end
-
-  subject(:executor) do
-    described_class.new(repository: repository, recorder_factory: recorder_factory)
   end
 
   # Stub Agent::Runner so #start drives it without an LLM: on run!, emit this
@@ -74,7 +74,7 @@ RSpec.describe Rubino::Run::Executor do
     expect(buses).not_to include(Rubino.event_bus)
 
     by_run = store.rows.select { |r| r[:type] == "run.completed" }
-                 .to_h { |r| [r[:run_id], r[:payload][:output]] }
+                       .to_h { |r| [r[:run_id], r[:payload][:output]] }
     expect(by_run).to eq("run-A" => "ALPHA", "run-B" => "BRAVO")
   end
 end

@@ -17,7 +17,7 @@ module Rubino
         def self.display_name  = "GitHub"
         def self.site          = "https://github.com"
         def self.authorize_path = "/login/oauth/authorize"
-        def self.token_path    = "/login/oauth/access_token"
+        def self.token_path = "/login/oauth/access_token"
         def self.default_scopes = %w[repo user:email]
 
         API_BASE = "https://api.github.com"

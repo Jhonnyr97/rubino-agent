@@ -224,4 +224,3 @@ module Rubino
     end
   end
 end
-

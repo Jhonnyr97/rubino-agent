@@ -49,10 +49,9 @@ module Rubino
       def update(id, attrs)
         return nil unless find(id)
 
-        attrs = attrs.transform_keys(&:to_sym).slice(:name, :schedule, :prompt, :skills, :model, :provider, :deliver, :enabled)
-        if attrs.key?(:skills)
-          attrs[:skills_json] = JSON.generate(attrs.delete(:skills) || [])
-        end
+        attrs = attrs.transform_keys(&:to_sym).slice(:name, :schedule, :prompt, :skills, :model, :provider, :deliver,
+                                                     :enabled)
+        attrs[:skills_json] = JSON.generate(attrs.delete(:skills) || []) if attrs.key?(:skills)
         attrs[:updated_at] = Time.now.utc.iso8601
         @db[:cron_jobs].where(id: id).update(attrs)
         find(id)

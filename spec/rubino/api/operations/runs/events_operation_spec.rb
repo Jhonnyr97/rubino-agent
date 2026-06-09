@@ -5,6 +5,7 @@ require "json"
 
 RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
   before { with_test_db }
+
   let(:session_repo) { Rubino::Session::Repository.new }
   let(:run_repo)     { Rubino::Run::Repository.new }
   let(:event_store)  { Rubino::Run::EventStore.new }
@@ -18,7 +19,8 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
 
   it "returns 200 with SSE headers and replays persisted events" do
     run = setup_run
-    event_store.append(session_id: run[:session_id], run_id: run[:id], type: "message.delta", payload: { text: "hello" })
+    event_store.append(session_id: run[:session_id], run_id: run[:id], type: "message.delta",
+                       payload: { text: "hello" })
     event_store.append(session_id: run[:session_id], run_id: run[:id], type: "run.completed", payload: { status: "ok" })
 
     status, headers, body = described_class.call(make_request(params: { id: run[:id] }))
@@ -36,10 +38,13 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
 
   it "honors Last-Event-ID to skip replayed events" do
     run = setup_run
-    first  = event_store.append(session_id: run[:session_id], run_id: run[:id], type: "message.delta", payload: { text: "a" })
-    second = event_store.append(session_id: run[:session_id], run_id: run[:id], type: "message.delta", payload: { text: "b" })
+    first  = event_store.append(session_id: run[:session_id], run_id: run[:id], type: "message.delta",
+                                payload: { text: "a" })
+    second = event_store.append(session_id: run[:session_id], run_id: run[:id], type: "message.delta",
+                                payload: { text: "b" })
 
-    _, _, body = described_class.call(make_request(params: { id: run[:id] }, headers: { "Last-Event-ID" => first[:seq].to_s }))
+    _, _, body = described_class.call(make_request(params: { id: run[:id] },
+                                                   headers: { "Last-Event-ID" => first[:seq].to_s }))
     chunks = body.to_a
     expect(chunks.length).to eq(1)
     expect(chunks.first).to include('"text":"b"')

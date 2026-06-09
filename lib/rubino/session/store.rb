@@ -44,13 +44,13 @@ module Rubino
       def copy_into(target_session_id, messages)
         messages.each do |msg|
           create(
-            session_id:   target_session_id,
-            role:         msg.role,
-            content:      msg.content,
-            tool_name:    msg.tool_name,
+            session_id: target_session_id,
+            role: msg.role,
+            content: msg.content,
+            tool_name: msg.tool_name,
             tool_call_id: msg.tool_call_id,
-            token_count:  msg.token_count,
-            metadata:     msg.metadata
+            token_count: msg.token_count,
+            metadata: msg.metadata
           )
         end
       end
@@ -63,8 +63,8 @@ module Rubino
       # an empty assistant box wrapping the tool).
       def for_session(session_id, limit: nil)
         dataset = @db[:messages]
-                    .where(session_id: session_id)
-                    .order(:created_at, Sequel.lit("rowid"))
+                  .where(session_id: session_id)
+                  .order(:created_at, Sequel.lit("rowid"))
         dataset = dataset.limit(limit) if limit
         dataset.all.map { |row| hydrate(row) }
       end
@@ -104,9 +104,9 @@ module Rubino
       # @return [Integer] number of rows removed
       def delete_from_inclusive(session_id, from_id:)
         msg = @db[:messages]
-                .where(id: from_id, session_id: session_id)
-                .select(:created_at, Sequel.lit("rowid AS row_id"))
-                .first
+              .where(id: from_id, session_id: session_id)
+              .select(:created_at, Sequel.lit("rowid AS row_id"))
+              .first
         return 0 unless msg
 
         @db[:messages]
@@ -136,15 +136,15 @@ module Rubino
         match_query = sanitize_fts_query(query)
 
         dataset = @db[:messages_fts]
-                    .where(Sequel.lit("messages_fts MATCH ?", match_query))
-                    .join(:messages, Sequel[:messages][:rowid] => Sequel[:messages_fts][:rowid])
-                    .select(
-                      Sequel[:messages][:id].as(:message_id),
-                      Sequel[:messages][:session_id],
-                      Sequel[:messages][:role],
-                      Sequel[:messages][:created_at],
-                      Sequel.lit("snippet(messages_fts, 0, '<mark>', '</mark>', '...', 16) AS snippet")
-                    )
+                  .where(Sequel.lit("messages_fts MATCH ?", match_query))
+                  .join(:messages, Sequel[:messages][:rowid] => Sequel[:messages_fts][:rowid])
+                  .select(
+                    Sequel[:messages][:id].as(:message_id),
+                    Sequel[:messages][:session_id],
+                    Sequel[:messages][:role],
+                    Sequel[:messages][:created_at],
+                    Sequel.lit("snippet(messages_fts, 0, '<mark>', '</mark>', '...', 16) AS snippet")
+                  )
 
         dataset = dataset.where(Sequel[:messages][:role] => role) if role
         dataset = dataset.where(Sequel[:messages][:tool_name] => tool) if tool
@@ -162,9 +162,9 @@ module Rubino
       # Tie-broken on rowid like the other read paths. Used by retry/undo.
       def last_for_role(session_id, role)
         row = @db[:messages]
-                .where(session_id: session_id, role: role)
-                .order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
-                .first
+              .where(session_id: session_id, role: role)
+              .order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
+              .first
         row && hydrate(row)
       end
 

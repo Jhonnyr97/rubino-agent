@@ -37,7 +37,7 @@ module Rubino
       # Finds a command by name (without the leading /)
       def find(name)
         discover! unless @discovered
-        @commands[name.to_s.sub(/\A\//, "")]
+        @commands[name.to_s.sub(%r{\A/}, "")]
       end
 
       # Returns true if input starts with a slash command

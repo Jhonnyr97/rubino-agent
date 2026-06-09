@@ -60,7 +60,7 @@ module Rubino
       private
 
       # A GFM pipe-table separator row, e.g. "|---|:--:|---|" or "---|---".
-      TABLE_SEP_RE = /\A\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*\z/.freeze
+      TABLE_SEP_RE = /\A\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*\z/
 
       # Kramdown's GFM parser only recognizes a pipe table when its header row is
       # preceded by a blank line. LLMs frequently emit a table glued directly to
@@ -129,7 +129,7 @@ module Rubino
                 when 1 then { fg: :cyan, modifiers: [:bold] }
                 when 2 then { fg: :cyan, modifiers: [:bold] }
                 when 3 then { fg: :white, modifiers: [:bold] }
-                else { fg: :white, modifiers: [:bold, :dim] }
+                else { fg: :white, modifiers: %i[bold dim] }
                 end
         # Headings are STYLED, not prefixed with literal "#" markers (L3): the
         # raw "##" would otherwise show through verbatim. A leading bar gives a
@@ -193,11 +193,12 @@ module Rubino
 
         lang = el.options[:lang].to_s
         out = []
-        if lang.empty?
-          out << [["┌─ code ", { fg: :gray }], ["─" * 40, { fg: :gray }]]
-        else
-          out << [["┌─ ", { fg: :gray }], [lang, { fg: :gray, modifiers: [:italic] }], [" ", { fg: :gray }], ["─" * 40, { fg: :gray }]]
-        end
+        out << if lang.empty?
+                 [["┌─ code ", { fg: :gray }], ["─" * 40, { fg: :gray }]]
+               else
+                 [["┌─ ", { fg: :gray }], [lang, { fg: :gray, modifiers: [:italic] }], [" ", { fg: :gray }],
+                  ["─" * 40, { fg: :gray }]]
+               end
         lines.each do |line|
           out << [["│ ", { fg: :gray }], [line, { fg: :bright_white }]]
         end
@@ -239,7 +240,7 @@ module Rubino
             next unless tr.type == :tr
 
             cells = tr.children.select { |c| %i[td th].include?(c.type) }
-                      .map { |cell| flatten_cell(cell) }
+                               .map { |cell| flatten_cell(cell) }
             if section.type == :thead && header.nil?
               header = cells
             else
@@ -300,7 +301,13 @@ module Rubino
           end
         end
         out << join_row.call(header) if header
-        out << widths.each_with_index.flat_map { |w, i| t = [["─" * w, { fg: :gray }]]; t << ["─┼─", { fg: :gray }] if i < widths.size - 1; t } if header
+        if header
+          out << widths.each_with_index.flat_map do |w, i|
+            t = [["─" * w, { fg: :gray }]]
+            t << ["─┼─", { fg: :gray }] if i < widths.size - 1
+            t
+          end
+        end
         rows.each { |r| out << join_row.call(r) }
         out
       end

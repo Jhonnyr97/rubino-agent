@@ -57,7 +57,10 @@ RSpec.describe "BottomComposer PTY integration" do
   RUBY
 
   def pty_available?
-    PTY.open { |m, s| m.close; s.close }
+    PTY.open do |m, s|
+      m.close
+      s.close
+    end
     true
   rescue StandardError
     false
@@ -80,18 +83,17 @@ RSpec.describe "BottomComposer PTY integration" do
         sleep 0.1
         writer.write("\r") # submit
 
-        begin
-          loop do
-            chunk = reader.read_nonblock(4096)
-            output << chunk.force_encoding(Encoding::UTF_8)
-            sleep 0.02
-          rescue IO::WaitReadable
-            IO.select([reader], nil, nil, 0.3) or next
-            retry
-          rescue Errno::EIO, EOFError
-            break
-          end
+        loop do
+          chunk = reader.read_nonblock(4096)
+          output << chunk.force_encoding(Encoding::UTF_8)
+          sleep 0.02
+        rescue IO::WaitReadable
+          IO.select([reader], nil, nil, 0.3) or next
+          retry
+        rescue Errno::EIO, EOFError
+          break
         end
+
         Process.wait(pid)
       end
     rescue PTY::ChildExited

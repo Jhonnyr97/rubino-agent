@@ -113,7 +113,7 @@ module Rubino
         return unless provider.to_s == "fake"
         return if ENV["RUBINO_ALLOW_FAKE"] == "1"
 
-        $stderr.puts "fake provider is dev-only — set RUBINO_ALLOW_FAKE=1 to opt in."
+        warn "fake provider is dev-only — set RUBINO_ALLOW_FAKE=1 to opt in."
         exit(1)
       end
 
@@ -131,7 +131,8 @@ module Rubino
         Metrics.describe(:runs_total, "Runs started, labelled by source.")
         Metrics.describe(:runs_completed_total, "Total number of runs that have completed (success+failure+cancelled).")
         Metrics.describe(:skills_loaded_total, "Number of times a skill was successfully loaded via the `skill` tool.")
-        Metrics.describe(:skills_created_total, "Number of new skills observed by the registry on a re-scan (disk-diff signal; no creation tool exists).")
+        Metrics.describe(:skills_created_total,
+                         "Number of new skills observed by the registry on a re-scan (disk-diff signal; no creation tool exists).")
       end
     end
   end

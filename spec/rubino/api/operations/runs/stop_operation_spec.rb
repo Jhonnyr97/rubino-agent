@@ -4,6 +4,7 @@ require "spec_helper"
 
 RSpec.describe Rubino::API::Operations::Runs::StopOperation do
   before { with_test_db }
+
   let(:session_repo) { Rubino::Session::Repository.new }
   let(:run_repo)     { Rubino::Run::Repository.new }
 

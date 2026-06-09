@@ -160,16 +160,16 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     subject(:adapter) { described_class.new(model_id: "gpt-4o", config: config) }
 
     {
-      "end_turn"      => :stop,
+      "end_turn" => :stop,
       "stop_sequence" => :stop,
-      "stop"          => :stop,
-      "max_tokens"    => :length,
-      "length"        => :length,
-      "tool_use"      => :tool_calls,
-      "tool_calls"    => :tool_calls,
-      "weird_reason"  => nil,
-      ""              => nil,
-      nil             => nil
+      "stop" => :stop,
+      "max_tokens" => :length,
+      "length" => :length,
+      "tool_use" => :tool_calls,
+      "tool_calls" => :tool_calls,
+      "weird_reason" => nil,
+      "" => nil,
+      nil => nil
     }.each do |raw, expected|
       it "maps #{raw.inspect} → #{expected.inspect}" do
         expect(adapter.send(:normalize_stop_reason, raw)).to eq(expected)
@@ -183,9 +183,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     # Mimics ruby_llm's response.raw (a Faraday::Response) carrying a parsed
     # Anthropic-Messages body. We only depend on .raw.body, never provider types.
     def response_with_body(body)
-      raw      = Struct.new(:body).new(body)
-      response = Struct.new(:raw).new(raw)
-      response
+      raw = Struct.new(:body).new(body)
+      Struct.new(:raw).new(raw)
     end
 
     it "maps an Anthropic stop_reason from the body" do
@@ -215,19 +214,19 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
   describe "#provider (auto-detection)" do
     {
-      "openai/gpt-4o"                               => "openai",
-      "gpt-4.1"                                     => "openai",
-      "o3"                                          => "openai",
-      "o4-mini"                                     => "openai",
-      "anthropic/claude-3-5-sonnet"                 => "anthropic",
-      "claude-sonnet-4-5"                           => "anthropic",
-      "google/gemini-2.5-pro"                       => "google",
-      "gemini-2.5-flash"                            => "google",
-      "amazon.titan-text-express-v1"                => "bedrock",
-      "meta.llama3-70b-instruct-v1:0"               => "bedrock",
-      "mistral.mistral-7b-instruct-v0:2"            => "bedrock",
-      "cohere.command-r-plus-v1:0"                  => "bedrock",
-      "ai21.j2-ultra-v1"                            => "bedrock"
+      "openai/gpt-4o" => "openai",
+      "gpt-4.1" => "openai",
+      "o3" => "openai",
+      "o4-mini" => "openai",
+      "anthropic/claude-3-5-sonnet" => "anthropic",
+      "claude-sonnet-4-5" => "anthropic",
+      "google/gemini-2.5-pro" => "google",
+      "gemini-2.5-flash" => "google",
+      "amazon.titan-text-express-v1" => "bedrock",
+      "meta.llama3-70b-instruct-v1:0" => "bedrock",
+      "mistral.mistral-7b-instruct-v0:2" => "bedrock",
+      "cohere.command-r-plus-v1:0" => "bedrock",
+      "ai21.j2-ultra-v1" => "bedrock"
     }.each do |model_id, expected_provider|
       it "resolves #{model_id} → #{expected_provider}" do
         adapter = described_class.new(model_id: model_id, config: config)
@@ -481,10 +480,10 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
   describe "#provider auto-detection for reasoning models (#5)" do
     {
-      "MiniMax-M2"        => "minimax",
-      "abab6.5s-chat"     => "minimax",
-      "qwen2.5-72b"       => "qwen",
-      "deepseek-r1"       => "deepseek"
+      "MiniMax-M2" => "minimax",
+      "abab6.5s-chat" => "minimax",
+      "qwen2.5-72b" => "qwen",
+      "deepseek-r1" => "deepseek"
     }.each do |model_id, expected|
       it "resolves #{model_id} → #{expected}" do
         adapter = described_class.new(model_id: model_id, config: config)
@@ -504,9 +503,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         "providers" => { "ollama" => { "openai_compatible" => true, "base_url" => "http://localhost:11434/v1" } }
       )
       ENV.delete("OPENAI_API_KEY")
-      expect {
+      expect do
         described_class.new(model_id: "llama3", config: cfg)
-      }.to raise_error(Rubino::Error, /Missing API key for provider 'ollama'/)
+      end.to raise_error(Rubino::Error, /Missing API key for provider 'ollama'/)
     end
 
     it "accepts the api_key from provider config" do
@@ -514,9 +513,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         "model" => { "provider" => "ollama", "default" => "llama3", "temperature" => 0.3, "context_length" => nil },
         "providers" => { "ollama" => { "openai_compatible" => true, "api_key" => "sk-test", "base_url" => "http://x" } }
       )
-      expect {
+      expect do
         described_class.new(model_id: "llama3", config: cfg)
-      }.not_to raise_error
+      end.not_to raise_error
     end
   end
 
@@ -624,9 +623,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         } }
       )
       ENV.delete("ANTHROPIC_API_KEY")
-      expect {
+      expect do
         described_class.new(model_id: "MiniMax-M2.7", config: bad)
-      }.to raise_error(Rubino::Error, /Missing API key for provider 'minimax'/)
+      end.to raise_error(Rubino::Error, /Missing API key for provider 'minimax'/)
     end
   end
 
@@ -794,14 +793,14 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
     it "swallows errors in the user-supplied block instead of aborting the stream (#6)" do
       received_after_error = false
-      expect {
+      expect do
         adapter.stream(messages: [{ role: "user", content: "hi" }]) do |c|
           if c[:type] == :content && !received_after_error
             received_after_error = true
             raise "ui broke"
           end
         end
-      }.not_to raise_error
+      end.not_to raise_error
       expect(received_after_error).to be true
     end
 
@@ -809,9 +808,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       filter = Rubino::LLM::InlineThinkFilter.new
       allow(Rubino::LLM::InlineThinkFilter).to receive(:new).and_return(filter)
       allow(filter).to receive(:flush).and_raise("boom on flush")
-      expect {
+      expect do
         adapter.stream(messages: [{ role: "user", content: "hi" }]) { |_| }
-      }.not_to raise_error
+      end.not_to raise_error
     end
   end
 
@@ -834,7 +833,10 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     #   block 2: "allelo. Pronto."
     let(:chunk1)   { double("Chunk", content: "Cerco le notizie in par", thinking: nil) }
     let(:chunk2)   { double("Chunk", content: "allelo. Pronto.", thinking: nil) }
-    let(:response) { double("Response", content: "Cerco le notizie in parallelo. Pronto.", input_tokens: 1, output_tokens: 1, tool_calls: nil) }
+    let(:response) do
+      double("Response", content: "Cerco le notizie in parallelo. Pronto.", input_tokens: 1, output_tokens: 1,
+                         tool_calls: nil)
+    end
     let(:fake_chat) do
       c = Object.new
       callbacks = {}
@@ -886,7 +888,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     end
   end
 
-  # NOTE (Slice 4): the adapter's retry helpers (with_retries, backoff_cap,
+  # NOTE: (Slice 4): the adapter's retry helpers (with_retries, backoff_cap,
   # backoff_cap_for, cancellable_sleep, auth_error?/raise_with_auth_hint) moved
   # to Agent::ModelCallRunner — the single retry owner — to avoid double-retry.
   # Their behaviour is now covered by model_call_runner_spec.rb. The adapter only
@@ -912,7 +914,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
     it "honors providers.<name>.request_timeout_seconds override" do
       cfg = test_configuration(
-        "model"     => { "provider" => "openai", "default" => "gpt-4o" },
+        "model" => { "provider" => "openai", "default" => "gpt-4o" },
         "providers" => { "openai" => { "request_timeout_seconds" => 1200 } }
       )
       described_class.new(model_id: "gpt-4o", config: cfg)
@@ -944,9 +946,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
       adapter = adapter_for(chat)
 
-      expect {
+      expect do
         adapter.stream(messages: [{ role: "user", content: "hi" }]) { |_| }
-      }.to raise_error(Faraday::ConnectionFailed)
+      end.to raise_error(Faraday::ConnectionFailed)
       expect(chat).to have_received(:ask).once # adapter does NOT retry itself anymore
     end
 
@@ -962,12 +964,14 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
       adapter = adapter_for(chat)
       emitted = []
-      out = adapter.stream(messages: [{ role: "user", content: "hi" }]) { |c| emitted << c[:text] if c[:type] == :content }
+      out = adapter.stream(messages: [{ role: "user", content: "hi" }]) do |c|
+        emitted << c[:text] if c[:type] == :content
+      end
 
       expect(calls).to eq(1)                    # NOT retried after output
       expect(emitted.join).to eq("Hello world") # content delivered once, not duplicated
       expect(out.content).to eq("Hello world")  # buffered partial preserved
-      expect(out.interrupted?).to be true        # flagged so the Loop fails the turn, not "completed"
+      expect(out.interrupted?).to be true # flagged so the Loop fails the turn, not "completed"
     end
   end
 
@@ -1014,8 +1018,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       messages = [
         { role: "user", content: "list files" },
         {
-          role:       "assistant",
-          content:    "let me check",
+          role: "assistant",
+          content: "let me check",
           tool_calls: [{ id: "call_1", name: "shell", arguments: { command: "ls" } }]
         },
         { role: "tool", content: "a.rb\nb.rb", tool_call_id: "call_1" },

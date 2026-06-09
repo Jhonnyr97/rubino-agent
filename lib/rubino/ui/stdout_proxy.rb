@@ -31,7 +31,10 @@ module Rubino
       # The two methods UI code actually uses are #print and #puts; #write backs
       # both formattings and is also what e.g. StringIO/IO duck-typers call.
       def write(*args)
-        args.sum { |a| append(a.to_s); a.to_s.bytesize }
+        args.sum do |a|
+          append(a.to_s)
+          a.to_s.bytesize
+        end
       end
 
       def print(*args)
@@ -56,8 +59,8 @@ module Rubino
         nil
       end
 
-      def printf(format, *args)
-        append(format(format, *args))
+      def printf(format, *)
+        append(format(format, *))
         nil
       end
 

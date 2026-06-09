@@ -4,25 +4,15 @@ require "spec_helper"
 
 RSpec.describe "OAuth API operations" do
   let(:registry) { Module.new.extend(RegistryDouble) }
-
-  module RegistryDouble
-    def fetch(id)
-      @entries[id.to_sym] or raise Rubino::NotFoundError.new("oauth_provider", id)
-    end
-    def fetch_or_nil(id) = (@entries ||= {})[id.to_sym]
-    def all = (@entries ||= {}).values
-    def install(id, provider) = ((@entries ||= {})[id.to_sym] = provider)
-    def reset = (@entries = {})
-  end
-
   let(:provider_class) do
     Class.new(Rubino::OAuth::Provider) do
       def self.id            = :dummy
       def self.display_name  = "Dummy"
       def self.site          = "https://dummy.test"
       def self.authorize_path = "/auth"
-      def self.token_path    = "/token"
+      def self.token_path = "/token"
       def self.default_scopes = %w[read]
+
       def fetch_account_info(_token)
         { account_id: "user-42", account_email: "a@b.test", metadata: { login: "u" } }
       end
@@ -32,8 +22,18 @@ RSpec.describe "OAuth API operations" do
       end
     end
   end
-
   let(:provider) { provider_class.new(client_id: "cid", client_secret: "csec") }
+
+  module RegistryDouble
+    def fetch(id)
+      @entries[id.to_sym] or raise Rubino::NotFoundError.new("oauth_provider", id)
+    end
+
+    def fetch_or_nil(id) = (@entries ||= {})[id.to_sym]
+    def all = (@entries ||= {}).values
+    def install(id, provider) = ((@entries ||= {})[id.to_sym] = provider)
+    def reset = (@entries = {})
+  end
 
   before { registry.install(:dummy, provider) }
 
@@ -89,9 +89,9 @@ RSpec.describe "OAuth API operations" do
                 "code_verifier" => "v", "redirect_uri" => "https://app/cb" },
         params: { "id" => "dummy" }
       )
-      expect {
+      expect do
         described_class.new(registry: registry, repository: repository).call(request)
-      }.to raise_error(Rubino::ValidationError, /state/)
+      end.to raise_error(Rubino::ValidationError, /state/)
     end
 
     it "exchanges, persists encrypted connection, and returns 201 sans tokens" do
@@ -126,9 +126,9 @@ RSpec.describe "OAuth API operations" do
 
     it "returns 404 when the connection does not exist" do
       request = make_request(params: { "id" => "missing" })
-      expect {
+      expect do
         described_class.new(repository: repository, registry: registry).call(request)
-      }.to raise_error(Rubino::NotFoundError)
+      end.to raise_error(Rubino::NotFoundError)
     end
 
     it "revokes the provider token, destroys the connection, and returns 204" do

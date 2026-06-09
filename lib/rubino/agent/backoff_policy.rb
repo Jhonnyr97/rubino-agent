@@ -26,7 +26,7 @@ module Rubino
 
       # Preset = [base_delay, max_delay] in seconds.
       INVALID_RESPONSE = { base: 5.0, max: 120.0 }.freeze
-      ERROR_PATH       = { base: 2.0, max:  60.0 }.freeze
+      ERROR_PATH       = { base: 2.0, max: 60.0 }.freeze
 
       # Retry-After header values larger than this are clamped, matching the
       # reference 2-minute cap.

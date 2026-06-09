@@ -1,20 +1,20 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Interaction::Lifecycle do
-  let(:session)   { { id: "sess-1", model: "gpt-4o" } }
-  let(:event_bus) { Rubino::Interaction::EventBus.new }
-  let(:null_ui)   { Rubino::UI::Null.new }
-
   # persist_user_message only collaborates with @message_store / @session_repo,
   # so config is unused here.
   subject(:lifecycle) do
     described_class.new(
-      session:   session,
+      session: session,
       event_bus: event_bus,
-      ui:        null_ui,
-      config:    nil
+      ui: null_ui,
+      config: nil
     )
   end
+
+  let(:session)   { { id: "sess-1", model: "gpt-4o" } }
+  let(:event_bus) { Rubino::Interaction::EventBus.new }
+  let(:null_ui)   { Rubino::UI::Null.new }
 
   describe "#persist_user_message" do
     let(:message_store) do
@@ -93,10 +93,10 @@ RSpec.describe Rubino::Interaction::Lifecycle do
   describe "#load_memory" do
     subject(:lifecycle) do
       described_class.new(
-        session:   session,
+        session: session,
         event_bus: event_bus,
-        ui:        null_ui,
-        config:    test_configuration("memory" => { "enabled" => true })
+        ui: null_ui,
+        config: test_configuration("memory" => { "enabled" => true })
       )
     end
 

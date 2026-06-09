@@ -18,19 +18,19 @@ module Rubino
     #   recorder.detach!
     class Recorder
       EVENT_MAP = {
-        Interaction::Events::MODEL_STREAM         => "message.delta",
-        Interaction::Events::MESSAGE_COMPLETED    => "message.completed",
-        Interaction::Events::TOOL_STARTED         => "tool.started",
-        Interaction::Events::TOOL_PROGRESS        => "tool.progress",
-        Interaction::Events::TOOL_FINISHED        => "tool.completed",
-        Interaction::Events::ARTIFACT_CREATED     => "artifact.created",
-        Interaction::Events::INPUT_INJECTED       => "input.injected",
-        Interaction::Events::SKILL_LOADED         => "skill.loaded",
-        Interaction::Events::SUBAGENT_SPAWNED     => "subagent.spawned",
-        Interaction::Events::SUBAGENT_COMPLETED   => "subagent.completed",
-        Interaction::Events::SUBAGENT_FAILED      => "subagent.failed",
+        Interaction::Events::MODEL_STREAM => "message.delta",
+        Interaction::Events::MESSAGE_COMPLETED => "message.completed",
+        Interaction::Events::TOOL_STARTED => "tool.started",
+        Interaction::Events::TOOL_PROGRESS => "tool.progress",
+        Interaction::Events::TOOL_FINISHED => "tool.completed",
+        Interaction::Events::ARTIFACT_CREATED => "artifact.created",
+        Interaction::Events::INPUT_INJECTED => "input.injected",
+        Interaction::Events::SKILL_LOADED => "skill.loaded",
+        Interaction::Events::SUBAGENT_SPAWNED => "subagent.spawned",
+        Interaction::Events::SUBAGENT_COMPLETED => "subagent.completed",
+        Interaction::Events::SUBAGENT_FAILED => "subagent.failed",
         Interaction::Events::INTERACTION_FINISHED => "run.completed",
-        Interaction::Events::INTERACTION_FAILED   => "run.failed"
+        Interaction::Events::INTERACTION_FAILED => "run.failed"
       }.freeze
 
       def initialize(run_id:, session_id:, event_bus: nil, store: nil)

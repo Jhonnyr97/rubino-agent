@@ -185,7 +185,7 @@ module Rubino
 
       def workspace_violation_message(path)
         roots = workspace_roots
-        where = roots.length == 1 ? roots.first : "any allowed root (#{roots.join(', ')})"
+        where = roots.length == 1 ? roots.first : "any allowed root (#{roots.join(", ")})"
         "Error: refusing to access '#{path}' — outside #{where}. " \
           "Set tools.workspace_strict=false in config.yml to disable this check."
       end
@@ -202,8 +202,8 @@ module Rubino
         return nil unless @read_tracker
 
         unless @read_tracker.seen?(expanded)
-          return { output:     "Error: must use the read tool on #{display_path} in this turn before editing it. " \
-                               "Read it first so the #{verb} can verify the surrounding context.",
+          return { output: "Error: must use the read tool on #{display_path} in this turn before editing it. " \
+                           "Read it first so the #{verb} can verify the surrounding context.",
                    error_code: :stale_read }
         end
 
@@ -211,9 +211,9 @@ module Rubino
         current = File.mtime(expanded)
         return nil if stashed.nil? || current <= stashed
 
-        { output:     "Error: #{display_path} changed on disk since the last read in this turn " \
-                      "(read at #{stashed.utc.iso8601}, now #{current.utc.iso8601}). " \
-                      "Re-read the file before editing so the #{verb} reflect the current contents.",
+        { output: "Error: #{display_path} changed on disk since the last read in this turn " \
+                  "(read at #{stashed.utc.iso8601}, now #{current.utc.iso8601}). " \
+                  "Re-read the file before editing so the #{verb} reflect the current contents.",
           error_code: :stale_read }
       end
     end

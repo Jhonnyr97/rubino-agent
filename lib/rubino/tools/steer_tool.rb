@@ -33,12 +33,12 @@ module Rubino
 
       def description
         "Steer one of YOUR OWN running subagents: park a short note that is " \
-        "folded into that child's context at its NEXT turn (it persists and " \
-        "changes what the child does). Use it to course-correct a child you " \
-        "started — add a constraint, narrow the scope, flag something it missed. " \
-        "You can ONLY steer subagents you started (your direct children); you " \
-        "cannot steer yourself, a sibling, or a finished child. The note is " \
-        "queued, not delivered instantly — the child sees it between turns."
+          "folded into that child's context at its NEXT turn (it persists and " \
+          "changes what the child does). Use it to course-correct a child you " \
+          "started — add a constraint, narrow the scope, flag something it missed. " \
+          "You can ONLY steer subagents you started (your direct children); you " \
+          "cannot steer yourself, a sibling, or a finished child. The note is " \
+          "queued, not delivered instantly — the child sees it between turns."
       end
 
       def input_schema
@@ -46,7 +46,8 @@ module Rubino
           type: "object",
           properties: {
             task_id: { type: "string", description: "The id (sa_…) of YOUR running subagent to steer." },
-            note:    { type: "string", description: "The steering note to fold into the child's next turn. Keep it short and self-contained." }
+            note: { type: "string",
+                    description: "The steering note to fold into the child's next turn. Keep it short and self-contained." }
           },
           required: %w[task_id note]
         }

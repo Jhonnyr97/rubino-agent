@@ -219,7 +219,7 @@ module Rubino
       # Activity finished: renders as `✓ done · name · metric` or `✗ done · name · message`
       def activity_finished(name, metric: nil, failed: false)
         @activity_open = false
-        status_icon = failed ? "✗" : "✓"
+        failed ? "✗" : "✓"
         status_word = failed ? "✗ done" : "✓ done"
         suffix = if metric
                    " · #{metric}"
@@ -228,7 +228,7 @@ module Rubino
                  else
                    ""
                  end
-        line  = "  └ #{status_word} · #{name}#{suffix}"
+        line = "  └ #{status_word} · #{name}#{suffix}"
         $stdout.puts(failed ? @pastel.red(line) : @pastel.green(line))
       end
 
@@ -244,6 +244,7 @@ module Rubino
       # Body text rendered with modest indentation (no big box).
       def body(text)
         return if text.nil? || text.to_s.empty?
+
         text.each_line do |line|
           $stdout.puts "  #{line.chomp}"
         end
@@ -264,6 +265,7 @@ module Rubino
       # Free-line annotation rendered as `┄ message ┄`, dim.
       def note(text)
         return if text.nil? || text.to_s.empty?
+
         $stdout.puts
         $stdout.puts @pastel.dim("┄ #{text} ┄")
       end
@@ -294,11 +296,11 @@ module Rubino
       # that nothing here was saved. Same render family as #note / #mode_changed.
       def probe_aside(answer)
         $stdout.puts
-        $stdout.puts @pastel.dim("┄ probe (ephemeral · not saved) ┄#{'─' * 28}")
+        $stdout.puts @pastel.dim("┄ probe (ephemeral · not saved) ┄#{"─" * 28}")
         answer.to_s.each_line do |line|
           $stdout.puts @pastel.dim("┊  #{line.chomp}")
         end
-        $stdout.puts @pastel.dim("┄ vanished · main thread untouched ┄#{'─' * 25}")
+        $stdout.puts @pastel.dim("┄ vanished · main thread untouched ┄#{"─" * 25}")
         $stdout.puts
       end
 
@@ -312,12 +314,12 @@ module Rubino
         seed = "inherits  #{short_parent}  ▸ up to here"
         seed += "  + the probe above" if included_probe
         $stdout.puts
-        $stdout.puts @pastel.dim("┄ branched ┄#{'─' * 50}")
+        $stdout.puts @pastel.dim("┄ branched ┄#{"─" * 50}")
         label = title.to_s.strip.empty? ? "" : %(  "#{title}")
         $stdout.puts @pastel.dim("┊  new session  #{short_new}#{label}")
         $stdout.puts @pastel.dim("┊  #{seed}")
         $stdout.puts @pastel.dim("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return")
-        $stdout.puts @pastel.dim("┄ now in  #{short_new} ┄#{'─' * 42}")
+        $stdout.puts @pastel.dim("┄ now in  #{short_new} ┄#{"─" * 42}")
         $stdout.puts
       end
 
@@ -353,6 +355,7 @@ module Rubino
       # sitting after a partial stream chunk.
       def queued(text)
         return if text.nil? || text.to_s.empty?
+
         $stdout.print "\r\e[2K"
         $stdout.puts @pastel.dim("queued ▸ #{text}")
         $stdout.flush
@@ -365,6 +368,7 @@ module Rubino
       # even if the cursor is mid-stream-chunk.
       def input_injected(text)
         return if text.nil? || text.to_s.empty?
+
         $stdout.print "\r\e[2K"
         $stdout.puts @pastel.dim("↳ ricevuto mentre lavoravo: #{text}")
         $stdout.flush
@@ -374,6 +378,7 @@ module Rubino
       # modest indentation, no box.
       def assistant_text(text)
         return if text.nil? || text.to_s.empty?
+
         # A progress indicator must be REPLACED by its result, never left as
         # residue above the answer (#86). On the non-streaming path nothing
         # else clears the transient "thinking…" line before the committed
@@ -389,6 +394,7 @@ module Rubino
       # the per-block streaming path so both apply the identical rendering.
       def commit_markdown_block(text)
         return if text.nil? || text.to_s.empty?
+
         render_markdown_block(text).each { |line| $stdout.puts "  #{line}" }
       end
 
@@ -529,6 +535,7 @@ module Rubino
       # Whole seconds the current/last thinking phase ran, for the collapse cue.
       def thinking_elapsed_seconds
         return 0 unless @thinking_started_at
+
         (monotonic_now - @thinking_started_at).to_i
       end
 
@@ -551,6 +558,7 @@ module Rubino
 
       def tool_body(text, kind: :plain)
         return if text.nil? || text.to_s.empty?
+
         write_body_lines(text.to_s) do |chomped|
           if kind == :diff
             case chomped[0]
@@ -566,6 +574,7 @@ module Rubino
 
       def tool_chunk(_name, chunk)
         return if chunk.nil? || chunk.to_s.empty?
+
         write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
       end
 
@@ -688,9 +697,21 @@ module Rubino
         $stdout.puts(name.to_sym == :yolo ? @pastel.yellow(text) : @pastel.dim(text))
       end
 
-      def job_enqueued(type) = puts_colored(:dim, "  ⊕ Job enqueued: #{type}") if Rubino.configuration.ui_verbose?
-      def job_started(type)  = puts_colored(:dim, "  ▶ Job started: #{type}")  if Rubino.configuration.ui_verbose?
-      def job_finished(type) = puts_colored(:dim, "  ■ Job finished: #{type}") if Rubino.configuration.ui_verbose?
+      if Rubino.configuration.ui_verbose?
+        def job_enqueued(type)
+          puts_colored(:dim, "  ⊕ Job enqueued: #{type}")
+        end
+      end
+      if Rubino.configuration.ui_verbose?
+        def job_started(type)
+          puts_colored(:dim, "  ▶ Job started: #{type}")
+        end
+      end
+      if Rubino.configuration.ui_verbose?
+        def job_finished(type)
+          puts_colored(:dim, "  ■ Job finished: #{type}")
+        end
+      end
 
       def with_spinner(message, &block)
         spinner = TTY::Spinner.new("[:spinner] #{message}", format: :dots)
@@ -711,7 +732,7 @@ module Rubino
         activity_started(type)
       end
 
-      def box_close(*pieces, color: nil)
+      def box_close(*_pieces, color: nil)
         # Compact: close the activity
         activity_finished(@activity_name || "done", failed: color == :red)
       end
@@ -826,7 +847,7 @@ module Rubino
           # denies read symmetrically instead of mixing "yes, once" with
           # "no — deny this once".
           @prompt.select("approve?", cycle: false) do |menu|
-            menu.choice "Approve once",                          :once
+            menu.choice "Approve once", :once
             menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
             menu.choice "Approve — this command (always)",       :always_command
             menu.choice "Approve — this tool (this session)",    :always_tool
@@ -1047,7 +1068,7 @@ module Rubino
       # is the only place that carries the "ctrl-o to show" affordance.
       def commit_reasoning_aside(text, seconds)
         $stdout.puts
-        $stdout.puts @pastel.dim("┄ thinking ┄#{'─' * 50}")
+        $stdout.puts @pastel.dim("┄ thinking ┄#{"─" * 50}")
         text.to_s.each_line do |line|
           $stdout.puts @pastel.dim("┊  #{line.chomp}")
         end
@@ -1152,7 +1173,7 @@ module Rubino
 
       def path_key?(key)
         k = key.to_s
-        k == "file_path" || k == "path"
+        %w[file_path path].include?(k)
       end
 
       def pick_hint(arguments)

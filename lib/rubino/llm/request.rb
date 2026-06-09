@@ -41,14 +41,14 @@ module Rubino
 
       def to_h
         {
-          messages:    @messages,
-          tools:       @tools,
+          messages: @messages,
+          tools: @tools,
           temperature: @temperature,
-          max_tokens:  @max_tokens,
-          thinking:    @thinking,
-          prefill:     @prefill,
+          max_tokens: @max_tokens,
+          thinking: @thinking,
+          prefill: @prefill,
           image_paths: @image_paths,
-          stream:      @stream
+          stream: @stream
         }
       end
     end

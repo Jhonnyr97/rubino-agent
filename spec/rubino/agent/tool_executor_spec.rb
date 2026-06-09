@@ -1,14 +1,22 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Agent::ToolExecutor do
+  subject(:executor) do
+    described_class.new(registry: registry, approval_policy: policy, ui: ui,
+                        config: config, tool_call_repository: repo)
+  end
+
   let(:tool) do
     Class.new(Rubino::Tools::Base) do
-      def name; "fake_tool"; end
-      def description; "fake"; end
-      def input_schema; { type: "object" }; end
-      def risk_level; :low; end
+      def name = "fake_tool"
+      def description = "fake"
+      def input_schema = { type: "object" }
+      def risk_level = :low
       attr_writer :output
-      def call(_args); @output.nil? ? "ok" : @output; end
+
+      def call(_args)
+        @output.nil? ? "ok" : @output
+      end
     end.new
   end
 
@@ -18,14 +26,10 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   let(:repo)     { double("Repo", record: true) }
   let(:config)   { Rubino.configuration }
 
-  subject(:executor) do
-    described_class.new(registry: registry, approval_policy: policy, ui: ui,
-                        config: config, tool_call_repository: repo)
-  end
-
   # Overflowing output spills the full text to <home>/tool-results/<id>.txt;
   # sandbox home so tests don't write into the real ~/.rubino.
   let(:spill_home) { Dir.mktmpdir("spill_home") }
+
   after { FileUtils.rm_rf(spill_home) }
   before { allow(Rubino).to receive(:home_path).and_return(spill_home) }
 
@@ -81,11 +85,11 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     it "warns before running a risky tool in skip mode" do
       # fake_tool defined at the top of this file is :low risk; build a :high one
       risky = Class.new(Rubino::Tools::Base) do
-        def name; "shell"; end
-        def description; "x"; end
-        def input_schema; {}; end
-        def risk_level; :high; end
-        def call(_); "out"; end
+        def name = "shell"
+        def description = "x"
+        def input_schema = {}
+        def risk_level = :high
+        def call(_) = "out"
       end.new
       allow(registry).to receive(:find).and_return(risky)
 
@@ -104,12 +108,18 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   # stdout). The executor used to render BOTH, so every output line appeared
   # twice in the timeline. When the tool streamed, the body must be suppressed.
   describe "streamed tool output is not also rendered as a body" do
+    subject(:streaming_executor) do
+      described_class.new(registry: streaming_registry, approval_policy: policy,
+                          ui: streaming_ui, config: config, tool_call_repository: repo)
+    end
+
     let(:streaming_tool) do
       Class.new(Rubino::Tools::Base) do
-        def name; "fake_stream"; end
-        def description; "fake"; end
-        def input_schema; { type: "object" }; end
-        def risk_level; :low; end
+        def name = "fake_stream"
+        def description = "fake"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+
         def call(_args)
           emit_chunk("13\n")
           { output: "13\n", body: "13", body_kind: :plain }
@@ -122,11 +132,6 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       double("UI", confirm: true, tool_started: nil, tool_finished: nil, tool_chunk: nil, tool_body: nil)
     end
 
-    subject(:streaming_executor) do
-      described_class.new(registry: streaming_registry, approval_policy: policy,
-                          ui: streaming_ui, config: config, tool_call_repository: repo)
-    end
-
     before { allow(policy).to receive(:decide).and_return(:allow) }
 
     it "streams chunks but does NOT re-render the body for a streaming tool" do
@@ -137,11 +142,11 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
     it "still renders the body for a NON-streaming tool that returns one" do
       non_streaming = Class.new(Rubino::Tools::Base) do
-        def name; "fake_body"; end
-        def description; "fake"; end
-        def input_schema; { type: "object" }; end
-        def risk_level; :low; end
-        def call(_args); { output: "x", body: "preview", body_kind: :plain }; end
+        def name = "fake_body"
+        def description = "fake"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+        def call(_args) = { output: "x", body: "preview", body_kind: :plain }
       end.new
       allow(streaming_registry).to receive(:find).and_return(non_streaming)
       expect(streaming_ui).to receive(:tool_body).with("preview", kind: :plain)
@@ -154,12 +159,19 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     # A long, silent tool that emits several stream chunks. In API mode these
     # must reach the event bus as TOOL_PROGRESS so the SSE stream isn't silent
     # for minutes and the idle watchdog doesn't reap a busy-but-quiet run.
+    subject(:bus_executor) do
+      described_class.new(registry: bus_reg, approval_policy: policy,
+                          ui: bus_ui, config: config, tool_call_repository: repo,
+                          event_bus: bus)
+    end
+
     let(:chatty_tool) do
       Class.new(Rubino::Tools::Base) do
-        def name; "chatty"; end
-        def description; "fake"; end
-        def input_schema; { type: "object" }; end
-        def risk_level; :low; end
+        def name = "chatty"
+        def description = "fake"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+
         def call(_args)
           5.times { |i| emit_chunk("chunk #{i}\n") }
           "done"
@@ -169,12 +181,6 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     let(:bus)     { Rubino::Interaction::EventBus.new }
     let(:bus_reg) { double("Registry", find: chatty_tool) }
     let(:bus_ui)  { double("UI", confirm: true, tool_started: nil, tool_finished: nil) }
-
-    subject(:bus_executor) do
-      described_class.new(registry: bus_reg, approval_policy: policy,
-                          ui: bus_ui, config: config, tool_call_repository: repo,
-                          event_bus: bus)
-    end
 
     before { allow(policy).to receive(:decide).and_return(:allow) }
 
@@ -232,7 +238,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       # 4-byte emoji repeated past the byte cap → would split mid-char with naked byteslice
       allow(config).to receive(:tool_output_max_bytes).and_return(10)
       allow(config).to receive(:tool_output_max_lines).and_return(1_000)
-      tool.output = "🚀" * 20  # 4 bytes × 20 = 80 bytes
+      tool.output = "🚀" * 20 # 4 bytes × 20 = 80 bytes
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c5")
       expect(result.output.valid_encoding?).to be true

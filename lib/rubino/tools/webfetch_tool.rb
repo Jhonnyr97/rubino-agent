@@ -21,7 +21,7 @@ module Rubino
 
       def description
         "Fetch content from a URL and return it as text. " \
-        "Useful for reading documentation, API references, and web pages."
+          "Useful for reading documentation, API references, and web pages."
       end
 
       def input_schema
@@ -84,7 +84,10 @@ module Rubino
           # response is labelled text/* but contains stray non-UTF-8 bytes
           # (which is the common case for misencoded HTML / CRLF logs).
           body = response.body.to_s.dup.force_encoding("UTF-8").scrub("?")
-          body = body.byteslice(0, MAX_BODY_SIZE).to_s.force_encoding("UTF-8").scrub("?") if body.bytesize > MAX_BODY_SIZE
+          if body.bytesize > MAX_BODY_SIZE
+            body = body.byteslice(0,
+                                  MAX_BODY_SIZE).to_s.force_encoding("UTF-8").scrub("?")
+          end
 
           if format == "html"
             body
@@ -111,9 +114,9 @@ module Rubino
 
       def binary_refusal(url, content_type)
         "Error: refusing to fetch binary content as text " \
-        "(URL=#{url}, Content-Type=#{content_type.split(';').first.to_s.strip}). " \
-        "Use a dedicated tool (e.g. read_file after downloading, attach_file, " \
-        "or an image-aware model) for binary assets."
+          "(URL=#{url}, Content-Type=#{content_type.split(";").first.to_s.strip}). " \
+          "Use a dedicated tool (e.g. read_file after downloading, attach_file, " \
+          "or an image-aware model) for binary assets."
       end
 
       def strip_html(html)
@@ -121,12 +124,12 @@ module Rubino
         text = html.dup
 
         # Remove script and style blocks
-        text.gsub!(/<script[^>]*>.*?<\/script>/mi, "")
-        text.gsub!(/<style[^>]*>.*?<\/style>/mi, "")
+        text.gsub!(%r{<script[^>]*>.*?</script>}mi, "")
+        text.gsub!(%r{<style[^>]*>.*?</style>}mi, "")
 
         # Convert common elements
-        text.gsub!(/<br\s*\/?>/i, "\n")
-        text.gsub!(/<\/(p|div|h[1-6]|li|tr)>/i, "\n")
+        text.gsub!(%r{<br\s*/?>}i, "\n")
+        text.gsub!(%r{</(p|div|h[1-6]|li|tr)>}i, "\n")
         text.gsub!(/<(h[1-6])[^>]*>/i, "\n## ")
         text.gsub!(/<li[^>]*>/i, "- ")
 

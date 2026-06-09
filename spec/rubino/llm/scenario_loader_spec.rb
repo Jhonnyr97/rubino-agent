@@ -29,9 +29,9 @@ RSpec.describe Rubino::LLM::ScenarioLoader do
 
     it "raises NotFound citing both paths when the scenario is missing" do
       Dir.mktmpdir do |dir|
-        expect {
+        expect do
           described_class.load("does-not-exist", scenarios_dir: dir)
-        }.to raise_error(Rubino::LLM::ScenarioLoader::NotFound) do |err|
+        end.to raise_error(Rubino::LLM::ScenarioLoader::NotFound) do |err|
           expect(err.message).to include(dir)
           expect(err.message).to include(described_class::DEFAULT_DIR)
           expect(err.message).to include("does-not-exist")

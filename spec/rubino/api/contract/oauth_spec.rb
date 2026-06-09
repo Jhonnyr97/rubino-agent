@@ -13,7 +13,7 @@ RSpec.describe "API contract: oauth" do
     # ConnectionRepository constructs a TokenEncryptor at init time even when
     # no rows exist; supply a deterministic key so the request never reaches
     # the decryptor with a missing-key error.
-    @prev_key = ENV["RUBINO_ENCRYPTION_KEY"]
+    @prev_key = ENV.fetch("RUBINO_ENCRYPTION_KEY", nil)
     ENV["RUBINO_ENCRYPTION_KEY"] = Base64.strict_encode64("0" * 32)
   end
 
@@ -30,6 +30,7 @@ RSpec.describe "API contract: oauth" do
       def self.authorize_path  = "/auth"
       def self.token_path      = "/token"
       def self.default_scopes  = %w[read]
+
       def fetch_account_info(_token)
         { account_id: "user-42", account_email: "a@b.test", metadata: { login: "u" } }
       end
@@ -112,7 +113,7 @@ RSpec.describe "API contract: oauth" do
         "code_verifier" => "v", "redirect_uri" => "https://app/cb"
       }
       expect(last_response.status).to eq(422)
-      expect(json_body.dig("error", "message")).to match(/state/)
+      expect(json_body.dig("error", "message")).to include("state")
     end
 
     it "502 when the provider raises during token exchange" do

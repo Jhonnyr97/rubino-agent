@@ -39,10 +39,12 @@ module Rubino
               return chunk if chunk.nil?
 
               @read += chunk.bytesize
-              raise Rubino::PayloadTooLargeError.new(
-                "multipart upload exceeds #{@limit} bytes",
-                details: { limit_bytes: @limit }
-              ) if @read > @limit
+              if @read > @limit
+                raise Rubino::PayloadTooLargeError.new(
+                  "multipart upload exceeds #{@limit} bytes",
+                  details: { limit_bytes: @limit }
+                )
+              end
 
               chunk
             end
@@ -58,15 +60,17 @@ module Rubino
               @io.eof?
             end
 
-            def gets(*args)
-              line = @io.gets(*args)
+            def gets(*)
+              line = @io.gets(*)
               return line if line.nil?
 
               @read += line.bytesize
-              raise Rubino::PayloadTooLargeError.new(
-                "multipart upload exceeds #{@limit} bytes",
-                details: { limit_bytes: @limit }
-              ) if @read > @limit
+              if @read > @limit
+                raise Rubino::PayloadTooLargeError.new(
+                  "multipart upload exceeds #{@limit} bytes",
+                  details: { limit_bytes: @limit }
+                )
+              end
 
               line
             end
@@ -75,8 +79,8 @@ module Rubino
               @io.respond_to?(name, include_private) || super
             end
 
-            def method_missing(name, *args, &block)
-              return @io.send(name, *args, &block) if @io.respond_to?(name)
+            def method_missing(name, *, &)
+              return @io.send(name, *, &) if @io.respond_to?(name)
 
               super
             end
@@ -97,14 +101,19 @@ module Rubino
 
           def call(request)
             content_type = request.env["CONTENT_TYPE"].to_s
-            raise ValidationError, "content-type must be multipart/form-data" unless content_type.start_with?("multipart/form-data")
+            unless content_type.start_with?("multipart/form-data")
+              raise ValidationError,
+                    "content-type must be multipart/form-data"
+            end
 
             limit = max_upload_bytes
             declared = request.env["CONTENT_LENGTH"].to_s
-            raise PayloadTooLargeError.new(
-              "multipart upload exceeds #{limit} bytes",
-              details: { limit_bytes: limit }
-            ) if !declared.empty? && declared.to_i > limit
+            if !declared.empty? && declared.to_i > limit
+              raise PayloadTooLargeError.new(
+                "multipart upload exceeds #{limit} bytes",
+                details: { limit_bytes: limit }
+              )
+            end
 
             params = parse_with_cap(request.env, limit)
             upload = params["file"]

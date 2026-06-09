@@ -7,7 +7,7 @@ RSpec.describe Rubino::Security::AllowlistPersister do
   around do |example|
     Dir.mktmpdir do |dir|
       @config_path = File.join(dir, "config.yml")
-      File.write(@config_path, { "security" => { "command_allowlist" => %w[git\ status] } }.to_yaml)
+      File.write(@config_path, { "security" => { "command_allowlist" => ["git status"] } }.to_yaml)
       example.run
     end
   end
@@ -19,7 +19,7 @@ RSpec.describe Rubino::Security::AllowlistPersister do
   end
 
   it "appends a new value to security.command_allowlist on disk and in memory" do
-    config = config_with(%w[git\ status])
+    config = config_with(["git status"])
     result = described_class.persist("git", config: config, config_path: @config_path)
 
     expect(result).to eq(["git status", "git"])

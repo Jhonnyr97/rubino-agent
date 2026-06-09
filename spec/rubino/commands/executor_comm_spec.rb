@@ -4,11 +4,11 @@
 # the Executor: /agents <id> steer, /agents <id> probe, and /reply <id>.
 # Render/visual correctness is verified separately in the headless terminal.
 RSpec.describe "Rubino::Commands::Executor comm verbs" do
+  subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: nil) }
+
   let(:db)     { test_database }
   let(:ui)     { Rubino::UI::Null.new }
   let(:loader) { Rubino::Commands::Loader.new(config: test_configuration) }
-
-  subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: nil) }
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
@@ -16,6 +16,7 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
     Rubino::Tools::Registry.reset!
     Rubino::Tools::BackgroundTasks.reset!
   end
+
   after do
     Rubino::Tools::Registry.reset!
     Rubino::Tools::BackgroundTasks.reset!
@@ -23,7 +24,7 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
 
   def info_lines
     ui.messages.select { |m| %i[info status success error].include?(m[:level]) }
-      .map { |m| m[:message].to_s }
+               .map { |m| m[:message].to_s }
   end
 
   describe "/agents <id> steer" do
@@ -89,7 +90,7 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
       entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
       Rubino::Tools::BackgroundTasks.instance.begin_ask(
         entry.id, gate: Rubino::Run::ApprovalGate.new, ask_id: "a",
-        question: "which db?", blocking: true
+                  question: "which db?", blocking: true
       )
       exec.try_execute("/reply")
       expect(info_lines.join("\n")).to include("waiting on you")

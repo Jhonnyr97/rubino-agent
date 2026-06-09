@@ -2,7 +2,6 @@
 
 require "fileutils"
 require "net/http"
-require "set"
 require "uri"
 
 module Rubino
@@ -51,6 +50,7 @@ module Rubino
       def fetch_one(dir, url)
         uri = parse_uri(url)
         return nil unless uri
+
         unless host_allowed?(uri.host)
           log_warn(url, "host #{uri.host.inspect} not in attachments.allowed_hosts")
           return nil
@@ -60,7 +60,7 @@ module Rubino
         path     = File.join(dir, filename)
 
         http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl     = (uri.scheme == "https")
+        http.use_ssl = (uri.scheme == "https")
         http.open_timeout = HTTP_TIMEOUT
         http.read_timeout = HTTP_TIMEOUT
 
@@ -117,6 +117,7 @@ module Rubino
         # the comparison against LOOPBACK_HOSTS matches.
         normalized = host.to_s.downcase.delete_prefix("[").delete_suffix("]")
         return false if normalized.empty?
+
         LOOPBACK_HOSTS.include?(normalized) || @allowed_hosts.include?(normalized)
       end
 
@@ -124,6 +125,7 @@ module Rubino
         uri = URI.parse(url.to_s)
         return nil unless %w[http https].include?(uri.scheme)
         return nil if uri.host.to_s.empty?
+
         uri
       rescue URI::InvalidURIError
         nil

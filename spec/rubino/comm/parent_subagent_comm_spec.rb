@@ -31,6 +31,7 @@ RSpec.describe "parent <-> subagent communication" do
     Rubino::Tools::Registry.reset!
     Rubino::Tools::BackgroundTasks.reset!
   end
+
   after do
     Rubino::Tools::Registry.reset!
     Rubino::Tools::BackgroundTasks.reset!
@@ -46,9 +47,9 @@ RSpec.describe "parent <-> subagent communication" do
   describe "steer (parent -> running child, persisted)" do
     let(:tool_executor) do
       Rubino::Agent::ToolExecutor.new(
-        registry:        Rubino::Tools::Registry,
+        registry: Rubino::Tools::Registry,
         approval_policy: Rubino::Security::ApprovalPolicy.new(config: config),
-        ui:              null_ui, config: config, event_bus: event_bus
+        ui: null_ui, config: config, event_bus: event_bus
       )
     end
     let(:budget) { Rubino::Agent::IterationBudget.new(config: config) }
@@ -210,6 +211,7 @@ RSpec.describe "parent <-> subagent communication" do
       Rubino::Tools::Registry.register_defaults!
       Rubino.agent_registry = Rubino::Agent::AgentRegistry.new
     end
+
     after { Rubino.agent_registry = nil }
 
     def wait_for(timeout: 2.0)
@@ -238,10 +240,12 @@ RSpec.describe "parent <-> subagent communication" do
       end
       stub_const("GrandchildRunner", Class.new do
         def initialize(latch) = @latch = latch
+
         def run!(_input, **_opts)
           @latch.pop # park so the grandchild stays live long enough to inspect
           "grandchild done"
         end
+
         def cancel!; end
       end)
 
@@ -251,15 +255,15 @@ RSpec.describe "parent <-> subagent communication" do
 
       # The child ran and spawned a grandchild via the real path.
       wait_for { grandchild_handles.any? }
-      expect(grandchild_handles.first).to match(/Started background subagent 'general' as task sa_/)
+      expect(grandchild_handles.first).to include("Started background subagent 'general' as task sa_")
       grandchild_id = grandchild_handles.first[/sa_[0-9a-f]+/]
 
       child = registry.find(child_id)
       grandchild = registry.find(grandchild_id)
-      expect(child.owner_subagent_id).to be_nil      # human-spawned
+      expect(child.owner_subagent_id).to be_nil # human-spawned
       expect(child.depth).to eq(0)
       expect(grandchild.owner_subagent_id).to eq(child_id) # ownership link
-      expect(grandchild.depth).to eq(1)                # owner.depth + 1
+      expect(grandchild.depth).to eq(1) # owner.depth + 1
       expect(registry.owned_by?(child_id, grandchild_id)).to be(true)
 
       latch << :go
@@ -286,11 +290,13 @@ RSpec.describe "parent <-> subagent communication" do
       end
 
       expect(out).to include("Max nesting depth reached")
-      expect(out).not_to match(/Started background subagent/)
+      expect(out).not_to include("Started background subagent")
     end
 
     it "keeps ask_parent subagent-only after nesting is re-enabled" do
-      Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new) unless Rubino::Tools::Registry.find("ask_parent")
+      unless Rubino::Tools::Registry.find("ask_parent")
+        Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
+      end
       subagent = Rubino.agent_registry.find("explore")
       primary  = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
 
@@ -303,7 +309,10 @@ RSpec.describe "parent <-> subagent communication" do
       registry = Rubino::Tools::BackgroundTasks.instance
       latch = Queue.new
       runner = Class.new do
-        define_method(:run!) { |_i, **_o| latch.pop; "done" }
+        define_method(:run!) do |_i, **_o|
+          latch.pop
+          "done"
+        end
         define_method(:cancel!) {}
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
@@ -327,7 +336,7 @@ RSpec.describe "parent <-> subagent communication" do
       gate  = Rubino::Run::ApprovalGate.new
       Rubino::Tools::BackgroundTasks.instance.begin_ask(
         entry.id, gate: gate, ask_id: "ask_#{entry.id}",
-        question: "migrate v1 -> v2 or keep both?", blocking: true
+                  question: "migrate v1 -> v2 or keep both?", blocking: true
       )
 
       expect(Rubino::Tools::BackgroundTasks.instance.running.map(&:id)).to include(entry.id)
@@ -351,9 +360,9 @@ RSpec.describe "parent <-> subagent communication" do
   describe "model-callable steer (S2) on a real child Loop" do
     let(:tool_executor) do
       Rubino::Agent::ToolExecutor.new(
-        registry:        Rubino::Tools::Registry,
+        registry: Rubino::Tools::Registry,
         approval_policy: Rubino::Security::ApprovalPolicy.new(config: config),
-        ui:              null_ui, config: config, event_bus: event_bus
+        ui: null_ui, config: config, event_bus: event_bus
       )
     end
     let(:budget) { Rubino::Agent::IterationBudget.new(config: config) }

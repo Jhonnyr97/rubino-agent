@@ -23,7 +23,7 @@ RSpec.describe Rubino::API::Operations::Sessions::RetryOperation do
     message_store.create(session_id: session[:id], role: "user", content: "first question")
     message_store.create(session_id: session[:id], role: "assistant", content: "a wrong answer")
     message_store.create(session_id: session[:id], role: "user", content: "second question")
-    sleep 0.005  # ensure distinct created_at vs assistant below
+    sleep 0.005 # ensure distinct created_at vs assistant below
     message_store.create(session_id: session[:id], role: "assistant", content: "another wrong answer")
 
     status, body = operation.call(make_request(params: { id: session[:id] }))

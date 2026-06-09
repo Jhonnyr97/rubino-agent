@@ -65,11 +65,11 @@ RSpec.describe Rubino::Tools::ShellTool do
     end
 
     it "blocks chmod -R 000 /" do
-      expect_blocked("chmod -R 000 /", /chmod\/chown of root filesystem/)
+      expect_blocked("chmod -R 000 /", %r{chmod/chown of root filesystem})
     end
 
     it "blocks shutdown now" do
-      expect_blocked("shutdown now", /shutdown\/reboot/)
+      expect_blocked("shutdown now", %r{shutdown/reboot})
     end
 
     it "allows rm -rf node_modules (no root target)" do

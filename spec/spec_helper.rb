@@ -60,7 +60,7 @@ RSpec.configure do |config|
     FileUtils.rm_rf(TEST_HOME)
   end
 
-  config.before(:each) do
+  config.before do
     Rubino.reset!
     # Modes is in-process state — without this, `/mode yolo` or `--yolo` in
     # one spec leaks into every spec that runs after it under

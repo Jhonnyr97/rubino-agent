@@ -20,9 +20,7 @@ module Rubino
 
     class << self
       # The active skill name (String), or nil when none is pinned.
-      def current
-        @current
-      end
+      attr_reader :current
 
       # Pins +name+ as the active skill. A nil/empty/"none" clears it. Returns
       # the new value (the name String, or nil when cleared). The caller is
@@ -30,7 +28,7 @@ module Rubino
       # this — ActiveSkill is a dumb slot, like Modes.
       def set(name)
         normalized = name.to_s.strip
-        @current = (normalized.empty? || normalized.casecmp?(NONE)) ? nil : normalized
+        @current = normalized.empty? || normalized.casecmp?(NONE) ? nil : normalized
       end
 
       # Clears the active skill (the `/skills none` / `✗ none` path).

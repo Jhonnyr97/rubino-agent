@@ -55,7 +55,7 @@ module Rubino
         end
 
         Rubino.ui.info("Session: #{session[:id]}")
-        Rubino.ui.info("Title: #{session[:title] || '(untitled)'}")
+        Rubino.ui.info("Title: #{session[:title] || "(untitled)"}")
         Rubino.ui.info("Status: #{session[:status]}")
         Rubino.ui.info("Model: #{session[:model]}")
         Rubino.ui.info("Messages: #{session[:message_count]}")
@@ -63,9 +63,9 @@ module Rubino
         Rubino.ui.info("Created: #{session[:created_at]}")
         Rubino.ui.info("Updated: #{session[:updated_at]}")
 
-        if session[:parent_session_id]
-          Rubino.ui.info("Parent: #{session[:parent_session_id]}")
-        end
+        return unless session[:parent_session_id]
+
+        Rubino.ui.info("Parent: #{session[:parent_session_id]}")
       end
 
       desc "delete ID", "Permanently delete a session and all its messages/events"
@@ -83,7 +83,7 @@ module Rubino
 
         unless options[:force]
           confirmed = Rubino.ui.confirm(
-            "Delete session #{session[:id][0..7]} '#{session[:title] || '(untitled)'}'? " \
+            "Delete session #{session[:id][0..7]} '#{session[:title] || "(untitled)"}'? " \
             "This will also remove its messages, events, and tool calls."
           )
           unless confirmed

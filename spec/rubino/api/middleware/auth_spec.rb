@@ -11,7 +11,7 @@ RSpec.describe Rubino::API::Middleware::Auth do
     {
       "REQUEST_METHOD" => method,
       "PATH_INFO" => path
-    }.merge(headers.transform_keys { |k| "HTTP_#{k.upcase.tr('-', '_')}" })
+    }.merge(headers.transform_keys { |k| "HTTP_#{k.upcase.tr("-", "_")}" })
   end
 
   it "passes through with a valid bearer token" do

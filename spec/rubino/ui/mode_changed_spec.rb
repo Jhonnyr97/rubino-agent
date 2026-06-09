@@ -20,13 +20,13 @@ RSpec.describe "UI#mode_changed" do
 
     it "renders a `┄ mode <prev> → <new> ┄` free line (compact, no timestamp)" do
       out = capture_stdout { ui.mode_changed(:plan, previous: :default) }
-      expect(out).to match(/┄ mode default → plan ┄/)
+      expect(out).to include("┄ mode default → plan ┄")
     end
 
     it "omits the arrow when there is no previous (initial set)" do
       out = capture_stdout { ui.mode_changed(:plan) }
-      expect(out).to match(/┄ mode plan ┄/)
-      expect(out).not_to match(/→/)
+      expect(out).to include("┄ mode plan ┄")
+      expect(out).not_to include("→")
     end
 
     it "colours the line yellow when entering yolo so it stands out scrolling back" do

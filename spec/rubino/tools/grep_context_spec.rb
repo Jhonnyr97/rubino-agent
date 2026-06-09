@@ -27,7 +27,7 @@ RSpec.describe Rubino::Tools::GrepTool do
       expect(body).to match(/a\.txt:2:\s+MATCH here/)
       expect(body).to match(/a\.txt:3-\s+tail1/)
       expect(body).to match(/a\.txt:4-\s+tail2/)
-      expect(body).not_to match(/tail3/)
+      expect(body).not_to include("tail3")
     end
   end
 
@@ -39,7 +39,7 @@ RSpec.describe Rubino::Tools::GrepTool do
       expect(body).to match(/b\.txt:2-\s+lead2/)
       expect(body).to match(/b\.txt:3-\s+lead3/)
       expect(body).to match(/b\.txt:4:\s+MATCH here/)
-      expect(body).not_to match(/lead1/)
+      expect(body).not_to include("lead1")
     end
   end
 
@@ -52,8 +52,8 @@ RSpec.describe Rubino::Tools::GrepTool do
       expect(body).to match(/c\.txt:3-\s+l3/)
       expect(body).to match(/c\.txt:4:\s+MATCH/)
       expect(body).to match(/c\.txt:5-\s+t1/)
-      expect(body).not_to match(/l1/) # `context` of 1 wins, so we don't see line 1 or 2
-      expect(body).not_to match(/t3/)
+      expect(body).not_to include("l1") # `context` of 1 wins, so we don't see line 1 or 2
+      expect(body).not_to include("t3")
     end
   end
 
@@ -63,8 +63,8 @@ RSpec.describe Rubino::Tools::GrepTool do
       out = tool.call("pattern" => "MATCH", "path" => tmp_dir)
       body = out[:output]
       expect(body).to match(/d\.txt:2:\s+MATCH/)
-      expect(body).not_to match(/before/)
-      expect(body).not_to match(/after/)
+      expect(body).not_to include("before")
+      expect(body).not_to include("after")
     end
   end
 end

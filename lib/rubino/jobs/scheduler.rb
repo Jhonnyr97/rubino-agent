@@ -40,7 +40,8 @@ module Rubino
         end
       end
 
-      def initialize(rufus: nil, cron_job_repository: nil, run_repository: nil, session_repository: nil, executor: nil, webhook: nil, logger: nil)
+      def initialize(rufus: nil, cron_job_repository: nil, run_repository: nil, session_repository: nil, executor: nil,
+                     webhook: nil, logger: nil)
         @rufus = rufus || Rufus::Scheduler.new
         @cron_repo = cron_job_repository || CronJobRepository.new
         @run_repo = run_repository || ::Rubino::Run::Repository.new
@@ -102,7 +103,8 @@ module Rubino
         return unless job
 
         session = @session_repo.create(source: "cron", model: job[:model], provider: job[:provider], title: job[:name])
-        run = @run_repo.create(session_id: session[:id], input_text: job[:prompt], model: job[:model], provider: job[:provider], cron_job_id: job_id)
+        run = @run_repo.create(session_id: session[:id], input_text: job[:prompt], model: job[:model],
+                               provider: job[:provider], cron_job_id: job_id)
         @cron_repo.record_run(job_id, run_id: run[:id])
 
         @executor.start(run, on_complete: ->(payload) { deliver_if_needed(job, payload) })

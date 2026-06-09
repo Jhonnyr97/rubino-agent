@@ -2,9 +2,9 @@
 
 RSpec.describe Rubino::LLM::CredentialCheck do
   def config(raw)
-    Rubino::Config::Configuration.new(raw: Rubino::Config::Defaults.to_hash.merge(raw) { |_k, a, b|
+    Rubino::Config::Configuration.new(raw: Rubino::Config::Defaults.to_hash.merge(raw) do |_k, a, b|
       a.is_a?(Hash) && b.is_a?(Hash) ? a.merge(b) : b
-    })
+    end)
   end
 
   around do |ex|
@@ -36,7 +36,7 @@ RSpec.describe Rubino::LLM::CredentialCheck do
 
     it "is TRUE when the provider key is set in config (api_key)" do
       c = config(
-        "model"     => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
         "providers" => { "minimax" => { "api_key" => "sk-test", "anthropic_compatible" => true } }
       )
       expect(described_class.usable?(c)).to be true

@@ -52,34 +52,42 @@ module Rubino
         !@gate.nil? && !@recorder.nil?
       end
 
-      def info(message);    emit_event(:info,    message: message);    end
+      def info(message) = emit_event(:info, message: message)
 
-      def success(message); emit_event(:success, message: message);    end
-      def warning(message); emit_event(:warning, message: message);    end
-      def error(message);   emit_event(:error,   message: message);    end
-      def status(message);  emit_event(:status,  message: message);    end
-      def note(text);       emit_event(:note,    text: text);          end
-      def assistant_text(text); emit_event(:assistant_text, text: text); end
-      def stream(chunk);    emit_event(:stream,  chunk: chunk);        end
-      def stream_end;       emit_event(:stream_end);                   end
-      def thinking_started; emit_event(:thinking_started);             end
-      def table(headers:, rows:); emit_event(:table, headers: headers, rows: rows); end
-      def tool_started(name, arguments: nil, at: nil); emit_event(:tool_started, name: name, arguments: arguments, at: at); end
-      def tool_body(text, kind: :plain);     emit_event(:tool_body, text: text, kind: kind); end
-      def tool_chunk(name, chunk);            emit_event(:tool_chunk, name: name, chunk: chunk); end
-      def tool_finished(name, result: nil); emit_event(:tool_finished, name: name); end
-      def compression_started(at: nil);                emit_event(:compression_started, at: at); end
-      def compression_finished(metadata, at: nil);     emit_event(:compression_finished, metadata: metadata, at: at); end
-      def job_enqueued(type);                 emit_event(:job_enqueued, type: type); end
-      def job_started(type);                  emit_event(:job_started, type: type); end
-      def job_finished(type);                 emit_event(:job_finished, type: type); end
-      def separator;                          emit_event(:separator); end
-      def blank_line;                         emit_event(:blank_line); end
-      def mode_changed(name, previous: nil);  emit_event(:mode_changed, mode: name, previous: previous); end
-      def reasoning_status(mode);             emit_event(:reasoning_status, mode: mode); end
-      def reasoning_changed(mode, previous: nil); emit_event(:reasoning_changed, mode: mode, previous: previous); end
-      def think_status(effort);               emit_event(:think_status, effort: effort); end
-      def think_changed(effort, previous: nil); emit_event(:think_changed, effort: effort, previous: previous); end
+      def success(message) = emit_event(:success, message: message)
+      def warning(message) = emit_event(:warning, message: message)
+      def error(message) = emit_event(:error, message: message)
+      def status(message) = emit_event(:status, message: message)
+      def note(text) = emit_event(:note, text: text)
+      def assistant_text(text) = emit_event(:assistant_text, text: text)
+      def stream(chunk) = emit_event(:stream, chunk: chunk)
+      def stream_end = emit_event(:stream_end)
+      def thinking_started = emit_event(:thinking_started)
+      def table(headers:, rows:) = emit_event(:table, headers: headers, rows: rows)
+
+      def tool_started(name, arguments: nil, at: nil)
+        emit_event(:tool_started, name: name, arguments: arguments, at: at)
+      end
+
+      def tool_body(text, kind: :plain) = emit_event(:tool_body, text: text, kind: kind)
+      def tool_chunk(name, chunk) = emit_event(:tool_chunk, name: name, chunk: chunk)
+      def tool_finished(name, result: nil) = emit_event(:tool_finished, name: name)
+      def compression_started(at: nil) = emit_event(:compression_started, at: at)
+
+      def compression_finished(metadata, at: nil)
+        emit_event(:compression_finished, metadata: metadata, at: at)
+      end
+
+      def job_enqueued(type) = emit_event(:job_enqueued, type: type)
+      def job_started(type) = emit_event(:job_started, type: type)
+      def job_finished(type) = emit_event(:job_finished, type: type)
+      def separator = emit_event(:separator)
+      def blank_line = emit_event(:blank_line)
+      def mode_changed(name, previous: nil) = emit_event(:mode_changed, mode: name, previous: previous)
+      def reasoning_status(mode) = emit_event(:reasoning_status, mode: mode)
+      def reasoning_changed(mode, previous: nil) = emit_event(:reasoning_changed, mode: mode, previous: previous)
+      def think_status(effort) = emit_event(:think_status, effort: effort)
+      def think_changed(effort, previous: nil) = emit_event(:think_changed, effort: effort, previous: previous)
 
       # Emits `approval.required` and blocks on the ApprovalGate until an
       # HTTP client posts a decision for the generated approval_id.
@@ -103,9 +111,7 @@ module Rubino
         # Session-scope short-circuit: a prior "session" / "always_*"
         # decision (or a persisted prefix) for this scope means we must NOT
         # prompt again in the same session.
-        if scope && @session_id && @approval_cache.allowed?(@session_id, scope)
-          return true
-        end
+        return true if scope && @session_id && @approval_cache.allowed?(@session_id, scope)
 
         rule = derive_rule(tool, command, pattern_key)
 
@@ -184,15 +190,15 @@ module Rubino
       def approval_payload(approval_id, question, tool:, command:, pattern_key:, description:, rule:)
         suggested = rule&.kind == :prefix ? rule.value : nil
         {
-          approval_id:     approval_id,
-          question:        question.to_s,
-          command:         command.to_s,
-          tool:            tool.to_s,
-          description:     description.to_s,
-          hardline:        false,
+          approval_id: approval_id,
+          question: question.to_s,
+          command: command.to_s,
+          tool: tool.to_s,
+          description: description.to_s,
+          hardline: false,
           suggested_prefix: suggested,
-          pattern_key:     pattern_key,
-          choices:         choices_for(suggested)
+          pattern_key: pattern_key,
+          choices: choices_for(suggested)
         }
       end
 

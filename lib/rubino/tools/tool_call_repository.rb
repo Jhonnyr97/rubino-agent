@@ -14,15 +14,15 @@ module Rubino
       def record(name:, call_id:, arguments:, result:, status:, error: nil)
         now = Time.now.utc.iso8601
         Rubino.database.db[:tool_calls].insert(
-          id:          call_id || SecureRandom.uuid,
-          session_id:  result.session_id,
-          tool_name:   name,
-          input_json:  JSON.generate(arguments),
-          output:      result.output,
-          status:      status,
-          started_at:  now,
+          id: call_id || SecureRandom.uuid,
+          session_id: result.session_id,
+          tool_name: name,
+          input_json: JSON.generate(arguments),
+          output: result.output,
+          status: status,
+          started_at: now,
           finished_at: now,
-          error:       error
+          error: error
         )
       rescue StandardError
         # Don't fail the tool call just because audit persistence failed.

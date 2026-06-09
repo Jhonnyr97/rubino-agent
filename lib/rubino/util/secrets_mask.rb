@@ -31,7 +31,7 @@ module Rubino
               authorization|auth|bearer)
         (?<sep>\s*[:=]\s*|\s+)
         (?<val>"[^"]+"|'[^']+'|(?:Bearer\s+)?[^"'\s]+)
-      /xi.freeze
+      /xi
 
       MASK = "***"
 
@@ -47,6 +47,7 @@ module Rubino
       def self.mask_value(value, key: nil)
         return value if value.nil?
         return MASK if key && sensitive_key?(key)
+
         mask_inline(value.to_s)
       end
 
@@ -74,6 +75,7 @@ module Rubino
       # has to reach the tool).
       def self.mask_hash(hash)
         return hash unless hash.is_a?(Hash)
+
         hash.each_with_object({}) { |(k, v), out| out[k] = mask_value(v, key: k) }
       end
     end

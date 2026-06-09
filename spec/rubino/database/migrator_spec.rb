@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Database::Migrator do
-  let(:connection) { Rubino::Database::Connection.new(":memory:") }
-
   subject(:migrator) { described_class.new(connection) }
+
+  let(:connection) { Rubino::Database::Connection.new(":memory:") }
 
   describe "#pending?" do
     it "returns true on a fresh database with no migrations applied" do

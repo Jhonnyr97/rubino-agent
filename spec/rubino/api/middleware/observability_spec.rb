@@ -7,7 +7,7 @@ RSpec.describe Rubino::API::Middleware::Observability do
   after  { Rubino::Metrics.reset! }
 
   let(:logger) { instance_double(Rubino::Logger, info: nil) }
-  let(:app) { ->(env) { [201, {}, ["body"]] } }
+  let(:app) { ->(_env) { [201, {}, ["body"]] } }
   let(:middleware) { described_class.new(app, logger: logger) }
 
   it "records counter + histogram + emits an api.request log line" do
@@ -16,7 +16,7 @@ RSpec.describe Rubino::API::Middleware::Observability do
       hash_including(event: "api.request", method: "POST", path: "/v1/sessions", status: 201)
     )
 
-    status, _, _ = middleware.call(env)
+    status, = middleware.call(env)
     expect(status).to eq(201)
 
     rendered = Rubino::Metrics.render
@@ -25,7 +25,7 @@ RSpec.describe Rubino::API::Middleware::Observability do
   end
 
   it "records status=500 when downstream raises and re-raises" do
-    app = ->(_env) { raise RuntimeError, "boom" }
+    app = ->(_env) { raise "boom" }
     middleware = described_class.new(app, logger: logger)
     env = { "REQUEST_METHOD" => "GET", "PATH_INFO" => "/v1/health" }
 

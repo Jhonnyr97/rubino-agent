@@ -16,7 +16,7 @@ RSpec.describe Rubino::Config::Loader do
   # through Loader.default_home_path.
   describe "RUBINO_HOME single source of truth" do
     around do |example|
-      prev = ENV["RUBINO_HOME"]
+      prev = ENV.fetch("RUBINO_HOME", nil)
       example.run
     ensure
       if prev.nil?
@@ -138,7 +138,7 @@ RSpec.describe Rubino::Config::Loader do
     it "creates a YAML config file with model section" do
       path = loader.create_default_config!
       expect(File.exist?(path)).to be true
-      content = YAML.safe_load(File.read(path), permitted_classes: [Symbol])
+      content = YAML.safe_load_file(path, permitted_classes: [Symbol])
       expect(content["model"]["default"]).to eq("openai/gpt-4.1")
     end
   end

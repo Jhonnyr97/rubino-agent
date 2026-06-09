@@ -60,7 +60,7 @@ module Rubino
         # 5. Run agent loop
         @state.transition_to!(:calling_model, event_bus: @event_bus)
         response = run_agent_loop(messages, tools, image_paths: image_paths,
-                                  input_queue: input_queue)
+                                                   input_queue: input_queue)
 
         # 6. Persist session state
         @state.transition_to!(:persisting_session, event_bus: @event_bus)
@@ -140,7 +140,7 @@ module Rubino
         {} # Don't fail the interaction if memory loading fails
       end
 
-      def build_messages(input, memory_context)
+      def build_messages(_input, memory_context)
         assembler = Context::PromptAssembler.new(
           session: @session,
           memory_context: memory_context,
@@ -197,12 +197,12 @@ module Rubino
 
       def run_agent_loop(messages, tools, image_paths: [], input_queue: nil)
         tool_executor = Agent::ToolExecutor.new(
-          registry:        Tools::Registry.instance,
+          registry: Tools::Registry.instance,
           approval_policy: Security::ApprovalPolicy.new,
-          ui:              @ui,
-          config:          @config,
-          cancel_token:    @cancel_token,
-          event_bus:       @event_bus
+          ui: @ui,
+          config: @config,
+          cancel_token: @cancel_token,
+          event_bus: @event_bus
         )
 
         # Dispatch through AdapterFactory so a "fake/..." model id (or an
@@ -214,28 +214,28 @@ module Rubino
         # "fake/with-approvals") on an existing session without having to
         # mutate the persisted session row.
         llm_adapter = LLM::AdapterFactory.build(
-          model_id:      @model_override || @session[:model],
-          provider:      @provider_override || @config.model_provider,
-          ui:            @ui,
-          event_bus:     @event_bus,
+          model_id: @model_override || @session[:model],
+          provider: @provider_override || @config.model_provider,
+          ui: @ui,
+          event_bus: @event_bus,
           tool_executor: tool_executor,
-          cancel_token:  @cancel_token
+          cancel_token: @cancel_token
         )
 
         budget = Agent::IterationBudget.new(config: @config, max_tool_iterations: @max_tool_iterations)
 
         loop_runner = Agent::Loop.new(
-          session:             @session,
-          llm_adapter:         llm_adapter,
-          tool_executor:       tool_executor,
-          message_store:       @message_store,
-          budget:              budget,
-          ui:                  @ui,
-          event_bus:           @event_bus,
-          config:              @config,
-          cancel_token:        @cancel_token,
+          session: @session,
+          llm_adapter: llm_adapter,
+          tool_executor: tool_executor,
+          message_store: @message_store,
+          budget: budget,
+          ui: @ui,
+          event_bus: @event_bus,
+          config: @config,
+          cancel_token: @cancel_token,
           initial_image_paths: image_paths,
-          input_queue:         input_queue
+          input_queue: input_queue
         )
 
         # Bind the parent's steering queue as the background-subagent
@@ -274,20 +274,18 @@ module Rubino
         # already covered) before spending one aux-model call. Touching the
         # constant registers the handler (Zeitwerk side-effect) so the inline
         # runner can resolve it.
-        if @config.skills_auto_distill?
-          Jobs::Handlers::DistillSkillJob # ensure registration
+        if @config.skills_auto_distill? # ensure registration
           queue.enqueue("DistillSkillJob", { session_id: @session[:id] })
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
         end
 
         # Summarize if session is getting long
         message_count = @message_store.count(@session[:id])
-        if message_count > 20
-          queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] })
-          @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
-        end
-      end
+        return unless message_count > 20
 
+        queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] })
+        @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
+      end
     end
   end
 end

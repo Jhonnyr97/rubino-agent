@@ -33,7 +33,7 @@ RSpec.describe Rubino::Run::Executor do
       out = executor.send(:augment_input_with_attachments,
                           "cosa c'è nel img ?",
                           ["/tmp/uploads/abc/cat.webp"])
-      expect(out.lines.first).to match(/Uploaded files/)
+      expect(out.lines.first).to include("Uploaded files")
       expect(out).to end_with("cosa c'è nel img ?")
     end
 
@@ -64,7 +64,7 @@ RSpec.describe Rubino::Run::Executor do
                             native_image_paths: [png])
         expect(out).to include("[Image attached at: #{png}]")
         # Not pre-described / no tool imperative — the model sees the pixels.
-        expect(out).not_to match(/vision/)
+        expect(out).not_to include("vision")
       end
     end
 
@@ -84,7 +84,7 @@ RSpec.describe Rubino::Run::Executor do
         png = real_png(dir)
         out = executor.send(:augment_input_with_attachments, "descrivi", [png])
         expect(out).to include("no multimodal model is configured")
-        expect(out).not_to match(/Call the `vision` tool/)
+        expect(out).not_to include("Call the `vision` tool")
       end
     end
 
@@ -96,7 +96,7 @@ RSpec.describe Rubino::Run::Executor do
         png = real_png(dir)
         out = executor.send(:augment_input_with_attachments, "descrivi", [png])
         expect(out).to include("Call the `vision` tool with file_path: #{png}")
-        expect(out).to match(/do not use shell\/ls/i)
+        expect(out).to match(%r{do not use shell/ls}i)
       end
     end
 
@@ -133,7 +133,7 @@ RSpec.describe Rubino::Run::Executor do
                             native_image_paths: [spoof])
         expect(out).to include("[Attached archive: #{real}")
         expect(out).not_to include("[Image attached at:")
-        expect(out).not_to match(/`vision` tool/)
+        expect(out).not_to include("`vision` tool")
       end
     end
 
@@ -149,7 +149,7 @@ RSpec.describe Rubino::Run::Executor do
         # "call the `vision` tool" egress imperative on extension alone.
         out = executor.send(:augment_input_with_attachments, "hi", [spoof])
         expect(out).to include("[Attached archive: #{real}")
-        expect(out).not_to match(/`vision` tool/)
+        expect(out).not_to include("`vision` tool")
       end
     end
   end

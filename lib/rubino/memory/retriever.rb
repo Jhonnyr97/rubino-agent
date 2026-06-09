@@ -32,7 +32,7 @@ module Rubino
       end
 
       # Returns memories relevant to the current session context
-      def relevant_for_session(session_id)
+      def relevant_for_session(_session_id)
         char_limit = @config.memory_char_limit
         @store.within_limit(char_limit: char_limit)
       end

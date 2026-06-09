@@ -12,6 +12,7 @@ RSpec.describe Rubino::Tools::GlobTool do
   end
 
   let(:tmp_dir) { Dir.mktmpdir("glob_tool_spec") }
+
   after { FileUtils.rm_rf(tmp_dir) }
 
   before do

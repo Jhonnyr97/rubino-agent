@@ -6,6 +6,7 @@
 # depth: even with a misconfigured approval policy, plan mode is safe.
 RSpec.describe Rubino::Tools::Registry do
   before(:all) { Rubino.loader.eager_load }
+
   before do
     described_class.reset!
     described_class.register_defaults!

@@ -27,9 +27,7 @@ module Rubino
 
         # Check rules from most specific to least specific
         @rules.each do |pattern, action|
-          if matches_pattern?(full_string, pattern)
-            return action.to_sym
-          end
+          return action.to_sym if matches_pattern?(full_string, pattern)
         end
 
         # Default: no explicit match
@@ -40,8 +38,8 @@ module Rubino
       def matches_pattern?(input, pattern)
         # Convert glob-style pattern to regex
         regex_str = Regexp.escape(pattern)
-                         .gsub('\*', '.*')
-                         .gsub('\?', '.')
+                          .gsub('\*', ".*")
+                          .gsub('\?', ".")
         regex = Regexp.new("\\A#{regex_str}\\z", Regexp::IGNORECASE)
         input.match?(regex)
       end

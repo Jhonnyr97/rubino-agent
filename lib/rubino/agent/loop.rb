@@ -43,11 +43,11 @@ module Rubino
         # so single-provider setups behave exactly as before.
         @fallback_chain      = FallbackChain.new(
           primary_adapter: llm_adapter,
-          config:          config,
-          ui:              ui,
-          event_bus:       event_bus,
-          tool_executor:   tool_executor,
-          cancel_token:    cancel_token
+          config: config,
+          ui: ui,
+          event_bus: event_bus,
+          tool_executor: tool_executor,
+          cancel_token: cancel_token
         )
         # Owns the inner retry loop (call → validate → classify → backoff →
         # return/raise). The Loop builds each LLM::Request and hands it to the
@@ -57,13 +57,13 @@ module Rubino
         # the adapter's with_retries now live here — single owner, no double-retry.
         # The runner issues calls against the chain's CURRENT adapter and can
         # rotate it via the chain on a fallback-worthy failure.
-        @model_call_runner   = ModelCallRunner.new(
-          llm:            llm_adapter,
+        @model_call_runner = ModelCallRunner.new(
+          llm: llm_adapter,
           fallback_chain: @fallback_chain,
-          config:         config,
-          ui:             ui,
-          event_bus:      event_bus,
-          cancel_token:   cancel_token
+          config: config,
+          ui: ui,
+          event_bus: event_bus,
+          cancel_token: cancel_token
         )
         # Single count + persist sink for tool results. The executor invokes it
         # for every tool on BOTH paths: the streaming path (ruby_llm runs the
@@ -312,10 +312,10 @@ module Rubino
         @pending_image_paths = []
 
         request = LLM::Request.new(
-          messages:    messages,
-          tools:       tools,
+          messages: messages,
+          tools: tools,
           image_paths: image_paths,
-          stream:      streaming?
+          stream: streaming?
         )
 
         # Single boundary entry (normalize_response seam).
@@ -350,9 +350,9 @@ module Rubino
           @model_call_runner.call!(req, iteration: iteration, &blk)
         end
         TruncationContinuation.new(
-          boundary:    boundary,
+          boundary: boundary,
           base_tokens: @config.dig("model", "max_tokens"),
-          ui:          @ui
+          ui: @ui
         )
       end
 
@@ -383,8 +383,8 @@ module Rubino
       # history between the user prompt and the tool result(s).
       def build_assistant_tool_use_message(response)
         {
-          role:       "assistant",
-          content:    response.content || "",
+          role: "assistant",
+          content: response.content || "",
           tool_calls: response.tool_calls
         }
       end
@@ -406,11 +406,11 @@ module Rubino
           @tool_count += 1
         end
         persist_tool_result(
-          role:         "tool",
-          content:      result.output,
+          role: "tool",
+          content: result.output,
           tool_call_id: call_id,
-          name:         name,
-          arguments:    arguments
+          name: name,
+          arguments: arguments
         )
       end
 
@@ -422,17 +422,17 @@ module Rubino
           # the tool mid-stream via ToolBridge → never lands here) and the
           # non-streaming path (this branch) both emit exactly once.
           result = @tool_executor.execute(
-            name:      tc[:name],
+            name: tc[:name],
             arguments: tc[:arguments],
-            call_id:   tc[:id]
+            call_id: tc[:id]
           )
 
           {
-            role:         "tool",
-            content:      result.output,
+            role: "tool",
+            content: result.output,
             tool_call_id: tc[:id],
-            name:         tc[:name],
-            arguments:    tc[:arguments]
+            name: tc[:name],
+            arguments: tc[:arguments]
           }
         end
       end
@@ -445,8 +445,8 @@ module Rubino
         with_db_retries do
           @message_store.create(
             session_id: @session[:id],
-            role:       "user",
-            content:    text
+            role: "user",
+            content: text
           )
         end
         session_repo.increment_message_count!(@session[:id])
@@ -465,11 +465,11 @@ module Rubino
 
         with_db_retries do
           @message_store.create(
-            session_id:  @session[:id],
-            role:        "assistant",
-            content:     response.content,
+            session_id: @session[:id],
+            role: "assistant",
+            content: response.content,
             token_count: response.output_tokens,
-            metadata:    metadata
+            metadata: metadata
           )
         end
       end
@@ -483,12 +483,12 @@ module Rubino
 
         with_db_retries do
           @message_store.create(
-            session_id:   @session[:id],
-            role:         "tool",
-            content:      result[:content],
-            tool_name:    result[:name],
+            session_id: @session[:id],
+            role: "tool",
+            content: result[:content],
+            tool_name: result[:name],
             tool_call_id: result[:tool_call_id],
-            metadata:     metadata
+            metadata: metadata
           )
         end
       end
@@ -513,9 +513,9 @@ module Rubino
       # tool is never silently counted as if it ran (#83).
       def tool_count_label
         denied = @denied_count.to_i
-        return "#{@tool_count} tool#{'s' if @tool_count != 1}" if denied.zero?
+        return "#{@tool_count} tool#{"s" if @tool_count != 1}" if denied.zero?
 
-        ran = @tool_count.zero? ? "0 run" : "#{@tool_count} tool#{'s' if @tool_count != 1}"
+        ran = @tool_count.zero? ? "0 run" : "#{@tool_count} tool#{"s" if @tool_count != 1}"
         "#{ran} · #{denied} denied"
       end
 

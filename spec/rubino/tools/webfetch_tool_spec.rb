@@ -12,16 +12,17 @@ RSpec.describe Rubino::Tools::WebFetchTool do
   # without us building a real HTTP object graph.
   def fake_success(body:, content_type:)
     headers = { "content-type" => content_type, "location" => nil }
-    Class.new(Net::HTTPSuccess) {
+    Class.new(Net::HTTPSuccess) do
       def initialize(body, headers)
         @body = body
         @headers = headers
       end
       attr_reader :body
+
       def [](key) = @headers[key.downcase]
       def code = "200"
       def message = "OK"
-    }.new(body, headers)
+    end.new(body, headers)
   end
 
   def stub_http(response)
@@ -34,7 +35,8 @@ RSpec.describe Rubino::Tools::WebFetchTool do
   end
 
   describe "binary content-type refusal" do
-    %w[application/pdf image/png image/jpeg audio/mpeg video/mp4 application/zip application/octet-stream font/woff2].each do |ct|
+    %w[application/pdf image/png image/jpeg audio/mpeg video/mp4 application/zip application/octet-stream
+       font/woff2].each do |ct|
       it "refuses #{ct}" do
         stub_http(fake_success(body: "binary\xFFstuff", content_type: ct))
         result = tool.call("url" => "https://example.com/file")

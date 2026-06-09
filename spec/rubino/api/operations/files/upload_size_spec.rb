@@ -58,8 +58,8 @@ RSpec.describe "Rubino::API::Operations::Files::UploadOperation size cap" do
 
     # Stream must NOT be drained when Content-Length already overflows the cap.
     input_before = env["rack.input"]
-    expect(input_before).to receive(:read).never
-    expect(input_before).to receive(:gets).never
+    expect(input_before).not_to receive(:read)
+    expect(input_before).not_to receive(:gets)
 
     expect { operation.call(Rubino::API::Request.new(env, {})) }
       .to raise_error(Rubino::PayloadTooLargeError) do |err|

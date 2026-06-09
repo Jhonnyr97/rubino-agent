@@ -84,18 +84,17 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
   let(:ui)        { Rubino::UI::Null.new }
   let(:event_bus) { Rubino::Interaction::EventBus.new }
   let(:config)    { test_configuration("agent" => { "api_max_retries" => 3, "empty_response_max_retries" => 2 }) }
+  let(:request) { Rubino::LLM::Request.new(messages: [{ role: "user", content: "hi" }]) }
 
   def build_runner(llm, cancel_token: nil, cfg: config)
     described_class.new(
-      llm:          llm,
-      config:       cfg,
-      ui:           ui,
-      event_bus:    event_bus,
+      llm: llm,
+      config: cfg,
+      ui: ui,
+      event_bus: event_bus,
       cancel_token: cancel_token
     )
   end
-
-  let(:request) { Rubino::LLM::Request.new(messages: [{ role: "user", content: "hi" }]) }
 
   # Never actually wait between attempts in specs.
   before { allow_any_instance_of(Rubino::Agent::BackoffPolicy).to receive(:sleep) }
@@ -115,7 +114,7 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
       boundary.define_singleton_method(:call) do |_req, &blk|
         blk&.call({ type: :content, text: "hi", message_id: 0 })
         Rubino::LLM::AdapterResponse.new(content: "hi", tool_calls: [], input_tokens: 1,
-                                            output_tokens: 1, model_id: "fake")
+                                         output_tokens: 1, model_id: "fake")
       end
       build_runner(boundary).call!(request) { |chunk| forwarded = chunk }
       expect(forwarded).to eq({ type: :content, text: "hi", message_id: 0 })
@@ -234,7 +233,7 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
       # The nudge was appended in place: …tool → assistant("(empty)") → user(nudge).
       expect(messages[-2]).to include(role: "assistant")
       expect(messages.last).to include(role: "user")
-      expect(messages.last[:content]).to match(/continue with the task/)
+      expect(messages.last[:content]).to include("continue with the task")
     end
   end
 
@@ -247,7 +246,7 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
       boundary.define_singleton_method(:call) do |_req, &blk|
         blk&.call({ type: :content, text: "The streamed answer.", message_id: 0 })
         Rubino::LLM::AdapterResponse.new(content: "<think>reasoning</think>", tool_calls: [],
-                                            input_tokens: 1, output_tokens: 1, model_id: "fake")
+                                         input_tokens: 1, output_tokens: 1, model_id: "fake")
       end
       out = build_runner(boundary).call!(request, iteration: 1) { |_c| }
       expect(out.content).to eq("The streamed answer.")
@@ -345,12 +344,12 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
 
   def build_runner_with_chain(chain, cfg: config)
     described_class.new(
-      llm:            chain.current_adapter,
+      llm: chain.current_adapter,
       fallback_chain: chain,
-      config:         cfg,
-      ui:             ui,
-      event_bus:      event_bus,
-      cancel_token:   nil
+      config: cfg,
+      ui: ui,
+      event_bus: event_bus,
+      cancel_token: nil
     )
   end
 

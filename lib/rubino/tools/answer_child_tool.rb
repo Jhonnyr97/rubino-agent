@@ -35,12 +35,12 @@ module Rubino
 
       def description
         "Answer one of YOUR OWN subagents that asked you a question via " \
-        "ask_parent (you will have received it as a [subagent-question] note). " \
-        "The answer is delivered into that child's context: it unblocks a child " \
-        "that paused for it and folds into a child that kept working. You can " \
-        "ONLY answer a subagent you started (your direct child) that is actually " \
-        "waiting on you. If you CANNOT answer from your own context, do NOT guess " \
-        "— escalate by calling ask_parent yourself."
+          "ask_parent (you will have received it as a [subagent-question] note). " \
+          "The answer is delivered into that child's context: it unblocks a child " \
+          "that paused for it and folds into a child that kept working. You can " \
+          "ONLY answer a subagent you started (your direct child) that is actually " \
+          "waiting on you. If you CANNOT answer from your own context, do NOT guess " \
+          "— escalate by calling ask_parent yourself."
       end
 
       def input_schema
@@ -48,7 +48,8 @@ module Rubino
           type: "object",
           properties: {
             task_id: { type: "string", description: "The id (sa_…) of YOUR subagent that asked you." },
-            answer:  { type: "string", description: "Your answer. Be specific and self-contained — it enters the child's context." }
+            answer: { type: "string",
+                      description: "Your answer. Be specific and self-contained — it enters the child's context." }
           },
           required: %w[task_id answer]
         }
@@ -69,15 +70,11 @@ module Rubino
         registry  = BackgroundTasks.instance
 
         # Ownership: only a DIRECT child of the caller may be answered.
-        unless registry.owned_by?(caller_id, task_id)
-          return "Error: #{task_id} is not one of your subagents."
-        end
+        return "Error: #{task_id} is not one of your subagents." unless registry.owned_by?(caller_id, task_id)
 
         # It must actually be waiting on an ask (deliver_answer no-ops without a
         # live ask_gate). Covers a missing/finished/not-blocked child uniformly.
-        unless registry.deliver_answer(task_id, answer)
-          return "#{task_id} is not waiting on you."
-        end
+        return "#{task_id} is not waiting on you." unless registry.deliver_answer(task_id, answer)
 
         "↳ answered #{task_id}: #{truncate(answer, 80)}\n✓ #{task_id} resumes at its next turn"
       end

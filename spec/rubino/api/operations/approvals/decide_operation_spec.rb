@@ -48,7 +48,9 @@ RSpec.describe Rubino::API::Operations::Approvals::DecideOperation do
     run = create_run
     gate.register("ap-2")
     expect do
-      described_class.call(make_request(body: { "decision" => "maybe" }, params: { run_id: run[:id], approval_id: "ap-2" }))
+      described_class.call(make_request(body: { "decision" => "maybe" },
+                                        params: { run_id: run[:id],
+                                                  approval_id: "ap-2" }))
     end.to raise_error(Rubino::ValidationError)
   end
 
@@ -60,9 +62,11 @@ RSpec.describe Rubino::API::Operations::Approvals::DecideOperation do
 
   it "returns 409 when no gate is registered for the run" do
     session = session_repo.create(source: "api")
-    run = run_repo.create(session_id: session[:id], input_text: "x")  # no gate registered
+    run = run_repo.create(session_id: session[:id], input_text: "x") # no gate registered
     expect do
-      described_class.call(make_request(body: { "decision" => "once" }, params: { run_id: run[:id], approval_id: "ap-4" }))
+      described_class.call(make_request(body: { "decision" => "once" },
+                                        params: { run_id: run[:id],
+                                                  approval_id: "ap-4" }))
     end.to raise_error(Rubino::ConflictError)
   end
 end

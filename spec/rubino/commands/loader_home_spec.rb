@@ -9,7 +9,7 @@ RSpec.describe "Rubino::Commands::Loader RUBINO_HOME resolution" do
   let(:custom_home) { Dir.mktmpdir("rubino-home") }
 
   around do |example|
-    prev = ENV["RUBINO_HOME"]
+    prev = ENV.fetch("RUBINO_HOME", nil)
     ENV["RUBINO_HOME"] = custom_home
     Rubino.reload_configuration!
     example.run

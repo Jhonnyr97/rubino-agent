@@ -15,6 +15,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   let(:tool) do
     Class.new do
       attr_accessor :output, :cancel_token, :read_tracker, :stream_chunk
+
       def name = "fake_tool"
       def description = ""
       def input_schema = {}
@@ -26,10 +27,10 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
   let(:executor) do
     described_class.new(
-      registry:             registry,
-      approval_policy:      policy,
-      ui:                   ui,
-      config:               config,
+      registry: registry,
+      approval_policy: policy,
+      ui: ui,
+      config: config,
       tool_call_repository: repo
     )
   end
@@ -38,6 +39,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   # <home>/tool-results/<call_id>.txt, so point home at a tmp dir to keep the
   # real ~/.rubino clean during tests.
   let(:spill_home) { Dir.mktmpdir("spill_home") }
+
   after { FileUtils.rm_rf(spill_home) }
 
   before do
@@ -50,7 +52,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     it "keeps a small head, the marker, and the tail when above max_bytes" do
       allow(config).to receive(:tool_output_max_bytes).and_return(1_000)
       allow(config).to receive(:tool_output_max_lines).and_return(10_000)
-      tool.output = "HEAD#{'x' * 5_000}TAIL"
+      tool.output = "HEAD#{"x" * 5_000}TAIL"
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c1")
 
@@ -83,7 +85,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     it "writes the FULL output to tool-results/<call_id>.txt and points the marker at it" do
       allow(config).to receive(:tool_output_max_bytes).and_return(1_000)
       allow(config).to receive(:tool_output_max_lines).and_return(10_000)
-      full = "HEAD#{'x' * 5_000}TAIL"
+      full = "HEAD#{"x" * 5_000}TAIL"
       tool.output = full
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "spill1")

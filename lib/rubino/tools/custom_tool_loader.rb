@@ -109,9 +109,9 @@ end
 
 # Module-level DSL method for defining custom tools
 module Rubino
-  def self.define_tool(&block)
+  def self.define_tool(&)
     builder = Tools::CustomToolBuilder.new
-    builder.instance_eval(&block)
+    builder.instance_eval(&)
     tool = builder.build
     Tools::Registry.register(tool)
     tool

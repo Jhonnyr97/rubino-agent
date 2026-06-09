@@ -30,10 +30,10 @@ RSpec.describe Rubino::Util::Output do
       text = (1..20).map { |i| "L#{i}" }.join("\n")
       result = described_class.preview(text, max: 10, head: 2, tail: 3)
       expect(result.lines.map(&:chomp)).to eq([
-        "L1", "L2",
-        "… [15 more lines · full in DB] …",
-        "L18", "L19", "L20"
-      ])
+                                                "L1", "L2",
+                                                "… [15 more lines · full in DB] …",
+                                                "L18", "L19", "L20"
+                                              ])
     end
 
     it "leaves single-line input alone" do

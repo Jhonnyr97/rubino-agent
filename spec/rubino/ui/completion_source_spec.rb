@@ -82,10 +82,11 @@ RSpec.describe Rubino::UI::CompletionSource do
   end
 
   describe "#arg_candidates_for (command argument: skills)" do
-    let(:names) { %w[ruby-expert react-pro rust-guru python-pro] }
     subject(:source) do
       described_class.new(commands: commands, arg_sources: { "skills" => -> { names } })
     end
+
+    let(:names) { %w[ruby-expert react-pro rust-guru python-pro] }
 
     it "returns the ✗ none entry plus all skill names for an empty partial" do
       expect(source.arg_candidates_for("skills", "")).to eq(

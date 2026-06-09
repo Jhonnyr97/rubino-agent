@@ -43,7 +43,7 @@ RSpec.describe "Prometheus HELP coverage" do
     output = Rubino::Metrics.render
     REGISTERED_METRICS.each do |name|
       expect(output).to match(/^# HELP #{Regexp.escape(name.to_s)} .+/),
-        "expected /v1/metrics output to include a non-empty HELP line for #{name}"
+                        "expected /v1/metrics output to include a non-empty HELP line for #{name}"
     end
   end
 
@@ -55,7 +55,7 @@ RSpec.describe "Prometheus HELP coverage" do
 
     Rubino::Metrics.each do |metric|
       expect(metric.help).not_to eq(metric.name.to_s),
-        "#{metric.name} has no description — add it to ServerCommand#register_metric_descriptions!"
+                                 "#{metric.name} has no description — add it to ServerCommand#register_metric_descriptions!"
       expect(metric.help.to_s).not_to be_empty
     end
   end

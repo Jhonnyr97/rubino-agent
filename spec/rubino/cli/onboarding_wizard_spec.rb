@@ -9,7 +9,7 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   let(:output) { StringIO.new }
 
   around do |ex|
-    prev = ENV["RUBINO_HOME"]
+    prev = ENV.fetch("RUBINO_HOME", nil)
     ENV["RUBINO_HOME"] = home
     saved_keys = ENV.to_hash.slice("MINIMAX_API_KEY", "OPENAI_API_KEY")
     %w[MINIMAX_API_KEY OPENAI_API_KEY].each { |k| ENV.delete(k) }
@@ -52,7 +52,7 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     expect(ok).to be true
 
     loader = Rubino::Config::Loader.new(home_path: home)
-    raw    = YAML.safe_load(File.read(loader.config_path))
+    raw    = YAML.safe_load_file(loader.config_path)
     expect(raw.dig("model", "default")).to eq("gpt-4.1")
     expect(raw.dig("model", "provider")).to eq("openai")
     expect(File.read(loader.env_path)).to include("OPENAI_API_KEY=sk-openai-test")
@@ -64,7 +64,7 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     expect(ok).to be true
 
     loader = Rubino::Config::Loader.new(home_path: home)
-    raw    = YAML.safe_load(File.read(loader.config_path))
+    raw    = YAML.safe_load_file(loader.config_path)
     expect(raw.dig("model", "default")).to eq("MiniMax-M2.7")
     expect(raw.dig("model", "provider")).to eq("minimax")
     expect(raw.dig("providers", "minimax", "anthropic_compatible")).to be true
@@ -106,7 +106,7 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     expect(prompts).to be >= 2
 
     loader = Rubino::Config::Loader.new(home_path: home)
-    raw    = YAML.safe_load(File.read(loader.config_path))
+    raw    = YAML.safe_load_file(loader.config_path)
     expect(raw.dig("model", "provider")).to eq("openai")
   end
 

@@ -20,8 +20,8 @@ Sequel.migration do
   up do
     create_table?(:memory_entities) do
       String :id, primary_key: true
-      String :name, null: false        # display form, first-seen casing
-      String :name_norm, null: false    # lowercased resolution key
+      String :name, null: false # display form, first-seen casing
+      String :name_norm, null: false # lowercased resolution key
       String :kind                       # person | tool | project | ... (best-effort)
       String :created_at, null: false
       String :updated_at, null: false

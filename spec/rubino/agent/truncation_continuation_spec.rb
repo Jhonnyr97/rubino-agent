@@ -12,7 +12,7 @@ RSpec.describe Rubino::Agent::TruncationContinuation do
       @requests  = []
     end
 
-    def call(request, &_block)
+    def call(request, &)
       @requests << request
       @responses.shift
     end
@@ -22,19 +22,19 @@ RSpec.describe Rubino::Agent::TruncationContinuation do
 
   def response(content:, stop_reason:, tool_calls: [])
     Rubino::LLM::AdapterResponse.new(
-      content:       content,
-      tool_calls:    tool_calls,
-      input_tokens:  10,
+      content: content,
+      tool_calls: tool_calls,
+      input_tokens: 10,
       output_tokens: 20,
-      model_id:      "fake-model",
-      stop_reason:   stop_reason
+      model_id: "fake-model",
+      stop_reason: stop_reason
     )
   end
 
   def request(max_tokens: nil)
     Rubino::LLM::Request.new(
-      messages:   [{ role: "user", content: "Write a long essay." }],
-      tools:      [],
+      messages: [{ role: "user", content: "Write a long essay." }],
+      tools: [],
       max_tokens: max_tokens
     )
   end
@@ -95,7 +95,7 @@ RSpec.describe Rubino::Agent::TruncationContinuation do
 
       cont.continue(request(max_tokens: 4096), response(content: "start", stop_reason: :length))
 
-      expect(boundary.requests[0].max_tokens).to eq(8192)  # 4096 × 2
+      expect(boundary.requests[0].max_tokens).to eq(8192) # 4096 × 2
       expect(boundary.requests[1].max_tokens).to eq(12_288) # 4096 × 3
     end
 
@@ -149,7 +149,7 @@ RSpec.describe Rubino::Agent::TruncationContinuation do
       boundary = TruncBoundary.new(response(content: " end", stop_reason: :stop))
       cont     = described_class.new(boundary: boundary, ui: ui)
 
-      expect(ui).to receive(:note).with(/continuation \(1\/3\)/).once
+      expect(ui).to receive(:note).with(%r{continuation \(1/3\)}).once
 
       cont.continue(request, response(content: "start", stop_reason: :length))
     end
@@ -158,6 +158,7 @@ RSpec.describe Rubino::Agent::TruncationContinuation do
       received = []
       boundary = Class.new do
         def initialize(received) = @received = received
+
         def call(_request, &block)
           block&.call({ type: :content, text: "x", message_id: 0 })
           Rubino::LLM::AdapterResponse.new(

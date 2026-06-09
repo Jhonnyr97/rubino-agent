@@ -62,25 +62,27 @@ module Rubino
 
       def description
         "Delegate a bounded sub-task to a specialized subagent. By DEFAULT the " \
-        "subagent runs in the BACKGROUND: this call returns immediately with a " \
-        "task id and the subagent keeps working while you continue with other " \
-        "tools or reasoning — do NOT wait for it. When it finishes you will " \
-        "automatically receive a `[background-task] <id> completed` message with " \
-        "its result; you can also fetch the result anytime with `task_result(<id>)` " \
-        "or stop it with `task_stop(<id>)`. Set `background: false` ONLY when you " \
-        "cannot proceed without the subagent's answer in this same step (this " \
-        "blocks until it finishes and returns the result inline). The subagent " \
-        "runs in an isolated fresh context (it does NOT see this conversation) and " \
-        "returns only its final message — put every file path / error / detail it " \
-        "needs into `prompt`. Available subagents: #{available_subagents_description}."
+          "subagent runs in the BACKGROUND: this call returns immediately with a " \
+          "task id and the subagent keeps working while you continue with other " \
+          "tools or reasoning — do NOT wait for it. When it finishes you will " \
+          "automatically receive a `[background-task] <id> completed` message with " \
+          "its result; you can also fetch the result anytime with `task_result(<id>)` " \
+          "or stop it with `task_stop(<id>)`. Set `background: false` ONLY when you " \
+          "cannot proceed without the subagent's answer in this same step (this " \
+          "blocks until it finishes and returns the result inline). The subagent " \
+          "runs in an isolated fresh context (it does NOT see this conversation) and " \
+          "returns only its final message — put every file path / error / detail it " \
+          "needs into `prompt`. Available subagents: #{available_subagents_description}."
       end
 
       def input_schema
         {
           type: "object",
           properties: {
-            subagent: { type: "string", description: "Name of the subagent to delegate to (#{available_subagent_names.join(', ')})" },
-            prompt:   { type: "string", description: "The full self-contained task for the subagent (the only context it receives)" },
+            subagent: { type: "string",
+                        description: "Name of the subagent to delegate to (#{available_subagent_names.join(", ")})" },
+            prompt: { type: "string",
+                      description: "The full self-contained task for the subagent (the only context it receives)" },
             background: {
               type: "boolean",
               description: "Run the subagent in the background (default true). " \
@@ -111,7 +113,7 @@ module Rubino
         definition = registry.find(subagent)
         unless definition&.subagent?
           return "Error: unknown subagent '#{subagent}'. " \
-                 "Valid subagents: #{available_subagent_names.join(', ')}."
+                 "Valid subagents: #{available_subagent_names.join(", ")}."
         end
 
         if background
@@ -278,8 +280,8 @@ module Rubino
 
       def completion_notice(entry, text)
         "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') completed.\n" \
-        "Result:\n#{truncate(text, 4000)}\n" \
-        "(full result via task_result(\"#{entry.id}\"))"
+          "Result:\n#{truncate(text, 4000)}\n" \
+          "(full result via task_result(\"#{entry.id}\"))"
       end
 
       def failure_notice(entry, message)
@@ -288,9 +290,9 @@ module Rubino
 
       def spawn_handle(entry, definition)
         "Started background subagent '#{definition.name}' as task #{entry.id}. " \
-        "It is running now — keep working on other things. You'll receive a " \
-        "`[background-task]` message when it finishes; or call " \
-        "task_result(\"#{entry.id}\") to check on it, task_stop(\"#{entry.id}\") to cancel."
+          "It is running now — keep working on other things. You'll receive a " \
+          "`[background-task]` message when it finishes; or call " \
+          "task_result(\"#{entry.id}\") to check on it, task_stop(\"#{entry.id}\") to cancel."
       end
 
       # Turns a nil reserve into a clear, reason-specific model-facing string. The
@@ -325,12 +327,12 @@ module Rubino
           @runner_factory.call(definition)
         else
           Agent::Runner.new(
-            session_id:       nil,
-            model_override:   definition.resolved_model,
-            max_turns:        definition.max_turns,
-            ui:               child_ui,
+            session_id: nil,
+            model_override: definition.resolved_model,
+            max_turns: definition.max_turns,
+            ui: child_ui,
             agent_definition: definition,
-            event_bus:        Interaction::EventBus.new
+            event_bus: Interaction::EventBus.new
           )
         end
       end
@@ -346,9 +348,9 @@ module Rubino
         if parent_ui.is_a?(UI::CLI)
           UI::SubagentView.new(
             agent_name: entry.subagent,
-            entry_id:   entry.id,
-            parent_ui:  parent_ui,
-            approve:    approval_handler_for(entry)
+            entry_id: entry.id,
+            parent_ui: parent_ui,
+            approve: approval_handler_for(entry)
           )
         else
           UI::Null.new
@@ -369,12 +371,14 @@ module Rubino
           gate        = Run::ApprovalGate.new
           approval_id = entry.id
           gate.register(approval_id)
-          cmd = (command && !command.to_s.empty?) ? command.to_s : scope.to_s
+          cmd = command && !command.to_s.empty? ? command.to_s : scope.to_s
           BackgroundTasks.instance.begin_approval(
             entry.id, gate: gate, approval_id: approval_id,
-            question: question, command: cmd
+                      question: question, command: cmd
           )
-          surface_completion(entry_parent_ui, "● #{entry.id} · #{entry.subagent} · needs approval: #{truncate(cmd, 80)} — /agents #{entry.id}")
+          surface_completion(entry_parent_ui,
+                             "● #{entry.id} · #{entry.subagent} · needs approval: #{truncate(cmd,
+                                                                                             80)} — /agents #{entry.id}")
           repaint_parent_cards(entry_parent_ui)
           begin
             decision = gate.await(approval_id)
@@ -435,10 +439,10 @@ module Rubino
           @runner_factory.call(definition)
         else
           Agent::Runner.new(
-            session_id:       nil,
-            model_override:   definition.resolved_model,
-            max_turns:        definition.max_turns,
-            ui:               nested_ui(definition),
+            session_id: nil,
+            model_override: definition.resolved_model,
+            max_turns: definition.max_turns,
+            ui: nested_ui(definition),
             agent_definition: definition
           )
         end

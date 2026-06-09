@@ -191,8 +191,12 @@ RSpec.describe Rubino::Tools::PatchTool do
       # Cancel token that flips to true on the SECOND poll — first op writes,
       # second op is skipped.
       token = Class.new do
-        def initialize; @polls = 0; end
-        def cancelled?; @polls += 1; @polls > 1; end
+        def initialize = @polls = 0
+
+        def cancelled?
+          @polls += 1
+          @polls > 1
+        end
       end.new
       tool.cancel_token = token
 

@@ -146,7 +146,7 @@ module Rubino
         # Default to on when the key is absent — env injection is the cheap
         # win we don't want a forgetful config.yml to disable accidentally.
         value = dig("prompts", "environment", "enabled")
-        value.nil? ? true : value == true
+        value.nil? || value == true
       end
 
       def prompts_environment_extra_utilities
@@ -228,7 +228,7 @@ module Rubino
         return false unless dig("skills", "enabled") != false
 
         value = dig("skills", "auto_distill")
-        value.nil? ? true : value == true
+        value.nil? || value == true
       end
 
       def memory_user_char_limit
@@ -308,7 +308,6 @@ module Rubino
 
         require_confirmation_for_shell? ? :confirm_all : :dangerous_only
       end
-
 
       def security_command_allowlist
         dig("security", "command_allowlist") || []

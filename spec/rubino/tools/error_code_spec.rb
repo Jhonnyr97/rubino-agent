@@ -40,6 +40,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   let(:tool) do
     Class.new do
       attr_accessor :payload, :cancel_token, :read_tracker, :stream_chunk
+
       def name = "fake_tool"
       def description = ""
       def input_schema = {}
@@ -51,10 +52,10 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
   let(:executor) do
     described_class.new(
-      registry:             registry,
-      approval_policy:      policy,
-      ui:                   ui,
-      config:               config,
+      registry: registry,
+      approval_policy: policy,
+      ui: ui,
+      config: config,
       tool_call_repository: repo
     )
   end

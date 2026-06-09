@@ -30,7 +30,7 @@ RSpec.describe Rubino::CLI::ConfigCommand do
       described_class.new.set("model.default.foo", "bar")
     rescue SystemExit
       err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to match(/'model\.default' is a scalar value, not a section/)
+      expect(err[:message]).to include("'model.default' is a scalar value, not a section")
     end
   end
 
@@ -41,7 +41,7 @@ RSpec.describe Rubino::CLI::ConfigCommand do
     it "does not exit (treated as not found, status 0)" do
       expect { described_class.new.get("model.default.foo") }.not_to raise_error
       warn = ui.messages.find { |m| m[:level] == :warning }
-      expect(warn[:message]).to match(/not found/)
+      expect(warn[:message]).to include("not found")
     end
   end
 end

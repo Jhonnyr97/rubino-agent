@@ -11,8 +11,8 @@ module Rubino
 
       def description
         "Create and manage a structured task list for the current session. " \
-        "Use this to track progress on complex multi-step tasks. " \
-        "Tasks have content, status (pending/in_progress/completed/cancelled), and priority."
+          "Use this to track progress on complex multi-step tasks. " \
+          "Tasks have content, status (pending/in_progress/completed/cancelled), and priority."
       end
 
       def input_schema

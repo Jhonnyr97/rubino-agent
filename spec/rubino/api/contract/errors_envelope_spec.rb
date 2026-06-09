@@ -35,10 +35,10 @@ RSpec.describe "API contract: error envelope" do
 
   describe "typed errors" do
     {
-      "not_found"    => [404, "not_found"],
+      "not_found" => [404, "not_found"],
       "unauthorized" => [401, "unauthorized"],
-      "conflict"     => [409, "conflict"],
-      "upstream"     => [502, "upstream"]
+      "conflict" => [409, "conflict"],
+      "upstream" => [502, "upstream"]
     }.each do |kind, (status, code)|
       it "#{kind} → #{status} with code '#{code}'" do
         get_json "/v1/__test/raise/#{kind}"

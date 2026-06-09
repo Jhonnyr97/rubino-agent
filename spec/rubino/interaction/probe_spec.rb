@@ -7,6 +7,11 @@
 #   - it returns the answer;
 #   - it does NOT mutate the session message store (screen-only, vanishes).
 RSpec.describe Rubino::Interaction::Probe do
+  subject(:probe) do
+    described_class.new(session: session, config: config,
+                        model_override: "fake/test", provider_override: "fake")
+  end
+
   let(:db)     { test_database }
   let(:config) { test_configuration }
   let(:store)  { Rubino::Session::Store.new(db: db.db) }
@@ -24,11 +29,6 @@ RSpec.describe Rubino::Interaction::Probe do
     # Seed a couple of real turns so the snapshot has history to read.
     store.create(session_id: session[:id], role: "user", content: "wire up billing")
     store.create(session_id: session[:id], role: "assistant", content: "On it.")
-  end
-
-  subject(:probe) do
-    described_class.new(session: session, config: config,
-                        model_override: "fake/test", provider_override: "fake")
   end
 
   it "runs a one-shot side-inference (no tools) over the session snapshot + question" do

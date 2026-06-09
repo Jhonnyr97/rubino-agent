@@ -31,10 +31,10 @@ RSpec.describe "Agent behaviour observable from the UI" do
 
   let(:tool_executor) do
     Rubino::Agent::ToolExecutor.new(
-      registry:        Rubino::Tools::Registry,
+      registry: Rubino::Tools::Registry,
       approval_policy: approval_policy,
-      ui:              ui,
-      config:          config
+      ui: ui,
+      config: config
     )
   end
 
@@ -47,14 +47,14 @@ RSpec.describe "Agent behaviour observable from the UI" do
 
   def build_loop(llm: fake_llm)
     Rubino::Agent::Loop.new(
-      session:       session,
-      llm_adapter:   llm,
+      session: session,
+      llm_adapter: llm,
       tool_executor: tool_executor,
       message_store: message_store,
-      budget:        budget,
-      ui:            ui,
-      event_bus:     event_bus,
-      config:        config
+      budget: budget,
+      ui: ui,
+      event_bus: event_bus,
+      config: config
     )
   end
 
@@ -74,7 +74,8 @@ RSpec.describe "Agent behaviour observable from the UI" do
     it "i tool di default vengono registrati nel Registry" do
       Rubino::Tools::Registry.register_defaults!
       nomi = Rubino::Tools::Registry.all.map(&:name)
-      expect(nomi).to include("read", "write", "edit", "multi_edit", "grep", "glob", "git", "shell", "shell_output", "shell_kill")
+      expect(nomi).to include("read", "write", "edit", "multi_edit", "grep", "glob", "git", "shell", "shell_output",
+                              "shell_kill")
     end
 
     it "un tool registrato viene trovato per nome" do
@@ -91,7 +92,6 @@ RSpec.describe "Agent behaviour observable from the UI" do
       expect(nomi_abilitati).not_to include("webfetch")
       expect(nomi_abilitati).to include("shell")
     end
-
 
     it "enabled_tools restituisce tool senza config esplicita come abilitati (opt-out)" do
       Rubino::Tools::Registry.register(Rubino::Tools::GlobTool.new)
@@ -110,10 +110,10 @@ RSpec.describe "Agent behaviour observable from the UI" do
       test_configuration(
         "streaming" => { "enabled" => true, "transport" => "off",
                          "edit_interval" => 0.3, "buffer_threshold" => 40, "cursor" => " ▉" },
-        "display"   => { "streaming" => true, "show_reasoning" => false,
-                         "language" => "en",
-                         "runtime_footer" => { "enabled" => false },
-                         "interim_assistant_messages" => false }
+        "display" => { "streaming" => true, "show_reasoning" => false,
+                       "language" => "en",
+                       "runtime_footer" => { "enabled" => false },
+                       "interim_assistant_messages" => false }
       )
     end
 
@@ -158,7 +158,7 @@ RSpec.describe "Agent behaviour observable from the UI" do
       levels = ui.messages.map { |m| m[:level] }
       expect(levels.last).to eq(:note)
       expect(levels[-2]).to eq(:stream_end)
-      expect(ui.messages.last[:message]).to match(/↳ turn · /)
+      expect(ui.messages.last[:message]).to include("↳ turn · ")
     end
   end
 
@@ -192,7 +192,7 @@ RSpec.describe "Agent behaviour observable from the UI" do
       fake_llm.enqueue_text("ok")
       build_loop.run(messages: user_messages, tools: [])
 
-      indici = ui.messages.each_with_index.filter_map do |m, i|
+      ui.messages.each_with_index.filter_map do |m, i|
         i if %i[tool_started tool_finished].include?(m[:level])
       end
       started_idx  = ui.messages.index { |m| m[:level] == :tool_started }

@@ -38,8 +38,8 @@ module Rubino
 
         prov_cfg = config.provider_config(provider)
         return true if present?(prov_cfg["api_key"])
-        return present?(ENV["OPENAI_API_KEY"])    if prov_cfg["openai_compatible"] == true
-        return present?(ENV["ANTHROPIC_API_KEY"]) if prov_cfg["anthropic_compatible"] == true
+        return present?(ENV.fetch("OPENAI_API_KEY", nil))    if prov_cfg["openai_compatible"] == true
+        return present?(ENV.fetch("ANTHROPIC_API_KEY", nil)) if prov_cfg["anthropic_compatible"] == true
 
         present?(provider_env_key(provider))
       end
@@ -47,15 +47,15 @@ module Rubino
       # The native ENV credential a provider reads when no config key is set.
       def provider_env_key(provider)
         case provider
-        when "openai"    then ENV["OPENAI_API_KEY"]
-        when "anthropic" then ENV["ANTHROPIC_API_KEY"]
-        when "google"    then ENV["GEMINI_API_KEY"] || ENV["GOOGLE_API_KEY"]
-        when "bedrock"   then ENV["BEDROCK_API_KEY"]
-        when "minimax"   then ENV["MINIMAX_API_KEY"]
+        when "openai"    then ENV.fetch("OPENAI_API_KEY", nil)
+        when "anthropic" then ENV.fetch("ANTHROPIC_API_KEY", nil)
+        when "google"    then ENV["GEMINI_API_KEY"] || ENV.fetch("GOOGLE_API_KEY", nil)
+        when "bedrock"   then ENV.fetch("BEDROCK_API_KEY", nil)
+        when "minimax"   then ENV.fetch("MINIMAX_API_KEY", nil)
         else
           # Unknown / self-hosted provider: no native ENV mapping. Fall back to
           # the OpenAI key, which most openai-compatible backends accept.
-          ENV["OPENAI_API_KEY"]
+          ENV.fetch("OPENAI_API_KEY", nil)
         end
       end
 
@@ -63,11 +63,11 @@ module Rubino
       # the actionable error message and the wizard.
       def provider_env_var_name(provider)
         {
-          "openai"    => "OPENAI_API_KEY",
+          "openai" => "OPENAI_API_KEY",
           "anthropic" => "ANTHROPIC_API_KEY",
-          "google"    => "GEMINI_API_KEY",
-          "bedrock"   => "BEDROCK_API_KEY",
-          "minimax"   => "MINIMAX_API_KEY"
+          "google" => "GEMINI_API_KEY",
+          "bedrock" => "BEDROCK_API_KEY",
+          "minimax" => "MINIMAX_API_KEY"
         }.fetch(provider, "#{provider.to_s.upcase}_API_KEY")
       end
 

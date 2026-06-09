@@ -31,7 +31,6 @@ module Rubino
         @doom_detector = DoomLoopDetector.new
       end
 
-
       # Returns the decision for a tool call: :allow, :ask, :deny
       #
       # CANONICAL DECISION ORDER (deny-class checks precede every allow path).
@@ -79,6 +78,7 @@ module Rubino
         #    is the one thing yolo isn't supposed to license.
         if Rubino::Modes.skip_approvals?
           return :deny if @doom_detector.record(tool_name: tool.name, arguments: arguments)
+
           return :allow
         end
 
@@ -116,12 +116,12 @@ module Rubino
           case @confirm_policy
           when :dangerous_only
             return :ask if dangerous?(command_str)
+
             return :allow
           else # :confirm_all
             return :ask
           end
         end
-
 
         # 9. Fall back to mode-based decision
         mode_based_decision(tool)
@@ -134,7 +134,6 @@ module Rubino
       def dangerous?(command)
         DangerousPatterns.dangerous?(command)
       end
-
 
       # Returns true if a specific command is pre-approved by the config
       # allowlist. An empty allowlist pre-approves NOTHING.

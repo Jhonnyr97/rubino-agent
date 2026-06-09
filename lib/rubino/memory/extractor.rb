@@ -27,7 +27,7 @@ module Rubino
         extracted = []
 
         messages.each do |msg|
-          next unless msg.role == "user" || msg.role == "assistant"
+          next unless %w[user assistant].include?(msg.role)
           next if msg.content.nil? || msg.content.empty?
 
           memories = extract_from_content(msg.content, session_id)

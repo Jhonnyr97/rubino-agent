@@ -27,7 +27,7 @@ module Rubino
         config_keys = Tools::Registry.all.map(&:config_key).uniq
         rows = config_keys.sort.map do |key|
           value   = config.dig("tools", key)
-          enabled = value.nil? ? true : value == true
+          enabled = value.nil? || value == true
           [key, enabled ? "enabled" : "disabled"]
         end
 

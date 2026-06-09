@@ -28,9 +28,7 @@ module Rubino
         def call(env)
           if APPLICABLE_METHODS.include?(env["REQUEST_METHOD"]) && json_content?(env)
             limit = max_body_bytes
-            if content_length_over_limit?(env, limit)
-              return too_large(limit)
-            end
+            return too_large(limit) if content_length_over_limit?(env, limit)
 
             body, overflowed = read_capped(env, limit)
             return too_large(limit) if overflowed

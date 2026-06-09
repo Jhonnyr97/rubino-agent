@@ -6,9 +6,12 @@
 # the partial-line buffering / commit-on-newline behaviour without a terminal.
 RSpec.describe Rubino::UI::StdoutProxy do
   # Records the coordinator calls the proxy makes.
+  subject(:proxy) { described_class.new(composer) }
+
   let(:composer) do
     Class.new do
       attr_reader :committed
+
       def initialize
         @committed = []
         @partial = ""
@@ -23,13 +26,9 @@ RSpec.describe Rubino::UI::StdoutProxy do
         @partial = str.to_s
       end
 
-      def partial
-        @partial
-      end
+      attr_reader :partial
     end.new
   end
-
-  subject(:proxy) { described_class.new(composer) }
 
   describe "partial writes (no newline)" do
     it "holds a partial write as the live partial, uncommitted" do
@@ -57,7 +56,10 @@ RSpec.describe Rubino::UI::StdoutProxy do
     it "commits exactly one line above the composer" do
       # Mimic UI::CLI#stream emitting partial tokens (no newline) then
       # stream_end emitting the terminating newline.
-      ["Hel", "lo,", " ", "wor", "ld"].each { |tok| proxy.print(tok); proxy.flush }
+      ["Hel", "lo,", " ", "wor", "ld"].each do |tok|
+        proxy.print(tok)
+        proxy.flush
+      end
       expect(composer.committed).to eq([]) # nothing committed yet
       expect(composer.partial).to eq("Hello, world")
 

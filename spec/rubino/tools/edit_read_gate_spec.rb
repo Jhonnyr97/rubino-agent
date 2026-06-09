@@ -71,7 +71,7 @@ RSpec.describe "Read-before-Edit gate" do
       path = write_file("b.rb", "one two three")
       out  = tool.call(
         "file_path" => path,
-        "edits"     => [{ "old_string" => "one", "new_string" => "1" }]
+        "edits" => [{ "old_string" => "one", "new_string" => "1" }]
       )
       msg = out.is_a?(Hash) ? out[:output] : out.to_s
       expect(msg).to start_with("Error: must use the read tool")
@@ -85,7 +85,7 @@ RSpec.describe "Read-before-Edit gate" do
       tracker.register(path, File.mtime(path))
       out = tool.call(
         "file_path" => path,
-        "edits"     => [
+        "edits" => [
           { "old_string" => "one", "new_string" => "1" },
           { "old_string" => "two", "new_string" => "2" }
         ]
@@ -99,7 +99,7 @@ RSpec.describe "Read-before-Edit gate" do
       tracker.register(path, File.mtime(path) - 5)
       out = tool.call(
         "file_path" => path,
-        "edits"     => [{ "old_string" => "one", "new_string" => "1" }]
+        "edits" => [{ "old_string" => "one", "new_string" => "1" }]
       )
       msg = out.is_a?(Hash) ? out[:output] : out.to_s
       expect(msg).to include("changed on disk since the last read")

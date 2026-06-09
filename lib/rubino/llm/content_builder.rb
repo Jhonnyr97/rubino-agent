@@ -23,19 +23,19 @@ module Rubino
         cleaned = text.dup
 
         # Match file paths to images: /path/to/image.png or ./image.jpg
-        cleaned.gsub!(/(?:^|\s)((?:\/|\.\/|\~\/)[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp))/i) do
-          path = $1.strip
+        cleaned.gsub!(%r{(?:^|\s)((?:/|\./|~/)[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp))}i) do
+          path = ::Regexp.last_match(1).strip
           if File.exist?(File.expand_path(path))
             images << { type: :file, path: File.expand_path(path) }
             "" # Remove from text
           else
-            $&
+            ::Regexp.last_match(0)
           end
         end
 
         # Match image URLs
-        cleaned.gsub!(/(https?:\/\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp)(?:\?[^\s]*)?)/i) do
-          url = $1
+        cleaned.gsub!(%r{(https?://[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp)(?:\?[^\s]*)?)}i) do
+          url = ::Regexp.last_match(1)
           images << { type: :url, url: url }
           "" # Remove from text
         end

@@ -6,7 +6,23 @@
 #   - live:true (billed) runs SubagentProbe#peek ONCE and is budgeted per child,
 #   - the child's persisted session is NEVER mutated (the ephemeral invariant).
 RSpec.describe Rubino::Tools::ProbeTool do
+  subject(:tool) { described_class.new(probe: peek_spy) }
+
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+  # A SubagentProbe test double that counts peeks (so we can assert "called
+  # once" / "not called") and returns a canned answer.
+  let(:peek_spy) do
+    Class.new do
+      attr_reader :calls
+
+      def initialize = @calls = []
+
+      def peek(entry:, question:)
+        @calls << { entry: entry, question: question }
+        "the child says: working on auth"
+      end
+    end.new
+  end
 
   before { Rubino::Tools::BackgroundTasks.reset! }
   after  { Rubino::Tools::BackgroundTasks.reset! }
@@ -18,22 +34,6 @@ RSpec.describe Rubino::Tools::ProbeTool do
   def call_as(caller_id, tool, args)
     Rubino.with_current_subagent_id(caller_id) { tool.call(args) }
   end
-
-  # A SubagentProbe test double that counts peeks (so we can assert "called
-  # once" / "not called") and returns a canned answer.
-  let(:peek_spy) do
-    Class.new do
-      attr_reader :calls
-
-      def initialize = @calls = []
-      def peek(entry:, question:)
-        @calls << { entry: entry, question: question }
-        "the child says: working on auth"
-      end
-    end.new
-  end
-
-  subject(:tool) { described_class.new(probe: peek_spy) }
 
   it "declares the model-facing contract" do
     expect(tool.name).to eq("probe")

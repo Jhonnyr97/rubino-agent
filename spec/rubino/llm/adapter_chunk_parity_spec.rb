@@ -31,15 +31,15 @@ RSpec.describe "adapter streaming chunk parity" do
 
   describe Rubino::LLM::FakeProvider do
     let(:tmp_dir) { Dir.mktmpdir }
-    after { FileUtils.rm_rf(tmp_dir) }
-
     let(:config) do
       test_configuration(
-        "model"         => { "provider" => "fake", "default" => "fake/happy-path" },
-        "display"       => { "streaming" => true, "show_reasoning" => false },
+        "model" => { "provider" => "fake", "default" => "fake/happy-path" },
+        "display" => { "streaming" => true, "show_reasoning" => false },
         "fake_provider" => { "scenarios_dir" => tmp_dir }
       )
     end
+
+    after { FileUtils.rm_rf(tmp_dir) }
 
     def collect_chunks
       File.write(
@@ -62,7 +62,7 @@ RSpec.describe "adapter streaming chunk parity" do
     let(:body) do
       {
         "output" => { "message" => { "content" => [{ "text" => "Hello world" }] } },
-        "usage"  => { "inputTokens" => 5, "outputTokens" => 3 }
+        "usage" => { "inputTokens" => 5, "outputTokens" => 3 }
       }
     end
 

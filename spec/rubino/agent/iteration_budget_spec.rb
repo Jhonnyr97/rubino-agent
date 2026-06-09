@@ -6,8 +6,8 @@ RSpec.describe Rubino::Agent::IterationBudget do
   describe "#can_continue?" do
     it "stops once the iteration cap is exceeded" do
       budget = described_class.new(config: test_configuration("agent" => {
-        "max_turns" => 90, "max_tool_iterations" => 3, "max_turn_seconds" => 120
-      }))
+                                                                "max_turns" => 90, "max_tool_iterations" => 3, "max_turn_seconds" => 120
+                                                              }))
       expect(budget.can_continue?(3)).to be true
       expect(budget.can_continue?(4)).to be false
     end

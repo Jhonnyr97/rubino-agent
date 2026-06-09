@@ -44,7 +44,8 @@ module Rubino
         # askpass/shell/list) are the agent-reachable escalation forms.
         # (sudo -S WITHOUT a configured password is hardline; this is the
         # broader, recoverable privilege-flag class.)
-        [/\bsudo\b[^;|&\n]*?\s+(?:--stdin\b|-a\b|--askpass\b|-s\b)/, "sudo with privilege flag (stdin/askpass/shell/list)"],
+        [/\bsudo\b[^;|&\n]*?\s+(?:--stdin\b|-a\b|--askpass\b|-s\b)/,
+         "sudo with privilege flag (stdin/askpass/shell/list)"],
 
         # --- Pipe remote content to a shell (curl|sh, wget|bash) ---
         [%r{\b(?:curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)}, "pipe remote content to shell"],
@@ -53,8 +54,8 @@ module Rubino
         # --- Write / overwrite into system or credential files ---
         [/>>?\s*["']?#{SENSITIVE_WRITE_TARGET}/, "overwrite system file via redirection"],
         [/\btee\b.*["']?#{SENSITIVE_WRITE_TARGET}/, "overwrite system file via tee"],
-        [%r{\b(?:cp|mv|install)\b.*\s#{SYSTEM_CONFIG_PATH}}, "copy/move file into system config path"],
-        [%r{\bsed\s+-\S*i.*\s#{SYSTEM_CONFIG_PATH}}, "in-place edit of system config"],
+        [/\b(?:cp|mv|install)\b.*\s#{SYSTEM_CONFIG_PATH}/, "copy/move file into system config path"],
+        [/\bsed\s+-\S*i.*\s#{SYSTEM_CONFIG_PATH}/, "in-place edit of system config"],
 
         # --- Service control ---
         [/\bsystemctl\s+(?:-\S+\s+)*(?:stop|restart|disable|mask)\b/, "stop/restart system service"],
@@ -65,7 +66,7 @@ module Rubino
         [/\bkillall\s+(?:-\S*\s+)*-r\b/, "kill processes by regex (killall -r)"],
 
         # --- find that deletes ---
-        [/\bfind\b.*-exec(?:dir)?\s+(?:\/\S*\/)?rm\b/, "find -exec/-execdir rm"],
+        [%r{\bfind\b.*-exec(?:dir)?\s+(?:/\S*/)?rm\b}, "find -exec/-execdir rm"],
         [/\bfind\b.*-delete\b/, "find -delete"],
         [/\bxargs\s+.*\brm\b/, "xargs with rm"],
 

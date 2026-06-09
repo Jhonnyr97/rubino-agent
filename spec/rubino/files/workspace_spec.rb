@@ -6,12 +6,11 @@ require "tempfile"
 RSpec.describe Rubino::Files::Workspace do
   let(:root)      { Dir.mktmpdir("rubino_ws") }
   let(:workspace) { described_class.new(root: root) }
-
-  after { FileUtils.rm_rf(root) }
-
   # @root is realpath'd in initialize (macOS /tmp → /private/tmp etc),
   # so anything we compare against on disk must be too.
   let(:root_real) { File.realpath(root) }
+
+  after { FileUtils.rm_rf(root) }
 
   describe "#resolve" do
     it "returns the absolute path inside the root" do

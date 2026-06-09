@@ -31,7 +31,7 @@ RSpec.describe Rubino::Tools::MultiEditTool do
     tool.call(
       "file_path" => path,
       "edits" => [
-        { "old_string" => "old",  "new_string" => "new" },
+        { "old_string" => "old", "new_string" => "new" },
         { "old_string" => "new name", "new_string" => "renamed" }
       ]
     )

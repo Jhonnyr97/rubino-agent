@@ -14,8 +14,8 @@ module Rubino
 
       def description
         "Terminate a background shell started via `shell` with run_in_background: true. " \
-        "Sends SIGTERM to the process group, waits #{GRACE_SECONDS}s, then SIGKILL if " \
-        "the process is still alive."
+          "Sends SIGTERM to the process group, waits #{GRACE_SECONDS}s, then SIGKILL if " \
+          "the process is still alive."
       end
 
       def input_schema
@@ -51,6 +51,7 @@ module Rubino
         send_signal(entry.pgid, "TERM")
         GRACE_SECONDS.times do
           break unless entry.wait_thr.alive?
+
           sleep 1
         end
 

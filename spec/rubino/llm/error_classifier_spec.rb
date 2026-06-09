@@ -17,13 +17,13 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
   describe ".classify — typed ruby_llm errors" do
     # reason, retryable, [class, status, message]
     cases = {
-      RubyLLM::RateLimitError          => [FR::RATE_LIMIT,   true,  429],
-      RubyLLM::ServerError             => [FR::SERVER_ERROR, true,  500],
-      RubyLLM::ServiceUnavailableError => [FR::OVERLOADED,   true,  503],
-      RubyLLM::OverloadedError         => [FR::OVERLOADED,   true,  529],
-      RubyLLM::UnauthorizedError       => [FR::AUTH,         false, 401],
-      RubyLLM::ForbiddenError          => [FR::AUTH,         false, 403],
-      RubyLLM::PaymentRequiredError    => [FR::BILLING,      false, 402]
+      RubyLLM::RateLimitError => [FR::RATE_LIMIT, true, 429],
+      RubyLLM::ServerError => [FR::SERVER_ERROR, true, 500],
+      RubyLLM::ServiceUnavailableError => [FR::OVERLOADED, true, 503],
+      RubyLLM::OverloadedError => [FR::OVERLOADED, true, 529],
+      RubyLLM::UnauthorizedError => [FR::AUTH, false, 401],
+      RubyLLM::ForbiddenError => [FR::AUTH, false, 403],
+      RubyLLM::PaymentRequiredError => [FR::BILLING, false, 402]
     }
 
     cases.each do |klass, (reason, retryable, status)|

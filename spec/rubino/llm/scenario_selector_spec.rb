@@ -46,8 +46,8 @@ RSpec.describe Rubino::LLM::ScenarioSelector do
       end
 
       expect(missing).to be_empty,
-        "ROUTER references scenarios with no YAML under " \
-        "#{Rubino::LLM::ScenarioLoader::DEFAULT_DIR}: #{missing.inspect}"
+                         "ROUTER references scenarios with no YAML under " \
+                         "#{Rubino::LLM::ScenarioLoader::DEFAULT_DIR}: #{missing.inspect}"
     end
   end
 end

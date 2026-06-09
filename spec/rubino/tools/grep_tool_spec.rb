@@ -12,6 +12,7 @@ RSpec.describe Rubino::Tools::GrepTool do
   end
 
   let(:tmp_dir) { Dir.mktmpdir("grep_tool_spec") }
+
   after { FileUtils.rm_rf(tmp_dir) }
 
   before do
@@ -56,7 +57,7 @@ RSpec.describe Rubino::Tools::GrepTool do
     # thousands of lines (prod failure mode); the total cap bounds it.
     File.write(File.join(tmp_dir, "big.txt"), Array.new(500) { |i| "line #{i}" }.join("\n"))
     result = payload(tool.call("pattern" => "line", "path" => tmp_dir, "max_results" => 10))
-    body   = result.sub(/\A.*?:\n\n/m, "")           # strip the header
+    body   = result.sub(/\A.*?:\n\n/m, "") # strip the header
     expect(body.lines.size).to eq(10)
     expect(result).to match(/more.*raise max_results/)
   end

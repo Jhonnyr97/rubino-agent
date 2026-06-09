@@ -25,11 +25,11 @@ module Rubino
 
       def description
         "Send input to a background shell started via `shell` with " \
-        "run_in_background: true — answer an interactive prompt (Y/N, menu " \
-        "selection, password) of a running command. A newline is appended by " \
-        "default (like pressing Enter); pass enter: false for raw bytes, or " \
-        "eof: true to close stdin (EOF). Read the prompt and the result with " \
-        "`shell_output`."
+          "run_in_background: true — answer an interactive prompt (Y/N, menu " \
+          "selection, password) of a running command. A newline is appended by " \
+          "default (like pressing Enter); pass enter: false for raw bytes, or " \
+          "eof: true to close stdin (EOF). Read the prompt and the result with " \
+          "`shell_output`."
       end
 
       def input_schema
@@ -86,7 +86,7 @@ module Rubino
 
         registry.close_stdin(entry) if eof
 
-        msg = "[#{run_id}] wrote #{written} byte#{written == 1 ? "" : "s"} to stdin"
+        msg = "[#{run_id}] wrote #{written} byte#{"s" unless written == 1} to stdin"
         msg << " (EOF sent)" if eof
         msg << "\nRead the result: shell_output run_id=#{run_id}"
         msg

@@ -9,8 +9,9 @@ require "stringio"
 # rendered surface, the suppressions, the safe confirm, and the deterministic
 # per-name color.
 RSpec.describe Rubino::UI::SubagentView do
-  let(:io)      { StringIO.new }
   subject(:ui)  { described_class.new(agent_name: "explore", out: io) }
+
+  let(:io)      { StringIO.new }
 
   # Pastel honors NO_COLOR / non-tty, but be explicit: strip ANSI so the
   # assertions check the text, and check color separately via #color.
@@ -107,8 +108,16 @@ RSpec.describe Rubino::UI::SubagentView do
   end
 
   describe "collapsed-card mode (Variant A, #124)" do
-    before { Rubino::Tools::BackgroundTasks.reset! }
-    after  { Rubino::Tools::BackgroundTasks.reset! }
+    subject(:card_view) do
+      described_class.new(agent_name: "explore", out: io, entry_id: entry.id, parent_ui: parent)
+    end
+
+    before do
+      Rubino::Tools::BackgroundTasks.reset!
+      allow(parent).to receive(:set_subagent_cards) { repaints << :paint }
+    end
+
+    after { Rubino::Tools::BackgroundTasks.reset! }
 
     let(:registry) { Rubino::Tools::BackgroundTasks.instance }
     let(:entry)    { registry.reserve(subagent: "explore", prompt: "find the bug") }
@@ -117,12 +126,6 @@ RSpec.describe Rubino::UI::SubagentView do
     # we record, so we can assert it feeds the registry and does NOT flood $stdout.
     let(:repaints) { [] }
     let(:parent)   { double("parent_ui", set_subagent_cards: nil) }
-
-    subject(:card_view) do
-      described_class.new(agent_name: "explore", out: io, entry_id: entry.id, parent_ui: parent)
-    end
-
-    before { allow(parent).to receive(:set_subagent_cards) { repaints << :paint } }
 
     it "feeds tool_started to the registry instead of flooding stdout (#124)" do
       card_view.tool_started("read", arguments: { "file_path" => "lib/foo.rb" })

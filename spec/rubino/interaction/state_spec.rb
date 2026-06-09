@@ -17,9 +17,9 @@ RSpec.describe Rubino::Interaction::State do
     end
 
     it "raises for invalid state" do
-      expect {
+      expect do
         state.transition_to!(:bogus)
-      }.to raise_error(Rubino::Error)
+      end.to raise_error(Rubino::Error)
     end
 
     # Audit finding (2): streaming_response/executing_tools were listed but

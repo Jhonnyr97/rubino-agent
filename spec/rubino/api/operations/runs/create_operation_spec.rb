@@ -4,10 +4,13 @@ require "spec_helper"
 
 RSpec.describe Rubino::API::Operations::Runs::CreateOperation do
   before { with_test_db }
+
   let(:session_repo) { Rubino::Session::Repository.new }
   let(:run_repo)     { Rubino::Run::Repository.new }
   let(:executor)     { instance_double(Rubino::Run::Executor, start: nil) }
-  let(:operation)    { described_class.new(session_repository: session_repo, run_repository: run_repo, executor: executor) }
+  let(:operation)    do
+    described_class.new(session_repository: session_repo, run_repository: run_repo, executor: executor)
+  end
 
   it "creates a run and dispatches it" do
     session = session_repo.create(source: "api")
@@ -40,7 +43,8 @@ RSpec.describe Rubino::API::Operations::Runs::CreateOperation do
   it "accepts an image-only run: blank input with attachments" do
     session = session_repo.create(source: "api")
     status, body = operation.call(
-      make_request(body: { "input" => "", "attachments" => ["https://example.test/cat.png"] }, params: { id: session[:id] })
+      make_request(body: { "input" => "", "attachments" => ["https://example.test/cat.png"] },
+                   params: { id: session[:id] })
     )
 
     expect(status).to eq(201)

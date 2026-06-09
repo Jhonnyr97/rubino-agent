@@ -8,12 +8,11 @@
 # the in-memory test DB and Null UI. Render/visual correctness is verified
 # separately in the headless browser terminal (project rule).
 RSpec.describe "Rubino::Commands::Executor usability commands" do
+  subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: runner) }
+
   let(:db)     { test_database }
   let(:ui)     { Rubino::UI::Null.new }
   let(:loader) { Rubino::Commands::Loader.new(config: test_configuration) }
-
-  subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: runner) }
-
   let(:runner) { nil }
 
   before do
@@ -24,7 +23,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
 
   def info_lines
     ui.messages.select { |m| %i[info status success error].include?(m[:level]) }
-      .map { |m| m[:message].to_s }
+               .map { |m| m[:message].to_s }
   end
 
   def table_rows
@@ -64,14 +63,14 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
     it "reports the memory fact count from the store" do
       Rubino::Memory::Store.new(db: db.db).create(kind: "fact", content: "the sky is blue")
       exec.try_execute("/status")
-      expect(info_lines.join("\n")).to match(/1 facts/)
+      expect(info_lines.join("\n")).to include("1 facts")
     end
 
     it "counts running background subagents" do
       reg = Rubino::Tools::BackgroundTasks.instance
       reg.reserve(subagent: "explore", prompt: "find sessions")
       exec.try_execute("/status")
-      expect(info_lines.join("\n")).to match(/1 running/)
+      expect(info_lines.join("\n")).to include("1 running")
     end
 
     it "degrades gracefully with no live runner" do
@@ -323,7 +322,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       e = reg.reserve(subagent: "explore", prompt: "x")
       reg.complete(e, status: :completed, result: "done")
       exec.try_execute("/agents #{e.id} --stop")
-      expect(info_lines.join("\n")).to match(/already completed/)
+      expect(info_lines.join("\n")).to include("already completed")
     end
 
     describe "approval-surfacing drill-in (Option 2)" do
@@ -548,7 +547,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       joined = info_lines.join("\n")
       # One combined row, not two identical "End session" rows.
       expect(joined).to include("/exit, /quit")
-      expect(joined.scan(/- End session/).size).to eq(1)
+      expect(joined.scan("- End session").size).to eq(1)
     end
 
     it "lists /paste and /clear-images exactly once (#87)" do

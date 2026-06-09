@@ -42,7 +42,7 @@ RSpec.describe Rubino::UI::API do
     end
 
     it "remembers a session decision and skips the gate on the next confirm" do
-      first_emitted  = false
+      first_emitted = false
       allow(gate).to receive(:register)
       allow(recorder).to receive(:emit) { first_emitted = true }
       allow(gate).to receive(:await).and_return("session")

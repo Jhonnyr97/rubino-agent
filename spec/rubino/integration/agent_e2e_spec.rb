@@ -121,6 +121,7 @@ RSpec.describe "Agent end-to-end with FakeLLMAdapter" do
 
   describe "tool call cycle" do
     let(:tmp_dir) { Dir.mktmpdir("e2e_tool") }
+
     after         { FileUtils.rm_rf(tmp_dir) }
 
     before do

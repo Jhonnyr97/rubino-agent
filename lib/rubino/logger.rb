@@ -21,7 +21,8 @@ module Rubino
   # This covers tokens, secrets, and raw Authorization headers passing through
   # middleware logs.
   class Logger
-    LEVELS = { debug: ::Logger::DEBUG, info: ::Logger::INFO, warn: ::Logger::WARN, error: ::Logger::ERROR, fatal: ::Logger::FATAL }.freeze
+    LEVELS = { debug: ::Logger::DEBUG, info: ::Logger::INFO, warn: ::Logger::WARN, error: ::Logger::ERROR,
+               fatal: ::Logger::FATAL }.freeze
 
     # Keys (matched case-insensitively against String form) whose values are
     # replaced with REDACTED before logging. Recursive — applies at any depth.
@@ -34,7 +35,8 @@ module Rubino
     # Replacement string written in place of redacted values.
     REDACTED = "[REDACTED]"
 
-    def initialize(io: $stdout, level: ENV.fetch("RUBINO_LOG_LEVEL", "info"), format: ENV.fetch("RUBINO_LOG_FORMAT", "json"))
+    def initialize(io: $stdout, level: ENV.fetch("RUBINO_LOG_LEVEL", "info"),
+                   format: ENV.fetch("RUBINO_LOG_FORMAT", "json"))
       @logger = ::Logger.new(io)
       @logger.level = LEVELS.fetch(level.to_sym, ::Logger::INFO)
       @format = format.to_sym
@@ -88,7 +90,9 @@ module Rubino
       if @format == :pretty
         ->(severity, time, _progname, fields) { "[#{time.iso8601}] #{severity.downcase} #{fields.inspect}\n" }
       else
-        ->(severity, time, _progname, fields) { "#{JSON.generate({ ts: time.iso8601, level: severity.downcase }.merge(fields))}\n" }
+        lambda { |severity, time, _progname, fields|
+          "#{JSON.generate({ ts: time.iso8601, level: severity.downcase }.merge(fields))}\n"
+        }
       end
     end
   end

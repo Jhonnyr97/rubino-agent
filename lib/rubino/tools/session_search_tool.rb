@@ -20,8 +20,8 @@ module Rubino
 
       def description
         "Full-text search across past session messages. " \
-        "Returns matched messages with highlighted snippets and the owning session id. " \
-        "Use to recall earlier conversations or look up what a tool returned previously."
+          "Returns matched messages with highlighted snippets and the owning session id. " \
+          "Use to recall earlier conversations or look up what a tool returned previously."
       end
 
       def input_schema

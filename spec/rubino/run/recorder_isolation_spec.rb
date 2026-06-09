@@ -49,7 +49,7 @@ RSpec.describe Rubino::Run::Recorder do
     bus_b.emit(Rubino::Interaction::Events::INTERACTION_FINISHED, output: "BRAVO")
 
     by_run = store.rows.select { |r| r[:type] == "run.completed" }
-                 .to_h { |r| [r[:run_id], r[:payload][:output]] }
+                       .to_h { |r| [r[:run_id], r[:payload][:output]] }
     expect(by_run).to eq("run-A" => "ALPHA", "run-B" => "BRAVO")
   end
 

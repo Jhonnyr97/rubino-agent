@@ -24,10 +24,10 @@ RSpec.describe Rubino::Tools::AttachFileTool do
     result = tool.call("file_path" => path)
 
     expect(result[:artifact]).to include(
-      path:         path,
-      filename:     "report.pdf",
+      path: path,
+      filename: "report.pdf",
       content_type: "application/pdf",
-      byte_size:    "PDF-content-bytes".bytesize
+      byte_size: "PDF-content-bytes".bytesize
     )
     expect(result[:output]).to include("report.pdf")
   end

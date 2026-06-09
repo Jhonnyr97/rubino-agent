@@ -6,18 +6,18 @@
 # could see a tool error. The fix scrubs invalid UTF-8 at this boundary so
 # the event is persisted (with replacement chars) and the run survives.
 RSpec.describe Rubino::Run::EventStore do
-  let(:connection) { test_database }
   subject(:store)  { described_class.new(db: connection.db) }
 
+  let(:connection) { test_database }
   let(:session_id) { SecureRandom.uuid }
   let(:run_id)     { SecureRandom.uuid }
 
   it "persists a payload containing invalid UTF-8 bytes without raising" do
     bad = (+"prefix \xFF\xFE tail").force_encoding(Encoding::ASCII_8BIT)
-    expect {
+    expect do
       store.append(session_id: session_id, run_id: run_id, type: "tool.finished",
                    payload: { output: bad })
-    }.not_to raise_error
+    end.not_to raise_error
   end
 
   it "replaces invalid bytes with ? in the stored JSON" do
@@ -33,9 +33,9 @@ RSpec.describe Rubino::Run::EventStore do
   it "scrubs nested strings inside arrays and hashes" do
     bad = (+"deep \xC3\x28").force_encoding(Encoding::ASCII_8BIT) # invalid UTF-8 multi-byte
     payload = { tools: [{ name: "read", output: bad }], meta: { error: bad } }
-    expect {
+    expect do
       store.append(session_id: session_id, run_id: run_id, type: "tool.finished", payload: payload)
-    }.not_to raise_error
+    end.not_to raise_error
     row = connection.db[:events].where(session_id: session_id).first
     parsed = JSON.parse(row[:payload_json])
     expect(parsed["tools"][0]["output"]).to include("deep")

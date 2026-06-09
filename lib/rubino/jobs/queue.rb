@@ -32,9 +32,7 @@ module Rubino
         )
 
         # If inline mode, execute immediately
-        if @config.jobs_mode == "inline"
-          Runner.new.run_job(id)
-        end
+        Runner.new.run_job(id) if @config.jobs_mode == "inline"
 
         id
       end
@@ -44,22 +42,22 @@ module Rubino
         now = Time.now.utc.iso8601
 
         job = @db[:jobs]
-                .where(status: "queued")
-                .where { run_at <= now }
-                .order(:priority, :run_at)
-                .first
+              .where(status: "queued")
+              .where { run_at <= now }
+              .order(:priority, :run_at)
+              .first
 
         return nil unless job
 
         # Lock the job
         updated = @db[:jobs]
-                    .where(id: job[:id], status: "queued")
-                    .update(
-                      status: "running",
-                      locked_at: now,
-                      locked_by: worker_id,
-                      updated_at: now
-                    )
+                  .where(id: job[:id], status: "queued")
+                  .update(
+                    status: "running",
+                    locked_at: now,
+                    locked_by: worker_id,
+                    updated_at: now
+                  )
 
         # Return nil if another worker grabbed it first
         updated > 0 ? @db[:jobs].where(id: job[:id]).first : nil

@@ -13,6 +13,7 @@ RSpec.describe Rubino::CLI::SetupCommand do
   let(:ui) do
     Class.new do
       attr_reader :messages
+
       def initialize = @messages = []
       def info(m)       = @messages << [:info, m]
       def success(m)    = @messages << [:success, m]
@@ -24,7 +25,7 @@ RSpec.describe Rubino::CLI::SetupCommand do
   end
 
   around do |ex|
-    prev = ENV["RUBINO_HOME"]
+    prev = ENV.fetch("RUBINO_HOME", nil)
     ENV["RUBINO_HOME"] = home
     saved = ENV.to_hash.slice("MINIMAX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
     %w[MINIMAX_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY].each { |k| ENV.delete(k) }

@@ -13,10 +13,10 @@ module Rubino
 
           db = Rubino.database.db
           old_sessions = db[:sessions]
-                           .where(status: "ended")
-                           .where { ended_at < cutoff }
-                           .select(:id)
-                           .all
+                         .where(status: "ended")
+                         .where { ended_at < cutoff }
+                         .select(:id)
+                         .all
 
           repo = Session::Repository.new
           old_sessions.each do |s|

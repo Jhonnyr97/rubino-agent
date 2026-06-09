@@ -132,9 +132,7 @@ module Rubino
       # for FILE_CACHE_TTL so we never reshell on every keystroke.
       def workspace_files
         now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        if @files_cache && @files_cache_at && (now - @files_cache_at) < FILE_CACHE_TTL
-          return @files_cache
-        end
+        return @files_cache if @files_cache && @files_cache_at && (now - @files_cache_at) < FILE_CACHE_TTL
 
         @files_cache    = discover_files(workspace_root)
         @files_cache_at = now
@@ -194,7 +192,7 @@ module Rubino
       def glob_files(root)
         files = []
         Dir.glob("**/*", File::FNM_DOTMATCH, base: root) do |rel|
-          next if rel == "." || rel == ".."
+          next if [".", ".."].include?(rel)
           next if GLOB_IGNORE_DIRS.any? { |d| rel == d || rel.start_with?("#{d}/") }
           next unless File.file?(File.join(root, rel))
 

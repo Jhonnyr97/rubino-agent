@@ -10,11 +10,11 @@ RSpec.describe Rubino::Config::Configuration do
 
     it "returns model temperature" do
       cfg = test_configuration("model" => {
-        "default" => "openai/gpt-4.1",
-        "provider" => "auto",
-        "context_length" => nil,
-        "temperature" => 0.3
-      })
+                                 "default" => "openai/gpt-4.1",
+                                 "provider" => "auto",
+                                 "context_length" => nil,
+                                 "temperature" => 0.3
+                               })
       expect(cfg.model_temperature).to eq(0.3)
     end
 
@@ -70,10 +70,10 @@ RSpec.describe Rubino::Config::Configuration do
       # mirrors `config set agent.max_turn_seconds nil`, whose writer coerces
       # "nil" -> nil and used to leave a bare nil that crashed every turn.
       cfg = test_configuration("agent" => {
-        "max_turns" => 90,
-        "max_tool_iterations" => nil,
-        "max_turn_seconds" => nil
-      })
+                                 "max_turns" => 90,
+                                 "max_tool_iterations" => nil,
+                                 "max_turn_seconds" => nil
+                               })
       expect(cfg.agent_max_tool_iterations).to eq(8)
       expect(cfg.agent_max_turn_seconds).to eq(120)
     end
@@ -88,8 +88,8 @@ RSpec.describe Rubino::Config::Configuration do
 
     it "returns configured overrides" do
       cfg = test_configuration("tasks" => {
-        "max_depth" => 4, "max_children_per_node" => 2, "max_concurrent_total" => 12
-      })
+                                 "max_depth" => 4, "max_children_per_node" => 2, "max_concurrent_total" => 12
+                               })
       expect(cfg.tasks_max_depth).to eq(4)
       expect(cfg.tasks_max_children_per_node).to eq(2)
       expect(cfg.tasks_max_concurrent_total).to eq(12)
@@ -97,8 +97,8 @@ RSpec.describe Rubino::Config::Configuration do
 
     it "falls back to the built-in default when a value is nil" do
       cfg = test_configuration("tasks" => {
-        "max_depth" => nil, "max_children_per_node" => nil, "max_concurrent_total" => nil
-      })
+                                 "max_depth" => nil, "max_children_per_node" => nil, "max_concurrent_total" => nil
+                               })
       expect(cfg.tasks_max_depth).to eq(2)
       expect(cfg.tasks_max_children_per_node).to eq(3)
       expect(cfg.tasks_max_concurrent_total).to eq(8)
@@ -121,17 +121,17 @@ RSpec.describe Rubino::Config::Configuration do
 
     it "honors an explicit confirm_policy and lets it win over the alias" do
       cfg = test_configuration("security" => {
-        "confirm_policy" => "dangerous_only",
-        "require_confirmation_for_shell" => true
-      })
+                                 "confirm_policy" => "dangerous_only",
+                                 "require_confirmation_for_shell" => true
+                               })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
     end
 
     it "falls back to the alias on an unrecognized confirm_policy" do
       cfg = test_configuration("security" => {
-        "confirm_policy" => "bogus",
-        "require_confirmation_for_shell" => false
-      })
+                                 "confirm_policy" => "bogus",
+                                 "require_confirmation_for_shell" => false
+                               })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
     end
 
@@ -150,7 +150,6 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
-
   describe "#database_path (issue #96 — default follows RUBINO_HOME)" do
     # Build a Configuration whose raw["database"]["path"] is the sentinel
     # default, with no explicit home_path so resolution falls through to
@@ -161,7 +160,7 @@ RSpec.describe Rubino::Config::Configuration do
     end
 
     around do |example|
-      prev = ENV["RUBINO_HOME"]
+      prev = ENV.fetch("RUBINO_HOME", nil)
       example.run
     ensure
       if prev.nil?

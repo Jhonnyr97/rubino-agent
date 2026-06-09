@@ -30,7 +30,8 @@ module Rubino
       #   +:refresh_token+, +:scopes+ (Array<String>) and +:metadata+ (Hash).
       #   The +:access_token+/+:refresh_token+ values are sensitive — never
       #   log them.
-      def upsert(provider:, account_id:, account_email: nil, access_token:, refresh_token: nil, expires_at: nil, scopes: [], metadata: {})
+      def upsert(provider:, account_id:, access_token:, account_email: nil, refresh_token: nil, expires_at: nil,
+                 scopes: [], metadata: {})
         now = Time.now.utc.iso8601
         existing = @db[:oauth_connections].where(provider: provider.to_s, account_id: account_id.to_s).first
         id = existing ? existing[:id] : SecureRandom.uuid

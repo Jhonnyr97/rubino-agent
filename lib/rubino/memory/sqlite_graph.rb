@@ -82,7 +82,7 @@ module Rubino
       # (idempotent). Co_occurs edges are undirected in effect: we store the
       # canonical ordering for the pair so the de-dup works both ways.
       def upsert_edge(src, dst, relation, source_fact_id)
-        a, b = (relation == CO_OCCURS) ? [src, dst].minmax : [src, dst]
+        a, b = relation == CO_OCCURS ? [src, dst].minmax : [src, dst]
         return if @db[EDGES].where(
           src_entity_id: a, dst_entity_id: b, relation: relation, valid_to: nil
         ).count.positive?

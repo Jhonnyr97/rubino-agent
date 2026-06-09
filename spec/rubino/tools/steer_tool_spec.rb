@@ -89,7 +89,7 @@ RSpec.describe Rubino::Tools::SteerTool do
     child  = reserve(owner: parent.id)
     long   = "a" * 200
     out = call_as(parent.id, "task_id" => child.id, "note" => long)
-    expect(out).to eq("steer ▸ #{child.id} ← #{'a' * 80}…  (parked · enters child context next turn)")
+    expect(out).to eq("steer ▸ #{child.id} ← #{"a" * 80}…  (parked · enters child context next turn)")
     # The FULL note still lands on the queue (only the echo is truncated).
     expect(child.steer_queue.drain).to eq([long])
   end

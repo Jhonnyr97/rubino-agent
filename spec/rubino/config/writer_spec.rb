@@ -29,7 +29,7 @@ RSpec.describe Rubino::Config::Writer do
     it "set does not corrupt the file when it refuses" do
       writer.set("model.default.foo", "bar")
     rescue Rubino::ConfigurationError
-      raw = YAML.safe_load(File.read(config_path))
+      raw = YAML.safe_load_file(config_path)
       expect(raw.dig("model", "default")).to eq("openai/gpt-4.1")
     end
 

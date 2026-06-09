@@ -28,9 +28,7 @@ module Rubino
 
       # Transitions to a new state, emitting an event
       def transition_to!(new_state, event_bus: nil)
-        unless VALID_STATES.include?(new_state)
-          raise Error, "Invalid state: #{new_state}"
-        end
+        raise Error, "Invalid state: #{new_state}" unless VALID_STATES.include?(new_state)
 
         old_state = @current
         @current = new_state

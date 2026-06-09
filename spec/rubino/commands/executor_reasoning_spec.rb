@@ -5,9 +5,10 @@
 # and the CLI render path stay on one source of truth) and emits a
 # reasoning_changed / reasoning_status UI event.
 RSpec.describe Rubino::Commands::Executor do
+  subject(:exec) { described_class.new(loader: loader, ui: ui) }
+
   let(:ui)       { Rubino::UI::Null.new }
   let(:loader)   { Rubino::Commands::Loader.new(config: test_configuration) }
-  subject(:exec) { described_class.new(loader: loader, ui: ui) }
 
   describe "/reasoning" do
     it "switches the render mode on config and emits reasoning_changed" do
@@ -33,7 +34,7 @@ RSpec.describe Rubino::Commands::Executor do
       exec.try_execute("/reasoning warp")
       expect(Rubino::Config::ReasoningPrefs.mode(Rubino.configuration)).to eq(:collapsed)
       err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to match(/unknown reasoning mode/)
+      expect(err[:message]).to include("unknown reasoning mode")
     end
 
     it "with no argument shows the current mode" do
@@ -61,7 +62,7 @@ RSpec.describe Rubino::Commands::Executor do
     it "reports an unknown value as an error" do
       exec.try_execute("/think extreme")
       err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to match(/unknown effort/)
+      expect(err[:message]).to include("unknown effort")
     end
 
     it "with no argument shows the current effort" do

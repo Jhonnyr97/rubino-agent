@@ -29,7 +29,7 @@ module Rubino
 
       # Case-insensitive header lookup; "X-Foo" becomes HTTP_X_FOO.
       def header(name)
-        key = "HTTP_#{name.upcase.tr('-', '_')}"
+        key = "HTTP_#{name.upcase.tr("-", "_")}"
         @env[key]
       end
 

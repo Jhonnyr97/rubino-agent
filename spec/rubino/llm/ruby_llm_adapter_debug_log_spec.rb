@@ -6,18 +6,18 @@ require "tmpdir"
 # (RUBINO_HOME -> else ~/.rubino) instead of a hardcoded ~/.rubino/logs, so an
 # isolated/custom home is not polluted with a log written into the default home.
 RSpec.describe "Rubino::LLM::RubyLLMAdapter#debug_log_path RUBINO_HOME resolution" do
+  subject(:adapter) { Rubino::LLM::RubyLLMAdapter.allocate }
+
   let(:custom_home) { Dir.mktmpdir("rubino-home") }
 
   around do |example|
-    prev = ENV["RUBINO_HOME"]
+    prev = ENV.fetch("RUBINO_HOME", nil)
     ENV["RUBINO_HOME"] = custom_home
     example.run
   ensure
     ENV["RUBINO_HOME"] = prev
     FileUtils.rm_rf(custom_home)
   end
-
-  subject(:adapter) { Rubino::LLM::RubyLLMAdapter.allocate }
 
   it "derives the debug-log path from the resolved RUBINO_HOME" do
     expect(adapter.send(:debug_log_path))

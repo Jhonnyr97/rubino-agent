@@ -5,9 +5,10 @@
 # typing `/mode plan` at the prompt MUST flip the global mode AND emit a
 # mode_changed UI event (so the API adapter can forward it to web clients).
 RSpec.describe Rubino::Commands::Executor do
+  subject(:exec) { described_class.new(loader: loader, ui: ui) }
+
   let(:ui)       { Rubino::UI::Null.new }
   let(:loader)   { Rubino::Commands::Loader.new(config: test_configuration) }
-  subject(:exec) { described_class.new(loader: loader, ui: ui) }
 
   describe "/mode" do
     it "switches mode and emits mode_changed with the previous value" do
@@ -36,16 +37,16 @@ RSpec.describe Rubino::Commands::Executor do
       exec.try_execute("/mode warp")
       expect(Rubino::Modes.current).to eq(:plan)
       err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to match(/unknown mode/)
+      expect(err[:message]).to include("unknown mode")
     end
 
     it "with no argument lists all modes and marks the current one" do
       exec.try_execute("/mode")
       lines = ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message] }
-      expect(lines).to include(match(/Current mode: default/))
-      expect(lines).to include(match(/▸ \/mode default/))
-      expect(lines).to include(match(/  \/mode plan/))
-      expect(lines).to include(match(/  \/mode yolo/))
+      expect(lines).to include(include("Current mode: default"))
+      expect(lines).to include(include("▸ /mode default"))
+      expect(lines).to include(include("  /mode plan"))
+      expect(lines).to include(include("  /mode yolo"))
     end
 
     it "treats `/mode list` like a bare `/mode`" do
@@ -68,10 +69,10 @@ RSpec.describe Rubino::Commands::Executor do
       exec.try_execute("/help")
       lines = ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
 
-      expect(lines).to include(match(/@<path>/))
+      expect(lines).to include(include("@<path>"))
       expect(lines).to include(match(/\bTab\b/))
       # Still lists the built-in slash commands.
-      expect(lines).to include(match(%r{/help}))
+      expect(lines).to include(include("/help"))
     end
   end
 end

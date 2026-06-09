@@ -22,9 +22,9 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   # Timeline convention: activity lines use ● / ✓ / ✗ / ◆ markers
-  ACTIVITY_START = /● running/.freeze
-  ACTIVITY_DONE  = /✓ done/.freeze
-  ACTIVITY_FAIL  = /✗ done/.freeze
+  ACTIVITY_START = /● running/
+  ACTIVITY_DONE  = /✓ done/
+  ACTIVITY_FAIL  = /✗ done/
 
   describe "#stream" do
     it "prints streamed content directly without a box" do
@@ -33,7 +33,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       expect(out).to include("hello")
-      expect(out).not_to match(/┌─/)
+      expect(out).not_to include("┌─")
     end
 
     it "buffers thinking text instead of raw-printing it (bug #2)" do
@@ -68,7 +68,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream(type: :content, text: "done")
         ui.stream_end
       end
-      expect(out).to match(/┄ thinking ┄/)
+      expect(out).to include("┄ thinking ┄")
       expect(out).to include("┊  Let me check the failing test first.")
       # A shown aside is append-only scrollback that can't be un-shown, so its
       # close line carries NO toggle promise (neither "to hide" nor "to show").
@@ -102,7 +102,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       out = capture_stdout { ui.reveal_last_reasoning }
-      expect(out).to match(/┄ thinking ┄/)
+      expect(out).to include("┄ thinking ┄")
       expect(out).to include("┊  Let me check the failing test first.")
       # The reveal JUST showed the reasoning, so its close line must NOT promise
       # "to show" (redundant) nor "to hide" (a scrollback aside can't be hidden).
@@ -126,7 +126,7 @@ RSpec.describe Rubino::UI::CLI do
       # Every subsequent press prints NOTHING — no aside, and no ack line
       # ("┄ already shown ┄" was scrollback spam; D2 removed it). True silence.
       expect(second).not_to include("┊  first thought.")
-      expect(second).not_to match(/┄ thinking ┄/)
+      expect(second).not_to include("┄ thinking ┄")
       expect(second).not_to include("already shown")
       expect(second).to eq("")
       expect(third).to eq("")
@@ -198,7 +198,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.send(:clear_thinking_indicator)
         expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
         expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
-        expect(live.string).to match(/thinking…/)
+        expect(live.string).to include("thinking…")
       ensure
         $stdout = old
       end
@@ -260,7 +260,7 @@ RSpec.describe Rubino::UI::CLI do
     # The width detector must clamp to a usable minimum so columns stay readable.
     it "keeps streamed-table columns readable when winsize under-reports (#95)" do
       headers = %w[Language Type Concurrency]
-      md = "| #{headers.join(' | ')} |\n|---|---|---|\n" \
+      md = "| #{headers.join(" | ")} |\n|---|---|---|\n" \
            "| Ruby | Dynamic | GIL + threads/fibers; async |\n"
 
       # Tiny positive winsize (the streaming under-report) and a zero/garbage one
@@ -353,6 +353,7 @@ RSpec.describe Rubino::UI::CLI do
     it "shows the in-progress tail via the live seam when $stdout supports it" do
       live_io = Class.new(StringIO) do
         attr_reader :live_calls
+
         def live(str)
           (@live_calls ||= []) << str
           self
@@ -376,6 +377,7 @@ RSpec.describe Rubino::UI::CLI do
       # the earlier rows stay buffered until the table completes and renders.
       live_io = Class.new(StringIO) do
         attr_reader :live_calls
+
         def live(str)
           (@live_calls ||= []) << str
           self
@@ -424,17 +426,17 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#tool_started" do
-    it "renders as compact '● running  name · hint'" do
+    it "renders as compact '● running name · hint'" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: { command: "ls" })
       end
-      expect(out).to match(/● running  shell · ls/)
-      expect(out).not_to match(/┌─/)
+      expect(out).to include("● running  shell · ls")
+      expect(out).not_to include("┌─")
     end
 
-    it "renders as '● running  name' when no args given" do
+    it "renders as '● running name' when no args given" do
       out = capture_stdout { ui.tool_started("ping", arguments: nil) }
-      expect(out).to match(/● running  ping/)
+      expect(out).to include("● running  ping")
       expect(out).not_to match(/· \S/)
     end
 
@@ -451,7 +453,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("shell", arguments: { command: "ls" })
         ui.tool_finished("shell", result: nil)
       end
-      expect(out).to match(/✓ done · shell/)
+      expect(out).to include("✓ done · shell")
     end
 
     it "renders as '✗ done · name' on failure" do
@@ -460,7 +462,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("shell", arguments: nil)
         ui.tool_finished("shell", result: result)
       end
-      expect(out).to match(/✗ done · shell/)
+      expect(out).to include("✗ done · shell")
     end
 
     it "shows metric on success when result provides it" do
@@ -469,7 +471,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("ls", arguments: nil)
         ui.tool_finished("ls", result: result)
       end
-      expect(out).to match(/✓ done · ls · 42 files/)
+      expect(out).to include("✓ done · ls · 42 files")
     end
 
     it "shows error message on failure" do
@@ -478,7 +480,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("read", arguments: nil)
         ui.tool_finished("read", result: result)
       end
-      expect(out).to match(/✗ done · read · not found/)
+      expect(out).to include("✗ done · read · not found")
     end
 
     # B7: a tool that signals failure by RETURNING an "Error: …" string (status
@@ -492,8 +494,8 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("read", arguments: nil)
         ui.tool_finished("read", result: result)
       end
-      expect(out).to match(/✗ done · read/)
-      expect(out).not_to match(/✓ done · read/)
+      expect(out).to include("✗ done · read")
+      expect(out).not_to include("✓ done · read")
     end
   end
 
@@ -514,8 +516,8 @@ RSpec.describe Rubino::UI::CLI do
         name: "task", call_id: "t1", output: "Started background subagent 'explore' as task sa_1."
       )
       out = render_delegation(result)
-      expect(out).to match(/✓ explore/)
-      expect(out).not_to match(/✗ explore/)
+      expect(out).to include("✓ explore")
+      expect(out).not_to include("✗ explore")
     end
 
     it "renders ✗ when the task tool returned an Error: string (success-status Result)" do
@@ -524,8 +526,8 @@ RSpec.describe Rubino::UI::CLI do
         output: "Error: unknown subagent 'nonexistent-agent'. Valid subagents: explore, general."
       )
       out = render_delegation(result)
-      expect(out).to match(/✗ explore/)
-      expect(out).not_to match(/✓ explore/)
+      expect(out).to include("✗ explore")
+      expect(out).not_to include("✓ explore")
     end
 
     it "renders ✗ when the task tool returned an At capacity: string" do
@@ -534,8 +536,8 @@ RSpec.describe Rubino::UI::CLI do
         output: "At capacity: 3 background subagents are already running."
       )
       out = render_delegation(result)
-      expect(out).to match(/✗ explore/)
-      expect(out).not_to match(/✓ explore/)
+      expect(out).to include("✗ explore")
+      expect(out).not_to include("✓ explore")
     end
 
     it "renders ✗ when the result has error status (synchronous subagent raised)" do
@@ -543,16 +545,16 @@ RSpec.describe Rubino::UI::CLI do
         name: "task", call_id: "t1", error: "subagent 'explore' failed: boom"
       )
       out = render_delegation(result)
-      expect(out).to match(/✗ explore/)
-      expect(out).not_to match(/✓ explore/)
+      expect(out).to include("✗ explore")
+      expect(out).not_to include("✓ explore")
     end
   end
 
   describe "#replay_user_input" do
     it "renders the past user turn as plain text" do
       out = capture_stdout { ui.replay_user_input("hello again") }
-      expect(out).to match(/hello again/)
-      expect(out).not_to match(/┌─/)
+      expect(out).to include("hello again")
+      expect(out).not_to include("┌─")
     end
 
     it "stringifies non-string content without raising" do
@@ -714,10 +716,11 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#confirm" do
-    let(:cache) { Rubino::Run::SessionApprovalCache.new }
     subject(:ui) do
       described_class.new(session_id: "sess-1", approval_cache: cache)
     end
+
+    let(:cache) { Rubino::Run::SessionApprovalCache.new }
 
     # Stubs @prompt.select to return the choice symbol the menu would yield.
     def stub_choice(symbol)
@@ -742,7 +745,7 @@ RSpec.describe Rubino::UI::CLI do
       # The clear-line escape must land BEFORE the ◆ card header, so the header
       # never glues onto "thinking…".
       expect(out).to match(/thinking….*\r\e\[2K.*◆ Allow shell with args/m)
-      expect(out).not_to match(/thinking…◆/)
+      expect(out).not_to include("thinking…◆")
     end
 
     it "finalizes an in-progress content stream before the approval card" do
@@ -753,8 +756,8 @@ RSpec.describe Rubino::UI::CLI do
       end
       # The reasoning tail must be committed on its own line — the card header
       # never glues onto it ("Let me run this.◆ Allow…").
-      expect(out).not_to match(/Let me run this\.◆/)
-      expect(out).to match(/◆ Allow shell with args/)
+      expect(out).not_to include("Let me run this.◆")
+      expect(out).to include("◆ Allow shell with args")
     end
 
     it "returns true for 'yes once' without remembering" do
@@ -945,29 +948,29 @@ RSpec.describe Rubino::UI::CLI do
   describe "#compression_started / #compression_finished" do
     it "renders compaction with `┄` bookends" do
       out = capture_stdout { ui.compression_started }
-      expect(out).to match(/┄ compacting context… ┄/)
+      expect(out).to include("┄ compacting context… ┄")
     end
 
     it "renders finished compaction with saved-tokens count" do
       out = capture_stdout { ui.compression_finished({ saved_tokens: 4200 }) }
-      expect(out).to match(/┄ compacted · saved 4200 tok ┄/)
+      expect(out).to include("┄ compacted · saved 4200 tok ┄")
     end
   end
 
   describe "#activity_started / #activity_finished" do
     it "activity_started renders as ● running with optional hint" do
       out = capture_stdout { ui.activity_started("git", hint: "status") }
-      expect(out).to match(/● running  git · status/)
+      expect(out).to include("● running  git · status")
     end
 
     it "activity_finished renders as ✓ done with optional metric" do
       out = capture_stdout { ui.activity_finished("git", metric: "clean") }
-      expect(out).to match(/✓ done · git · clean/)
+      expect(out).to include("✓ done · git · clean")
     end
 
     it "activity_finished with failed: true renders as ✗ done" do
       out = capture_stdout { ui.activity_finished("git", failed: true) }
-      expect(out).to match(/✗ done · git/)
+      expect(out).to include("✗ done · git")
     end
   end
 
@@ -982,9 +985,9 @@ RSpec.describe Rubino::UI::CLI do
           ]
         )
       end
-      expect(out).to match(/◆ Apply changes\?/)
-      expect(out).to match(/\[y\] apply/)
-      expect(out).to match(/\[n\] cancel/)
+      expect(out).to include("◆ Apply changes?")
+      expect(out).to include("[y] apply")
+      expect(out).to include("[n] cancel")
     end
   end
 
@@ -1011,7 +1014,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.confirm("Allow shell with:", tool: "shell", command: "rm -rf /tmp/cache")
       end
       expect(out).to include("✗")
-      expect(out).to match(/denied — not executed/)
+      expect(out).to include("denied — not executed")
       expect(out).to match(/\e\[31m/) # red ✗, the same styling failed tools use
     end
 
@@ -1027,21 +1030,21 @@ RSpec.describe Rubino::UI::CLI do
       out = capture_stdout do
         ui.confirm("Allow shell with:", tool: "shell", command: "ls")
       end
-      expect(out).not_to match(/not executed/)
+      expect(out).not_to include("not executed")
     end
   end
 
   describe "#mode_changed" do
     it "renders dim when entering non-yolo mode" do
       out = capture_stdout { ui.mode_changed(:plan) }
-      expect(out).to match(/┄ mode plan ┄/)
+      expect(out).to include("┄ mode plan ┄")
     end
 
     it "renders yellow when entering yolo" do
       # Force Pastel ANSI output for non-TTY StringIO
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
       out = capture_stdout { ui.mode_changed(:yolo) }
-      expect(out).to match(/┄ mode yolo ┄/)
+      expect(out).to include("┄ mode yolo ┄")
       expect(out).to match(/\e\[33m/) # yellow
     end
   end

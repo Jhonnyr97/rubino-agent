@@ -80,9 +80,7 @@ module Rubino
           messages: chat_msgs.map { |m| format_message(m) }
         }
 
-        if system_msgs.any?
-          body[:system] = system_msgs.map { |m| { text: content_of(m).to_s } }
-        end
+        body[:system] = system_msgs.map { |m| { text: content_of(m).to_s } } if system_msgs.any?
 
         # Attach tool definitions when provided
         if tools && !tools.empty?
@@ -111,8 +109,8 @@ module Rubino
               content_blocks << {
                 toolUse: {
                   toolUseId: call[:id] || call["id"],
-                  name:      call[:name] || call["name"],
-                  input:     call[:arguments] || call["arguments"] || {}
+                  name: call[:name] || call["name"],
+                  input: call[:arguments] || call["arguments"] || {}
                 }
               }
             end
@@ -123,11 +121,11 @@ module Rubino
         when "tool"
           # Tool result — Bedrock expects role: "user" with toolResult content block
           {
-            role:    "user",
+            role: "user",
             content: [{
               toolResult: {
                 toolUseId: msg[:tool_call_id] || msg["tool_call_id"] || "unknown",
-                content:   [{ text: content.to_s }]
+                content: [{ text: content.to_s }]
               }
             }]
           }
@@ -152,7 +150,7 @@ module Rubino
 
         {
           toolSpec: {
-            name:        name,
+            name: name,
             description: description,
             inputSchema: { json: schema }
           }
@@ -162,7 +160,7 @@ module Rubino
       def post(path, body)
         uri = URI("https://#{@host}#{path}")
         http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl     = true
+        http.use_ssl = true
         http.read_timeout = 120
         http.open_timeout = 30
 
@@ -175,7 +173,11 @@ module Rubino
         response = http.request(request)
 
         unless response.code.to_i == 200
-          error_body = JSON.parse(response.body) rescue { "message" => response.body }
+          error_body = begin
+            JSON.parse(response.body)
+          rescue StandardError
+            { "message" => response.body }
+          end
           raise Rubino::Error, "Bedrock error #{response.code}: #{error_body["message"] || error_body}"
         end
 
@@ -190,11 +192,11 @@ module Rubino
         output_tokens = data.dig("usage", "outputTokens") || 0
 
         Rubino::LLM::AdapterResponse.new(
-          content:       text,
-          tool_calls:    tool_calls,
-          input_tokens:  input_tokens,
+          content: text,
+          tool_calls: tool_calls,
+          input_tokens: input_tokens,
           output_tokens: output_tokens,
-          model_id:      @model_id
+          model_id: @model_id
         )
       end
 
@@ -211,10 +213,11 @@ module Rubino
         content_blocks = data.dig("output", "message", "content") || []
         content_blocks.filter_map do |block|
           next unless block["toolUse"]
+
           tu = block["toolUse"]
           {
-            id:        tu["toolUseId"],
-            name:      tu["name"],
+            id: tu["toolUseId"],
+            name: tu["name"],
             arguments: tu["input"] || {}
           }
         end

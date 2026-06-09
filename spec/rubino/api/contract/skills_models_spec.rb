@@ -22,8 +22,10 @@ RSpec.describe "API contract: skills + models" do
   end
 
   def contract_router
-    skills_list   = Rubino::API::Operations::Skills::ListOperation.new(registry: registry, state_repository: state_repository)
-    skills_toggle = Rubino::API::Operations::Skills::ToggleOperation.new(registry: registry, state_repository: state_repository)
+    skills_list   = Rubino::API::Operations::Skills::ListOperation.new(registry: registry,
+                                                                       state_repository: state_repository)
+    skills_toggle = Rubino::API::Operations::Skills::ToggleOperation.new(registry: registry,
+                                                                         state_repository: state_repository)
     models_list   = Rubino::API::Operations::Models::ListOperation.new(model_source: -> { fake_models })
 
     router = Rubino::API::Router.new
@@ -78,9 +80,9 @@ RSpec.describe "API contract: skills + models" do
       get_json "/v1/models"
       expect(last_response.status).to eq(200)
       expect(json_body).to eq([
-        { "id" => "openai/gpt-4o",    "provider" => "openai",    "context_window" => 128_000 },
-        { "id" => "anthropic/claude", "provider" => "anthropic", "context_window" => 200_000 }
-      ])
+                                { "id" => "openai/gpt-4o", "provider" => "openai", "context_window" => 128_000 },
+                                { "id" => "anthropic/claude", "provider" => "anthropic", "context_window" => 200_000 }
+                              ])
     end
   end
 end

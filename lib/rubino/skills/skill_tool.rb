@@ -26,12 +26,12 @@ module Rubino
 
       def description
         "Load a specialized skill's instructions into context, or create a new " \
-        "skill. action defaults to \"load\": use it when a task matches one of " \
-        "the available skills listed under \"## Skills\" in the system prompt " \
-        "(pass file_path to load a bundled file). After finishing a complex, " \
-        "multi-step task (typically 5+ tool calls) that is likely to recur and " \
-        "isn't already covered, call action: \"create\" with name, description, " \
-        "and body to save it as a reusable skill."
+          "skill. action defaults to \"load\": use it when a task matches one of " \
+          "the available skills listed under \"## Skills\" in the system prompt " \
+          "(pass file_path to load a bundled file). After finishing a complex, " \
+          "multi-step task (typically 5+ tool calls) that is likely to recur and " \
+          "isn't already covered, call action: \"create\" with name, description, " \
+          "and body to save it as a reusable skill."
       end
 
       def input_schema
@@ -121,7 +121,7 @@ module Rubino
           name: skill_name, file_path: path
         )
         "Created skill '#{skill_name}' at #{path}. It is now available to load " \
-        "with skill(name: \"#{skill_name}\")."
+          "with skill(name: \"#{skill_name}\")."
       rescue StandardError => e
         "Could not create skill '#{skill_name}': #{e.message}"
       end
@@ -143,7 +143,7 @@ module Rubino
         dir = File.join(skills_write_dir, skill_name)
         FileUtils.mkdir_p(dir)
         path = File.join(dir, "SKILL.md")
-        content = +"---\nname: #{skill_name}\ndescription: #{yaml_scalar(description)}\n---\n\n"
+        content = "---\nname: #{skill_name}\ndescription: #{yaml_scalar(description)}\n---\n\n"
         content << body
         content << "\n" unless content.end_with?("\n")
         File.write(path, content)
@@ -166,13 +166,13 @@ module Rubino
 
       def duplicate(skill_name)
         "A skill named '#{skill_name}' already exists; not overwriting. " \
-        "Pick a different name or load the existing one with skill(name: \"#{skill_name}\")."
+          "Pick a different name or load the existing one with skill(name: \"#{skill_name}\")."
       end
 
       # ---- load (unchanged) -------------------------------------------------
 
       def load_body(skill, skill_name)
-        body = +"Skill '#{skill_name}' loaded:\n\n#{skill.content}"
+        body = "Skill '#{skill_name}' loaded:\n\n#{skill.content}"
         body << linked_files_hint(skill, skill_name) unless skill.linked_files.empty?
         announce_loaded(skill_name)
         body
@@ -198,7 +198,7 @@ module Rubino
         else
           available = skill.current_linked_files.join(", ")
           "File '#{file_path}' not found in skill '#{skill_name}'. " \
-            "Available files: #{available.empty? ? '(none)' : available}"
+            "Available files: #{available.empty? ? "(none)" : available}"
         end
       end
 

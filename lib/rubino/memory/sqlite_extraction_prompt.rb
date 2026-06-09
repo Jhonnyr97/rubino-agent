@@ -11,7 +11,7 @@ module Rubino
     module SqliteExtractionPrompt
       KINDS = %w[user_profile preference project fact env].freeze
 
-      SYSTEM = <<~PROMPT.freeze
+      SYSTEM = <<~PROMPT
         You maintain a long-term memory of durable facts about the user and their project.
         You will see the latest conversation turn and the facts already in memory.
 

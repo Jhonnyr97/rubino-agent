@@ -7,6 +7,7 @@ RSpec.describe Rubino::LLM::FakeProvider do
   # All specs in this file build a temp scenarios dir and inject it via
   # config to keep the fixtures self-contained.
   let(:tmp_dir) { Dir.mktmpdir }
+
   after { FileUtils.rm_rf(tmp_dir) }
 
   def write_scenario(name, events)
@@ -25,14 +26,14 @@ RSpec.describe Rubino::LLM::FakeProvider do
   describe "#stream" do
     it "yields :content chunks and concatenates them into AdapterResponse#content" do
       write_scenario("happy-path", [
-        { "type" => "content", "text" => "Hello, " },
-        { "type" => "content", "text" => "world!" }
-      ])
+                       { "type" => "content", "text" => "Hello, " },
+                       { "type" => "content", "text" => "world!" }
+                     ])
       adapter = described_class.new(model_id: "fake/happy-path", config: config_with)
       chunks = []
       response = adapter.stream(messages: [{ role: "user", content: "hi" }]) { |c| chunks << c }
 
-      expect(chunks.map { |c| c[:type] }).to eq([:content, :content])
+      expect(chunks.map { |c| c[:type] }).to eq(%i[content content])
       expect(chunks.map { |c| c[:text] }).to eq(["Hello, ", "world!"])
       expect(response).to be_a(Rubino::LLM::AdapterResponse)
       expect(response.content).to eq("Hello, world!")
@@ -42,9 +43,9 @@ RSpec.describe Rubino::LLM::FakeProvider do
 
     it "gates :thinking chunks behind display.show_reasoning" do
       write_scenario("happy-path", [
-        { "type" => "thinking", "text" => "reasoning..." },
-        { "type" => "content",  "text" => "answer" }
-      ])
+                       { "type" => "thinking", "text" => "reasoning..." },
+                       { "type" => "content",  "text" => "answer" }
+                     ])
 
       hidden = described_class.new(model_id: "fake/happy-path", config: config_with(show_reasoning: false))
       hidden_chunks = []
@@ -54,7 +55,7 @@ RSpec.describe Rubino::LLM::FakeProvider do
       shown = described_class.new(model_id: "fake/happy-path", config: config_with(show_reasoning: true))
       shown_chunks = []
       shown.stream(messages: [{ role: "user", content: "x" }]) { |c| shown_chunks << c }
-      expect(shown_chunks.map { |c| c[:type] }).to eq([:thinking, :content])
+      expect(shown_chunks.map { |c| c[:type] }).to eq(%i[thinking content])
     end
 
     it "treats a fresh user turn after an old tool result as a new turn (not post-tool)" do
@@ -65,18 +66,19 @@ RSpec.describe Rubino::LLM::FakeProvider do
       # through the scenario selector. The check now restricts to the
       # very last message.
       write_scenario("with-uploads", [
-        { "type" => "content", "text" => "Received {{input}}." }
-      ])
+                       { "type" => "content", "text" => "Received {{input}}." }
+                     ])
       adapter = described_class.new(model_id: "fake", config: config_with)
       response = adapter.stream(messages: [
-        { role: "user",      content: "first request please upload" },
-        { role: "assistant", content: "ok", tool_calls: [{ id: "1", name: "shell", arguments: {} }] },
-        { role: "tool",      content: "old tool output", tool_call_id: "1", name: "shell" },
-        { role: "assistant", content: "all done" },
-        # Brand-new turn: user attaches a file with no text. This must
-        # route to with-uploads, NOT collapse into the post-tool closing.
-        { role: "user", content: "uploaded file: report.pdf" }
-      ]) { |_c| }
+                                  { role: "user", content: "first request please upload" },
+                                  { role: "assistant", content: "ok",
+                                    tool_calls: [{ id: "1", name: "shell", arguments: {} }] },
+                                  { role: "tool",      content: "old tool output", tool_call_id: "1", name: "shell" },
+                                  { role: "assistant", content: "all done" },
+                                  # Brand-new turn: user attaches a file with no text. This must
+                                  # route to with-uploads, NOT collapse into the post-tool closing.
+                                  { role: "user", content: "uploaded file: report.pdf" }
+                                ]) { |_c| }
 
       expect(response.content).to eq("Received uploaded file: report.pdf.")
     end
@@ -100,10 +102,10 @@ RSpec.describe Rubino::LLM::FakeProvider do
 
     it "buffers tool_call events onto the final response with symbol keys and string-keyed arguments" do
       write_scenario("with-approvals", [
-        { "type" => "content", "text" => "ok" },
-        { "type" => "tool_call", "id" => "call_1", "name" => "shell",
-          "arguments" => { "command" => "ls" } }
-      ])
+                       { "type" => "content", "text" => "ok" },
+                       { "type" => "tool_call", "id" => "call_1", "name" => "shell",
+                         "arguments" => { "command" => "ls" } }
+                     ])
       adapter = described_class.new(model_id: "fake/with-approvals", config: config_with)
       chunks = []
       response = adapter.stream(messages: [{ role: "user", content: "x" }]) { |c| chunks << c }
@@ -120,8 +122,8 @@ RSpec.describe Rubino::LLM::FakeProvider do
 
     it "routes via the model_id 'fake/<name>' prefix without consulting the router" do
       write_scenario("pinned", [
-        { "type" => "content", "text" => "from pinned" }
-      ])
+                       { "type" => "content", "text" => "from pinned" }
+                     ])
       adapter = described_class.new(model_id: "fake/pinned", config: config_with)
       response = adapter.stream(messages: [{ role: "user", content: "approve this" }]) { |_| }
       # The "approve" keyword would normally route to with-approvals, but the
@@ -131,8 +133,8 @@ RSpec.describe Rubino::LLM::FakeProvider do
 
     it "falls back to the keyword router when model_id has no fake/ prefix" do
       write_scenario("failure", [
-        { "type" => "content", "text" => "boom" }
-      ])
+                       { "type" => "content", "text" => "boom" }
+                     ])
       adapter = described_class.new(model_id: "fake", config: config_with)
       response = adapter.stream(messages: [{ role: "user", content: "this will crash" }]) { |_| }
       expect(response.content).to eq("boom")
@@ -140,10 +142,10 @@ RSpec.describe Rubino::LLM::FakeProvider do
 
     it "stops mid-stream and returns the partial response when cancellation fires" do
       write_scenario("happy-path", [
-        { "type" => "content",       "text" => "part 1" },
-        { "type" => "delay_seconds", "value" => 0.01 },
-        { "type" => "content",       "text" => "part 2" }
-      ])
+                       { "type" => "content", "text" => "part 1" },
+                       { "type" => "delay_seconds", "value" => 0.01 },
+                       { "type" => "content",       "text" => "part 2" }
+                     ])
       token = Rubino::Interaction::CancelToken.new
       adapter = described_class.new(model_id: "fake/happy-path", config: config_with, cancel_token: token)
 
@@ -161,30 +163,30 @@ RSpec.describe Rubino::LLM::FakeProvider do
 
     it "preserves event ordering across mixed types" do
       write_scenario("happy-path", [
-        { "type" => "thinking",  "text" => "T1" },
-        { "type" => "content",   "text" => "C1" },
-        { "type" => "thinking",  "text" => "T2" },
-        { "type" => "content",   "text" => "C2" }
-      ])
+                       { "type" => "thinking",  "text" => "T1" },
+                       { "type" => "content",   "text" => "C1" },
+                       { "type" => "thinking",  "text" => "T2" },
+                       { "type" => "content",   "text" => "C2" }
+                     ])
       adapter = described_class.new(model_id: "fake/happy-path", config: config_with(show_reasoning: true))
       sequence = []
       adapter.stream(messages: [{ role: "user", content: "x" }]) { |c| sequence << [c[:type], c[:text]] }
 
       expect(sequence).to eq([
-        [:thinking, "T1"],
-        [:content,  "C1"],
-        [:thinking, "T2"],
-        [:content,  "C2"]
-      ])
+                               [:thinking, "T1"],
+                               [:content,  "C1"],
+                               [:thinking, "T2"],
+                               [:content,  "C2"]
+                             ])
     end
   end
 
   describe "#chat" do
     it "drives the scenario with a no-op block and returns the AdapterResponse" do
       write_scenario("happy-path", [
-        { "type" => "content", "text" => "hi" },
-        { "type" => "tool_call", "id" => "c1", "name" => "noop", "arguments" => {} }
-      ])
+                       { "type" => "content", "text" => "hi" },
+                       { "type" => "tool_call", "id" => "c1", "name" => "noop", "arguments" => {} }
+                     ])
       adapter = described_class.new(model_id: "fake/happy-path", config: config_with)
       response = adapter.chat(messages: [{ role: "user", content: "x" }])
 

@@ -10,18 +10,21 @@ RSpec.describe Rubino::Run::AttachmentDownloader do
 
   after { FileUtils.remove_entry(workspace) if Dir.exist?(workspace) }
 
-  def stub_http_get(url, body:, content_type: "text/plain", code: "200", filename: nil)
+  def stub_http_get(_url, body:, content_type: "text/plain", code: "200", filename: nil)
     headers = { "content-disposition" => filename && %(attachment; filename="#{filename}") }.compact
-    response = Class.new(Net::HTTPSuccess) {
+    response = Class.new(Net::HTTPSuccess) do
       def initialize(body, headers)
-        @body, @headers = body, headers
+        @body = body
+        @headers = headers
       end
       attr_reader :body
+
       def [](key) = @headers[key.downcase]
+
       def read_body
         yield @body
       end
-    }.new(body, headers)
+    end.new(body, headers)
 
     http = instance_double(Net::HTTP)
     allow(http).to receive(:use_ssl=)
@@ -85,16 +88,19 @@ RSpec.describe Rubino::Run::AttachmentDownloader do
     it "honors content-disposition filename* (RFC 5987) when present" do
       downloader = described_class.new(workspace_root: workspace, allowed_hosts: %w[example.com])
       headers = { "content-disposition" => "attachment; filename*=UTF-8''rapporto%20Q3.txt" }
-      response = Class.new(Net::HTTPSuccess) {
+      response = Class.new(Net::HTTPSuccess) do
         def initialize(body, headers)
-          @body, @headers = body, headers
+          @body = body
+          @headers = headers
         end
         attr_reader :body
+
         def [](key) = @headers[key.downcase]
+
         def read_body
           yield @body
         end
-      }.new("body", headers)
+      end.new("body", headers)
       http = instance_double(Net::HTTP)
       allow(http).to receive(:use_ssl=)
       allow(http).to receive(:open_timeout=)
