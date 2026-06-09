@@ -75,20 +75,38 @@ module Rubino
       #   chip), which the composer adopts and redraws. The composer holds no mode
       #   knowledge itself. nil = Shift+Tab is a no-op.
       # @param echo [Symbol] how a submitted line is echoed into scrollback:
-      #   :queued (default) prints "queued ▸ <line>" — the steering affordance for
-      #   a line typed DURING a turn; :prompt prints the prompt + the line (e.g.
+      #   :queued (default) is the IN-TURN composer — Enter INTERRUPTS the active
+      #   turn and sends the line as the next turn (the default), so it never
+      #   commits an echo here (the next turn's prompt echo is committed by the
+      #   chat loop when it runs); :prompt prints the prompt + the line (e.g.
       #   "default ❯ <line>") — the idle case, where the line IS the user's
-      #   message and should read back like a normal shell submit, not a queued
-      #   steer.
+      #   message and should read back like a normal shell submit.
+      # @param on_interrupt [#call, nil] invoked when the user presses Enter to
+      #   submit a line WHILE a turn is active. The chat loop wires this to the
+      #   active turn's cancel so the current turn is interrupted and the
+      #   just-submitted line runs as the next turn immediately. nil ⇒ no
+      #   interrupt (the line is simply queued, as before).
+      # @param pending_queued [Array<String>, nil] shared stack of messages the
+      #   user EXPLICITLY queued (Alt+Enter / "/queued <msg>") while a turn is
+      #   active. Rendered as "⏳ queued: <msg>" rows ABOVE the input (live region,
+      #   never committed). Shared across the per-turn composers by the chat loop
+      #   so the indicator survives a composer teardown and is removed/committed as
+      #   a normal message when the queued item's turn runs. nil ⇒ a private list
+      #   (standalone / tests).
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
                      on_ctrl_o: nil, on_mode_cycle: nil,
-                     completion_source: nil, history: nil, echo: :queued)
+                     completion_source: nil, history: nil, echo: :queued,
+                     on_interrupt: nil, pending_queued: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
         @on_ctrl_o     = on_ctrl_o
         @on_mode_cycle = on_mode_cycle
         @echo          = echo
+        @on_interrupt  = on_interrupt
+        # Shared (or private) stack of EXPLICITLY-queued messages, rendered as
+        # "⏳ queued: <msg>" rows above the input while pending (see #queued_rows).
+        @pending_queued = pending_queued || []
         # Shared completion discovery (slash commands + @file picker) extracted
         # from LineInput. nil ⇒ the `/`+`@` completion menu is inert (steering /
         # standalone use), so the composer degrades to a plain editor.
@@ -139,13 +157,12 @@ module Rubino
         # once the stream ends so the `┊` aside renders cleanly AFTER the answer
         # instead of between chunks (D1). nil ⇒ nothing deferred.
         @deferred_reveal = false
-        # Type-ahead echoes ("queued ▸ <line>") for NEXT-turn lines the user
-        # submitted WHILE the current turn was active (thinking OR content
-        # streaming), queued (in submission order) to flush at TURN END so each
-        # echo renders AFTER the finished answer AND after the turn-summary footer
-        # the loop emits, instead of above the still-running turn (D7/D7e/D7a-c).
-        # The line itself is pushed to @input_queue immediately — only its VISIBLE
-        # echo is deferred. Empty ⇒ nothing deferred.
+        # Retired in the interrupt-by-default model: a line submitted with Enter
+        # during a turn now INTERRUPTS and runs next (no deferred "queued ▸"
+        # echo), and an EXPLICIT queue (Alt+Enter / "/queued") shows a live
+        # "⏳ queued:" indicator instead of a post-footer echo. Kept as an empty
+        # list only so #end_turn (called by the loop's run_turn ensure) stays a
+        # quiet no-op. Always empty now.
         @deferred_echoes = []
         # Subagent CARD block (Variant A): zero or more collapsed live rows shown
         # ABOVE the streamed partial and the prompt, redrawn in place each frame.
@@ -324,6 +341,24 @@ module Rubino
           @cards = capped
           render_frame(committed: nil)
         end
+      end
+
+      # Remove the FIRST pending "⏳ queued:" indicator matching +msg+ (public:
+      # the chat loop calls this when the queued item's turn starts, so the
+      # indicator disappears from above the input as the item is committed as a
+      # normal message). Operates on the shared @pending_queued list, so it works
+      # from whichever composer is current. Returns true if one was removed.
+      def commit_queued(msg)
+        removed = false
+        @render.synchronize do
+          idx = @pending_queued.index(msg)
+          if idx
+            @pending_queued.delete_at(idx)
+            removed = true
+            redraw
+          end
+        end
+        removed
       end
 
       # True when a live partial line is currently shown above the prompt.
@@ -542,7 +577,8 @@ module Rubino
           # the reflowed partial/card rows blank until the turn committed (X1).
           # With nothing live above the prompt the cheap prompt-only redraw is
           # enough.
-          if @live_rows_above.positive? || !@partial.empty? || !@announce.empty? || @cards.any?
+          if @live_rows_above.positive? || !@partial.empty? || !@announce.empty? ||
+             @cards.any? || @pending_queued.any?
             render_frame(committed: nil)
           else
             draw_input
@@ -644,6 +680,13 @@ module Rubino
           @output.print("\r\e[2K#{clamp(@announce, @cols - 1)}\r\n")
           @live_rows_above += 1
         end
+        # EXPLICITLY-queued messages (Alt+Enter / "/queued"): one "⏳ queued: <msg>"
+        # row each, redrawn in place above the partial/prompt, never committed —
+        # removed (and the item committed as a normal message) when its turn runs.
+        queued_rows.each do |row|
+          @output.print("\r\e[2K#{clamp(row, @cols - 1)}\r\n")
+          @live_rows_above += 1
+        end
         unless @partial.empty?
           @output.print("\r\e[2K#{clamp(@partial, @cols - 1)}\r\n")
           @live_rows_above += 1
@@ -700,7 +743,69 @@ module Rubino
         taken.reverse.join
       end
 
+      # QUEUED-message prefix: submitting a line that starts with this queues the
+      # REST instead of interrupting — the discoverable, terminal-independent
+      # fallback for Alt+Enter (which some terminals don't deliver).
+      QUEUED_PREFIX = "/queued "
+
+      # Enter. Captures + clears the buffer, then routes per the interrupt-by-
+      # default model:
+      #   * empty                  → nothing.
+      #   * "/queued <msg>"        → QUEUE the rest (no interrupt), like Alt+Enter.
+      #   * :prompt (idle)         → immediate "<prompt><line>" echo (unchanged).
+      #   * :queued + turn active  → INTERRUPT the current turn and run the line
+      #                              next (default). The line is pushed; the next
+      #                              turn's prompt echo is committed by the chat
+      #                              loop when it runs, so nothing is echoed here.
+      #   * :queued + idle         → immediate "queued ▸ <line>" (standalone/tests
+      #                              with no turn and no interrupt hook).
       def submit_line
+        line = take_buffer
+        return if line.strip.empty?
+
+        if line.start_with?(QUEUED_PREFIX)
+          msg = line[QUEUED_PREFIX.length..].to_s.strip
+          queue_message(msg) unless msg.empty?
+          return
+        end
+
+        @history.remember(line)
+
+        if @echo == :prompt
+          @input_queue&.push(line)
+          print_above("#{@prompt}#{line}")
+        elsif (@turn_active || @content_streaming) && @on_interrupt
+          # Interrupt-by-default: send the line as the NEXT turn immediately and
+          # interrupt the current one. Push FIRST so the REPL drain has it ready
+          # when the cancelled turn unwinds, THEN fire the interrupt. No echo
+          # here — run_turn commits the next turn's "<prompt><line>" when it runs.
+          @input_queue&.push(line)
+          @on_interrupt.call
+        else
+          # No active turn (or no interrupt hook wired): a plain queued submit,
+          # echoed immediately as before.
+          @input_queue&.push(line)
+          print_above("queued ▸ #{line}")
+        end
+      end
+
+      # Alt+Enter (\e\r / \e\n) — or the "/queued" alias — QUEUES the current
+      # buffer WITHOUT interrupting the active turn: push it to the input queue
+      # and add a live "⏳ queued: <msg>" row above the input. The current turn
+      # keeps running; the queued item is committed as a normal message + the
+      # indicator removed when its turn actually runs (the chat loop drives that
+      # via #commit_queued at dequeue time).
+      def queue_alt_enter
+        msg = take_buffer.strip
+        return if msg.empty?
+
+        @history.remember(msg)
+        queue_message(msg)
+      end
+
+      # Snapshot + clear the editable buffer under the render mutex, closing any
+      # open completion menu and repainting. Shared by Enter and Alt+Enter.
+      def take_buffer
         line = nil
         @render.synchronize do
           close_menu
@@ -709,26 +814,15 @@ module Rubino
           @cursor = 0
           redraw # clears any open-menu rows above the prompt on submit
         end
-        return if line.strip.empty?
+        line
+      end
 
-        @history.remember(line)
-        @input_queue&.push(line)
-        # Echo the captured line into scrollback so the keystrokes don't vanish.
-        # :prompt (idle) reads it back like a normal shell submit (prompt + line);
-        # :queued (during a turn) marks it as a steer parked for the next turn.
-        if @echo == :prompt
-          print_above("#{@prompt}#{line}")
-        elsif @turn_active || @content_streaming
-          # D7/D7e: this line was typed AHEAD, while a turn is active — during the
-          # THINKING phase OR while the answer streams. Committing its "queued ▸"
-          # echo now would land it ABOVE the thought line and the still-running
-          # answer, so it reads as if the next question was asked before the first
-          # was answered. DEFER the visible echo (the line is already queued above)
-          # and flush it at TURN END (#end_turn), after the turn-summary footer,
-          # preserving submission order across several type-ahead lines.
-          @deferred_echoes << "queued ▸ #{line}"
-        else
-          print_above("queued ▸ #{line}")
+      # Push +msg+ to the input queue and show its live "⏳ queued:" indicator.
+      def queue_message(msg)
+        @input_queue&.push(msg)
+        @render.synchronize do
+          @pending_queued << msg
+          redraw
         end
       end
 
@@ -738,7 +832,8 @@ module Rubino
       # which renders ABOVE the prompt — appear/clear/track as it changes, the
       # same way the streamed partial and the subagent cards do.
       def redraw
-        if @menu || @cards.any? || !@partial.empty? || !@announce.empty? || @live_rows_above.positive?
+        if @menu || @cards.any? || !@partial.empty? || !@announce.empty? ||
+           @pending_queued.any? || @live_rows_above.positive?
           render_frame(committed: nil)
         else
           draw_input
@@ -1092,6 +1187,24 @@ module Rubino
         @menu_pastel ||= Pastel.new
       end
 
+      # Hard cap on the visible "⏳ queued:" rows so a burst of explicit queues
+      # can never push the prompt off-screen. Beyond the cap, a dim count row
+      # stands in for the overflow.
+      MAX_QUEUED_ROWS = 4
+
+      # The "⏳ queued: <msg>" indicator rows for the pending explicit-queue
+      # stack, in submission order. House grammar: the ⏳ glyph, dim. Capped to
+      # MAX_QUEUED_ROWS with a dim "┄ +N more queued ┄" overflow row.
+      def queued_rows
+        return [] if @pending_queued.empty?
+
+        shown = @pending_queued.first(MAX_QUEUED_ROWS)
+        rows = shown.map { |msg| menu_pastel.dim("⏳ queued: #{msg}") }
+        overflow = @pending_queued.size - shown.size
+        rows << menu_pastel.dim("┄ +#{overflow} more queued ┄") if overflow.positive?
+        rows
+      end
+
       # Handle a bracketed-paste body. The composer is a ONE-ROW editor, so a
       # paste is inserted into the editable buffer at the cursor like fast typing
       # — still editable before submit. A MULTI-LINE paste is collapsed to a
@@ -1131,11 +1244,12 @@ module Rubino
       def consume_escape_sequence
         nxt = read_nonblock_char
         case nxt
-        when nil      then dismiss_menu_or_noop # lone ESC
-        when "["      then dispatch_csi(read_csi)
-        when "O"      then dispatch_final(read_nonblock_char, modifier: 1)
-        when "b"      then word_left
-        when "f"      then word_right
+        when nil        then dismiss_menu_or_noop # lone ESC
+        when "\r", "\n" then queue_alt_enter # Alt/Meta+Enter (ESC CR / ESC LF)
+        when "["        then dispatch_csi(read_csi)
+        when "O"        then dispatch_final(read_nonblock_char, modifier: 1)
+        when "b"        then word_left
+        when "f"        then word_right
         end
       end
 

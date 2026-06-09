@@ -449,6 +449,41 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # Interrupt-by-default / queue plumbing: a line that came off the input queue
+  # (typed during the previous turn — interrupt-by-default Enter, Alt+Enter, or
+  # /queued) is flagged so run_turn commits its normal "<prompt><line>" echo and
+  # removes any "⏳ queued:" indicator. An idle submit (read_idle_line) is NOT
+  # flagged, so it isn't double-echoed.
+  describe "queued-prompt commit (#input_from_queue / #commit_queued_prompt)" do
+    let(:cmd) { described_class.new({}) }
+    let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+    it "flags a drained-from-queue line for run_turn to echo" do
+      input_queue.push("interrupt-sent")
+      cmd.send(:next_input, input_queue)
+      expect(cmd.instance_variable_get(:@input_from_queue)).to eq(["interrupt-sent"])
+    end
+
+    it "commit_queued_prompt echoes <prompt><line> and clears the matching indicator" do
+      cmd.instance_variable_set(:@input_from_queue, ["do later"])
+      composer = instance_spy(Rubino::UI::BottomComposer)
+      allow(cmd).to receive(:build_prompt).and_return("default ❯ ")
+
+      cmd.send(:commit_queued_prompt, composer)
+
+      expect(composer).to have_received(:commit_queued).with("do later")
+      expect(composer).to have_received(:print_above).with("default ❯ do later")
+      expect(cmd.instance_variable_get(:@input_from_queue)).to be_nil
+    end
+
+    it "is a no-op when the prompt was an idle submit (not flagged)" do
+      cmd.instance_variable_set(:@input_from_queue, nil)
+      composer = instance_spy(Rubino::UI::BottomComposer)
+      cmd.send(:commit_queued_prompt, composer)
+      expect(composer).not_to have_received(:print_above)
+    end
+  end
+
   # -----------------------------------------------------------------------
   # ensure_setup!
   # -----------------------------------------------------------------------

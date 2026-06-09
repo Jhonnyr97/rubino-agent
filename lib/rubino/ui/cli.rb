@@ -249,6 +249,18 @@ module Rubino
         end
       end
 
+      # Commits the standardized interrupt marker right after the partial answer
+      # that was kept when a turn is cancelled (Ctrl+C, or the interrupt-by-
+      # default Enter): a dim `⎿ interrupted` row, house grammar. Leading CR +
+      # clear-line so it lands cleanly even if the cursor is sitting after a
+      # partial stream chunk. This is the single visible interrupt notice — the
+      # runner no longer also prints a separate "interrupted by user" warning.
+      def turn_interrupted
+        $stdout.print "\r\e[2K"
+        $stdout.puts @pastel.dim("  ⎿ interrupted")
+        $stdout.flush
+      end
+
       # Free-line annotation rendered as `┄ message ┄`, dim.
       def note(text)
         return if text.nil? || text.to_s.empty?

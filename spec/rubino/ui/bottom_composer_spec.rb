@@ -188,110 +188,141 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
-    # D7: a NEXT-turn line typed AHEAD, while the current turn is active (the
-    # answer is streaming OR the model is still thinking), must not commit its
-    # "queued ▸" echo above the live turn — it would read as if the second
-    # question was asked before the first answered. The echo is DEFERRED and
-    # flushed at TURN END (after the footer); the line itself is still queued
-    # immediately so the steered turn still runs.
-    context "with echo: :queued during an active turn (D7/D7e)" do
-      it "defers the echo but still queues the line, flushing at turn end" do
-        composer.begin_turn
-        composer.begin_content_stream
-        "ping".each_char { |c| composer.handle_key(c) }
-        composer.handle_key("\r")
-        expect(queue.drain).to eq(["ping"]) # line queued IMMEDIATELY
-        expect(output.string).not_to include("queued ▸ ping") # echo NOT yet committed
-        composer.end_content_stream
-        expect(output.string).not_to include("queued ▸ ping") # still not — waits for turn end
-        composer.end_turn
-        expect(output.string).to include("queued ▸ ping") # flushed at turn end
-      end
-
-      # D7e: the line is submitted while the model is still THINKING — a turn is
-      # active but content has NOT begun streaming. The echo must STILL defer
-      # (the old gate on @content_streaming alone left it stranded above the
-      # thought line + the whole answer). It flushes at turn end, not immediately.
-      it "defers a line typed during the THINKING phase (turn active, not yet streaming)" do
-        composer.begin_turn # turn started; NO begin_content_stream yet (thinking)
-        "while-thinking".each_char { |c| composer.handle_key(c) }
-        composer.handle_key("\r")
-        expect(queue.drain).to eq(["while-thinking"]) # line queued IMMEDIATELY
-        expect(output.string).not_to include("queued ▸") # echo deferred, not stranded
-        composer.begin_content_stream # answer begins to stream
-        composer.end_content_stream   # answer block finishes
-        expect(output.string).not_to include("queued ▸") # still deferred until turn end
-        composer.end_turn
-        expect(output.string).to include("queued ▸ while-thinking") # flushed at turn end
-      end
-
-      it "flushes multiple type-ahead echoes in submission order" do
-        composer.begin_turn
-        composer.begin_content_stream
-        "one".each_char  { |c| composer.handle_key(c) }
-        composer.handle_key("\r")
-        "two".each_char  { |c| composer.handle_key(c) }
-        composer.handle_key("\r")
-        expect(output.string).not_to include("queued ▸") # both deferred
-        expect(queue.drain).to eq(%w[one two]) # both queued immediately, in order
-        composer.end_content_stream
-        composer.end_turn
-        idx_one = output.string.index("queued ▸ one")
-        idx_two = output.string.index("queued ▸ two")
-        expect(idx_one).not_to be_nil
-        expect(idx_two).not_to be_nil
-        expect(idx_one).to be < idx_two # order preserved
-      end
-
-      # A turn that produced NO content (empty/aborted answer): end_turn must
-      # still flush a deferred echo (never strand it) without a stray blank one.
-      it "flushes deferred echoes at turn end even when the turn produced no content" do
-        composer.begin_turn # turn active, never streams content
-        "queued-ahead".each_char { |c| composer.handle_key(c) }
-        composer.handle_key("\r")
-        expect(output.string).not_to include("queued ▸")
-        composer.end_turn # no end_content_stream ever called
-        expect(output.string).to include("queued ▸ queued-ahead")
-      end
-
-      # end_turn with nothing deferred is a quiet no-op: no stray blank echo.
-      it "emits no echo at turn end when nothing was deferred" do
-        composer.begin_turn
-        composer.end_turn
-        expect(output.string).not_to include("queued ▸")
-      end
-
-      # Clearing the content-stream flag then the turn-active flag must not
-      # double-flush: each deferred echo lands exactly once.
-      it "flushes each deferred echo exactly once across end_content_stream + end_turn" do
-        composer.begin_turn
-        composer.begin_content_stream
-        "once".each_char { |c| composer.handle_key(c) }
-        composer.handle_key("\r")
-        composer.end_content_stream
-        composer.end_turn
-        expect(output.string.scan("queued ▸ once").size).to eq(1)
-      end
-
-      it "flushes a pending reveal BEFORE the turn footer, deferred echoes AFTER" do
-        order = []
+    # NEW MODEL: Enter while a turn is active INTERRUPTS the current turn and
+    # sends the line as the NEXT turn immediately (the default). The line is
+    # pushed to the queue AND the on_interrupt hook fires; nothing is echoed
+    # here (the next turn's prompt echo is committed by the chat loop when it
+    # runs). The OLD "queued ▸" deferred echo is retired.
+    context "interrupt-by-default (Enter during an active turn)" do
+      it "fires on_interrupt and queues the line, with no echo, during streaming" do
+        interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
-                                on_ctrl_o: -> { order << :reveal })
+                                on_interrupt: -> { interrupts += 1 })
         c.begin_turn
         c.begin_content_stream
-        c.handle_key("\x0f") # Ctrl+O reveal deferred (belongs to the finished answer)
-        "next".each_char { |ch| c.handle_key(ch) } # type-ahead for the NEXT turn
+        "ping".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        c.end_content_stream # reveal flushes here (after the answer, before the footer)
-        order << :echo if output.string.include?("queued ▸ next")
-        expect(order).to eq([:reveal]) # echo NOT yet flushed at this point
-        c.end_turn # footer already emitted by the loop; echo flushes now
-        order << :echo if output.string.include?("queued ▸ next")
-        expect(order).to eq(%i[reveal echo]) # reveal (pre-footer) then echo (post-footer)
+        expect(interrupts).to eq(1)            # interrupt fired exactly once
+        expect(queue.drain).to eq(["ping"])    # line queued for the immediate next run
+        expect(output.string).not_to include("queued ▸") # old deferred echo retired
+        expect(output.string).not_to include("⏳ queued") # not an explicit queue either
+      end
+
+      it "fires on_interrupt during the THINKING phase too (turn active, not streaming)" do
+        interrupts = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { interrupts += 1 })
+        c.begin_turn # NO begin_content_stream yet (thinking)
+        "while-thinking".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(interrupts).to eq(1)
+        expect(queue.drain).to eq(["while-thinking"])
+        expect(output.string).not_to include("queued ▸")
+      end
+
+      # end_turn is now a quiet no-op (no deferred echoes to flush).
+      it "emits nothing at turn end (deferred-echo machinery retired)" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        "x".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        before = output.string.dup
+        c.end_turn
+        expect(output.string).to eq(before) # nothing flushed at turn end
       end
     end
 
-    # D7: when NO turn is active, a :queued submit is unchanged — immediate echo.
+    # EXPLICIT QUEUE (the exception): Alt+Enter (\e\r) or "/queued <msg>" queues
+    # WITHOUT interrupting — the current turn keeps running. The queued message
+    # shows a live "⏳ queued: <msg>" row above the input while pending; it's
+    # removed and committed as a normal message when its turn runs (#commit_queued).
+    context "explicit queue (Alt+Enter / /queued)" do
+      it "Alt+Enter (\\e\\r) queues the buffer without firing on_interrupt" do
+        interrupts = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { interrupts += 1 })
+        c.begin_turn
+        c.begin_content_stream
+        "hold-this".each_char { |ch| c.handle_key(ch) }
+        # Alt+Enter arrives as ESC then CR: preload the CR after ESC the way the
+        # arrow/CSI specs drive escape sequences, then feed the ESC.
+        c.instance_variable_set(:@input, StringIO.new("\r"))
+        c.handle_key("\e")
+        expect(interrupts).to eq(0)               # NOT interrupted
+        expect(queue.drain).to eq(["hold-this"])  # queued
+        expect(output.string).to include("⏳ queued: hold-this") # live indicator shown
+        expect(c.buffer).to eq("")                # buffer cleared
+      end
+
+      it "Alt+Enter via \\e\\n (LF form) also queues" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        "lf-form".each_char { |ch| c.handle_key(ch) }
+        c.instance_variable_set(:@input, StringIO.new("\n"))
+        c.handle_key("\e")
+        expect(queue.drain).to eq(["lf-form"])
+        expect(output.string).to include("⏳ queued: lf-form")
+      end
+
+      it "/queued <msg> queues the message after the prefix without interrupting" do
+        interrupts = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { interrupts += 1 })
+        c.begin_turn
+        c.begin_content_stream
+        "/queued do this later".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(interrupts).to eq(0)
+        expect(queue.drain).to eq(["do this later"]) # only the message, prefix stripped
+        expect(output.string).to include("⏳ queued: do this later")
+      end
+
+      it "stacks multiple queued indicators in order and removes each on commit" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        "/queued one".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        "/queued two".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        # Both shown, in order.
+        idx_one = output.string.index("⏳ queued: one")
+        idx_two = output.string.index("⏳ queued: two")
+        expect(idx_one).not_to be_nil
+        expect(idx_two).not_to be_nil
+        expect(idx_one).to be < idx_two
+        # Committing "one" removes only its row; "two" stays.
+        expect(c.commit_queued("one")).to be(true)
+        # The current frame no longer renders "one" but still renders "two".
+        c.set_partial("") # force a fresh frame
+        frame = output.string.split("\r\e[2K").last(8).join
+        expect(frame).to include("⏳ queued: two")
+        expect(frame).not_to include("⏳ queued: one")
+      end
+
+      it "shares the pending list across composers (indicator survives teardown)" do
+        pending = []
+        c1 = described_class.new(input_queue: queue, input: input, output: output,
+                                 on_interrupt: -> {}, pending_queued: pending)
+        c1.begin_turn
+        "/queued later".each_char { |ch| c1.handle_key(ch) }
+        c1.handle_key("\r")
+        expect(pending).to eq(["later"]) # recorded in the shared list
+        # A fresh composer built on the same list still renders it.
+        out2 = FakeTermIO.new
+        c2 = described_class.new(input_queue: queue, input: input, output: out2,
+                                 prompt: "default ❯ ", echo: :prompt, pending_queued: pending)
+        c2.set_partial("") # force a frame
+        expect(out2.string).to include("⏳ queued: later")
+        expect(c2.commit_queued("later")).to be(true)
+        expect(pending).to eq([]) # removed from the shared list
+      end
+    end
+
+    # NO interrupt hook + no active turn: a :queued submit is unchanged —
+    # immediate "queued ▸" echo (the standalone/legacy fallback).
     it "echoes a :queued submit immediately when no turn is active" do
       "ping".each_char { |c| composer.handle_key(c) }
       composer.handle_key("\r")

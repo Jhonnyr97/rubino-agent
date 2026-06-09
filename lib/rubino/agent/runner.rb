@@ -46,7 +46,11 @@ module Rubino
       def run(input, image_paths: [], input_queue: nil)
         run!(input, image_paths: image_paths, input_queue: input_queue)
       rescue Interrupted
-        @ui.warning("interrupted by user")
+        # Standardized single interrupt notice: a dim `⎿ interrupted` marker
+        # right after the partial answer the Loop already committed via
+        # #stream_end. Replaces the old "⚠ interrupted by user" warning so the
+        # Ctrl+C path and the interrupt-by-default type-ahead path read the same.
+        @ui.turn_interrupted
         nil
       rescue SystemExit, Interrupt, SignalException
         raise

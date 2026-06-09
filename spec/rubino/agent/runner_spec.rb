@@ -186,8 +186,11 @@ RSpec.describe Rubino::Agent::Runner do
         runner.cancel!
         raise Rubino::Interrupted
       end
+      # The interrupt now commits the standardized `⎿ interrupted` marker via
+      # the UI (replacing the old "interrupted by user" warning); assert the UI
+      # was asked to render it and the turn returns nil.
+      expect(null_ui).to receive(:turn_interrupted)
       expect(runner.run("interrupt me")).to be_nil
-      expect(null_ui.messages.any? { |m| m[:message].to_s.include?("interrupted by user") }).to be true
 
       # Second turn: lifecycle succeeds normally — must NOT be pre-cancelled.
       allow(fake_lifecycle).to receive(:execute).and_return("RESPONSE")

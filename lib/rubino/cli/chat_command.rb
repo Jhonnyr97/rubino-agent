@@ -190,6 +190,11 @@ module Rubino
         # no copy/paste — instead of blocking on a fresh readline.
         input_queue = Rubino::Interaction::InputQueue.new
 
+        # Reset the shared explicit-queue stack for this interactive session (see
+        # #pending_queued): live "⏳ queued: <msg>" rows the composers render and
+        # the loop commits as normal messages when their turn runs.
+        @pending_queued = []
+
         # Keep structured JSON log lines OUT of the raw-mode TUI (#125): for the
         # whole interactive session the logger writes to a file in the logs dir
         # instead of the terminal $stdout the renderer owns. A warn/info event
@@ -351,6 +356,17 @@ module Rubino
         nil
       end
 
+      # Shared stack of EXPLICITLY-queued messages (Alt+Enter / "/queued"),
+      # rendered as live "⏳ queued: <msg>" rows above whichever composer is
+      # current (idle or in-turn) and removed — the item committed as a normal
+      # "<prompt><msg>" message — when its turn actually runs (see #run_turn).
+      # Memoized so it survives the per-turn composer teardown AND so unit tests
+      # that drive #read_idle_line / #start_composer directly (without going
+      # through #run_interactive) still get a real list, not nil.
+      def pending_queued
+        @pending_queued ||= []
+      end
+
       # Next prompt for the REPL. If the user typed while the previous turn
       # ran, those lines were parked in the InputQueue; consume them as the
       # next prompt INSTEAD of blocking on a fresh readline. Multiple lines are
@@ -358,8 +374,16 @@ module Rubino
       # keeps steering at the turn boundary, not mid-tool. When nothing was
       # queued, fall back to the normal readline prompt.
       def next_input(input_queue)
+        # Drain anything parked by the composer's reader while the previous turn
+        # ran — whether interrupt-by-default Enter or an explicit Alt+Enter /
+        # "/queued". Mark it so #run_turn commits the normal "<prompt><line>"
+        # echo (and clears any "⏳ queued:" indicator) when this line runs.
         queued = input_queue.drain
-        return queued.join("\n") unless queued.empty?
+        unless queued.empty?
+          @input_from_queue = queued.dup
+          return queued.join("\n")
+        end
+        @input_from_queue = nil
 
         # Carry over any draft the user typed into the bottom composer during the
         # previous turn but never submitted (no Enter): the turn-scoped composer
@@ -417,7 +441,8 @@ module Rubino
           on_mode_cycle:     mode_cycle_handler,
           completion_source: @completion_source,
           history:           @input_history,
-          echo:              :prompt
+          echo:              :prompt,
+          pending_queued:    pending_queued
         )
         composer.start
         seed_draft(composer, draft)
@@ -428,6 +453,13 @@ module Rubino
         loop do
           queued = input_queue.drain
           unless queued.empty?
+            # An idle plain submit already echoed "<prompt><line>" at submit time;
+            # only EXPLICITLY-queued items (Alt+Enter / "/queued" at idle, which
+            # carry a "⏳ queued:" indicator and no echo yet) need run_turn to
+            # commit them as normal messages. Flag just those so a plain submit is
+            # never double-echoed.
+            @input_from_queue = queued.select { |l| pending_queued.include?(l) }
+            @input_from_queue = nil if @input_from_queue.empty?
             line = queued.join("\n")
             break
           end
@@ -653,9 +685,9 @@ module Rubino
               else
                 last_int_at = now
                 runner.cancel!
-                # The runner emits the "⚠ interrupted by user" line once it
-                # unwinds the cancelled turn; here we only add the actionable
-                # double-tap hint so the two messages don't restate the same
+                # The runner commits the standardized dim "⎿ interrupted" marker
+                # once it unwinds the cancelled turn; here we only add the
+                # actionable double-tap hint so the two don't restate the same
                 # "interrupted" wording (L10). Single ASCII write —
                 # async-signal-safe enough for a trap.
                 $stderr.write("\n(press Ctrl+C again to exit)\n")
@@ -674,6 +706,15 @@ module Rubino
         # thought line and the answer (D7e). Cleared (and the deferred echoes
         # flushed, after the footer) in the ensure below.
         composer.begin_turn if composer.respond_to?(:begin_turn)
+
+        # If this turn's prompt came off the input queue (interrupt-by-default
+        # Enter, Alt+Enter, or "/queued" during the previous turn), commit it now
+        # as a NORMAL "<prompt><line>" message above the input — the same echo an
+        # idle submit gets — and remove its "⏳ queued:" indicator so it visibly
+        # MOVES from the above-input pending row to a transcript message at send
+        # time. An idle-submitted prompt already echoed at submit, so it isn't
+        # marked and is skipped here (no double echo).
+        commit_queued_prompt(composer)
 
         # Pass the SAME queue the composer pushes into through to the agent loop:
         # the loop drains it at each iteration boundary (Phase-2 mid-turn
@@ -699,6 +740,25 @@ module Rubino
         composer.end_turn if composer.respond_to?(:end_turn)
         stop_composer(composer, real_stdout)
         Signal.trap("INT", prev) if prev
+      end
+
+      # Commits the just-dequeued prompt as a normal "<prompt><line>" transcript
+      # message and removes its "⏳ queued:" indicator. Each line the previous
+      # turn parked (set in #next_input as @input_from_queue) is echoed in the
+      # mode-aware prompt, so a queued/interrupt-sent message reads back exactly
+      # like an idle submit. No-op when the prompt was an idle submit (already
+      # echoed) or there's no composer (piped / -q). Clears the marker after.
+      def commit_queued_prompt(composer)
+        lines = @input_from_queue
+        @input_from_queue = nil
+        return unless lines && composer
+
+        lines.each do |line|
+          # Drop the live "⏳ queued:" row first (explicit-queue items), then
+          # commit the normal echo above the input.
+          composer.commit_queued(line) if composer.respond_to?(:commit_queued)
+          composer.print_above("#{build_prompt}#{line}")
+        end
       end
 
       # Starts the bottom-pinned composer for the duration of a turn and swaps
@@ -727,7 +787,9 @@ module Rubino
         # (default / plan / yolo ❯) so the bottom composer doesn't drop the mode.
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           on_ctrl_o: ctrl_o_handler,
-                                          on_mode_cycle: mode_cycle_handler)
+                                          on_mode_cycle: mode_cycle_handler,
+                                          on_interrupt: -> { runner.cancel! },
+                                          pending_queued: pending_queued)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
