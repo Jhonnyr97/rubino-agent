@@ -60,8 +60,16 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to match(/mode\s+plan/)
     end
 
-    it "reports the memory fact count from the store" do
-      Rubino::Memory::Store.new(db: db.db).create(kind: "fact", content: "the sky is blue")
+    # Regression for #83: /status used to count the legacy `:memories` table
+    # (empty under the sqlite default) and reported "0 facts" while /memory in
+    # the SAME session listed rows. It must count on the ACTIVE backend.
+    it "reports the memory fact count from the ACTIVE backend, not the legacy table (#83)" do
+      backend = Rubino::Memory::Backends::Sqlite.new(config: test_configuration, db: db.db)
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+      allow(Rubino::Memory::Store).to receive(:new)
+        .and_raise("/status must use the active backend, not Memory::Store")
+
+      backend.store(kind: "fact", content: "the sky is blue")
       exec.try_execute("/status")
       expect(info_lines.join("\n")).to include("1 facts")
     end
@@ -194,6 +202,41 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       exec.try_execute("/memory forget #{m[:id]}")
       expect(store.find(m[:id])).to be_nil
       expect(info_lines.join("\n")).to include("Forgot")
+    end
+
+    # Regression for #59: `/memory search` with no query used to search for the
+    # literal word "search". The bare token now falls back to the summary, and
+    # `search <query>` searches <query>.
+    it "treats bare 'search' as the subcommand, not a literal query (#59)" do
+      store.store(kind: "fact", content: "something stored")
+      exec.try_execute("/memory search")
+      joined = info_lines.join("\n")
+      expect(joined).not_to include('No facts matching "search"')
+      expect(joined).to include("/memory <query>")
+    end
+
+    it "searches the query after the 'search' token (#59)" do
+      store.store(kind: "fact", content: "postgres core ported to ruby")
+      exec.try_execute("/memory search postgres")
+      expect(info_lines.join("\n")).to include("postgres core")
+    end
+
+    # Regression for #82/#86: a superseded fact must not show up in the human
+    # list or search as if current, and the header count must match the rows.
+    it "hides superseded facts from the list and the search (#82/#86)" do
+      store.store(kind: "preference", content: "User prefers tabs over spaces.")
+      store.replace(kind: "preference", old_text: "tabs over spaces",
+                    content: "User prefers spaces over tabs.")
+
+      exec.try_execute("/memory")
+      expect(info_lines.join("\n")).to include("1 facts")
+      expect(table_rows.size).to eq(1)
+
+      ui.reset!
+      exec.try_execute("/memory tabs")
+      joined = info_lines.join("\n")
+      expect(joined).to include("spaces over tabs")
+      expect(joined).not_to include("tabs over spaces")
     end
 
     it "errors when forgetting an unknown id" do
