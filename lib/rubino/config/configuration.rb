@@ -93,6 +93,44 @@ module Rubino
         dig("agent", "disabled_toolsets") || []
       end
 
+      # -- Tasks / nested-subagent caps --
+      # Maximum nesting depth for the `task` delegation tree. depth 0 is a
+      # human/top-level-spawned child; the cap bounds how deep a chain of
+      # subagents-spawning-subagents may go. Default 2 ⇒ human→child→grandchild.
+      # Falls back to the built-in default when missing/nil so the numeric caps
+      # in BackgroundTask#reserve never crash on a bare nil.
+      def tasks_max_depth
+        dig("tasks", "max_depth") || Defaults.dig("tasks", "max_depth")
+      end
+
+      # Maximum number of LIVE direct children a single node (the human/top-level
+      # or one subagent) may have at once. Default 3.
+      def tasks_max_children_per_node
+        dig("tasks", "max_children_per_node") || Defaults.dig("tasks", "max_children_per_node")
+      end
+
+      # Hard global ceiling on the total number of LIVE subagents across the whole
+      # tree, so depth × fan-out cannot blow past the process's thread/cost budget.
+      # Default 8.
+      def tasks_max_concurrent_total
+        dig("tasks", "max_concurrent_total") || Defaults.dig("tasks", "max_concurrent_total")
+      end
+
+      # Per-child budget for BILLED live probes (`probe(live:true)`). Over budget,
+      # the model is steered to the FREE live:false snapshot. Free snapshots are
+      # unlimited. Default 5.
+      def tasks_max_live_probes_per_child
+        dig("tasks", "max_live_probes_per_child") || Defaults.dig("tasks", "max_live_probes_per_child")
+      end
+
+      # Bound (seconds) a BLOCKING ask_parent waits for an answer before the child
+      # self-heals and proceeds with its best judgement (S5a). Reuses the
+      # approval-gate timeout convention — a sane upper bound, never "forever" —
+      # so an abandoned ask never parks the child's thread indefinitely. Default 900.
+      def tasks_ask_parent_timeout
+        dig("tasks", "ask_parent_timeout") || Defaults.dig("tasks", "ask_parent_timeout")
+      end
+
       # -- Prompts section --
       # The customer-facing preamble prepended to every assembled system
       # prompt. nil/empty disables the layer.

@@ -37,6 +37,9 @@ module Rubino
             end
 
             entry.runner&.cancel!
+            # Stop-cascade (S5a): wake any descendant parked on a blocking
+            # ask_parent so the whole subtree unwinds at once.
+            @registry.cancel_descendant_ask_gates(id)
             [202, Serializer.detail(entry)]
           end
         end
