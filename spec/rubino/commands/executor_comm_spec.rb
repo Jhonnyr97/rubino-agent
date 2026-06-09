@@ -64,6 +64,9 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
       expect(joined).to include("probe → #{entry.id}")
       expect(joined).to include("ephemeral · not saved")
       expect(joined).to include("peeked answer")
+      # #112: a child with no tool activity yet gets the at-this-instant hint
+      # so its honest "I'm not doing anything" answer doesn't read as broken.
+      expect(joined).to include("snapshot at this instant")
       expect(store.count(sess[:id])).to eq(before_count)
     end
   end

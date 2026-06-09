@@ -524,6 +524,13 @@ module Rubino
         end
 
         @ui.info(pastel.dim("┄┄ probe → #{id} ┄┄  (ephemeral · not saved · child trajectory unchanged)"))
+        # A probe answers from the child's context AT THIS INSTANT; right after
+        # spawn that context is still empty and the child honestly says it isn't
+        # working on anything yet — hint so that doesn't read as broken (#112).
+        if entry.tool_count.to_i.zero?
+          @ui.info(pastel.dim("   (snapshot at this instant — the child just started and its " \
+                              "context is still empty; probe again in a moment)"))
+        end
         @ui.info("?  #{question}")
         answer = Tools::SubagentProbe.new.peek(entry: entry, question: question)
         @ui.info("⟵  #{answer}")
@@ -658,8 +665,11 @@ module Rubino
         @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
         @ui.info("task: #{truncate(entry.prompt, 200)}")
         @ui.separator
-        if entry.status == :failed
+        case entry.status
+        when :failed
           @ui.error(entry.error.to_s.empty? ? "(failed, no error message)" : entry.error.to_s)
+        when :stopped
+          @ui.info("(stopped at your request — no result)")
         else
           @ui.info(entry.result.to_s.empty? ? "(no output)" : entry.result.to_s)
         end
@@ -791,6 +801,11 @@ module Rubino
         # unwinds instead of holding its thread until the bound. The stop-cascade
         # then wakes every DESCENDANT parked on a blocking ask too, so the whole
         # subtree unwinds at once (S5a — no orphaned blocked grandchild).
+        # Mark the stop FIRST so the very next /agents list shows ◌ stopping
+        # instead of a stale ● running (#108), and so the worker's terminal
+        # write records the unwind as :stopped, not ✗ failed (#13) — then wake
+        # the gates/runner.
+        registry.request_stop(id)
         entry.approval_gate&.cancel!
         entry.ask_gate&.cancel!
         registry.cancel_descendant_ask_gates(id)
@@ -805,6 +820,8 @@ module Rubino
         glyph, word, color =
           case status
           when :running          then ["●", "running", :yellow]
+          when :stopping         then ["◌", "stopping", :yellow]
+          when :stopped          then ["⊘", "stopped", :yellow]
           when :needs_approval   then ["●", "approval", :yellow]
           when :blocked_on_human then ["⛔", "waiting on you", :red]
           when :blocked_on_parent then ["◷", "waiting on parent", :cyan]
@@ -825,12 +842,26 @@ module Rubino
       # line so the tail — often the distinguishing path/arg — survives instead
       # of being cut at 40.
       def agent_label(entry)
-        if %i[running needs_approval].include?(entry.status) && !entry.last_activity.to_s.empty?
+        if %i[running needs_approval stopping].include?(entry.status) && !entry.last_activity.to_s.empty?
           return "#{entry.subagent}: #{truncate(entry.last_activity, 80)}"
         end
 
-        prompt = truncate(entry.prompt.to_s.lines.first.to_s.strip, 80)
+        prompt = truncate_middle(entry.prompt.to_s.lines.first.to_s.strip, 80)
         prompt.empty? ? entry.subagent : "#{entry.subagent}: #{prompt}"
+      end
+
+      # Middle truncation for the /agents Task label (#14): similarly-phrased
+      # delegations share their HEAD ("Summarize the contents of lib/…") while
+      # the distinguishing detail — the path/arg — sits at the TAIL, so a
+      # head-only cut renders concurrent tasks identical. Keep both ends,
+      # elide the middle.
+      def truncate_middle(text, max)
+        s = text.to_s.gsub(/\s+/, " ").strip
+        return s if s.length <= max
+
+        head = (max - 1) * 2 / 3
+        tail = max - 1 - head
+        "#{s[0, head]}…#{s[-tail, tail]}"
       end
 
       def agent_elapsed(entry)

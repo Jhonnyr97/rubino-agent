@@ -108,12 +108,31 @@ RSpec.describe Rubino::Tools::QuestionTool do
       expect(result).to eq("User answered: blue")
     end
 
-    it "reports (no response) when the user gives no answer" do
+    it "fails closed with the deterministic no-answer result when ui.ask returns nil (#107)" do
       allow(ui).to receive(:ask).and_return(nil)
 
       result = tool.call("question" => "Favourite colour?")
 
-      expect(result).to eq("User answered: (no response)")
+      expect(result).to eq(described_class::NO_ANSWER)
+      expect(result).to include("no interactive user input available")
+    end
+  end
+
+  # #107: in non-interactive mode the UI's #ask returns nil (CLI off a TTY,
+  # Null, SubagentView). The tool must NEVER silently pick an option — it
+  # returns the structured no-answer result so the model knows no user was
+  # available, regardless of what ambient stdin held.
+  describe "#call with options when no user answer is available (#107)" do
+    it "returns the structured no-answer result instead of auto-picking option 1" do
+      allow(ui).to receive(:ask).and_return(nil)
+
+      result = tool.call(
+        "question" => "Delete the branch?",
+        "options" => [{ "label" => "Yes" }, { "label" => "No" }]
+      )
+
+      expect(result).to eq(described_class::NO_ANSWER)
+      expect(result).not_to include("Yes")
     end
   end
 end

@@ -159,11 +159,30 @@ module Rubino
         end
       end
 
+      # Marks a stop REQUEST (the /agents <id> --stop / task_stop path) on a
+      # live entry so the list/cards immediately show ◌ stopping instead of a
+      # stale ● running while the child unwinds at its next checkpoint (#108).
+      # Returns true when the entry flipped. #complete then maps a failure on
+      # a :stopping entry to the terminal :stopped, so a deliberate stop never
+      # reads as ✗ failed (#13).
+      def request_stop(id)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return false unless entry && live_status?(entry.status)
+
+          entry.status = :stopping
+          true
+        end
+      end
+
       # Records terminal state when the worker finishes (called from its
       # `ensure`). Single writer per entry, but guarded so #find/#list readers
-      # see a consistent snapshot.
+      # see a consistent snapshot. A failure landing on a :stopping entry is a
+      # USER-REQUESTED stop unwinding (Interrupted at the next checkpoint), so
+      # it is recorded as :stopped — distinct from a genuine :failed (#108/#13).
       def complete(entry, status:, result: nil, error: nil)
         @mutex.synchronize do
+          status            = :stopped if entry.status == :stopping && status == :failed
           entry.status      = status
           entry.result      = result
           entry.error       = error
@@ -471,11 +490,12 @@ module Rubino
       end
 
       # A child holds a concurrency slot while its thread is alive — whether
-      # actively running, parked on a human approval, or parked on an escalated
-      # ask_parent question (waiting on the human OR on its agent-parent). Both
-      # blocked states hold a live thread, so both count as live.
+      # actively running, parked on a human approval, parked on an escalated
+      # ask_parent question (waiting on the human OR on its agent-parent), or
+      # unwinding after a stop request (:stopping). All of these hold a live
+      # thread, so all count as live.
       def live_status?(status)
-        %i[running needs_approval blocked_on_human blocked_on_parent].include?(status)
+        %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(status)
       end
 
       def running_count

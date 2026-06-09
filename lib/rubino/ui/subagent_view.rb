@@ -11,7 +11,7 @@ module Rubino
     # isolated Agent::Runner. By default that child is wired with UI::Null, so
     # its activity is invisible. This adapter makes the child's TOOL ACTIVITY
     # visible INLINE — compact rows indented under the parent's
-    # "● delegato → X" delegation boundary, in a per-subagent color — so the
+    # "● delegated → X" delegation boundary, in a per-subagent color — so the
     # user can watch what the subagent is doing live.
     #
     # DISPLAY ONLY. This adapter writes to $stdout (which, during a parent turn,
@@ -57,7 +57,7 @@ module Rubino
       PALETTE = %i[cyan magenta blue yellow green bright_cyan].freeze
 
       # Nested-row indent: 2 spaces beyond the CLI's own 2-space body indent so
-      # the subagent's steps read as nested under the "● delegato → X" row.
+      # the subagent's steps read as nested under the "● delegated → X" row.
       INDENT = "    "
 
       # Glyph prefixing every subagent activity row.

@@ -187,7 +187,7 @@ module Rubino
         payload = { name: name, arguments: sanitized }
         # Boundary event for delegation: tag the `task` call with the target
         # subagent name (+ the task prompt) so an SSE consumer (the web UI)
-        # can render "delegato a X" without parsing the raw arguments. The
+        # can render "delegated to X" without parsing the raw arguments. The
         # subagent's own inner events are NOT streamed in Phase 1 — boundary only.
         payload.merge!(subagent_tag(arguments)) if name == "task"
         @event_bus&.emit(Interaction::Events::TOOL_STARTED, **payload)
@@ -322,8 +322,13 @@ module Rubino
       # model actually sent. Lay each key out on its own line; clip long
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
+        pairs = Array(arguments)
+        # No arguments (e.g. a bare run_tests run) ⇒ no "with:" — a trailing
+        # "with:" followed by nothing reads as a truncated/broken card (#109).
+        return "Allow #{tool.name}" if pairs.empty?
+
         lines = ["Allow #{tool.name} with:"]
-        Array(arguments).each { |key, value| lines.concat(format_arg_pair(key, value)) }
+        pairs.each { |key, value| lines.concat(format_arg_pair(key, value)) }
         lines.join("\n")
       end
 

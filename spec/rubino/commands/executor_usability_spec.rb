@@ -280,6 +280,23 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(text).to include("grep current_user") # the live last_activity ● line
     end
 
+    # #14: for finished tasks the label slice must keep the TAIL — concurrent
+    # similarly-phrased delegations differ in their trailing path/arg, and a
+    # head-only cut rendered them as identical rows.
+    it "the list label middle-truncates so the distinguishing tail survives (#14)" do
+      shared = "Summarize the contents and structure of every file in the directory tree"
+      a = reg.reserve(subagent: "explore", prompt: "#{shared} lib/rubino/tools")
+      b = reg.reserve(subagent: "explore", prompt: "#{shared} lib/rubino/commands")
+      reg.complete(a, status: :completed, result: "ok")
+      reg.complete(b, status: :completed, result: "ok")
+
+      exec.try_execute("/agents")
+      labels = table_rows.map { |row| row[2] }
+      expect(labels.uniq.size).to eq(2)
+      expect(labels.join(" ")).to include("lib/rubino/tools")
+      expect(labels.join(" ")).to include("lib/rubino/commands")
+    end
+
     it "the list label uses the live last_activity to distinguish concurrent tasks (#127)" do
       a = reg.reserve(subagent: "explore", prompt: "Summarize the contents of lib/rubino")
       reg.record_tool_started(a.id, "read lib/rubino/tools/edit_tool.rb")
@@ -323,6 +340,36 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       reg.complete(e, status: :completed, result: "done")
       exec.try_execute("/agents #{e.id} --stop")
       expect(info_lines.join("\n")).to include("already completed")
+    end
+
+    # #108: after a stop request the list must reflect it immediately —
+    # showing plain "● running" right after "Stop requested" reads as if the
+    # stop did nothing while the child unwinds at its next checkpoint.
+    it "--stop flips the list status to stopping right away (#108)" do
+      child = instance_double(Rubino::Agent::Runner, cancel!: nil)
+      e = reg.reserve(subagent: "explore", prompt: "x")
+      reg.attach(e, thread: Thread.new {}, runner: child)
+
+      exec.try_execute("/agents #{e.id} --stop")
+      exec.try_execute("/agents")
+
+      cells = table_rows.flatten.join(" ")
+      expect(cells).to include("stopping")
+      expect(cells).not_to include("running")
+    end
+
+    # #13 (status model): a deliberate stop must not end up as red ✗ failed.
+    it "a stop-requested child that unwinds with a failure lists as stopped, not failed (#108/#13)" do
+      child = instance_double(Rubino::Agent::Runner, cancel!: nil)
+      e = reg.reserve(subagent: "explore", prompt: "x")
+      reg.attach(e, thread: Thread.new {}, runner: child)
+      exec.try_execute("/agents #{e.id} --stop")
+      reg.complete(e, status: :failed, error: "interrupted by user")
+
+      exec.try_execute("/agents")
+      cells = table_rows.flatten.join(" ")
+      expect(cells).to include("stopped")
+      expect(cells).not_to include("failed")
     end
 
     describe "approval-surfacing drill-in (Option 2)" do
