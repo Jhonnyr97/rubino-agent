@@ -247,16 +247,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
       )
     end
 
-    it "--continue fetches latest active session" do
-      allow(repo).to receive(:latest_active).and_return(session)
+    it "--continue fetches latest resumable session" do
+      allow(repo).to receive(:latest_resumable).and_return(session)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: "abc123ef")
       )
     end
 
-    it "--continue passes nil when no active session" do
-      allow(repo).to receive(:latest_active).and_return(nil)
+    it "--continue passes nil when no resumable session" do
+      allow(repo).to receive(:latest_resumable).and_return(nil)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: nil)

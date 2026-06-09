@@ -561,6 +561,11 @@ RSpec.describe "ChatCommand slash command integration" do
     allow(Rubino).to receive(:database).and_return(db)
     allow(db).to receive(:healthy?).and_return(true)
     allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:build_completion_source)
+    # These specs exercise slash-command routing, not the credential gate;
+    # without this stub a keyless environment makes ensure_model_configured!
+    # warn + exit(1), killing the whole suite mid-run (SystemExit is not
+    # rescued by RSpec).
+    allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
     Rubino.ui = null_ui
   end
 
