@@ -701,12 +701,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
         expect(cmd.send(:next_input, input_queue)).to eq("steered message")
       end
 
-      it "coalesces multiple queued lines into one next-turn message" do
+      it "runs each queued line as its OWN turn, in submission order (B4)" do
         input_queue.push("first")
         input_queue.push("second")
         expect(cmd).not_to receive(:cooked_input)
 
-        expect(cmd.send(:next_input, input_queue)).to eq("first\nsecond")
+        # First boundary takes only "first" (NOT "first\nsecond"); "second"
+        # stays parked and is taken as its own next turn.
+        expect(cmd.send(:next_input, input_queue)).to eq("first")
+        expect(cmd.send(:next_input, input_queue)).to eq("second")
+        expect(input_queue.pending?).to be(false)
       end
 
       it "reads a fresh line when the queue is empty" do
@@ -875,6 +879,63 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         expect(line).to eq("hello world")
       end
+
+      # BH-2 wiring: a real SIGINT at the idle prompt is routed THROUGH the
+      # composer (not the session-end / default handler), so a typed draft is
+      # never silently discarded. With text in the buffer, the first Ctrl+C
+      # CLEARS the line and the read keeps going — proven by then submitting a
+      # fresh line, which returns normally. The draft is gone (cleared), the
+      # session did NOT exit.
+      it "idle Ctrl+C with a non-empty draft clears the line and does NOT exit" do
+        typist = Thread.new do
+          sleep 0.05
+          "to be cleared".each_char { |c| fake_composer.handle_key(c) }
+          Process.kill("INT", Process.pid) # the real idle Ctrl+C
+          sleep 0.1                          # let the loop drain the trap + clear
+          expect(fake_composer.buffer).to eq("") # draft cleared, not lost to exit
+          "after clear".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
+        end
+
+        line = cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        expect(line).to eq("after clear") # read continued past the Ctrl+C
+      end
+
+      # With an EMPTY buffer, a SINGLE idle Ctrl+C must NOT exit — it arms the
+      # transient hint and keeps reading. Proven by then submitting a line.
+      it "idle Ctrl+C on an empty buffer does NOT exit on the first tap" do
+        typist = Thread.new do
+          sleep 0.05
+          Process.kill("INT", Process.pid) # first (and only) Ctrl+C, empty buffer
+          sleep 0.1
+          "still alive".each_char { |c| fake_composer.handle_key(c) }
+          fake_composer.handle_key("\r")
+        end
+
+        line = cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        expect(line).to eq("still alive")
+        expect(output.string).to include("press Ctrl+C again to exit")
+      end
+
+      # Two empty Ctrl+C in quick succession DO exit cleanly: #read_idle_line
+      # returns nil (which #run_interactive treats as end-of-session).
+      it "a double idle Ctrl+C on an empty buffer exits (returns nil)" do
+        typist = Thread.new do
+          sleep 0.05
+          Process.kill("INT", Process.pid)
+          sleep 0.1
+          Process.kill("INT", Process.pid) # second tap within the window
+        end
+
+        line = cmd.send(:read_idle_line, input_queue, nil)
+        typist.join
+
+        expect(line).to be_nil # exit
+      end
     end
 
     # Drives run_turn with a runner that blocks on a latch until the test has
@@ -921,13 +982,72 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       it "start_composer returns [nil, nil] for non-TTY stdin" do
         allow($stdin).to receive(:tty?).and_return(false)
-        expect(cmd.send(:start_composer, input_queue)).to eq([nil, nil])
+        expect(cmd.send(:start_composer, input_queue, runner)).to eq([nil, nil])
       end
 
       it "start_composer returns [nil, nil] when no queue is wired" do
         allow($stdin).to receive(:tty?).and_return(true)
         allow($stdout).to receive(:tty?).and_return(true)
-        expect(cmd.send(:start_composer, nil)).to eq([nil, nil])
+        expect(cmd.send(:start_composer, nil, runner)).to eq([nil, nil])
+      end
+    end
+
+    # BH-1 (the crash that shipped): the in-turn composer's on_interrupt lambda
+    # is wired by the REAL #start_composer, where `runner` was NOT in scope (a
+    # parameter of #run_turn, no @runner ivar). So the instant the user pressed
+    # Enter during a turn — the documented interrupt gesture — the lambda raised
+    # `NameError: undefined local variable or method 'runner'`, dumping a
+    # backtrace into the chat, NOT cancelling the turn, and killing the reader.
+    #
+    # The existing bottom_composer specs inject their OWN on_interrupt stub, so
+    # they never exercised this wiring — which is why it shipped broken. This
+    # drives the REAL ChatCommand seam: build the composer via #start_composer
+    # (the production wiring), then submit a line via the composer's keystroke
+    # handler while a turn is active, and assert the interrupt resolves `runner`
+    # and calls #cancel! with NO NameError.
+    describe "interrupt-by-default wiring (BH-1)" do
+      let(:runner)      { instance_double(Rubino::Agent::Runner, run: "ok") }
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+
+      before do
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:winsize).and_return([24, 80])
+        # No real raw reader thread / termios: the test drives keystrokes
+        # synchronously through the composer's #handle_key instead.
+        allow_any_instance_of(Rubino::UI::BottomComposer)
+          .to receive(:start_reader).and_return(Thread.new { nil })
+        allow($stdin).to receive(:cooked!)
+        allow(runner).to receive(:cancel!)
+      end
+
+      # Drive the WHOLE production seam: #run_turn builds the composer via the
+      # real #start_composer and runs the runner. We stand in for the reader by
+      # pressing Enter (the documented interrupt gesture) mid-turn on the SAME
+      # composer #start_composer wired — so the real on_interrupt lambda fires.
+      # Against the buggy code this raised `NameError: undefined local variable
+      # or method 'runner'` (BH-1); after the fix it resolves `runner` and
+      # cancels. NO hand-built on_interrupt stub anywhere — that is the whole
+      # point (the prior specs stubbed it and never caught the crash).
+      it "an Enter-during-turn submit resolves `runner` and calls cancel! (no NameError)" do
+        raised = nil
+        allow(runner).to receive(:run) do
+          composer = Rubino::UI::BottomComposer.current
+          composer.begin_turn
+          "interrupt me".each_char { |ch| composer.handle_key(ch) }
+          begin
+            composer.handle_key("\r") # fires the REAL on_interrupt lambda
+          rescue NameError => e
+            raised = e # capture so the turn still unwinds and we can assert
+          end
+          "ok"
+        end
+
+        cmd.send(:run_turn, runner, "hello", ui, input_queue)
+
+        expect(raised).to be_nil, "on_interrupt raised: #{raised&.message}" # BH-1
+        expect(runner).to have_received(:cancel!)        # the turn was cancelled
+        expect(input_queue.shift).to eq("interrupt me")  # line parked to run next
       end
     end
 

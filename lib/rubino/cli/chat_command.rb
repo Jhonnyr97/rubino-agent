@@ -330,6 +330,26 @@ module Rubino
         nil
       end
 
+      # Install the idle-prompt SIGINT trap (BH-2). The block is the whole
+      # handler body and MUST be trap-safe — the caller passes one that only
+      # flips a plain flag (no Mutex, no I/O), exactly like the during-turn INT
+      # trap. Returns the previous handler so #restore_idle_int can put it back.
+      # nil (no trap installed) on a platform without SIGINT.
+      def trap_idle_int(&handler)
+        Signal.trap("INT", &handler)
+      rescue ArgumentError
+        nil
+      end
+
+      # Restore whatever INT handler was in place before the idle read armed its
+      # own (the session-end / default handler), so the trap never leaks past the
+      # idle prompt into a turn (which installs its own double-tap INT trap).
+      def restore_idle_int(prev)
+        Signal.trap("INT", prev || "DEFAULT")
+      rescue ArgumentError
+        nil
+      end
+
       # Routes the structured logger to a file for the interactive session so
       # JSON log lines never reach the terminal $stdout the TUI renders into
       # (#125). Returns the previous sink IO to restore on exit; nil (no-op,
@@ -369,19 +389,21 @@ module Rubino
 
       # Next prompt for the REPL. If the user typed while the previous turn
       # ran, those lines were parked in the InputQueue; consume them as the
-      # next prompt INSTEAD of blocking on a fresh readline. Multiple lines are
-      # coalesced (newline-joined) into one next-turn user message — the MVP
-      # keeps steering at the turn boundary, not mid-tool. When nothing was
-      # queued, fall back to the normal readline prompt.
+      # next prompt INSTEAD of blocking on a fresh readline. Each parked line is
+      # taken ONE at a time (FIFO) and run as its OWN turn (B4) — an
+      # interrupt-by-default Enter, an Alt+Enter, or a "/queued" each get their
+      # own turn in submission order, never coalesced into a single
+      # newline-joined message. The remaining queued items stay parked (their
+      # "⏳ queued:" indicators remain) and each runs on a later #next_input.
+      # When nothing is queued, fall back to the normal readline prompt.
       def next_input(input_queue)
-        # Drain anything parked by the composer's reader while the previous turn
-        # ran — whether interrupt-by-default Enter or an explicit Alt+Enter /
-        # "/queued". Mark it so #run_turn commits the normal "<prompt><line>"
-        # echo (and clears any "⏳ queued:" indicator) when this line runs.
-        queued = input_queue.drain
-        unless queued.empty?
-          @input_from_queue = queued.dup
-          return queued.join("\n")
+        # Take the OLDEST parked line (FIFO). Mark it so #run_turn commits the
+        # normal "<prompt><line>" echo (and clears any "⏳ queued:" indicator)
+        # when this line runs. The rest stay queued for their own later turns.
+        queued = input_queue.shift
+        unless queued.nil?
+          @input_from_queue = [queued]
+          return queued
         end
         @input_from_queue = nil
 
@@ -449,24 +471,46 @@ module Rubino
         paint_idle_cards
         ticker = background_children_live? ? start_idle_card_ticker(composer) : nil
 
+        # Gate idle Ctrl+C through the composer (BH-2): the composer runs under
+        # raw(intr: true), so a single Ctrl+C still raises SIGINT — which would
+        # otherwise hit the session-end / default handler and quit, silently
+        # discarding a typed draft. Trap INT here so a draft is never nuked: the
+        # trap body stays trap-safe (flip a flag only — Mutex#lock is forbidden
+        # in a trap, Ruby #14222), and the poll loop below performs the actual
+        # clear/hint/exit through the composer OUTSIDE trap context. Restored in
+        # the ensure so the trap never leaks past the idle read.
+        int_pending = false
+        prev_int    = trap_idle_int { int_pending = true }
+
         line = nil
         loop do
-          queued = input_queue.drain
-          unless queued.empty?
+          # Drained the idle Ctrl+C the trap recorded: clear the draft (non-empty)
+          # or arm/confirm the two-tap exit (empty). Done here, not in the trap,
+          # so the render mutex is safe.
+          if int_pending
+            int_pending = false
+            break if composer.idle_interrupt(window: DOUBLE_TAP_SECONDS) == :exit
+          end
+
+          # Take ONE parked line (FIFO) so several items queued at idle each run
+          # as their OWN turn (B4), in submission order — never coalesced. The
+          # rest stay parked for the next #next_input / loop pass.
+          queued = input_queue.shift
+          unless queued.nil?
             # An idle plain submit already echoed "<prompt><line>" at submit time;
-            # only EXPLICITLY-queued items (Alt+Enter / "/queued" at idle, which
-            # carry a "⏳ queued:" indicator and no echo yet) need run_turn to
-            # commit them as normal messages. Flag just those so a plain submit is
+            # only an EXPLICITLY-queued item (Alt+Enter / "/queued" at idle, which
+            # carries a "⏳ queued:" indicator and no echo yet) needs run_turn to
+            # commit it as a normal message. Flag just that so a plain submit is
             # never double-echoed.
-            @input_from_queue = queued.select { |l| pending_queued.include?(l) }
-            @input_from_queue = nil if @input_from_queue.empty?
-            line = queued.join("\n")
+            @input_from_queue = pending_queued.include?(queued) ? [queued] : nil
+            line = queued
             break
           end
           sleep(0.05)
         end
         line
       ensure
+        restore_idle_int(prev_int)
         ticker&.kill
         ticker&.join
         if composer
@@ -698,7 +742,7 @@ module Rubino
           end
         end
 
-        composer, real_stdout = start_composer(input_queue)
+        composer, real_stdout = start_composer(input_queue, runner)
 
         # Mark the composer "in a turn" for the WHOLE turn — covering the THINKING
         # phase AND the content stream — so a "queued ▸" type-ahead echo submitted
@@ -780,11 +824,15 @@ module Rubino
       # the runner or the agent loop, so it cannot race the turn own work — the
       # parked text is consumed by the loop at a safe iteration boundary (atomic
       # #drain), or by #next_input between turns for anything typed in the gap.
-      def start_composer(input_queue)
+      def start_composer(input_queue, runner)
         return [nil, nil] unless input_queue && UI::BottomComposer.active?
 
         # Use the SAME mode-aware prompt as the between-turns Reline prompt
         # (default / plan / yolo ❯) so the bottom composer doesn't drop the mode.
+        # `runner` is threaded in (not captured from an enclosing scope) so the
+        # interrupt lambda resolves it — it is a parameter of #run_turn, not in
+        # scope here, and there is no @runner ivar, so capturing it implicitly
+        # raised NameError the instant an Enter-during-turn fired (BH-1).
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           on_ctrl_o: ctrl_o_handler,
                                           on_mode_cycle: mode_cycle_handler,
