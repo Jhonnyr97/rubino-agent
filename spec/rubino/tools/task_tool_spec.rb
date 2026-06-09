@@ -74,12 +74,22 @@ RSpec.describe Rubino::Tools::TaskTool do
   # no nesting
   # ---------------------------------------------------------------------------
 
-  describe "no nesting" do
-    it "excludes the delegation tools from a subagent's tool list" do
+  describe "scoped nesting (S1)" do
+    it "KEEPS the delegation tools in a subagent's tool list (nesting enabled)" do
       %w[explore general].each do |name|
         tools = Rubino.agent_registry.find(name).resolved_tools.map(&:name)
-        expect(tools).not_to include("task", "task_result", "task_stop")
+        expect(tools).to include("task")
       end
+    end
+
+    it "keeps ask_parent subagent-only (off the primary, on the subagent)" do
+      Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
+
+      explore_tools = Rubino.agent_registry.find("explore").resolved_tools.map(&:name)
+      expect(explore_tools).to include("ask_parent")
+
+      primary = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
+      expect(primary.resolved_tools.map(&:name)).not_to include("ask_parent")
     end
   end
 

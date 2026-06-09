@@ -93,6 +93,29 @@ module Rubino
         dig("agent", "disabled_toolsets") || []
       end
 
+      # -- Tasks / nested-subagent caps --
+      # Maximum nesting depth for the `task` delegation tree. depth 0 is a
+      # human/top-level-spawned child; the cap bounds how deep a chain of
+      # subagents-spawning-subagents may go. Default 2 ⇒ human→child→grandchild.
+      # Falls back to the built-in default when missing/nil so the numeric caps
+      # in BackgroundTask#reserve never crash on a bare nil.
+      def tasks_max_depth
+        dig("tasks", "max_depth") || Defaults.dig("tasks", "max_depth")
+      end
+
+      # Maximum number of LIVE direct children a single node (the human/top-level
+      # or one subagent) may have at once. Default 3.
+      def tasks_max_children_per_node
+        dig("tasks", "max_children_per_node") || Defaults.dig("tasks", "max_children_per_node")
+      end
+
+      # Hard global ceiling on the total number of LIVE subagents across the whole
+      # tree, so depth × fan-out cannot blow past the process's thread/cost budget.
+      # Default 8.
+      def tasks_max_concurrent_total
+        dig("tasks", "max_concurrent_total") || Defaults.dig("tasks", "max_concurrent_total")
+      end
+
       # -- Prompts section --
       # The customer-facing preamble prepended to every assembled system
       # prompt. nil/empty disables the layer.

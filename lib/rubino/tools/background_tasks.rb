@@ -24,6 +24,15 @@ module Rubino
     class BackgroundTasks
       MAX_CONCURRENT = 3
 
+      # Fallback caps for the nested-subagent tree, used when config is absent
+      # (e.g. a bare registry in a unit test with no Configuration wired). The
+      # live values come from config (tasks.max_depth / max_children_per_node /
+      # max_concurrent_total); these constants are the built-in defaults the
+      # config keys themselves default to. All three are enforced in #reserve.
+      MAX_DEPTH             = 2
+      MAX_CHILDREN_PER_NODE = 3
+      MAX_CONCURRENT_TOTAL  = 8
+
       # last_activity / tool_count / activity_log — live-progress fields written
       # by the child's EventBus tap (TaskTool#wire_child_activity) under the
       # registry mutex and read by the parent renderer (UI::SubagentCards) and
@@ -56,6 +65,13 @@ module Rubino
         # ask returns immediately and the answer is delivered later via
         # `steer_queue`. The human answers via /reply <id>, which decides the gate.
         :ask_gate, :ask_id, :ask_question, :ask_blocking,
+        # Ownership link (S1 — foundation for model-driven steer/probe/ask_parent).
+        # owner_subagent_id is the `sa_*` id of the subagent that spawned this
+        # child, or nil when the spawner is the human / top-level agent. depth is
+        # 0 for a human-spawned child and owner.depth + 1 otherwise. The registry
+        # stays a FLAT map keyed by id; the parent/child tree is computed over
+        # owner_subagent_id (see #children_of / #descendants_of / #ancestors_of).
+        :owner_subagent_id, :depth,
         keyword_init: true
       )
 
@@ -79,30 +95,53 @@ module Rubino
       end
 
       # Reserves a slot and registers a `running` entry, returning it. The
-      # caller then attaches the worker thread + runner via #attach. Returns nil
-      # when the registry is at capacity so the tool can surface an at-capacity
-      # message instead of spawning unbounded work.
-      def reserve(subagent:, prompt:)
+      # caller then attaches the worker thread + runner via #attach.
+      #
+      # owner_subagent_id is the `sa_*` id of the SPAWNING subagent (nil ⇒ the
+      # human / top-level agent spawned this child). depth is the caller's hint
+      # for a human-spawned child (0); for an owner-spawned child the depth is
+      # recomputed here from the owner entry (owner.depth + 1) so a stale hint
+      # can't smuggle a child past the depth cap.
+      #
+      # Returns nil — so TaskTool can surface a clear message instead of spawning
+      # unbounded work — when ANY of the three nesting caps is hit. The reason is
+      # available via #last_refusal_reason for the caller to phrase the message:
+      #   :depth          — depth >= max_depth (no deeper nesting allowed)
+      #   :per_owner      — this owner already has max_children_per_node live kids
+      #   :global         — total live subagents across the tree >= max total
+      # This is the SINGLE enforcement point for every nesting limit.
+      def reserve(subagent:, prompt:, owner_subagent_id: nil, depth: 0)
         @mutex.synchronize do
-          return nil if running_count >= MAX_CONCURRENT
+          owner = owner_subagent_id ? @entries[owner_subagent_id] : nil
+          effective_depth = owner ? owner.depth.to_i + 1 : depth.to_i
+
+          @last_refusal_reason = refusal_reason(owner_subagent_id, effective_depth)
+          return nil if @last_refusal_reason
 
           entry = Entry.new(
-            id:           new_id,
-            subagent:     subagent.to_s,
-            prompt:       prompt.to_s,
-            status:       :running,
-            started_at:   Time.now,
-            tool_count:   0,
-            activity_log: [],
+            id:                new_id,
+            subagent:          subagent.to_s,
+            prompt:            prompt.to_s,
+            status:            :running,
+            started_at:        Time.now,
+            tool_count:        0,
+            activity_log:      [],
             # Every background child gets its OWN steering queue at reserve time
             # so the parent can `/agents <id> steer "..."` it the instant it is
             # listed — no separate wiring step, no nil window.
-            steer_queue:  Interaction::InputQueue.new
+            steer_queue:       Interaction::InputQueue.new,
+            owner_subagent_id: owner_subagent_id,
+            depth:             effective_depth
           )
           @entries[entry.id] = entry
           entry
         end
       end
+
+      # Why the most recent #reserve returned nil (one of :depth / :per_owner /
+      # :global), or nil when the last reserve succeeded. Read by TaskTool to
+      # phrase a reason-specific at-capacity message.
+      attr_reader :last_refusal_reason
 
       # Binds the live worker thread + child runner to a reserved entry so the
       # registry can later cancel it. Done after reserve so the entry exists in
@@ -277,7 +316,99 @@ module Rubino
         @mutex.synchronize { @entries.delete(id) }
       end
 
+      # --- Tree over owner_subagent_id (the registry stays a flat map) ---------
+
+      # Direct children of `id`: entries whose owner_subagent_id == id. Pass nil
+      # for the human/top-level node's direct children.
+      def children_of(id)
+        @mutex.synchronize { @entries.values.select { |e| e.owner_subagent_id == id } }
+      end
+
+      # All transitive descendants of `id` (BFS over owner_subagent_id), in
+      # breadth order. Cycle-safe (an id is visited at most once).
+      def descendants_of(id)
+        @mutex.synchronize do
+          out     = []
+          seen    = {}
+          frontier = @entries.values.select { |e| e.owner_subagent_id == id }
+          until frontier.empty?
+            nxt = []
+            frontier.each do |e|
+              next if seen[e.id]
+
+              seen[e.id] = true
+              out << e
+              nxt.concat(@entries.values.select { |c| c.owner_subagent_id == e.id })
+            end
+            frontier = nxt
+          end
+          out
+        end
+      end
+
+      # The chain of ancestors of `id`, nearest parent first, walking
+      # owner_subagent_id up to the human/top-level root. Cycle-safe.
+      def ancestors_of(id)
+        @mutex.synchronize do
+          out  = []
+          seen = { id => true }
+          cur  = @entries[id]&.owner_subagent_id
+          while cur && (entry = @entries[cur]) && !seen[cur]
+            seen[cur] = true
+            out << entry
+            cur = entry.owner_subagent_id
+          end
+          out
+        end
+      end
+
+      # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
+      # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
+      def owned_by?(parent_id, child_id)
+        @mutex.synchronize do
+          child = @entries[child_id]
+          !child.nil? && child.owner_subagent_id == parent_id
+        end
+      end
+
       private
+
+      # The reason (if any) a reserve at this owner/depth must be refused, checked
+      # in the documented order. nil ⇒ allowed. Runs UNDER the mutex (callers hold
+      # it), reading the live entry map for the per-owner and global live counts.
+      def refusal_reason(owner_subagent_id, effective_depth)
+        return :depth if effective_depth >= max_depth
+        return :global if running_count >= max_concurrent_total
+
+        live_children = @entries.values.count do |e|
+          e.owner_subagent_id == owner_subagent_id && live_status?(e.status)
+        end
+        return :per_owner if live_children >= max_children_per_node
+
+        nil
+      end
+
+      # Live cap values, from config when wired, else the built-in constants (so a
+      # bare registry in a unit test with no Configuration still has sane caps).
+      def max_depth
+        config_int(:tasks_max_depth, MAX_DEPTH)
+      end
+
+      def max_children_per_node
+        config_int(:tasks_max_children_per_node, MAX_CHILDREN_PER_NODE)
+      end
+
+      def max_concurrent_total
+        config_int(:tasks_max_concurrent_total, MAX_CONCURRENT_TOTAL)
+      end
+
+      def config_int(accessor, fallback)
+        cfg = Rubino.configuration if Rubino.respond_to?(:configuration)
+        val = cfg&.respond_to?(accessor) ? cfg.public_send(accessor) : nil
+        Integer(val)
+      rescue StandardError, TypeError, ArgumentError
+        fallback
+      end
 
       # A child holds a concurrency slot while its thread is alive — whether
       # actively running, parked on a human approval, or parked on an escalated

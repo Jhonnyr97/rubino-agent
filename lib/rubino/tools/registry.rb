@@ -91,9 +91,9 @@ module Rubino
           # (Level 3) on demand. Gated like any tool via `tools.skill`.
           register(Rubino::Skills::SkillTool.new)
           # Delegation tool: lets the model spawn an isolated subagent run.
-          # Gated like any other tool (tools.task in config). Subagents never
-          # see it — Definition#resolved_tools drops `task` for :subagent defs,
-          # so a subagent can't spawn subagents (no nesting).
+          # Gated like any other tool (tools.task in config). Subagents now KEEP
+          # it (scoped nesting, S1) — a subagent can spawn its own subagents,
+          # bounded by the depth / fan-out / global caps in BackgroundTasks#reserve.
           register(Rubino::Tools::TaskTool.new)
           # Companion poll/stop tools for background subagents (the default
           # path of `task`). Mirror the shell_output/shell_kill trio. Gated by

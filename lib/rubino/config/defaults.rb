@@ -235,6 +235,22 @@ module Rubino
           "max_attempts" => 3,
           "retry_backoff_seconds" => 30
         },
+        # Nested-subagent (the `task` delegation tool) caps. A subagent CAN now
+        # spawn its own subagents; these three caps bound the tree so depth ×
+        # fan-out cannot blow past the process's thread/cost budget. All three are
+        # enforced in ONE place — Tools::BackgroundTasks#reserve — which refuses a
+        # spawn (the tool then surfaces a clear at-capacity / max-depth message).
+        "tasks" => {
+          # Max nesting depth. depth 0 = a human/top-level-spawned child; the cap
+          # bounds chains of subagents-spawning-subagents. 2 ⇒ human→child→grandchild
+          # (no deeper).
+          "max_depth" => 2,
+          # Max LIVE direct children one node (human/top-level or a single
+          # subagent) may have at once.
+          "max_children_per_node" => 3,
+          # Hard global ceiling on total LIVE subagents across the whole tree.
+          "max_concurrent_total" => 8
+        },
         "tools" => {
           # Sandbox write/edit/delete tools to workspace_root (terminal.cwd
           # or Dir.pwd). Set to false to let the model touch any path the
