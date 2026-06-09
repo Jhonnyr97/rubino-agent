@@ -104,6 +104,11 @@ module Rubino
           # (gated by the same tools.task key), but Definition#resolved_tools
           # exposes it ONLY to subagents — a top-level agent has no parent to ask.
           register(Rubino::Tools::AskParentTool.new)
+          # steer / probe (S2/S3): the MODEL-callable parent->child channels,
+          # registered for ALL agents and AUTHORIZED by ownership at call time
+          # (a node with no children just gets a "not your child" error). NOT on
+          # any strip list — scoping happens inside the tool, not in the registry.
+          register(Rubino::Tools::SteerTool.new)
         end
 
         private
