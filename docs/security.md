@@ -89,7 +89,7 @@ A run parked on a human decision is bounded by `approvals.wait_timeout_seconds` 
 
 ## Attachment SSRF guard
 
-URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped.
+URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped. The same policy gates CLI image attachments (`-i`/`--image`, `@image` tokens, dropped paths, `/paste`): a file that fails classification or the size cap is rejected client-side, before any provider call.
 
 ## <a id="autonomous-memory"></a>Autonomous memory tool
 

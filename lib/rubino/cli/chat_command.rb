@@ -45,6 +45,14 @@ module Rubino
       def run_oneshot(query)
         apply_yolo! if opt(:yolo)
 
+        # Structured JSON log lines (llm.retry & friends) must never contaminate
+        # the one-shot stdout (#99): `answer=$(rubino prompt ...)` pipes stdout,
+        # so a warn event would interleave JSON noise with the answer. Route the
+        # logger to stderr for the whole one-shot run — the diagnostic twin of
+        # the interactive REPL's redirect-to-file (#125). Restored in the ensure
+        # so embedders/tests sharing the memoized logger are unaffected.
+        prev_log_io = redirect_logger_to_stderr
+
         # Surface the resolved model (and any unknown-id warning) before the
         # answer (#142). In one-shot mode there is no chat header, so without
         # this a typo'd `-m` silently runs the wrong/forced-through model with
@@ -78,6 +86,7 @@ module Rubino
         # then an empty prompt and a success exit (#93) — here we surface the
         # actionable error to stderr and exit non-zero so automation/the user can
         # actually tell it failed.
+        announce_attachment_upload(image_paths)
         response = runner.run!(text, image_paths: image_paths)
 
         $stdout.puts response.to_s
@@ -87,6 +96,8 @@ module Rubino
       rescue Exception => e # rubocop:disable Lint/RescueException
         warn "rubino: #{e.message}"
         exit(1)
+      ensure
+        restore_logger(prev_log_io)
       end
 
       # Builds the [text, image_paths] pair for a one-shot turn. Pulls @image /
@@ -94,6 +105,11 @@ module Rubino
       # the literal text) and prepends any paths given via --image. Flag paths
       # are expanded the same way as in-line tokens; a flag path that isn't a
       # readable image is reported and skipped rather than silently dropped.
+      #
+      # Every candidate then passes the SAME secure-by-default attachment gate
+      # as the server/run path (Attachments::Classify + Policy, via
+      # ImageInput#attachment_error) — a policy rejection is a clean one-line
+      # error BEFORE any network call, not five provider retries (#98).
       def resolve_oneshot_images(query)
         flag_paths = Array(opt(:image)).map { |p| Interaction::ImageInput.expand(p) }
         flag_paths.each do |p|
@@ -102,9 +118,38 @@ module Rubino
           warn "rubino: ignoring --image #{p} (not a readable image file)"
         end
         valid_flags = flag_paths.select { |p| LLM::ContentBuilder.image_file?(p) && File.file?(p) }
+        valid_flags.each do |p|
+          reason = Interaction::ImageInput.attachment_error(p)
+          raise Rubino::Error, "--image #{p}: #{reason}" if reason
+        end
 
         result = Interaction::ImageInput.parse(query, existing: valid_flags)
+        if (rejection = result.rejected.first)
+          raise Rubino::Error, "#{rejection[:path]}: #{rejection[:reason]}"
+        end
+
         [result.text, result.image_paths]
+      end
+
+      # One deterministic status line before a request that carries attachments
+      # (#101): a multi-MB upload can stall for tens of seconds with zero
+      # feedback in one-shot mode. Goes to stderr so the piped stdout answer
+      # stays clean.
+      def announce_attachment_upload(image_paths)
+        return if image_paths.empty?
+
+        mb    = (image_paths.sum { |p| File.size?(p).to_i } / 1_048_576.0).round(1)
+        label = image_paths.size == 1 ? "image" : "#{image_paths.size} images"
+        warn "sending #{label} (#{mb} MB)…"
+      end
+
+      # Routes the structured logger to stderr for the one-shot run (#99).
+      # Returns the previous sink IO to restore on exit; nil (no-op) on failure —
+      # a logging-destination detail must never break the run.
+      def redirect_logger_to_stderr
+        Rubino.logger.reopen($stderr)
+      rescue StandardError
+        nil
       end
 
       # --- Interactive mode ---
@@ -221,12 +266,13 @@ module Rubino
 
             # Pull any image references (@image, dropped/quoted path) out of the
             # line into image_paths (the native vision slot); the rest stays text.
+            # An image-only line STAGES the attachment instead of submitting an
+            # empty turn (#100): the in-prompt hint promises a "sent with your
+            # next message (/clear-images to drop)" window, so honour it for
+            # @image/dropped paths the same as /paste — the image goes out with
+            # the next message that carries text.
             input = extract_images!(input, ui)
-            next if input.empty? && pending_image_paths.empty?
-
-            # An image with no accompanying words still needs a user turn; give
-            # the model a default question so it has something to answer.
-            input = "What do you see in this image?" if input.empty?
+            next if input.empty?
 
             # A leading `? ` is the one-keystroke ephemeral probe (Option A of
             # the locked UX): the rest of the line is a side-question answered
@@ -596,10 +642,15 @@ module Rubino
       # Parses the line for image references (@image, dropped/quoted/escaped
       # path), moves any into @pending_image_paths and returns the cleaned text.
       # Non-image references are left in the text (current behaviour). Shows an
-      # in-prompt indicator for whatever is now attached.
+      # in-prompt indicator for whatever is now attached. A candidate the
+      # attachment policy rejects (oversize / spoofed extension / unsafe) is
+      # dropped with a one-line warning instead of being shipped (#98).
       def extract_images!(input, ui)
         result = Interaction::ImageInput.parse(input, existing: pending_image_paths)
-        newly  = result.image_paths - pending_image_paths
+        result.rejected.each do |rejection|
+          ui.warning("not attached — #{File.basename(rejection[:path])}: #{rejection[:reason]}")
+        end
+        newly = result.image_paths - pending_image_paths
         @pending_image_paths = result.image_paths
         show_image_indicator(ui, newly) unless newly.empty?
         result.text
@@ -630,12 +681,21 @@ module Rubino
 
       def paste_clipboard_image(ui)
         path = Interaction::ClipboardImage.save_to_tempfile
-        if path
-          pending_image_paths << path unless pending_image_paths.include?(path)
-          show_image_indicator(ui, [path])
-        else
+        unless path
           ui.warning("Clipboard paste failed: #{Interaction::ClipboardImage.unavailable_reason}")
+          return
         end
+
+        # Same universal attachment gate as @image/dropped/--image paths (#98):
+        # a clipboard capture that violates policy (e.g. oversize) is dropped
+        # with a clear warning, never shipped to the provider.
+        if (reason = Interaction::ImageInput.attachment_error(path))
+          ui.warning("not attached — #{File.basename(path)}: #{reason}")
+          return
+        end
+
+        pending_image_paths << path unless pending_image_paths.include?(path)
+        show_image_indicator(ui, [path])
       end
 
       # In-prompt indicator of attached image(s), Claude-Code style.
