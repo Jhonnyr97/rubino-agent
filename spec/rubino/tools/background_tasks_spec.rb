@@ -58,6 +58,143 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     end
   end
 
+  # S1 — ownership link + scoped-nesting caps + tree helpers. The registry stays
+  # a flat map; the parent/child tree is computed over owner_subagent_id.
+  describe "ownership link (S1)" do
+    it "stamps a human-spawned child with nil owner and depth 0" do
+      entry = reserve
+      expect(entry.owner_subagent_id).to be_nil
+      expect(entry.depth).to eq(0)
+    end
+
+    it "stamps an owner-spawned child with the owner id and owner.depth + 1" do
+      parent = reserve
+      child  = registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: parent.id)
+      expect(child.owner_subagent_id).to eq(parent.id)
+      expect(child.depth).to eq(parent.depth + 1)
+    end
+
+    it "recomputes depth from the owner entry, ignoring a stale depth hint" do
+      parent = reserve # depth 0
+      # Caller passes a bogus depth:0 hint, but the owner link wins → depth 1.
+      child = registry.reserve(subagent: "general", prompt: "x",
+                               owner_subagent_id: parent.id, depth: 0)
+      expect(child.depth).to eq(1)
+    end
+  end
+
+  describe "scoped-nesting caps (S1, single enforcement point)" do
+    it "refuses past the depth cap (returns nil + :depth reason)" do
+      # MAX_DEPTH 2 ⇒ depths 0 and 1 are allowed (refuse when depth >= 2). So the
+      # tree is human → child(depth0) → grandchild(depth1), and a great-grandchild
+      # (depth2) is refused: human→child→grandchild, no deeper.
+      human_child = reserve # depth 0
+      grandchild  = registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: human_child.id)
+      expect(grandchild.depth).to eq(1)
+
+      refused = registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: grandchild.id)
+      expect(refused).to be_nil
+      expect(registry.last_refusal_reason).to eq(:depth)
+    end
+
+    it "refuses past the per-owner child cap (returns nil + :per_owner reason)" do
+      parent = reserve
+      described_class::MAX_CHILDREN_PER_NODE.times do
+        registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: parent.id)
+      end
+      refused = registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: parent.id)
+      expect(refused).to be_nil
+      expect(registry.last_refusal_reason).to eq(:per_owner)
+    end
+
+    it "refuses past the global total cap (returns nil + :global reason)" do
+      # Hit the global ceiling WITHOUT tripping per-owner or depth first: 3 human
+      # children (owner nil, depth0), then fan grandchildren (depth1) under them,
+      # ≤3 per owner, until total live == MAX_CONCURRENT_TOTAL (8).
+      humans = Array.new(described_class::MAX_CHILDREN_PER_NODE) { reserve } # 3 (depth0)
+      humans.each do |h|
+        break if registry.running.size >= described_class::MAX_CONCURRENT_TOTAL
+
+        until registry.children_of(h.id).size >= described_class::MAX_CHILDREN_PER_NODE ||
+              registry.running.size >= described_class::MAX_CONCURRENT_TOTAL
+          registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: h.id)
+        end
+      end
+      expect(registry.running.size).to eq(described_class::MAX_CONCURRENT_TOTAL)
+
+      # A fresh human-spawned child (owner nil, depth0 — under both per-owner and
+      # depth caps) is still refused purely on the global ceiling.
+      refused = registry.reserve(subagent: "explore", prompt: "x")
+      expect(refused).to be_nil
+      expect(registry.last_refusal_reason).to eq(:global)
+    end
+
+    it "reads the caps from config (config-driven, not just the constants)" do
+      cfg = test_configuration("tasks" => { "max_depth" => 5, "max_children_per_node" => 1, "max_concurrent_total" => 50 })
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+
+      parent = reserve
+      registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: parent.id) # 1st child OK
+      refused = registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: parent.id)
+      expect(refused).to be_nil
+      expect(registry.last_refusal_reason).to eq(:per_owner) # config cap of 1 honored
+    end
+
+    it "clears last_refusal_reason after a successful reserve" do
+      registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: "sa_missing", depth: 99)
+      reserve # human child, succeeds
+      expect(registry.last_refusal_reason).to be_nil
+    end
+  end
+
+  describe "tree helpers over owner_subagent_id (S1)" do
+    # Hand-built 3-level fixture without spawning real threads. The tree logic is
+    # independent of the caps, so we raise the depth cap for this block to build a
+    # genuine depth-2 chain (root → a → a1) plus a sibling b:
+    #   root (human, depth0)
+    #     ├─ a (depth1)
+    #     │   └─ a1 (depth2)
+    #     └─ b (depth1)
+    before do
+      cfg = test_configuration("tasks" => { "max_depth" => 10, "max_children_per_node" => 10, "max_concurrent_total" => 50 })
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+    end
+
+    let!(:root) { registry.reserve(subagent: "explore", prompt: "root") }
+    let!(:a)    { registry.reserve(subagent: "general", prompt: "a", owner_subagent_id: root.id) }
+    let!(:a1)   { registry.reserve(subagent: "general", prompt: "a1", owner_subagent_id: a.id) }
+    let!(:b)    { registry.reserve(subagent: "general", prompt: "b", owner_subagent_id: root.id) }
+
+    it "children_of returns only direct children" do
+      expect(registry.children_of(root.id).map(&:id)).to contain_exactly(a.id, b.id)
+      expect(registry.children_of(a.id).map(&:id)).to contain_exactly(a1.id)
+      expect(registry.children_of(a1.id)).to be_empty
+    end
+
+    it "children_of(nil) returns the human/top-level node's children" do
+      expect(registry.children_of(nil).map(&:id)).to contain_exactly(root.id)
+    end
+
+    it "descendants_of returns the full transitive subtree (BFS)" do
+      expect(registry.descendants_of(root.id).map(&:id)).to contain_exactly(a.id, b.id, a1.id)
+      expect(registry.descendants_of(a.id).map(&:id)).to contain_exactly(a1.id)
+      expect(registry.descendants_of(b.id)).to be_empty
+    end
+
+    it "ancestors_of walks owner_subagent_id up to the root, nearest first" do
+      expect(registry.ancestors_of(a1.id).map(&:id)).to eq([a.id, root.id])
+      expect(registry.ancestors_of(a.id).map(&:id)).to eq([root.id])
+      expect(registry.ancestors_of(root.id)).to be_empty
+    end
+
+    it "owned_by? is the direct-parent predicate" do
+      expect(registry.owned_by?(a.id, a1.id)).to be(true)
+      expect(registry.owned_by?(root.id, a.id)).to be(true)
+      expect(registry.owned_by?(root.id, a1.id)).to be(false) # grandparent, not owner
+      expect(registry.owned_by?(a.id, "sa_missing")).to be(false)
+    end
+  end
+
   describe "approval-surfacing state" do
     it "flips an entry to :needs_approval and stores the gate + command" do
       entry = reserve

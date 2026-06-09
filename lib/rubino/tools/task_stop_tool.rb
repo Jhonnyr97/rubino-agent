@@ -50,6 +50,9 @@ module Rubino
         end
 
         entry.runner&.cancel!
+        # Stop-cascade (S5a): wake any descendant parked on a blocking ask_parent
+        # so the whole subtree unwinds at once (no orphaned blocked grandchild).
+        registry.cancel_descendant_ask_gates(task_id)
         "[#{task_id}] stop requested (subagent '#{entry.subagent}'). " \
         "It will unwind at its next checkpoint; check task_result(\"#{task_id}\")."
       end

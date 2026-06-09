@@ -27,9 +27,14 @@ module Rubino
     #   - the only parent→child channel is the `prompt`, so the parent model must
     #     put any needed file paths / errors into it.
     #
-    # No nesting: a subagent's tool list excludes `task` (Definition#resolved_tools
-    # filters it), so a background child can't spawn background grandchildren — a
-    # hard guard against runaway recursion / fan-out storms.
+    # Scoped nesting (S1): a subagent CAN now spawn its own subagents (the
+    # delegation tools are no longer stripped from a subagent's tool list). The
+    # tree is bounded in ONE place — BackgroundTasks#reserve — by three caps:
+    # max nesting depth (tasks.max_depth), per-owner live children
+    # (tasks.max_children_per_node), and a global live ceiling
+    # (tasks.max_concurrent_total). When a cap is hit reserve returns nil and this
+    # tool surfaces a clear, reason-specific message (#capacity_message) so the
+    # model knows whether to retry later, do the work inline, or report back.
     class TaskTool < Base
       # Suffix of the placeholder a subagent run lands on when it produced no
       # final assistant text — a no-op or a fully-denied run (every tool denied,
@@ -141,8 +146,18 @@ module Rubino
       # iteration boundary — the Claude Code "auto-notify on completion" contract.
       def run_background(definition, prompt)
         registry_bg = BackgroundTasks.instance
-        entry = registry_bg.reserve(subagent: definition.name, prompt: prompt)
-        return at_capacity_message unless entry
+        # Ownership link (S1): when THIS run is itself a subagent, the thread-local
+        # current-subagent id is the spawner — the new child's owner. nil ⇒ the
+        # human / top-level agent is spawning (depth 0). The owner's depth is what
+        # reserve uses to stamp the child (owner.depth + 1); we pass 0 only as the
+        # human-spawned default. reserve recomputes depth from the owner entry, so
+        # this is just the top-level base case.
+        owner_id = Rubino.current_subagent_id
+        entry = registry_bg.reserve(
+          subagent: definition.name, prompt: prompt,
+          owner_subagent_id: owner_id, depth: 0
+        )
+        return capacity_message(registry_bg) unless entry
 
         # Captured on the PARENT thread, before we spawn — the child thread has
         # no access to the parent's thread-locals. The sink is the parent's
@@ -278,10 +293,27 @@ module Rubino
         "task_result(\"#{entry.id}\") to check on it, task_stop(\"#{entry.id}\") to cancel."
       end
 
-      def at_capacity_message
-        "At capacity: #{BackgroundTasks::MAX_CONCURRENT} background subagents are " \
-        "already running. Wait for one to finish (you'll get a `[background-task]` " \
-        "message), check it with task_result, or run this one with background: false."
+      # Turns a nil reserve into a clear, reason-specific model-facing string. The
+      # registry records WHY it refused (last_refusal_reason) so the three caps —
+      # max nesting depth, per-owner fan-out, global total — read distinctly
+      # instead of one undifferentiated "at capacity".
+      def capacity_message(registry_bg)
+        case registry_bg.last_refusal_reason
+        when :depth
+          "Max nesting depth reached: subagents can only nest #{BackgroundTasks::MAX_DEPTH} " \
+          "levels deep. This subagent is too deep to delegate further — do the work " \
+          "directly, or report back so a shallower agent can split it up."
+        when :per_owner
+          "At capacity: this agent already has #{BackgroundTasks::MAX_CHILDREN_PER_NODE} " \
+          "background subagents running. Wait for one to finish (you'll get a " \
+          "`[background-task]` message), check it with task_result, or run this one " \
+          "with background: false."
+        else # :global (or any future ceiling)
+          "At capacity: the maximum number of background subagents " \
+          "(#{BackgroundTasks::MAX_CONCURRENT_TOTAL}) are already running across all " \
+          "agents. Wait for one to finish (you'll get a `[background-task]` message), " \
+          "check it with task_result, or run this one with background: false."
+        end
       end
 
       # Background children get their OWN fresh EventBus so their inner tool

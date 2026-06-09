@@ -547,8 +547,12 @@ module Rubino
           return
         end
 
+        # /reply is UNSCOPED: the human is the ultimate supervisor and may answer
+        # ANY blocked node — one waiting on the human (:blocked_on_human) OR one
+        # waiting on its agent-parent (:blocked_on_parent), if the human chooses
+        # to step in.
         entry = Tools::BackgroundTasks.instance.find(id)
-        if entry.nil? || entry.status != :blocked_on_human
+        if entry.nil? || !%i[blocked_on_human blocked_on_parent].include?(entry.status)
           @ui.error("#{id} is not waiting on you.")
           return
         end
@@ -578,9 +582,10 @@ module Rubino
       # steer queue (a non-blocking ask folds it in next turn). Then clear the
       # blocked state and repaint so the ⛔ marker clears.
       def deliver_reply(entry, answer)
-        entry.ask_gate&.decide(entry.ask_id, answer)
-        Tools::BackgroundTasks.instance.steer(entry.id, "[parent answer] #{answer}")
-        Tools::BackgroundTasks.instance.end_ask(entry.id)
+        # The ONE shared answer wire (also used by the model-callable
+        # answer_child tool): decide the gate + push the steer note + clear the
+        # blocked state, all in BackgroundTasks#deliver_answer.
+        Tools::BackgroundTasks.instance.deliver_answer(entry.id, answer)
         @ui.info("↳ answered #{entry.id}: #{truncate(answer, 80)}")
         @ui.info("✓ tree unblocked · #{entry.id} resumes at its next turn")
         @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
@@ -774,15 +779,19 @@ module Rubino
           return
         end
 
-        unless %i[running needs_approval].include?(entry.status)
+        unless %i[running needs_approval blocked_on_human blocked_on_parent].include?(entry.status)
           @ui.info("#{id} already #{entry.status} — nothing to stop.")
           return
         end
 
-        # A child parked on a human approval is blocked in its gate's wait;
-        # cancel the gate so it wakes (Interrupted → deny) and unwinds instead of
-        # holding its thread until the 15-min bound.
+        # A child parked on a human approval or an ask_parent is blocked in its
+        # gate's wait; cancel the gates so it wakes (Interrupted → deny/cancel) and
+        # unwinds instead of holding its thread until the bound. The stop-cascade
+        # then wakes every DESCENDANT parked on a blocking ask too, so the whole
+        # subtree unwinds at once (S5a — no orphaned blocked grandchild).
         entry.approval_gate&.cancel!
+        entry.ask_gate&.cancel!
+        registry.cancel_descendant_ask_gates(id)
         entry.runner&.cancel!
         @ui.success("Stop requested for #{id} (#{entry.subagent}); it unwinds at its next checkpoint.")
       end
@@ -793,10 +802,12 @@ module Rubino
       def agent_status_icon(status)
         glyph, word, color =
           case status
-          when :running        then ["●", "running",  :yellow]
-          when :needs_approval then ["●", "approval",  :yellow]
-          when :failed         then ["✗", "failed",    :red]
-          else                      ["✓", "done",      :green]
+          when :running          then ["●", "running",        :yellow]
+          when :needs_approval   then ["●", "approval",        :yellow]
+          when :blocked_on_human then ["⛔", "waiting on you",   :red]
+          when :blocked_on_parent then ["◷", "waiting on parent", :cyan]
+          when :failed           then ["✗", "failed",          :red]
+          else                        ["✓", "done",            :green]
           end
         "#{pastel.public_send(color, glyph)} #{word}"
       end

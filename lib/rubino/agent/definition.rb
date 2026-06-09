@@ -52,19 +52,20 @@ module Rubino
 
       # Returns tool list based on the agent's tool configuration.
       #
-      # No-nesting guard: a subagent NEVER gets the delegation tools (`task` and
-      # its companions `task_result`/`task_stop`), regardless of its tool config
-      # (:all / :read_only / explicit list) — a subagent must not spawn or steer
-      # further subagents. This is the single enforcement point; #resolved_tools
-      # is what Lifecycle#load_tools hands to the loop, so a subagent run can't
-      # even propose a `task` call.
+      # Scoped nesting (S1): a subagent now KEEPS the delegation tools (`task` and
+      # its companions `task_result`/`task_stop`) so it can spawn its own
+      # subagents. Runaway recursion / fan-out is no longer prevented by hiding
+      # the tool here — it is bounded in ONE place, Tools::BackgroundTasks#reserve,
+      # by the depth / per-owner / global caps. (DELEGATION_TOOLS is kept as a
+      # named set for any reader that still wants to reason about the group.)
       DELEGATION_TOOLS = %w[task task_result task_stop].freeze
 
-      # The inverse of DELEGATION_TOOLS: tools that ONLY make sense for a
-      # subagent and must be hidden from a primary/top-level agent. ask_parent
-      # escalates a question to the PARENT — a top-level agent has no parent, so
-      # exposing it there would be a dead tool. Subagents keep it; everyone else
-      # drops it. Single enforcement point, same as DELEGATION_TOOLS.
+      # Tools that ONLY make sense for a subagent and must be hidden from a
+      # primary/top-level agent. ask_parent escalates a question to the PARENT — a
+      # top-level agent has no parent, so exposing it there would be a dead tool.
+      # Subagents keep it; everyone else drops it. This is the single enforcement
+      # point and is UNCHANGED by S1 (re-enabling nesting does not expose
+      # ask_parent to top-level agents).
       SUBAGENT_ONLY_TOOLS = %w[ask_parent].freeze
 
       def resolved_tools
@@ -80,8 +81,10 @@ module Rubino
             Tools::Registry.enabled_tools
           end
 
+        # ask_parent is subagent-only; a primary/top-level agent has no parent.
+        # Nesting is otherwise allowed for everyone — the delegation tools stay.
         if subagent?
-          tools.reject { |t| DELEGATION_TOOLS.include?(t.name) }
+          tools
         else
           tools.reject { |t| SUBAGENT_ONLY_TOOLS.include?(t.name) }
         end

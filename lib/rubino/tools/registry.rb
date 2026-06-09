@@ -91,9 +91,9 @@ module Rubino
           # (Level 3) on demand. Gated like any tool via `tools.skill`.
           register(Rubino::Skills::SkillTool.new)
           # Delegation tool: lets the model spawn an isolated subagent run.
-          # Gated like any other tool (tools.task in config). Subagents never
-          # see it — Definition#resolved_tools drops `task` for :subagent defs,
-          # so a subagent can't spawn subagents (no nesting).
+          # Gated like any other tool (tools.task in config). Subagents now KEEP
+          # it (scoped nesting, S1) — a subagent can spawn its own subagents,
+          # bounded by the depth / fan-out / global caps in BackgroundTasks#reserve.
           register(Rubino::Tools::TaskTool.new)
           # Companion poll/stop tools for background subagents (the default
           # path of `task`). Mirror the shell_output/shell_kill trio. Gated by
@@ -104,6 +104,18 @@ module Rubino
           # (gated by the same tools.task key), but Definition#resolved_tools
           # exposes it ONLY to subagents — a top-level agent has no parent to ask.
           register(Rubino::Tools::AskParentTool.new)
+          # steer / probe (S2/S3): the MODEL-callable parent->child channels,
+          # registered for ALL agents and AUTHORIZED by ownership at call time
+          # (a node with no children just gets a "not your child" error). NOT on
+          # any strip list — scoping happens inside the tool, not in the registry.
+          register(Rubino::Tools::SteerTool.new)
+          register(Rubino::Tools::ProbeTool.new)
+          # answer_child (S4): the MODEL-callable answer to a child's ask_parent,
+          # the agent-parent twin of the human /reply. Registered for ALL agents
+          # and AUTHORIZED by ownership at call time (like steer/probe). NOT on
+          # any strip list — a node with no waiting child just gets a not-waiting
+          # / not-yours error.
+          register(Rubino::Tools::AnswerChildTool.new)
         end
 
         private

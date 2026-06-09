@@ -79,6 +79,32 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  describe "nested-subagent cap accessors (S1)" do
+    it "returns the built-in defaults (2 / 3 / 8)" do
+      expect(config.tasks_max_depth).to eq(2)
+      expect(config.tasks_max_children_per_node).to eq(3)
+      expect(config.tasks_max_concurrent_total).to eq(8)
+    end
+
+    it "returns configured overrides" do
+      cfg = test_configuration("tasks" => {
+        "max_depth" => 4, "max_children_per_node" => 2, "max_concurrent_total" => 12
+      })
+      expect(cfg.tasks_max_depth).to eq(4)
+      expect(cfg.tasks_max_children_per_node).to eq(2)
+      expect(cfg.tasks_max_concurrent_total).to eq(12)
+    end
+
+    it "falls back to the built-in default when a value is nil" do
+      cfg = test_configuration("tasks" => {
+        "max_depth" => nil, "max_children_per_node" => nil, "max_concurrent_total" => nil
+      })
+      expect(cfg.tasks_max_depth).to eq(2)
+      expect(cfg.tasks_max_children_per_node).to eq(3)
+      expect(cfg.tasks_max_concurrent_total).to eq(8)
+    end
+  end
+
   describe "human-in-the-loop accessors" do
     it "keeps shell behind a confirmation prompt by default" do
       expect(config.require_confirmation_for_shell?).to be true
