@@ -159,6 +159,24 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.handle_key("\r")
       expect(queue.drain).to eq([])
     end
+
+    # echo: :prompt is the IDLE submit (the line IS the user's message): the
+    # submitted line commits ABOVE the pinned prompt as "<prompt><line>", reading
+    # back like a normal shell submit rather than the "queued ▸" steering marker.
+    context "with echo: :prompt (idle path)" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output,
+                            prompt: "default ❯ ", echo: :prompt)
+      end
+
+      it "echoes the submitted line above the prompt as <prompt><line>" do
+        "hi".each_char { |c| composer.handle_key(c) }
+        composer.handle_key("\r")
+        expect(output.string).to include("default ❯ hi\r\n")
+        expect(output.string).not_to include("queued ▸")
+        expect(queue.drain).to eq(["hi"]) # still pushed for the REPL to consume
+      end
+    end
   end
 
   # Slice 1: cursor-aware editing. The buffer is edited at an internal cursor

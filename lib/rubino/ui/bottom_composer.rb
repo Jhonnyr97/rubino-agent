@@ -74,14 +74,21 @@ module Rubino
       #   transition footer) and RETURNS the freshly-built prompt string (the mode
       #   chip), which the composer adopts and redraws. The composer holds no mode
       #   knowledge itself. nil = Shift+Tab is a no-op.
+      # @param echo [Symbol] how a submitted line is echoed into scrollback:
+      #   :queued (default) prints "queued ▸ <line>" — the steering affordance for
+      #   a line typed DURING a turn; :prompt prints the prompt + the line (e.g.
+      #   "default ❯ <line>") — the idle case, where the line IS the user's
+      #   message and should read back like a normal shell submit, not a queued
+      #   steer.
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
                      on_ctrl_o: nil, on_mode_cycle: nil,
-                     completion_source: nil, history: nil)
+                     completion_source: nil, history: nil, echo: :queued)
         @input_queue   = input_queue
         @input         = input
         @output        = output
         @on_ctrl_o     = on_ctrl_o
         @on_mode_cycle = on_mode_cycle
+        @echo          = echo
         # Shared completion discovery (slash commands + @file picker) extracted
         # from LineInput. nil ⇒ the `/`+`@` completion menu is inert (steering /
         # standalone use), so the composer degrades to a plain editor.
@@ -589,9 +596,14 @@ module Rubino
 
         @history.remember(line)
         @input_queue&.push(line)
-        # Echo the captured line into scrollback so the keystrokes don't vanish
-        # into the streaming output. Mirrors the old UI#queued affordance.
-        print_above("queued ▸ #{line}")
+        # Echo the captured line into scrollback so the keystrokes don't vanish.
+        # :prompt (idle) reads it back like a normal shell submit (prompt + line);
+        # :queued (during a turn) marks it as a steer parked for the next turn.
+        if @echo == :prompt
+          print_above("#{@prompt}#{line}")
+        else
+          print_above("queued ▸ #{line}")
+        end
       end
 
       # Redraw the prompt, repainting the FULL live region (cards + menu +
@@ -1133,7 +1145,15 @@ module Rubino
       # Safe-on-nil and idempotent.
       def stop_reader
         if @stop_pipe && !@stop_pipe.closed?
-          @stop_pipe.write("x")
+          # The reader may have ALREADY exited (e.g. EOF) and closed its read end
+          # of the self-pipe before we signal — writing then raises EPIPE. The
+          # signal is moot there (the reader is gone), so swallow it; the join
+          # below still returns. (Errno::EPIPE / IOError on a half-closed pipe.)
+          begin
+            @stop_pipe.write("x")
+          rescue Errno::EPIPE, IOError
+            nil
+          end
           @stop_pipe.close
         elsif @reader
           @reader.kill # no stop pipe (stubbed/edge): kill is the only way out

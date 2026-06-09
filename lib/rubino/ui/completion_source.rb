@@ -5,11 +5,11 @@ require "open3"
 
 module Rubino
   module UI
-    # Shared completion DISCOVERY + token HIGHLIGHT for the interactive prompt,
-    # extracted from LineInput so the bottom composer and the (legacy) Reline
-    # path use one implementation instead of duplicating the git→rg→glob walk,
-    # the @file candidate shaping, the caps/TTL cache, and the cyan leading-token
-    # highlight.
+    # Shared completion DISCOVERY + token HIGHLIGHT for the interactive prompt.
+    # The bottom composer's /command + @file completion menu and token highlight
+    # consult this single implementation (git→rg→glob walk, @file candidate
+    # shaping, caps/TTL cache, cyan leading-token highlight) instead of each
+    # path duplicating it.
     #
     #   * +candidates_for(token)+ — slash commands or @file paths for a token.
     #   * +highlight_line(line)+  — cyan the leading /command / @mention token.

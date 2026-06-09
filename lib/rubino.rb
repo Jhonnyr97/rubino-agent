@@ -80,10 +80,6 @@ module Rubino
         # errors.rb defines multiple constants in Rubino (NotFoundError, ...),
         # not a single Rubino::Errors module — loaded manually via require_relative.
         loader.ignore(File.expand_path("rubino/errors.rb", __dir__))
-        # reline_dropdown_nav.rb prepends a module into Reline::LineEditor at
-        # require time (a side effect, not an autoloadable Rubino constant).
-        # LineInput require_relatives it; Zeitwerk must not also manage it.
-        loader.ignore(File.expand_path("rubino/ui/reline_dropdown_nav.rb", __dir__))
         # rubino-agent.rb is a require shim matching the gem name; it maps to no
         # Rubino constant (and "Rubino-agent" isn't a valid cname). Zeitwerk must
         # not try to manage it.

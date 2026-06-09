@@ -85,31 +85,21 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::Modes.set(:default)
     end
 
-    it "does NOT stack footers — repeated cycles overwrite one transient line" do
+    # With the bottom composer as the single input path, a live composer commits
+    # the footer above the pinned prompt via print_above (no stateful in-place
+    # footer row to clear). Here, with no composer active, the cooked fallback
+    # prints one dim footer line per press. Each press confirms the latest mode.
+    it "commits the footer through the active composer's print_above (clean above the prompt)" do
       Rubino::Modes.set(:default)
-      out = capture_stdout do
-        cmd.send(:cycle_mode) # → plan
-        cmd.send(:cycle_mode) # → yolo
-        cmd.send(:cycle_mode) # → default
-      end
-      # Exactly one ┄ mode · … ┄ footer per press, but each successive one is
-      # written after a clear-to-EOL (\e[2K) on the SAME row rather than a fresh
-      # scrollback line — only the FIRST press opens a new line ("\n").
-      expect(out.scan("\n").size).to eq(1)
-      expect(out.scan("\e[2K").size).to eq(2) # 2nd + 3rd press overwrite in place
-      expect(strip_ansi(out)).to include("mode · default")
-    ensure
-      Rubino::Modes.set(:default)
-    end
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      footers = []
+      allow(composer).to receive(:print_above) { |s| footers << s }
 
-    it "clear_mode_footer wipes the transient line and is a no-op when none shown" do
-      Rubino::Modes.set(:default)
-      capture_stdout { cmd.send(:cycle_mode) }
-      cleared = capture_stdout { cmd.send(:clear_mode_footer) }
-      expect(cleared).to include("\r\e[2K")
-      # Second clear: nothing showing, no output.
-      again = capture_stdout { cmd.send(:clear_mode_footer) }
-      expect(again).to eq("")
+      cmd.send(:cycle_mode) # → plan
+      cmd.send(:cycle_mode) # → yolo
+      expect(strip_ansi(footers.last)).to include("mode · yolo")
+      expect(footers.size).to eq(2) # one committed footer per press, no stacking row
     ensure
       Rubino::Modes.set(:default)
     end
