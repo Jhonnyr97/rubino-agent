@@ -3,6 +3,14 @@
 module Rubino
   module CLI
     # Health check command that verifies all system components are working.
+    #
+    # Doctor is a READ-ONLY diagnosis (#68): it must never create the home
+    # directory or the database file while checking them — a never-setup
+    # install is reported as "run 'rubino setup'", not silently materialized
+    # at the umask's permissions and then declared healthy.
+    #
+    # Exit status (#67): non-zero when one or more required checks did not
+    # pass, so CI/scripts can gate on `rubino doctor`.
     class DoctorCommand
       def execute
         ui = Rubino.ui
@@ -39,6 +47,9 @@ module Rubino
           end
         else
           ui.warning("#{passed}/#{total} required checks passed")
+          # Scripts/CI gate on doctor: a failed required check must be a
+          # non-zero exit, not a green 0 under a red report (#67).
+          exit(1)
         end
       end
 
@@ -59,6 +70,10 @@ module Rubino
 
       def check_database
         ui = Rubino.ui
+        unless database_on_disk?
+          ui.error("Database not initialized: #{Rubino.database.db_path}. Run 'rubino setup'")
+          return { name: "database", status: :fail }
+        end
 
         if Rubino.database.healthy?
           ui.success("Database accessible: #{Rubino.database.db_path}")
@@ -74,6 +89,11 @@ module Rubino
 
       def check_migrations
         ui = Rubino.ui
+        unless database_on_disk?
+          ui.error("Migrations not run — no database. Run 'rubino setup'")
+          return { name: "migrations", status: :fail }
+        end
+
         migrator = Database::Migrator.new(Rubino.database)
 
         if migrator.pending?
@@ -88,6 +108,17 @@ module Rubino
         { name: "migrations", status: :fail }
       end
 
+      # Read-only guard for the two DB checks (#68): SQLite lazily CREATES the
+      # file (and its parent directory) on the first connection, so probing a
+      # never-setup home with `SELECT 1` would mutate it — and doctor would then
+      # report the empty, unmigrated database it just created as "accessible".
+      # A missing file is an uninitialized install: report it without touching
+      # the disk.
+      def database_on_disk?
+        db = Rubino.database
+        db.memory? || File.exist?(db.db_path)
+      end
+
       def check_directories
         ui = Rubino.ui
         home = Rubino.home_path
@@ -96,7 +127,7 @@ module Rubino
           ui.success("Home directory exists: #{home}")
           { name: "directories", status: :ok }
         else
-          ui.error("Home directory missing: #{home}")
+          ui.error("Home directory missing: #{home}. Run 'rubino setup'")
           { name: "directories", status: :fail }
         end
       end

@@ -135,9 +135,13 @@ module Rubino
 
       def load_or_create_session(session_id)
         if session_id
-          # Support resume by title prefix as well as ID
+          # Support resume by title/first-prompt substring as well as ID
           session = @session_repo.find_by_id_or_title(session_id)
-          raise SessionError, "Session not found: #{session_id}" unless session
+          unless session
+            raise SessionError,
+                  "Session not found: #{session_id}. " \
+                  "Try `rubino sessions list`, or resume by id prefix."
+          end
 
           # An existing row is already in the DB; mark it so the lazy-persist
           # path (#144) treats it as persisted and never re-inserts.

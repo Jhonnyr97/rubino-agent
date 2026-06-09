@@ -103,7 +103,10 @@ module Rubino
 
       # Resolves a user-supplied query to a session: tries ID prefix first
       # (handles "abc12345" style short IDs), then falls back to a case-
-      # insensitive title substring match across the 50 most recent sessions.
+      # insensitive substring match across the 50 most recent sessions —
+      # against the title AND the full first user message. The stored title
+      # is truncated (~60 chars), so a memorable word from the TAIL of a long
+      # first prompt would otherwise silently fail to resume (#70).
       # Returns the session row or nil. Centralised so the CLI Runner and
       # the TUI history loader agree on what `--resume <query>` accepts.
       #
@@ -121,7 +124,10 @@ module Rubino
         end
 
         needle = query.to_s.downcase
-        title_matches = list(limit: 50).select { |s| s[:title]&.downcase&.include?(needle) }
+        title_matches = list(limit: 50).select do |s|
+          s[:title]&.downcase&.include?(needle) ||
+            first_user_message(s[:id])&.downcase&.include?(needle)
+        end
         if title_matches.size > 1
           raise AmbiguousSessionError.new(query, title_matches)
         elsif title_matches.size == 1
@@ -245,6 +251,15 @@ module Rubino
       end
 
       private
+
+      # The full first user message of a session — what derive_title truncated
+      # the title from — so resume-by-title can match the whole prompt (#70).
+      def first_user_message(session_id)
+        @db[:messages]
+          .where(session_id: session_id, role: "user")
+          .order(:created_at, Sequel.lit("rowid"))
+          .get(:content)
+      end
 
       # True when a process with this pid is currently alive and signalable by
       # us. Process.kill(0, pid) is the canonical liveness probe: it sends no

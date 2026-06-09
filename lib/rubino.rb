@@ -287,10 +287,17 @@ module Rubino
       Rubino::Config::Loader.default_home_path
     end
 
-    # Ensures the home directory and subdirectories exist
+    # Ensures the home directory and subdirectories exist. The home holds
+    # secrets (.env) and the database, so it is forced to 0700 here — the
+    # single code path every entry point (setup/chat/prompt/doctor) goes
+    # through to materialize the home — not just when `setup` ran first
+    # (#65): an auto-created home used to be left at the umask's 0755.
     def ensure_directories!
+      home = home_path
+      FileUtils.mkdir_p(home)
+      File.chmod(0o700, home)
       %w[memories sessions logs skills commands tools plugins].each do |subdir|
-        dir = File.join(home_path, subdir)
+        dir = File.join(home, subdir)
         FileUtils.mkdir_p(dir) unless File.directory?(dir)
       end
     end

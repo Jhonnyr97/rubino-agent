@@ -36,8 +36,13 @@ module Rubino
 
     # ---- SHOW (pure local read) -------------------------------------------
 
-    # One-line dim notice when a newer version is cached, else nil.
+    # One-line dim notice when a newer version is cached, else nil. The
+    # RUBINO_NO_UPDATE_CHECK opt-out disables the feature ENTIRELY — "no
+    # network, no notice" per docs/commands.md — so a previously-cached
+    # notice must not leak through either (#66).
     def notice_from_cache
+      return nil if opted_out?
+
       latest = cached_latest
       return nil unless newer?(latest)
 
@@ -120,9 +125,15 @@ module Rubino
 
     # ---- gating -----------------------------------------------------------
 
+    # The user's full opt-out: RUBINO_NO_UPDATE_CHECK set (to anything
+    # non-blank) disables refresh AND the cached boot notice.
+    def opted_out?
+      !ENV["RUBINO_NO_UPDATE_CHECK"].to_s.strip.empty?
+    end
+
     # All must hold (mirrors gh): no opt-out env, interactive TTY, not CI.
     def checks_enabled?
-      ENV["RUBINO_NO_UPDATE_CHECK"].to_s.strip.empty? &&
+      !opted_out? &&
         $stdout.tty? &&
         ENV["CI"].to_s.strip.empty?
     end
