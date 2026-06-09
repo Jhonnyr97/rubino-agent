@@ -280,6 +280,23 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(text).to include("grep current_user") # the live last_activity ● line
     end
 
+    # #14: for finished tasks the label slice must keep the TAIL — concurrent
+    # similarly-phrased delegations differ in their trailing path/arg, and a
+    # head-only cut rendered them as identical rows.
+    it "the list label middle-truncates so the distinguishing tail survives (#14)" do
+      shared = "Summarize the contents and structure of every file in the directory tree"
+      a = reg.reserve(subagent: "explore", prompt: "#{shared} lib/rubino/tools")
+      b = reg.reserve(subagent: "explore", prompt: "#{shared} lib/rubino/commands")
+      reg.complete(a, status: :completed, result: "ok")
+      reg.complete(b, status: :completed, result: "ok")
+
+      exec.try_execute("/agents")
+      labels = table_rows.map { |row| row[2] }
+      expect(labels.uniq.size).to eq(2)
+      expect(labels.join(" ")).to include("lib/rubino/tools")
+      expect(labels.join(" ")).to include("lib/rubino/commands")
+    end
+
     it "the list label uses the live last_activity to distinguish concurrent tasks (#127)" do
       a = reg.reserve(subagent: "explore", prompt: "Summarize the contents of lib/rubino")
       reg.record_tool_started(a.id, "read lib/rubino/tools/edit_tool.rb")

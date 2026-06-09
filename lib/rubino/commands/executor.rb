@@ -842,12 +842,26 @@ module Rubino
       # line so the tail — often the distinguishing path/arg — survives instead
       # of being cut at 40.
       def agent_label(entry)
-        if %i[running needs_approval].include?(entry.status) && !entry.last_activity.to_s.empty?
+        if %i[running needs_approval stopping].include?(entry.status) && !entry.last_activity.to_s.empty?
           return "#{entry.subagent}: #{truncate(entry.last_activity, 80)}"
         end
 
-        prompt = truncate(entry.prompt.to_s.lines.first.to_s.strip, 80)
+        prompt = truncate_middle(entry.prompt.to_s.lines.first.to_s.strip, 80)
         prompt.empty? ? entry.subagent : "#{entry.subagent}: #{prompt}"
+      end
+
+      # Middle truncation for the /agents Task label (#14): similarly-phrased
+      # delegations share their HEAD ("Summarize the contents of lib/…") while
+      # the distinguishing detail — the path/arg — sits at the TAIL, so a
+      # head-only cut renders concurrent tasks identical. Keep both ends,
+      # elide the middle.
+      def truncate_middle(text, max)
+        s = text.to_s.gsub(/\s+/, " ").strip
+        return s if s.length <= max
+
+        head = (max - 1) * 2 / 3
+        tail = max - 1 - head
+        "#{s[0, head]}…#{s[-tail, tail]}"
       end
 
       def agent_elapsed(entry)
