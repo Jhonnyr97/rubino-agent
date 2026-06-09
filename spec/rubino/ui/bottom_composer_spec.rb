@@ -484,6 +484,46 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.menu_open?).to be(false)
       expect(composer.buffer).to eq("hello")
     end
+
+    # D5: when the typed token is ALREADY an exact, complete command (the only /
+    # selected candidate), Enter SUBMITS it instead of splicing a trailing space
+    # and forcing a second Enter.
+    describe "Enter on an exact full command (D5)" do
+      let(:source) do
+        Rubino::UI::CompletionSource.new(commands: %w[/new /help /reasoning /reset])
+      end
+
+      it "submits immediately when the buffer is exactly a command (sole candidate)" do
+        "/new".each_char { |ch| composer.handle_key(ch) } # menu auto-opens, only /new
+        expect(composer.menu_open?).to be(true)
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit)
+        expect(queue.drain).to eq(["/new"]) # submitted, NOT "/new " then a 2nd Enter
+        expect(composer.buffer).to eq("")
+      end
+
+      it "submits an exact command even when other commands share its prefix, if it's selected" do
+        # "/re" is ambiguous (/reasoning, /reset) → Enter accepts the highlight.
+        "/re".each_char { |ch| composer.handle_key(ch) }
+        composer.handle_key("\r")
+        expect(composer.buffer).to eq("/reasoning ") # accept-highlight, NOT submit
+        expect(queue.drain).to eq([])
+      end
+
+      it "still accepts the highlighted candidate for a partial token (Enter)" do
+        "/res".each_char { |ch| composer.handle_key(ch) } # only /reset matches but not exact
+        composer.handle_key("\r")
+        expect(composer.buffer).to eq("/reset ")
+        expect(queue.drain).to eq([])
+      end
+
+      it "Tab-accept is unchanged for an exact command (splice + trailing space)" do
+        "/new".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        expect(composer.buffer).to eq("/new ")
+        expect(composer.menu_open?).to be(false)
+      end
+    end
   end
 
   describe "#handle_key Ctrl+O (reveal reasoning)" do
@@ -500,6 +540,40 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "is a quiet no-op when no callback is wired" do
       expect { composer.handle_key("\x0f") }.not_to raise_error
+    end
+
+    # D1: while the ANSWER content is actively streaming, Ctrl+O must NOT commit
+    # the `┊` aside between chunks (it would bisect the answer). The reveal is
+    # DEFERRED and flushed once the stream ends, so it renders after the answer.
+    it "DEFERS the reveal while content is streaming, flushing it on stream end (D1)" do
+      called = []
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_ctrl_o: -> { called << :reveal })
+      c.begin_content_stream
+      expect(c.streaming?).to be(true)
+      c.handle_key("\x0f")            # Ctrl+O mid-stream
+      expect(called).to eq([])        # NOT revealed yet (no aside between chunks)
+      c.end_content_stream            # answer block finished
+      expect(called).to eq([:reveal]) # now flushed, cleanly after the answer
+    end
+
+    it "reveals immediately when NOT streaming (idle Ctrl+O is unchanged)" do
+      called = []
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_ctrl_o: -> { called << :reveal })
+      c.handle_key("\x0f")
+      expect(called).to eq([:reveal])
+    end
+
+    it "flushes at most one deferred reveal per stream (no double-commit)" do
+      called = []
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_ctrl_o: -> { called << :reveal })
+      c.begin_content_stream
+      c.handle_key("\x0f")
+      c.handle_key("\x0f") # mashed twice mid-stream
+      c.end_content_stream
+      expect(called).to eq([:reveal]) # one flush, not two
     end
   end
 
@@ -524,6 +598,49 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # D2/D3: the mode confirmation is a TRANSIENT live-region row (#announce), not
+  # a committed print_above line. Cycling N times must leave ZERO stacked banner
+  # lines in scrollback — only the prompt chip reflects the mode.
+  describe "#announce (transient mode confirmation)" do
+    it "renders the banner in the live region above the prompt" do
+      composer.handle_key("x")
+      composer.announce("┄ mode · plan ┄")
+      expect(output.string).to include("┄ mode · plan ┄\r\n")
+      expect(output.string).to end_with("#{PROMPT}x")
+    end
+
+    it "REPLACES (does not stack) the banner when cycled again" do
+      composer.announce("┄ mode · plan ┄")
+      output.truncate(0); output.rewind
+      composer.announce("┄ mode · yolo ┄")
+      # The prior banner row is cleared in place (cursor-up), not scrolled — the
+      # new frame shows only the latest banner.
+      expect(output.string).to include("\e[1A\e[2K")
+      expect(output.string).to include("┄ mode · yolo ┄")
+      expect(output.string).not_to include("plan")
+    end
+
+    it "is cleared by the next keystroke (one-shot toast, no scrollback)" do
+      composer.announce("┄ mode · plan ┄")
+      composer.handle_key("a") # any keystroke dismisses the toast
+      # The latest frame is just the prompt + buffer; the banner is gone.
+      last_frame = output.string.split("\r\e[2K").last
+      expect(last_frame).not_to include("mode · plan")
+      expect(composer.instance_variable_get(:@announce)).to eq("")
+    end
+
+    it "cycling repeatedly leaves no banner residue after a keystroke (D3)" do
+      # Three announce → keystroke cycles, mirroring default→plan→yolo→default.
+      %w[plan yolo default].each do |m|
+        composer.announce("┄ mode · #{m} ┄")
+        composer.handle_key(" ") # a keystroke dismisses each toast
+      end
+      # The final frame carries no committed banner line for any mode.
+      last_frame = output.string.split("\r\e[2K").last
+      %w[plan yolo default].each { |m| expect(last_frame).not_to include("mode · #{m}") }
+    end
+  end
+
   describe "bracketed paste (L1)" do
     # Drive a paste by preloading the input IO with the bytes that follow the
     # initial ESC, then triggering the escape consumer via handle_key("\e").
@@ -534,21 +651,30 @@ RSpec.describe Rubino::UI::BottomComposer do
       c
     end
 
-    it "submits a multi-line paste as ONE message with newlines preserved" do
-      paste("line1\nline2\nline3")
-      expect(queue.drain).to eq(["line1\nline2\nline3"])
+    # D6: the one-row composer collapses a multi-line paste into a single
+    # editable line, joining lines with a SPACE so adjacent words don't fuse
+    # (the "word1word2" defect) and a literal newline never desyncs the row. The
+    # paste is NOT auto-submitted — it lands in the buffer, editable.
+    it "collapses a multi-line paste into one editable line joined by spaces (D6)" do
+      c = paste("line1\nline2\nline3")
+      expect(queue.drain).to eq([]) # not auto-submitted
+      expect(c.buffer).to eq("line1 line2 line3")
     end
 
-    it "does not glue words across pasted lines" do
-      paste("first paragraph\nsecond paragraph")
-      drained = queue.drain.first
-      expect(drained).to include("\n")
-      expect(drained).not_to include("paragraphsecond")
+    it "does not glue words across pasted lines (D6 separator)" do
+      c = paste("first paragraph\nsecond paragraph")
+      expect(c.buffer).to include(" ")
+      expect(c.buffer).not_to include("paragraphsecond")
+      expect(c.buffer).to eq("first paragraph second paragraph")
     end
 
-    it "preserves CR-delimited pasted newlines (normalized to \\n)" do
-      paste("a\r\nb")
-      expect(queue.drain).to eq(["a\nb"])
+    it "normalizes CR / CRLF pasted line breaks to a single space (D6)" do
+      expect(paste("a\r\nb").buffer).to eq("a b")
+      expect(paste("a\rb").buffer).to eq("a b")
+    end
+
+    it "collapses a run of blank lines to a single space (no wall of spaces)" do
+      expect(paste("a\n\n\nb").buffer).to eq("a b")
     end
 
     it "appends a single-line paste to the editable buffer (not auto-submitted)" do
@@ -557,9 +683,13 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(c.buffer).to eq("inline text")
     end
 
-    it "echoes a compact multi-line marker above the prompt" do
-      paste("alpha\nbeta\ngamma")
-      expect(output.string).to match(/queued ▸ alpha .*\(3 lines pasted\)/)
+    it "inserts the paste AT the cursor, like fast typing" do
+      c = described_class.new(input_queue: queue, input: input, output: output)
+      "ac".each_char { |ch| c.handle_key(ch) }
+      c.instance_variable_set(:@input, StringIO.new("[200~X\nY\e[201~"))
+      c.handle_key("\x02") # Ctrl+B: cursor between a and c
+      c.handle_key("\e")   # trigger the preloaded paste
+      expect(c.buffer).to eq("aX Yc")
     end
   end
 

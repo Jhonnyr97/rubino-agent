@@ -913,14 +913,15 @@ module Rubino
         -> { cycle_mode }
       end
 
-      # Shift+Tab: cycle the mode, COMMIT a single transition footer above the
-      # pinned prompt, and RETURN the freshly-built prompt chip so the composer
-      # adopts it and redraws the chip LIVE (fixes the stale-chip D7). The footer
-      # is committed through the active composer's print_above (clear prompt →
-      # print footer → redraw prompt under the render mutex), so it lands cleanly
-      # ABOVE the prompt and can't smear the layout — no out-of-band $stdout write
-      # and no stateful in-place footer row to clear later. With no composer
-      # (cooked fallback) it falls back to a plain dim line.
+      # Shift+Tab: cycle the mode, show a SINGLE TRANSIENT confirmation banner,
+      # and RETURN the freshly-built prompt chip so the composer adopts it and
+      # redraws the chip LIVE (fixes the stale-chip D7). The persistent indicator
+      # is the prompt CHIP; the banner is a one-shot toast rendered in the
+      # composer's live region via #announce — redrawn in place, cleared on the
+      # next keystroke, NEVER committed to scrollback. So cycling N times leaves
+      # ZERO stacked banner lines (D3) and a mid-stream Shift+Tab can't wedge a
+      # banner between answer chunks (D2). With no composer (cooked fallback) it
+      # falls back to a plain dim line.
       def cycle_mode
         previous = Rubino::Modes.current
         idx      = Rubino::Modes::ALL.index(previous) || 0
@@ -929,7 +930,7 @@ module Rubino
         footer = pastel.dim("┄ mode · #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
         composer = UI::BottomComposer.current
         if composer
-          composer.print_above(footer)
+          composer.announce(footer)
         else
           $stdout.print "\n#{footer}\n"
           $stdout.flush

@@ -438,6 +438,12 @@ module Rubino
           @stream_type = type
         end
 
+        # Signal the bottom composer that ANSWER content is now actively
+        # streaming so it defers a mid-stream Ctrl+O reveal (D1) instead of
+        # bisecting the answer. Thinking deltas never reach here (they return
+        # early above), so the thinking phase stays "not streaming" and its
+        # commits still land cleanly above.
+        mark_content_streaming(true)
         stream_content(text)
       end
 
@@ -450,6 +456,10 @@ module Rubino
         end
         @stream_md = nil
         @stream_type = nil
+        # The answer block is finished: tell the composer to flush any reveal
+        # that was deferred during the stream so the `┊` aside renders cleanly
+        # AFTER the answer (D1).
+        mark_content_streaming(false)
       end
 
       # Glyphs for the star-pulse thinking animation, cycled on the timer.
@@ -924,6 +934,25 @@ module Rubino
         else
           clear_thinking_indicator
         end
+      end
+
+      # Toggles the bottom composer's "answer content is actively streaming"
+      # flag (D1). The composer gates the Ctrl+O reveal on it: a reveal requested
+      # while true is deferred and flushed by #end_content_stream when the answer
+      # finishes, so the `┊` aside never lands between answer chunks. A no-op when
+      # no composer owns the screen (between turns / piped input / plain mode), or
+      # when the composer predates this API. Cosmetic — never break the turn.
+      def mark_content_streaming(active)
+        composer = BottomComposer.current
+        return unless composer
+
+        if active
+          composer.begin_content_stream if composer.respond_to?(:begin_content_stream)
+        elsif composer.respond_to?(:end_content_stream)
+          composer.end_content_stream
+        end
+      rescue StandardError
+        nil
       end
 
       # Erases the transient "thinking…" line. With the composer active the

@@ -85,21 +85,24 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::Modes.set(:default)
     end
 
-    # With the bottom composer as the single input path, a live composer commits
-    # the footer above the pinned prompt via print_above (no stateful in-place
-    # footer row to clear). Here, with no composer active, the cooked fallback
-    # prints one dim footer line per press. Each press confirms the latest mode.
-    it "commits the footer through the active composer's print_above (clean above the prompt)" do
+    # D2/D3: with a live composer the confirmation is a TRANSIENT toast routed
+    # through composer#announce (live region, never committed), NOT print_above.
+    # So cycling N times never stacks scrollback banners — each press just
+    # REPLACES the transient line; only the prompt chip reflects the mode.
+    it "shows the confirmation via the composer's transient #announce (no committed scrollback)" do
       Rubino::Modes.set(:default)
       composer = instance_double(Rubino::UI::BottomComposer)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
-      footers = []
-      allow(composer).to receive(:print_above) { |s| footers << s }
+      announced = []
+      allow(composer).to receive(:announce) { |s| announced << s }
+      # If the implementation ever regressed to committing the banner, this would
+      # catch it: print_above must NOT be used for the mode confirmation.
+      allow(composer).to receive(:print_above) { raise "mode banner must not be committed via print_above" }
 
       cmd.send(:cycle_mode) # → plan
       cmd.send(:cycle_mode) # → yolo
-      expect(strip_ansi(footers.last)).to include("mode · yolo")
-      expect(footers.size).to eq(2) # one committed footer per press, no stacking row
+      expect(strip_ansi(announced.last)).to include("mode · yolo")
+      expect(announced.size).to eq(2) # one transient toast per press, replaced not stacked
     ensure
       Rubino::Modes.set(:default)
     end

@@ -115,6 +115,21 @@ module Rubino
         # every redraw. Replaces the old append-only model.
         @cursor      = 0
         @partial     = +"" # live, un-committed streamed line shown above the prompt
+        # TRANSIENT announcement row (e.g. the Shift+Tab mode confirmation):
+        # rendered in the live region directly above the partial/prompt, redrawn
+        # in place every frame and NEVER committed to scrollback. Cleared on the
+        # next keystroke so it reads as a one-shot toast, not stacking scrollback
+        # (D3). Empty ⇒ no row.
+        @announce    = +""
+        # True only while the model's ANSWER content is actively streaming (set by
+        # the CLI's stream/stream_end lifecycle, NOT the thinking phase — commits
+        # during thinking land cleanly above the partial). Gates the Ctrl+O reveal
+        # so it never bisects a streaming answer (D1).
+        @content_streaming = false
+        # A reveal (Ctrl+O) requested WHILE content was streaming, queued to flush
+        # once the stream ends so the `┊` aside renders cleanly AFTER the answer
+        # instead of between chunks (D1). nil ⇒ nothing deferred.
+        @deferred_reveal = false
         # Subagent CARD block (Variant A): zero or more collapsed live rows shown
         # ABOVE the streamed partial and the prompt, redrawn in place each frame.
         # Driven by UI::CLI#set_subagent_cards from the BackgroundTasks registry.
@@ -299,6 +314,43 @@ module Rubino
         !@partial.empty?
       end
 
+      # True while the model's ANSWER content is actively streaming. The CLI's
+      # stream lifecycle toggles this (begin/end below); the keystroke handler
+      # reads it to defer the Ctrl+O reveal so it never bisects the answer (D1).
+      def streaming?
+        @content_streaming
+      end
+
+      # Marks the start of an ACTIVE content stream (called by the CLI when the
+      # first answer token arrives). The thinking phase does NOT set this, so a
+      # footer/aside that commits during thinking still lands cleanly above.
+      def begin_content_stream
+        @content_streaming = true
+      end
+
+      # Marks the end of the content stream (CLI stream_end / finalize). Flushes
+      # any reveal deferred during the stream so the `┊` aside renders AFTER the
+      # finished answer block instead of between its chunks (D1).
+      def end_content_stream
+        @content_streaming = false
+        return unless @deferred_reveal
+
+        @deferred_reveal = false
+        @on_ctrl_o&.call
+      end
+
+      # Sets the TRANSIENT announcement row (the Shift+Tab mode confirmation).
+      # It renders in the live region above the prompt and is redrawn in place —
+      # cycling N times REPLACES it, never stacks — and is cleared on the next
+      # keystroke, so it leaves ZERO committed scrollback lines (D2/D3). An
+      # empty/nil string clears it. Must NOT be routed through print_above.
+      def announce(text)
+        @render.synchronize do
+          @announce = (text || "").to_s
+          redraw
+        end
+      end
+
       # The card rows currently shown (test/inspection helper).
       attr_reader :cards
 
@@ -378,13 +430,20 @@ module Rubino
       # The buffer is edited at @cursor (a codepoint index), so insert/delete and
       # the arrow/Home/End/word-jump moves all act mid-line, not just at the end.
       def handle_key(ch)
+        # The transient mode announcement is a one-shot toast: any keystroke
+        # clears it (a fresh Shift+Tab re-sets it below via #cycle_mode). It lives
+        # only in the live region, so this never touches scrollback (D2/D3).
+        clear_announce
         case ch
         when nil
           return :quit
         when "\r", "\n"
-          # Enter while a completion menu is open ACCEPTS the selection rather
-          # than submitting (matches the old Reline dropdown). Otherwise submit.
-          if menu_open?
+          # Enter while a completion menu is open ACCEPTS the highlighted
+          # candidate rather than submitting (matches the old Reline dropdown) —
+          # UNLESS the buffer is ALREADY an exact, complete command, in which
+          # case Enter SUBMITS it directly instead of splicing a trailing space
+          # and requiring a second Enter (D5).
+          if menu_open? && !buffer_is_exact_command?
             accept_completion
             return nil
           end
@@ -405,7 +464,7 @@ module Rubino
         when "\x0b" then kill_to_end             # Ctrl+K → delete to end of line
         when "\x15" then kill_to_start           # Ctrl+U → delete to start of line
         when "\x0f" # Ctrl+O: reveal the last retained reasoning aside.
-          @on_ctrl_o&.call
+          request_reveal
         when "\e"
           # ESC: start of a CSI/SS3 escape (arrows, Home/End, word-jump,
           # Shift+Tab, bracketed paste) OR a lone ESC that dismisses the menu.
@@ -436,7 +495,7 @@ module Rubino
           # the reflowed partial/card rows blank until the turn committed (X1).
           # With nothing live above the prompt the cheap prompt-only redraw is
           # enough.
-          if @live_rows_above.positive? || !@partial.empty? || @cards.any?
+          if @live_rows_above.positive? || !@partial.empty? || !@announce.empty? || @cards.any?
             render_frame(committed: nil)
           else
             draw_input
@@ -532,6 +591,12 @@ module Rubino
           @output.print("\r\e[2K#{clamp(row, @cols - 1)}\r\n")
           @live_rows_above += 1
         end
+        # The TRANSIENT announcement (mode confirmation) sits just above the
+        # partial/prompt: one row, redrawn in place, never committed (D2/D3).
+        unless @announce.empty?
+          @output.print("\r\e[2K#{clamp(@announce, @cols - 1)}\r\n")
+          @live_rows_above += 1
+        end
         unless @partial.empty?
           @output.print("\r\e[2K#{clamp(@partial, @cols - 1)}\r\n")
           @live_rows_above += 1
@@ -617,7 +682,7 @@ module Rubino
       # which renders ABOVE the prompt — appear/clear/track as it changes, the
       # same way the streamed partial and the subagent cards do.
       def redraw
-        if @menu || @cards.any? || !@partial.empty? || @live_rows_above.positive?
+        if @menu || @cards.any? || !@partial.empty? || !@announce.empty? || @live_rows_above.positive?
           render_frame(committed: nil)
         else
           draw_input
@@ -909,6 +974,23 @@ module Rubino
         end
       end
 
+      # True when the buffer is ALREADY an exact, complete command, so Enter
+      # should SUBMIT it rather than accept-and-space (D5). The safe heuristic:
+      # the whole trimmed buffer equals a candidate string exactly AND that exact
+      # match is the menu's current selection (or the only candidate) — so a
+      # partial/ambiguous token (e.g. "/re" with /reasoning + /reset) still
+      # accepts the highlight on Enter as before. Tab-accept is untouched.
+      def buffer_is_exact_command?
+        return false unless @menu
+
+        typed = @buffer.strip
+        items = @menu[:items]
+        return false unless items.include?(typed)
+
+        selected = items[@menu[:selected]].to_s
+        items.size == 1 || selected == typed
+      end
+
       # Close the menu and clear the sticky ESC-dismiss flag (submit / accept):
       # the next token starts fresh and is free to auto-open again.
       def close_menu
@@ -954,25 +1036,29 @@ module Rubino
         @menu_pastel ||= Pastel.new
       end
 
-      # Handle a bracketed-paste body. A SINGLE-LINE paste is appended to the
-      # editable buffer like fast typing (still editable before submit). A
-      # MULTI-LINE paste is submitted immediately as one multi-line message with
-      # its newlines preserved (the one-row composer can't edit multiple lines),
-      # echoed with a compact "(N lines)" marker so the user sees what landed.
+      # Handle a bracketed-paste body. The composer is a ONE-ROW editor, so a
+      # paste is inserted into the editable buffer at the cursor like fast typing
+      # — still editable before submit. A MULTI-LINE paste is collapsed to a
+      # single row with its line breaks turned into single SPACES so adjacent
+      # words don't fuse ("word1word2") and a literal newline never desyncs the
+      # single-row redraw (D6).
       def submit_paste(text)
         return if text.nil? || text.empty?
 
-        normalized = text.gsub("\r\n", "\n").tr("\r", "\n")
-        if normalized.include?("\n")
-          stripped = normalized.sub(/\n+\z/, "")
-          return if stripped.strip.empty?
+        flat = flatten_paste_lines(text)
+        return if flat.empty?
 
-          @input_queue&.push(stripped)
-          n = stripped.count("\n") + 1
-          print_above("queued ▸ #{stripped.lines.first.to_s.chomp} … (#{n} lines pasted)")
-        else
-          insert(normalized) # at the cursor, like fast typing
-        end
+        insert(flat) # at the cursor, like fast typing
+      end
+
+      # Collapse a pasted body's line breaks to single spaces. The composer is a
+      # ONE-ROW editor, so a literal newline in @buffer would desync the redraw
+      # AND fuse the adjacent words ("word1word2") when shown on the single row.
+      # Joining with a space keeps the words separated and the row well-formed
+      # (D6). Collapses runs of blank lines to one space too, so a paste with
+      # double newlines doesn't insert a wall of spaces. Trims a trailing newline.
+      def flatten_paste_lines(text)
+        text.to_s.gsub(/\r\n|\r|\n/, "\n").sub(/\n+\z/, "").gsub(/\n+/, " ")
       end
 
       # After ESC, parse and ACT on the escape sequence so arrows / Home / End /
@@ -1075,9 +1161,12 @@ module Rubino
         end
       end
 
-      # Shift+Tab: ask the callback to cycle + persist the mode and print its
-      # transition footer, then adopt the new prompt chip it returns and redraw
-      # the prompt under the render mutex. The composer owns NO mode logic.
+      # Shift+Tab: ask the callback to cycle + persist the mode, then adopt the
+      # new prompt chip it returns and redraw the prompt under the render mutex.
+      # The callback returns the new chip; if it ALSO returns a confirmation
+      # banner (via the composer's #announce, which the handler now calls instead
+      # of print_above) that banner is a transient row, not committed scrollback
+      # (D2/D3). The composer owns NO mode logic.
       def cycle_mode
         return unless @on_mode_cycle
 
@@ -1087,6 +1176,32 @@ module Rubino
         @render.synchronize do
           @prompt = new_prompt.to_s.empty? ? PROMPT : new_prompt.to_s
           @prompt_width = @prompt.gsub(ANSI_RE, "").length
+          redraw
+        end
+      end
+
+      # Ctrl+O: reveal the last retained reasoning aside. When the answer is
+      # actively streaming, DEFER it — committing the `┊` aside now would land it
+      # between answer chunks and bisect the answer (D1). The deferred reveal is
+      # flushed by #end_content_stream once the answer block finishes, so it
+      # renders cleanly AFTER the answer. When idle (not streaming) it reveals
+      # immediately, exactly as before.
+      def request_reveal
+        if @content_streaming
+          @deferred_reveal = true
+        else
+          @on_ctrl_o&.call
+        end
+      end
+
+      # Clears the transient mode-announcement row if one is showing (any
+      # keystroke dismisses the toast). Redraws so the row disappears in place.
+      # No-op (and no redraw) when there's nothing to clear.
+      def clear_announce
+        return if @announce.empty?
+
+        @render.synchronize do
+          @announce = +""
           redraw
         end
       end
@@ -1205,6 +1320,7 @@ module Rubino
         @partial = +""
         @cards = []
         @menu = nil
+        @announce = +""
         @output.flush
       end
 

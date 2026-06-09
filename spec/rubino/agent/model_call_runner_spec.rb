@@ -283,6 +283,37 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
       expect { build_runner(boundary).call!(request) }.to raise_error(Rubino::Interrupted)
       expect(boundary.calls).to eq(1)
     end
+
+    # D4: a Ctrl+C that lands mid-stream may not raise — once a chunk has flowed
+    # the adapter RETURNS the buffered (here empty) partial. With the token
+    # cancelled, the runner must treat that as the terminal interrupt, NOT
+    # classify it :empty_response and emit "Empty response — retrying (1/2)".
+    it "raises Interrupted (no empty-retry) when the token was cancelled mid-stream" do
+      token = Rubino::Interaction::CancelToken.new
+      # A boundary that, on its FIRST call, trips the cancel token DURING the
+      # stream (as the user's Ctrl+C does) and then RETURNS an empty partial —
+      # the adapter's "chunks flowed, so return buffered" path, which does not
+      # raise. The runner must re-check the token after the call and raise the
+      # terminal interrupt instead of classifying the empty partial as retryable.
+      calls = 0
+      empty = empty_response
+      boundary = Object.new
+      boundary.define_singleton_method(:call) do |_req, &blk|
+        calls += 1
+        blk&.call({ type: :content, text: "par", message_id: 0 })
+        token.cancel! # Ctrl+C landed mid-stream
+        empty
+      end
+      boundary.define_singleton_method(:calls) { calls }
+
+      runner = build_runner(boundary, cancel_token: token)
+      expect { runner.call!(request, iteration: 1) }.to raise_error(Rubino::Interrupted)
+      expect(boundary.calls).to eq(1) # NO empty-retry re-issue
+      # The spurious banner is the real symptom: the recovery ladder must never
+      # have run, so no "Empty response — retrying" note was emitted.
+      retry_notes = ui.messages.select { |m| m[:message].to_s.include?("Empty response from model — retrying") }
+      expect(retry_notes).to be_empty
+    end
   end
 
   # ── SLICE-7: provider/model fallback ──────────────────────────────────────
