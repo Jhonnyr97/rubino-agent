@@ -1,3 +1,5 @@
+inherit_from: .rubocop_todo.yml
+
 # RuboCop configuration for rubino-agent.
 #
 # This config encodes the project's actual house style so that `rubocop -a`
@@ -63,6 +65,11 @@ Metrics/PerceivedComplexity:
 
 Metrics/BlockLength:
   Max: 40
+  # Merge (not replace) this Exclude with the per-file list generated in
+  # .rubocop_todo.yml, so the deferred baseline stays green.
+  inherit_mode:
+    merge:
+      - Exclude
   Exclude:
     - "spec/**/*"
     - "*.gemspec"
