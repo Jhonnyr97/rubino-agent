@@ -668,6 +668,13 @@ module Rubino
 
         composer, real_stdout = start_composer(input_queue)
 
+        # Mark the composer "in a turn" for the WHOLE turn — covering the THINKING
+        # phase AND the content stream — so a "queued ▸" type-ahead echo submitted
+        # before the first content token is deferred too, not stranded above the
+        # thought line and the answer (D7e). Cleared (and the deferred echoes
+        # flushed, after the footer) in the ensure below.
+        composer.begin_turn if composer.respond_to?(:begin_turn)
+
         # Pass the SAME queue the composer pushes into through to the agent loop:
         # the loop drains it at each iteration boundary (Phase-2 mid-turn
         # steering). Anything still queued in the gap after the turn ends falls
@@ -683,6 +690,13 @@ module Rubino
         ui.warning("turn cancelled")
         raise
       ensure
+        # End the turn BEFORE tearing the composer down: the runner has fully
+        # unwound here, so the turn-summary footer is already in scrollback. This
+        # clears the turn-active flag and flushes any deferred "queued ▸" echoes
+        # via the still-live composer's print_above, so they land AFTER the footer
+        # (answer → reveal → `↳ turn` → `queued ▸`). A no-content/aborted turn
+        # still flushes here, so a mid-turn type-ahead is never stranded.
+        composer.end_turn if composer.respond_to?(:end_turn)
         stop_composer(composer, real_stdout)
         Signal.trap("INT", prev) if prev
       end

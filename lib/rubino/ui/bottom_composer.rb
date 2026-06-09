@@ -126,15 +126,25 @@ module Rubino
         # during thinking land cleanly above the partial). Gates the Ctrl+O reveal
         # so it never bisects a streaming answer (D1).
         @content_streaming = false
+        # True for the WHOLE turn — from the moment the chat loop hands a prompt to
+        # the runner until the turn fully unwinds — including the THINKING phase
+        # that precedes the first content token. Set/cleared by the chat loop's
+        # run_turn bracket (#begin_turn / #end_turn). A "queued ▸" type-ahead echo
+        # is deferred whenever a turn is active (thinking OR content streaming), not
+        # only when content is streaming: a line submitted while the model is still
+        # THINKING would otherwise commit its echo ABOVE the thought line and the
+        # whole answer (D7e). nil/false ⇒ idle, immediate echo as before.
+        @turn_active = false
         # A reveal (Ctrl+O) requested WHILE content was streaming, queued to flush
         # once the stream ends so the `┊` aside renders cleanly AFTER the answer
         # instead of between chunks (D1). nil ⇒ nothing deferred.
         @deferred_reveal = false
         # Type-ahead echoes ("queued ▸ <line>") for NEXT-turn lines the user
-        # submitted WHILE the current answer was streaming, queued (in submission
-        # order) to flush once the stream ends so each echo renders AFTER the
-        # finished answer instead of above the still-streaming chunks (D7). The
-        # line itself is pushed to @input_queue immediately — only its VISIBLE
+        # submitted WHILE the current turn was active (thinking OR content
+        # streaming), queued (in submission order) to flush at TURN END so each
+        # echo renders AFTER the finished answer AND after the turn-summary footer
+        # the loop emits, instead of above the still-running turn (D7/D7e/D7a-c).
+        # The line itself is pushed to @input_queue immediately — only its VISIBLE
         # echo is deferred. Empty ⇒ nothing deferred.
         @deferred_echoes = []
         # Subagent CARD block (Variant A): zero or more collapsed live rows shown
@@ -335,22 +345,40 @@ module Rubino
         @content_streaming = true
       end
 
-      # Marks the end of the content stream (CLI stream_end / finalize). Flushes,
-      # in order, anything deferred during the stream so it renders AFTER the
-      # finished answer block instead of between its chunks:
-      #   1) the Ctrl+O reveal (`┊` aside) — it belongs to the JUST-finished turn,
-      #      so it comes first (D1);
-      #   2) the "queued ▸" type-ahead echoes — they belong to the NEXT input the
-      #      user lined up mid-stream, so they come AFTER the answer (and after the
-      #      reveal), each committed via print_above in submission order (D7).
-      # Flushing on this lifecycle hook (not on first-content) guarantees the
-      # echoes are never stranded even if the turn ended with no content stream.
+      # Marks the end of the content stream (CLI stream_end / finalize). Flushes
+      # the Ctrl+O reveal (`┊` aside) deferred during the stream so it renders
+      # AFTER the finished answer block instead of between its chunks — the reveal
+      # belongs to the JUST-finished answer, so it lands right after the contiguous
+      # answer and BEFORE the turn-summary footer (D1). The "queued ▸" type-ahead
+      # echoes are NOT flushed here: they belong to the NEXT input the user lined
+      # up, so they flush at TURN END (#end_turn), after the footer, so the order
+      # reads answer → reveal → `↳ turn` footer → `queued ▸` echo(es) (D7a-c).
       def end_content_stream
         @content_streaming = false
-        if @deferred_reveal
-          @deferred_reveal = false
-          @on_ctrl_o&.call
-        end
+        return unless @deferred_reveal
+
+        @deferred_reveal = false
+        @on_ctrl_o&.call
+      end
+
+      # Marks the START of a turn — the chat loop's run_turn calls this when it
+      # hands a prompt to the runner. From here through #end_turn the composer is
+      # "in a turn" (the THINKING phase AND the content stream), so a "queued ▸"
+      # type-ahead echo is deferred for the WHOLE turn, not only while content
+      # streams (D7e). Idempotent.
+      def begin_turn
+        @turn_active = true
+      end
+
+      # Marks the END of a turn — the chat loop's run_turn `ensure` calls this
+      # AFTER the runner has fully unwound (so the turn-summary footer is already
+      # in scrollback). Clears the turn-active flag and flushes any "queued ▸"
+      # type-ahead echoes in submission order, so they land AFTER the footer
+      # (D7a-c). A turn that produced NO content (empty/aborted answer) still
+      # flushes here, so a mid-turn type-ahead is never stranded; with nothing
+      # deferred this is a quiet no-op (never a stray blank echo). Idempotent.
+      def end_turn
+        @turn_active = false
         return if @deferred_echoes.empty?
 
         echoes = @deferred_echoes
@@ -690,14 +718,14 @@ module Rubino
         # :queued (during a turn) marks it as a steer parked for the next turn.
         if @echo == :prompt
           print_above("#{@prompt}#{line}")
-        elsif @content_streaming
-          # D7: this line was typed AHEAD, while the current turn's answer is
-          # still streaming. Committing its "queued ▸" echo now would land it
-          # ABOVE the still-streaming answer, so it reads as if the next question
-          # was asked before the first was answered. DEFER the visible echo (the
-          # line is already queued above) and flush it after the answer block ends
-          # via #end_content_stream, preserving submission order across several
-          # type-ahead lines.
+        elsif @turn_active || @content_streaming
+          # D7/D7e: this line was typed AHEAD, while a turn is active — during the
+          # THINKING phase OR while the answer streams. Committing its "queued ▸"
+          # echo now would land it ABOVE the thought line and the still-running
+          # answer, so it reads as if the next question was asked before the first
+          # was answered. DEFER the visible echo (the line is already queued above)
+          # and flush it at TURN END (#end_turn), after the turn-summary footer,
+          # preserving submission order across several type-ahead lines.
           @deferred_echoes << "queued ▸ #{line}"
         else
           print_above("queued ▸ #{line}")
