@@ -79,7 +79,18 @@ module Rubino
         return unless job
 
         new_attempts = job[:attempts] + 1
-        new_status = new_attempts >= job[:max_attempts] ? "dead" : "queued"
+        # Inline mode has no background drainer, so re-queueing a failed job
+        # would leave it "queued" forever (#84) — mark it terminal ("failed")
+        # instead so `jobs list` is honest. Worker/manual modes keep the
+        # retry-with-backoff behavior until attempts are exhausted.
+        new_status =
+          if new_attempts >= job[:max_attempts]
+            "dead"
+          elsif @config.jobs_mode == "inline"
+            "failed"
+          else
+            "queued"
+          end
 
         # Calculate retry time with backoff
         backoff = @config.dig("jobs", "retry_backoff_seconds") || 30
