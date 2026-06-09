@@ -28,6 +28,12 @@ module Rubino
       # /agents drill-in's `recent:` ring).
       RECENT_MAX = 6
 
+      # A probe is a snapshot at this instant: a child probed right after
+      # spawn has run nothing yet and honestly reports an empty/confused
+      # context, which reads as broken without this hint (#112).
+      JUST_STARTED_HINT = "(snapshot at this instant — the child just started and its " \
+                          "context is still empty; probe again in a moment)"
+
       def initialize(probe: nil)
         # Test seam: inject a SubagentProbe (or any object responding to #peek)
         # so the live path can be driven without a real model.
@@ -102,12 +108,6 @@ module Rubino
         raw = arguments.key?("live") ? arguments["live"] : arguments[:live]
         [true, "true", 1, "1"].include?(raw)
       end
-
-      # A probe is a snapshot at this instant: a child probed right after
-      # spawn has run nothing yet and honestly reports an empty/confused
-      # context, which reads as broken without this hint (#112).
-      JUST_STARTED_HINT = "(snapshot at this instant — the child just started and its " \
-                          "context is still empty; probe again in a moment)"
 
       def just_started?(entry)
         entry.tool_count.to_i.zero?
