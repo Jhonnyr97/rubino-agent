@@ -25,6 +25,15 @@ RSpec.describe Rubino::Tools::MemoryTool do
       expect(tool.risky?).to be(false)
       expect(tool.input_schema[:required]).to include("action", "target")
     end
+
+    # #85: atomicity must hold on BOTH write paths. The auto-extractor's
+    # prompt already demands atomic facts; the tool path relies on this
+    # instruction so the model doesn't store one combined blob that can't be
+    # superseded or forgotten in pieces.
+    it "instructs the model to store one atomic fact per call (#85)" do
+      expect(tool.description).to include("ONE atomic fact per call")
+      expect(tool.description).to include("separate calls")
+    end
   end
 
   describe "add" do
