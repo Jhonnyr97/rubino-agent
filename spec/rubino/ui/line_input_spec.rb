@@ -515,76 +515,23 @@ RSpec.describe Rubino::UI::LineInput do
       expect(complete("@match").size).to eq(described_class::MAX_CANDIDATES)
     end
 
-    it "degrades to [] when discovery is unavailable" do
-      li = configure_with_root
-      allow(li).to receive(:discover_files).and_return([])
-      expect(Reline.completion_proc.call("@l")).to eq([])
-    end
-
-    describe "discovery tier fallback (git -> rg -> glob)" do
-      subject(:li) { configure_with_root }
-
-      before do
-        File.write(File.join(@root, "plain.rb"), "x")
-      end
-
-      it "uses git when available" do
-        allow(li).to receive(:git_files).and_return(["from_git.rb"])
-        expect(li.send(:discover_files, @root)).to eq(["from_git.rb"])
-      end
-
-      it "falls through to rg when git fails" do
-        allow(li).to receive(:git_files).and_return(nil)
-        allow(li).to receive(:rg_files).and_return(["from_rg.rb"])
-        expect(li.send(:discover_files, @root)).to eq(["from_rg.rb"])
-      end
-
-      it "falls through to a glob walk when git and rg both fail" do
-        allow(li).to receive(:git_files).and_return(nil)
-        allow(li).to receive(:rg_files).and_return(nil)
-        expect(li.send(:discover_files, @root)).to include("plain.rb")
-      end
-
-      it "the glob fallback skips the hardcoded ignore dirs" do
-        FileUtils.mkdir_p(File.join(@root, ".git"))
-        File.write(File.join(@root, ".git", "config"), "x")
-        FileUtils.mkdir_p(File.join(@root, "node_modules"))
-        File.write(File.join(@root, "node_modules", "x.rb"), "x")
-        result = li.send(:glob_files, @root)
-        expect(result).to include("plain.rb")
-        expect(result).not_to include(a_string_starting_with(".git/"))
-        expect(result).not_to include(a_string_starting_with("node_modules/"))
-      end
-
-      # D5: in a NON-git dir, `git ls-files` writes "fatal: not a git repository"
-      # to STDERR. With err: File::NULL that diagnostic must never reach the tty
-      # (it used to bleed onto the prompt line), git_files returns nil, and
-      # discovery falls through to glob and still returns clean candidates.
-      context "in a non-git workspace (D5)" do
-        it "git_files returns nil and leaks nothing to stderr" do
-          # @root has no .git — a real git invocation. err: File::NULL means
-          # git's "fatal: not a git repository" must NOT reach process STDERR.
-          expect do
-            @result = li.send(:git_files, @root)
-          end.not_to output(/not a git repository|fatal/).to_stderr
-          expect(@result).to be_nil
-        end
-
-        it "discovery still returns clean candidates via the glob fallback" do
-          allow(li).to receive(:rg_files).and_return(nil) # force glob tier
-          files = li.send(:discover_files, @root)
-          expect(files).to include("plain.rb")
-          expect(files.join).not_to include("fatal")
-        end
-      end
-    end
+    # Discovery internals (git→rg→glob fallback, ignore dirs, the D5 non-git
+    # stderr-leak guard) now live in the shared UI::CompletionSource and are
+    # covered by completion_source_spec.rb. Here we only assert that LineInput's
+    # Reline completion_proc delegates to it correctly (the behavioral surface).
   end
 
   describe "#highlight_line (output_modifier_proc)" do
     subject(:line_input) { described_class.new }
 
-    # Force coloring on regardless of the test tty so the substitution is visible.
-    before { line_input.instance_variable_set(:@pastel, Pastel.new(enabled: true)) }
+    # highlight_line now delegates to the shared CompletionSource (built by
+    # configure_completion). Configure it, then force coloring on its pastel so
+    # the substitution is visible regardless of the test tty.
+    before do
+      line_input.configure_completion(commands: commands)
+      src = line_input.instance_variable_get(:@source)
+      src.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+    end
 
     it "leaves plain text unchanged" do
       expect(line_input.send(:highlight_line, "just text\n", complete: false)).to eq("just text\n")
