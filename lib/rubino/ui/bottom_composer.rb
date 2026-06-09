@@ -776,10 +776,11 @@ module Rubino
           print_above("#{@prompt}#{line}")
         elsif (@turn_active || @content_streaming) && @on_interrupt
           # Interrupt-by-default: send the line as the NEXT turn immediately and
-          # interrupt the current one. Push FIRST so the REPL drain has it ready
-          # when the cancelled turn unwinds, THEN fire the interrupt. No echo
-          # here — run_turn commits the next turn's "<prompt><line>" when it runs.
-          @input_queue&.push(line)
+          # interrupt the current one. Push to the FRONT so it runs ahead of any
+          # items the user explicitly parked (Alt+Enter / "/queued") earlier in
+          # this turn, THEN fire the interrupt. No echo here — run_turn commits
+          # the next turn's "<prompt><line>" when it runs.
+          @input_queue&.push_front(line)
           @on_interrupt.call
         else
           # No active turn (or no interrupt hook wired): a plain queued submit,

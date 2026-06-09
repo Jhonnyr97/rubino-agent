@@ -41,6 +41,51 @@ RSpec.describe Rubino::Interaction::InputQueue do
     end
   end
 
+  describe "#shift (one-at-a-time FIFO consumption — B4)" do
+    it "returns the oldest line and leaves the rest parked" do
+      queue.push("first")
+      queue.push("second")
+      queue.push("third")
+
+      expect(queue.shift).to eq("first")
+      expect(queue.shift).to eq("second")
+      expect(queue.shift).to eq("third")
+      expect(queue.shift).to be_nil
+    end
+
+    it "returns nil on an empty queue" do
+      expect(queue.shift).to be_nil
+    end
+
+    it "drops nil/blank lines so a stray Enter makes no turn" do
+      queue.push(nil)
+      queue.push("   ")
+      queue.push("real")
+      expect(queue.shift).to eq("real")
+      expect(queue.shift).to be_nil
+    end
+  end
+
+  describe "#push_front (interrupt jumps the queue)" do
+    it "places the line ahead of items parked earlier" do
+      queue.push("queued-a")
+      queue.push("queued-b")
+      queue.push_front("interrupt")
+
+      # The interrupt line runs immediately next; the explicitly-queued items
+      # then run in their original order behind it.
+      expect(queue.shift).to eq("interrupt")
+      expect(queue.shift).to eq("queued-a")
+      expect(queue.shift).to eq("queued-b")
+    end
+
+    it "drops a nil/blank front push" do
+      queue.push("a")
+      queue.push_front("")
+      expect(queue.shift).to eq("a")
+    end
+  end
+
   describe "#pending?" do
     it "is false on a fresh queue" do
       expect(queue.pending?).to be(false)
