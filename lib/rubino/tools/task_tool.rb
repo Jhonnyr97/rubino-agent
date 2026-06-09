@@ -278,13 +278,14 @@ module Rubino
         # A UI hiccup must never wedge the worker's terminal-state bookkeeping.
       end
 
-      # Pushes the notice onto the parent's InputQueue if one is wired. The
-      # parent loop drains it at its next iteration top (Loop#inject_steered_input)
-      # — between turns, never between a tool_use and its results. When no sink
-      # exists (API/server, or the parent turn already ended) the result still
-      # lives in the registry and is reachable via `task_result`.
+      # Parks the notice on the parent's InputQueue if one is wired — as a
+      # NOTICE, not a typed line: the parent loop folds it in at an iteration
+      # boundary of a live turn, or at the start of the NEXT real turn, never
+      # as a standalone synthetic user turn at the idle prompt (#13). When no
+      # sink exists (API/server, or the parent turn already ended) the result
+      # still lives in the registry and is reachable via `task_result`.
       def notify(sink, text)
-        sink&.push(text)
+        sink&.push_notice(text)
       end
 
       def completion_notice(entry, text)

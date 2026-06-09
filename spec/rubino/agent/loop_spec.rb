@@ -749,6 +749,23 @@ RSpec.describe Rubino::Agent::Loop do
       expect(echoes.map { |m| m[:message] }).to eq(["hey"])
     end
 
+    # #13: a parked [background-task] notice folds into the NEXT real turn at
+    # its start instead of draining as its own synthetic user turn at idle.
+    it "injects a parked background NOTICE at the start of the next turn (iteration 1, #13)" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue.push_notice("[background-task] Task sa_1 (subagent 'explore') completed.")
+
+      fake_llm.enqueue_text("immediate answer")
+
+      build_loop(input_queue: queue).run(messages: user_messages, tools: [])
+
+      # Delivered to the model on this (single-iteration) turn…
+      seen = fake_llm.calls.last[:messages]
+      expect(seen.any? { |m| m[:role] == "user" && m[:content].include?("[background-task]") }).to be(true)
+      # …and consumed: nothing left to manufacture an idle turn.
+      expect(queue.pending?).to be(false)
+    end
+
     it "does NOT inject on the first iteration (initial user input is already the turn)" do
       queue = Rubino::Interaction::InputQueue.new
       queue.push("typed in the gap before the turn started")

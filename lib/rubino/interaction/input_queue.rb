@@ -22,8 +22,12 @@ module Rubino
         # explicitly parked earlier in the same turn (#push_front), neither of
         # which ::Queue supports. The mutex still serialises the reader (push)
         # against the main loop (shift/drain/pending?).
-        @lines = []
-        @mutex = Mutex.new
+        @lines   = []
+        # Deterministic background notices (#push_notice) are held apart from
+        # typed lines: #shift never returns them, so a parked notice can't fire
+        # a standalone model turn at the idle prompt (#13).
+        @notices = []
+        @mutex   = Mutex.new
       end
 
       # Records one completed line typed during the turn. Blank/nil lines are
@@ -47,6 +51,19 @@ module Rubino
         @mutex.synchronize { @lines.unshift(text) }
       end
 
+      # Records a deterministic background notice (the `[background-task] …
+      # completed/failed/stopped` lines). Notices are NOT user turns: #shift
+      # never returns them, so at the idle prompt a notice doesn't spend a
+      # whole model turn just to restate itself (#13). It rides along on the
+      # NEXT real turn instead — #drain (mid-turn steering boundary) and
+      # #drain_notices (turn start) both deliver it.
+      def push_notice(line)
+        text = normalize(line)
+        return if text.nil?
+
+        @mutex.synchronize { @notices.push(text) }
+      end
+
       # Removes and returns the OLDEST queued line (FIFO), or nil when empty.
       # The REPL consumes one queued message per turn so several lines parked
       # during one turn each run as their OWN turn, in submission order (B4) —
@@ -56,19 +73,33 @@ module Rubino
         @mutex.synchronize { @lines.shift }
       end
 
-      # Removes and returns every queued line, in arrival order. Empty when
-      # nothing was typed. Atomic against a concurrent #push.
+      # Removes and returns every queued line, in arrival order — parked
+      # background notices first, then typed lines. Empty when nothing is
+      # waiting. Atomic against a concurrent #push.
       def drain
         @mutex.synchronize do
-          lines = @lines
-          @lines = []
+          lines    = @notices + @lines
+          @notices = []
+          @lines   = []
           lines
         end
       end
 
-      # True when at least one line is waiting to be drained.
+      # Removes and returns only the parked background notices. The turn-START
+      # injection (Loop, iteration 1) folds notices into the turn the user just
+      # submitted without consuming their typed-ahead lines, which must keep
+      # running as their own turns (#13).
+      def drain_notices
+        @mutex.synchronize do
+          notices  = @notices
+          @notices = []
+          notices
+        end
+      end
+
+      # True when at least one line or notice is waiting to be drained.
       def pending?
-        @mutex.synchronize { !@lines.empty? }
+        @mutex.synchronize { !@lines.empty? || !@notices.empty? }
       end
 
       private
