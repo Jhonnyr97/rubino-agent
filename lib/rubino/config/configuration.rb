@@ -116,6 +116,13 @@ module Rubino
         dig("tasks", "max_concurrent_total") || Defaults.dig("tasks", "max_concurrent_total")
       end
 
+      # Per-child budget for BILLED live probes (`probe(live:true)`). Over budget,
+      # the model is steered to the FREE live:false snapshot. Free snapshots are
+      # unlimited. Default 5.
+      def tasks_max_live_probes_per_child
+        dig("tasks", "max_live_probes_per_child") || Defaults.dig("tasks", "max_live_probes_per_child")
+      end
+
       # -- Prompts section --
       # The customer-facing preamble prepended to every assembled system
       # prompt. nil/empty disables the layer.

@@ -109,6 +109,7 @@ module Rubino
           # (a node with no children just gets a "not your child" error). NOT on
           # any strip list — scoping happens inside the tool, not in the registry.
           register(Rubino::Tools::SteerTool.new)
+          register(Rubino::Tools::ProbeTool.new)
         end
 
         private

@@ -249,7 +249,12 @@ module Rubino
           # subagent) may have at once.
           "max_children_per_node" => 3,
           # Hard global ceiling on total LIVE subagents across the whole tree.
-          "max_concurrent_total" => 8
+          "max_concurrent_total" => 8,
+          # Per-child budget for BILLED live probes (`probe(live:true)`): how many
+          # times an owner may run a one-shot model peek over a single child's
+          # transcript. Over budget → the model is told to use the FREE
+          # live:false snapshot instead. Free snapshots are unlimited.
+          "max_live_probes_per_child" => 5
         },
         "tools" => {
           # Sandbox write/edit/delete tools to workspace_root (terminal.cwd

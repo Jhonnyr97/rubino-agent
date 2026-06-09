@@ -72,6 +72,12 @@ module Rubino
         # stays a FLAT map keyed by id; the parent/child tree is computed over
         # owner_subagent_id (see #children_of / #descendants_of / #ancestors_of).
         :owner_subagent_id, :depth,
+        # Model-driven LIVE-probe budget (S3). probe_count is how many BILLED
+        # `probe(live:true)` peeks the owner has run against this child;
+        # last_probe_at is when the last one ran (for an optional min-interval).
+        # Free snapshot probes (live:false) never touch these. Per-process, dies
+        # with the registry like the rest of the live-progress state.
+        :probe_count, :last_probe_at,
         keyword_init: true
       )
 
@@ -243,6 +249,22 @@ module Rubino
 
         queue.push(text)
         true
+      end
+
+      # Records a BILLED live probe against a child (S3): bumps probe_count and
+      # stamps last_probe_at, under the mutex (the owner runs this on its own
+      # thread while the parent renderer may read the entry). Returns the new
+      # count, or nil for an unknown id. Free snapshot probes (live:false) never
+      # call this — only `probe(live:true)` does, after the budget check passes.
+      def record_live_probe(id)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return nil unless entry
+
+          entry.probe_count   = entry.probe_count.to_i + 1
+          entry.last_probe_at = Time.now
+          entry.probe_count
+        end
       end
 
       # Flips an entry into the :blocked_on_human state for an escalated
