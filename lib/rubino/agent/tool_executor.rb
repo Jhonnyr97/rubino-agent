@@ -322,8 +322,13 @@ module Rubino
       # model actually sent. Lay each key out on its own line; clip long
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
+        pairs = Array(arguments)
+        # No arguments (e.g. a bare run_tests run) ⇒ no "with:" — a trailing
+        # "with:" followed by nothing reads as a truncated/broken card (#109).
+        return "Allow #{tool.name}" if pairs.empty?
+
         lines = ["Allow #{tool.name} with:"]
-        Array(arguments).each { |key, value| lines.concat(format_arg_pair(key, value)) }
+        pairs.each { |key, value| lines.concat(format_arg_pair(key, value)) }
         lines.join("\n")
       end
 
