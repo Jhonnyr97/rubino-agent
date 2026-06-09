@@ -54,7 +54,7 @@ is set.
 | `--query` | `-q` | One-shot prompt (non-interactive) |
 | `--image` | `-i` | Attach image file(s) (repeatable); `@image` tokens in the prompt also work |
 | `--session` | `-s` | Resume a session by ID |
-| `--resume` | `-r` | Resume a session by ID or title |
+| `--resume` | `-r` | Resume a session by ID prefix, or by a substring of its title or full first prompt |
 | `--continue` | `-c` | Resume the most recent session |
 | `--new` | | Start a fresh session (bare `chat` resumes the last one by default) |
 | `--model` | `-m` | Override the model (e.g. `claude-sonnet-4-5`) |
@@ -67,8 +67,23 @@ is set.
 
 - A **bare** interactive `rubino chat` auto-resumes your most recent resumable session and replays its history.
 - `--new` forces a fresh session; `--continue`/`-c` resumes the latest; `--resume`/`-r <id|title>` resumes a specific one.
+- `--resume` matches an ID prefix first, then a case-insensitive substring of the session title **or its full first prompt** — so a memorable phrase from the tail of a long first message works even though the stored title is truncated. More than one match is an error listing the candidates; no match exits non-zero with a pointer to `rubino sessions list`.
 - One-shot mode (`-q` / `prompt`) does **not** auto-resume — automation isn't silently hijacked onto a past session; pass `--resume`/`--continue` explicitly if you want it.
 - Sessions are marked ended on clean exit, terminal close (SIGHUP), or kill (SIGTERM), so a closed window doesn't leave a session looking active.
+
+### Exit codes (scripting around `prompt` / one-shot)
+
+- `rubino prompt` / `chat -q` exits **0** whenever the run completes and an
+  answer is printed — including when a tool request was **cleanly refused** by
+  policy along the way (a write outside the workspace boundary, a denied
+  approval, a hardline-blocked command). A refusal the agent handled and
+  explained is expected behavior, not an error.
+- It exits **non-zero** when the run itself fails: no usable credentials, the
+  `--resume`/`--session` target doesn't exist or is ambiguous, or the provider
+  call errors out. The reason is printed to stderr; the answer (when any) stays
+  on stdout.
+- `rubino doctor` exits **non-zero** when one or more required checks fail, so
+  CI can gate on it. Unknown subcommands also exit non-zero.
 
 ### server flags
 

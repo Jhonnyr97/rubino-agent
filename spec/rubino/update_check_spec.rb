@@ -63,6 +63,16 @@ RSpec.describe Rubino::UpdateCheck do
       File.write(File.join(@home, "update_check.json"), "{not json")
       expect(described_class.notice_from_cache).to be_nil
     end
+
+    # #66: the documented opt-out is "no network, no notice, no thread" — a
+    # previously-cached newer version must not leak the boot notice through.
+    it "hides the notice when RUBINO_NO_UPDATE_CHECK is set, even with a newer cached version" do
+      write_cache(latest: "0.4.1")
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("RUBINO_NO_UPDATE_CHECK").and_return("1")
+
+      expect(described_class.notice_from_cache).to be_nil
+    end
   end
 
   describe ".newer? / .semver?" do

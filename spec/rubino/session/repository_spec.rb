@@ -98,6 +98,31 @@ RSpec.describe Rubino::Session::Repository do
       expect(repo.find_by_id_or_title("modulo")[:id]).to eq(s[:id])
     end
 
+    # #70: the stored title is truncated (~60 chars), so a word from the TAIL
+    # of a long first prompt is not in the title at all. Resume must match
+    # against the full first user message, not just the truncated title.
+    it "matches a word from the truncated-away tail of the first user message" do
+      prompt = "Please refactor the billing pipeline so invoices are " \
+               "generated per tenant and emailed on schedule like four seasons"
+      title  = described_class.derive_title(prompt)
+      expect(title).not_to include("four seasons") # precondition: truncated away
+
+      s = repo.create(source: "cli", title: title)
+      Rubino::Session::Store.new(db: db_connection.db)
+                            .create(session_id: s[:id], role: "user", content: prompt)
+
+      expect(repo.find_by_id_or_title("four seasons")[:id]).to eq(s[:id])
+    end
+
+    it "matches the FIRST user message only, not later turns" do
+      s = repo.create(source: "cli", title: "short title")
+      store = Rubino::Session::Store.new(db: db_connection.db)
+      store.create(session_id: s[:id], role: "user", content: "first prompt")
+      store.create(session_id: s[:id], role: "user", content: "later xylophone prompt")
+
+      expect(repo.find_by_id_or_title("xylophone")).to be_nil
+    end
+
     it "returns nil when nothing matches" do
       expect(repo.find_by_id_or_title("absolutely-not-a-session")).to be_nil
     end
