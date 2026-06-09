@@ -206,6 +206,13 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   end
 
   describe "approval question formatting" do
+    # #109: a no-args tool call (e.g. a bare run_tests) used to render
+    # "Allow run_tests with:" followed by nothing — reading as truncated.
+    it "omits the 'with:' line entirely when there are no arguments (#109)" do
+      expect(executor.send(:approval_question, tool, {})).to eq("Allow #{tool.name}")
+      expect(executor.send(:approval_question, tool, nil)).to eq("Allow #{tool.name}")
+    end
+
     it "lays each argument on its own line" do
       question = executor.send(:approval_question, tool,
                                { "file_path" => "a.rb", "mode" => "w" })

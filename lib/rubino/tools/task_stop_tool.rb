@@ -47,6 +47,9 @@ module Rubino
 
         return "[#{task_id}] already #{entry.status} — nothing to stop." unless entry.status == :running
 
+        # Mark the stop first so the list/cards immediately show ◌ stopping and
+        # the unwind records as :stopped, not failed (#108/#13).
+        registry.request_stop(task_id)
         entry.runner&.cancel!
         # Stop-cascade (S5a): wake any descendant parked on a blocking ask_parent
         # so the whole subtree unwinds at once (no orphaned blocked grandchild).

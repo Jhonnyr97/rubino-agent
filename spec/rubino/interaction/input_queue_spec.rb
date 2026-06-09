@@ -86,6 +86,45 @@ RSpec.describe Rubino::Interaction::InputQueue do
     end
   end
 
+  # #13: background-task notices are NOT user turns. They park on their own
+  # channel: #shift (the idle-prompt consumer) never returns them, so a
+  # completion notice can't fire a standalone model turn; #drain and
+  # #drain_notices deliver them on the next real injection boundary.
+  describe "#push_notice (background notices, #13)" do
+    it "is never returned by #shift (no standalone idle turn)" do
+      queue.push_notice("[background-task] sa_1 completed")
+      expect(queue.shift).to be_nil
+    end
+
+    it "is included by #drain, ahead of typed lines" do
+      queue.push("typed line")
+      queue.push_notice("[background-task] sa_1 completed")
+      expect(queue.drain).to eq(["[background-task] sa_1 completed", "typed line"])
+    end
+
+    it "#drain_notices returns only notices, leaving typed lines parked" do
+      queue.push("typed line")
+      queue.push_notice("[background-task] sa_1 completed")
+
+      expect(queue.drain_notices).to eq(["[background-task] sa_1 completed"])
+      expect(queue.shift).to eq("typed line")
+    end
+
+    it "marks the queue pending" do
+      expect(queue.pending?).to be(false)
+      queue.push_notice("[background-task] sa_1 completed")
+      expect(queue.pending?).to be(true)
+      queue.drain_notices
+      expect(queue.pending?).to be(false)
+    end
+
+    it "drops nil/blank notices" do
+      queue.push_notice(nil)
+      queue.push_notice("   ")
+      expect(queue.pending?).to be(false)
+    end
+  end
+
   describe "#pending?" do
     it "is false on a fresh queue" do
       expect(queue.pending?).to be(false)

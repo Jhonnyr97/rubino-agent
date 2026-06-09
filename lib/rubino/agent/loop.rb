@@ -107,10 +107,10 @@ module Rubino
           # and any prior assistant(tool_use) + tool(result) messages from the
           # previous iteration are already appended, so adding a USER message
           # here can never split a tool_use from its results (no orphan pair on
-          # strict providers). Skip iteration 1 — the initial user input is
-          # already the user turn; only later iterations are tool-result
-          # follow-ups into which fresh user text can be folded.
-          inject_steered_input(messages, iteration) if iteration > 1
+          # strict providers). On iteration 1 the initial user input is already
+          # the user turn, so only parked background NOTICES fold in (#13);
+          # typed lines stay queued for their own turns.
+          inject_steered_input(messages, iteration)
 
           unless @budget.can_continue?(iteration)
             @ui.warning("Iteration budget exhausted (#{iteration} turns)")
@@ -211,7 +211,11 @@ module Rubino
       def inject_steered_input(messages, iteration)
         return unless @input_queue&.pending?
 
-        lines = @input_queue.drain
+        # Iteration 1's user input IS the turn: only parked background notices
+        # ([background-task] completion lines) fold in at turn start, so a
+        # notice never spends a standalone model turn restating itself (#13).
+        # Later iterations drain everything (typed steering + notices).
+        lines = iteration > 1 ? @input_queue.drain : @input_queue.drain_notices
         return if lines.empty?
 
         text = lines.join("\n")

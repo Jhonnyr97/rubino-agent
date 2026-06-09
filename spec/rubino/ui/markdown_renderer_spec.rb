@@ -145,6 +145,40 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
         end
       end
 
+      # Issue #104: kramdown parses the typographic apostrophe U+2019 as a
+      # separate :smart_quote token, splitting "don’t" into three inline
+      # fragments. Treating each fragment as its own word made the wrapper
+      # re-join them with injected spaces ("don ’ t") whenever the line
+      # wrapped. Fragments not separated by whitespace must stay glued.
+      it "keeps contractions with a typographic apostrophe intact when wrapping (#104)" do
+        width  = 30
+        md     = "Well don’t you worry because it’s going to take just un’ora before I’ll finish everything"
+        blocks = described_class.new(width: width).render(md)
+        lines  = lines_of(blocks)
+
+        expect(lines.size).to be > 1
+        joined = lines.join(" ")
+        expect(joined).to include("don’t")
+        expect(joined).to include("it’s")
+        expect(joined).to include("un’ora")
+        expect(joined).to include("I’ll")
+        expect(joined).not_to include("’ ")
+        expect(joined).not_to include(" ’")
+      end
+
+      it "keeps a styled fragment glued to its unstyled neighbors when wrapping" do
+        width  = 20
+        # **bold**-suffix: "re" + bold "run" + "s" are three fragments with no
+        # whitespace between them; they must render as one word, styles intact.
+        md     = "the long command re**run**s again and again and again"
+        blocks = described_class.new(width: width).render(md)
+        lines  = lines_of(blocks)
+
+        expect(lines.join(" ")).to include("reruns")
+        bold = blocks.flatten(1).find { |t, _| t == "run" }
+        expect(bold.last[:modifiers]).to include(:bold)
+      end
+
       it "leaves ASCII wrapping byte-for-byte unchanged (no regression)" do
         # For pure ASCII, display width == String#length, so the column budget
         # reproduces the exact same break points as the old char-count logic.

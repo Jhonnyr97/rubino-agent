@@ -197,6 +197,51 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     end
   end
 
+  # #108/#13: a /agents --stop (or task_stop) marks the entry :stopping so the
+  # list/cards reflect the request immediately, and the worker's terminal write
+  # maps a stop-induced failure to :stopped — never a plain ✗ failed.
+  describe "stop request (#108/#13)" do
+    it "flips a live entry to :stopping and reports true" do
+      entry = reserve
+      expect(registry.request_stop(entry.id)).to be(true)
+      expect(registry.find(entry.id).status).to eq(:stopping)
+    end
+
+    it "returns false for an unknown or already-finished entry" do
+      entry = reserve
+      registry.complete(entry, status: :completed, result: "done")
+      expect(registry.request_stop(entry.id)).to be(false)
+      expect(registry.request_stop("sa_missing")).to be(false)
+      expect(registry.find(entry.id).status).to eq(:completed)
+    end
+
+    it "keeps a :stopping entry live (it still holds a slot while unwinding)" do
+      entry = reserve
+      registry.request_stop(entry.id)
+      expect(registry.running.map(&:id)).to include(entry.id)
+    end
+
+    it "records a failure on a :stopping entry as :stopped" do
+      entry = reserve
+      registry.request_stop(entry.id)
+      registry.complete(entry, status: :failed, error: "interrupted by user")
+      expect(registry.find(entry.id).status).to eq(:stopped)
+    end
+
+    it "records a normal completion on a :stopping entry truthfully as :completed" do
+      entry = reserve
+      registry.request_stop(entry.id)
+      registry.complete(entry, status: :completed, result: "finished anyway")
+      expect(registry.find(entry.id).status).to eq(:completed)
+    end
+
+    it "records a failure on a non-stopping entry as :failed (unchanged)" do
+      entry = reserve
+      registry.complete(entry, status: :failed, error: "boom")
+      expect(registry.find(entry.id).status).to eq(:failed)
+    end
+  end
+
   describe "approval-surfacing state" do
     it "flips an entry to :needs_approval and stores the gate + command" do
       entry = reserve

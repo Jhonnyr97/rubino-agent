@@ -511,6 +511,14 @@ RSpec.describe Rubino::UI::CLI do
       end
     end
 
+    # #105: the delegation header label is user-facing UI and must be English
+    # ("delegated", not the Italian "delegato").
+    it "renders an English 'delegated →' header for the delegation row (#105)" do
+      out = capture_stdout { ui.tool_started("task", arguments: { subagent: "explore", prompt: "hi" }) }
+      expect(out).to include("● delegated → explore")
+      expect(out).not_to include("delegato")
+    end
+
     it "renders ✓ when the delegation succeeded" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1", output: "Started background subagent 'explore' as task sa_1."
@@ -547,6 +555,18 @@ RSpec.describe Rubino::UI::CLI do
       out = render_delegation(result)
       expect(out).to include("✗ explore")
       expect(out).not_to include("✓ explore")
+    end
+  end
+
+  # #106/#107: off a real terminal TTY::Prompt would leak raw cursor-control
+  # escapes (ESC[4A / ESC[2K / ESC[1G) into the piped stream and read whatever
+  # ambient stdin held. #ask must fail closed: deterministic nil, zero output.
+  describe "#ask off a TTY" do
+    it "returns nil and emits nothing when stdout is not a TTY (#106)" do
+      out = capture_stdout do
+        expect(ui.ask("Red or blue?")).to be_nil
+      end
+      expect(out).to eq("")
     end
   end
 
