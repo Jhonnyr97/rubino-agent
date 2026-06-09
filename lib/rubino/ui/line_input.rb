@@ -217,9 +217,13 @@ module Rubino
       # (1) git: tracked + untracked, honoring .gitignore, no FS walk of our own.
       # nil (not []) on failure so the caller falls through to the next tier.
       def git_files(root)
+        # err: File::NULL so git's "fatal: not a git repository" (and any other
+        # diagnostic) goes to the bit-bucket instead of bleeding onto the prompt
+        # line in a non-git workspace (D5). On failure we still fall through to
+        # rg/glob below.
         out, status = Open3.capture2(
           "git", "ls-files", "--cached", "--others", "--exclude-standard",
-          chdir: root
+          chdir: root, err: File::NULL
         )
         return nil unless status.success?
 
@@ -233,7 +237,8 @@ module Rubino
       def rg_files(root)
         return nil unless ripgrep_available?
 
-        out, status = Open3.capture2("rg", "--files", chdir: root)
+        # err: File::NULL — same stderr-leak guard as git_files (D5).
+        out, status = Open3.capture2("rg", "--files", chdir: root, err: File::NULL)
         return nil unless status.success?
 
         out.split("\n").reject(&:empty?)

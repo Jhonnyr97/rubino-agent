@@ -111,7 +111,7 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("ctrl-o to hide")
     end
 
-    it "ctrl-o reveal is idempotent — a second press does NOT re-emit the aside" do
+    it "ctrl-o reveal is idempotent — a second press is a SILENT no-op (D2)" do
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
       capture_stdout do
         ui.thinking_started
@@ -121,11 +121,15 @@ RSpec.describe Rubino::UI::CLI do
       end
       first  = capture_stdout { ui.reveal_last_reasoning }
       second = capture_stdout { ui.reveal_last_reasoning }
+      third  = capture_stdout { ui.reveal_last_reasoning }
       expect(first).to include("┊  first thought.")
-      # Second press must NOT re-print the aside block; a tiny ack is fine.
+      # Every subsequent press prints NOTHING — no aside, and no ack line
+      # ("┄ already shown ┄" was scrollback spam; D2 removed it). True silence.
       expect(second).not_to include("┊  first thought.")
       expect(second).not_to match(/┄ thinking ┄/)
-      expect(second).to include("┄ already shown ┄")
+      expect(second).not_to include("already shown")
+      expect(second).to eq("")
+      expect(third).to eq("")
     end
 
     it "a NEW retained thought resets the reveal guard so its first ctrl-o works" do

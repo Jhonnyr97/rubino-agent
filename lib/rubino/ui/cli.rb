@@ -582,17 +582,17 @@ module Rubino
       def reveal_last_reasoning
         return if @last_reasoning.nil? || @last_reasoning.strip.empty?
 
-        # IDEMPOTENT: a scrollback aside can't be un-printed, so revealing the
-        # SAME retained buffer twice would just stack an identical block. Once
-        # this thought has been revealed, a second Ctrl+O prints a single dim
-        # acknowledgment instead of re-emitting the whole aside. #collapse_reasoning
-        # clears the flag when a NEW thought is retained, so its first reveal works.
-        if @last_reasoning_revealed
-          $stdout.puts @pastel.dim("┄ already shown ┄")
-        else
-          commit_reasoning_aside(@last_reasoning, @last_reasoning_seconds.to_i)
-          @last_reasoning_revealed = true
-        end
+        # IDEMPOTENT + SILENT: a scrollback aside can't be un-printed, so
+        # revealing the SAME retained buffer twice would just stack an identical
+        # block. Once this thought has been revealed, any further Ctrl+O is a
+        # true silent no-op — we print NOTHING (no ack line), so a human mashing
+        # Ctrl+O gets silence, not growing scrollback. #collapse_reasoning clears
+        # the flag when a NEW thought is retained, so its first reveal works, and
+        # a new turn resets it so its first reveal works again.
+        return if @last_reasoning_revealed
+
+        commit_reasoning_aside(@last_reasoning, @last_reasoning_seconds.to_i)
+        @last_reasoning_revealed = true
         # Re-emit the idle prompt so the cursor returns to a proper prompt line
         # instead of being stranded on a bare line below the reveal. Guarded —
         # degrade silently if Reline isn't the active input (e.g. in-turn).

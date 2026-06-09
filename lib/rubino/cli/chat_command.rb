@@ -629,6 +629,13 @@ module Rubino
         image_paths = pending_image_paths
         @pending_image_paths = []
 
+        # Arm the idle-key gate (item 5): for the duration of this turn, Ctrl+O /
+        # Shift+Tab are a hard no-op (both the idle Reline path and the in-turn
+        # composer callbacks route through IdleKeyActions and check turn_active),
+        # so their out-of-band $stdout writes can't race / smear the streaming
+        # answer. Disarmed in the ensure below so the keys work again at idle.
+        UI::IdleKeyActions.begin_turn!
+
         last_int_at = nil
         in_trap     = false
 
@@ -675,6 +682,8 @@ module Rubino
         ui.warning("turn cancelled")
         raise
       ensure
+        # Disarm the idle-key gate — the idle prompt is the active reader again.
+        UI::IdleKeyActions.end_turn!
         stop_composer(composer, real_stdout)
         Signal.trap("INT", prev) if prev
       end
@@ -887,11 +896,20 @@ module Rubino
       # The Ctrl+O callback for the composer: reveal the last retained reasoning
       # aside via the UI adapter (the CLI keeps the buffer). nil when the adapter
       # doesn't support it, so the composer treats Ctrl+O as a no-op.
+      #
+      # Gated by IdleKeyActions.turn_active (item 5): while a turn is streaming,
+      # this is a no-op so the reveal can't $stdout-write into / race the answer
+      # (interim cover for D1/D3/D4). The same gate covers the idle Reline path,
+      # which routes through IdleKeyActions.reveal_reasoning.
       def ctrl_o_handler
         ui = Rubino.ui
         return nil unless ui.respond_to?(:reveal_last_reasoning)
 
-        -> { ui.reveal_last_reasoning }
+        lambda {
+          return nil if UI::IdleKeyActions.turn_active
+
+          ui.reveal_last_reasoning
+        }
       end
 
       # The Shift+Tab callback for the composer: cycle the mode to the next in
@@ -899,8 +917,17 @@ module Rubino
       # transient house-style footer with the new mode's description, and RETURN
       # the freshly-built prompt chip so the composer can redraw it. The composer
       # holds no mode logic — it just adopts the returned prompt.
+      #
+      # Gated by IdleKeyActions.turn_active (item 5): while a turn is streaming,
+      # this is a no-op so the mode footer can't $stdout-write into / race the
+      # answer (interim cover for D3). Returning nil leaves the composer prompt
+      # unchanged.
       def mode_cycle_handler
-        -> { cycle_mode }
+        lambda {
+          return nil if UI::IdleKeyActions.turn_active
+
+          cycle_mode
+        }
       end
 
       # Route Shift+Tab / Ctrl+O at the IDLE Reline prompt to the SAME handlers

@@ -90,26 +90,47 @@ module Rubino
       # dialog WITHOUT committing the currently arrowed candidate AND clears the
       # in-progress `/token` from the composer (F8 — previously ESC only closed
       # the menu and left `/xyz` in the buffer; L8 — and it used to leak the
-      # highlighted entry, e.g. "/exit", into the buffer). When the dialog isn't
-      # open, fall through to the native ed_unassigned no-op so a lone ESC is
-      # harmless. Every internal touched is guarded so a Reline rename degrades to
-      # "do nothing" rather than crashing the prompt.
+      # highlighted entry, e.g. "/exit", into the buffer).
+      #
+      # D6: ESC must clear the in-progress `/token` even when the dropdown has
+      # ALREADY been torn down by an intervening edit. Arrowing the journey
+      # commits the highlighted candidate into the line buffer (Reline's
+      # move_completed_list calls set_current_line); a subsequent Backspace then
+      # resets @completion_journey_state to nil (input_key, !@completion_occurs),
+      # so the dialog is no longer "open" — but the partial candidate (e.g.
+      # `/repl`) is still sitting in the buffer. If ESC only acted while the
+      # dropdown was open it would leave that fragment, which then fuses with the
+      # retyped command into garbage like `/repreaso`. So we clear an in-progress
+      # `/…` token unconditionally. clear_inprogress_slash_command only touches a
+      # lone single-line `/…` buffer, so a lone ESC on plain text (or multi-line
+      # work) stays a harmless no-op. Every internal touched is guarded so a
+      # Reline rename degrades to "do nothing" rather than crashing the prompt.
       def dismiss_completion_dialog(key)
-        return ed_unassigned(key) unless dropdown_open?
-
-        # Tear down the journey so the highlighted candidate is NOT inserted, and
-        # force the dialogs to re-render closed on the next paint.
-        @completion_journey_state = nil
-        @completion_occurs = false
-        if @dialogs.respond_to?(:each)
-          @dialogs.each do |d|
-            d.contents = nil if d.respond_to?(:name) && d.name == :autocomplete && d.respond_to?(:contents=)
-          end
+        if dropdown_open?
+          tear_down_completion_dialog
+          clear_inprogress_slash_command
+          return nil
         end
-        clear_inprogress_slash_command
-        nil
+
+        # Dropdown already closed: still scrub any leftover `/…` fragment so a
+        # retype builds a clean token; otherwise behave like the native no-op.
+        return nil if clear_inprogress_slash_command
+
+        ed_unassigned(key)
       rescue StandardError
         nil
+      end
+
+      # Tear down the journey so the highlighted candidate is NOT committed, and
+      # force the dialogs to re-render closed on the next paint.
+      def tear_down_completion_dialog
+        @completion_journey_state = nil
+        @completion_occurs = false
+        return unless @dialogs.respond_to?(:each)
+
+        @dialogs.each do |d|
+          d.contents = nil if d.respond_to?(:name) && d.name == :autocomplete && d.respond_to?(:contents=)
+        end
       end
 
       # Clears a half-typed slash command (a single-line buffer beginning with
@@ -117,15 +138,22 @@ module Rubino
       # a lone "/…" line — multi-line input or non-slash text is left untouched
       # so ESC never destroys real work. Uses the public set_current_line seam
       # (same one Reline's own completion uses) and is fully guarded.
+      #
+      # Returns true when it cleared a `/…` token, false/nil otherwise, so the
+      # caller can decide whether ESC also needs the native no-op (D6).
       def clear_inprogress_slash_command
-        return unless respond_to?(:current_line, true) && respond_to?(:set_current_line, true)
+        return false unless respond_to?(:current_line, true) && respond_to?(:set_current_line, true)
 
         line = current_line.to_s
-        return unless line.start_with?("/")
+        return false unless line.start_with?("/")
+        # Only a single-line buffer — never flatten/destroy a multi-line draft.
+        lines = instance_variable_get(:@buffer_of_lines)
+        return false if lines.respond_to?(:size) && lines.size > 1
 
         set_current_line("", 0)
+        true
       rescue StandardError
-        nil
+        false
       end
 
       # Shift+Tab at the idle prompt: cycle the agent mode. The editor action

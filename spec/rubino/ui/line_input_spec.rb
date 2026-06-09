@@ -262,6 +262,50 @@ RSpec.describe Rubino::UI::LineInput do
       end
     end
 
+    # D6: arrowing the journey commits the highlighted candidate into the buffer;
+    # a subsequent edit (Backspace) tears the dialog down, so by the time ESC is
+    # pressed the dropdown is NO LONGER open but a partial `/token` fragment is
+    # still sitting in the buffer. ESC must scrub that fragment so a retyped
+    # command builds a clean token (otherwise the two fuse into garbage like
+    # `/repreaso`). A lone ESC on plain text must still be a harmless no-op.
+    context "ESC scrubs a leftover slash fragment after the dropdown closed (D6)" do
+      let(:editor_with_line_class) do
+        Class.new(editor_class) do
+          attr_accessor :line, :cleared_to
+          def current_line = @line
+          def set_current_line(line, byte_pointer = nil)
+            @line = line
+            @cleared_to = byte_pointer
+          end
+        end
+      end
+
+      subject(:editor) { editor_with_line_class.new }
+
+      before do
+        # Dropdown already torn down by the intervening edit.
+        editor.config = open_config
+        editor.completion_journey_state = nil
+        editor.dialogs = []
+      end
+
+      it "clears a leftover `/repl` fragment so the retype is clean" do
+        editor.line = "/repl"
+        editor.dismiss_completion_dialog(:key)
+        expect(editor.line).to eq("")
+        expect(editor.cleared_to).to eq(0)
+        # It cleared, so it must NOT also fall through to the native no-op.
+        expect(editor.history_calls).to be_empty
+      end
+
+      it "is a harmless no-op on plain (non-slash) text" do
+        editor.line = "real work in progress"
+        editor.dismiss_completion_dialog(:key)
+        expect(editor.line).to eq("real work in progress")
+        expect(editor.history_calls).to eq([:unassigned])
+      end
+    end
+
     context "when the dropdown is not open" do
       before do
         editor.config = open_config
@@ -359,6 +403,43 @@ RSpec.describe Rubino::UI::LineInput do
       described_class.on_mode_cycle = -> { raise "boom" }
       expect { described_class.cycle_mode }.not_to raise_error
       expect(described_class.cycle_mode).to be_nil
+    end
+
+    # Item 5 gate (interim cover for D1/D3/D4): while a turn is active the idle
+    # key actions must be a hard no-op so their out-of-band $stdout writes can't
+    # race the streaming answer. The chat loop sets turn_active around #run_turn.
+    context "turn-active gate" do
+      it "no-ops cycle_mode while a turn is active and never calls the proc" do
+        called = []
+        described_class.on_mode_cycle = -> { called << :cycle; "chip" }
+        described_class.begin_turn!
+        expect(described_class.cycle_mode).to be_nil
+        expect(called).to be_empty
+      end
+
+      it "no-ops reveal_reasoning while a turn is active and never calls the proc" do
+        called = []
+        described_class.on_reveal_reasoning = -> { called << :reveal }
+        described_class.begin_turn!
+        expect(described_class.reveal_reasoning).to be_nil
+        expect(called).to be_empty
+      end
+
+      it "acts again once the turn ends" do
+        called = []
+        described_class.on_mode_cycle = -> { called << :cycle; "chip" }
+        described_class.begin_turn!
+        described_class.cycle_mode
+        described_class.end_turn!
+        expect(described_class.cycle_mode).to eq("chip")
+        expect(called).to eq([:cycle])
+      end
+
+      it "reset! clears the gate" do
+        described_class.begin_turn!
+        described_class.reset!
+        expect(described_class.turn_active).to be(false)
+      end
     end
   end
 
@@ -473,6 +554,28 @@ RSpec.describe Rubino::UI::LineInput do
         expect(result).to include("plain.rb")
         expect(result).not_to include(a_string_starting_with(".git/"))
         expect(result).not_to include(a_string_starting_with("node_modules/"))
+      end
+
+      # D5: in a NON-git dir, `git ls-files` writes "fatal: not a git repository"
+      # to STDERR. With err: File::NULL that diagnostic must never reach the tty
+      # (it used to bleed onto the prompt line), git_files returns nil, and
+      # discovery falls through to glob and still returns clean candidates.
+      context "in a non-git workspace (D5)" do
+        it "git_files returns nil and leaks nothing to stderr" do
+          # @root has no .git — a real git invocation. err: File::NULL means
+          # git's "fatal: not a git repository" must NOT reach process STDERR.
+          expect do
+            @result = li.send(:git_files, @root)
+          end.not_to output(/not a git repository|fatal/).to_stderr
+          expect(@result).to be_nil
+        end
+
+        it "discovery still returns clean candidates via the glob fallback" do
+          allow(li).to receive(:rg_files).and_return(nil) # force glob tier
+          files = li.send(:discover_files, @root)
+          expect(files).to include("plain.rb")
+          expect(files.join).not_to include("fatal")
+        end
       end
     end
   end
