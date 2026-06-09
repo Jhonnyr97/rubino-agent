@@ -195,6 +195,17 @@ Risk: low
 Parameters: question, options[], multiple
 ```
 
+Non-interactive / no-TTY behavior: the tool fails closed. When there is no
+interactive terminal to prompt on — a piped or redirected `rubino prompt`
+(stdin or stdout not a TTY), a subagent context, or an API/server run with no
+pending clarify gate — nothing is prompted and no terminal escape sequences
+are emitted. The tool immediately returns a deterministic structured result
+("No answer: no interactive user input available …") instructing the model
+not to assume a choice on the user's behalf. It never reads ambient stdin and
+never silently auto-selects an option. On the HTTP API path with a clarify
+gate wired, the question is still delivered as a `clarify.required` event and
+the tool waits for the client's answer as before.
+
 ### todowrite
 
 Track tasks during a session.
