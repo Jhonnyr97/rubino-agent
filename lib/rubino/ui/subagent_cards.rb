@@ -65,7 +65,8 @@ module Rubino
           approval_card_line(entry)
         else
           glyph = @pastel.cyan(COLLAPSED)
-          body  = "#{entry.id} · #{entry.subagent} · running · " \
+          state = entry.status == :stopping ? "stopping" : "running"
+          body  = "#{entry.id} · #{entry.subagent} · #{state} · " \
                   "#{entry.tool_count.to_i} tools · #{elapsed(entry)}"
           body += " · #{entry.last_activity}" unless entry.last_activity.to_s.empty?
           "  #{glyph} #{body}"
@@ -98,7 +99,7 @@ module Rubino
       private
 
       def live?(entry)
-        %i[running needs_approval blocked_on_human].include?(entry.status)
+        %i[running needs_approval blocked_on_human stopping].include?(entry.status)
       end
 
       # Shared hint under the block. When something needs approval the hint leads

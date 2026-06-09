@@ -658,8 +658,11 @@ module Rubino
         @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
         @ui.info("task: #{truncate(entry.prompt, 200)}")
         @ui.separator
-        if entry.status == :failed
+        case entry.status
+        when :failed
           @ui.error(entry.error.to_s.empty? ? "(failed, no error message)" : entry.error.to_s)
+        when :stopped
+          @ui.info("(stopped at your request — no result)")
         else
           @ui.info(entry.result.to_s.empty? ? "(no output)" : entry.result.to_s)
         end
@@ -791,6 +794,11 @@ module Rubino
         # unwinds instead of holding its thread until the bound. The stop-cascade
         # then wakes every DESCENDANT parked on a blocking ask too, so the whole
         # subtree unwinds at once (S5a — no orphaned blocked grandchild).
+        # Mark the stop FIRST so the very next /agents list shows ◌ stopping
+        # instead of a stale ● running (#108), and so the worker's terminal
+        # write records the unwind as :stopped, not ✗ failed (#13) — then wake
+        # the gates/runner.
+        registry.request_stop(id)
         entry.approval_gate&.cancel!
         entry.ask_gate&.cancel!
         registry.cancel_descendant_ask_gates(id)
@@ -805,6 +813,8 @@ module Rubino
         glyph, word, color =
           case status
           when :running          then ["●", "running", :yellow]
+          when :stopping         then ["◌", "stopping", :yellow]
+          when :stopped          then ["⊘", "stopped", :yellow]
           when :needs_approval   then ["●", "approval", :yellow]
           when :blocked_on_human then ["⛔", "waiting on you", :red]
           when :blocked_on_parent then ["◷", "waiting on parent", :cyan]

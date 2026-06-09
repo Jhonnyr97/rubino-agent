@@ -512,6 +512,33 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(sink.drain.join).to include("failed: boom")
     end
 
+    # #108/#13: a child unwinding after a deliberate stop (Interrupted at its
+    # next checkpoint) must surface as "stopped", never as a failure notice.
+    it "records :stopped + a stopped notice when a stop-requested child unwinds" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = Class.new do
+        define_method(:run!) do |_input, **_opts|
+          latch.pop
+          raise Rubino::Interrupted, "interrupted by user"
+        end
+        define_method(:cancel!) {}
+      end.new
+      tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "x") }
+      task_id = out[/sa_[0-9a-f]+/]
+
+      Rubino::Tools::BackgroundTasks.instance.request_stop(task_id)
+      latch << :go
+      wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).status == :stopped }
+
+      wait_until { sink.pending? }
+      notice = sink.drain.join("\n")
+      expect(notice).to include("stopped")
+      expect(notice).not_to include("failed")
+    end
+
     it "refuses past MAX_CONCURRENT live subagents" do
       latch = Queue.new
       tool  = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { gated_runner("x", latch) })

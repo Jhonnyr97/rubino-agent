@@ -325,6 +325,36 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to include("already completed")
     end
 
+    # #108: after a stop request the list must reflect it immediately —
+    # showing plain "● running" right after "Stop requested" reads as if the
+    # stop did nothing while the child unwinds at its next checkpoint.
+    it "--stop flips the list status to stopping right away (#108)" do
+      child = instance_double(Rubino::Agent::Runner, cancel!: nil)
+      e = reg.reserve(subagent: "explore", prompt: "x")
+      reg.attach(e, thread: Thread.new {}, runner: child)
+
+      exec.try_execute("/agents #{e.id} --stop")
+      exec.try_execute("/agents")
+
+      cells = table_rows.flatten.join(" ")
+      expect(cells).to include("stopping")
+      expect(cells).not_to include("running")
+    end
+
+    # #13 (status model): a deliberate stop must not end up as red ✗ failed.
+    it "a stop-requested child that unwinds with a failure lists as stopped, not failed (#108/#13)" do
+      child = instance_double(Rubino::Agent::Runner, cancel!: nil)
+      e = reg.reserve(subagent: "explore", prompt: "x")
+      reg.attach(e, thread: Thread.new {}, runner: child)
+      exec.try_execute("/agents #{e.id} --stop")
+      reg.complete(e, status: :failed, error: "interrupted by user")
+
+      exec.try_execute("/agents")
+      cells = table_rows.flatten.join(" ")
+      expect(cells).to include("stopped")
+      expect(cells).not_to include("failed")
+    end
+
     describe "approval-surfacing drill-in (Option 2)" do
       let(:gate) { Rubino::Run::ApprovalGate.new }
 

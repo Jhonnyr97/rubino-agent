@@ -225,12 +225,21 @@ module Rubino
                         status: "completed", output: truncate(text, 400))
       rescue Exception => e # rubocop:disable Lint/RescueException
         BackgroundTasks.instance.complete(entry, status: :failed, error: e.message)
-        notify(sink, failure_notice(entry, e.message))
-        surface_completion(parent_ui, "✗ #{entry.id} · #{entry.subagent} · failed: #{e.message}")
+        # A failure landing on a stop-requested entry was recorded as :stopped
+        # (BackgroundTasks#complete): a deliberate /agents --stop / task_stop
+        # must not surface as a ✗ "failed" notice (#108/#13).
+        if entry.status == :stopped
+          notify(sink, stopped_notice(entry))
+          surface_completion(parent_ui, "⊘ #{entry.id} · #{entry.subagent} · stopped at your request")
+        else
+          notify(sink, failure_notice(entry, e.message))
+          surface_completion(parent_ui, "✗ #{entry.id} · #{entry.subagent} · failed: #{e.message}")
+        end
         repaint_parent_cards(parent_ui)
         event_bus&.emit(Interaction::Events::SUBAGENT_FAILED,
                         task_id: entry.id, subagent: entry.subagent,
-                        status: "failed", error: e.message)
+                        status: entry.status == :stopped ? "stopped" : "failed",
+                        error: e.message)
       end
 
       # One committed summary line for a finished subagent, folded above the
@@ -286,6 +295,11 @@ module Rubino
 
       def failure_notice(entry, message)
         "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') failed: #{message}"
+      end
+
+      def stopped_notice(entry)
+        "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') was stopped " \
+          "at the user's request — no action needed."
       end
 
       def spawn_handle(entry, definition)
