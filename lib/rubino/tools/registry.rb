@@ -110,6 +110,12 @@ module Rubino
           # any strip list — scoping happens inside the tool, not in the registry.
           register(Rubino::Tools::SteerTool.new)
           register(Rubino::Tools::ProbeTool.new)
+          # answer_child (S4): the MODEL-callable answer to a child's ask_parent,
+          # the agent-parent twin of the human /reply. Registered for ALL agents
+          # and AUTHORIZED by ownership at call time (like steer/probe). NOT on
+          # any strip list — a node with no waiting child just gets a not-waiting
+          # / not-yours error.
+          register(Rubino::Tools::AnswerChildTool.new)
         end
 
         private

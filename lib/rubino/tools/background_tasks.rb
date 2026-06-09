@@ -276,7 +276,12 @@ module Rubino
       # delivered later via the steer queue. A child in this state still holds a
       # concurrency slot (its thread is alive, or it is awaiting the human), so it
       # counts as live.
-      def begin_ask(id, gate:, ask_id:, question:, blocking:)
+      # The status depends on WHO owns the asking child (S4): owner_id present (an
+      # agent-parent) → :blocked_on_parent (the parent MODEL answers via
+      # answer_child; the question was pushed onto the owner's steer_queue, NOT
+      # the human's job); owner_id nil (the human / top-level) → :blocked_on_human
+      # (the human answers via /reply <id>).
+      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil)
         @mutex.synchronize do
           entry = @entries[id]
           return unless entry
@@ -285,12 +290,13 @@ module Rubino
           entry.ask_id       = ask_id
           entry.ask_question = question.to_s
           entry.ask_blocking = blocking ? true : false
-          entry.status       = :blocked_on_human
+          entry.status       = owner_id ? :blocked_on_parent : :blocked_on_human
         end
       end
 
-      # Clears the ask state and returns the entry to :running once the human has
-      # answered (or the child unwinds / is stopped).
+      # Clears the ask state and returns the entry to :running once the question
+      # has been answered (by the human via /reply, or the agent-parent via
+      # answer_child), or the child unwinds / is stopped.
       def end_ask(id)
         @mutex.synchronize do
           entry = @entries[id]
@@ -300,13 +306,34 @@ module Rubino
           entry.ask_id       = nil
           entry.ask_question = nil
           entry.ask_blocking = nil
-          entry.status       = :running if entry.status == :blocked_on_human
+          entry.status       = :running if %i[blocked_on_human blocked_on_parent].include?(entry.status)
         end
+      end
+
+      # The ONE shared answer wire for an escalated ask_parent, used by BOTH the
+      # human /reply path (Commands::Executor#deliver_reply) and the model-callable
+      # `answer_child` tool: route the answer back DOWN to the asking child by
+      # (1) deciding its ask gate — unblocks a BLOCKING ask with the answer as its
+      # tool result — and (2) pushing the answer onto its steer queue so a
+      # NON-BLOCKING ask folds it in at its next turn boundary; then clear the
+      # blocked state (#end_ask). Either way the answer PERSISTS in the child's
+      # context. No-op (returns false) for an unknown id or one not awaiting an
+      # answer (no ask_gate); true when the answer was routed.
+      def deliver_answer(id, answer)
+        entry = find(id)
+        return false unless entry&.ask_gate
+
+        entry.ask_gate.decide(entry.ask_id, answer)
+        steer(entry.id, "[parent answer] #{answer}")
+        end_ask(entry.id)
+        true
       end
 
       # Entries parked on an escalated ask_parent, waiting on THE HUMAN — the
       # source of the persistent \"\u26d4 N subagent waiting on you\" marker and
-      # answerable via /reply <id>.
+      # answerable via /reply <id>. Counts ONLY :blocked_on_human: a
+      # :blocked_on_parent child is its agent-parent's job (answer_child), not the
+      # human's, so it must NOT inflate the human's "waiting on you" count.
       def awaiting_human
         @mutex.synchronize { @entries.values.select { |e| e.status == :blocked_on_human } }
       end
@@ -434,9 +461,10 @@ module Rubino
 
       # A child holds a concurrency slot while its thread is alive — whether
       # actively running, parked on a human approval, or parked on an escalated
-      # ask_parent question waiting on the human.
+      # ask_parent question (waiting on the human OR on its agent-parent). Both
+      # blocked states hold a live thread, so both count as live.
       def live_status?(status)
-        status == :running || status == :needs_approval || status == :blocked_on_human
+        %i[running needs_approval blocked_on_human blocked_on_parent].include?(status)
       end
 
       def running_count
