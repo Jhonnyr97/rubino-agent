@@ -582,7 +582,42 @@ module Rubino
       def reveal_last_reasoning
         return if @last_reasoning.nil? || @last_reasoning.strip.empty?
 
-        commit_reasoning_aside(@last_reasoning, @last_reasoning_seconds.to_i, hint: "ctrl-o to show")
+        # IDEMPOTENT: a scrollback aside can't be un-printed, so revealing the
+        # SAME retained buffer twice would just stack an identical block. Once
+        # this thought has been revealed, a second Ctrl+O prints a single dim
+        # acknowledgment instead of re-emitting the whole aside. #collapse_reasoning
+        # clears the flag when a NEW thought is retained, so its first reveal works.
+        if @last_reasoning_revealed
+          $stdout.puts @pastel.dim("┄ already shown ┄")
+        else
+          commit_reasoning_aside(@last_reasoning, @last_reasoning_seconds.to_i)
+          @last_reasoning_revealed = true
+        end
+        # Re-emit the idle prompt so the cursor returns to a proper prompt line
+        # instead of being stranded on a bare line below the reveal. Guarded —
+        # degrade silently if Reline isn't the active input (e.g. in-turn).
+        redisplay_idle_prompt
+      end
+
+      # Ask Reline to repaint its prompt + current buffer after out-of-band
+      # output (the Ctrl+O reveal) has scrolled below the parked idle prompt.
+      # Uses the public Reline line-refresh seam; fully guarded so a Reline that
+      # lacks it (or a non-Reline input path) degrades to a no-op rather than
+      # crashing the prompt. Does NOT attempt to move the reveal above the prompt
+      # (that's the deferred pinned-layout work) — it only restores the prompt
+      # line so the cursor isn't left bare.
+      def redisplay_idle_prompt
+        return unless defined?(Reline)
+
+        core = Reline.respond_to?(:core) ? Reline.core : nil
+        line_editor = core&.instance_variable_get(:@line_editor)
+        if line_editor.respond_to?(:rerender)
+          line_editor.rerender
+        elsif core.respond_to?(:line_editor) && core.line_editor.respond_to?(:rerender)
+          core.line_editor.rerender
+        end
+      rescue StandardError
+        nil
       end
 
       # `/reasoning` with no arg: confirm the current render mode in house style.
@@ -596,10 +631,17 @@ module Rubino
       #   state change is written to config by the executor so the adapter gate
       #   (which reads config) and this render path stay on one source of truth.
       #   ┄ reasoning collapsed → full ┄
+      # Switching to `hidden` gets an explanatory line instead of the terse arrow
+      # — "hidden" is otherwise opaque (no cue, no aside), so we spell out what it
+      # does and how to bring reasoning back.
       def reasoning_changed(mode, previous: nil)
-        arrow = previous && previous != mode ? "#{previous} → #{mode}" : mode.to_s
         $stdout.puts
-        $stdout.puts @pastel.dim("┄ reasoning #{arrow} ┄")
+        if mode.to_sym == :hidden
+          $stdout.puts @pastel.dim("┄ reasoning hidden — won't be shown (ctrl-o or /reasoning to bring it back) ┄")
+        else
+          arrow = previous && previous != mode ? "#{previous} → #{mode}" : mode.to_s
+          $stdout.puts @pastel.dim("┄ reasoning #{arrow} ┄")
+        end
       end
 
       # `/think` with no arg: confirm the current effort in house style.
@@ -939,6 +981,9 @@ module Rubino
           end
           @last_reasoning = buffered
           @last_reasoning_seconds = seconds
+          # A new thought is retained — reset the reveal guard so the first
+          # Ctrl+O on THIS thought re-emits its aside (Fix 1 idempotency).
+          @last_reasoning_revealed = false
         end
 
         @reasoning_buffer = +""
@@ -954,14 +999,18 @@ module Rubino
       # The expanded reasoning aside (full mode / ctrl-o reveal), reusing the
       # `┊` left-rail family of #probe_aside: a `┄ thinking ┄` opening rail, the
       # reasoning body on a dim 2-space `┊` rail, and a `┄ thought for <N>s ┄`
-      # closing rail. The hint verb differs per call site (show vs hide).
-      def commit_reasoning_aside(text, seconds, hint: "ctrl-o to hide")
+      # closing rail. The aside is already fully shown and is append-only
+      # scrollback that can't be un-printed, so the close line carries NO toggle
+      # hint — promising "ctrl-o to hide" would be a lie and "ctrl-o to show"
+      # would be redundant. The collapsed one-liner cue (#commit_reasoning_cue)
+      # is the only place that carries the "ctrl-o to show" affordance.
+      def commit_reasoning_aside(text, seconds)
         $stdout.puts
         $stdout.puts @pastel.dim("┄ thinking ┄#{'─' * 50}")
         text.to_s.each_line do |line|
           $stdout.puts @pastel.dim("┊  #{line.chomp}")
         end
-        $stdout.puts @pastel.dim("┄ thought for #{seconds}s · #{hint} ┄")
+        $stdout.puts @pastel.dim("┄ thought for #{seconds}s ┄")
         $stdout.puts
       end
       alias commit_reasoning_aside_full commit_reasoning_aside

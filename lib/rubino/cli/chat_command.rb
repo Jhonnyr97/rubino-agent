@@ -353,6 +353,10 @@ module Rubino
       # keeps steering at the turn boundary, not mid-tool. When nothing was
       # queued, fall back to the normal readline prompt.
       def next_input(input_queue, line_input)
+        # Clear any transient mode footer left from a Shift+Tab cycle before the
+        # next prompt is drawn, so it never accumulates into scrollback (Fix 4).
+        clear_mode_footer
+
         queued = input_queue.drain
         return queued.join("\n") unless queued.empty?
 
@@ -913,15 +917,40 @@ module Rubino
         nil
       end
 
+      # Shift+Tab: cycle the mode and confirm it with a SINGLE transient footer
+      # that does NOT accumulate in scrollback. The first cycle drops one line
+      # below the parked idle prompt and writes the footer there; each subsequent
+      # cycle OVERWRITES that same row in place (`\r\e[2K`) instead of printing a
+      # new line, so three rapid presses leave one footer, not three. The footer
+      # is cleared by #clear_mode_footer before the next prompt is drawn. The
+      # prompt chip itself updates on the next prompt via the returned build_prompt
+      # (live mid-line chip repaint is the deferred structural work).
       def cycle_mode
         previous = Rubino::Modes.current
         idx      = Rubino::Modes::ALL.index(previous) || 0
         nxt      = Rubino::Modes::ALL[(idx + 1) % Rubino::Modes::ALL.length]
         Rubino::Modes.set(nxt)
-        $stdout.puts
-        $stdout.puts pastel.dim("┄ mode · #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        footer = pastel.dim("┄ mode · #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        if @mode_footer_active
+          # Overwrite the existing footer in place — no new scrollback line.
+          $stdout.print "\r\e[2K#{footer}"
+        else
+          $stdout.print "\n#{footer}"
+          @mode_footer_active = true
+        end
         $stdout.flush
         build_prompt
+      end
+
+      # Clear the transient mode footer (Fix 4) so it never survives into the
+      # next prompt / the user's typing. Wipes the footer row in place and resets
+      # the cursor to the line start; a no-op when no footer is showing.
+      def clear_mode_footer
+        return unless @mode_footer_active
+
+        $stdout.print "\r\e[2K"
+        $stdout.flush
+        @mode_footer_active = false
       end
 
       def build_prompt

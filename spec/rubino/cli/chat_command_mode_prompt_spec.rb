@@ -84,6 +84,35 @@ RSpec.describe Rubino::CLI::ChatCommand do
     ensure
       Rubino::Modes.set(:default)
     end
+
+    it "does NOT stack footers — repeated cycles overwrite one transient line" do
+      Rubino::Modes.set(:default)
+      out = capture_stdout do
+        cmd.send(:cycle_mode) # → plan
+        cmd.send(:cycle_mode) # → yolo
+        cmd.send(:cycle_mode) # → default
+      end
+      # Exactly one ┄ mode · … ┄ footer per press, but each successive one is
+      # written after a clear-to-EOL (\e[2K) on the SAME row rather than a fresh
+      # scrollback line — only the FIRST press opens a new line ("\n").
+      expect(out.scan("\n").size).to eq(1)
+      expect(out.scan("\e[2K").size).to eq(2) # 2nd + 3rd press overwrite in place
+      expect(strip_ansi(out)).to include("mode · default")
+    ensure
+      Rubino::Modes.set(:default)
+    end
+
+    it "clear_mode_footer wipes the transient line and is a no-op when none shown" do
+      Rubino::Modes.set(:default)
+      capture_stdout { cmd.send(:cycle_mode) }
+      cleared = capture_stdout { cmd.send(:clear_mode_footer) }
+      expect(cleared).to include("\r\e[2K")
+      # Second clear: nothing showing, no output.
+      again = capture_stdout { cmd.send(:clear_mode_footer) }
+      expect(again).to eq("")
+    ensure
+      Rubino::Modes.set(:default)
+    end
   end
 
   def capture_stdout
