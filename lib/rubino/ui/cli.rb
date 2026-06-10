@@ -37,11 +37,22 @@ module Rubino
         @stream_type        = nil
         @stream_md          = nil # StreamingMarkdown buffer, lazily built per content stream
         @thinking_indicator = false
-        # Animated "thinking…" state: a small timer thread repaints the live row,
-        # @thinking_started_at marks the start so the collapse cue can report the
-        # elapsed seconds, and @reasoning_buffer accumulates the model's reasoning
-        # deltas (no longer raw-printed) for the collapse cue / full aside / ctrl-o.
+        # Turn-scoped status row ("Ruby facet"): ONE ticker thread per turn —
+        # started when the turn (or a stand-alone wait like /probe) starts and
+        # stopped only at turn end / error / interrupt. Events swap its LABEL
+        # under @status_mutex instead of killing the thread, so inter-tool gaps
+        # and post-turn inline jobs keep an animated row instead of dead air.
+        # @thinking_started_at marks the start of the current reasoning phase so
+        # the collapse cue can report the elapsed seconds, and @reasoning_buffer
+        # accumulates the model's reasoning deltas (no longer raw-printed) for
+        # the collapse cue / full aside / ctrl-o.
         @thinking_thread    = nil
+        @status_mutex       = Mutex.new
+        @status             = nil
+        @turn_active        = false
+        @turn_started_at    = nil
+        @turn_tool_count    = 0
+        @turn_tok_chars     = 0
         @thinking_started_at = nil
         @reasoning_buffer   = +""
         # The last retained reasoning block (committed/collapsed), revealable via
@@ -305,6 +316,10 @@ module Rubino
       # cleanup. Idempotent — a no-op for errors printed outside a turn.
       def error(message)
         finalize_stream
+        # An error tears the turn-scoped status row down entirely (#74): the
+        # next model attempt (retry/fallback) restarts it via thinking_started.
+        status_stop
+        @thinking_indicator = false
         super
       end
 
@@ -331,6 +346,9 @@ module Rubino
       # Swallowed once after a QUIET slash-command interrupt (#111, above).
       def turn_interrupted
         finalize_stream
+        # Interrupt = turn end for the status row: kill the engine thread.
+        status_stop
+        @thinking_indicator = false
         if @suppress_interrupt_marker
           @suppress_interrupt_marker = false
           return
@@ -341,12 +359,19 @@ module Rubino
         $stdout.flush
       end
 
-      # Free-line annotation rendered as `┄ message ┄`, dim.
+      # Free-line annotation rendered as `┄ message ┄`, dim. A note opening
+      # with "◆ " (the turn footer: `◆ turn · 7.1s · 1 tool · 371 tok`) gets
+      # its facet rendered red — the sweeping ◆ of the status row "lands" in
+      # the footer at turn end.
       def note(text)
         return if text.nil? || text.to_s.empty?
 
         $stdout.puts
-        $stdout.puts @pastel.dim("┄ #{text} ┄")
+        if text.to_s.start_with?("◆ ")
+          $stdout.puts "#{@pastel.dim("┄ ")}#{@pastel.red("◆")}#{@pastel.dim(" #{text.to_s[2..]} ┄")}"
+        else
+          $stdout.puts @pastel.dim("┄ #{text} ┄")
+        end
       end
 
       # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
@@ -499,13 +524,20 @@ module Rubino
         $stdout.puts
       end
 
+      # The left margin every committed markdown line is printed behind. The
+      # live tail (#show_live_tail) reuses it so the raw in-flight lines sit in
+      # the SAME column as the rendered block they become — a flush-left tail
+      # under indented committed output read as a jarring seam.
+      MD_MARGIN = "  "
+
       # Renders a markdown string to committed, styled lines above the composer
-      # (each line as `$stdout.puts "  #{line}"`). Shared by #assistant_text and
-      # the per-block streaming path so both apply the identical rendering.
+      # (each line as `$stdout.puts "#{MD_MARGIN}#{line}"`). Shared by
+      # #assistant_text and the per-block streaming path so both apply the
+      # identical rendering.
       def commit_markdown_block(text)
         return if text.nil? || text.to_s.empty?
 
-        render_markdown_block(text).each { |line| $stdout.puts "  #{line}" }
+        render_markdown_block(text).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
       end
 
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
@@ -526,7 +558,7 @@ module Rubino
       # How many trailing lines of the in-flight block stay visible live (#127).
       LIVE_TAIL_ROWS = 3
 
-      # Column budget for markdown rendering: terminal width minus the 2-space
+      # Column budget for markdown rendering: terminal width minus the MD_MARGIN
       # indent applied to every committed line. Headless-safe (falls back to 80).
       #
       # `winsize` can under-report during the bottom-composer raw-mode TUI while a
@@ -540,7 +572,7 @@ module Rubino
           nil
         end
         cols = 80 unless cols&.positive?
-        [cols - 2, MIN_MARKDOWN_WIDTH].max
+        [cols - MD_MARGIN.length, MIN_MARKDOWN_WIDTH].max
       end
 
       # --- Streaming (unchanged except visual, now uses assistant_text) ---
@@ -550,17 +582,27 @@ module Rubino
         text = chunk[:text].to_s
         return if text.empty?
 
+        @turn_tok_chars += text.length if @turn_active
+
         # Reasoning deltas are NEVER raw-printed (that dumped unstyled reasoning
         # indistinguishable from the answer). Buffer them so the collapse cue /
         # full aside / ctrl-o reveal can render them in house style instead. The
-        # animated "thinking…" row keeps spinning while reasoning accumulates.
+        # status row keeps animating (label "thinking") while reasoning
+        # accumulates — and RESUMES if a tool/content block hid it (P4).
         if type == :thinking
           @reasoning_buffer << text
+          @thinking_started_at ||= monotonic_now
+          if @turn_active && thinking_painter
+            @thinking_indicator = true
+            status_ensure("thinking", phase: :thinking)
+          end
           return
         end
 
         # First answer token: collapse any buffered reasoning into scrollback
-        # (cue or aside per mode) before the answer streams below it.
+        # (cue or aside per mode) before the answer streams below it. The
+        # status row hides while answer text streams — the live tail owns the
+        # transient row until the block ends.
         collapse_reasoning if @thinking_indicator || !@reasoning_buffer.empty?
         clear_thinking_indicator
 
@@ -582,7 +624,7 @@ module Rubino
         clear_thinking_indicator
         if @stream_type == :content && @stream_md
           flush_content_stream
-        else
+        elsif @stream_type
           $stdout.puts
         end
         @stream_md = nil
@@ -593,54 +635,87 @@ module Rubino
         mark_content_streaming(false)
       end
 
-      # Glyphs for the star-pulse thinking animation, cycled on the timer.
-      THINKING_GLYPHS = %w[· ✢ ✳ ✶ ✻].freeze
-      # Repaint cadence for the animation (seconds).
-      THINKING_TICK = 0.1
+      # Block boundary on the STREAMING path, driven by the adapter's
+      # after_message callback (one assistant message == one content block; on
+      # a multi-step tool turn several blocks stream within one model call).
+      # Commits the in-flight block's tail and clears @stream_type so the
+      # status row can resume between blocks (the P4 inter-tool gap) and a
+      # later #thinking_started isn't gated out by a stale open stream.
+      # Idempotent: a no-op when no stream is open (non-streaming path, or the
+      # boundary for a block that carried no content).
+      def stream_block_end(_message_id = nil)
+        return unless @stream_type
 
-      # Starts the animated "thinking…" row: a pulsing star glyph + a live
-      # elapsed-seconds counter, all dim, repainted ~10×/s. Mid-turn the frames
-      # go through $stdout.live so each one passes the composer's render mutex
-      # (no rogue cursor/thread to desync the frame); on a BARE TTY with no
-      # #live seam — the /probe wait at the idle prompt (#58) — the same
-      # animation repaints in place via CR + clear-line, so the wait never
-      # looks frozen. Into a pipe it stays a single static dim print — never
-      # animate into a non-terminal.
+        stream_end
+        return unless @turn_active && thinking_painter
+
+        @thinking_indicator = true
+        status_ensure("thinking", phase: :thinking)
+      end
+
+      # Repaint cadence for the status-row animation (seconds).
+      STATUS_TICK = 0.1
+      # "Ruby facet" skin: a red ◆ sweeping back and forth on a 5-cell dim ┄
+      # track (the house separator glyph). 12-frame loop @100ms — the facet
+      # dwells one extra beat at each end of the sweep.
+      FACET_TRACK_CELLS = 5
+      FACET_FRAMES = [0, 0, 0, 1, 2, 3, 4, 4, 4, 3, 2, 1].freeze
+      # Don't nag fast turns: the "enter to interrupt" hint appears only after
+      # the wait has visibly dragged.
+      INTERRUPT_HINT_AFTER = 1.5
+
+      # Marks the start of a TURN: resets the per-turn stats and starts the
+      # status-row engine in its initial "thinking" phase (the P1 wait). Called
+      # by the chat loop right before the runner takes over; guarded with
+      # respond_to? at the call site so other UI adapters are unaffected.
+      def turn_started
+        @turn_active     = true
+        @turn_started_at = monotonic_now
+        @turn_tool_count = 0
+        @turn_tok_chars  = 0
+        @thinking_indicator = true if thinking_painter
+        status_show("thinking", phase: :thinking)
+      end
+
+      # Marks the end of a TURN (normal completion, error, or interrupt): the
+      # one place the turn-scoped ticker thread is allowed to die.
+      def turn_finished
+        @turn_active = false
+        @thinking_indicator = false
+        status_stop
+      end
+
+      # Shows the status row during the model wait. Mid-turn this only swaps
+      # the label back to "thinking" (the engine thread is already running);
+      # for a stand-alone wait with no turn bracket — the /probe side-inference
+      # (#58) — it starts the engine fresh. Frames go through #paint_live, so
+      # mid-turn they pass the composer's render mutex; on a BARE TTY with no
+      # #live seam the row repaints in place via CR + clear-line. Into a pipe
+      # it stays a single static dim print — never animate into a non-terminal.
       def thinking_started
         return if @stream_type
-        return if @thinking_indicator
 
-        @thinking_started_at = monotonic_now
-        @thinking_indicator  = true
+        @thinking_started_at ||= monotonic_now
+        unless thinking_painter
+          return if @thinking_indicator
 
-        painter = thinking_painter
-        unless painter
+          @thinking_indicator = true
           $stdout.print @pastel.dim("thinking…")
           $stdout.flush
           return
         end
 
-        @thinking_thread = Thread.new do
-          i = 0
-          loop do
-            elapsed = (monotonic_now - @thinking_started_at).to_i
-            glyph   = THINKING_GLYPHS[i % THINKING_GLYPHS.length]
-            painter.call(@pastel.dim("#{glyph} thinking…  #{elapsed}s"))
-            i += 1
-            sleep THINKING_TICK
-          end
-        rescue StandardError
-          # The animation is cosmetic — a repaint failure must never break the
-          # turn. Stop quietly.
-        end
+        @thinking_indicator = true
+        status_ensure("thinking", phase: :thinking)
       end
 
-      # Clears the "thinking…" indicator for callers that bracket a synchronous
-      # wait with no stream lifecycle of their own — the /probe side-inference
-      # (#58). Public counterpart to #thinking_started; a no-op when nothing is
-      # showing.
+      # Clears the status row for callers that bracket a synchronous wait with
+      # no stream lifecycle of their own — the /probe side-inference (#58).
+      # Public counterpart to #thinking_started; a no-op when nothing is
+      # showing. Outside a turn this also stops the engine thread.
       def thinking_finished
         clear_thinking_indicator
+        status_stop unless @turn_active
       end
 
       def monotonic_now
@@ -742,6 +817,10 @@ module Rubino
 
         hint = args_hint(arguments)
         activity_started(name, hint: hint)
+        # The committed `● running` row is in scrollback; SWITCH the status-row
+        # label to the tool (P3) instead of leaving the live region dead while
+        # the tool runs. The engine thread stays the same — label swap only.
+        status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
       end
 
       def tool_body(text, kind: :plain)
@@ -779,6 +858,21 @@ module Rubino
                      (result&.respond_to?(:truncated_preview) ? result.truncated_preview : nil)
                  end
         activity_finished(name, metric: metric, failed: failed)
+        status_back_to_thinking
+      end
+
+      # After a tool's `✓ done` row commits, swap the status row back to the
+      # thinking phase (the P4 inter-tool gap) with the accumulated stats. The
+      # live row count is a simple per-turn UI tally — the footer's exact
+      # ran/denied split from the Loop stays authoritative.
+      def status_back_to_thinking
+        return unless @turn_active
+
+        @turn_tool_count += 1
+        return unless thinking_painter
+
+        @thinking_indicator = true
+        status_show("thinking", phase: :thinking)
       end
 
       def compression_started(at: nil)
@@ -897,20 +991,36 @@ module Rubino
         $stdout.puts(name.to_sym == :yolo ? @pastel.yellow(text) : @pastel.dim(text))
       end
 
-      if Rubino.configuration.ui_verbose?
-        def job_enqueued(type)
-          puts_colored(:dim, "  ⊕ Job enqueued: #{type}")
-        end
+      # Short human labels for the post-turn inline jobs the status row tracks.
+      JOB_STATUS_LABELS = {
+        "ExtractMemoryJob" => "memory",
+        "DistillSkillJob" => "skills",
+        "SummarizeSessionJob" => "summary"
+      }.freeze
+
+      def job_enqueued(type)
+        puts_colored(:dim, "  ⊕ Job enqueued: #{type}") if Rubino.configuration.ui_verbose?
       end
-      if Rubino.configuration.ui_verbose?
-        def job_started(type)
-          puts_colored(:dim, "  ▶ Job started: #{type}")
-        end
+
+      # Post-turn inline jobs (P6): the aux-LLM memory extract / skill distill
+      # used to freeze the UI for seconds after the footer. The turn-scoped
+      # status row is still alive here (it stops at #turn_finished, not at the
+      # footer), so swap its label to "polishing · <job>" while each job runs.
+      def job_started(type)
+        puts_colored(:dim, "  ▶ Job started: #{type}") if Rubino.configuration.ui_verbose?
+        return unless @turn_active && thinking_painter
+
+        @thinking_indicator = true
+        status_show("polishing", phase: :job, hint: job_status_label(type))
       end
-      if Rubino.configuration.ui_verbose?
-        def job_finished(type)
-          puts_colored(:dim, "  ■ Job finished: #{type}")
-        end
+
+      def job_finished(type)
+        puts_colored(:dim, "  ■ Job finished: #{type}") if Rubino.configuration.ui_verbose?
+        clear_thinking_indicator if @turn_active
+      end
+
+      def job_status_label(type)
+        JOB_STATUS_LABELS[type.to_s] || type.to_s
       end
 
       def with_spinner(message, &block)
@@ -1129,7 +1239,7 @@ module Rubino
         clear_plain_tail if remaining
         if remaining
           if open_fence?(remaining)
-            remaining.split("\n", -1).each { |line| $stdout.puts "  #{line}" }
+            remaining.split("\n", -1).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
           else
             commit_markdown_block(remaining)
           end
@@ -1147,8 +1257,29 @@ module Rubino
       # skipped into a pipe). A blank tail just clears the transient row.
       # Nothing is lost on the skipped path — every block is still rendered +
       # committed in full when it completes.
+      #
+      # Each tail row carries the SAME MD_MARGIN the committed lines above it
+      # get (#commit_markdown_block), so the raw in-flight lines sit in the
+      # same column as the rendered block they snap into — a flush-left tail
+      # under indented output read as a jarring seam. Off-TTY this is moot:
+      # #paint_live skips pipes entirely (#56).
       def show_live_tail(tail)
-        paint_live(tail)
+        paint_live(margined_tail(tail))
+      end
+
+      # Prefixes every tail row with MD_MARGIN, pre-clamping each row to the
+      # terminal budget MINUS the margin (and the live region's one spare
+      # column) so the downstream one-row clamp (LiveRegion.clamp to cols - 1)
+      # never has to left-truncate the margin away — an over-long row keeps
+      # its margin and loses its HEAD ("  …tail"), same truncation rule as
+      # every other live row. A blank tail passes through untouched (it just
+      # clears the transient row).
+      def margined_tail(tail)
+        text = tail.to_s
+        return text if text.empty?
+
+        budget = terminal_cols - MD_MARGIN.length - 1
+        text.split("\n", -1).map { |line| "#{MD_MARGIN}#{LiveRegion.clamp(line, budget)}" }.join("\n")
       end
 
       # Commits any in-progress streaming so the next committed output (the
@@ -1183,31 +1314,138 @@ module Rubino
         nil
       end
 
-      # Erases the transient "thinking…" line through the same seam the frames
-      # used (#paint_live): the proxy/composer transient row when one is active,
-      # else an in-place CR + clear-line on a bare TTY.
+      # Erases the transient status row through the same seam the frames used
+      # (#paint_live): the proxy/composer transient row when one is active,
+      # else an in-place CR + clear-line on a bare TTY. INSIDE a turn this only
+      # HIDES the row (the turn-scoped engine thread keeps running so the next
+      # event can swap the label back in); outside a turn it stops the engine
+      # entirely — the old one-shot semantics (#58, #74).
       def clear_thinking_indicator
         return unless @thinking_indicator
 
-        # Stop the animation thread FIRST so it can't repaint the row after we
-        # erase it (no print-after-clear leak). join is bounded by the tick.
-        stop_thinking_animation
-
-        paint_live("")
-        $stdout.flush
+        if @turn_active
+          status_hide
+        else
+          status_stop
+        end
         @thinking_indicator = false
       end
 
-      # Kills + joins the animation timer thread cleanly. Idempotent.
-      def stop_thinking_animation
+      # --- Turn-scoped status row engine (V3 "Ruby facet") ---
+
+      # Shows the row with +label+ (and optional +hint+), resetting the phase
+      # clock. Starts the engine thread when none is running. No-op into a pipe
+      # — there is nothing to animate and raw escapes must not leak (#56).
+      def status_show(label, phase:, hint: nil)
+        return unless thinking_painter
+
+        @status_mutex.synchronize do
+          @turn_started_at ||= monotonic_now
+          @status = { label: label, hint: hint, phase: phase,
+                      phase_started_at: monotonic_now, visible: true }
+          start_status_thread
+        end
+      end
+
+      # Like #status_show, but keeps the current phase clock when the row is
+      # already showing this exact label — so per-delta callers (the reasoning
+      # stream) don't reset the elapsed counter ten times a second.
+      def status_ensure(label, phase:, hint: nil)
+        current = @status_mutex.synchronize { @status&.dup }
+        return if current && current[:visible] && current[:label] == label && current[:hint] == hint
+
+        status_show(label, phase: phase, hint: hint)
+      end
+
+      # Hides the row WITHOUT killing the engine thread (mid-turn: the live
+      # answer tail takes the row over while text streams).
+      def status_hide
+        @status_mutex.synchronize do
+          @status[:visible] = false if @status
+          paint_live("")
+        end
+        $stdout.flush
+      end
+
+      # Kills + joins the engine thread and clears the row. Idempotent. The
+      # only exits: turn end, error, interrupt, or a stand-alone wait ending.
+      def status_stop
         thread = @thinking_thread
         @thinking_thread = nil
-        return unless thread
-
-        thread.kill
-        thread.join
+        if thread
+          thread.kill
+          thread.join
+        end
+        @status_mutex.synchronize { @status = nil }
+        @turn_started_at = nil unless @turn_active
+        paint_live("")
+        $stdout.flush
       rescue StandardError
         nil
+      end
+
+      # The single ticker thread for the turn. Frames are built AND painted
+      # under @status_mutex so a hide/relabel can never interleave with a
+      # half-painted stale frame.
+      def start_status_thread
+        return if @thinking_thread&.alive?
+
+        @thinking_thread = Thread.new do
+          i = 0
+          loop do
+            @status_mutex.synchronize do
+              paint_live(status_frame(i)) if @status && @status[:visible]
+            end
+            i += 1
+            sleep STATUS_TICK
+          end
+        rescue StandardError
+          # The animation is cosmetic — a repaint failure must never break the
+          # turn. Stop quietly.
+        end
+      end
+
+      # One frame: the sweeping red ◆ on its dim ┄ track, label + stats right.
+      def status_frame(tick)
+        pos   = FACET_FRAMES[tick % FACET_FRAMES.length]
+        track = (0...FACET_TRACK_CELLS).map do |cell|
+          cell == pos ? @pastel.red("◆") : @pastel.dim("┄")
+        end.join
+        "#{track} #{@pastel.dim(status_text)}"
+      end
+
+      # The text to the right of the track. Thinking phase: turn-elapsed +
+      # accumulated stats (tools run, ~tok streamed); tool/job phases: the
+      # label · hint · per-phase elapsed. Always fits 80 cols.
+      def status_text(now = monotonic_now)
+        s = @status
+        parts = [s[:label]]
+        parts << s[:hint] if s[:hint]
+        if s[:phase] == :thinking
+          parts << "#{(now - (@turn_started_at || s[:phase_started_at])).to_i}s"
+          parts << "#{@turn_tool_count} tool#{"s" if @turn_tool_count != 1}" if @turn_tool_count.positive?
+          parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
+          parts << "enter to interrupt" if interrupt_hint?(s, now)
+        else
+          parts << "#{(now - s[:phase_started_at]).to_i}s"
+        end
+        text = parts.join(" · ")
+        budget = [terminal_cols, 80].min - FACET_TRACK_CELLS - 2
+        text.length > budget ? "#{text[0, budget - 1]}…" : text
+      end
+
+      # Mid-turn token spend is an ESTIMATE from streamed deltas (~4 chars/tok)
+      # — always marked with the leading ~; the exact total stays in the footer.
+      def format_status_tokens(count)
+        count >= 1000 ? "#{(count / 1000.0).round(1)}k" : count.to_s
+      end
+
+      # The hint only appears where Enter actually interrupts (a composer owns
+      # the keyboard) and only once the wait has dragged past the threshold.
+      def interrupt_hint?(state, now)
+        @turn_active &&
+          (now - state[:phase_started_at]) >= INTERRUPT_HINT_AFTER &&
+          !BottomComposer.current.nil?
       end
 
       # Commits the buffered reasoning into scrollback per the active render mode,
@@ -1223,7 +1461,6 @@ module Rubino
         buffered = @reasoning_buffer
         mode = reasoning_mode
 
-        stop_thinking_animation
         clear_thinking_indicator
 
         unless buffered.strip.empty?
@@ -1284,6 +1521,7 @@ module Rubino
         $stdout.puts @pastel.cyan("● delegated → #{sub}#{preview}")
         @activity_open = true
         @activity_name = "task"
+        status_show("task", phase: :tool, hint: sub) if @turn_active
       end
 
       # `✓ <subagent>: <summary>` (or `✗ <subagent>: <error>` on failure).
@@ -1306,6 +1544,7 @@ module Rubino
           end
         $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
         @delegation_subagent = nil
+        status_back_to_thinking
       end
 
       # True when a delegation did nothing / was denied: the subagent produced no
@@ -1361,6 +1600,18 @@ module Rubino
         else
           label
         end
+      end
+
+      # A PLAIN short hint for the status row (no OSC-8 hyperlink wrapping —
+      # the live row is repainted 10×/s and must stay measurable plain text).
+      def status_hint(arguments)
+        return nil unless arguments.is_a?(Hash)
+
+        raw_key, raw_value = pick_hint(arguments)
+        return nil unless raw_value
+
+        first = Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s.lines.first.to_s.strip
+        first.length > 30 ? "#{first[0, 29]}…" : first
       end
 
       def path_key?(key)

@@ -535,7 +535,7 @@ module Rubino
         # Drop the token field entirely when usage is unknown/zero rather than
         # printing a permanent "0 tok" that reads as broken (#86). Providers
         # that don't report usage simply omit the segment.
-        parts = ["↳ turn", format_duration(duration), tool_count_label]
+        parts = ["◆ turn", format_duration(duration), tool_count_label]
         parts << format_tokens(token_total) if token_total.to_i.positive?
         @ui.note(parts.join(" · "))
       end
