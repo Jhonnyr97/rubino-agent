@@ -598,7 +598,7 @@ RSpec.describe Rubino::Agent::Loop do
 
         loop_runner.run(messages: user_messages, tools: [echo_tool])
 
-        summary = null_ui.messages.find { |m| m[:message].to_s.include?("↳ turn") }
+        summary = null_ui.messages.find { |m| m[:message].to_s.include?("◆ turn") }
         expect(summary[:message]).to include("2 tools")
       end
 
@@ -606,14 +606,14 @@ RSpec.describe Rubino::Agent::Loop do
       # dropped entirely when usage is unknown/zero, but kept when known.
       it "omits the token field from the turn summary when usage is zero (#86)" do
         build_loop.send(:emit_turn_summary, Process.clock_gettime(Process::CLOCK_MONOTONIC), 0)
-        summary = null_ui.messages.find { |m| m[:message].to_s.include?("↳ turn") }
+        summary = null_ui.messages.find { |m| m[:message].to_s.include?("◆ turn") }
         expect(summary[:message]).not_to include("0 tok")
         expect(summary[:message]).not_to match(/tok\b/) # no token segment at all when zero
       end
 
       it "keeps the token field when usage is known (#86)" do
         build_loop.send(:emit_turn_summary, Process.clock_gettime(Process::CLOCK_MONOTONIC), 1234)
-        summary = null_ui.messages.find { |m| m[:message].to_s.include?("↳ turn") }
+        summary = null_ui.messages.find { |m| m[:message].to_s.include?("◆ turn") }
         expect(summary[:message]).to include("1.2k tok")
       end
 
