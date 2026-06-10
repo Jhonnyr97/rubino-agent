@@ -99,6 +99,8 @@ default ❯ add a docstring to the top of lib/foo.rb
 
 When the agent wants to run `shell` (or any approval-gated tool), it pauses and asks for your decision. Approve once, approve for the session, or deny — see [security.md](security.md) for the full approval model.
 
+You can keep typing while the agent works: **Enter** interrupts the current turn and runs your line next; **Alt+Enter** (or `/queued <message>`) queues it to run after the turn finishes. See [commands.md](commands.md#typing-while-the-agent-is-working).
+
 ## 5. Exit and resume
 
 Type `exit` (or `/exit`, Ctrl+D, or a double Ctrl+C) to end the session. On exit you get a resume hint:

@@ -138,6 +138,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/sessions` | List recent sessions and resume one |
 | `/new` | Start a fresh session (the current one is left intact) |
 | `/probe` | Ask an ephemeral side-question (not saved); tip: start a line with '? ' |
+| `/queued` | Queue a message to run after the current turn (Alt+Enter does the same) |
 | `/branch` | Fork the current session into a new one and switch into it |
 | `/memory` | Inspect/search/forget what the agent remembers |
 | `/agents` | List background subagents; steer/probe a running one, or view output |
@@ -157,6 +158,14 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/quit` | End session |
 
 (`exit`, `quit`, and `bye` without a slash also end the session; Ctrl+D and a double Ctrl+C do too.)
+
+### Typing while the agent is working
+
+You can keep typing while a turn is running — the pinned input stays live:
+
+- **Enter** interrupts the current turn and runs your line as the **next** turn (the partial answer is kept and marked `⎿ interrupted`).
+- **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does.
+- **`/queued <message>`** is the terminal-independent fallback for Alt+Enter (some terminals don't deliver the chord) — it queues the message the same way.
 
 ### Probes and branches
 
@@ -202,7 +211,7 @@ Custom commands live as Markdown templates in `.rubino/commands/` (project) or `
 
 ### Modes
 
-`/mode` (or the `--yolo` flag) switches between:
+`/mode` (or the `--yolo` flag) switches between the modes below. **Shift+Tab** cycles them from the prompt (default → plan → yolo) and shows a transient `mode <old> → <new>` footer.
 
 - `default` — approval-gated tools prompt as configured.
 - `plan` — read-only: the registry is pared down so mutating tools (`edit`, `shell`, `git`, …) aren't even offered to the model.

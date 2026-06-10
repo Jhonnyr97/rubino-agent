@@ -1115,7 +1115,9 @@ module Rubino
         idx      = Rubino::Modes::ALL.index(previous) || 0
         nxt      = Rubino::Modes::ALL[(idx + 1) % Rubino::Modes::ALL.length]
         Rubino::Modes.set(nxt)
-        footer = pastel.dim("┄ mode · #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        # Same `<old> → <new>` arrow grammar as the /mode footer (#78), plus
+        # the description and the cycle hint only this transient toast carries.
+        footer = pastel.dim("┄ mode #{previous} → #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
         composer = UI::BottomComposer.current
         if composer
           composer.announce(footer)

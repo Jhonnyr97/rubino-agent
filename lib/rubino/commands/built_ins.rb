@@ -13,6 +13,7 @@ module Rubino
         "/sessions" => "List recent sessions and resume one",
         "/new" => "Start a fresh session (the current one is left intact)",
         "/probe" => "Ask an ephemeral side-question (not saved); tip: start a line with '? '",
+        "/queued" => "Queue a message to run after the current turn (Alt+Enter does the same)",
         "/branch" => "Fork the current session into a new one and switch into it",
         "/memory" => "Inspect/search/forget what the agent remembers",
         "/agents" => "List background subagents; steer/probe a running one, or view output",
