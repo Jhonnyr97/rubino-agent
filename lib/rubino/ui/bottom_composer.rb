@@ -839,12 +839,29 @@ module Rubino
           # this turn, THEN fire the interrupt. No echo here — run_turn commits
           # the next turn's "<prompt><line>" when it runs.
           @input_queue&.push_front(line)
-          @on_interrupt.call
+          fire_interrupt(line)
         else
           # No active turn (or no interrupt hook wired): a plain queued submit,
           # echoed immediately as before.
           @input_queue&.push(line)
           print_above("queued ▸ #{line}")
+        end
+      end
+
+      # Fire the on_interrupt hook for a mid-turn submit. A SLASH COMMAND
+      # entered while nothing is visibly in flight (no content stream, no live
+      # partial row — e.g. the turn is only repainting a subagent card) is a
+      # QUIET interrupt (#111): the hook receives quiet=true so the chat loop
+      # can suppress the `⎿ interrupted` marker, which would otherwise strand
+      # a stray artifact above the command's own output even though the turn
+      # LOOKED idle. A hook that takes no parameter (tests/embedders) keeps
+      # the old no-arg contract.
+      def fire_interrupt(line)
+        if @on_interrupt.arity.zero?
+          @on_interrupt.call
+        else
+          quiet = line.start_with?("/") && !@content_streaming && @partial.empty?
+          @on_interrupt.call(quiet)
         end
       end
 

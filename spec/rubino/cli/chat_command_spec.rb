@@ -74,6 +74,41 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # #111: the composer's quiet flag routes through the interrupt handler — a
+  # quiet slash-command interrupt suppresses the UI's next `⎿ interrupted`
+  # marker, then cancels; a loud one just cancels.
+  describe "#interrupt_handler (#111)" do
+    let(:turn_runner) { instance_double(Rubino::Agent::Runner, cancel!: nil) }
+
+    it "suppresses the marker then cancels on a quiet interrupt" do
+      ui = instance_double(Rubino::UI::CLI, suppress_interrupt_marker: nil)
+      allow(Rubino).to receive(:ui).and_return(ui)
+
+      described_class.new({}).send(:interrupt_handler, turn_runner).call(true)
+
+      expect(ui).to have_received(:suppress_interrupt_marker)
+      expect(turn_runner).to have_received(:cancel!)
+    end
+
+    it "just cancels on a loud interrupt" do
+      ui = instance_double(Rubino::UI::CLI, suppress_interrupt_marker: nil)
+      allow(Rubino).to receive(:ui).and_return(ui)
+
+      described_class.new({}).send(:interrupt_handler, turn_runner).call(false)
+
+      expect(ui).not_to have_received(:suppress_interrupt_marker)
+      expect(turn_runner).to have_received(:cancel!)
+    end
+
+    it "degrades to cancel-only on a UI without the suppression seam" do
+      allow(Rubino).to receive(:ui).and_return(Rubino::UI::Null.new)
+
+      described_class.new({}).send(:interrupt_handler, turn_runner).call(true)
+
+      expect(turn_runner).to have_received(:cancel!)
+    end
+  end
+
   # Regression: ensure_setup! must populate the tool registry. If it doesn't,
   # Lifecycle#load_tools returns []; RubyLLMAdapter#build_chat never calls
   # chat.with_tool; the request body sent to the provider has no `tools`

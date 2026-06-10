@@ -309,6 +309,17 @@ module Rubino
         super
       end
 
+      # One-shot suppression of the next `⎿ interrupted` marker (#111). The
+      # chat loop sets it when a slash-command submit interrupted a turn with
+      # nothing visibly in flight (no stream, no live partial — e.g. only a
+      # subagent card animating): the turn LOOKED idle, so the marker would
+      # read as a stray artifact above the command's own output. Consumed by
+      # #turn_interrupted; the chat loop resets it at each turn start so a
+      # suppression that never fired can't leak into a later real Ctrl+C.
+      def suppress_interrupt_marker(value: true)
+        @suppress_interrupt_marker = value
+      end
+
       # Commits the standardized interrupt marker right after the partial answer
       # that was kept when a turn is cancelled (Ctrl+C, or the interrupt-by-
       # default Enter): a dim `⎿ interrupted` row, house grammar. Leading CR +
@@ -318,8 +329,14 @@ module Rubino
       # Tears down a still-ticking "thinking…" animation first, same as the
       # error path (#74) — Loop#stream_end usually already did, but an
       # interrupt raised outside the streaming bracket must settle too.
+      # Swallowed once after a QUIET slash-command interrupt (#111, above).
       def turn_interrupted
         finalize_stream
+        if @suppress_interrupt_marker
+          @suppress_interrupt_marker = false
+          return
+        end
+
         $stdout.print "\r\e[2K"
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush

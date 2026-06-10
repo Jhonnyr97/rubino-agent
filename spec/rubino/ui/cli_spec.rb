@@ -1137,6 +1137,26 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # #111: a slash-command submit that interrupted a turn with nothing visibly
+  # in flight (only a card animating) must not strand a `⎿ interrupted`
+  # artifact above the command's own output. The suppression is one-shot.
+  describe "#turn_interrupted quiet suppression (#111)" do
+    it "swallows exactly ONE marker after suppress_interrupt_marker" do
+      ui.suppress_interrupt_marker
+      first  = capture_stdout { ui.turn_interrupted }
+      second = capture_stdout { ui.turn_interrupted }
+      expect(first).to eq("")
+      expect(second).to include("⎿ interrupted")
+    end
+
+    it "can be reset at turn start so a stale suppression never leaks" do
+      ui.suppress_interrupt_marker
+      ui.suppress_interrupt_marker(value: false)
+      out = capture_stdout { ui.turn_interrupted }
+      expect(out).to include("⎿ interrupted")
+    end
+  end
+
   # #58: the /probe wait shows the SAME thinking row a normal turn gets. On a
   # bare TTY (idle prompt — no composer, so no $stdout.live seam) the animation
   # repaints in place via CR + clear-line; into a pipe it stays one static

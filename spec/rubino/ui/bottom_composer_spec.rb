@@ -238,6 +238,62 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(output.string).not_to include("queued ▸")
       end
 
+      # #111: the hook's optional quiet flag classifies the interrupt. A SLASH
+      # COMMAND submitted while nothing is visibly in flight (no content
+      # stream, no live partial — e.g. only a subagent card animating) is
+      # QUIET: the chat loop then swallows the `⎿ interrupted` marker that
+      # would otherwise strand a stray artifact above the command's output.
+      context "quiet-interrupt classification (#111)" do
+        def composer_with_quiet_probe
+          quiet_values = []
+          c = described_class.new(input_queue: queue, input: input, output: output,
+                                  on_interrupt: ->(quiet) { quiet_values << quiet })
+          c.begin_turn
+          [c, quiet_values]
+        end
+
+        it "marks a slash command with nothing visibly in flight as quiet" do
+          c, quiet_values = composer_with_quiet_probe
+          "/agents".each_char { |ch| c.handle_key(ch) }
+          c.handle_key("\r")
+          expect(quiet_values).to eq([true])
+          expect(queue.drain).to eq(["/agents"])
+        end
+
+        it "keeps a plain message loud even when nothing is in flight" do
+          c, quiet_values = composer_with_quiet_probe
+          "hello".each_char { |ch| c.handle_key(ch) }
+          c.handle_key("\r")
+          expect(quiet_values).to eq([false])
+        end
+
+        it "keeps a slash command loud while a live partial row is showing" do
+          c, quiet_values = composer_with_quiet_probe
+          c.set_partial("✻ thinking…  2s")
+          "/agents".each_char { |ch| c.handle_key(ch) }
+          c.handle_key("\r")
+          expect(quiet_values).to eq([false])
+        end
+
+        it "keeps a slash command loud while content is streaming" do
+          c, quiet_values = composer_with_quiet_probe
+          c.begin_content_stream
+          "/agents".each_char { |ch| c.handle_key(ch) }
+          c.handle_key("\r")
+          expect(quiet_values).to eq([false])
+        end
+
+        it "still supports a no-arg hook (old contract)" do
+          fired = 0
+          c = described_class.new(input_queue: queue, input: input, output: output,
+                                  on_interrupt: -> { fired += 1 })
+          c.begin_turn
+          "/agents".each_char { |ch| c.handle_key(ch) }
+          c.handle_key("\r")
+          expect(fired).to eq(1)
+        end
+      end
+
       # end_turn is now a quiet no-op (no deferred echoes to flush).
       it "emits nothing at turn end (deferred-echo machinery retired)" do
         c = described_class.new(input_queue: queue, input: input, output: output,

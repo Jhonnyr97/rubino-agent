@@ -805,6 +805,11 @@ module Rubino
           end
         end
 
+        # Stale-flag guard (#111): a quiet suppression armed by a prior turn
+        # that completed before observing its cancel must not swallow THIS
+        # turn's real `⎿ interrupted` marker.
+        ui.suppress_interrupt_marker(value: false) if ui.respond_to?(:suppress_interrupt_marker)
+
         composer, real_stdout = start_composer(input_queue, runner)
 
         # Mark the composer "in a turn" for the WHOLE turn — covering the THINKING
@@ -899,7 +904,7 @@ module Rubino
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           on_ctrl_o: ctrl_o_handler,
                                           on_mode_cycle: mode_cycle_handler,
-                                          on_interrupt: -> { runner.cancel! },
+                                          on_interrupt: interrupt_handler(runner),
                                           pending_queued: pending_queued)
         composer.start
         real_stdout = $stdout
@@ -916,6 +921,20 @@ module Rubino
         composer&.stop
         $stdout = real_stdout if real_stdout
         [nil, nil]
+      end
+
+      # The composer's Enter-during-turn hook: cancel the runner so the just-
+      # submitted line runs as the next turn. +quiet+ marks a slash-command
+      # submit at an idle-LOOKING moment — nothing visibly streaming, only the
+      # live cards animating (#111) — so the UI is told to swallow the
+      # upcoming `⎿ interrupted` marker instead of stranding it above the
+      # command's own output.
+      def interrupt_handler(runner)
+        lambda { |quiet = false|
+          ui = Rubino.ui
+          ui.suppress_interrupt_marker if quiet && ui.respond_to?(:suppress_interrupt_marker)
+          runner.cancel!
+        }
       end
 
       # Tears down the composer: restores the real $stdout, flushes any held
