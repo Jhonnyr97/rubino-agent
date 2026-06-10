@@ -136,12 +136,12 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | Command | Description |
 |---|---|
 | `/status` | Overview: model, mode, session, memory, background work |
-| `/sessions` | List recent sessions and resume one |
+| `/sessions` | List recent sessions; resume, show, or delete one (--all lifts the cap) |
 | `/new` | Start a fresh session (the current one is left intact) |
 | `/probe` | Ask an ephemeral side-question (not saved); tip: start a line with '? ' |
 | `/queued` | Queue a message to run after the current turn (Alt+Enter does the same) |
 | `/branch` | Fork the current session into a new one and switch into it |
-| `/memory` | Inspect/search/forget what the agent remembers |
+| `/memory` | Inspect/search/forget what the agent remembers (show ID, backend, --all) |
 | `/agents` | List background subagents; steer/probe a running one, or view output |
 | `/tasks` | Alias for /agents |
 | `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
@@ -174,6 +174,42 @@ You can keep typing while a turn is running — the pinned input stays live:
 - `/probe <question>` is the discoverable alias for the `? ` prefix: an **ephemeral** side-question answered from the current context but **never saved** to the session — the next turn proceeds as if it never happened. Bare `/probe` just teaches the `? ` prefix.
 - `/branch [title]` forks the current session here into a **new saved session** (optionally titled) and switches into it, so you can explore an alternative direction; the original session stays intact.
 
+### Status at a glance: `/status`
+
+`/status` is the one-line-per-area state dump and the discoverability index for the management commands — every line carries a `(use /x)` pointer. Beyond model/provider/mode/approvals/session/tools it shows:
+
+- `display` — the persisted `/reasoning` render mode and `/think` effort.
+- `mcp` — servers/reachable/tools, only when MCP servers are configured (`use /mcp`).
+- `dirs` — workspace-root count plus how many are untrusted (context/skills withheld), only when there is more than one root or any root is untrusted (`use /dirs`).
+- `skills` — available/enabled counts, plus `· active: <name>` when a skill is pinned (`use /skills`).
+- `jobs` — pending/failed counts from the persistent jobs queue, only when nonzero (`use rubino jobs list`); distinct from the `background` line, which counts in-process subagents.
+
+### Sessions in-chat: `/sessions`
+
+Bare `/sessions` opens the arrow-key picker over recent sessions (Enter resumes, Esc cancels). Beyond resuming:
+
+```
+/sessions <id|title>        # resume (id prefix or title substring)
+/sessions show <id>         # details (title, status, msgs, created) without switching
+/sessions delete <id>       # delete a session + its messages (asks to confirm)
+/sessions --all             # list without the row cap
+```
+
+The bare list shows 10 rows by default; set `sessions.list_limit` in config to change it, or pass `--all`. The active session cannot be deleted in-chat (start `/new` first). Typing `/sessions ` opens a dropdown with the verbs and recent session ids — the same grammar `/agents` ships. `show`/`delete` share the exact rendering and confirm-and-destroy flow of the `rubino sessions` CLI verbs.
+
+### Memory in-chat: `/memory`
+
+`/memory` shows the active backend + recent facts; `/memory <query>` searches by substring. The management verbs mirror the `rubino memory` CLI:
+
+```
+/memory show <id>           # one fact in full, with the temporal chain (Retired / Superseded by)
+/memory forget <id>         # delete a fact
+/memory backend             # show the active + available backends (switching is CLI-only)
+/memory --all               # include retired (superseded) facts, marked
+```
+
+Typing `/memory ` opens a dropdown with the verbs; after `show`/`forget` it offers recent fact ids, after `backend` the registered backend names. Switching the backend stays CLI-only (`rubino memory backend NAME`) because the live agent loop memoizes its store — a restart applies the switch everywhere at once.
+
 ### Background subagents: `/agents` and `/reply`
 
 The agent spawns background subagents with its `task` tool; these commands are the human surface over them (full model in [agents.md](agents.md)):
@@ -192,7 +228,7 @@ The agent spawns background subagents with its `task` tool; these commands are t
 
 ### Workspace roots: `/add-dir` and `/dirs`
 
-The workspace sandbox confines write/edit/delete tools to the workspace roots. `/add-dir <path>` adds an extra allowed root mid-session (and runs the one-time folder-trust gate, so the new root's `AGENTS.md`/skills are only honored once vouched for); `/dirs` lists the current roots and their trust state.
+The workspace sandbox confines write/edit/delete tools to the workspace roots. `/add-dir <path>` adds an extra allowed root mid-session (and runs the one-time folder-trust gate, so the new root's `AGENTS.md`/skills are only honored once vouched for); `/dirs` lists the current roots and their trust state. Typing `/add-dir ` opens a directory-path dropdown (relative, absolute, and `~` paths complete as you type).
 
 ### Active skill: `/skills`
 
@@ -231,6 +267,8 @@ Two orthogonal knobs control all this (persisted to config, so they survive the 
 
 - `/reasoning [hidden|collapsed|full]` controls how the reasoning stream is **rendered**, as above. Bare `/reasoning` shows the current mode. Writes `display.reasoning`.
 - `/think [off|low|medium|high]` controls how much thinking **effort** is requested from the model, mapped to an Anthropic-style thinking-token budget (`off`→0, `low`→4000, `medium`→8000, `high`→16000). Bare `/think` shows the current effort (default `medium`). Writes `thinking.effort`.
+
+Typing `/reasoning ` or `/think ` (and `/mode `) opens a dropdown of the valid values with one-line descriptions, so the enum is discoverable before a wrong guess.
 
 **Provider caveat:** some anthropic-compatible backends reject thinking budgets. The first such turn is retried once without the budget and a dim `provider doesn't support thinking — effort off` note is printed; the rejection is remembered for the session. Set `/think off` (or `thinking.effort: "off"` in config — quote the `"off"`, bare YAML `off` parses as `false`) to skip the retry entirely. See [configuration.md](configuration.md#reasoning--thinking).
 

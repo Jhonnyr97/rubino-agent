@@ -89,6 +89,82 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(source.description_for("reload")).to include("reconnect")
       expect(source.description_for("off")).to include("stop")
     end
+
+    # #185: the closed enums complete their valid values from the dropdown —
+    # previously discoverable only by typing a wrong one and reading the error.
+    # No ✗ none entry: "none" is not a mode/render-mode/effort.
+    it "completes the /mode, /reasoning and /think enums without a ✗ none entry (#185)" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("mode", "")).to eq(%w[default plan yolo])
+      expect(source.arg_candidates_for("reasoning", "")).to eq(%w[hidden collapsed full])
+      expect(source.arg_candidates_for("think", "")).to eq(%w[off low medium high])
+      expect(source.arg_candidates_for("mode", "")).not_to include("✗ none")
+      # First argument only — the enums take a single value.
+      expect(source.arg_candidates_for("mode", "", ["plan"])).to eq([])
+      expect(source.arg_candidates_for("think", "", ["high"])).to eq([])
+    end
+
+    it "registers one-line descriptions for the enum values (#185)" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.description_for("plan")).to eq(Rubino::Modes.description(:plan))
+      expect(source.description_for("collapsed")).to include("Ctrl-O")
+      expect(source.description_for("medium")).to include("default")
+    end
+
+    # #185: `/add-dir ` completes filesystem DIRECTORIES from the typed
+    # partial (the partial-aware source), first argument only.
+    it "completes directories for /add-dir from the typed partial (#185)" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "sub"))
+        File.write(File.join(dir, "subfile.txt"), "x")
+        expect(source.arg_candidates_for("add-dir", "#{dir}/su")).to eq(["#{dir}/sub"])
+        expect(source.arg_candidates_for("add-dir", "#{dir}/su", ["already"])).to eq([])
+      end
+    end
+
+    # #183: the /sessions grammar — verbs + recent ids first (bare id
+    # resumes), recent ids after show/delete.
+    it "completes the /sessions grammar: verbs + recent ids, then ids after a verb (#183)" do
+      repo = Rubino::Session::Repository.new(db: db.db)
+      repo.create(source: "cli", title: "completable")
+      session_id = repo.list(limit: 1).first[:id]
+
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      first = source.arg_candidates_for("sessions", "")
+      expect(first).to include("show", "delete", "--all", session_id)
+      expect(source.arg_candidates_for("sessions", "", ["show"])).to include(session_id)
+      expect(source.arg_candidates_for("sessions", "", ["delete"])).to include(session_id)
+      expect(source.arg_candidates_for("sessions", "", ["--all"])).to eq([])
+      expect(source.arg_candidates_for("sessions", "", ["show", session_id])).to eq([])
+    end
+
+    # #184: the /memory grammar — verbs, then fact ids after show/forget and
+    # backend names after backend.
+    it "completes the /memory grammar: verbs, ids after show/forget, backends after backend (#184)" do
+      backend = Rubino::Memory::Backends::Sqlite.new(config: test_configuration, db: db.db)
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+      fact = backend.store(kind: "fact", content: "completable fact")
+
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("memory", ""))
+        .to eq(["search", "show", "forget", "backend", "--all"])
+      expect(source.arg_candidates_for("memory", "", ["show"])).to include(fact[:id][0..7])
+      expect(source.arg_candidates_for("memory", "", ["forget"])).to include(fact[:id][0..7])
+      expect(source.arg_candidates_for("memory", "", ["backend"]))
+        .to eq(Rubino::Memory::Backends.names)
+      expect(source.arg_candidates_for("memory", "", ["search"])).to eq([])
+    end
   end
 
   # #111: the composer's quiet flag routes through the interrupt handler — a

@@ -1395,12 +1395,27 @@ module Rubino
         #   * /reply — the ids of children blocked waiting on the human.
         #   * /mcp — the configured server names (+ reload), then on/off for a
         #     named server (#182), same grammar shape as /agents.
+        #   * /mode, /reasoning, /think — the closed enums (#185), via the
+        #     positional shape so no `✗ none` clear entry is injected (there
+        #     is no "clear" for a mode — see CompletionSource#initialize).
+        #   * /add-dir — filesystem DIRECTORY candidates from the typed
+        #     partial (#185), via the partial-aware two-arg shape.
+        #   * /sessions, /memory — verbs + recent ids (#183/#184), the same
+        #     per-position grammar /agents ships.
         arg_sources = {
           "skills" => -> { Rubino::Skills::Registry.trusted.names },
           "agents" => ->(args) { agents_arg_candidates(args) },
           "tasks" => ->(args) { agents_arg_candidates(args) },
           "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] },
-          "mcp" => ->(args) { mcp_arg_candidates(args) }
+          "mcp" => ->(args) { mcp_arg_candidates(args) },
+          "mode" => ->(args) { args.empty? ? Rubino::Modes::ALL.map(&:to_s) : [] },
+          "reasoning" => ->(args) { args.empty? ? Rubino::Config::ReasoningPrefs::RENDER_MODES.map(&:to_s) : [] },
+          "think" => ->(args) { args.empty? ? Rubino::Config::ReasoningPrefs::EFFORTS.map(&:to_s) : [] },
+          "add-dir" => lambda { |args, partial|
+            args.empty? ? Rubino::UI::CompletionSource.directory_candidates(partial) : []
+          },
+          "sessions" => ->(args) { sessions_arg_candidates(args) },
+          "memory" => ->(args) { memory_arg_candidates(args) }
         }
         Rubino::UI::CompletionSource.new(commands: names, files: files,
                                          arg_sources: arg_sources,
@@ -1444,6 +1459,54 @@ module Rubino
         []
       end
 
+      # The /sessions subcommand grammar (#183): verbs + recent session ids
+      # first (bare id resumes, verb then id shows/deletes), then ids after a
+      # verb. Mirrors the /agents grammar so the picker teaches the surface.
+      SESSIONS_SUBCOMMANDS = ["show", "delete", "--all"].freeze
+
+      def sessions_arg_candidates(args)
+        case args.length
+        when 0 then SESSIONS_SUBCOMMANDS + recent_session_ids
+        when 1 then %w[show delete].include?(args.first) ? recent_session_ids : []
+        else []
+        end
+      end
+
+      # Recent session ids for the /sessions dropdown — same source the
+      # in-chat list reads (Session::Repository#list). Best-effort: a DB
+      # hiccup degrades to no id candidates, never a broken prompt.
+      def recent_session_ids
+        Rubino::Session::Repository.new.list(limit: 10).map { |s| s[:id].to_s }
+      rescue StandardError
+        []
+      end
+
+      # The /memory subcommand grammar (#184): verbs first, then recent fact
+      # ids after show/forget (short ids — the store resolves prefixes) or the
+      # registered backend names after backend.
+      MEMORY_SUBCOMMANDS = ["search", "show", "forget", "backend", "--all"].freeze
+
+      def memory_arg_candidates(args)
+        case args.length
+        when 0 then MEMORY_SUBCOMMANDS
+        when 1
+          case args.first
+          when "show", "forget" then recent_memory_ids
+          when "backend" then Rubino::Memory::Backends.names
+          else []
+          end
+        else []
+        end
+      end
+
+      # Recent fact ids (short form) for the /memory show/forget dropdown,
+      # read from the ACTIVE backend — the same store /memory manages.
+      def recent_memory_ids
+        Rubino::Memory::Backends.build.list(limit: 10).map { |m| m[:id].to_s[0..7] }
+      rescue StandardError
+        []
+      end
+
       # One-line descriptions for the dropdown (#39): the SAME strings /help
       # shows (BuiltIns + custom command frontmatter), plus usage hints for the
       # /agents subcommand grammar. Best-effort — a loader hiccup degrades to
@@ -1462,9 +1525,30 @@ module Rubino
           "steer" => "park a note the subagent folds in at its next turn",
           "probe" => "ask the subagent an ephemeral question (not saved)",
           "--stop" => "cancel the running subagent",
+          # /mcp verbs (#182). "off" is ALSO /think's zero effort (#185) —
+          # descriptions are keyed by candidate string, so the one line
+          # covers both surfaces.
           "reload" => "re-read config.yml and reconnect every MCP server",
           "on" => "(re)start the MCP server and register its tools",
-          "off" => "stop the MCP server and remove its tools (this session)"
+          "off" => "mcp: stop the server and its tools · think: no thinking budget",
+          # /sessions + /memory verbs (#183/#184). "show"/"--all" are shared
+          # by both grammars, so their one-liners cover both surfaces.
+          "show" => "show full details by id",
+          "delete" => "delete a session and its messages (asks to confirm)",
+          "search" => "search facts by substring",
+          "forget" => "delete a fact by id",
+          "backend" => "show the active memory backend",
+          "--all" => "list everything (sessions: no row cap · memory: incl. retired)",
+          # The closed enums (#185) reuse the same wording the commands print.
+          "default" => Rubino::Modes.description(:default),
+          "plan" => Rubino::Modes.description(:plan),
+          "yolo" => Rubino::Modes.description(:yolo),
+          "hidden" => "show no reasoning (Ctrl-O reveals the last)",
+          "collapsed" => "a dim one-line cue; Ctrl-O expands",
+          "full" => "the whole reasoning as a dim aside",
+          "low" => "small thinking-token budget",
+          "medium" => "medium thinking-token budget (default)",
+          "high" => "large thinking-token budget"
         )
       end
 

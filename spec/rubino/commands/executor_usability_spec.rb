@@ -131,6 +131,96 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to match(/approvals\s+skipped/)
     end
 
+    # #186: the persisted display prefs (/reasoning + /think) were invisible —
+    # not in the chip, not in /status. One line shows both.
+    it "shows the reasoning render mode and think effort on a display line (#186)" do
+      exec.try_execute("/status")
+      expect(info_lines.join("\n")).to match(/display\s+reasoning: collapsed · effort: medium/)
+    end
+
+    # #186: the skills line names WHICH skill is pinned, not just the counts.
+    it "appends the active skill name to the skills line (#186)" do
+      Rubino::ActiveSkill.set("data-helper")
+      exec.try_execute("/status")
+      expect(info_lines.join("\n")).to match(/skills\s+.*· active: data-helper/)
+    ensure
+      Rubino::ActiveSkill.reset!
+    end
+
+    it "omits the active-skill suffix when no skill is pinned" do
+      Rubino::ActiveSkill.reset!
+      exec.try_execute("/status")
+      expect(info_lines.join("\n")).not_to include("active:")
+    end
+
+    # #186: workspace roots + trust — the #1 "why are my skills/AGENTS.md not
+    # loading" confusion gets a line, but only when there is something to say.
+    describe "dirs line (#186)" do
+      it "shows root count and untrusted count when a root is untrusted" do
+        allow(Rubino::Workspace).to receive(:canonical_roots).and_return(["/a", "/b"])
+        # Default first: the skills line ALSO consults Trust (for the cwd).
+        allow(Rubino::Trust).to receive(:trusted?).and_return(true)
+        allow(Rubino::Trust).to receive(:trusted?).with("/b").and_return(false)
+
+        exec.try_execute("/status")
+        expect(info_lines.join("\n"))
+          .to match(%r{dirs\s+2 roots · 1 untrusted \(context/skills withheld\)\s+\(use /dirs\)})
+      end
+
+      it "shows the count for multiple trusted roots" do
+        allow(Rubino::Workspace).to receive(:canonical_roots).and_return(["/a", "/b"])
+        allow(Rubino::Trust).to receive(:trusted?).and_return(true)
+
+        exec.try_execute("/status")
+        expect(info_lines.join("\n")).to match(/dirs\s+2 roots/)
+      end
+
+      it "omits the line for a single trusted root (nothing to say)" do
+        allow(Rubino::Workspace).to receive(:canonical_roots).and_return(["/a"])
+        allow(Rubino::Trust).to receive(:trusted?).and_return(true)
+
+        exec.try_execute("/status")
+        expect(info_lines.join("\n")).not_to match(/dirs\s+/)
+      end
+    end
+
+    # #186: the persistent jobs queue (distinct from the in-process background
+    # subagents) — pending/failed counts, only when nonzero.
+    describe "jobs line (#186)" do
+      # Manual mode: the default ("inline") would RUN the job at enqueue time.
+      let(:queue) do
+        Rubino::Jobs::Queue.new(
+          db: db.db,
+          config: test_configuration("jobs" => { "mode" => "manual", "max_attempts" => 3,
+                                                 "retry_backoff_seconds" => 0 })
+        )
+      end
+
+      it "shows pending and failed counts when nonzero" do
+        queue.enqueue("distill_skill", {})
+        failed = queue.enqueue("distill_skill", {})
+        dead   = queue.enqueue("distill_skill", {})
+        db.db[:jobs].where(id: failed).update(status: "failed")
+        db.db[:jobs].where(id: dead).update(status: "dead")
+
+        exec.try_execute("/status")
+        expect(info_lines.join("\n")).to match(/jobs\s+1 pending · 2 failed/)
+      end
+
+      it "shows only the nonzero part" do
+        queue.enqueue("distill_skill", {})
+        exec.try_execute("/status")
+        joined = info_lines.join("\n")
+        expect(joined).to match(/jobs\s+1 pending/)
+        expect(joined).not_to include("failed")
+      end
+
+      it "omits the line when the queue is empty" do
+        exec.try_execute("/status")
+        expect(info_lines.join("\n")).not_to match(/jobs\s+/)
+      end
+    end
+
     # #82: welcome and /status must NOT render the same block. Welcome is
     # guidance ("try: …"); /status is the state grid (approvals/tools).
     it "welcome and /status are NOT identical blocks (#82)" do
@@ -259,6 +349,88 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       joined = info_lines.join("\n")
       expect(joined).to include("spaces over tabs")
       expect(joined).not_to include("tabs over spaces")
+    end
+
+    # #184: a REAL id lookup — `/memory <id>` used to be a substring search
+    # over content, so an id matched nothing. Rendering (incl. the temporal
+    # chain) is shared with the `rubino memory show` CLI verb.
+    describe "show (#184)" do
+      it "shows one fact in full by id (short-id prefix resolves)" do
+        m = store.store(kind: "fact", content: "the deploy uses kamal behind a proxy")
+        exec.try_execute("/memory show #{m[:id][0..7]}")
+        joined = info_lines.join("\n")
+        expect(joined).to include("ID: #{m[:id]}")
+        expect(joined).to include("Kind: fact")
+        expect(joined).to include("the deploy uses kamal behind a proxy")
+      end
+
+      it "prints the temporal chain for a superseded fact, like the CLI" do
+        old = store.store(kind: "preference", content: "User prefers tabs over spaces.")
+        store.replace(kind: "preference", old_text: "tabs over spaces",
+                      content: "User prefers spaces over tabs.")
+
+        exec.try_execute("/memory show #{old[:id]}")
+        joined = info_lines.join("\n")
+        expect(joined).to include("Retired:")
+        expect(joined).to include("Superseded by:")
+      end
+
+      it "errors on an unknown id" do
+        exec.try_execute("/memory show deadbeef")
+        errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
+        expect(errors.join("\n")).to include("no fact with id")
+      end
+
+      it "prints a usage hint for a bare 'show' (not a search)" do
+        exec.try_execute("/memory show")
+        joined = info_lines.join("\n")
+        expect(joined).to include("Usage: /memory show <id>")
+        expect(joined).not_to include("No facts matching")
+      end
+    end
+
+    # #184: the backend is inspectable in-chat; switching stays CLI-only
+    # (every consumer memoizes its built store — an in-process flip would
+    # leave the live loop writing to the OLD store).
+    describe "backend (#184)" do
+      it "shows the active and available backends" do
+        exec.try_execute("/memory backend")
+        joined = info_lines.join("\n")
+        expect(joined).to include("Active backend: sqlite")
+        expect(joined).to include("Available: #{Rubino::Memory::Backends.names.join(", ")}")
+      end
+
+      it "points a switch attempt at the CLI verb instead of half-applying it" do
+        # Nothing is written — no config write, just the pointer.
+        expect(Rubino::Config::Writer).not_to receive(:new)
+        exec.try_execute("/memory backend default")
+        joined = info_lines.join("\n")
+        expect(joined).to include("Active backend: sqlite")
+        expect(joined).to include("rubino memory backend default")
+      end
+    end
+
+    # #184: `--all` includes retired (superseded) facts, marked with the same
+    # tombstone dialect as `rubino memory list --all`.
+    describe "--all (#184)" do
+      before do
+        store.store(kind: "preference", content: "User prefers tabs over spaces.")
+        store.replace(kind: "preference", old_text: "tabs over spaces",
+                      content: "User prefers spaces over tabs.")
+      end
+
+      it "lists retired facts next to live ones, marked" do
+        exec.try_execute("/memory --all")
+        contents = table_rows.map { |row| row[2] }
+        expect(table_rows.size).to eq(2)
+        expect(contents.join(" ")).to include("(retired")
+      end
+
+      it "keeps the default list retired-free (regression guard)" do
+        exec.try_execute("/memory")
+        expect(table_rows.size).to eq(1)
+        expect(table_rows.flatten.join(" ")).not_to include("(retired")
+      end
     end
 
     it "errors when forgetting an unknown id" do
@@ -683,6 +855,101 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(result).to eq(:handled)
       errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
       expect(errors).not_to be_empty
+    end
+
+    # #183: the management verbs — show/delete in-chat, sharing the CLI
+    # subcommands' rendering and confirm-and-destroy flow.
+    describe "verbs (#183)" do
+      it "shows a session's details without switching into it" do
+        repo.create(source: "cli", title: "inspect me")
+        s = repo.list(limit: 1).first
+
+        expect(exec.try_execute("/sessions show #{s[:id][0..7]}")).to eq(:handled)
+        joined = info_lines.join("\n")
+        expect(joined).to include("Session: #{s[:id]}")
+        expect(joined).to include("Title: inspect me")
+        expect(joined).to include("Status: active")
+        expect(joined).not_to include("Resuming")
+      end
+
+      it "prints a usage hint for a bare verb" do
+        exec.try_execute("/sessions show")
+        expect(info_lines.join("\n")).to include("Usage: /sessions show <id>")
+        ui.reset!
+        exec.try_execute("/sessions delete")
+        expect(info_lines.join("\n")).to include("Usage: /sessions delete <id>")
+      end
+
+      it "errors on an unknown id" do
+        expect(exec.try_execute("/sessions show zzz_nope")).to eq(:handled)
+        errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
+        expect(errors.join("\n")).to include("no session matching")
+      end
+
+      it "deletes a session after the confirm (shared CLI flow)" do
+        repo.create(source: "cli", title: "junk")
+        s = repo.list(limit: 1).first
+        allow(ui).to receive(:confirm).and_return(true)
+
+        expect(exec.try_execute("/sessions delete #{s[:id][0..7]}")).to eq(:handled)
+        expect(repo.find(s[:id])).to be_nil
+        expect(info_lines.join("\n")).to include("Deleted session #{s[:id][0..7]}")
+        expect(ui).to have_received(:confirm).with(/Delete session #{s[:id][0..7]}/)
+      end
+
+      it "keeps the session when the confirm is declined" do
+        repo.create(source: "cli", title: "keep me")
+        s = repo.list(limit: 1).first
+        allow(ui).to receive(:confirm).and_return(false)
+
+        exec.try_execute("/sessions delete #{s[:id][0..7]}")
+        expect(repo.find(s[:id])).not_to be_nil
+        expect(info_lines.join("\n")).to include("Aborted.")
+      end
+
+      it "refuses to delete the ACTIVE session" do
+        repo.create(source: "cli", title: "live one")
+        s = repo.list(limit: 1).first
+        live = instance_double(Rubino::Agent::Runner, session: { id: s[:id], title: "live one" })
+
+        Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: live)
+                                  .try_execute("/sessions delete #{s[:id]}")
+
+        expect(repo.find(s[:id])).not_to be_nil
+        errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
+        expect(errors.join("\n")).to include("ACTIVE session")
+      end
+
+      it "surfaces an ambiguous query on a verb instead of guessing" do
+        repo.create(source: "cli", title: "dup row")
+        repo.create(source: "cli", title: "dup row two")
+        exec.try_execute("/sessions delete dup row")
+        errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
+        expect(errors).not_to be_empty
+      end
+    end
+
+    # #183: the bare-list row cap is no longer hardwired to 10 — `--all`
+    # lifts it per call and `sessions.list_limit` configures it.
+    describe "row cap (#183)" do
+      before { 12.times { |i| repo.create(source: "cli", title: "s#{i}") } }
+
+      it "caps the bare list at 10 rows by default" do
+        exec.try_execute("/sessions")
+        expect(table_rows.size).to eq(10)
+      end
+
+      it "lists every session with --all" do
+        exec.try_execute("/sessions --all")
+        expect(table_rows.size).to eq(12)
+      end
+
+      it "honours a configured sessions.list_limit" do
+        allow(Rubino).to receive(:configuration)
+          .and_return(test_configuration("sessions" => { "list_limit" => 3 }))
+        exec.try_execute("/sessions")
+        expect(table_rows.size).to eq(3)
+      end
     end
 
     # #145/#40: on a real terminal bare /sessions offers ONLY the arrow-key

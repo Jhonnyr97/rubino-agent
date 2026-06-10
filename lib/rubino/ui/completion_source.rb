@@ -55,6 +55,14 @@ module Rubino
       #       what completes at this position (e.g. "agents": [] → live ids,
       #       [id] → steer/probe/--stop), so a subcommand grammar is
       #       discoverable from the same dropdown (#39). No `✗ none` entry.
+      #       Closed enums (`/mode`, `/reasoning`, `/think`, #185) use this
+      #       shape too — `->(args) { args.empty? ? VALUES : [] }` — exactly
+      #       because it carries no `✗ none` entry (there is no "clear" for a
+      #       mode; the no-arg shape's prefix would offer a bogus value).
+      #     * a TWO-ARG proc — receives (prior args, the PARTIAL typed so far)
+      #       and OWNS the matching (no additional prefix filter): a
+      #       filesystem-path source (`/add-dir`, #185) expands `~`, which a
+      #       literal prefix filter would drop. No `✗ none` entry.
       # @param descriptions [Hash{String=>String}] one-line description per
       #   candidate string (e.g. BuiltIns::DESCRIPTIONS), rendered dim next to
       #   the name in the dropdown (#39). Candidates without an entry show
@@ -107,10 +115,33 @@ module Rubino
             # "n"/"no…"/"none" prefix, so typing toward "none" keeps it in view.
             none = down.empty? || NONE.start_with?(down) ? [NONE_ENTRY] : []
             none + Array(source.call).select { |n| n.to_s.downcase.start_with?(down) }
+          elsif source.arity == 2
+            # PARTIAL-AWARE source: it derives candidates FROM the typed text
+            # (e.g. a filesystem glob) and owns the matching — see #initialize.
+            Array(source.call(args, partial.to_s))
           else
             Array(source.call(args)).select { |n| n.to_s.downcase.start_with?(down) }
           end
         list.first(MAX_CANDIDATES)
+      end
+
+      # Directory candidates for a PATH-shaped argument (`/add-dir `, #185) —
+      # the directory-flavored sibling of the `@file` picker. Globs the
+      # filesystem from the typed partial (relative to cwd, absolute, or
+      # `~`-prefixed — an added root usually lives OUTSIDE the workspace, so
+      # the workspace file list is the wrong source here), keeps only
+      # directories, and folds `~` back so the spliced candidate preserves the
+      # user's spelling. Best-effort: any failure (e.g. `~nouser`) returns [].
+      def self.directory_candidates(partial)
+        text    = partial.to_s
+        pattern = text.start_with?("~") ? File.expand_path(text) : text
+        Dir.glob("#{pattern}*")
+           .select { |p| File.directory?(p) }
+           .sort
+           .map { |p| text.start_with?("~") ? p.sub(File.expand_path("~"), "~") : p }
+           .first(MAX_CANDIDATES)
+      rescue StandardError
+        []
       end
 
       # The sentinel a `✗ none` selection resolves to once spliced + submitted —

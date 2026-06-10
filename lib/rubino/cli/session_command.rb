@@ -54,18 +54,24 @@ module Rubino
         # ui.error line was the same failure repeated in a second format.
         raise Thor::Error, "session not found: #{id}" if session.nil?
 
-        Rubino.ui.info("Session: #{session[:id]}")
-        Rubino.ui.info("Title: #{session[:title] || "(untitled)"}")
-        Rubino.ui.info("Status: #{session[:status]}")
-        Rubino.ui.info("Model: #{session[:model]}")
-        Rubino.ui.info("Messages: #{session[:message_count]}")
-        Rubino.ui.info("Tokens: #{session[:token_count]}")
-        Rubino.ui.info("Created: #{session[:created_at]}")
-        Rubino.ui.info("Updated: #{session[:updated_at]}")
+        self.class.render(session, ui: Rubino.ui)
+      end
+
+      # ONE session-details rendering for both surfaces (#183): the CLI verb
+      # above and the in-chat `/sessions show <id>` (Commands::Executor).
+      def self.render(session, ui:)
+        ui.info("Session: #{session[:id]}")
+        ui.info("Title: #{session[:title] || "(untitled)"}")
+        ui.info("Status: #{session[:status]}")
+        ui.info("Model: #{session[:model]}")
+        ui.info("Messages: #{session[:message_count]}")
+        ui.info("Tokens: #{session[:token_count]}")
+        ui.info("Created: #{session[:created_at]}")
+        ui.info("Updated: #{session[:updated_at]}")
 
         return unless session[:parent_session_id]
 
-        Rubino.ui.info("Parent: #{session[:parent_session_id]}")
+        ui.info("Parent: #{session[:parent_session_id]}")
       end
 
       desc "delete ID", "Permanently delete a session and all its messages/events"
@@ -79,19 +85,25 @@ module Rubino
         # Single-styled not-found error (#20), as in #show above.
         raise Thor::Error, "session not found: #{id}" if session.nil?
 
-        unless options[:force]
-          confirmed = Rubino.ui.confirm(
+        self.class.destroy_with_confirm(session, repo: repo, ui: Rubino.ui, force: options[:force])
+      end
+
+      # ONE confirm-and-destroy flow for both surfaces (#183): the CLI verb
+      # above and the in-chat `/sessions delete <id>`.
+      def self.destroy_with_confirm(session, repo:, ui:, force: false)
+        unless force
+          confirmed = ui.confirm(
             "Delete session #{session[:id][0..7]} '#{session[:title] || "(untitled)"}'? " \
             "This will also remove its messages, events, and tool calls."
           )
           unless confirmed
-            Rubino.ui.info("Aborted.")
+            ui.info("Aborted.")
             return
           end
         end
 
         repo.destroy!(session[:id])
-        Rubino.ui.success("Deleted session #{session[:id][0..7]}.")
+        ui.success("Deleted session #{session[:id][0..7]}.")
       end
 
       desc "compact ID", "Manually trigger compaction on a session"

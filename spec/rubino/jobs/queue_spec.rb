@@ -162,6 +162,24 @@ RSpec.describe Rubino::Jobs::Queue do
     end
   end
 
+  describe "#failed_count" do
+    it "counts failed AND dead jobs, not queued/completed ones (#186)" do
+      done   = queue.enqueue("Job1", {})
+      failed = queue.enqueue("Job2", {})
+      dead   = queue.enqueue("Job3", {})
+      queue.enqueue("Job4", {})
+      db_connection.db[:jobs].where(id: done).update(status: "completed")
+      db_connection.db[:jobs].where(id: failed).update(status: "failed")
+      db_connection.db[:jobs].where(id: dead).update(status: "dead")
+
+      expect(queue.failed_count).to eq(2)
+    end
+
+    it "is zero on an empty queue" do
+      expect(queue.failed_count).to eq(0)
+    end
+  end
+
   describe "#list" do
     it "filters by status" do
       queue.enqueue("Job1", {})
