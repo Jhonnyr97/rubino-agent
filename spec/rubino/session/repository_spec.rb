@@ -326,5 +326,19 @@ RSpec.describe Rubino::Session::Repository do
       expect(described_class.derive_title("   ")).to be_nil
       expect(described_class.derive_title(nil)).to be_nil
     end
+
+    # #128: a throwaway sub-3-char first prompt ("y" the user immediately
+    # interrupted) must not become the title — the resume hint would suggest a
+    # useless one-char matcher (`--resume "y"`). The session stays untitled so
+    # the next meaningful prompt titles it instead.
+    it "returns nil for junk-short input so the next real prompt titles the session (#128)" do
+      expect(described_class.derive_title("y")).to be_nil
+      expect(described_class.derive_title("ok")).to be_nil
+      expect(described_class.derive_title("fix")).to eq("fix") # 3 chars is meaningful enough
+    end
+
+    it "treats a slash command with a junk-short remainder as junk too (#128)" do
+      expect(described_class.derive_title("/mode y")).to be_nil
+    end
   end
 end

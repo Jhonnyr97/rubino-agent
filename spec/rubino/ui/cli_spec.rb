@@ -172,7 +172,13 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("┄ already shown ┄")
     end
 
-    it "ctrl-o reveal is a no-op when nothing is retained" do
+    it "ctrl-o with nothing retained prints a dim one-shot note, then stays silent (#133)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      # First press: the advertised key must give SOME feedback instead of
+      # reading as a broken keybinding on providers that stream no thinking.
+      out = capture_stdout { ui.reveal_last_reasoning }
+      expect(out).to include("no reasoning retained")
+      # Further presses in the same dry spell stay silent (no stacking notes).
       expect { ui.reveal_last_reasoning }.not_to output.to_stdout
     end
 
@@ -433,11 +439,13 @@ RSpec.describe Rubino::UI::CLI do
       expect(live_io.live_calls).to include("incomplete ta")
     end
 
-    it "shows only the in-progress row of a partial table on the live seam" do
-      # Regression: a half-arrived table was sent WHOLE to the one-row live
-      # region, which collapsed its rows onto one line and clipped it with a
-      # leading ellipsis. The live seam must receive only the in-progress row;
-      # the earlier rows stay buffered until the table completes and renders.
+    it "shows a bounded rolling tail of the in-flight block on the live seam (#127)" do
+      # Regression (one-row era): a half-arrived multi-line block sent only its
+      # current raw line to the live region, so the earlier lines the user had
+      # just watched stream by VANISHED until the whole block committed. The
+      # live seam now receives the last LIVE_TAIL_ROWS lines of the in-flight
+      # block — recent context stays visible, and the window is bounded so a
+      # long block can never grow the live region unbounded.
       live_io = Class.new(StringIO) do
         attr_reader :live_calls
 
@@ -455,8 +463,9 @@ RSpec.describe Rubino::UI::CLI do
         $stdout = old
       end
 
-      expect(live_io.live_calls.last).to eq("| ruby_llm | LLM")
-      expect(live_io.live_calls).to all(satisfy { |s| !s.include?("\n") })
+      expect(live_io.live_calls.last).to eq("| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM")
+      rows = described_class::LIVE_TAIL_ROWS
+      expect(live_io.live_calls).to all(satisfy { |s| s.split("\n").length <= rows })
     end
 
     it "does not crash on the plain path when $stdout has no #live" do
@@ -508,6 +517,31 @@ RSpec.describe Rubino::UI::CLI do
       long = "x" * 200
       expect { ui.tool_started("shell", arguments: { command: long }) }
         .to output(/\.\.\./).to_stdout
+    end
+
+    # Regression for #136: on the streaming path the model emits answer text
+    # right up to the tool call (ruby_llm runs the tool mid-stream, no
+    # stream_end intervenes). The buffered pre-tool segment must COMMIT BEFORE
+    # the tool card — in stream order — and stay a separate block from the
+    # post-tool continuation, never "…number.Confirmed — …" glue after the card.
+    it "commits the buffered pre-tool stream text BEFORE the tool card (#136)" do
+      out = capture_stdout do
+        ui.stream(type: :content, text: "Starting the subagent to compute the number.")
+        ui.tool_started("task", arguments: { prompt: "fib(25)" })
+        ui.tool_finished("task", result: nil)
+        ui.stream(type: :content, text: "Confirmed — it is running.")
+        ui.stream_end
+      end
+
+      pre  = out.index("compute the number.")
+      card = out.index("delegated")
+      post = out.index("Confirmed — it is running.")
+      expect(pre).not_to be_nil
+      expect(card).not_to be_nil
+      expect(post).not_to be_nil
+      expect(pre).to be < card           # pre-tool text before the card (stream order)
+      expect(card).to be < post          # post-tool text after the card
+      expect(out).not_to include("number.Confirmed") # never glued into one word
     end
   end
 
@@ -643,6 +677,44 @@ RSpec.describe Rubino::UI::CLI do
 
     it "stringifies non-string content without raising" do
       expect { ui.replay_user_input(nil) }.not_to raise_error
+    end
+  end
+
+  describe "#input_injected" do
+    after { Rubino::UI::BottomComposer.current = nil }
+
+    # #129: a line the loop folded into the CURRENT turn as steering has been
+    # consumed — its live "⏳ queued:" indicator must clear, or it would sit
+    # above the input forever for a message that already ran.
+    it "clears the consumed line's pending indicator on the current composer (#129)" do
+      pending  = ["fold me in"]
+      composer = Rubino::UI::BottomComposer.new(
+        input_queue: Rubino::Interaction::InputQueue.new,
+        input: StringIO.new, output: StringIO.new, pending_queued: pending
+      )
+      Rubino::UI::BottomComposer.current = composer
+
+      capture_stdout { ui.input_injected("fold me in") }
+
+      expect(pending).to eq([])
+    end
+
+    it "clears indicators for each line of a coalesced injection (#129)" do
+      pending  = %w[alpha beta]
+      composer = Rubino::UI::BottomComposer.new(
+        input_queue: Rubino::Interaction::InputQueue.new,
+        input: StringIO.new, output: StringIO.new, pending_queued: pending
+      )
+      Rubino::UI::BottomComposer.current = composer
+
+      capture_stdout { ui.input_injected("alpha\nbeta") }
+
+      expect(pending).to eq([])
+    end
+
+    it "echoes the injected text dim with the ↳ marker" do
+      out = capture_stdout { ui.input_injected("steered note") }
+      expect(out).to include("↳ received while working: steered note")
     end
   end
 
@@ -1267,6 +1339,16 @@ RSpec.describe Rubino::UI::CLI do
     it "does not mistake an arrow-key escape prefix for a cancel" do
       picker_with_keys("\e[B\r") # ↓ then Enter — selects the second row
       expect(ui.select("pick", choices)).to eq(2)
+    end
+
+    # Regression for #138: Esc aborts tty-prompt mid-render, parking the cursor
+    # at the END of the last menu row — the caller's cancel hint then glued
+    # straight onto it ("… · active)Resume: /sessions <id|title>"). The cancel
+    # path must restore line discipline with a newline before returning.
+    it "emits a newline on Esc so the next committed line never glues onto the last row (#138)" do
+      picker_with_keys("\e")
+      out = capture_stdout { expect(ui.select("pick", choices)).to be_nil }
+      expect(out).to end_with("\n")
     end
   end
 

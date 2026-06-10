@@ -165,7 +165,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 You can keep typing while a turn is running — the pinned input stays live:
 
 - **Enter** interrupts the current turn and runs your line as the **next** turn (the partial answer is kept and marked `⎿ interrupted`).
-- **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does.
+- **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does. At idle (no turn running) there is nothing to queue behind, so Alt+Enter submits the line immediately, same as Enter.
 - **`/queued <message>`** is the terminal-independent fallback for Alt+Enter (some terminals don't deliver the chord) — it queues the message the same way.
 
 ### Probes and branches
@@ -210,7 +210,7 @@ While the model reasons, the CLI shows a live animated status row — a pulsing 
 - `full` — the whole reasoning committed as a dim `┊` aside above the answer.
 - `hidden` — nothing is shown, but the last thought is still retained.
 
-**Ctrl+O** reveals the last retained reasoning as the `┊` aside — in `collapsed` mode after the cue, and in `hidden` mode on demand. The reveal is one-way scrollback (a second press is a silent no-op until a new thought arrives).
+**Ctrl+O** reveals the last retained reasoning as the `┊` aside — in `collapsed` mode after the cue, and in `hidden` mode on demand. The reveal is one-way scrollback (a second press is a silent no-op until a new thought arrives). When nothing was retained — typically a provider that streams no thinking blocks at all — the first press prints a dim `no reasoning retained` note instead of doing nothing.
 
 Two orthogonal knobs control all this (persisted to config, so they survive the session):
 

@@ -208,11 +208,13 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     # NEW MODEL: Enter while a turn is active INTERRUPTS the current turn and
     # sends the line as the NEXT turn immediately (the default). The line is
-    # pushed to the queue AND the on_interrupt hook fires; nothing is echoed
+    # pushed to the queue AND the on_interrupt hook fires; no committed echo
     # here (the next turn's prompt echo is committed by the chat loop when it
-    # runs). The OLD "queued ▸" deferred echo is retired.
+    # runs) — but the line shows a live "⏳ queued:" indicator while parked
+    # (#129), so a submit that doesn't run instantly is never invisible. The
+    # OLD "queued ▸" deferred echo is retired.
     context "interrupt-by-default (Enter during an active turn)" do
-      it "fires on_interrupt and queues the line, with no echo, during streaming" do
+      it "fires on_interrupt and queues the line with a live indicator, during streaming" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> { interrupts += 1 })
@@ -223,7 +225,10 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(interrupts).to eq(1)            # interrupt fired exactly once
         expect(queue.drain).to eq(["ping"])    # line queued for the immediate next run
         expect(output.string).not_to include("queued ▸") # old deferred echo retired
-        expect(output.string).not_to include("⏳ queued") # not an explicit queue either
+        # Visible while parked (#129): the interrupt line renders the same live
+        # "⏳ queued:" row an explicit queue gets, removed at dequeue time.
+        expect(output.string).to include("⏳ queued: ping")
+        expect(c.commit_queued("ping")).to be(true) # dequeue clears it
       end
 
       it "fires on_interrupt during the THINKING phase too (turn active, not streaming)" do
@@ -374,6 +379,49 @@ RSpec.describe Rubino::UI::BottomComposer do
         frame = output.string.split("\r\e[2K").last(8).join
         expect(frame).to include("⏳ queued: two")
         expect(frame).not_to include("⏳ queued: one")
+      end
+
+      # #130: at IDLE there is no turn whose completion could drain the queue —
+      # Alt+Enter must behave exactly like plain Enter (parity with "/queued",
+      # which runs immediately at idle), never park the line under a forever
+      # "⏳ queued:" indicator.
+      it "Alt+Enter at idle submits like plain Enter on the :prompt composer (#130)" do
+        pending = []
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                prompt: "default ❯ ", echo: :prompt, pending_queued: pending)
+        "what is 6+6?".each_char { |ch| c.handle_key(ch) }
+        c.instance_variable_set(:@input, StringIO.new("\r"))
+        c.handle_key("\e")
+
+        expect(queue.drain).to eq(["what is 6+6?"])          # submitted, not parked
+        expect(pending).to eq([])                            # no indicator left behind
+        expect(output.string).to include("default ❯ what is 6+6?") # normal prompt echo
+        expect(output.string).not_to include("⏳ queued")
+      end
+
+      it "Alt+Enter with no active turn on a :queued composer submits too (#130)" do
+        interrupts = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { interrupts += 1 })
+        # NO begin_turn: idle. Alt+Enter routes through the plain submit path.
+        "idle chord".each_char { |ch| c.handle_key(ch) }
+        c.instance_variable_set(:@input, StringIO.new("\r"))
+        c.handle_key("\e")
+
+        expect(interrupts).to eq(0)
+        expect(queue.drain).to eq(["idle chord"])
+        expect(output.string).not_to include("⏳ queued")
+      end
+
+      it "Alt+Enter mid-turn still queues (the idle parity does not regress queueing)" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        "park me".each_char { |ch| c.handle_key(ch) }
+        c.instance_variable_set(:@input, StringIO.new("\r"))
+        c.handle_key("\e")
+        expect(queue.drain).to eq(["park me"])
+        expect(output.string).to include("⏳ queued: park me")
       end
 
       it "shares the pending list across composers (indicator survives teardown)" do

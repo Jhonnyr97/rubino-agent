@@ -758,11 +758,25 @@ module Rubino
           @output.print("\r\e[2K#{clamp(row, @cols - 1)}\r\n")
           @live_rows_above += 1
         end
-        unless @partial.empty?
-          @output.print("\r\e[2K#{clamp(@partial, @cols - 1)}\r\n")
+        # The live streamed partial: one row per line, capped (a rolling tail of
+        # an in-flight markdown block is a few lines, #127), each clamped so a
+        # long line can never wrap and desync the frame.
+        partial_rows.each do |row|
+          @output.print("\r\e[2K#{clamp(row, @cols - 1)}\r\n")
           @live_rows_above += 1
         end
         draw_input
+      end
+
+      # Hard ceiling on the live partial rows so a runaway caller can never push
+      # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block).
+      MAX_PARTIAL_ROWS = 4
+
+      # The partial as drawn: its last MAX_PARTIAL_ROWS lines, one row each.
+      def partial_rows
+        return [] if @partial.empty?
+
+        @partial.split("\n").last(MAX_PARTIAL_ROWS) || []
       end
 
       # Clamp a single visible line to the terminal width (one row), left-
@@ -850,8 +864,12 @@ module Rubino
           # interrupt the current one. Push to the FRONT so it runs ahead of any
           # items the user explicitly parked (Alt+Enter / "/queued") earlier in
           # this turn, THEN fire the interrupt. No echo here — run_turn commits
-          # the next turn's "<prompt><line>" when it runs.
-          @input_queue&.push_front(line)
+          # the next turn's "<prompt><line>" when it runs — but the line DOES get
+          # a live "⏳ queued:" indicator while parked (#129): if the interrupted
+          # turn doesn't unwind instantly (e.g. it is deep in post-turn work),
+          # the submit must never be invisible. The indicator is removed at
+          # dequeue time like any other queued item.
+          queue_message(line, front: true)
           fire_interrupt(line)
         else
           # No active turn (or no interrupt hook wired): a plain queued submit,
@@ -884,7 +902,13 @@ module Rubino
       # keeps running; the queued item is committed as a normal message + the
       # indicator removed when its turn actually runs (the chat loop drives that
       # via #commit_queued at dequeue time).
+      #
+      # With NO turn active there is nothing to queue behind: Alt+Enter behaves
+      # exactly like plain Enter (#130), so an idle chord can never park the
+      # message under a "⏳ queued:" indicator that no turn boundary will drain.
       def queue_alt_enter
+        return submit_line unless @turn_active || @content_streaming
+
         msg = take_buffer.strip
         return if msg.empty?
 
@@ -907,10 +931,13 @@ module Rubino
       end
 
       # Push +msg+ to the input queue and show its live "⏳ queued:" indicator.
-      def queue_message(msg)
-        @input_queue&.push(msg)
+      # +front+ jumps the queue (the interrupt-by-default Enter): the message is
+      # the NEXT one dequeued, and its indicator leads the pending rows so the
+      # visible order matches the run order (#129).
+      def queue_message(msg, front: false)
+        front ? @input_queue&.push_front(msg) : @input_queue&.push(msg)
         @render.synchronize do
-          @pending_queued << msg
+          front ? @pending_queued.unshift(msg) : @pending_queued.push(msg)
           redraw
         end
       end

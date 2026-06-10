@@ -235,6 +235,7 @@ module Rubino
         end
 
         Rubino.configuration.set("display", "reasoning", sym.to_s)
+        persist_config("display.reasoning", sym.to_s)
         @ui.reasoning_changed(sym, previous: previous) if @ui.respond_to?(:reasoning_changed)
       end
 
@@ -262,7 +263,20 @@ module Rubino
         end
 
         Rubino.configuration.set("thinking", "effort", sym.to_s)
+        persist_config("thinking.effort", sym.to_s)
         @ui.think_changed(sym, previous: previous) if @ui.respond_to?(:think_changed)
+      end
+
+      # Write-through of a /reasoning // /think switch to config.yml so it
+      # survives the session, as docs/commands.md promises (#131). The in-memory
+      # set above stays authoritative for THIS session either way; a disk
+      # failure degrades to the old session-only behavior with a warning, never
+      # a broken command.
+      def persist_config(key_path, value)
+        path = Config::Loader.new.config_path
+        Config::Writer.new(config_path: path).set(key_path, value)
+      rescue StandardError => e
+        @ui.warning("could not persist #{key_path} to config: #{e.message}")
       end
 
       # --- /status & welcome -------------------------------------------------
@@ -357,8 +371,19 @@ module Rubino
         id    = session[:id].to_s[0..7]
         title = session[:title].to_s.strip
         title = title.empty? ? "(untitled)" : %("#{title}")
-        msgs  = session[:message_count]
+        msgs  = status_message_count(session)
         "#{id}  #{title}#{" · #{msgs} msgs" if msgs}"
+      end
+
+      # The session's message count, read LIVE from the message store. The
+      # in-memory session hash's :message_count is a boot-time snapshot the
+      # streaming path never refreshes, so /status reported a permanent
+      # "0 msgs" while the DB had every turn (#159). Counting the persisted
+      # rows also matches the "Loaded N prior messages" resume banner.
+      def status_message_count(session)
+        Session::Store.new.count(session[:id])
+      rescue StandardError
+        session[:message_count]
       end
 
       # /status must count facts on the ACTIVE backend — the same store /memory
