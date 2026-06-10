@@ -186,6 +186,24 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\r")
         expect(output.string).to include("default ❯ hi\r\n")
       end
+
+      # #55: hammering Enter on an EMPTY idle buffer must be a FULL no-op for
+      # scrollback — no committed "<prompt>" echo per tap (the old Reline path
+      # stacked a bare prompt row each time), no queued line. The composer just
+      # repaints its own row in place.
+      it "swallows empty Enter spam with no committed prompt echo (#55)" do
+        3.times { composer.handle_key("\r") }
+        expect(queue.drain).to eq([])
+        expect(output.string).not_to include("default ❯ \r\n")
+      end
+
+      it "swallows a whitespace-only submit the same way (#55)" do
+        [" ", " ", "\r"].each { |ch| composer.handle_key(ch) }
+        expect(queue.drain).to eq([])
+        # No COMMITTED echo (a committed row ends in CRLF); the live
+        # editing row legitimately shows the typed spaces before Enter.
+        expect(output.string).not_to match(/default ❯ {2}\r\n/)
+      end
     end
 
     # NEW MODEL: Enter while a turn is active INTERRUPTS the current turn and
@@ -904,30 +922,36 @@ RSpec.describe Rubino::UI::BottomComposer do
       c
     end
 
-    # D6: the one-row composer collapses a multi-line paste into a single
-    # editable line, joining lines with a SPACE so adjacent words don't fuse
-    # (the "word1word2" defect) and a literal newline never desyncs the row. The
-    # paste is NOT auto-submitted — it lands in the buffer, editable.
-    it "collapses a multi-line paste into one editable line joined by spaces (D6)" do
-      c = paste("line1\nline2\nline3")
+    # #57: a multi-line paste keeps its REAL newlines in the buffer (and in
+    # the submitted payload), instead of the old D6 collapse to spaces that
+    # destroyed pasted code structure. The paste is NOT auto-submitted — each
+    # embedded \n lands in the buffer, editable, drawn as a visible ⏎ mark.
+    it "preserves a multi-line paste's newlines in the editable buffer (#57)" do
+      c = paste("def add(a, b)\n  a + b\nend")
       expect(queue.drain).to eq([]) # not auto-submitted
-      expect(c.buffer).to eq("line1 line2 line3")
+      expect(c.buffer).to eq("def add(a, b)\n  a + b\nend")
     end
 
-    it "does not glue words across pasted lines (D6 separator)" do
-      c = paste("first paragraph\nsecond paragraph")
-      expect(c.buffer).to include(" ")
-      expect(c.buffer).not_to include("paragraphsecond")
-      expect(c.buffer).to eq("first paragraph second paragraph")
+    it "submits the pasted newlines intact in the message payload (#57)" do
+      c = paste("line1\nline2")
+      c.handle_key("\r")
+      expect(queue.drain).to eq(["line1\nline2"])
     end
 
-    it "normalizes CR / CRLF pasted line breaks to a single space (D6)" do
-      expect(paste("a\r\nb").buffer).to eq("a b")
-      expect(paste("a\rb").buffer).to eq("a b")
+    it "draws buffer newlines as visible ⏎ marks, never a literal newline (#57)" do
+      paste("line1\nline2")
+      frame = output.string.split("\r\e[2K").last
+      expect(frame).to include("line1⏎line2")
+      expect(frame).not_to include("line1\nline2")
     end
 
-    it "collapses a run of blank lines to a single space (no wall of spaces)" do
-      expect(paste("a\n\n\nb").buffer).to eq("a b")
+    it "normalizes CR / CRLF pasted line breaks to \n" do
+      expect(paste("a\r\nb").buffer).to eq("a\nb")
+      expect(paste("a\rb").buffer).to eq("a\nb")
+    end
+
+    it "preserves interior blank lines but trims the trailing newline" do
+      expect(paste("a\n\n\nb\n").buffer).to eq("a\n\n\nb")
     end
 
     it "appends a single-line paste to the editable buffer (not auto-submitted)" do
@@ -942,7 +966,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       c.instance_variable_set(:@input, StringIO.new("[200~X\nY\e[201~"))
       c.handle_key("\x02") # Ctrl+B: cursor between a and c
       c.handle_key("\e")   # trigger the preloaded paste
-      expect(c.buffer).to eq("aX Yc")
+      expect(c.buffer).to eq("aX\nYc")
     end
   end
 

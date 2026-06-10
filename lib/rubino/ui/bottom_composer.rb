@@ -30,10 +30,11 @@ module Rubino
     # Known limitations (verify live, then iterate):
     #   * ONE-ROW composer: a buffer longer than the terminal width is shown
     #     left-truncated with a leading "…" instead of wrapping to a second row.
-    #     True multi-row wrap is deferred. A multi-line PASTE is therefore
-    #     collapsed onto the single row — its newlines become single spaces
-    #     (see #flatten_paste_lines); preserving pasted newlines is tracked
-    #     in issue #57.
+    #     True multi-row wrap is deferred. A multi-line PASTE keeps its REAL
+    #     newlines in the buffer and the submitted payload; the one-row view
+    #     renders each as a visible ⏎ mark (#57 — see #display_view /
+    #     #submit_paste), so structure survives even though the EDITING view
+    #     stays single-row.
     #
     # (Two earlier MVP limitations no longer apply: arrows/Home/End/Delete/
     # word-jump now drive the cursor via #consume_escape_sequence, and the
@@ -54,11 +55,10 @@ module Rubino
       # Bracketed paste (DEC 2004): the terminal wraps pasted text in
       # ESC[200~ … ESC[201~ so we can tell a PASTE from typed keystrokes and
       # keep each embedded \n from submitting a half-line (L1 — "pasteline2"
-      # glue). The body is inserted as ONE editable string with its newlines
-      # currently COLLAPSED to single spaces — the one-row composer cannot hold
-      # a literal newline (see #submit_paste; preserving them is issue #57). We
-      # enable it on start, disable on stop/suspend, and accumulate the body
-      # between the markers.
+      # glue). The body is inserted as ONE editable string with its REAL
+      # newlines preserved; the one-row view draws each as a ⏎ mark (#57, see
+      # #submit_paste). We enable it on start, disable on stop/suspend, and
+      # accumulate the body between the markers.
       PASTE_ON   = "\e[?2004h"
       PASTE_OFF  = "\e[?2004l"
       PASTE_END  = "201~"
@@ -499,13 +499,14 @@ module Rubino
         avail = @cols - @prompt_width - 1
         avail = 1 if avail < 1
 
-        chars  = @buffer.chars
+        view   = display_view
+        chars  = view.chars
         cursor = @cursor.clamp(0, chars.length)
 
-        if display_width(@buffer) <= avail
+        if display_width(view) <= avail
           # Whole buffer fits: draw it highlighted, then move the caret left from
           # the line end to the cursor's display column.
-          @output.print("\r\e[2K#{@prompt}#{highlight_line(@buffer)}")
+          @output.print("\r\e[2K#{@prompt}#{highlight_line(view)}")
           tail_cols = display_width(chars[cursor..].join)
           @output.print("\e[#{tail_cols}D") if tail_cols.positive?
         else
@@ -549,6 +550,18 @@ module Rubino
 
       # The current editable buffer (test/inspection helper).
       attr_reader :buffer
+
+      # How a buffer NEWLINE renders on the one-row composer: a visible ⏎ mark
+      # (display width 1), so a pasted multi-line draft keeps its structure
+      # visible without a literal newline desyncing the single-row redraw. The
+      # buffer holds REAL newlines — this is a draw-time view transform, 1:1 by
+      # codepoint, so all cursor/width math is unchanged (#57).
+      NEWLINE_MARK = "⏎"
+
+      # The buffer as drawn: newlines swapped for the visible ⏎ mark.
+      def display_view
+        @buffer.tr("\n", NEWLINE_MARK)
+      end
 
       # Feeds a single character through the edit logic. Public so the PTY/unit
       # tests can drive editing without a live raw read. Returns :submit when the
@@ -1306,28 +1319,27 @@ module Rubino
       end
 
       # Handle a bracketed-paste body. The composer is a ONE-ROW editor, so a
-      # paste is inserted into the editable buffer at the cursor like fast typing
-      # — still editable before submit. A MULTI-LINE paste is collapsed to a
-      # single row with its line breaks turned into single SPACES so adjacent
-      # words don't fuse ("word1word2") and a literal newline never desyncs the
-      # single-row redraw (D6).
+      # paste is inserted into the editable buffer at the cursor like fast
+      # typing — still editable before submit. A MULTI-LINE paste keeps its
+      # REAL newlines in the buffer (and so in the submitted message payload —
+      # pasted code arrives at the model with its line structure intact); the
+      # one-row view renders each newline as a visible ⏎ mark instead of
+      # silently flattening them to spaces (#57; supersedes the D6 collapse).
       def submit_paste(text)
         return if text.nil? || text.empty?
 
-        flat = flatten_paste_lines(text)
-        return if flat.empty?
+        body = normalize_paste_newlines(text)
+        return if body.empty?
 
-        insert(flat) # at the cursor, like fast typing
+        insert(body) # at the cursor, like fast typing
       end
 
-      # Collapse a pasted body's line breaks to single spaces. The composer is a
-      # ONE-ROW editor, so a literal newline in @buffer would desync the redraw
-      # AND fuse the adjacent words ("word1word2") when shown on the single row.
-      # Joining with a space keeps the words separated and the row well-formed
-      # (D6). Collapses runs of blank lines to one space too, so a paste with
-      # double newlines doesn't insert a wall of spaces. Trims a trailing newline.
-      def flatten_paste_lines(text)
-        text.to_s.gsub(/\r\n|\r|\n/, "\n").sub(/\n+\z/, "").gsub(/\n+/, " ")
+      # Normalize a pasted body's line endings to "\n" (terminals deliver CR
+      # for Enter in raw mode) and trim TRAILING newlines so a paste that ends
+      # with one never reads as a blank extra line. Interior newlines — and
+      # the indentation after them — are PRESERVED end-to-end (#57).
+      def normalize_paste_newlines(text)
+        text.to_s.gsub(/\r\n|\r/, "\n").sub(/\n+\z/, "")
       end
 
       # After ESC, parse and ACT on the escape sequence so arrows / Home / End /
