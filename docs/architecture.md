@@ -85,8 +85,8 @@ API's `parent_session_id` path.
 - `ContentBuilder` — Multipart content for vision (text + images)
 
 ### `mcp/`
-MCP support is present as a design surface but dormant in the current
-current lightweight build.
+Experimental — booted at chat startup when `mcp.servers` is configured
+(see [mcp.md](mcp.md)).
 - `Manager` — Manages multiple MCP client connections
 - `MCPToolWrapper` — Wraps MCP tools into Tools::Base interface
 

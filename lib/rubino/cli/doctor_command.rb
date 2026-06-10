@@ -35,6 +35,12 @@ module Rubino
         ui.info("Optional (API/OAuth server):")
         optional = [check_encryption_key]
 
+        # MCP servers are optional integrations (#90): report each configured
+        # server's reachability best-effort, but never let a down MCP server
+        # fail doctor — it is informational, not a required check, so non-MCP
+        # users (and MCP users with a flaky server) still exit 0.
+        check_mcp_servers if MCP.enabled?
+
         ui.blank_line
         passed = required.count { |c| c[:status] == :ok }
         total = required.size
@@ -184,6 +190,34 @@ module Rubino
       rescue ArgumentError => e
         ui.error("RUBINO_ENCRYPTION_KEY invalid: #{e.message}")
         { name: "encryption_key", status: :fail }
+      end
+
+      # Best-effort MCP reachability report (#90). Starts each configured
+      # server, health-checks it, and stops everything again — doctor stays
+      # read-only and leaves no child processes behind. Deliberately NOT part
+      # of the required score: a server that fails to start already warned via
+      # Manager#start_server, a started-but-dead one warns here, and neither
+      # flips the exit status. Any unexpected error degrades to a warning so
+      # the MCP section can never break doctor itself.
+      def check_mcp_servers
+        ui = Rubino.ui
+        ui.blank_line
+        ui.info("Optional (MCP servers, experimental):")
+
+        servers = Rubino.configuration.dig("mcp", "servers") || {}
+        manager = MCP::Manager.new
+        servers.each { |name, server_config| manager.start_server(name, server_config) }
+
+        manager.health_check.each do |status|
+          if status[:alive]
+            ui.success("MCP server '#{status[:name]}' reachable")
+          else
+            ui.warning("MCP server '#{status[:name]}' not reachable")
+          end
+        end
+        manager.stop_all!
+      rescue StandardError => e
+        ui.warning("MCP check failed: #{e.message}")
       end
     end
   end

@@ -1,15 +1,16 @@
 # MCP Integration
 
-> **Status: PLANNED.** MCP integration is designed in (via [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp)) but not fully wired yet — don't depend on it in production.
+> **Status: EXPERIMENTAL.** stdio servers are wired end-to-end (connect at chat boot, tools registered, `doctor`/`tools` surfaces). `sse`/`streamable` configs are forwarded to [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) but less battle-tested, and OAuth is **not implemented** on the rubino side (see below). Don't depend on it in production yet.
 
 rubino supports the [Model Context Protocol](https://modelcontextprotocol.io/) via [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp).
 
 ## Configuration
 
-Add MCP servers in `config.yml`:
+Configuring at least one server under `mcp.servers` in `config.yml` **is the opt-in** — there is no separate feature flag to flip. Set `mcp.enabled: false` to switch MCP off without deleting the server definitions.
 
 ```yaml
 mcp:
+  # enabled: false        # optional kill switch; defaults to true when servers exist
   servers:
     # Local server via stdio
     filesystem:
@@ -26,14 +27,10 @@ mcp:
       headers:
         Authorization: "Bearer {env:MCP_TOKEN}"
 
-    # Remote server via streamable HTTP (with OAuth)
-    oauth_server:
+    # Remote server via streamable HTTP
+    streaming_api:
       transport: streamable
       url: "https://mcp.example.com/api"
-      oauth:
-        client_id: "{env:MCP_CLIENT_ID}"
-        client_secret: "{env:MCP_CLIENT_SECRET}"
-        scope: "mcp:read mcp:write"
       timeout: 15000
 ```
 
@@ -47,14 +44,16 @@ mcp:
 
 ## How It Works
 
-1. On startup, `MCP::Manager` connects to all configured servers
+1. At chat boot (and in `rubino tools`), `MCP::Manager` connects to all configured servers — best-effort: a server that fails to start prints a warning and is skipped, it never blocks the session
 2. Each server's tools are wrapped in `MCPToolWrapper` (adapts to `Tools::Base` interface)
 3. Wrapped tools are registered in `Tools::Registry` with a prefix (`servername_toolname`)
 4. The agent can use MCP tools like any built-in tool
 
+MCP tools are dynamic — they come from whatever servers you configure — so they are not part of the drift-checked built-in tool list in [tools.md](tools.md) and have no `tools.<key>` config gate; disable a server (or set `mcp.enabled: false`) to remove its tools.
+
 ## Per-Agent Scoping
 
-Control which MCP servers each agent can access:
+Control which MCP servers each agent can access in `config.yml`:
 
 ```yaml
 agents:
@@ -66,7 +65,9 @@ agents:
     mcp_servers: []               # No MCP tools
 ```
 
-In code:
+An agent with no `mcp_servers` key sees every server. The YAML string `all` is normalized to the `:all` value the Manager compares against.
+
+In code (an explicit value here wins over config):
 
 ```ruby
 Rubino::Agent::Definition.new(
@@ -75,23 +76,11 @@ Rubino::Agent::Definition.new(
 )
 ```
 
-## OAuth Authentication
+## Authentication
 
-For remote MCP servers requiring OAuth:
+Remote-server credentials are passed through config: use `headers` (e.g. `Authorization: "Bearer {env:MCP_TOKEN}"`) or the server process `env` for stdio servers.
 
-```yaml
-mcp:
-  servers:
-    protected:
-      transport: streamable
-      url: "https://mcp.corp.example.com/api"
-      oauth:
-        client_id: "{env:MCP_OAUTH_CLIENT_ID}"
-        client_secret: "{env:MCP_OAUTH_CLIENT_SECRET}"
-        scope: "mcp:read mcp:write"
-```
-
-The OAuth flow uses PKCE and opens a browser for authentication. Tokens are stored in `~/.rubino/oauth_tokens.json` (permissions: 600).
+An `oauth` hash on a `streamable` server is forwarded verbatim to `ruby_llm-mcp` — rubino itself implements **no** OAuth flow: there is no PKCE/browser handshake and no rubino-side token storage (no `~/.rubino/oauth_tokens.json`). Whatever OAuth behavior you get is whatever your installed `ruby_llm-mcp` version provides; treat it as not yet supported.
 
 ## Manual Management
 
@@ -117,6 +106,8 @@ manager.stop_all!
 ## CLI
 
 ```bash
-rubino doctor   # Shows MCP server status in health check
-rubino tools    # Lists all tools including MCP tools
+rubino doctor   # "Optional (MCP servers, experimental)" section: per-server reachability.
+                # Informational only — an unreachable MCP server never fails doctor.
+rubino tools    # "MCP Tools (experimental)" section: prefixed servername_toolname rows
+                # per server, after the built-in table.
 ```
