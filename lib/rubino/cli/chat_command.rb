@@ -55,6 +55,10 @@ module Rubino
         @idle_cards ||= Chat::IdleCardHost.new
       end
 
+      def bang_shell
+        @bang_shell ||= Chat::BangShell.new
+      end
+
       # --- One-shot mode ---
 
       def run_oneshot(query)
@@ -278,6 +282,23 @@ module Rubino
             # dispatch so `? /foo` is still a probe about a literal `/foo`.
             if (question = probe_question(input))
               run_probe(runner, question, ui)
+              next
+            end
+
+            # A leading `!` is the human shell escape (Claude Code's bash
+            # mode): run the rest of the line in the user's shell NOW — no
+            # approval, the human typed it — stream the output into the
+            # transcript, then inject command + output into the session as
+            # user-role <bash-input>/<bash-stdout><bash-stderr> messages so
+            # the model can reference them next turn. Handled BEFORE slash
+            # dispatch so `!` always wins. :ran counts as interaction (the
+            # session now has messages worth a resume hint); a bare-`!`
+            # usage line (:handled) does not.
+            case bang_shell.handle(input, runner, ui)
+            when :ran
+              interacted = true
+              next
+            when :handled
               next
             end
 

@@ -820,6 +820,23 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(started[:arguments]).to eq({ command: "ls" })
     end
 
+    it "replays `!` bang messages as the echo + dim output, never raw tags" do
+      store.create(session_id: session[:id], role: "user",
+                   content: "<bash-input>git status</bash-input>")
+      store.create(session_id: session[:id], role: "user",
+                   content: "<bash-stdout>clean\n</bash-stdout><bash-stderr></bash-stderr>")
+
+      ui = Rubino::UI::Null.new
+      Rubino::CLI::Chat::SessionResolver.new({}).print_session_history(ui, session[:id])
+
+      echo = ui.messages.find { |m| m[:level] == :replay_user_input }
+      expect(echo[:message]).to eq("! git status")
+      body = ui.messages.find { |m| m[:level] == :tool_body }
+      expect(body[:message]).to eq("clean\n")
+      raw = ui.messages.find { |m| m[:message].to_s.include?("<bash-") }
+      expect(raw).to be_nil
+    end
+
     it "skips assistant messages whose content is blank" do
       store.create(session_id: session[:id], role: "user",      content: "ping")
       store.create(session_id: session[:id], role: "assistant", content: "")
