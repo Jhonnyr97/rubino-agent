@@ -14,6 +14,12 @@ module Rubino
         "Please provide a final response summarizing what you've found and " \
         "accomplished so far, without calling any more tools."
 
+      # Framing for turn-start background notices (#148): tells the model the
+      # notices are secondary to the user message that follows them.
+      NOTICES_PREAMBLE =
+        "[background notices — acknowledge briefly; the user's message AFTER " \
+        "these notices is the instruction to act on]"
+
       def initialize(session:, llm_adapter:, tool_executor:, message_store:,
                      budget:, ui:, event_bus:, config:, cancel_token: nil,
                      initial_image_paths: [], input_queue: nil)
@@ -219,13 +225,35 @@ module Rubino
         return if lines.empty?
 
         text = lines.join("\n")
-
-        persist_user_message(text)
-        messages << { role: "user", content: text }
+        # Turn-start fold-in: the notices are CONTEXT, the user's just-sent
+        # message is the INSTRUCTION. Appended after the user message, screens
+        # of completion reports drowned the prompt and the model answered the
+        # notices, ignoring the request (#148). Frame the notices and insert
+        # them BEFORE the user message so it stays last (most salient).
+        if iteration == 1
+          text = "#{NOTICES_PREAMBLE}\n#{text}"
+          persist_user_message(text)
+          insert_before_trailing_user(messages, text)
+        else
+          persist_user_message(text)
+          messages << { role: "user", content: text }
+        end
 
         @event_bus.emit(Interaction::Events::INPUT_INJECTED,
                         text: text, iteration: iteration)
         @ui.input_injected(text)
+      end
+
+      # Inserts the framed notice message just before the trailing user message
+      # (the turn's instruction, #148); appends defensively when the last
+      # message isn't a user one (should not happen at iteration 1).
+      def insert_before_trailing_user(messages, text)
+        notice = { role: "user", content: text }
+        if messages.last&.[](:role) == "user"
+          messages.insert(-2, notice)
+        else
+          messages << notice
+        end
       end
 
       # True when the model is configured to stream and the UI should display it

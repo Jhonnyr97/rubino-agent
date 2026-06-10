@@ -67,5 +67,25 @@ RSpec.describe Rubino::UI::SubagentCards do
       hint = plain(cards.card_lines([e])).last
       expect(hint).to include("/agents <id> to approve")
     end
+
+    # #141: a multi-line ruby/shell command often STARTS with a blank line —
+    # `.lines.first` rendered an empty "needs approval:" body. The preview must
+    # be the first NON-BLANK line.
+    it "previews the first non-blank command line, never an empty body (#141)" do
+      e = entry(id: "sa_x", status: :needs_approval,
+                approval_command: "\n# Method 1: Iterative\nfib_iter = 1")
+      line = plain(cards.card_lines([e])).first
+      expect(line).to include("needs approval: # Method 1: Iterative")
+      expect(line).not_to include("needs approval:  ")
+      expect(line).not_to include("fib_iter")
+    end
+  end
+
+  # #141: "· 1 tools ·" — the card must pluralize like the turn footer does.
+  it "pluralizes the tool count (1 tool, 2 tools) (#141)" do
+    one = plain(cards.card_lines([entry(tool_count: 1)])).first
+    two = plain(cards.card_lines([entry(tool_count: 2)])).first
+    expect(one).to include("· 1 tool ·")
+    expect(two).to include("· 2 tools ·")
   end
 end

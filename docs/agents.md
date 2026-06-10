@@ -63,8 +63,10 @@ message instead of fanning out unbounded work:
 | `●` | `needs_approval` | A child tool needs your approval | `/agents <id>` |
 | `⛔` | `blocked_on_human` | Asked a question only YOU can answer (`ask_parent` escalated to the human) | `/reply <id> <answer>` |
 | `◷` | `blocked_on_parent` | Asked its agent-parent a question — the PARENT MODEL answers (`answer_child`); not your job unless you choose to step in with `/reply` | (optional) `/reply <id>` |
-| `✓` | done | Finished; result available | `/agents <id>` |
-| `✗` | failed | Errored; error available | `/agents <id>` |
+| `◌` | `stopping` | Stop requested; unwinding at its next checkpoint | — |
+| `✓` | `done` | Finished; result available | `/agents <id>` |
+| `✗` | `failed` | Errored; error available | `/agents <id>` |
+| `⊘` | `stopped` | Cancelled by you (`--stop`); blocked descendants unwound; tools that completed before the stop may have left side effects | `/agents <id>` |
 
 A `⛔ N subagent waiting on you` marker persists until you `/reply`.
 

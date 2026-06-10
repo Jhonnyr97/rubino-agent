@@ -203,7 +203,7 @@ module Rubino
         }
         # On completion the `output` already carries the subagent's returned
         # summary; tag the subagent name (recovered from the call arguments) so
-        # the consumer can render "X ha risposto" and group it with the start.
+        # the consumer can render "X answered" and group it with the start.
         if name == "task" && arguments.is_a?(Hash)
           subagent = arguments["subagent"] || arguments[:subagent]
           payload[:subagent] = subagent.to_s unless subagent.nil?
