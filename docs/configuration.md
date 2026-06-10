@@ -69,6 +69,8 @@ providers:
 
 Per-provider you may also set `api_key`, and for custom gateways `anthropic_compatible: true` (MiniMax) or `openai_compatible: true`. See [models-and-keys.md](models-and-keys.md).
 
+Per-provider `supports_thinking: true | false` declares whether the backend handles an Anthropic-style thinking budget correctly; `false` means no budget is ever sent to it, regardless of `thinking.effort`. Unset, MiniMax-family model ids default to `false`, everything else to `true` — see [reasoning & thinking](#reasoning--thinking).
+
 ### auxiliary
 
 ```yaml
@@ -164,6 +166,7 @@ thinking:
 - `thinking.effort` maps to an Anthropic-style thinking-token budget (`off`→0, `low`→4000, `medium`→8000, `high`→16000) on the anthropic-family path. Unset (`null`) falls back to the `thinking_budget` chain, whose default is 8000 — i.e. the effective default effort is `medium`.
 - **Quote `"off"`**: bare YAML `off` parses as the boolean `false`. The reader coerces `false` back to `off`, but quoting keeps `config get thinking.effort` honest.
 - **Provider caveat**: some anthropic-compatible backends reject thinking budgets. The adapter detects the rejection, retries the turn once without the budget, and prints `provider doesn't support thinking — effort off` — set `effort: "off"` to skip the first-turn retry entirely.
+- **Provider capability gate**: other backends *accept* the budget but, lacking a separate reasoning channel, dump the model's chain-of-thought as plain content — the reasoning appears inside the assistant message. `providers.<name>.supports_thinking: false` stops the budget from ever being sent to that backend, regardless of `thinking.effort`. Unset, MiniMax-family model ids (`MiniMax*`/`abab*`) default to `false` (they return no thinking blocks and leak reasoning when sent a budget); set `supports_thinking: true` explicitly to re-enable.
 
 The legacy `display.show_reasoning` boolean maps in only when `display.reasoning` is unset (`true`→full, `false`→hidden); `model.thinking_budget` is likewise superseded by `thinking.effort`.
 

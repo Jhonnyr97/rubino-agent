@@ -89,7 +89,7 @@ module Rubino
         announce_attachment_upload(image_paths)
         response = runner.run!(text, image_paths: image_paths)
 
-        $stdout.puts response.to_s
+        print_oneshot_answer(response.to_s)
         $stdout.flush
       rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
         raise
@@ -141,6 +141,21 @@ module Rubino
         mb    = (image_paths.sum { |p| File.size?(p).to_i } / 1_048_576.0).round(1)
         label = image_paths.size == 1 ? "image" : "#{image_paths.size} images"
         warn "sending #{label} (#{mb} MB)…"
+      end
+
+      # Prints the one-shot answer. On a real TTY the answer goes through the
+      # SAME markdown pipeline interactive chat uses (UI::CLI#assistant_text →
+      # MarkdownRenderer: styled headings/bold/code, width-fit tables, wrapping)
+      # so `prompt`/-q doesn't dump literal `**`/`|---|` markdown at a human
+      # (#69). When stdout is NOT a TTY the raw text is kept byte-for-byte —
+      # `answer=$(rubino prompt ...)` and downstream tools want plain text, and
+      # diagnostics already route to stderr (#99) so the pipe stays clean.
+      def print_oneshot_answer(text)
+        if $stdout.respond_to?(:tty?) && $stdout.tty?
+          UI::CLI.new.assistant_text(text)
+        else
+          $stdout.puts text
+        end
       end
 
       # Routes the structured logger to stderr for the one-shot run (#99).

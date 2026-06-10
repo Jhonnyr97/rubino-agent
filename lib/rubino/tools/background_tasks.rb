@@ -34,8 +34,9 @@ module Rubino
       MAX_CONCURRENT_TOTAL  = 8
 
       # last_activity / tool_count / activity_log — live-progress fields written
-      # by the child's EventBus tap (TaskTool#wire_child_activity) under the
-      # registry mutex and read by the parent renderer (UI::SubagentCards) and
+      # by UI::SubagentView#tool_started / #tool_finished (via
+      # #record_tool_started / #record_tool_finished) under the registry mutex
+      # and read by the parent renderer (UI::SubagentCards) and
       # the /agents drill-in. activity_log is a bounded ring of the last few
       # `✓ verb · hint` lines for the live drill-in; nothing is persisted (it
       # dies with the process, like the rest of the registry).
@@ -192,9 +193,9 @@ module Rubino
 
       # Records a child tool STARTING: bumps the tool counter and sets the
       # last-activity string the card/list show so concurrent tasks stay
-      # distinguishable (#124/#127). Called from the child's EventBus tap, which
-      # runs on the CHILD thread, so it MUST take the mutex (the parent renderer
-      # reads these fields concurrently). No-op for an unknown id (a late event
+      # distinguishable (#124/#127). Called from UI::SubagentView#tool_started,
+      # which runs on the CHILD thread, so it MUST take the mutex (the parent
+      # renderer reads these fields concurrently). No-op for an unknown id (a late event
       # after #remove).
       def record_tool_started(id, activity)
         @mutex.synchronize do

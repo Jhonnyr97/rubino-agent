@@ -187,6 +187,29 @@ RSpec.describe Rubino::CLI::ChatCommand do
         hash_including(ui: an_instance_of(Rubino::UI::Null))
       )
     end
+
+    # #69 — one-shot answers go through the SAME markdown pipeline interactive
+    # chat uses when a human is watching (stdout is a TTY): no literal `**` /
+    # raw pipe tables at the prompt. Piped stdout stays raw byte-for-byte —
+    # `answer=$(rubino prompt ...)` depends on plain text.
+    it "renders markdown via the interactive pipeline when stdout is a TTY (#69)" do
+      allow(fake_runner).to receive(:run!).and_return("**bold** and `code`")
+      rendered = nil
+      expect do
+        # The output matcher has already swapped $stdout for its capture IO
+        # here, so the tty? stub lands on the capture and flips the TTY path.
+        allow($stdout).to receive(:tty?).and_return(true)
+        described_class.new("query" => "ping").execute
+      end.to output(satisfy { |s| rendered = s }).to_stdout
+      expect(rendered).to include("bold")
+      expect(rendered).not_to include("**bold**")
+    end
+
+    it "keeps raw markdown byte-for-byte when stdout is piped (#69)" do
+      allow(fake_runner).to receive(:run!).and_return("**bold** and `code`")
+      expect { described_class.new("query" => "ping").execute }
+        .to output("**bold** and `code`\n").to_stdout
+    end
   end
 
   # -----------------------------------------------------------------------

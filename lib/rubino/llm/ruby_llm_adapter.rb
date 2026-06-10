@@ -528,6 +528,9 @@ module Rubino
         # A provider that rejected the budget earlier this session never gets
         # sent one again (#75).
         return 0 if ThinkingSupport.unsupported?(@provider)
+        # A provider configured/known to mishandle an ACCEPTED budget never
+        # gets sent one at all (#2) — capability beats the requested effort.
+        return 0 unless ThinkingSupport.supports?(provider_cfg, @model_id)
 
         effort = Config::ReasoningPrefs.effort(@config)
         return Config::ReasoningPrefs.effort_budget(effort).to_i if effort

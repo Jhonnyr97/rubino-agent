@@ -697,7 +697,7 @@ module Rubino
 
       # #71 — LIVE drill-in for a running subagent. Renders the task summary and
       # the recent-activity ring (read live from the registry, which the child's
-      # EventBus tap keeps fresh), refreshing in place until the user presses a
+      # UI::SubagentView keeps fresh), refreshing in place until the user presses a
       # key (Esc/Enter/q) or the task ends. Off an interactive terminal (#ask
       # returns nil — Null/API/pipe) it degrades to a SINGLE snapshot so the
       # non-interactive paths and unit tests never block on a redraw loop.
