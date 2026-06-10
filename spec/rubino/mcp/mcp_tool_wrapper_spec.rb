@@ -18,11 +18,26 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
   end
 
   describe "#input_schema" do
-    it "uses the MCP tool's parameters when exposed" do
-      schema = { type: "object", properties: { path: { type: "string" } } }
-      allow(mcp_tool).to receive(:parameters).and_return(schema)
+    # #170 — the server-advertised JSON schema lives in params_schema; the
+    # inherited RubyLLM::Tool#parameters DSL accessor is always empty for MCP
+    # tools, so forwarding it presented every tool with `parameters: {}` and
+    # the model had to guess argument names (server then rejects with -32602).
+    it "forwards the server-declared params_schema" do
+      schema = {
+        "type" => "object",
+        "properties" => { "path" => { "type" => "string" } },
+        "required" => ["path"]
+      }
+      allow(mcp_tool).to receive(:params_schema).and_return(schema)
 
       expect(wrapper.input_schema).to eq(schema)
+    end
+
+    it "never uses the always-empty RubyLLM::Tool#parameters DSL accessor" do
+      allow(mcp_tool).to receive_messages(params_schema: nil, parameters: {})
+
+      expect(wrapper.input_schema).to eq(type: "object", properties: {})
+      expect(mcp_tool).not_to have_received(:parameters)
     end
 
     it "falls back to an empty object schema otherwise" do
@@ -38,17 +53,45 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
       expect(mcp_tool).to have_received(:execute).with(path: "a.txt")
     end
 
-    it "returns an error string (never raises) when the MCP tool fails" do
+    # #172 — ruby_llm-mcp reports tool failures by RETURNING { error: "…" }
+    # instead of raising. Without the "Error:" prefix Tools::Result#errorish?
+    # is false and the transcript renders the failure as "✓ done".
+    it "maps an { error: … } result to the registry's Error: convention" do
+      allow(mcp_tool).to receive(:execute).and_return({ error: "MCP error -32602: Input validation error" })
+
+      output = wrapper.call("path" => "a.txt")
+
+      expect(output).to eq("Error: MCP tool filesystem/read_file: MCP error -32602: Input validation error")
+    end
+
+    it "maps a string-keyed error result too" do
+      allow(mcp_tool).to receive(:execute).and_return({ "error" => "boom" })
+
+      expect(wrapper.call({})).to eq("Error: MCP tool filesystem/read_file: boom")
+    end
+
+    it "returns an Error: string (never raises) when the MCP tool fails" do
       allow(mcp_tool).to receive(:execute).and_raise(StandardError, "server gone")
 
-      expect(wrapper.call({})).to eq("MCP tool error (filesystem/read_file): server gone")
+      expect(wrapper.call({})).to eq("Error: MCP tool filesystem/read_file: server gone")
     end
   end
 
-  it "exposes the prefixed name in the LLM tool definition" do
-    definition = wrapper.to_tool_definition
+  describe "#to_tool_definition" do
+    it "exposes the prefixed name and the forwarded server schema" do
+      schema = {
+        "type" => "object",
+        "properties" => { "path" => { "type" => "string" } },
+        "required" => ["path"]
+      }
+      allow(mcp_tool).to receive(:params_schema).and_return(schema)
 
-    expect(definition[:name]).to eq("filesystem_read_file")
-    expect(definition[:description]).to eq("Reads a file")
+      definition = wrapper.to_tool_definition
+
+      expect(definition[:name]).to eq("filesystem_read_file")
+      expect(definition[:description]).to eq("Reads a file")
+      expect(definition[:parameters]["properties"]).to have_key("path")
+      expect(definition[:parameters]["required"]).to eq(["path"])
+    end
   end
 end

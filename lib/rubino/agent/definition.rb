@@ -45,7 +45,7 @@ module Rubino
       # `agents.<name>.mcp_servers` block in config.yml applies (#92), and
       # absent both the agent sees every server. YAML has no symbols, so the
       # literal string "all" from config normalizes to :all — the value
-      # MCP::Manager#tools_for_agent compares against.
+      # #resolved_tools compares against.
       def mcp_servers
         return @mcp_servers if @mcp_servers
 
@@ -97,6 +97,12 @@ module Rubino
             Tools::Registry.enabled_tools
           end
 
+        # Per-agent MCP scoping (#92/#173): every consumer of this agent's tool
+        # set (Lifecycle#load_tools, prompt assembler) goes through here, so
+        # filtering MCP wrappers HERE is what actually keeps an out-of-scope
+        # server's tools away from the model.
+        tools = reject_unscoped_mcp_tools(tools)
+
         # ask_parent is subagent-only; a primary/top-level agent has no parent.
         # Nesting is otherwise allowed for everyone — the delegation tools stay.
         if subagent?
@@ -104,6 +110,18 @@ module Rubino
         else
           tools.reject { |t| SUBAGENT_ONLY_TOOLS.include?(t.name) }
         end
+      end
+
+      private
+
+      # Drops MCPToolWrapper instances whose server is not in this agent's
+      # mcp_servers allowlist (:all keeps everything). Built-in tools pass
+      # through untouched.
+      def reject_unscoped_mcp_tools(tools)
+        allowed = mcp_servers
+        return tools if allowed == :all
+
+        tools.reject { |t| t.is_a?(MCP::MCPToolWrapper) && !allowed.include?(t.server_name.to_s) }
       end
     end
   end

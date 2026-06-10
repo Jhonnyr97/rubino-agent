@@ -22,12 +22,13 @@ module Rubino
       end
 
       def input_schema
-        # ruby_llm-mcp tools expose their schema
-        if @mcp_tool.respond_to?(:parameters)
-          @mcp_tool.parameters
-        else
-          { type: "object", properties: {} }
-        end
+        # The server-advertised JSON schema lives in RubyLLM::MCP::Tool#params_schema.
+        # The inherited RubyLLM::Tool#parameters DSL accessor is ALWAYS empty for
+        # MCP tools — forwarding it sent every tool to the model with `parameters:
+        # {}`, so the model had to guess argument names and every call failed
+        # server-side validation with -32602 (#170).
+        schema = @mcp_tool.params_schema if @mcp_tool.respond_to?(:params_schema)
+        schema || { type: "object", properties: {} }
       end
 
       def risk_level
@@ -37,9 +38,16 @@ module Rubino
 
       def call(arguments)
         result = @mcp_tool.execute(**symbolize_keys(arguments))
+        # ruby_llm-mcp reports tool failures by RETURNING `{ error: "…" }`
+        # instead of raising. Map both failure paths onto the registry's
+        # "Error: …" convention (Tools::Result#errorish?) so an errored MCP
+        # call renders ✗ like any built-in tool, not "✓ done" (#172).
+        error = result[:error] || result["error"] if result.is_a?(Hash)
+        return "Error: MCP tool #{@server_name}/#{@mcp_tool.name}: #{error}" if error
+
         result.to_s
       rescue StandardError => e
-        "MCP tool error (#{@server_name}/#{@mcp_tool.name}): #{e.message}"
+        "Error: MCP tool #{@server_name}/#{@mcp_tool.name}: #{e.message}"
       end
 
       # Override to provide the raw MCP tool definition for LLM

@@ -664,11 +664,28 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       end
       let(:adapter) { described_class.new(model_id: "MiniMax-M2.7", config: cfg) }
 
-      it "enables thinking with the default budget (8000)" do
+      # supports_thinking: true on an assume-model-exists model routes the
+      # thinking block through with_params (#175): ruby_llm 1.16's
+      # with_thinking raises client-side for models whose registry entry
+      # declares no budget_tokens reasoning option, so the documented opt-in
+      # silently died (rejection detector → budget dropped for the session).
+      it "enables thinking with the default budget (8000) via raw params" do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         adapter.send(:build_chat)
+        expect(chat).not_to have_received(:with_thinking)
+        expect(chat).to have_received(:with_params)
+          .with(hash_including(thinking: { type: :enabled, budget_tokens: 8000 }))
+      end
+
+      it "keeps with_thinking when the model's registry entry declares a budget option" do
+        chat = recording_chat
+        model = double("model", reasoning_option: { type: "budget_tokens" })
+        allow(chat).to receive(:model).and_return(model)
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
         expect(chat).to have_received(:with_thinking).with(budget: 8000)
+        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
       end
 
       it "forces temperature=1 when thinking is enabled (Anthropic constraint)" do
@@ -682,8 +699,10 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         adapter.send(:build_chat)
-        # default ceiling 16384 vs budget(8000)+headroom(4096)=12096 → 16384
-        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        # default ceiling 16384 vs budget(8000)+headroom(4096)=12096 → 16384.
+        # Single with_params call: ruby_llm REPLACES @params on every call, so
+        # max_tokens must ride together with the params-routed thinking block.
+        expect(chat).to have_received(:with_params).once.with(hash_including(max_tokens: 16_384))
       end
 
       it "drives the wire params through LLM::ReasoningManager#render (single source of truth)" do
@@ -704,9 +723,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
           budget: 8000, temperature: 0.3, max_tokens: 16_384,
           text_headroom: 4096, apply_max_tokens: true
         )
-        expect(chat).to have_received(:with_thinking).with(budget: 8000)
         expect(chat).to have_received(:with_temperature).with(1)
-        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        expect(chat).to have_received(:with_params)
+          .with(max_tokens: 16_384, thinking: { type: :enabled, budget_tokens: 8000 })
       end
 
       it "honors a provider thinking_budget override and grows max_tokens accordingly" do
@@ -723,9 +742,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         a.send(:build_chat)
-        expect(chat).to have_received(:with_thinking).with(budget: 30_000)
         # 30000 + 4096 = 34096 > default 16384
-        expect(chat).to have_received(:with_params).with(max_tokens: 34_096)
+        expect(chat).to have_received(:with_params)
+          .with(max_tokens: 34_096, thinking: { type: :enabled, budget_tokens: 30_000 })
       end
 
       it "applies @temperature (not forced 1) when thinking is disabled (budget 0)" do
@@ -744,6 +763,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         a.send(:build_chat)
         expect(chat).not_to have_received(:with_thinking)
         expect(chat).to have_received(:with_temperature).with(0.3)
+        # exact match — no thinking block rides along when the budget is off
+        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
       end
     end
 

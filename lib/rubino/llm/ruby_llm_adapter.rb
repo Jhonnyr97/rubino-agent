@@ -488,18 +488,22 @@ module Rubino
           apply_max_tokens: anthropic_family
         )
 
-        if rendered.thinking_enabled? && chat.respond_to?(:with_thinking)
-          chat.with_thinking(budget: rendered.thinking[:budget_tokens])
+        params = { max_tokens: rendered.max_tokens }.compact
+
+        if rendered.thinking_enabled?
+          if ThinkingSupport.budget_via_params?(provider_cfg, chat)
+            params[:thinking] = rendered.thinking
+          elsif chat.respond_to?(:with_thinking)
+            chat.with_thinking(budget: rendered.thinking[:budget_tokens])
+          end
         end
         chat.with_temperature(rendered.temperature) if !rendered.temperature.nil? && chat.respond_to?(:with_temperature)
-        return unless !rendered.max_tokens.nil? && chat.respond_to?(:with_params)
-
-        chat.with_params(max_tokens: rendered.max_tokens)
+        # Single with_params call — ruby_llm REPLACES @params on every call,
+        # so max_tokens and a params-routed thinking block must travel together.
+        chat.with_params(**params) if params.any? && chat.respond_to?(:with_params)
       end
 
-      def reasoning_manager
-        @reasoning_manager ||= ReasoningManager.new
-      end
+      def reasoning_manager = @reasoning_manager ||= ReasoningManager.new
 
       # True when generation runs through ruby_llm's anthropic provider — the
       # only path where thinking budgets and the 4096 max_tokens default apply.
