@@ -24,6 +24,7 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
 
       it "allows quoted arguments containing operators (literal in single quotes)" do
         expect(allowed?("grep 'a|b' lib/foo.rb")).to be true
+        expect(allowed?("grep '$(x)' lib/foo.rb")).to be true
       end
 
       it "allows plain input redirection" do
