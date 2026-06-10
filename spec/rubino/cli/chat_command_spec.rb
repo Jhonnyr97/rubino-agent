@@ -776,13 +776,13 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "no-ops when session_id is nil" do
       ui = Rubino::UI::Null.new
-      described_class.new({}).send(:print_session_history, ui, nil)
+      Rubino::CLI::Chat::SessionResolver.new({}).print_session_history(ui, nil)
       expect(ui.messages).to be_empty
     end
 
     it "no-ops when the session has no messages" do
       ui = Rubino::UI::Null.new
-      described_class.new({}).send(:print_session_history, ui, session[:id])
+      Rubino::CLI::Chat::SessionResolver.new({}).print_session_history(ui, session[:id])
       expect(ui.messages).to be_empty
     end
 
@@ -794,7 +794,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
                    metadata: { arguments: { "command" => "ls" } })
 
       ui = Rubino::UI::Null.new
-      described_class.new({}).send(:print_session_history, ui, session[:id])
+      Rubino::CLI::Chat::SessionResolver.new({}).print_session_history(ui, session[:id])
 
       levels = ui.messages.map { |m| m[:level] }
       # Replay matches the live rendering: user → replay_user_input, assistant →
@@ -825,7 +825,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       store.create(session_id: session[:id], role: "assistant", content: "")
 
       ui = Rubino::UI::Null.new
-      described_class.new({}).send(:print_session_history, ui, session[:id])
+      Rubino::CLI::Chat::SessionResolver.new({}).print_session_history(ui, session[:id])
 
       bodies = ui.messages.select { |m| m[:level] == :body }
       expect(bodies).to be_empty
@@ -1020,7 +1020,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         registry.reserve(subagent: "explore", prompt: "find the bug")
         Rubino::UI::BottomComposer.current = composer
 
-        cmd.send(:paint_idle_cards)
+        cmd.send(:idle_cards).paint
 
         # The card block is live ABOVE the idle prompt — proof the region is not
         # gated to an active turn.
@@ -1032,7 +1032,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         Rubino::UI::BottomComposer.current = composer
         composer.set_cards(["▸ sa_old · running"])
 
-        cmd.send(:paint_idle_cards) # registry empty ⇒ SubagentCards returns []
+        cmd.send(:idle_cards).paint # registry empty ⇒ SubagentCards returns []
 
         expect(composer.cards).to eq([])
       end
@@ -1041,7 +1041,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         registry.reserve(subagent: "explore", prompt: "x")
         Rubino::UI::BottomComposer.current = nil
 
-        expect { cmd.send(:paint_idle_cards) }.not_to raise_error
+        expect { cmd.send(:idle_cards).paint }.not_to raise_error
       end
     end
 
@@ -1530,19 +1530,19 @@ RSpec.describe Rubino::CLI::ChatCommand do
     let(:ui) { Rubino::UI::Null.new }
 
     it "prefers the title when one is set" do
-      cmd.send(:print_resume_hint, ui, { id: "abc-123", title: "audit work" })
+      cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: "audit work" })
       msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
       expect(msg[:message]).to eq(%(Resume with: rubino chat --resume "audit work"))
     end
 
     it "falls back to the id when the title is missing or blank" do
-      cmd.send(:print_resume_hint, ui, { id: "abc-123", title: nil })
+      cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: nil })
       msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
       expect(msg[:message]).to eq("Resume with: rubino chat --resume abc-123")
     end
 
     it "no-ops when session is nil" do
-      cmd.send(:print_resume_hint, ui, nil)
+      cmd.send(:session_resolver).print_resume_hint(ui, nil)
       expect(ui.messages.select { |m| m[:level] == :info }).to be_empty
     end
   end
@@ -1575,29 +1575,29 @@ RSpec.describe Rubino::CLI::ChatCommand do
       it "moves an @image into pending_image_paths and strips it from the text" do
         img = make("pic.png")
 
-        text = cmd.send(:extract_images!, "look at @#{img}", ui)
+        text = cmd.send(:image_inbox).extract_images!("look at @#{img}", ui)
 
         expect(text).to eq("look at")
-        expect(cmd.send(:pending_image_paths)).to eq([img])
+        expect(cmd.send(:image_inbox).pending_image_paths).to eq([img])
       end
 
       it "keeps a non-image @file in the text and attaches nothing" do
         doc = make("notes.md")
 
-        text = cmd.send(:extract_images!, "read @#{doc}", ui)
+        text = cmd.send(:image_inbox).extract_images!("read @#{doc}", ui)
 
         expect(text).to include("@#{doc}")
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
       end
 
       it "accumulates across calls and de-dups" do
         a = make("a.png")
         b = make("b.png")
 
-        cmd.send(:extract_images!, "@#{a}", ui)
-        cmd.send(:extract_images!, "@#{b} @#{a}", ui)
+        cmd.send(:image_inbox).extract_images!("@#{a}", ui)
+        cmd.send(:image_inbox).extract_images!("@#{b} @#{a}", ui)
 
-        expect(cmd.send(:pending_image_paths)).to eq([a, b])
+        expect(cmd.send(:image_inbox).pending_image_paths).to eq([a, b])
       end
     end
 
@@ -1611,7 +1611,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         cmd.send(:stage_flag_images, ui)
 
-        expect(cmd.send(:pending_image_paths)).to eq([img])
+        expect(cmd.send(:image_inbox).pending_image_paths).to eq([img])
       end
 
       it "stages nothing and stays silent when no --image flag was given" do
@@ -1619,7 +1619,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         cmd.send(:stage_flag_images, ui)
 
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         expect(ui.messages).to be_empty
       end
 
@@ -1628,7 +1628,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         cmd.send(:stage_flag_images, ui)
 
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         expect(ui.messages.map { |m| m[:level] }).to include(:warning)
       end
 
@@ -1639,7 +1639,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         cmd.send(:stage_flag_images, ui)
 
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         expect(ui.messages.map { |m| m[:level] }).to include(:warning)
       end
 
@@ -1648,40 +1648,40 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd = described_class.new("image" => [img])
         cmd.send(:stage_flag_images, ui)
 
-        cmd.send(:handle_image_command, "/clear-images", ui)
+        cmd.send(:image_inbox).handle_image_command("/clear-images", ui)
 
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
       end
     end
 
     describe "#handle_image_command" do
       it "/clear-images drops all pending attachments and returns true" do
-        cmd.send(:extract_images!, "@#{make("x.png")}", ui)
-        expect(cmd.send(:pending_image_paths)).not_to be_empty
+        cmd.send(:image_inbox).extract_images!("@#{make("x.png")}", ui)
+        expect(cmd.send(:image_inbox).pending_image_paths).not_to be_empty
 
-        expect(cmd.send(:handle_image_command, "/clear-images", ui)).to be(true)
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).handle_image_command("/clear-images", ui)).to be(true)
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
       end
 
       it "/paste attaches a clipboard image when capture succeeds" do
         clip = make("clip.png")
         allow(Rubino::Interaction::ClipboardImage).to receive(:save_to_tempfile).and_return(clip)
 
-        expect(cmd.send(:handle_image_command, "/paste", ui)).to be(true)
-        expect(cmd.send(:pending_image_paths)).to eq([clip])
+        expect(cmd.send(:image_inbox).handle_image_command("/paste", ui)).to be(true)
+        expect(cmd.send(:image_inbox).pending_image_paths).to eq([clip])
       end
 
       it "/paste warns (and attaches nothing) when capture fails" do
         allow(Rubino::Interaction::ClipboardImage).to receive(:save_to_tempfile).and_return(nil)
 
-        cmd.send(:handle_image_command, "/paste", ui)
+        cmd.send(:image_inbox).handle_image_command("/paste", ui)
 
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         expect(ui.messages.map { |m| m[:level] }).to include(:warning)
       end
 
       it "returns false for a non-image command (falls through to the dispatcher)" do
-        expect(cmd.send(:handle_image_command, "/help", ui)).to be(false)
+        expect(cmd.send(:image_inbox).handle_image_command("/help", ui)).to be(false)
       end
     end
 
@@ -1726,7 +1726,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       it "passes pending images to runner.run and clears them after the turn" do
         img = make("send.png")
-        cmd.send(:extract_images!, "@#{img}", ui)
+        cmd.send(:image_inbox).extract_images!("@#{img}", ui)
         allow(runner).to receive(:run)
 
         cmd.send(:run_turn, runner, "describe it", ui)
@@ -1735,7 +1735,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
           "describe it", image_paths: [img], input_queue: nil
         )
         # Sent exactly once: the next turn starts with no attachments.
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
       end
 
       it "passes an empty image_paths when nothing is attached" do
@@ -1782,10 +1782,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
       it "interactive extract_images! warns and drops a rejected candidate" do
         spoof = make_spoof("bad.png")
 
-        text = cmd.send(:extract_images!, "look @#{spoof}", ui)
+        text = cmd.send(:image_inbox).extract_images!("look @#{spoof}", ui)
 
         expect(text).to eq("look")
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         warning = ui.messages.find { |m| m[:level] == :warning }
         expect(warning[:message]).to include("bad.png").and include("not a valid image")
       end
@@ -1794,9 +1794,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
         spoof = make_spoof("clip.png")
         allow(Rubino::Interaction::ClipboardImage).to receive(:save_to_tempfile).and_return(spoof)
 
-        cmd.send(:handle_image_command, "/paste", ui)
+        cmd.send(:image_inbox).handle_image_command("/paste", ui)
 
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         expect(ui.messages.map { |m| m[:level] }).to include(:warning)
       end
     end
@@ -1826,7 +1826,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         expect { cmd.send(:run_interactive) }.to output.to_stdout
 
         expect(fake_runner).not_to have_received(:run)
-        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(cmd.send(:image_inbox).pending_image_paths).to be_empty
         cleared = null_ui.messages.find { |m| m[:message].to_s.include?("Cleared 1 attached image") }
         expect(cleared).not_to be_nil
       end

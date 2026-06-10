@@ -162,7 +162,6 @@ Lint/RedundantSafeNavigation:
 Lint/ShadowedException:
   Exclude:
     - 'lib/rubino/agent/runner.rb'
-    - 'lib/rubino/cli/chat_command.rb'
     - 'lib/rubino/run/executor.rb'
     - 'lib/rubino/tools/ask_parent_tool.rb'
     - 'lib/rubino/tools/background_tasks.rb'
@@ -413,7 +412,6 @@ Naming/PredicateMethod:
     - 'lib/rubino/agent/model_call_runner.rb'
     - 'lib/rubino/agent/response_validator.rb'
     - 'lib/rubino/agent/router.rb'
-    - 'lib/rubino/cli/chat_command.rb'
     - 'lib/rubino/cli/onboarding_wizard.rb'
     - 'lib/rubino/cli/trust_gate.rb'
     - 'lib/rubino/memory/backends/sqlite.rb'
@@ -777,11 +775,6 @@ Style/Documentation:
     - 'test/**/*'
     - 'lib/rubino.rb'
     - 'lib/rubino/files/workspace.rb'
-
-# Offense count: 1
-Style/FileOpen:
-  Exclude:
-    - 'lib/rubino/cli/chat_command.rb'
 
 # Offense count: 2
 # This cop supports safe autocorrection (--autocorrect).
