@@ -529,11 +529,13 @@ module Rubino
       THINKING_TICK = 0.1
 
       # Starts the animated "thinking…" row: a pulsing star glyph + a live
-      # elapsed-seconds counter, all dim, repainted ~10×/s through $stdout.live
-      # so every frame goes through the composer's render mutex (no rogue
-      # cursor/thread that would desync the frame). Off a live-capable stdout
-      # (plain mode / non-TTY) it degrades to a single static dim print, today's
-      # behavior — never animate into a pipe.
+      # elapsed-seconds counter, all dim, repainted ~10×/s. Mid-turn the frames
+      # go through $stdout.live so each one passes the composer's render mutex
+      # (no rogue cursor/thread to desync the frame); on a BARE TTY with no
+      # #live seam — the /probe wait at the idle prompt (#58) — the same
+      # animation repaints in place via CR + clear-line, so the wait never
+      # looks frozen. Into a pipe it stays a single static dim print — never
+      # animate into a non-terminal.
       def thinking_started
         return if @stream_type
         return if @thinking_indicator
@@ -541,19 +543,19 @@ module Rubino
         @thinking_started_at = monotonic_now
         @thinking_indicator  = true
 
-        unless $stdout.respond_to?(:live)
+        painter = thinking_painter
+        unless painter
           $stdout.print @pastel.dim("thinking…")
           $stdout.flush
           return
         end
 
-        out = $stdout
         @thinking_thread = Thread.new do
           i = 0
           loop do
             elapsed = (monotonic_now - @thinking_started_at).to_i
             glyph   = THINKING_GLYPHS[i % THINKING_GLYPHS.length]
-            out.live(@pastel.dim("#{glyph} thinking…  #{elapsed}s"))
+            painter.call(@pastel.dim("#{glyph} thinking…  #{elapsed}s"))
             i += 1
             sleep THINKING_TICK
           end
@@ -563,8 +565,37 @@ module Rubino
         end
       end
 
+      # Clears the "thinking…" indicator for callers that bracket a synchronous
+      # wait with no stream lifecycle of their own — the /probe side-inference
+      # (#58). Public counterpart to #thinking_started; a no-op when nothing is
+      # showing.
+      def thinking_finished
+        clear_thinking_indicator
+      end
+
       def monotonic_now
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # The per-frame paint strategy for the thinking animation, or nil when
+      # the output can't host one (a pipe): the composer's transient row when
+      # $stdout offers #live, else an in-place CR repaint on a bare TTY (#58).
+      def thinking_painter
+        if $stdout.respond_to?(:live)
+          ->(frame) { $stdout.live(frame) }
+        elsif tty_stdout?
+          lambda { |frame|
+            $stdout.print("\r\e[2K#{frame}")
+            $stdout.flush
+          }
+        end
+      end
+
+      # True when $stdout is a real terminal (guarded for IO doubles).
+      def tty_stdout?
+        $stdout.respond_to?(:tty?) && $stdout.tty?
+      rescue StandardError
+        false
       end
 
       # The active reasoning render mode (:hidden | :collapsed | :full), resolved

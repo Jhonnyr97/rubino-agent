@@ -1004,17 +1004,37 @@ module Rubino
       # The Q&A is stashed in @last_probe so a `/branch` right after can promote
       # it into the fork seed (the "actually, let's pursue this" move).
       def run_probe(runner, question, ui)
+        # The probe is a synchronous side-inference with nothing streaming, so
+        # the wait used to look frozen (#58): show the SAME thinking row a
+        # normal turn gets, cleared before the aside (or failure) renders. TTY
+        # only — never an indicator into a pipe.
+        probe_thinking_started(ui)
         result = Interaction::Probe.new(
           session: runner.session,
           model_override: model_name,
           provider_override: opt(:provider)
         ).ask(question)
+        probe_thinking_finished(ui)
         ui.probe_aside(result.answer)
         @last_probe = result
       rescue StandardError => e
+        probe_thinking_finished(ui)
         # A probe is a throwaway aside — a failure must never break the REPL.
         ui.warning("probe failed: #{e.message}")
         @last_probe = nil
+      end
+
+      # The /probe wait indicator (#58): reuse the UI's thinking-row machinery
+      # when present (UI::CLI). Guarded so Null/API adapters and piped stdout
+      # stay silent.
+      def probe_thinking_started(ui)
+        return unless $stdout.tty? && ui.respond_to?(:thinking_started)
+
+        ui.thinking_started
+      end
+
+      def probe_thinking_finished(ui)
+        ui.thinking_finished if ui.respond_to?(:thinking_finished)
       end
 
       # Forks the current session at this point into a NEW saved session and

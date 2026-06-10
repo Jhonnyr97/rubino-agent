@@ -84,6 +84,10 @@ module Rubino
         @messages << { level: :thinking_started, message: "" }
       end
 
+      def thinking_finished
+        @messages << { level: :thinking_finished, message: "" }
+      end
+
       def table(headers:, rows:)
         @messages << { level: :table, message: { headers: headers, rows: rows } }
       end

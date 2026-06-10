@@ -1113,6 +1113,39 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # #58: the /probe wait shows the SAME thinking row a normal turn gets. On a
+  # bare TTY (idle prompt — no composer, so no $stdout.live seam) the animation
+  # repaints in place via CR + clear-line; into a pipe it stays one static
+  # print. #thinking_finished is the public clear for synchronous waits.
+  describe "#thinking_started on a bare TTY (#58)" do
+    it "animates in place via CR repaints, then clears on thinking_finished" do
+      out = capture_stdout do
+        allow($stdout).to receive(:tty?).and_return(true)
+        ui.thinking_started
+        sleep 0.25
+        ui.thinking_finished
+      end
+      expect(out).to include("thinking…")
+      expect(out.scan("\r\e[2K").size).to be >= 2 # repaint frames + final clear
+    end
+
+    it "degrades to one static print into a pipe (never animates)" do
+      out = capture_stdout do
+        ui.thinking_started
+        sleep 0.15
+        ui.thinking_finished
+      end
+      expect(out.scan("thinking…").size).to eq(1)
+    end
+  end
+
+  describe "#thinking_finished" do
+    it "is a quiet no-op when nothing is showing" do
+      out = capture_stdout { ui.thinking_finished }
+      expect(out).to eq("")
+    end
+  end
+
   # #73: the /sessions picker advertises "(Esc to cancel)" — Esc must actually
   # cancel. The cancellable picker prompt binds :keyescape to the same
   # InputInterrupt Ctrl-C raises; #select rescues it to nil. tty-reader parses
