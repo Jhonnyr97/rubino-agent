@@ -156,6 +156,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
 
       it "the confirm toast counts live background children whose gates would drop" do
+        # The registry is a process singleton: a spec file that ran earlier in
+        # the (randomized) order can leak a live entry and skew the count —
+        # the suite's recurring order-dependent flake. Start clean, like
+        # background_tasks_spec does.
+        Rubino::Tools::BackgroundTasks.reset!
         Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
         out = capture_stdout { cmd.send(:cycle_mode) }
         expect(strip_ansi(out)).to include("1 running subagent(s) will run gated actions unprompted")

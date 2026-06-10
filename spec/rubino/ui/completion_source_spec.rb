@@ -286,6 +286,11 @@ RSpec.describe Rubino::UI::CompletionSource do
       expect(source.highlight_line("@bob hi")).to eq("\e[36m@bob\e[0m hi")
     end
 
+    it "colorizes a leading ! (the bang shell escape) so the line reads as a command" do
+      expect(source.highlight_line("! npm test")).to eq("\e[36m!\e[0m npm test")
+      expect(source.highlight_line("!ls -la")).to eq("\e[36m!ls\e[0m -la")
+    end
+
     it "returns non-string input untouched" do
       expect(source.highlight_line(nil)).to be_nil
     end

@@ -1489,6 +1489,7 @@ module Rubino
         # so they're NOT repeated here — this section is image/file INPUT only,
         # no command rows (#87 de-dup).
         @ui.info("Input:")
+        @ui.info("  ! <command>   - run a shell command yourself, no approval; output joins the context")
         @ui.info("  @<path>       - autocomplete a workspace file into the prompt")
         @ui.info("  @<image>      - attach an image (png/jpg/jpeg/gif/webp/bmp) to the turn")
         @ui.info("  <image path>  - drop or paste an image file path to attach it")

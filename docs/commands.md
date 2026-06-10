@@ -177,6 +177,28 @@ You can keep typing while a turn is running — the pinned input stays live:
 - **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does. At idle (no turn running) there is nothing to queue behind, so Alt+Enter submits the line immediately, same as Enter.
 - **`/queued <message>`** is the terminal-independent fallback for Alt+Enter (some terminals don't deliver the chord) — it queues the message the same way.
 
+### The `!` prefix: run a shell command yourself
+
+Start a line with `!` to run the rest of it as a shell command, immediately — the same bash-mode escape Claude Code, Gemini CLI, Codex CLI and opencode ship:
+
+```
+! npm test
+```
+
+- **No approval prompt.** You typed the command at your own terminal — it carries the same trust as your normal shell. (This mirrors Claude Code, which runs `!` commands without any gate; the approval model and the hardline floor only govern commands the **model** proposes.)
+- It runs in the **workspace root** via `bash -lc` (login shell, so your profile `PATH` applies), with **no `pipefail`** — your `!` line behaves like your shell, unlike the model's `shell` tool, which adds `pipefail` for its own pipelines.
+- Output (stdout + stderr) **streams into the transcript** as it arrives, followed by a `└ ✓ exit 0 · 1.2s · output → context` closing line. An empty run shows `(no output)`.
+- **Ctrl+C** terminates the command (SIGTERM, then SIGKILL) without quitting rubino.
+- **The model sees it.** Command and captured output are injected into the session as two user-role messages, in the exact shape Claude Code persists for its bash mode:
+
+  ```
+  <bash-input>npm test</bash-input>
+  <bash-stdout>...</bash-stdout><bash-stderr>...</bash-stderr>
+  ```
+
+  so the very next turn can be "fix the failures above". Each stream is capped at 30k characters (head + tail kept, with an explicit `[... output truncated ...]` marker); a failed run carries an `[exit code: N]` marker inside the stderr tag. The messages persist with the session — they survive `--resume`, `-c`, and `/branch`, and replay as the `! <command>` echo plus a dim output block.
+- A bare `!` prints usage and runs nothing. (Gemini CLI's persistent shell-**mode** toggle on a bare `!` is a possible follow-up.)
+
 ### Probes and branches
 
 - `/probe <question>` is the discoverable alias for the `? ` prefix: an **ephemeral** side-question answered from the current context but **never saved** to the session — the next turn proceeds as if it never happened. Bare `/probe` just teaches the `? ` prefix.

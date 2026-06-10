@@ -19,8 +19,11 @@ module Rubino
     # a burst of @ keystrokes never reshells. Every tier is guarded so a failure
     # degrades to the next tier (and finally to []), never crashing the prompt.
     class CompletionSource
-      # Tokens that trigger highlighting at the start of the line.
-      TRIGGER_TOKEN = %r{\A([/@]\S+)}
+      # Tokens that trigger highlighting at the start of the line. A leading
+      # `!` (the bang shell escape) glows like `/` so the user can SEE the
+      # line will run as a shell command, not a message — highlight only, it
+      # never opens the completion menu.
+      TRIGGER_TOKEN = %r{\A([/@]\S+|!\S*)}
 
       # Cap on candidates — keeps the menu skimmable and bounds work on huge
       # repos. Cline et al. ship similar caps.

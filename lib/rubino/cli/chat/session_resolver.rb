@@ -115,6 +115,11 @@ module Rubino
             at = parse_msg_timestamp(msg.created_at)
             case msg.role.to_s
             when "user"
+              # A `!` bang command persisted its <bash-input>/<bash-stdout>
+              # context messages as user rows; replay them as the `! <cmd>`
+              # echo + dim output block, never the raw tags.
+              next if BangShell.replay(ui, msg.content, at: at)
+
               ui.replay_user_input(msg.content, at: at)
             when "assistant"
               next if msg.content.nil? || msg.content.to_s.empty?
