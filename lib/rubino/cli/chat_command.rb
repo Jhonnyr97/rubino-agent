@@ -274,7 +274,11 @@ module Rubino
         begin
           loop do
             input = next_input(input_queue)
-            break if input.nil? || exit_command?(input)
+            if input.nil? || exit_command?(input)
+              break if confirm_quit?(ui)
+
+              next
+            end
             next if input.strip.empty?
 
             input = input.strip
@@ -1629,6 +1633,24 @@ module Rubino
 
       def exit_command?(input)
         %w[exit quit bye /exit /quit].include?(input.strip.downcase)
+      end
+
+      # Background subagents die with the process (nothing is persisted), so a
+      # /quit with live children must not be silent (#154): list them and
+      # confirm, default No. Off a real terminal there is no one to ask — the
+      # listed warning becomes the clear kill notice and the exit proceeds.
+      def confirm_quit?(ui)
+        live = Rubino::Tools::BackgroundTasks.instance.running
+        return true if live.empty?
+
+        n = live.size
+        ui.warning("#{n} background subagent#{"s" if n != 1} still running — quitting stops " \
+                   "#{n == 1 ? "it" : "them"} (partial side effects may remain):")
+        live.each { |e| ui.info("  #{e.id} · #{e.subagent} · #{e.status}") }
+        return true unless ui.respond_to?(:interactive_terminal?) && ui.interactive_terminal?
+
+        answer = ui.ask("quit anyway? [y/N] ")
+        %w[y yes].include?(answer.to_s.strip.downcase)
       end
 
       # First-run guard. A brand-new user who runs `chat` before `setup` used

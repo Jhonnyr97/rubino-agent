@@ -66,8 +66,9 @@ module Rubino
         else
           glyph = @pastel.cyan(COLLAPSED)
           state = entry.status == :stopping ? "stopping" : "running"
+          count = entry.tool_count.to_i
           body  = "#{entry.id} · #{entry.subagent} · #{state} · " \
-                  "#{entry.tool_count.to_i} tools · #{elapsed(entry)}"
+                  "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
           body += " · #{entry.last_activity}" unless entry.last_activity.to_s.empty?
           "  #{glyph} #{body}"
         end
@@ -130,8 +131,11 @@ module Rubino
         "#{secs / 3600}h"
       end
 
+      # First NON-BLANK line, elided to +max+. A ruby/shell approval command
+      # often starts with a newline or a blank line — taking `.lines.first`
+      # there rendered an EMPTY "needs approval:" body on the card (#141).
       def first_line(text, max)
-        first = text.to_s.lines.first.to_s.strip
+        first = text.to_s.each_line.map(&:strip).find { |l| !l.empty? }.to_s
         first.length > max ? "#{first[0, max - 1]}…" : first
       end
     end

@@ -50,9 +50,13 @@ module Rubino
             if a.is_a?(Array)
               a.each { |e| puts(e) }
             else
+              # Append the line and its terminating newline in ONE append so the
+              # text commits straight to scrollback. Appending them separately
+              # showed the line as a TRANSIENT partial row below the subagent
+              # cards for a frame before the commit moved it above them — the
+              # user saw the same line twice around the live card block (#153).
               s = a.to_s
-              append(s)
-              append("\n") unless s.end_with?("\n")
+              append(s.end_with?("\n") ? s : "#{s}\n")
             end
           end
         end

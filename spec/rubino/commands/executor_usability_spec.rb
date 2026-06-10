@@ -355,6 +355,97 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to include("found 3 files")
     end
 
+    # #139: the child's final report is markdown — on a UI with the markdown
+    # seam (UI::CLI#commit_markdown_block) it must render through it instead of
+    # dumping literal ##/** via info.
+    it "routes a completed result through the UI's markdown pipeline when available (#139)" do
+      md_ui = Class.new(Rubino::UI::Null) do
+        attr_reader :markdown_blocks
+
+        def commit_markdown_block(text)
+          (@markdown_blocks ||= []) << text
+        end
+      end.new
+      md_exec = Rubino::Commands::Executor.new(loader: loader, ui: md_ui, runner: runner)
+
+      e = reg.reserve(subagent: "general", prompt: "report")
+      reg.complete(e, status: :completed, result: "## Summary\n**Computed value:** 75025")
+      md_exec.try_execute("/agents #{e.id}")
+
+      expect(md_ui.markdown_blocks).to eq(["## Summary\n**Computed value:** 75025"])
+      raw = md_ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
+      expect(raw.join("\n")).not_to include("## Summary")
+    end
+
+    # #150: the stopped drill-in must surface partial progress (tools already
+    # run + activity tail) instead of a flat "no result".
+    it "shows partial progress for a stopped child that had run tools (#150)" do
+      e = reg.reserve(subagent: "general", prompt: "write usage docs")
+      reg.record_tool_started(e.id, "write docs/USAGE.md")
+      reg.record_tool_finished(e.id, "✓ write · docs/USAGE.md")
+      reg.request_stop(e.id)
+      reg.complete(e, status: :failed, error: "interrupted by user")
+
+      exec.try_execute("/agents #{e.id}")
+      text = info_lines.join("\n")
+      expect(text).to include("after 1 tool had already run")
+      expect(text).to include("side effects may exist")
+      expect(text).to include("✓ write · docs/USAGE.md")
+      expect(text).not_to include("— no result")
+    end
+
+    it "keeps the plain no-result line for a stopped child that ran nothing (#150)" do
+      e = reg.reserve(subagent: "general", prompt: "x")
+      reg.request_stop(e.id)
+      reg.complete(e, status: :failed, error: "interrupted by user")
+
+      exec.try_execute("/agents #{e.id}")
+      expect(info_lines.join("\n")).to include("stopped at your request before it ran any tools — no result")
+    end
+
+    # #146: the /agents probe wait runs a synchronous side-inference — it must
+    # show the same thinking indicator the /probe path got in #58.
+    it "brackets the probe wait with the thinking indicator (#146)" do
+      thinking_ui = Class.new(Rubino::UI::Null) do
+        attr_reader :thinking_events
+
+        def thinking_started  = (@thinking_events ||= []) << :started
+        def thinking_finished = (@thinking_events ||= []) << :finished
+      end.new
+      t_exec = Rubino::Commands::Executor.new(loader: loader, ui: thinking_ui, runner: runner)
+
+      e = reg.reserve(subagent: "explore", prompt: "x")
+      allow($stdout).to receive(:tty?).and_return(true)
+      probe = instance_double(Rubino::Tools::SubagentProbe)
+      allow(Rubino::Tools::SubagentProbe).to receive(:new).and_return(probe)
+      allow(probe).to receive(:peek) do
+        expect(thinking_ui.thinking_events).to eq([:started]) # showing DURING the wait
+        "halfway through"
+      end
+
+      t_exec.try_execute(%(/agents #{e.id} probe "status?"))
+      expect(thinking_ui.thinking_events).to eq(%i[started finished])
+    end
+
+    it "clears the thinking indicator even when the probe raises (#146)" do
+      thinking_ui = Class.new(Rubino::UI::Null) do
+        attr_reader :thinking_events
+
+        def thinking_started  = (@thinking_events ||= []) << :started
+        def thinking_finished = (@thinking_events ||= []) << :finished
+      end.new
+      t_exec = Rubino::Commands::Executor.new(loader: loader, ui: thinking_ui, runner: runner)
+
+      e = reg.reserve(subagent: "explore", prompt: "x")
+      allow($stdout).to receive(:tty?).and_return(true)
+      probe = instance_double(Rubino::Tools::SubagentProbe, peek: nil)
+      allow(Rubino::Tools::SubagentProbe).to receive(:new).and_return(probe)
+      allow(probe).to receive(:peek).and_raise("model unavailable")
+
+      expect { t_exec.try_execute(%(/agents #{e.id} probe "status?")) }.to raise_error(/model unavailable/)
+      expect(thinking_ui.thinking_events).to eq(%i[started finished])
+    end
+
     it "shows the error of a failed subagent" do
       e = reg.reserve(subagent: "explore", prompt: "do a thing")
       reg.complete(e, status: :failed, error: "boom")
