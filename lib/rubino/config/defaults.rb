@@ -179,13 +179,15 @@ module Rubino
         },
         "display" => {
           "streaming" => true,
-          # Tri-state reasoning render: "hidden" suppresses thinking entirely,
-          # "collapsed" buffers it and commits a one-liner cue ("thought for Ns"),
-          # "full" renders the whole reasoning as a dim aside above the answer.
-          # The legacy boolean display.show_reasoning still maps in for back-compat
-          # (true→full, false→hidden) when display.reasoning is unset.
-          "reasoning" => "collapsed",
-          "show_reasoning" => true,
+          # Tri-state reasoning render (display.reasoning): "hidden" suppresses
+          # thinking entirely, "collapsed" buffers it and commits a one-liner cue
+          # ("thought for Ns"), "full" renders the whole reasoning as a dim aside
+          # above the answer. Deliberately NOT seeded here (#132): defaults
+          # injecting it made the documented legacy display.show_reasoning
+          # mapping (true→full, false→hidden, applied only when
+          # display.reasoning is unset) unreachable for every config loaded
+          # normally. Config::ReasoningPrefs supplies the "collapsed" default
+          # when neither key is set.
           "language" => "en",
           "runtime_footer" => { "enabled" => false },
           "interim_assistant_messages" => false

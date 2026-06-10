@@ -86,6 +86,28 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to include("(none)")
     end
 
+    # Regression for #159: the session row's message count must be read LIVE
+    # from the message store — the in-memory session hash's :message_count is a
+    # boot-time snapshot the streaming path never refreshes, so /status said
+    # "0 msgs" forever while the DB had every turn.
+    it "counts the session's messages live from the store, not the stale session hash (#159)" do
+      store = Rubino::Session::Store.new
+      session_id = "9f3a1c2eabcd"
+      db.db[:sessions].insert(id: session_id, source: "cli", status: "active",
+                              created_at: Time.now.utc.iso8601, updated_at: Time.now.utc.iso8601)
+      store.create(session_id: session_id, role: "user", content: "hi")
+      store.create(session_id: session_id, role: "assistant", content: "hello")
+      store.create(session_id: session_id, role: "tool", content: "ok", tool_name: "shell")
+
+      stale = instance_double(
+        Rubino::Agent::Runner,
+        session: { id: session_id, title: "refactor", message_count: 0 } # stale snapshot
+      )
+      Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: stale).try_execute("/status")
+
+      expect(info_lines.join("\n")).to include("3 msgs")
+    end
+
     it "welcome renders without a runner and never raises" do
       expect do
         Rubino::Commands::Executor.welcome(runner: nil, ui: ui)

@@ -124,13 +124,24 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
       expect(buf.live_tail).to eq("incomplete ta")
     end
 
-    it "does NOT include earlier complete lines of a partial table" do
+    it "shows only the in-progress row by default (single-row window)" do
       # A markdown table arriving row-by-row: header + separator are complete
-      # lines, only the third row is still in progress. The live row must show
-      # JUST that in-progress row -- never all three crushed onto one line.
+      # lines, only the third row is still in progress. The default window is
+      # one row -- just the in-progress row, never all three crushed together.
       buf.feed("| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM")
       expect(buf.live_tail).to eq("| ruby_llm | LLM")
       expect(buf.live_tail).not_to include("\n")
+    end
+
+    it "returns a rolling window of the last N lines of the in-flight block (#127)" do
+      # A long list block streams item by item; a wider window keeps the most
+      # recent completed items visible above the raw in-progress line instead
+      # of vanishing them until the whole block commits.
+      buf.feed("1. Hydrogen\n2. Helium\n3. Lith")
+      expect(buf.live_tail(3)).to eq("1. Hydrogen\n2. Helium\n3. Lith")
+
+      buf.feed("ium\n4. Beryllium\n5. Bor")
+      expect(buf.live_tail(3)).to eq("3. Lithium\n4. Beryllium\n5. Bor")
     end
 
     it "does NOT include earlier lines of an open fence body" do
@@ -138,9 +149,12 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
       expect(buf.live_tail).to eq("puts ")
     end
 
-    it "is empty when the in-progress line has just been newline-terminated" do
+    it "keeps the just-completed line visible until its block commits (#127)" do
+      # The earlier one-row model blanked the live region the instant a line
+      # was newline-terminated — mid-block the user briefly saw NOTHING. The
+      # rolling tail keeps the latest buffered line on screen instead.
       buf.feed("| Gem | Use |\n")
-      expect(buf.live_tail).to eq("")
+      expect(buf.live_tail).to eq("| Gem | Use |")
     end
 
     it "is empty after a block completes" do

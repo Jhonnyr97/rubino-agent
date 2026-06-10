@@ -76,22 +76,23 @@ module Rubino
         parts.join("\n")
       end
 
-      # The single in-progress LINE to show live (raw): only the un-newlined
-      # remainder, never the earlier already-newlined lines of a multi-line
-      # in-flight block (e.g. a partially-arrived markdown table).
+      # The in-progress tail to show live (raw): the LAST +rows+ lines of the
+      # in-flight block — its most recent already-newlined lines plus the
+      # un-newlined remainder. Newline-joined; the live region renders one row
+      # per line.
       #
-      # Why this and not #tail: the CLI live region is ONE row. A multi-line
-      # tail (a table mid-arrival, an open fence body) was collapsed onto that
-      # row (newlines -> spaces) then left-truncated with a leading ellipsis,
-      # rendering the half-built table as a single over-wide clipped line. The
-      # leaders (Textual/Rich streaming-markdown, Streamdown, Glamour-style
-      # streamers) keep "only the last block can change" and show the in-flight
-      # block COHERENTLY rather than mangled: under a single-row, scroll-native
-      # region the coherent choice is line-stable -- show only the line still
-      # being typed, and let the whole block snap to rendered markdown the moment
-      # it completes (its earlier lines stay buffered until then).
-      def live_tail
-        @pending
+      # Why a rolling window and not the whole #tail: the live region must stay
+      # bounded (a long open fence/table must never push the prompt off-screen),
+      # so we keep "only the last block can change" (Textual/Rich, Streamdown,
+      # Glamour-style streamers) but show a FEW trailing lines instead of just
+      # the one being typed — a long list block used to vanish line-by-line as
+      # each item completed, leaving a single flickering raw line until the
+      # whole block committed (#127). Earlier lines stay buffered and the block
+      # still snaps to rendered markdown the moment it completes.
+      def live_tail(rows = 1)
+        lines = @block.last(rows)
+        lines += [@pending] unless @pending.empty?
+        lines.last(rows).join("\n")
       end
 
       # Drain the remainder on stream end. Promotes any un-newlined remainder to
