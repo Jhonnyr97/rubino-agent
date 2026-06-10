@@ -7,6 +7,7 @@ require_relative "tool_bridge"
 require_relative "inline_think_filter"
 require_relative "provider_resolver"
 require_relative "reasoning_manager"
+require_relative "thinking_support"
 
 module Rubino
   module LLM
@@ -59,14 +60,20 @@ module Rubino
       # variant yields chunks to the block then returns the same Response. This
       # is the front door the conversation loop depends on; #chat / #stream
       # remain as the underlying transports and stay valid for existing callers.
+      #
+      # Graceful thinking degradation (#75): a provider on the anthropic-
+      # compatible path that rejects the thinking budget used to hard-error the
+      # user's very first prompt (the default effort is medium). When the
+      # rejection is recognised, remember it for the session, tell the user
+      # once, and retry this same request WITHOUT the budget. Safe to re-issue:
+      # the rejection is a pre-stream 400, so no token reached the UI.
       def call(request, &)
-        if request.stream?
-          stream(messages: request.messages, tools: request.tools,
-                 image_paths: request.image_paths, prefill: request.prefill, &)
-        else
-          chat(messages: request.messages, tools: request.tools,
-               image_paths: request.image_paths, prefill: request.prefill)
-        end
+        dispatch(request, &)
+      rescue StandardError => e
+        raise unless thinking_budget_rejected?(e)
+
+        ThinkingSupport.mark_unsupported!(@provider, notify: @ui)
+        dispatch(request, &)
       end
 
       # Sends a chat completion request (non-streaming). image_paths, if any,
@@ -128,6 +135,27 @@ module Rubino
       end
 
       private
+
+      # The raw #call dispatch (streaming vs non-streaming), shared by the
+      # normal path and the one-shot thinking-budget retry (#75).
+      def dispatch(request, &)
+        if request.stream?
+          stream(messages: request.messages, tools: request.tools,
+                 image_paths: request.image_paths, prefill: request.prefill, &)
+        else
+          chat(messages: request.messages, tools: request.tools,
+               image_paths: request.image_paths, prefill: request.prefill)
+        end
+      end
+
+      # True when +error+ is a provider's "thinking (budget) is not supported"
+      # rejection AND this request actually carried a budget (#75). Once the
+      # provider is marked unsupported the budget drops to 0, so this can never
+      # match twice — no retry loop.
+      def thinking_budget_rejected?(error)
+        anthropic_generation_path? && thinking_budget.positive? &&
+          ThinkingSupport.rejection?(error)
+      end
 
       # One streaming attempt. See #stream for the retry / no-double-output
       # contract. Inline <think>…</think> sentinels are routed to :thinking;
@@ -498,6 +526,10 @@ module Rubino
       # other providers ignore with_thinking or never see it (we still set it,
       # ruby_llm only renders thinking for providers that support it).
       def thinking_budget
+        # A provider that rejected the budget earlier this session never gets
+        # sent one again (#75).
+        return 0 if ThinkingSupport.unsupported?(@provider)
+
         effort = Config::ReasoningPrefs.effort(@config)
         return Config::ReasoningPrefs.effort_budget(effort).to_i if effort
 

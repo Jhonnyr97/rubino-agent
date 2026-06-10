@@ -815,6 +815,115 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
+  # Graceful thinking degradation (#75): a provider on the anthropic-
+  # compatible path that rejects the thinking budget must NOT hard-error the
+  # turn — the adapter retries once without the budget, remembers the
+  # rejection for the session, and tells the user once.
+  # -----------------------------------------------------------------------
+  describe "#call thinking-budget rejection (#75)" do
+    let(:cfg) do
+      test_configuration(
+        "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7",
+                     "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "minimax" => {
+          "anthropic_compatible" => true, "assume_model_exists" => true,
+          "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic"
+        } }
+      )
+    end
+    let(:ui)       { double("UI", note: nil) }
+    let(:response) { double("Response", content: "hi there", input_tokens: 1, output_tokens: 1, tool_calls: nil) }
+    let(:request)  { Rubino::LLM::Request.new(messages: [{ role: "user", content: "hi" }], stream: false) }
+
+    after { Rubino::LLM::ThinkingSupport.reset! }
+
+    # A chat double whose ask raises a thinking rejection the first
+    # +rejections+ times, then succeeds.
+    def rejecting_chat(rejections)
+      c = double("Chat")
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      calls = 0
+      r = response
+      allow(c).to receive(:ask) do
+        calls += 1
+        raise "invalid params: the thinking budget is not supported by this model" if calls <= rejections
+
+        r
+      end
+      c
+    end
+
+    def adapter_with(chat)
+      a = described_class.new(model_id: "MiniMax-M2.7", config: cfg, ui: ui)
+      allow(a).to receive(:build_chat).and_return(chat)
+      a
+    end
+
+    it "retries once without the budget and completes the turn" do
+      chat = rejecting_chat(1)
+      result = adapter_with(chat).call(request)
+      expect(result.content).to eq("hi there")
+      expect(chat).to have_received(:ask).twice
+    end
+
+    it "retries the streaming path too (the rejection is pre-first-chunk)" do
+      chat = rejecting_chat(1)
+      streaming = Rubino::LLM::Request.new(messages: [{ role: "user", content: "hi" }], stream: true)
+      result = adapter_with(chat).call(streaming) { |_| }
+      expect(result.content).to eq("hi there")
+      expect(chat).to have_received(:ask).twice
+    end
+
+    it "remembers the rejection for the session (class-level memo)" do
+      adapter_with(rejecting_chat(1)).call(request)
+      expect(Rubino::LLM::ThinkingSupport.unsupported?("minimax")).to be(true)
+      # Lifecycle rebuilds the adapter every turn — the NEXT instance must
+      # already resolve a zero budget so the provider never sees one again.
+      fresh = described_class.new(model_id: "MiniMax-M2.7", config: cfg, ui: ui)
+      expect(fresh.send(:thinking_budget)).to eq(0)
+    end
+
+    it "tells the user once with a dim note" do
+      adapter_with(rejecting_chat(1)).call(request)
+      expect(ui).to have_received(:note)
+        .with("provider doesn't support thinking — effort off").once
+    end
+
+    it "re-raises when the provider keeps rejecting after the budget was dropped (no retry loop)" do
+      chat = rejecting_chat(2)
+      expect { adapter_with(chat).call(request) }
+        .to raise_error(/thinking budget is not supported/)
+      expect(chat).to have_received(:ask).twice
+    end
+
+    it "re-raises unrelated errors untouched" do
+      c = double("Chat")
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      allow(c).to receive(:ask).and_raise("rate limited")
+      expect { adapter_with(c).call(request) }.to raise_error("rate limited")
+      expect(Rubino::LLM::ThinkingSupport.unsupported?("minimax")).to be(false)
+      expect(ui).not_to have_received(:note)
+    end
+
+    it "ignores thinking-flavored errors on a non-anthropic path (no budget was sent)" do
+      openai_cfg = test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o",
+                     "temperature" => 0.3, "context_length" => nil }
+      )
+      c = double("Chat")
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      allow(c).to receive(:ask).and_raise("thinking is not supported")
+      a = described_class.new(model_id: "gpt-4o", config: openai_cfg, ui: ui)
+      allow(a).to receive(:build_chat).and_return(c)
+      expect { a.call(request) }.to raise_error(/thinking is not supported/)
+      expect(Rubino::LLM::ThinkingSupport.unsupported?("openai")).to be(false)
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # Message block boundaries (prod session-50 fix)
   #
   # In a multi-step streamed turn the model narrates, calls a tool, then
