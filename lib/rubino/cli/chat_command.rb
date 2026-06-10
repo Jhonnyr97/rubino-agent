@@ -1393,11 +1393,14 @@ module Rubino
         #     steer/probe/--stop subcommand grammar, so the comm surface is
         #     discoverable from the composer (#39).
         #   * /reply — the ids of children blocked waiting on the human.
+        #   * /mcp — the configured server names (+ reload), then on/off for a
+        #     named server (#182), same grammar shape as /agents.
         arg_sources = {
           "skills" => -> { Rubino::Skills::Registry.trusted.names },
           "agents" => ->(args) { agents_arg_candidates(args) },
           "tasks" => ->(args) { agents_arg_candidates(args) },
-          "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] }
+          "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] },
+          "mcp" => ->(args) { mcp_arg_candidates(args) }
         }
         Rubino::UI::CompletionSource.new(commands: names, files: files,
                                          arg_sources: arg_sources,
@@ -1423,6 +1426,24 @@ module Rubino
         Tools::BackgroundTasks.instance.awaiting_human.map(&:id)
       end
 
+      # The /mcp subcommand grammar (#182): configured server names + reload
+      # first, then the on/off verbs for a named server.
+      MCP_SUBCOMMANDS = %w[on off].freeze
+
+      def mcp_arg_candidates(args)
+        case args.length
+        when 0 then mcp_server_names + ["reload"]
+        when 1 then args.first == "reload" ? [] : MCP_SUBCOMMANDS
+        else []
+        end
+      end
+
+      def mcp_server_names
+        (Rubino.configuration.dig("mcp", "servers") || {}).keys.map(&:to_s)
+      rescue StandardError
+        []
+      end
+
       # One-line descriptions for the dropdown (#39): the SAME strings /help
       # shows (BuiltIns + custom command frontmatter), plus usage hints for the
       # /agents subcommand grammar. Best-effort — a loader hiccup degrades to
@@ -1440,7 +1461,10 @@ module Rubino
         descriptions.merge(
           "steer" => "park a note the subagent folds in at its next turn",
           "probe" => "ask the subagent an ephemeral question (not saved)",
-          "--stop" => "cancel the running subagent"
+          "--stop" => "cancel the running subagent",
+          "reload" => "re-read config.yml and reconnect every MCP server",
+          "on" => "(re)start the MCP server and register its tools",
+          "off" => "stop the MCP server and remove its tools (this session)"
         )
       end
 

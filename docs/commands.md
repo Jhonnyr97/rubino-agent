@@ -146,6 +146,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/tasks` | Alias for /agents |
 | `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
 | `/skills` | List skills, or activate one for the session (/skills NAME; 'none' clears) |
+| `/mcp` | List MCP servers and their tools; restart or disable one |
 | `/add-dir` | Add an extra allowed workspace directory (write/edit can reach it) |
 | `/dirs` | List the current workspace roots |
 | `/mode` | Show or switch mode (default \| plan \| yolo) |
@@ -201,6 +202,20 @@ The workspace sandbox confines write/edit/delete tools to the workspace roots. `
 - Activation is trust-gated: a project-local skill in an untrusted directory is refused with a reason instead of being pinned without effect.
 
 Activating is **not** the same as enabling/disabling — see [skills.md](skills.md#active-skill-skills) for the distinction.
+
+### MCP servers: `/mcp`
+
+The in-chat surface over the MCP servers configured under `mcp.servers` (setup in [mcp.md](mcp.md)):
+
+```
+/mcp                 # server list: name, transport, ● reachable / ✗ down / ◌ not started, tool count
+/mcp <server>        # drill-in: transport + command/url, health, its registered tools, last start error
+/mcp <server> off    # stop the client and remove its tools for this session (config untouched)
+/mcp <server> on     # (re)start the client and register its tools
+/mcp reload          # re-read config.yml and reconnect every server — picks up a config edit without restarting chat
+```
+
+Typing `/mcp ` opens a dropdown of the configured server names (plus `reload`); after a server name it offers `on`/`off`. List and drill-in read the live booted manager — they never re-spawn servers. `off` is session-scoped, like `/skills` activation; persistent disable stays a config edit (`mcp.enabled: false` or removing the server). When servers are configured, `/status` shows an `mcp` line (`2 servers · 1 reachable · 14 tools`).
 
 ### Reasoning display and thinking effort
 
