@@ -148,6 +148,91 @@ RSpec.describe Rubino::UI::CompletionSource do
     end
   end
 
+  # #185: closed enums (/mode, /reasoning, /think) register via the positional
+  # shape exactly because it injects no `✗ none` clear entry — `none` is not a
+  # mode, so the no-arg shape's prefix would offer a bogus value.
+  describe "#arg_candidates_for (enum source: mode)" do
+    subject(:source) do
+      described_class.new(arg_sources: { "mode" => lambda { |args|
+        args.empty? ? %w[default plan yolo] : []
+      } })
+    end
+
+    it "offers the enum for the first argument WITHOUT a ✗ none entry (#185)" do
+      expect(source.arg_candidates_for("mode", "")).to eq(%w[default plan yolo])
+      expect(source.arg_candidates_for("mode", "")).not_to include(described_class::NONE_ENTRY)
+    end
+
+    it "prefix-filters the enum and completes the first argument only" do
+      expect(source.arg_candidates_for("mode", "y")).to eq(%w[yolo])
+      expect(source.arg_candidates_for("mode", "", ["plan"])).to eq([])
+    end
+  end
+
+  # #185: a PARTIAL-AWARE source (two-arg proc) receives (args, partial) and
+  # owns its own matching — a path source expands `~`, which the literal
+  # prefix filter would otherwise drop.
+  describe "#arg_candidates_for (partial-aware source: add-dir)" do
+    it "passes the typed partial through and applies no extra prefix filter" do
+      seen = nil
+      source = described_class.new(arg_sources: { "add-dir" => lambda { |args, partial|
+        seen = [args, partial]
+        ["~/expanded-elsewhere"]
+      } })
+
+      expect(source.arg_candidates_for("add-dir", "/tmp/fo")).to eq(["~/expanded-elsewhere"])
+      expect(seen).to eq([[], "/tmp/fo"])
+    end
+
+    it "injects no ✗ none entry and still caps at MAX_CANDIDATES" do
+      many = Array.new(50) { |i| "dir-#{i}" }
+      source = described_class.new(arg_sources: { "add-dir" => ->(_args, _partial) { many } })
+
+      list = source.arg_candidates_for("add-dir", "")
+      expect(list.size).to eq(described_class::MAX_CANDIDATES)
+      expect(list).not_to include(described_class::NONE_ENTRY)
+    end
+  end
+
+  # #185: the directory-flavored sibling of the @file picker, used by the
+  # `/add-dir ` dropdown — filesystem dirs from the typed partial.
+  describe ".directory_candidates" do
+    around do |example|
+      Dir.mktmpdir do |dir|
+        @root = dir
+        FileUtils.mkdir_p(File.join(dir, "alpha"))
+        FileUtils.mkdir_p(File.join(dir, "beta"))
+        File.write(File.join(dir, "alnotadir.txt"), "x")
+        example.run
+      end
+    end
+
+    it "completes absolute paths to directories only (files excluded)" do
+      list = described_class.directory_candidates("#{@root}/al")
+      expect(list).to eq(["#{@root}/alpha"])
+    end
+
+    it "completes relative paths against the cwd" do
+      Dir.chdir(@root) do
+        expect(described_class.directory_candidates("")).to match_array(%w[alpha beta])
+        expect(described_class.directory_candidates("be")).to eq(%w[beta])
+      end
+    end
+
+    it "expands ~ and folds the home back so the candidate keeps the user's spelling" do
+      old_home = Dir.home
+      ENV["HOME"] = @root
+      expect(described_class.directory_candidates("~/al")).to eq(["~/alpha"])
+    ensure
+      ENV["HOME"] = old_home
+    end
+
+    it "returns [] for a non-matching or malformed partial" do
+      expect(described_class.directory_candidates("#{@root}/zzz")).to eq([])
+      expect(described_class.directory_candidates("~nosuchuser-xyz/")).to eq([])
+    end
+  end
+
   # #39: the dropdown shows a one-line description next to a candidate when
   # one is registered (BuiltIns/custom one-liners, subcommand usage hints).
   describe "#description_for" do

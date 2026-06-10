@@ -378,33 +378,16 @@ Naming/MemoizedInstanceVariableName:
 
 # Offense count: 85
 # Configuration parameters: MinNameLength, AllowNamesEndingInNumbers, AllowedNames, ForbiddenNames.
-# AllowedNames: as, at, by, cc, db, id, if, in, io, ip, of, on, os, pp, to
+# AllowedNames: as, at, by, cc, db, id, if, in, io, ip, of, on, os, pp, to, ui
 Naming/MethodParameterName:
   Exclude:
-    - 'lib/rubino/agent/degenerate_recovery.rb'
-    - 'lib/rubino/agent/fallback_chain.rb'
     - 'lib/rubino/agent/loop.rb'
-    - 'lib/rubino/agent/model_call_runner.rb'
-    - 'lib/rubino/agent/router.rb'
-    - 'lib/rubino/agent/runner.rb'
-    - 'lib/rubino/agent/tool_executor.rb'
-    - 'lib/rubino/agent/truncation_continuation.rb'
     - 'lib/rubino/api/operations/memory/index_operation.rb'
     - 'lib/rubino/api/operations/sessions/index_operation.rb'
     - 'lib/rubino/attachments/preamble.rb'
-    - 'lib/rubino/cli/chat_command.rb'
-    - 'lib/rubino/cli/onboarding_wizard.rb'
-    - 'lib/rubino/cli/setup_command.rb'
-    - 'lib/rubino/cli/trust_gate.rb'
-    - 'lib/rubino/commands/executor.rb'
-    - 'lib/rubino/interaction/lifecycle.rb'
-    - 'lib/rubino/llm/adapter_factory.rb'
-    - 'lib/rubino/llm/fake_provider.rb'
     - 'lib/rubino/llm/ruby_llm_adapter.rb'
-    - 'lib/rubino/llm/tool_bridge.rb'
     - 'lib/rubino/memory/backends/sqlite.rb'
     - 'lib/rubino/tools/patch_tool.rb'
-    - 'lib/rubino/tools/question_tool.rb'
     - 'lib/rubino/tools/shell_registry.rb'
     - 'lib/rubino/tools/shell_tool.rb'
     - 'lib/rubino/tools/test_tool.rb'

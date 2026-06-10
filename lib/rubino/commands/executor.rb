@@ -321,6 +321,7 @@ module Rubino
         @ui.info("  model      #{status_model}")
         @ui.info("  provider   #{status_provider_line}")
         @ui.info("  mode       #{Rubino::Modes.current} — #{Rubino::Modes.description}")
+        @ui.info("  display    #{status_display_line}   (use /reasoning · /think)")
         @ui.info("  approvals  #{status_approvals_line}")
         @ui.info("  session    #{status_session_line}")
         @ui.info("  tools      #{status_tools_line}")
@@ -328,10 +329,56 @@ module Rubino
         # /status stays exactly as before, and MCP tools stop being invisibly
         # mixed into the truncated tools line as the only trace of MCP.
         @ui.info("  mcp        #{status_mcp_line}   (use /mcp)") if Rubino::MCP.enabled?
+        if (dirs = status_dirs_line)
+          @ui.info("  dirs       #{dirs}   (use /dirs)")
+        end
         @ui.info("  memory     #{status_memory_line}   (use /memory)")
         @ui.info("  skills     #{status_skills_line}   (use /skills)")
         @ui.info("  background #{status_background_line}   (use /agents)")
+        if (jobs = status_jobs_line)
+          @ui.info("  jobs       #{jobs}   (use `rubino jobs list`)")
+        end
         @ui.separator
+      end
+
+      # The persisted display prefs (#186): /reasoning and /think write config
+      # but were invisible — not in the chip, not in /status.
+      def status_display_line
+        mode   = Config::ReasoningPrefs.mode(Rubino.configuration)
+        effort = Config::ReasoningPrefs.effort(Rubino.configuration) ||
+                 Config::ReasoningPrefs::DEFAULT_EFFORT
+        "reasoning: #{mode} · effort: #{effort}"
+      rescue StandardError
+        "(unavailable)"
+      end
+
+      # Workspace roots + trust (#186) — trust is the #1 "why are my
+      # skills/AGENTS.md not loading" confusion. Only earns a line when there
+      # is something to say (>1 root or any untrusted); nil otherwise.
+      def status_dirs_line
+        roots     = Rubino::Workspace.canonical_roots
+        untrusted = roots.count { |d| !Rubino::Trust.trusted?(d) }
+        return nil if roots.size <= 1 && untrusted.zero?
+
+        line = "#{roots.size} root#{"s" if roots.size != 1}"
+        untrusted.positive? ? "#{line} · #{untrusted} untrusted (context/skills withheld)" : line
+      rescue StandardError
+        nil
+      end
+
+      # The persistent jobs queue (#186) — distinct from the in-process
+      # `background` subagents line. Only earns a line when nonzero; nil (no
+      # line) when the queue is empty or unreadable.
+      def status_jobs_line
+        queue   = Jobs::Queue.new
+        pending = queue.pending_count
+        failed  = queue.failed_count
+        return nil unless pending.positive? || failed.positive?
+
+        [("#{pending} pending" if pending.positive?),
+         ("#{failed} failed" if failed.positive?)].compact.join(" · ")
+      rescue StandardError
+        nil
       end
 
       def status_model
@@ -418,7 +465,11 @@ module Rubino
         registry = Skills::Registry.trusted
         all      = registry.all
         enabled  = all.count { |s| registry.enabled?(s.name) }
-        "#{all.size} available, #{enabled} enabled"
+        line     = "#{all.size} available, #{enabled} enabled"
+        # WHICH skill is pinned (#186) — the chip shows it but the canonical
+        # state dump omitted it.
+        active = Rubino::ActiveSkill.current
+        active ? "#{line} · active: #{active}" : line
       rescue StandardError
         "(unavailable)"
       end
@@ -441,15 +492,25 @@ module Rubino
       # MemoryTool does autonomous writes; this is the human's window into it.
       #
       #   /memory                  → backend + count + recent facts
+      #   /memory --all            → recent facts INCLUDING retired, marked (#184)
       #   /memory <query>          → substring search over content
       #   /memory search <query>   → same search, explicit subcommand
+      #   /memory show <id>        → one fact in full, with the temporal chain (#184)
       #   /memory forget <id>      → delete a fact
+      #   /memory backend          → active + available backends (#184)
 
       def handle_memory(arguments)
         args = arguments.to_s.strip
 
         if args.empty?
           show_memory_summary
+        elsif args == "--all"
+          show_memory_summary(include_retired: true)
+        elsif args.match?(/\Ashow\b/)
+          id = args[/\Ashow\s+(\S+)\z/, 1]
+          id ? show_memory(id) : @ui.info("Usage: /memory show <id>")
+        elsif args.match?(/\Abackend\b/)
+          show_memory_backend(args[/\Abackend\s+(\S+)\z/, 1])
         elsif args.match?(/\Aforget\b/)
           id = args[/\Aforget\s+(\S+)\z/, 1]
           id ? forget_memory(id) : @ui.info("Usage: /memory forget <id>")
@@ -464,19 +525,48 @@ module Rubino
         end
       end
 
-      def show_memory_summary
+      # `/memory show <id>` (#184): a REAL id lookup (the store resolves the
+      # short-id prefix), not a substring search over content — an id used to
+      # match nothing. Rendering (incl. the temporal chain: Retired /
+      # Superseded by) is shared with the `rubino memory show` CLI verb.
+      def show_memory(id)
+        memory = memory_backend.find(id)
+        if memory.nil?
+          @ui.error("no fact with id #{id}.")
+          return
+        end
+
+        CLI::MemoryCommand.render(memory, ui: @ui)
+      end
+
+      # `/memory backend [name]` (#184): shows the active + available
+      # backends in-chat. SWITCHING stays CLI-only on purpose: every consumer
+      # (the lifecycle's retriever/flusher, the memory tool, this executor)
+      # memoizes its built backend, so an in-process flip would leave the live
+      # loop writing to the OLD store while /memory reads the new one — a
+      # half-applied switch. The CLI verb writes config and a restart applies
+      # it everywhere at once.
+      def show_memory_backend(name)
+        CLI::MemoryCommand.render_active_backend(ui: @ui)
+        return unless name
+
+        @ui.info("Switching is CLI-only: run `rubino memory backend #{name}` " \
+                 "(a restart applies it to the whole agent).")
+      end
+
+      def show_memory_summary(include_retired: false)
         store    = memory_backend
         backend  = Rubino.configuration.dig("memory", "backend") || Memory::Backends::DEFAULT_NAME
         @ui.info("backend  #{backend}   ·   #{store.count} facts")
 
-        memories = store.list(limit: 10)
+        memories = store.list(limit: 10, include_retired: include_retired)
         if memories.empty?
           @ui.info("No facts stored yet — the agent records them as it learns about you.")
           return
         end
 
         render_memory_table(memories)
-        @ui.info("/memory <query>   ·   /memory forget <id>")
+        @ui.info("/memory <query>   ·   /memory show <id>   ·   /memory forget <id>")
       end
 
       def search_memory(query)
@@ -525,9 +615,12 @@ module Rubino
         @memory_backend ||= Memory::Backends.build
       end
 
+      # The retired tombstone marker is shared with `rubino memory list --all`
+      # (CLI::MemoryCommand.retired_marker) so both surfaces speak one dialect.
       def render_memory_table(memories)
         rows = memories.map do |m|
-          [m[:id].to_s[0..7], m[:kind].to_s, truncate(m[:content], 60)]
+          [m[:id].to_s[0..7], m[:kind].to_s,
+           "#{truncate(m[:content], 60)}#{CLI::MemoryCommand.retired_marker(m)}"]
         end
         @ui.table(headers: %w[ID Kind Content], rows: rows)
       end
@@ -1036,12 +1129,63 @@ module Rubino
       # rebuilding its runner on that session (history replays). Reuses
       # Session::Repository#list and #find_by_id_or_title (which already raises
       # AmbiguousSessionError on >1 match).
+      #
+      # The management verbs (#183) reuse the CLI subcommands' logic
+      # (CLI::SessionCommand.render / .destroy_with_confirm — ONE rendering and
+      # ONE delete flow for both surfaces):
+      #
+      #   /sessions                → list (picker on a TTY) + resume
+      #   /sessions --all          → list without the row cap
+      #   /sessions show <id>      → details, without switching into it
+      #   /sessions delete <id>    → delete (asks to confirm)
+      #   /sessions <id|title>     → resume
 
       def handle_sessions(arguments)
-        query = arguments.to_s.strip
-        return list_sessions if query.empty?
+        tokens = arguments.to_s.strip.split(/\s+/)
+        all    = tokens.delete("--all") ? true : false
+        return list_sessions(all: all) if tokens.empty?
 
-        resume_session(query)
+        case tokens.first
+        when "show"   then session_verb(tokens[1..].join(" "), "show") { |s| CLI::SessionCommand.render(s, ui: @ui) }
+        when "delete" then session_verb(tokens[1..].join(" "), "delete") { |s| delete_session(s) }
+        else resume_session(tokens.join(" "))
+        end
+      end
+
+      # Resolves the id/title for a /sessions verb (same matcher resume uses,
+      # so short ids and title substrings work) and yields the session row;
+      # prints the usage/not-found/ambiguous error otherwise. Always :handled —
+      # the verbs never fall through to the unknown-command path (#34).
+      def session_verb(query, verb)
+        if query.nil? || query.empty?
+          @ui.info("Usage: /sessions #{verb} <id>")
+          return :handled
+        end
+
+        session = Session::Repository.new.find_by_id_or_title(query)
+        if session.nil?
+          @ui.error("no session matching #{query.inspect}.")
+          @ui.info("List them with /sessions")
+        else
+          yield session
+        end
+        :handled
+      rescue Rubino::AmbiguousSessionError => e
+        @ui.error(e.message)
+        :handled
+      end
+
+      # Deletes a session in-chat via the SAME confirm-and-destroy flow the
+      # `rubino sessions delete` CLI verb runs (#183). The session the live
+      # runner sits on is refused — deleting the history under the active
+      # runner would corrupt the running conversation; /new first.
+      def delete_session(session)
+        if @runner&.session&.dig(:id) == session[:id]
+          @ui.error("that is the ACTIVE session — start a new one first (/new), then delete it.")
+          return
+        end
+
+        CLI::SessionCommand.destroy_with_confirm(session, repo: Session::Repository.new, ui: @ui)
       end
 
       # `/probe <text>` — the discoverable alias for the `? ` prefix. Bare
@@ -1066,8 +1210,8 @@ module Rubino
         { branch: true, title: title.empty? ? nil : title }
       end
 
-      def list_sessions
-        sessions = Session::Repository.new.list(limit: 10)
+      def list_sessions(all: false)
+        sessions = Session::Repository.new.list(limit: all ? nil : sessions_list_limit)
         if sessions.empty?
           @ui.info("No past sessions yet.")
           return :handled
@@ -1088,7 +1232,7 @@ module Rubino
           return { resume_session_id: chosen }
         end
 
-        @ui.info("Resume: /sessions <id|title>")
+        @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
         :handled
       end
 
@@ -1101,7 +1245,7 @@ module Rubino
           [s[:id].to_s[0..7], session_title(s), s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
         end
         @ui.table(headers: %w[ID Title Created Status Msgs], rows: rows)
-        @ui.info("Resume: /sessions <id|title>")
+        @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
         :handled
       end
 
@@ -1148,6 +1292,15 @@ module Rubino
       def session_title(session)
         title = session[:title].to_s.strip
         title.empty? ? "(untitled)" : title
+      end
+
+      # The bare-list row cap (#183): configurable (`sessions.list_limit`) and
+      # liftable per call with `/sessions --all` — no longer hardwired to 10.
+      def sessions_list_limit
+        limit = Rubino.configuration.dig("sessions", "list_limit").to_i
+        limit.positive? ? limit : 10
+      rescue StandardError
+        10
       end
 
       # All known slash commands (built-ins + discovered custom), used for the

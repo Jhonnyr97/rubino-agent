@@ -29,7 +29,7 @@ module Rubino
         end
 
         rows = memories.map do |m|
-          [m[:id][0..7], m[:kind], "#{m[:content][0..60]}#{retired_marker(m)}", m[:created_at]]
+          [m[:id][0..7], m[:kind], "#{m[:content][0..60]}#{self.class.retired_marker(m)}", m[:created_at]]
         end
 
         Rubino.ui.table(
@@ -47,18 +47,24 @@ module Rubino
           return
         end
 
-        Rubino.ui.info("ID: #{memory[:id]}")
-        Rubino.ui.info("Kind: #{memory[:kind]}")
-        Rubino.ui.info("Confidence: #{memory[:confidence]}")
-        Rubino.ui.info("Created: #{memory[:created_at]}")
+        self.class.render(memory, ui: Rubino.ui)
+      end
+
+      # ONE fact-details rendering for both surfaces (#184): the CLI verb
+      # above and the in-chat `/memory show <id>` (Commands::Executor).
+      def self.render(memory, ui:)
+        ui.info("ID: #{memory[:id]}")
+        ui.info("Kind: #{memory[:kind]}")
+        ui.info("Confidence: #{memory[:confidence]}")
+        ui.info("Created: #{memory[:created_at]}")
         # The temporal chain (#88): a soft-retired fact shows when it stopped
         # being true and which fact replaced it.
         if memory[:valid_to]
-          Rubino.ui.info("Retired: #{memory[:valid_to]}")
-          Rubino.ui.info("Superseded by: #{memory[:superseded_by]}") if memory[:superseded_by]
+          ui.info("Retired: #{memory[:valid_to]}")
+          ui.info("Superseded by: #{memory[:superseded_by]}") if memory[:superseded_by]
         end
-        Rubino.ui.separator
-        Rubino.ui.info(memory[:content])
+        ui.separator
+        ui.info(memory[:content])
       end
 
       desc "delete ID", "Delete a specific memory"
@@ -85,19 +91,28 @@ module Rubino
         Rubino.ui.success("memory.backend = #{name}")
       end
 
-      private
-
       # `--all` surfaces soft-retired rows next to live ones; without a flag
       # they were indistinguishable and the supersession chain needed a `show`
       # per id (#161). Marks a tombstone with its retirement date and, when
-      # known, the short id of the fact that replaced it.
-      def retired_marker(memory)
+      # known, the short id of the fact that replaced it. A class method so the
+      # in-chat `/memory --all` table (#184) speaks the same dialect.
+      def self.retired_marker(memory)
         return "" unless memory[:valid_to]
 
         marker = " (retired #{memory[:valid_to][0..9]}"
         marker += " → #{memory[:superseded_by][0..7]}" if memory[:superseded_by]
         "#{marker})"
       end
+
+      # ONE backend summary for both surfaces (#184): the CLI `memory backend`
+      # verb and the in-chat `/memory backend`.
+      def self.render_active_backend(ui:)
+        active = Rubino.configuration.dig("memory", "backend") || Memory::Backends::DEFAULT_NAME
+        ui.info("Active backend: #{active}")
+        ui.info("Available: #{Memory::Backends.names.join(", ")}")
+      end
+
+      private
 
       # Resolve the *configured* memory backend (default: sqlite tiny-Zep), the
       # same store the agent loop, the in-chat `/memory` view and the HTTP
@@ -109,9 +124,7 @@ module Rubino
       end
 
       def show_backend
-        active = Rubino.configuration.dig("memory", "backend") || Memory::Backends::DEFAULT_NAME
-        Rubino.ui.info("Active backend: #{active}")
-        Rubino.ui.info("Available: #{Memory::Backends.names.join(", ")}")
+        self.class.render_active_backend(ui: Rubino.ui)
       end
 
       def config_path
