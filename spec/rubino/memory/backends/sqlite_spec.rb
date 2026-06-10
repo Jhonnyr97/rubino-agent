@@ -265,6 +265,43 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(texts).not_to include("User uses npm as the package manager.")
     end
 
+    it "does not insert a twin when the replacement already exists live (#157)" do
+      old = backend.store(kind: "preference", content: "Indentation preference: tabs over spaces.")
+      # The memory tool already stored the new fact in-turn; the post-turn
+      # extractor's supersede must dedup against it, not insert it again.
+      dup = backend.store(kind: "preference", content: "Prefers spaces over tabs, two-space indentation.")
+      stub_llm(<<~JSON)
+        {"add":[],"supersede":[{"id":"#{old[:id][0, 8]}",
+        "by_text":"Prefers spaces over tabs, two-space indentation.","kind":"preference"}]}
+      JSON
+
+      stored = backend.extract("s1")
+
+      expect(stored).to be_empty
+      live = db[:memory_facts].where(valid_to: nil).select_map(:text)
+      expect(live).to eq(["Prefers spaces over tabs, two-space indentation."])
+      retired = db[:memory_facts].where(id: old[:id]).first
+      expect(retired[:valid_to]).not_to be_nil
+      expect(retired[:superseded_by]).to eq(dup[:id])
+    end
+
+    it "still inserts a replacement that merely rephrases the fact it retires (#157 exclude guard)" do
+      # One word differs out of 14 (Jaccard ≈ 0.87 ≥ 0.85): the replacement is
+      # a near-dup of the row being RETIRED, which must not block the insert.
+      old = backend.store(kind: "env",
+                          content: "User runs the full test suite with bundler exec rspec on every single commit.")
+      stub_llm(<<~JSON)
+        {"add":[],"supersede":[{"id":"#{old[:id][0, 8]}",
+        "by_text":"User runs the full test suite with bundler exec rspec on each single commit.",
+        "kind":"env"}]}
+      JSON
+
+      backend.extract("s1")
+
+      expect(db[:memory_facts].where(valid_to: nil).select_map(:text))
+        .to eq(["User runs the full test suite with bundler exec rspec on each single commit."])
+    end
+
     it "supersedes by text match when no id is given" do
       backend.store(kind: "fact", content: "User works at Acme Corp.")
       stub_llm('{"add":[],"supersede":[{"match":"Acme Corp","by_text":"User works at Globex.","kind":"fact"}]}')

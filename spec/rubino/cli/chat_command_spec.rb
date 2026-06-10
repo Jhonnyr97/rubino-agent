@@ -1351,9 +1351,13 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
     end
 
+    # Fixtures carry REAL magic bytes for their extension: the attachment gate
+    # verifies image signatures (#158), so an extension alone no longer passes.
     def make(name)
       path = File.join(@dir, name)
-      File.binwrite(path, "x")
+      sig = { ".png" => "\x89PNG\r\n\x1a\n", ".jpg" => "\xFF\xD8\xFF", ".jpeg" => "\xFF\xD8\xFF",
+              ".gif" => "GIF89a", ".webp" => "RIFF\x20\x00\x00\x00WEBPVP8 ", ".bmp" => "BM" }[File.extname(name)]
+      File.binwrite(path, "#{sig}x".b)
       path
     end
 
@@ -1384,6 +1388,59 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:extract_images!, "@#{b} @#{a}", ui)
 
         expect(cmd.send(:pending_image_paths)).to eq([a, b])
+      end
+    end
+
+    # `chat --image/-i` without -q must STAGE in interactive mode (#160): the
+    # flag was consumed only by the one-shot path and silently dropped here,
+    # though docs promise it stages and /clear-images covers it.
+    describe "#stage_flag_images (#160)" do
+      it "seeds the pending inbox from --image flag paths" do
+        img = make("flagged.png")
+        cmd = described_class.new("image" => [img])
+
+        cmd.send(:stage_flag_images, ui)
+
+        expect(cmd.send(:pending_image_paths)).to eq([img])
+      end
+
+      it "stages nothing and stays silent when no --image flag was given" do
+        cmd = described_class.new({})
+
+        cmd.send(:stage_flag_images, ui)
+
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(ui.messages).to be_empty
+      end
+
+      it "warns and skips a flag path that is not a readable image" do
+        cmd = described_class.new("image" => [File.join(@dir, "missing.png")])
+
+        cmd.send(:stage_flag_images, ui)
+
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(ui.messages.map { |m| m[:level] }).to include(:warning)
+      end
+
+      it "rejects a content-spoofed flag path through the shared gate (#158)" do
+        spoof = File.join(@dir, "fake.png")
+        File.write(spoof, "this is not an image\n")
+        cmd = described_class.new("image" => [spoof])
+
+        cmd.send(:stage_flag_images, ui)
+
+        expect(cmd.send(:pending_image_paths)).to be_empty
+        expect(ui.messages.map { |m| m[:level] }).to include(:warning)
+      end
+
+      it "is covered by /clear-images like every other staging surface" do
+        img = make("flagged.png")
+        cmd = described_class.new("image" => [img])
+        cmd.send(:stage_flag_images, ui)
+
+        cmd.send(:handle_image_command, "/clear-images", ui)
+
+        expect(cmd.send(:pending_image_paths)).to be_empty
       end
     end
 

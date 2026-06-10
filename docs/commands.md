@@ -145,7 +145,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/agents` | List background subagents; steer/probe a running one, or view output |
 | `/tasks` | Alias for /agents |
 | `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
-| `/skills` | List available skills |
+| `/skills` | List skills, or activate one for the session (/skills NAME; 'none' clears) |
 | `/add-dir` | Add an extra allowed workspace directory (write/edit can reach it) |
 | `/dirs` | List the current workspace roots |
 | `/mode` | Show or switch mode (default \| plan \| yolo) |
@@ -192,6 +192,15 @@ The agent spawns background subagents with its `task` tool; these commands are t
 ### Workspace roots: `/add-dir` and `/dirs`
 
 The workspace sandbox confines write/edit/delete tools to the workspace roots. `/add-dir <path>` adds an extra allowed root mid-session (and runs the one-time folder-trust gate, so the new root's `AGENTS.md`/skills are only honored once vouched for); `/dirs` lists the current roots and their trust state.
+
+### Active skill: `/skills`
+
+- Bare `/skills` lists the available skills (with `(disabled)` / `(active)` markers).
+- `/skills <name>` **activates** a skill for the session: its body is force-loaded into the system prompt each turn and the prompt chip shows it — `default (skill: <name>) ❯`. Typing `/skills ` opens a dropdown picker of skill names, headed by a `✗ none` clear entry.
+- `/skills none` (or picking `✗ none`) clears the active skill: `✓ Cleared active skill (was: <name>).`
+- Activation is trust-gated: a project-local skill in an untrusted directory is refused with a reason instead of being pinned without effect.
+
+Activating is **not** the same as enabling/disabling — see [skills.md](skills.md#active-skill-skills) for the distinction.
 
 ### Reasoning display and thinking effort
 

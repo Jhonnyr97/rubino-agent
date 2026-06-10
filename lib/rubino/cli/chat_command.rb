@@ -243,6 +243,12 @@ module Rubino
           Rubino::Commands::Executor.welcome(runner: runner, ui: ui)
         end
 
+        # `chat --image/-i` without -q: stage the flag paths into the SAME
+        # pending-attachment inbox @image tokens, /paste and dropped paths fill
+        # (#160) — the flag used to be consumed only by the one-shot path, so
+        # in interactive mode it was silently dropped.
+        stage_flag_images(ui)
+
         # Steering: lines the user types *during* a turn are captured by the
         # background reader (see #run_turn) and parked here. At the next turn
         # boundary we drain them and they become the next prompt, so a message
@@ -668,6 +674,28 @@ module Rubino
 
       def pending_image_paths
         @pending_image_paths ||= []
+      end
+
+      # Seeds the interactive pending-images inbox from --image/-i flag paths
+      # (#160), through the SAME attachment gate every other staging surface
+      # uses (Attachments::Classify + Policy via ImageInput#attachment_error).
+      # A bad flag path warns and is skipped — interactive startup must not die
+      # on it the way one-shot raises. Staged images show the usual indicator
+      # and are covered by /clear-images, as documented.
+      def stage_flag_images(ui)
+        Array(opt(:image)).each do |raw|
+          path = Interaction::ImageInput.expand(raw)
+          unless LLM::ContentBuilder.image_file?(path) && File.file?(path)
+            ui.warning("not attached — #{raw}: not a readable image file")
+            next
+          end
+          if (reason = Interaction::ImageInput.attachment_error(path))
+            ui.warning("not attached — #{File.basename(path)}: #{reason}")
+            next
+          end
+          pending_image_paths << path unless pending_image_paths.include?(path)
+        end
+        show_image_indicator(ui, pending_image_paths) unless pending_image_paths.empty?
       end
 
       # Parses the line for image references (@image, dropped/quoted/escaped

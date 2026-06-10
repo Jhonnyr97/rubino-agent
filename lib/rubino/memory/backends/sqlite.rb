@@ -312,6 +312,15 @@ module Rubino
 
           Array(result["supersede"]).each do |s|
             old = resolve_supersede_target(s)
+            # The replacement passes the SAME near-dup check a plain add runs
+            # (#157): when the new fact already exists live (e.g. the memory
+            # tool stored it in-turn), retire the old row pointing at it
+            # instead of inserting a byte-identical twin.
+            if (existing_id = duplicate_of(s["by_text"], exclude_id: old && old[:id]))
+              retire!(old[:id], existing_id) if old
+              next
+            end
+
             # Retire the contradicted fact before inserting its replacement so
             # the old row's chars free up for the budget check.
             new_id = SecureRandom.uuid
@@ -324,7 +333,7 @@ module Rubino
           end
 
           Array(result["add"]).each do |a|
-            next if duplicate?(a["text"])
+            next if duplicate_of(a["text"])
 
             row = guarded_insert(
               text: a["text"], kind: a["kind"], entities: a["entities"],
@@ -421,22 +430,23 @@ module Rubino
           @db[TABLE].where(valid_to: nil)
         end
 
-        # Jaccard near-dup check against the live set (reuses the existing
-        # Deduplicator threshold) — keeps extraction cheap, no second LLM call.
-        def duplicate?(text)
-          return true if text.to_s.strip.empty?
-
+        # Jaccard near-dup check against the live set (Deduplicator threshold,
+        # no second LLM call): id of the first live near-dup, nil when none.
+        # +exclude_id+ skips the row being superseded so a rephrased
+        # replacement never matches its own retirement target (#157).
+        def duplicate_of(text, exclude_id: nil)
           words_b = word_set(text)
-          return false if words_b.empty?
+          return nil if words_b.empty?
 
-          live_dataset.select_map(:text).any? do |existing|
+          ds = exclude_id ? live_dataset.exclude(id: exclude_id) : live_dataset
+          ds.select_map(%i[id text]).find do |(_, existing)|
             words_a = word_set(existing)
             next false if words_a.empty?
 
             inter = (words_a & words_b).size
             union = (words_a | words_b).size
             (inter.to_f / union) >= Deduplicator::SIMILARITY_THRESHOLD
-          end
+          end&.first
         end
 
         def word_set(str)

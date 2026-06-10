@@ -60,6 +60,30 @@ RSpec.describe Rubino::Attachments do
       expect(c.kind).not_to eq(:image)
     end
 
+    it "does NOT classify a text file named .png as image (content-spoof, #158)" do
+      p = File.join(dir, "fake.png")
+      File.write(p, "this is not an image\n")
+      c = described_class::Classify.call(p)
+      expect(c.kind).to eq(:text)
+      expect(c.mime).to eq("text/plain")
+    end
+
+    it "does NOT classify a binary blob named .jpg as image (content-spoof, #158)" do
+      p = File.join(dir, "fake.jpg")
+      File.binwrite(p, ("\x00\x01\x02\x03" * 16).b)
+      c = described_class::Classify.call(p)
+      expect(c.kind).to eq(:binary)
+      expect(c.mime).to eq("application/octet-stream")
+    end
+
+    it "still classifies a real WebP as :image (RIFF container signature)" do
+      p = File.join(dir, "a.webp")
+      File.binwrite(p, "RIFF#{[40].pack("V")}WEBPVP8 ".b + ("\x00" * 16).b)
+      c = described_class::Classify.call(p)
+      expect(c.kind).to eq(:image)
+      expect(c.mime).to eq("image/webp")
+    end
+
     it "classifies an unknown-extension binary blob as :binary" do
       p = File.join(dir, "blob.dat")
       File.binwrite(p, ("\x00\x01\x02\x03" * 64).b)
