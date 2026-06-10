@@ -24,7 +24,11 @@ module Rubino
         # than a hardcoded list) means the displayed state can never drift
         # from reality — `web` no longer shows "disabled" while webfetch/
         # websearch stay live, and the dead `browser` key is gone.
-        config_keys = Tools::Registry.all.map(&:config_key).uniq
+        # MCP wrappers are excluded here: they are dynamic (no `tools.<key>`
+        # config gate) and get their own section below instead of fake rows
+        # in the config-group table.
+        builtins = Tools::Registry.all.grep_v(MCP::MCPToolWrapper)
+        config_keys = builtins.map(&:config_key).uniq
         rows = config_keys.sort.map do |key|
           value   = config.dig("tools", key)
           enabled = value.nil? || value == true
@@ -32,6 +36,33 @@ module Rubino
         end
 
         ui.table(headers: %w[Tool Status], rows: rows)
+
+        print_mcp_tools
+      end
+
+      private
+
+      # Lists tools from configured MCP servers (#91). Configuring
+      # `mcp.servers` is the opt-in: the Manager connects, prefixes each tool
+      # `servername_toolname`, and registers it alongside the built-ins. A
+      # configured-but-empty result still prints a breadcrumb (#94) so MCP
+      # users are never left staring at a silently builtin-only table —
+      # unreachable servers additionally warn via Manager#start_server.
+      def print_mcp_tools
+        return unless MCP.enabled?
+
+        ui = Rubino.ui
+        ui.blank_line
+        ui.info("MCP Tools (experimental):")
+        MCP.boot!
+
+        mcp_tools = Tools::Registry.all.grep(MCP::MCPToolWrapper)
+        if mcp_tools.empty?
+          ui.warning("mcp.servers configured, but no MCP tools loaded")
+        else
+          rows = mcp_tools.map { |t| [t.name, t.server_name] }.sort
+          ui.table(headers: %w[Tool Server], rows: rows)
+        end
       end
     end
   end
