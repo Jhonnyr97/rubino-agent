@@ -70,6 +70,13 @@ module Rubino
         unschedule(job[:id])
         handle = @rufus.cron(job[:schedule]) { fire(job[:id]) }
         @mutex.synchronize { @handles[job[:id]] = handle }
+      rescue ArgumentError => e
+        # A persisted row with a cron string rufus/fugit cannot parse (e.g.
+        # written by an older build before the API validated schedules, #164).
+        # Skip it and keep going: one poison row must never abort load_all!
+        # and take down server boot.
+        @logger.warn(event: "cron.invalid_schedule", job_id: job[:id], schedule: job[:schedule], error: e.message)
+        nil
       end
 
       def unschedule(job_id)

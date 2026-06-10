@@ -21,6 +21,11 @@ RSpec.describe Rubino::CLI::ServerCommand do
       allow(Rubino::API::Server).to receive(:new).and_return(server)
     end
 
+    # The "does not re-register" example leaves a registry holding ONLY shell;
+    # without this reset any later spec relying on "register defaults when
+    # empty" dies with "Unknown tool: write" (#163, seed 62637).
+    after { Rubino::Tools::Registry.reset! }
+
     it "registers default tools before starting the server" do
       expect(Rubino::Tools::Registry.all.size).to eq(0)
 

@@ -24,4 +24,38 @@ RSpec.describe Rubino::CLI::Commands do
       expect(described_class.commands.keys).to include("tls_cert")
     end
   end
+
+  # #134: `rubino chat --help` / `rubino prompt --help` used to treat the flag
+  # as the positional prompt and start a REAL agent run — provider tokens
+  # spent, memory facts persisted, no help text. The dispatch boundary must
+  # print usage locally instead: no ChatCommand, no network, no DB writes.
+  describe "subcommand --help interception (#134)" do
+    before do
+      # Any path that reaches the agent loop is the regression.
+      allow(Rubino::CLI::ChatCommand).to receive(:new)
+        .and_raise("ChatCommand must never be built for --help")
+    end
+
+    %w[--help -h].each do |flag|
+      it "prints usage for `chat #{flag}` without building ChatCommand" do
+        expect { described_class.start(["chat", flag]) }
+          .to output(/Usage:.*chat \[PROMPT\]/m).to_stdout
+      end
+
+      it "prints usage for `prompt #{flag}` without building ChatCommand" do
+        expect { described_class.start(["prompt", flag]) }
+          .to output(/Usage:.*prompt PROMPT/m).to_stdout
+      end
+    end
+
+    it "prints usage for a flag in any position (`chat --new --help`)" do
+      expect { described_class.start(["chat", "--new", "--help"]) }
+        .to output(/Usage:.*chat \[PROMPT\]/m).to_stdout
+    end
+
+    it "leaves Thor subcommands on their own richer help (`sessions --help`)" do
+      expect { described_class.start(["sessions", "--help"]) }
+        .to output(/sessions/).to_stdout
+    end
+  end
 end

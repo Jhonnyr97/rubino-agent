@@ -55,6 +55,26 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # #135: RUBINO_HOME must relocate skills like config/.env/DB/commands. The
+    # stock "~/.rubino/skills" entry used to File.expand_path against the REAL
+    # home, so an isolated home silently lost its user skills.
+    describe "RUBINO_HOME relocation (#135)" do
+      it "resolves the stock ~/.rubino/skills entry against the resolved home" do
+        Dir.mktmpdir do |home|
+          FileUtils.mkdir_p(File.join(home, "skills", "haiku-writer"))
+          File.write(File.join(home, "skills", "haiku-writer", "SKILL.md"),
+                     "---\nname: haiku-writer\ndescription: writes haikus\n---\nbody")
+          allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(home)
+
+          reg = described_class.new(
+            config: test_configuration("skills" => { "paths" => ["~/.rubino/skills"] }),
+            include_builtin: false
+          )
+          expect(reg.names).to include("haiku-writer")
+        end
+      end
+    end
+
     it "names a directory skill after its directory" do
       expect(registry.find("data-helper")).not_to be_nil
       expect(registry.find("data-helper").path).to end_with("data-helper/SKILL.md")

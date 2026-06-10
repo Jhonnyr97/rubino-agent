@@ -52,6 +52,23 @@ RSpec.describe "API contract: cron jobs" do
     expect(errors.keys).to include("schedule", "prompt")
   end
 
+  it "POST /v1/jobs with an invalid cron schedule → 422 and persists NOTHING (#164)" do
+    post_json "/v1/jobs", { "name" => "bad", "schedule" => "not a cron", "prompt" => "x" }
+    expect(last_response.status).to eq(422)
+    expect(json_body.dig("error", "code")).to eq("validation")
+    expect(json_body.dig("error", "details", "errors", "schedule")).to eq(["is not a valid cron expression"])
+    # The poison row must never reach the DB — a persisted bad schedule used
+    # to crash Scheduler#load_all! on the next boot.
+    expect(Rubino::Jobs::CronJobRepository.new.list(include_disabled: true)).to be_empty
+  end
+
+  it "PATCH /v1/jobs/:id with an invalid cron schedule → 422 and keeps the stored schedule (#164)" do
+    id = create_job.fetch("id")
+    patch_json "/v1/jobs/#{id}", { "schedule" => "not a cron" }
+    expect(last_response.status).to eq(422)
+    expect(Rubino::Jobs::CronJobRepository.new.find(id)[:schedule]).to eq("* * * * *")
+  end
+
   it "PATCH /v1/jobs/:id with :skills → 200 + :skills array in response (never :skills_json)" do
     post_json "/v1/jobs", { "name" => "x", "schedule" => "* * * * *", "prompt" => "p", "skills" => ["a"] }
     id = json_body.fetch("id")

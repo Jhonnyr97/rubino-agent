@@ -46,6 +46,18 @@ The project was rebranded from `ruby-agent` to **Rubino**. This is a clean break
 
 The GitHub repository is `github.com/Jhonnyr97/rubino-agent`. Publishing the renamed gem is **not** done as part of this change.
 
+### Fixed
+
+- **Invalid cron schedules can no longer brick the server** (#164): `POST/PATCH /v1/jobs` validates the cron string BEFORE persisting (422 with the canonical validation envelope, nothing committed), and `Jobs::Scheduler` skips + warns on a malformed persisted row instead of crashing boot — existing poisoned DBs recover on restart.
+- **Invalid API keys fail fast** (#126): statusless provider auth rejections (e.g. MiniMax "login fail", "incorrect api key") are classified non-retryable AUTH, surfacing the actionable auth error in one round-trip instead of ~60-90s of silent retries.
+- **`rubino chat --help` / `rubino prompt --help` print usage** (#134): a help flag on any top-level command is intercepted at dispatch and routed to Thor's help — no provider call, no memory writes.
+- **`RUBINO_HOME` relocates skills** (#135): the stock `~/.rubino/skills` entry resolves against the resolved home (same resolver as config/.env/DB/commands), so isolated homes discover their skills.
+- **Order-dependent suite abort** (#163): a spec leaking a pared-down tool registry is cleaned up, and the one-shot exit spec converts an unexpected `SystemExit` into a failing example instead of killing the rspec process.
+
+### Documentation
+
+- `docs/api/v1.md` aligned to the real API surface (#165, #166, #167): SSE catalogue documents the non-streaming contract (no `message.delta`/`reasoning.delta`), the approval decision enum lists all seven accepted values with semantics, and `GET /v1/sessions`, `/v1/memory*`, `/v1/tasks*` are documented. A doc-drift spec locks the documented route list to the registered routes.
+
 ## [0.3.0] - 2026-06-06
 
 Major capability release: the core conversation loop was ported 1:1 from the reference implementation (formalized LLM boundary, retry/backoff/fallback, degenerate-response recovery), background subagents became the default delegation path, the memory subsystem grew a pluggable backend contract with a tiny-Zep SQLite backend that is now the default, CLI gained image/file input and a scroll-native redesign, and a reference-aligned approval model (hardline floor, dangerous-pattern deny, prefix-derived rules) landed. Consolidated from `feature/subagent-view` (#48) plus #49-#58.

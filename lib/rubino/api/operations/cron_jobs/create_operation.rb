@@ -9,8 +9,11 @@ module Rubino
         # New jobs default to deliver="local" when the client omits it.
         #
         # @return [[Integer, Hash]] 201 + serialized job.
-        # @raise [Rubino::ValidationError] when the body fails Schemas::CreateCronJob.
+        # @raise [Rubino::ValidationError] when the body fails Schemas::CreateCronJob
+        #   or carries a cron schedule Fugit cannot parse (#164).
         class CreateOperation
+          include ScheduleValidation
+
           def self.call(request)
             new.call(request)
           end
@@ -23,6 +26,7 @@ module Rubino
 
           def call(request)
             attrs = request.validate!(Schemas::CreateCronJob)
+            validate_schedule!(attrs[:schedule])
             job = @repository.create(
               name: attrs[:name],
               schedule: attrs[:schedule],
