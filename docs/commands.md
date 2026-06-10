@@ -78,6 +78,7 @@ is set.
 - `--new` forces a fresh session; `--continue`/`-c` resumes the latest; `--resume`/`-r <id|title>` resumes a specific one.
 - `--resume` matches an ID prefix first, then a case-insensitive substring of the session title **or its full first prompt** — so a memorable phrase from the tail of a long first message works even though the stored title is truncated. More than one match is an error listing the candidates; no match exits non-zero with a pointer to `rubino sessions list`.
 - One-shot mode (`-q` / `prompt`) does **not** auto-resume — automation isn't silently hijacked onto a past session; pass `--resume`/`--continue` explicitly if you want it.
+- One-shot output: when stdout is a **terminal** the answer renders through the same markdown pipeline as interactive chat (styled text, fitted tables, wrapping); when stdout is **piped/redirected** the answer stays plain raw text and diagnostics go to stderr, so `$(rubino prompt …)` stays clean.
 - Sessions are marked ended on clean exit, terminal close (SIGHUP), or kill (SIGTERM), so a closed window doesn't leave a session looking active.
 
 ### Exit codes (scripting around `prompt` / one-shot)
