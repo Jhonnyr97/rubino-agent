@@ -38,6 +38,25 @@ RSpec.describe Rubino::Jobs::Scheduler do
     end
   end
 
+  describe "#load_all! with a poisoned row (#164)" do
+    it "skips a job whose persisted schedule cannot be parsed and still schedules the rest" do
+      # A row written by an older build, before the API pre-validated
+      # schedules. One poison row must never abort boot.
+      cron_repo.create(name: "bad", schedule: "not a cron", prompt: "x")
+      cron_repo.create(name: "good", schedule: "* * * * *", prompt: "y")
+
+      allow(rufus).to receive(:unschedule)
+      allow(rufus).to receive(:cron) do |schedule|
+        raise ArgumentError, %(invalid cron string "#{schedule}") if schedule == "not a cron"
+
+        :handle
+      end
+
+      expect { scheduler.load_all! }.not_to raise_error
+      expect(scheduler.scheduled_count).to eq(1)
+    end
+  end
+
   describe "#trigger (fire)" do
     it "stamps cron_job_id on the created run via Repository#create, not by reaching into @db" do
       job_id = cron_repo.create(name: "nightly", schedule: "0 9 * * *", prompt: "do x")[:id]

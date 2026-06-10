@@ -115,6 +115,12 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # field; the model can only roleplay bash in markdown. Verified against
   # real wire traffic via RUBYLLM_DEBUG=1 before this fix.
   describe "#ensure_setup!" do
+    # These examples mutate the process-global tool registry (one leaves it
+    # holding ONLY shell). Without this reset, any later spec relying on
+    # "register defaults when empty" sees a non-empty registry with no
+    # write/read/... and dies with "Unknown tool" (#163, seed 62637).
+    after { Rubino::Tools::Registry.reset! }
+
     it "registers default tools when the registry is empty" do
       Rubino::Tools::Registry.reset!
       expect(Rubino::Tools::Registry.all.size).to eq(0)

@@ -33,9 +33,14 @@ RSpec.describe Rubino::CLI::ChatCommand do
       fake_llm.enqueue_text("I can't write outside the workspace, so I left it alone.")
 
       # No SystemExit raised = exit status 0 for the process; the answer still
-      # lands on stdout for the caller to consume.
-      expect { described_class.new("query" => "write #{refused_path}").execute }
-        .to output(/left it alone/).to_stdout
+      # lands on stdout for the caller to consume. An UNEXPECTED exit is
+      # rescued and turned into a real failure: letting SystemExit escape the
+      # example kills the whole rspec process mid-suite (#163).
+      expect do
+        described_class.new("query" => "write #{refused_path}").execute
+      rescue SystemExit => e
+        raise "expected a clean exit-0 run, but ChatCommand exited with status #{e.status}"
+      end.to output(/left it alone/).to_stdout
 
       expect(File).not_to exist(refused_path)
     end

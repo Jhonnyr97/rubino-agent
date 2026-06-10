@@ -10,6 +10,11 @@ RSpec.describe Rubino::CLI::ToolsCommand do
   # boots one. It now registers the defaults (idempotently) so the table lists
   # the real, available tools.
   describe "#execute" do
+    # The "does not wipe" example leaves a registry holding ONLY shell;
+    # without this reset any later spec relying on "register defaults when
+    # empty" dies with "Unknown tool: write" (#163, seed 62637).
+    after { Rubino::Tools::Registry.reset! }
+
     it "lists the registered default tools (non-empty) on a cold registry" do
       Rubino::Tools::Registry.reset!
 
