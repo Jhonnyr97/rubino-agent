@@ -244,7 +244,9 @@ module Rubino
       # Gated on the skills feature being enabled (same gate as the index). A
       # pinned-but-now-missing/disabled skill (deleted on disk, or toggled off)
       # silently drops out rather than injecting an empty block. Never raises —
-      # a load failure must not take down prompt assembly.
+      # a load failure must not take down prompt assembly — but it LOGS, so a
+      # logic error here (e.g. a signature drift) is visible instead of the
+      # pinned skill silently vanishing from the prompt (#62).
       def active_skill_block
         return nil unless skills_feature_enabled?
 
@@ -268,7 +270,9 @@ module Rubino
           #{content.to_s.strip}
           </active_skill>
         PROMPT
-      rescue StandardError
+      rescue StandardError => e
+        Rubino.logger.debug(event: "prompt.active_skill_block_failed",
+                            error: "#{e.class}: #{e.message}")
         nil
       end
 

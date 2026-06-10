@@ -1168,18 +1168,18 @@ module Rubino
       # flag (D1). The composer gates the Ctrl+O reveal on it: a reveal requested
       # while true is deferred and flushed by #end_content_stream when the answer
       # finishes, so the `┊` aside never lands between answer chunks. A no-op when
-      # no composer owns the screen (between turns / piped input / plain mode), or
-      # when the composer predates this API. Cosmetic — never break the turn.
+      # no composer owns the screen (between turns / piped input / plain mode).
+      # No respond_to?/blanket-rescue safety net here: the composer is our own
+      # class, so a signature drift across this seam must fail LOUDLY in the
+      # suite instead of silently un-gating the reveal (#62). Only terminal IO
+      # errors are swallowed — end_content_stream can flush a deferred reveal
+      # (real output), and a dying tty must not break the turn. Cosmetic.
       def mark_content_streaming(active)
         composer = BottomComposer.current
         return unless composer
 
-        if active
-          composer.begin_content_stream if composer.respond_to?(:begin_content_stream)
-        elsif composer.respond_to?(:end_content_stream)
-          composer.end_content_stream
-        end
-      rescue StandardError
+        active ? composer.begin_content_stream : composer.end_content_stream
+      rescue IOError, Errno::EIO
         nil
       end
 
@@ -1268,7 +1268,6 @@ module Rubino
         $stdout.puts @pastel.dim("┄ thought for #{seconds}s ┄")
         $stdout.puts
       end
-      alias commit_reasoning_aside_full commit_reasoning_aside
 
       # --- Subagent delegation rows (the `task` tool) ---
 
