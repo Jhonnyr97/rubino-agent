@@ -194,6 +194,25 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
     end
   end
 
+  # #126: a PRESENT but INVALID key rejected via a statusless provider body
+  # (MiniMax "login fail") used to fall through to unknown->retryable and burn
+  # ~60-90s of silent retries on a deterministic auth failure.
+  describe ".classify — invalid credential fails fast (#126)" do
+    it "MiniMax statusless 'login fail' body -> auth, NOT retryable" do
+      err = RubyLLM::Error.new(nil, "login fail: Please carry the API secret key in the 'X-Api-Key' field")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::AUTH)
+      expect(c.retryable).to be false
+      expect(c.auth?).to be true
+    end
+
+    it "an 'incorrect api key' style message -> auth, NOT retryable" do
+      c = described_class.classify(StandardError.new("Incorrect API key provided: sk-cp-broken"))
+      expect(c.reason).to eq(FR::AUTH)
+      expect(c.retryable).to be false
+    end
+  end
+
   describe ".classify — unknown is the retryable default" do
     it "a generic no-status error -> unknown, retryable" do
       c = described_class.classify(RubyLLM::Error.new(nil, "something specific went wrong"))

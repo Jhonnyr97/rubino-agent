@@ -22,14 +22,30 @@ module Rubino
         :chat
       end
 
+      # Help flags recognized on any top-level command (#134).
+      HELP_FLAGS = ["--help", "-h"].freeze
+
       # Intercept `--version`/`-v` at dispatch (#32). Thor otherwise routes a
       # bare `rubino --version` to the default `chat` task, which treats the
       # flag as a prompt and fails with an API-key error. Handle it here —
       # print the version and exit — before any chat/credential handling.
+      #
+      # Likewise intercept `rubino <command> --help` (#134): Thor 1.x only maps
+      # a LEADING help flag to the help task, so `chat --help`/`prompt --help`
+      # used to fall through as an unknown option, become the positional
+      # prompt, and start a REAL agent run (provider call + memory writes).
+      # Reroute to Thor's own `help <command>` before option parsing. Thor
+      # subcommands (config/memory/sessions/jobs) already handle their own
+      # `--help` and keep their richer subcommand listing.
       def self.start(given_args = ARGV, config = {})
         if ["--version", "-v"].include?(given_args.first)
           puts "rubino v#{Rubino::VERSION}"
           return
+        end
+
+        cmd = given_args.first.to_s.tr("-", "_")
+        if given_args.drop(1).intersect?(HELP_FLAGS) && commands.key?(cmd) && !subcommands.include?(cmd)
+          return super(["help", cmd], config)
         end
 
         super

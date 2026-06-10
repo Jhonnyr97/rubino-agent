@@ -68,7 +68,7 @@ module Rubino
         known_before = @skills.keys
         @skills.clear
         skill_paths.each do |dir|
-          expanded = File.expand_path(dir)
+          expanded = resolve_path(dir)
           next unless File.directory?(expanded)
 
           add_skills(Dir.glob(File.join(expanded, FLAT_GLOB)))
@@ -146,6 +146,19 @@ module Rubino
 
       def state_repository
         @state_repository ||= StateRepository.new
+      end
+
+      # Resolves a configured skills dir to an absolute path. The stock
+      # "~/.rubino/..." entries follow the resolved home (RUBINO_HOME → else
+      # ~/.rubino), same resolver config/.env/DB/commands use, so an isolated
+      # home actually has its skills discovered (#135) instead of the literal
+      # path expanding against the REAL home. Any other path expands verbatim.
+      def resolve_path(dir)
+        if dir.to_s == "~/.rubino" || dir.to_s.start_with?("~/.rubino/")
+          File.join(Config::Loader.default_home_path, dir.to_s.delete_prefix("~/.rubino"))
+        else
+          File.expand_path(dir)
+        end
       end
 
       # Builds a Skill per path and indexes it by name. Called with flat paths

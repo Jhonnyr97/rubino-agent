@@ -125,6 +125,7 @@ module Rubino
         status = http_status(error)
 
         result = classify_missing_credential(error) ||
+                 classify_invalid_credential(error) ||
                  classify_transport(error) ||
                  classify_invalid_media(error) ||
                  classify_typed(error) ||
@@ -168,6 +169,30 @@ module Rubino
           defined?(RubyLLM::ConfigurationError) && error.is_a?(RubyLLM::ConfigurationError)
         msg = error.message.to_s.downcase
         return unless is_config_error || MISSING_CREDENTIAL_PATTERNS.any? { |p| msg.include?(p) }
+
+        result_for(FailoverReason::AUTH, http_status(error), error,
+                   retryable: false, should_rotate_credential: true, should_fallback: true)
+      end
+
+      # A PRESENT but INVALID credential rejected by the provider via a
+      # statusless / untyped error body (MiniMax's Anthropic-compatible
+      # endpoint says "login fail" with no 401), which used to fall through to
+      # the unknown→retryable default and burn ~60-90s of silent retries on a
+      # deterministic auth failure (#126). Same deal as a typed 401/403:
+      # NON-retryable AUTH, surfaced immediately. Patterns are the literal
+      # provider phrasings, kept narrow.
+      INVALID_CREDENTIAL_PATTERNS = [
+        "login fail",
+        "invalid api key",
+        "incorrect api key",
+        "invalid x-api-key",
+        "authentication_error",
+        "authentication failed"
+      ].freeze
+
+      def classify_invalid_credential(error)
+        msg = error.message.to_s.downcase
+        return unless INVALID_CREDENTIAL_PATTERNS.any? { |p| msg.include?(p) }
 
         result_for(FailoverReason::AUTH, http_status(error), error,
                    retryable: false, should_rotate_credential: true, should_fallback: true)

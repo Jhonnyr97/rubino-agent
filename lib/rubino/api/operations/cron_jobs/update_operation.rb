@@ -9,8 +9,11 @@ module Rubino
         # reschedule only when the resulting row is still enabled.
         #
         # @raise [Rubino::NotFoundError] when the cron job does not exist.
-        # @raise [Rubino::ValidationError] when the body fails Schemas::UpdateCronJob.
+        # @raise [Rubino::ValidationError] when the body fails Schemas::UpdateCronJob
+        #   or carries a cron schedule Fugit cannot parse (#164).
         class UpdateOperation
+          include ScheduleValidation
+
           def self.call(request)
             new.call(request)
           end
@@ -26,6 +29,7 @@ module Rubino
             raise NotFoundError.new("cron_job", id) unless @repository.find(id)
 
             attrs = request.validate!(Schemas::UpdateCronJob)
+            validate_schedule!(attrs[:schedule])
             updated = @repository.update(id, attrs)
             @scheduler.unschedule(id)
             @scheduler.schedule(updated) if updated[:enabled]
