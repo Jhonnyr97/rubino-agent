@@ -39,7 +39,7 @@ RSpec.describe Rubino::Commands::Executor do
 
       expect(Rubino::ActiveSkill.current).to eq("data-helper")
       err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to include("Unknown skill: nope-not-real")
+      expect(err[:message]).to include("unknown skill: nope-not-real")
     end
   end
 

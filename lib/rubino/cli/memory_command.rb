@@ -43,7 +43,7 @@ module Rubino
         memory = backend_store.find(id)
 
         if memory.nil?
-          Rubino.ui.error("Memory not found: #{id}")
+          Rubino.ui.error("memory not found: #{id}")
           return
         end
 
@@ -66,7 +66,7 @@ module Rubino
         if backend_store.delete(id)
           Rubino.ui.success("Memory deleted: #{id}")
         else
-          Rubino.ui.error("Memory not found: #{id}")
+          Rubino.ui.error("memory not found: #{id}")
         end
       end
 

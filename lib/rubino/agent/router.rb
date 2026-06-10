@@ -19,12 +19,12 @@ module Rubino
       def switch_to(agent_name)
         agent = @registry.find(agent_name)
         unless agent
-          @ui.error("Unknown agent: #{agent_name}")
+          @ui.error("unknown agent: #{agent_name}")
           return false
         end
 
         unless agent.primary?
-          @ui.error("Cannot switch to subagent '#{agent_name}'. Use @#{agent_name} to invoke it.")
+          @ui.error("cannot switch to subagent '#{agent_name}'. Use @#{agent_name} to invoke it.")
           return false
         end
 

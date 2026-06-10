@@ -514,7 +514,7 @@ RSpec.describe Rubino::Commands::Executor do
     it "prints error message" do
       executor.try_execute("/unknown_cmd")
       error_msgs = null_ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
-      expect(error_msgs).to include(a_string_including("Unknown command"))
+      expect(error_msgs).to include(a_string_including("unknown command"))
     end
 
     it "lists the built-in commands in the Available hint even when no custom commands exist (L6)" do

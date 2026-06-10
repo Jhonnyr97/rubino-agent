@@ -242,7 +242,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
     it "errors when forgetting an unknown id" do
       exec.try_execute("/memory forget deadbeef")
       errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
-      expect(errors.join("\n")).to include("No fact with id")
+      expect(errors.join("\n")).to include("no fact with id")
     end
 
     it "prints a usage hint for 'forget' with no id (not a search)" do
@@ -291,14 +291,14 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       make_ui_return_nil(:info, :table, :error, :separator)
       expect(exec.try_execute("/agents")).to eq(:handled)
       expect(info_lines.join("\n")).to include("No background subagents")
-      expect(info_lines.join("\n")).not_to include("Unknown command")
+      expect(info_lines.join("\n")).not_to include("unknown command")
     end
 
     it "/tasks is an alias for /agents" do
       make_ui_return_nil(:info, :table, :error, :separator)
       expect(exec.try_execute("/tasks")).to eq(:handled)
       expect(info_lines.join("\n")).to include("No background subagents")
-      expect(info_lines.join("\n")).not_to include("Unknown command")
+      expect(info_lines.join("\n")).not_to include("unknown command")
     end
 
     it "lists subagents read from BackgroundTasks with status + label" do
@@ -366,7 +366,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
     it "errors on an unknown id" do
       exec.try_execute("/agents sa_unknown")
       errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
-      expect(errors.join("\n")).to include("No background subagent")
+      expect(errors.join("\n")).to include("no background subagent")
     end
 
     it "--stop cancels a running subagent via its runner CancelToken" do
@@ -512,7 +512,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       result = exec.try_execute("/sessions nope_xyz")
       expect(result).to eq(:handled)
       errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
-      expect(errors.join("\n")).to include("No session matching")
+      expect(errors.join("\n")).to include("no session matching")
     end
 
     it "surfaces an ambiguous match instead of guessing" do

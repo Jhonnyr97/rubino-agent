@@ -206,7 +206,7 @@ module Rubino
 
       # Explicit, visible confirmation that a denied command was NOT executed.
       def denied(tool = nil)
-        label = tool ? "#{tool} command" : "Command"
+        label = tool ? "#{tool} command" : "command"
         error("#{label} denied — not executed")
       end
 

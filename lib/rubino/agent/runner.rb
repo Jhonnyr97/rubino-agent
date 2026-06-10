@@ -119,17 +119,17 @@ module Rubino
         msg = error.message.to_s
         case msg
         when /\b401\b|unauthorized|invalid[_ ]?api[_ ]?key/i
-          "Authentication failed (#{msg}). Check your API key in ~/.rubino/.env " \
+          "authentication failed (#{msg}). Check your API key in ~/.rubino/.env " \
           "or run `rubino setup`."
         when /\b404\b|model.*not.*found|invalid[_ ]?model|unknown[_ ]?model/i
-          "Model '#{@model_id}' not available with the current provider/plan. " \
+          "model '#{@model_id}' not available with the current provider/plan. " \
           "Check `model.default` in config.yml; details: #{msg}"
         when /\b(429|rate[_ ]?limit)\b/i
-          "Rate-limited by the provider. Wait a moment and retry. Details: #{msg}"
+          "rate-limited by the provider. Wait a moment and retry. Details: #{msg}"
         when /\b(timeout|timed out|connection reset)\b/i
-          "Network error reaching the LLM (#{msg}). Check connectivity and retry."
+          "network error reaching the LLM (#{msg}). Check connectivity and retry."
         else
-          "Error: #{msg}"
+          "error: #{msg}"
         end
       end
 

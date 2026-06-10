@@ -33,7 +33,7 @@ module Rubino
         # Look up custom command
         command = @loader.find(name)
         unless command
-          @ui.error("Unknown command: /#{name}")
+          @ui.error("unknown command: /#{name}")
           @ui.info("Available: #{available_commands.join(", ")}")
           return :handled # Signal that it was handled (even if failed)
         end
@@ -446,7 +446,7 @@ module Rubino
         store  = memory_backend
         memory = store.find(id)
         if memory.nil?
-          @ui.error("No fact with id #{id}.")
+          @ui.error("no fact with id #{id}.")
           return
         end
 
@@ -512,7 +512,7 @@ module Rubino
       # (▸, "enters child context") + a card repaint so the parked note shows.
       def steer_agent(id, text)
         if text.to_s.strip.empty?
-          @ui.error(%(Usage: /agents #{id} steer "your note"))
+          @ui.error(%(usage: /agents #{id} steer "your note"))
           return
         end
 
@@ -520,7 +520,7 @@ module Rubino
           @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}  (parked · enters child context next turn)")
           @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
         else
-          @ui.error("Cannot steer #{id} — no such running subagent.")
+          @ui.error("cannot steer #{id} — no such running subagent.")
         end
       end
 
@@ -532,13 +532,13 @@ module Rubino
       # entry is itself the signal that the peek changed nothing.
       def probe_agent(id, question)
         if question.to_s.strip.empty?
-          @ui.error(%(Usage: /agents #{id} probe "your question"))
+          @ui.error(%(usage: /agents #{id} probe "your question"))
           return
         end
 
         entry = Tools::BackgroundTasks.instance.find(id)
         unless entry
-          @ui.error("Cannot probe #{id} — no such subagent.")
+          @ui.error("cannot probe #{id} — no such subagent.")
           return
         end
 
@@ -660,7 +660,7 @@ module Rubino
       def show_agent_detail(id)
         entry = Tools::BackgroundTasks.instance.find(id)
         unless entry
-          @ui.error("No background subagent with id #{id}.")
+          @ui.error("no background subagent with id #{id}.")
           return
         end
 
@@ -806,7 +806,7 @@ module Rubino
         registry = Tools::BackgroundTasks.instance
         entry    = registry.find(id)
         unless entry
-          @ui.error("No background subagent with id #{id}.")
+          @ui.error("no background subagent with id #{id}.")
           return
         end
 
@@ -978,7 +978,7 @@ module Rubino
       def resume_session(query)
         session = Session::Repository.new.find_by_id_or_title(query)
         if session.nil?
-          @ui.error("No session matching #{query.inspect}.")
+          @ui.error("no session matching #{query.inspect}.")
           @ui.info("List them with /sessions")
           return :handled
         end
@@ -1183,7 +1183,7 @@ module Rubino
         registry = Skills::Registry.new
         skill = registry.find(arg)
         unless skill
-          @ui.error("Unknown skill: #{arg}")
+          @ui.error("unknown skill: #{arg}")
           available = registry.names
           @ui.info("Available: #{available.join(", ")}") unless available.empty?
           return
