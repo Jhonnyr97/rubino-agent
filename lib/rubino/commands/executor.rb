@@ -354,7 +354,7 @@ module Rubino
       end
 
       def status_skills_line
-        registry = Skills::Registry.new
+        registry = Skills::Registry.trusted
         all      = registry.all
         enabled  = all.count { |s| registry.enabled?(s.name) }
         "#{all.size} available, #{enabled} enabled"
@@ -1205,12 +1205,20 @@ module Rubino
           return
         end
 
-        registry = Skills::Registry.new
+        # Trust-aligned discovery (#63): activate only skills the assembler
+        # will actually pin — in an untrusted cwd a project-local skill is
+        # refused (with a reason) instead of chip-active-but-not-injected.
+        registry = Skills::Registry.trusted
         skill = registry.find(arg)
         unless skill
-          @ui.error("unknown skill: #{arg}")
-          available = registry.names
-          @ui.info("Available: #{available.join(", ")}") unless available.empty?
+          if Skills::Registry.new.find(arg)
+            @ui.error("skill #{arg} is in this directory's .rubino/skills, but the directory " \
+                      "isn't trusted — its SKILL.md would not be loaded, so it can't be activated")
+          else
+            @ui.error("unknown skill: #{arg}")
+            available = registry.names
+            @ui.info("Available: #{available.join(", ")}") unless available.empty?
+          end
           return
         end
 
@@ -1235,7 +1243,7 @@ module Rubino
       end
 
       def show_skills
-        registry = Skills::Registry.new
+        registry = Skills::Registry.trusted
         skills = registry.all
         if skills.empty?
           @ui.info("No skills found.")

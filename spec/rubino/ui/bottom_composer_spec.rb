@@ -787,6 +787,78 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\r") # submit (trailing accept-space preserved, as /command does)
         expect(queue.drain).to eq(["/skills ruby-expert "])
       end
+
+      # #63: accepting a command name lands the cursor in its ARGUMENT
+      # position — the next context's dropdown must open IMMEDIATELY, not one
+      # keystroke late (accept used to clear the menu and never re-run the
+      # refresh for the new context).
+      it "auto-opens the argument dropdown right after Tab-accepting /skills (#63)" do
+        "/skil".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        expect(composer.buffer).to eq("/skills ")
+        expect(composer.menu_open?).to be(true)
+        expect(output.string).to include("ruby-expert")
+      end
+
+      it "stays closed after accepting a command with no argument source (#63)" do
+        "/hel".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        expect(composer.buffer).to eq("/help ")
+        expect(composer.menu_open?).to be(false)
+      end
+    end
+
+    # #39: the dropdown shows each command's one-line description (the same
+    # strings /help carries) next to its name, and surfaces the /agents
+    # subcommand grammar (id → steer/probe/--stop) as completions.
+    describe "descriptions + /agents subcommand grammar (#39)" do
+      let(:source) do
+        Rubino::UI::CompletionSource.new(
+          commands: %w[/agents /help],
+          arg_sources: { "agents" => lambda { |args|
+            args.empty? ? %w[sa_aaaa] : ["steer", "probe", "--stop"]
+          } },
+          descriptions: { "/help" => "Show this help",
+                          "steer" => "park a note for the subagent" }
+        )
+      end
+
+      it "renders the command description next to its name in the dropdown" do
+        "/he".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true)
+        frame = output.string
+        expect(frame).to include("/help")
+        expect(frame).to include("Show this help")
+      end
+
+      it "leaves an undescribed candidate bare (no stray column)" do
+        "/ag".each_char { |ch| composer.handle_key(ch) }
+        rows = composer.send(:menu_rows)
+        expect(rows.first).to include("/agents")
+        # No description registered for /agents: nothing after the name.
+        expect(rows.first.rstrip).to end_with("/agents")
+      end
+
+      it "offers the live subagent ids for `/agents `" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true)
+        expect(output.string).to include("sa_aaaa")
+      end
+
+      it "offers steer/probe/--stop after the id, with the usage hint" do
+        "/agents sa_aaaa ".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true)
+        frame = output.string
+        expect(frame).to include("steer")
+        expect(frame).to include("--stop")
+        expect(frame).to include("park a note for the subagent")
+      end
+
+      it "accepts a subcommand into the buffer (Tab on --stop)" do
+        "/agents sa_aaaa --s".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        expect(composer.buffer).to eq("/agents sa_aaaa --stop ")
+      end
     end
   end
 

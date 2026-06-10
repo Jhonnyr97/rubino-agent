@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "tmpdir"
+require "fileutils"
+
 # Covers the `/skills` slash command path in Commands::Executor — the skill
 # PICKER's activation half. `/skills` lists (unchanged), `/skills <name>`
 # activates + pins it in Rubino::ActiveSkill (the session-scoped slot, mirroring
@@ -40,6 +43,59 @@ RSpec.describe Rubino::Commands::Executor do
       expect(Rubino::ActiveSkill.current).to eq("data-helper")
       err = ui.messages.find { |m| m[:level] == :error }
       expect(err[:message]).to include("unknown skill: nope-not-real")
+    end
+  end
+
+  # #63: align activation with the assembler's folder-trust gate — in an
+  # UNTRUSTED cwd a project-local skill is NOT pinnable (PromptAssembler drops
+  # its catalogue), so /skills must refuse it with a reason instead of showing
+  # an "active" chip whose SKILL.md is never injected into the prompt.
+  describe "folder-trust alignment (#63)" do
+    around do |example|
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, ".rubino", "skills"))
+        File.write(File.join(dir, ".rubino", "skills", "local-skill.md"), <<~MD)
+          ---
+          description: a cwd-local skill
+          ---
+          body
+        MD
+        Dir.chdir(dir) { example.run }
+      end
+    end
+
+    let(:config) do
+      test_configuration("skills" => { "paths" => [".rubino/skills"],
+                                       "include_builtin" => false })
+    end
+
+    before { allow(Rubino::Workspace).to receive(:primary_root).and_return(Dir.pwd) }
+
+    it "refuses to activate a project-local skill in an untrusted cwd" do
+      allow(Rubino::Trust).to receive(:trusted?).and_return(false)
+
+      exec.try_execute("/skills local-skill")
+
+      expect(Rubino::ActiveSkill.current).to be_nil
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("isn't trusted")
+    end
+
+    it "lists only pinnable skills while the cwd is untrusted" do
+      allow(Rubino::Trust).to receive(:trusted?).and_return(false)
+
+      exec.try_execute("/skills")
+
+      listing = ui.messages.map { |m| m[:message].to_s }.join("\n")
+      expect(listing).not_to include("local-skill")
+    end
+
+    it "activates the same skill normally once the cwd is trusted" do
+      allow(Rubino::Trust).to receive(:trusted?).and_return(true)
+
+      exec.try_execute("/skills local-skill")
+
+      expect(Rubino::ActiveSkill.current).to eq("local-skill")
     end
   end
 

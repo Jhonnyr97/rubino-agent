@@ -35,16 +35,42 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "feeds built-in slash commands into the completion source" do
-      cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
       source = described_class.new({}).send(:build_completion_source, cmd_loader)
       expect(source.candidates_for("/")).to include("/help", "/exit")
     end
 
     it "uses a lazy files proc resolving to the workspace primary root" do
-      cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
       source = described_class.new({}).send(:build_completion_source, cmd_loader)
       files_proc = source.instance_variable_get(:@files_root_proc)
       expect(files_proc.call).to eq(Rubino::Workspace.primary_root)
+    end
+
+    # #39: the dropdown carries the same one-liners /help shows, plus the
+    # /agents subcommand usage hints, and completes the steer/probe/--stop
+    # grammar (ids first) for /agents, /tasks and the /reply blocked ids.
+    it "registers the BuiltIns descriptions plus the /agents grammar hints" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+      expect(source.description_for("/sessions"))
+        .to eq(Rubino::Commands::BuiltIns::DESCRIPTIONS["/sessions"])
+      expect(source.description_for("steer")).to include("note")
+      expect(source.description_for("--stop")).to include("cancel")
+    end
+
+    it "completes the /agents grammar: live ids, then steer/probe/--stop" do
+      Rubino::Tools::BackgroundTasks.reset!
+      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "look around")
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("agents", "")).to include(entry.id)
+      expect(source.arg_candidates_for("agents", "", [entry.id]))
+        .to eq(["steer", "probe", "--stop"])
+      expect(source.arg_candidates_for("tasks", "", [entry.id]))
+        .to eq(["steer", "probe", "--stop"])
+      expect(source.arg_candidates_for("agents", "", [entry.id, "steer"])).to eq([])
     end
   end
 

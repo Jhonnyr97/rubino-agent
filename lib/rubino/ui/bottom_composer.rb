@@ -1112,8 +1112,8 @@ module Rubino
         return nil unless @completion
 
         if (arg = command_arg_context)
-          command, partial, start = arg
-          items = arg_candidates(command, partial)
+          command, partial, start, args = arg
+          items = arg_candidates(command, partial, args)
           return nil if items.empty?
 
           return [items, start, partial.chars.length]
@@ -1129,19 +1129,20 @@ module Rubino
         [items, start, token.chars.length]
       end
 
-      # When the buffer is the ARGUMENT position of a slash command — i.e.
-      # `/<cmd> <partial>` with the cursor in the (single) argument — returns
-      # [command, partial, partial_start] so {#completion_context} can complete
-      # the argument; nil otherwise. Only the first argument completes (MVP: one
-      # skill at a time), and only when the cursor is within/at the end of that
-      # argument run (no second space). Generic by command name so `/agents`
-      # could reuse it with no change here.
+      # When the buffer is an ARGUMENT position of a slash command — i.e.
+      # `/<cmd> [args…] <partial>` with the cursor in the trailing argument —
+      # returns [command, partial, partial_start, args] so
+      # {#completion_context} can complete it; nil otherwise. +args+ are the
+      # COMPLETE arguments before the partial, so a positional source can own a
+      # subcommand grammar (`/agents <id> steer|probe|--stop`, #39); whether a
+      # position completes at all is the CompletionSource's call (a
+      # single-argument command like /skills stops after its first).
       def command_arg_context
         prefix = @buffer.chars.first(@cursor).join
-        m = prefix.match(%r{\A/(\S+)[ \t]+(\S*)\z})
+        m = prefix.match(%r{\A/(\S+)((?:[ \t]+\S+)*)[ \t]+(\S*)\z})
         return nil unless m
 
-        [m[1], m[2], m.begin(2)]
+        [m[1], m[3], m.begin(3), m[2].split]
       end
 
       # Open the menu for the current completion context if it has candidates.
@@ -1191,13 +1192,14 @@ module Rubino
         []
       end
 
-      # Argument candidates for a slash command (e.g. skill names for `/skills`),
-      # via the CompletionSource. Guarded so a registry hiccup degrades the menu
-      # to closed rather than crashing the prompt — same contract as #candidates.
-      def arg_candidates(command, partial)
+      # Argument candidates for a slash command (e.g. skill names for `/skills`,
+      # ids + steer/probe/--stop for `/agents`), via the CompletionSource.
+      # Guarded so a registry hiccup degrades the menu to closed rather than
+      # crashing the prompt — same contract as #candidates.
+      def arg_candidates(command, partial, args)
         return [] unless @completion.respond_to?(:arg_candidates_for)
 
-        @completion.arg_candidates_for(command, partial)
+        @completion.arg_candidates_for(command, partial, args)
       rescue StandardError
         []
       end
@@ -1236,7 +1238,13 @@ module Rubino
           @cursor = start + replacement.chars.length
           @menu = nil
           @menu_suppressed = false # accepting ends this token; a new one can auto-open
-          redraw # repaint to CLEAR the now-closed menu rows above the prompt
+          # Re-run the menu refresh for the spliced buffer (#63): accepting a
+          # command name lands the cursor in its ARGUMENT position (`/skills `),
+          # so the next-context dropdown (skill names, /agents ids…) opens
+          # immediately instead of one keystroke late. With nothing to complete
+          # there it stays closed — the redraw then just clears the old rows.
+          auto_update_menu
+          redraw
         end
       end
 
@@ -1276,7 +1284,9 @@ module Rubino
 
       # The rendered menu rows (the slice in view, the selected one marked with a
       # cyan ❯ and inverse highlight), or [] when no menu is open. House grammar:
-      # a dim aside bar leads each row.
+      # a dim aside bar leads each row. Candidates with a registered description
+      # (BuiltIns/custom command one-liners, the /agents subcommand hints) show
+      # it dim in an aligned column next to the name (#39).
       def menu_rows
         return [] unless @menu
 
@@ -1284,16 +1294,41 @@ module Rubino
         top   = @menu[:top]
         sel   = @menu[:selected]
         slice = items[top, MENU_MAX_ROWS] || []
+        pad   = slice.map { |item| display_width(item.to_s) }.max.to_i
         rows = slice.each_with_index.map do |item, i|
-          idx = top + i
-          if idx == sel
-            "#{menu_pastel.cyan("❯")} #{menu_pastel.inverse(" #{item} ")}"
-          else
-            "#{menu_pastel.dim("┊")} #{item}"
+          selected = top + i == sel
+          row = if selected
+                  "#{menu_pastel.cyan("❯")} #{menu_pastel.inverse(" #{item} ")}"
+                else
+                  "#{menu_pastel.dim("┊")} #{item}"
+                end
+          desc = menu_description(item, pad)
+          if desc
+            # Align the description column across rows: the inverse highlight
+            # already widens the selected name by 2 (its padding spaces).
+            row += (" " * (pad - display_width(item.to_s) + (selected ? 0 : 2)))
+            row += menu_pastel.dim(desc)
           end
+          row
         end
         rows << menu_pastel.dim("┄ #{sel + 1}/#{items.size} ┄") if items.size > MENU_MAX_ROWS
         rows
+      end
+
+      # The dim description for a menu candidate, fitted to the row budget so a
+      # long one-liner is right-truncated here instead of the shared row clamp
+      # left-truncating the candidate NAME away. nil when the source has none
+      # (files, skill names) or the row is too narrow to show one usefully.
+      def menu_description(item, pad)
+        return nil unless @completion.respond_to?(:description_for)
+
+        desc = @completion.description_for(item).to_s
+        return nil if desc.empty?
+
+        budget = @cols - pad - 6 # glyph + gaps + the one-column scroll guard
+        return nil if budget < 8
+
+        desc.length > budget ? "#{desc[0, budget - 1]}…" : desc
       end
 
       def menu_pastel
