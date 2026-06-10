@@ -13,6 +13,7 @@ Two surfaces: **CLI subcommands** (run from your shell) and **slash commands** (
 | `rubino memory SUBCOMMAND` | Manage persistent memories (`list` / `show` / `delete` / `backend`) |
 | `rubino sessions SUBCOMMAND` | Manage chat sessions |
 | `rubino jobs SUBCOMMAND` | Manage background jobs |
+| `rubino skills SUBCOMMAND` | Manage skills (`list` / `show` / `enable` / `disable`) |
 | `rubino tools` | List available tools and their enabled/disabled state |
 | `rubino server` | Start the JSON API + SSE server |
 | `rubino tls-cert` | Print the agent's self-signed TLS certificate PEM (generating it if absent) |
@@ -103,12 +104,12 @@ is set.
 | `--host` | `127.0.0.1` | Interface to bind (`0.0.0.0` to expose; do so only behind TLS or a trusted segment) |
 | `--api_key` | | Bearer token required on every request |
 
-### config / memory / sessions / jobs subcommands
+### config / memory / sessions / jobs / skills subcommands
 
 ```bash
-rubino config get KEY        # read a config value
+rubino config get KEY        # read a config value (effective: file merged over defaults)
 rubino config set KEY VALUE  # write a config value
-rubino config show           # print the full effective config
+rubino config show           # print the full effective config (secrets masked)
 
 rubino memory list           # list stored memories (active backend)
 rubino memory show ID
@@ -123,9 +124,14 @@ rubino sessions delete ID
 rubino jobs list
 rubino jobs process          # run pending jobs now (manual mode)
 rubino jobs worker           # start a background worker
+
+rubino skills list           # list skills with enabled/disabled markers
+rubino skills show NAME      # print a skill's SKILL.md body (review before enabling)
+rubino skills enable NAME    # put a skill back in the index (every session)
+rubino skills disable NAME   # drop a skill from the index (every session)
 ```
 
-See [memory.md](memory.md) for the memory backends and [jobs.md](jobs.md) for the queue/cron system.
+`config get`/`config show` mask secret-named keys (`api_key`, tokens, …) on display — the file keeps the real value. See [memory.md](memory.md) for the memory backends, [jobs.md](jobs.md) for the queue/cron system and [skills.md](skills.md) for the skill model.
 
 ---
 
@@ -145,10 +151,12 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/agents` | List background subagents; steer/probe a running one, or view output |
 | `/tasks` | Alias for /agents |
 | `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
-| `/skills` | List skills, or activate one for the session (/skills NAME; 'none' clears) |
+| `/jobs` | List the background job queue (status counts); /jobs <id> for detail |
+| `/skills` | List skills; activate one ('none' clears), or enable/disable NAME |
 | `/mcp` | List MCP servers and their tools; restart or disable one |
 | `/add-dir` | Add an extra allowed workspace directory (write/edit can reach it) |
 | `/dirs` | List the current workspace roots |
+| `/config` | Read or set configuration (/config <key> [value]; 'show' = full view) |
 | `/mode` | Show or switch mode (default \| plan \| yolo) |
 | `/reasoning` | Show or switch how reasoning is shown (hidden \| collapsed \| full) |
 | `/think` | Show or switch thinking effort (off \| low \| medium \| high) |
@@ -182,7 +190,7 @@ You can keep typing while a turn is running — the pinned input stays live:
 - `mcp` — servers/reachable/tools, only when MCP servers are configured (`use /mcp`).
 - `dirs` — workspace-root count plus how many are untrusted (context/skills withheld), only when there is more than one root or any root is untrusted (`use /dirs`).
 - `skills` — available/enabled counts, plus `· active: <name>` when a skill is pinned (`use /skills`).
-- `jobs` — pending/failed counts from the persistent jobs queue, only when nonzero (`use rubino jobs list`); distinct from the `background` line, which counts in-process subagents.
+- `jobs` — pending/failed counts from the persistent jobs queue, only when nonzero (`use /jobs`); distinct from the `background` line, which counts in-process subagents.
 
 ### Sessions in-chat: `/sessions`
 
@@ -210,6 +218,31 @@ The bare list shows 10 rows by default; set `sessions.list_limit` in config to c
 
 Typing `/memory ` opens a dropdown with the verbs; after `show`/`forget` it offers recent fact ids, after `backend` the registered backend names. Switching the backend stays CLI-only (`rubino memory backend NAME`) because the live agent loop memoizes its store — a restart applies the switch everywhere at once.
 
+### Jobs in-chat: `/jobs`
+
+The window into the **persistent jobs queue** — the queue the agent itself feeds mid-session (skill distillation after tool-heavy turns, memory extraction) — distinct from the in-process `/agents` subagents:
+
+```
+/jobs           # status counts (3 queued · 1 failed …) + the recent-jobs table
+/jobs <id>      # one job in full: attempts, run_at, payload, last error
+```
+
+Short id prefixes resolve (the 8-char ids the table shows), and typing `/jobs ` opens a dropdown of recent job ids. The list shares the exact table rendering of `rubino jobs list`. Running jobs stays a CLI concern (`rubino jobs process` for a one-shot drain, `rubino jobs worker` for the daemon) — they are daemons, not session actions. See [jobs.md](jobs.md).
+
+### Config in-chat: `/config`
+
+Read (and set) configuration without leaving the REPL, over the same **effective config** (file merged over defaults) the `rubino config` CLI verbs use:
+
+```
+/config                  # config file path + usage hint
+/config show             # the full merged config, secrets masked
+/config path             # the config file path
+/config <key>            # get, dot-notation (/config get <key> also works)
+/config <key> <value>    # set (/config set <key> <value> also works)
+```
+
+Gets resolve default-valued keys (not just what's in the file), and secret-named keys (`api_key`, tokens, …) render masked — exactly like `rubino config show`. A set writes through `Config::Writer` (the same persist path `/reasoning` and `/think` use) **and** updates the live configuration, so it survives the session and applies from the next turn; consumers that memoize their config (e.g. the memory backend) still need a restart. Typing `/config ` opens a dropdown with the verbs plus the known config keys flattened from the defaults tree; after `get`/`set` the keys complete again.
+
 ### Background subagents: `/agents` and `/reply`
 
 The agent spawns background subagents with its `task` tool; these commands are the human surface over them (full model in [agents.md](agents.md)):
@@ -230,14 +263,15 @@ The agent spawns background subagents with its `task` tool; these commands are t
 
 The workspace sandbox confines write/edit/delete tools to the workspace roots. `/add-dir <path>` adds an extra allowed root mid-session (and runs the one-time folder-trust gate, so the new root's `AGENTS.md`/skills are only honored once vouched for); `/dirs` lists the current roots and their trust state. Typing `/add-dir ` opens a directory-path dropdown (relative, absolute, and `~` paths complete as you type).
 
-### Active skill: `/skills`
+### Skills: `/skills`
 
 - Bare `/skills` lists the available skills (with `(disabled)` / `(active)` markers).
-- `/skills <name>` **activates** a skill for the session: its body is force-loaded into the system prompt each turn and the prompt chip shows it — `default (skill: <name>) ❯`. Typing `/skills ` opens a dropdown picker of skill names, headed by a `✗ none` clear entry.
+- `/skills <name>` **activates** a skill for the session: its body is force-loaded into the system prompt each turn and the prompt chip shows it — `default (skill: <name>) ❯`. Typing `/skills ` opens a dropdown picker of skill names (plus the `enable`/`disable` verbs), headed by a `✗ none` clear entry.
 - `/skills none` (or picking `✗ none`) clears the active skill: `✓ Cleared active skill (was: <name>).`
+- `/skills enable <name>` / `/skills disable <name>` **persistently** toggle a skill in or out of the Level-1 index for *every* session — the same `skill_states` write the HTTP API (`PUT /v1/skills/<name>`) and the `rubino skills enable|disable` CLI verbs run. A disabled skill is marked `(disabled)` in the list, drops out of the index, and **cannot be activated** until re-enabled; disabling the currently active skill also clears the pin.
 - Activation is trust-gated: a project-local skill in an untrusted directory is refused with a reason instead of being pinned without effect.
 
-Activating is **not** the same as enabling/disabling — see [skills.md](skills.md#active-skill-skills) for the distinction.
+Activating (session-scoped pin) is **not** the same as enabling/disabling (persistent, every session) — see [skills.md](skills.md#active-skill-skills) for the distinction.
 
 ### MCP servers: `/mcp`
 

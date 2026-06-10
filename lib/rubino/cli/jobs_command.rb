@@ -26,14 +26,17 @@ module Rubino
           return
         end
 
+        self.class.render_list(jobs, ui: Rubino.ui)
+      end
+
+      # ONE jobs-table rendering for both surfaces (#187): this CLI verb and
+      # the in-chat /jobs list (Commands::Executor).
+      def self.render_list(jobs, ui:)
         rows = jobs.map do |j|
           [j[:id][0..7], j[:type], j[:status], j[:attempts].to_s, j[:run_at]]
         end
 
-        Rubino.ui.table(
-          headers: %w[ID Type Status Attempts RunAt],
-          rows: rows
-        )
+        ui.table(headers: %w[ID Type Status Attempts RunAt], rows: rows)
       end
 
       desc "process", "Run pending jobs now (manual mode)"

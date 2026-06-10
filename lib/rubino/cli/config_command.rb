@@ -14,13 +14,19 @@ module Rubino
         true
       end
 
-      desc "get KEY", "Get a configuration value (dot-notation)"
+      desc "get KEY", "Get a configuration value (dot-notation; secrets masked)"
       def get(key)
-        # Resolve against the effective config (file merged over defaults), the
-        # same source `show` and the running agent use, so default-valued keys
-        # are returned instead of falsely reported "not found" (issue #36).
-        # A scalar intermediate node (e.g. descending into a String) has no
-        # #dig; treat such a path as "not found" rather than crashing.
+        self.class.render_get(key, ui: Rubino.ui)
+      end
+
+      # ONE get rendering for both surfaces (#187): this CLI verb and the
+      # in-chat `/config get` (Commands::Executor). Resolves against the
+      # effective config (file merged over defaults), the same source `show`
+      # and the running agent use, so default-valued keys are returned instead
+      # of falsely reported "not found" (issue #36). A scalar intermediate
+      # node (e.g. descending into a String) has no #dig; treat such a path as
+      # "not found" rather than crashing. Secret-named keys render masked.
+      def self.render_get(key, ui:)
         value =
           begin
             Rubino.configuration.dig(*key.split("."))
@@ -28,9 +34,9 @@ module Rubino
             nil
           end
         if value.nil?
-          Rubino.ui.warning("Key '#{key}' not found")
+          ui.warning("Key '#{key}' not found")
         else
-          Rubino.ui.info("#{key} = #{value}")
+          ui.info("#{key} = #{redact(value, key: key.split(".").last)}")
         end
       end
 
@@ -44,10 +50,32 @@ module Rubino
         exit(1)
       end
 
-      desc "show", "Show full configuration"
+      desc "show", "Show full configuration (secrets masked)"
       def show
-        config = Rubino.configuration.raw
-        Rubino.ui.info(config.to_yaml)
+        self.class.render_show(ui: Rubino.ui)
+      end
+
+      # ONE full-config rendering for both surfaces (#187): this CLI verb and
+      # the in-chat `/config show` — with secret-named keys masked, which the
+      # clear-text dump never did (api_key landed verbatim in the scrollback).
+      def self.render_show(ui:)
+        ui.info(redact(Rubino.configuration.raw).to_yaml)
+      end
+
+      # Deep DISPLAY masking for config values (#187): a secret-named key's
+      # value renders as *** (Util::SecretsMask — the same heuristic approval
+      # prompts use), hashes/arrays are walked, and plain strings are scanned
+      # for inline `Bearer …`-style credentials. Display-only — the file and
+      # the live configuration keep the real values. Empty/nil values pass
+      # through unmasked so a *** never fakes a value that isn't set.
+      def self.redact(value, key: nil)
+        case value
+        when Hash  then value.to_h { |k, v| [k, redact(v, key: k)] }
+        when Array then value.map { |v| redact(v, key: key) }
+        when String
+          value.empty? ? value : Util::SecretsMask.mask_value(value, key: key)
+        else value
+        end
       end
 
       desc "path", "Show config file path"

@@ -123,4 +123,74 @@ RSpec.describe Rubino::Commands::Executor do
       expect(lines).to include(match(/data-helper.*\(active\)/))
     end
   end
+
+  # #188: the enable/disable toggle, previously reachable only through the
+  # HTTP API. Writes through the SAME Skills::Toggle/StateRepository pair, so
+  # the flag persists and every surface (index, list markers, activation)
+  # honors it.
+  describe "/skills disable <name> (#188)" do
+    let(:state_repository) { Rubino::Skills::StateRepository.new }
+
+    it "persists the disabled flag through the shared StateRepository" do
+      exec.try_execute("/skills disable data-helper")
+
+      expect(state_repository.enabled?("data-helper")).to be(false)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("Disabled skill: data-helper")
+    end
+
+    it "marks the disabled skill in the /skills list" do
+      exec.try_execute("/skills disable data-helper")
+      exec.try_execute("/skills")
+
+      listing = ui.messages.map { |m| m[:message].to_s }.join("\n")
+      expect(listing).to include("data-helper (disabled)")
+    end
+
+    it "refuses to activate a disabled skill with a pointer to enable" do
+      exec.try_execute("/skills disable data-helper")
+      exec.try_execute("/skills data-helper")
+
+      expect(Rubino::ActiveSkill.current).to be_nil
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("skill data-helper is disabled")
+      expect(err[:message]).to include("/skills enable data-helper")
+    end
+
+    it "clears the active pin when disabling the currently active skill" do
+      Rubino::ActiveSkill.set("data-helper")
+      exec.try_execute("/skills disable data-helper")
+
+      expect(Rubino::ActiveSkill.current).to be_nil
+    end
+
+    it "errors on an unknown skill without writing any state" do
+      exec.try_execute("/skills disable nope-not-real")
+
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("unknown skill: nope-not-real")
+      expect(Rubino.database.db[:skill_states].count).to eq(0)
+    end
+
+    it "teaches the usage when no name is given" do
+      exec.try_execute("/skills disable")
+
+      msg = ui.messages.find { |m| m[:level] == :info }
+      expect(msg[:message]).to include("Usage: /skills disable <name>")
+    end
+  end
+
+  describe "/skills enable <name> (#188)" do
+    let(:state_repository) { Rubino::Skills::StateRepository.new }
+
+    it "re-enables a disabled skill so activation works again" do
+      state_repository.set("data-helper", enabled: false)
+
+      exec.try_execute("/skills enable data-helper")
+      expect(state_repository.enabled?("data-helper")).to be(true)
+
+      exec.try_execute("/skills data-helper")
+      expect(Rubino::ActiveSkill.current).to eq("data-helper")
+    end
+  end
 end

@@ -165,6 +165,56 @@ RSpec.describe Rubino::CLI::ChatCommand do
         .to eq(Rubino::Memory::Backends.names)
       expect(source.arg_candidates_for("memory", "", ["search"])).to eq([])
     end
+
+    # #188: the /skills grammar — `✗ none` + the enable/disable verbs + the
+    # skill names first; after a toggle verb the names complete again, so
+    # activate-by-name and the clear entry keep working unchanged.
+    it "completes the /skills grammar: ✗ none + verbs + names, then names after a verb (#188)" do
+      registry = instance_double(Rubino::Skills::Registry, names: %w[ruby-expert data-helper])
+      allow(Rubino::Skills::Registry).to receive(:trusted).and_return(registry)
+
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("skills", ""))
+        .to eq(["✗ none", "enable", "disable", "ruby-expert", "data-helper"])
+      expect(source.arg_candidates_for("skills", "no")).to eq(["✗ none"])
+      expect(source.arg_candidates_for("skills", "", ["enable"])).to eq(%w[ruby-expert data-helper])
+      expect(source.arg_candidates_for("skills", "", ["disable"])).to eq(%w[ruby-expert data-helper])
+      expect(source.arg_candidates_for("skills", "", ["ruby-expert"])).to eq([])
+      expect(source.description_for("disable")).to include("index")
+    end
+
+    # #187: /jobs completes recent job ids (short form), first position only.
+    it "completes recent job ids for /jobs (#187)" do
+      queue = Rubino::Jobs::Queue.new(
+        db: db.db, config: test_configuration("jobs" => { "mode" => "manual", "max_attempts" => 3 })
+      )
+      id = queue.enqueue("DistillSkillJob", { "session_id" => "s1" })
+      allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
+
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("jobs", "")).to include(id[0..7])
+      expect(source.arg_candidates_for("jobs", "", [id[0..7]])).to eq([])
+    end
+
+    # #187: /config completes the verbs + the known keys (the defaults tree
+    # flattened to dot-paths), and the keys again after get/set.
+    it "completes the /config grammar: verbs + known keys, keys after get/set (#187)" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      first = source.arg_candidates_for("config", "mod")
+      expect(first).to include("model.default")
+      expect(source.arg_candidates_for("config", "")).to include("get", "set", "show", "path")
+      expect(source.arg_candidates_for("config", "memory", ["get"])).to include("memory.backend")
+      expect(source.arg_candidates_for("config", "memory", ["set"])).to include("memory.backend")
+      expect(source.arg_candidates_for("config", "", ["show"])).to eq([])
+      expect(source.arg_candidates_for("config", "", %w[get model.default])).to eq([])
+      expect(source.description_for("get")).to include("config")
+    end
   end
 
   # #111: the composer's quiet flag routes through the interrupt handler — a

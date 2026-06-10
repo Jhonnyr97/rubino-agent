@@ -119,6 +119,10 @@ rubino jobs run           # drain queued rows once (uses Runner#run_pending)
 rubino jobs worker        # start the polling worker (long-running)
 ```
 
+In an interactive chat, `/jobs` shows the same list (with status counts) and
+`/jobs <id>` one job in full, including its last error — see
+[commands.md](commands.md#jobs-in-chat-jobs). Running jobs stays CLI-only.
+
 ---
 
 ## Cron jobs

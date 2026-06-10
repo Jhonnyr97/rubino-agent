@@ -135,6 +135,9 @@ module Rubino
       desc "jobs SUBCOMMAND", "Manage background jobs"
       subcommand "jobs", JobsCommand
 
+      desc "skills SUBCOMMAND", "Manage skills (list, show, enable, disable)"
+      subcommand "skills", SkillsCommand
+
       desc "tools", "List available tools"
       def tools
         ToolsCommand.new.execute

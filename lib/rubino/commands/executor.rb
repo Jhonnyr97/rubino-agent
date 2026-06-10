@@ -17,6 +17,14 @@ module Rubino
       # empty/aborted read (#144) before giving up and leaving the child parked.
       APPROVAL_ASK_ATTEMPTS = 3
 
+      # Render order for the /jobs counts header (#187) — lifecycle order, not
+      # the arbitrary GROUP BY order (any unknown status is appended).
+      JOB_STATUS_ORDER = %w[queued running completed failed dead].freeze
+
+      # The /skills toggle verbs (#188) — the same registry-validated
+      # StateRepository write the HTTP API and `rubino skills` CLI run.
+      SKILL_TOGGLE_VERBS = %w[enable disable].freeze
+
       def initialize(loader: nil, ui: nil, runner: nil)
         @loader = loader || Loader.new
         @ui = ui || Rubino.ui
@@ -124,6 +132,12 @@ module Rubino
           :handled
         when "memory"
           handle_memory(arguments)
+          :handled
+        when "jobs"
+          handle_jobs(arguments)
+          :handled
+        when "config"
+          handle_config(arguments)
           :handled
         when "agents", "tasks"
           handle_agents(arguments)
@@ -336,7 +350,7 @@ module Rubino
         @ui.info("  skills     #{status_skills_line}   (use /skills)")
         @ui.info("  background #{status_background_line}   (use /agents)")
         if (jobs = status_jobs_line)
-          @ui.info("  jobs       #{jobs}   (use `rubino jobs list`)")
+          @ui.info("  jobs       #{jobs}   (use /jobs)")
         end
         @ui.separator
       end
@@ -623,6 +637,131 @@ module Rubino
            "#{truncate(m[:content], 60)}#{CLI::MemoryCommand.retired_marker(m)}"]
         end
         @ui.table(headers: %w[ID Kind Content], rows: rows)
+      end
+
+      # --- /jobs ---------------------------------------------------------------
+      #
+      # In-chat window into the PERSISTENT jobs queue (#187) — the queue the
+      # agent itself feeds mid-session (DistillSkillJob after tool-heavy turns,
+      # memory extraction), distinct from the in-process /agents subagents.
+      # Read-mostly: `process`/`worker` stay CLI-only (they are daemons, not
+      # session actions).
+      #
+      #   /jobs        → status counts + the recent-jobs table (the SAME
+      #                  rendering as `rubino jobs list` — JobsCommand.render_list)
+      #   /jobs <id>   → one job in full (attempts, payload, last error);
+      #                  short-id prefixes resolve, like /memory show
+
+      def handle_jobs(arguments)
+        id = arguments.to_s.strip.split(/\s+/).first
+        id.nil? ? show_jobs_list : show_job_detail(id)
+      end
+
+      def show_jobs_list
+        queue  = Jobs::Queue.new
+        counts = queue.counts
+        if counts.empty?
+          @ui.info("No jobs yet — the agent enqueues background work " \
+                   "(skill distillation, memory extraction) as you chat.")
+          return
+        end
+
+        ordered = (JOB_STATUS_ORDER & counts.keys) + (counts.keys - JOB_STATUS_ORDER)
+        @ui.info(ordered.map { |status| "#{counts[status]} #{status}" }.join("  ·  "))
+        CLI::JobsCommand.render_list(queue.list, ui: @ui)
+        @ui.info("/jobs <id> for detail   ·   `rubino jobs process` runs pending ones now")
+      end
+
+      def show_job_detail(id)
+        job = Jobs::Queue.new.find(id)
+        if job.nil?
+          @ui.error("no job with id #{id}.")
+          @ui.info("List them with /jobs")
+          return
+        end
+
+        @ui.info("#{job[:id][0..7]}  #{job[:type]}  ·  #{job[:status]}")
+        @ui.info("  attempts  #{job[:attempts]}/#{job[:max_attempts]}")
+        @ui.info("  run_at    #{job[:run_at]}")
+        @ui.info("  created   #{job[:created_at]}")
+        @ui.info("  payload   #{truncate(job[:payload_json], 200)}")
+        error = job[:last_error].to_s
+        @ui.error(error) unless error.empty?
+      end
+
+      # --- /config -------------------------------------------------------------
+      #
+      # In-chat read/set over the SAME effective config (file merged over
+      # defaults) the `rubino config` CLI verbs use (#187) — checking
+      # `memory.backend` no longer means quitting the REPL. Rendering is
+      # shared with the CLI (CLI::ConfigCommand.render_get / .render_show),
+      # so secret-named keys are masked identically on both surfaces.
+      #
+      #   /config                  → config file path + usage hint
+      #   /config show             → the full merged config, secrets masked
+      #   /config path             → the config file path
+      #   /config <key>            → get (dot-notation; `get <key>` also works)
+      #   /config <key> <value>    → set: the same Config::Writer write-through
+      #                              /reasoning uses (`set <key> <value>` too)
+
+      def handle_config(arguments)
+        tokens = arguments.to_s.strip.split(/\s+/)
+        case tokens.first
+        when nil    then show_config_summary
+        when "show" then CLI::ConfigCommand.render_show(ui: @ui)
+        when "path" then @ui.info(Config::Loader.new.config_path)
+        when "get"  then config_get(tokens[1])
+        when "set"  then config_set(tokens[1], tokens[2..])
+        else
+          tokens.length == 1 ? config_get(tokens.first) : config_set(tokens.first, tokens[1..])
+        end
+      end
+
+      def show_config_summary
+        @ui.info("config  #{Config::Loader.new.config_path}")
+        @ui.info("/config show   ·   /config <key>   ·   /config <key> <value>")
+      end
+
+      def config_get(key)
+        if key.to_s.empty?
+          @ui.info("Usage: /config get <key>  (dot-notation, e.g. memory.backend)")
+          return
+        end
+
+        CLI::ConfigCommand.render_get(key, ui: @ui)
+      end
+
+      # Write-through + live update, the same pair /reasoning and /think run
+      # (#131): the file write makes the change survive the session; the
+      # in-memory set applies it to config reads from the next turn. The echo
+      # is masked like `config show` so a freshly-set api_key never lands in
+      # the scrollback. Consumers that memoize their config (e.g. the memory
+      # backend) still need a restart — same caveat as the CLI verb.
+      def config_set(key, value_tokens)
+        value = Array(value_tokens).join(" ")
+        if key.to_s.empty? || value.empty?
+          @ui.info("Usage: /config set <key> <value>")
+          return
+        end
+
+        writer = Config::Writer.new(config_path: Config::Loader.new.config_path)
+        writer.set(key, value)
+        coerced = writer.get(key)
+        apply_config_live(key, coerced)
+        @ui.success("#{key} = #{CLI::ConfigCommand.redact(coerced, key: key.split(".").last)}   " \
+                    "(persisted; applies from the next turn — memoizing consumers need a restart)")
+      rescue ConfigurationError => e
+        @ui.error(e.message)
+      end
+
+      # Mirrors the Writer's (already validated + coerced) value onto the live
+      # configuration. Best-effort: the merged in-memory tree can disagree
+      # with the file's shape (a default-valued scalar where the file grew a
+      # section), in which case the persisted value still applies on restart.
+      def apply_config_live(key, value)
+        Rubino.configuration.set(*key.split("."), value)
+      rescue StandardError
+        @ui.warning("#{key} persisted to config.yml but could not be applied live — restart to pick it up")
       end
 
       # --- /agents (alias /tasks) -------------------------------------------
@@ -1462,17 +1601,30 @@ module Rubino
         @ui.info("Add more with /add-dir <path>")
       end
 
-      # `/skills`            → list (unchanged behavior).
-      # `/skills <name>`     → ACTIVATE that skill for the session (sticky). The
-      #                        name is validated against the registry; an unknown
-      #                        name errors and leaves the active skill unchanged.
-      # `/skills none`       → CLEAR the active skill (also the `✗ none` picker
-      #                        entry, whose spliced label is normalized here).
+      # `/skills`                 → list (unchanged behavior).
+      # `/skills <name>`          → ACTIVATE that skill for the session (sticky).
+      #                             The name is validated against the registry; an
+      #                             unknown OR DISABLED name errors and leaves the
+      #                             active skill unchanged.
+      # `/skills none`            → CLEAR the active skill (also the `✗ none`
+      #                             picker entry, whose spliced label is
+      #                             normalized here).
+      # `/skills enable <name>`   → persistently re-enable a skill (#188) — the
+      # `/skills disable <name>`    same StateRepository write the HTTP API
+      #                             toggle and the `rubino skills` CLI verbs run
+      #                             (Skills::Toggle), affecting EVERY session,
+      #                             unlike the session-scoped activation.
       #
       # The active skill is stored in Rubino::ActiveSkill (a process-level slot,
       # mirroring Rubino::Modes) so it survives across turns and is force-loaded
       # into the system prompt each turn (Context::PromptAssembler).
       def handle_skills(arguments)
+        tokens = arguments.to_s.strip.split(/\s+/)
+        if SKILL_TOGGLE_VERBS.include?(tokens.first.to_s.downcase)
+          toggle_skill(tokens[1], enabled: tokens.first.casecmp?("enable"))
+          return
+        end
+
         arg = normalize_skill_arg(arguments)
 
         return show_skills if arg.nil?
@@ -1505,8 +1657,53 @@ module Rubino
           return
         end
 
+        # A disabled skill is EXCLUDED from activation (#188): the assembler
+        # refuses to inject it (active_skill_block checks enabled?), so pinning
+        # it would show an active chip with no effect.
+        unless registry.enabled?(skill.name)
+          @ui.error("skill #{skill.name} is disabled — /skills enable #{skill.name} to use it")
+          return
+        end
+
         Rubino::ActiveSkill.set(skill.name)
         @ui.success("Active skill: #{skill.name} (loaded into context for this session).")
+      end
+
+      # `/skills enable|disable <name>` (#188) — the missing human surface for
+      # the StateRepository toggle (previously HTTP-API-only). Persisted, so it
+      # affects the Level-1 index of every session until toggled back.
+      def toggle_skill(name, enabled:)
+        verb = enabled ? "enable" : "disable"
+        if name.to_s.strip.empty?
+          @ui.info("Usage: /skills #{verb} <name>")
+          return
+        end
+
+        registry = Skills::Registry.trusted
+        unless Skills::Toggle.set(name, enabled: enabled, registry: registry)
+          @ui.error("unknown skill: #{name}")
+          available = registry.names
+          @ui.info("Available: #{available.join(", ")}") unless available.empty?
+          return
+        end
+
+        if enabled
+          @ui.success("Enabled skill: #{name} (back in the skills index for every session).")
+        else
+          clear_disabled_active_skill(name)
+          @ui.success("Disabled skill: #{name} (out of the index for every session; " \
+                      "/skills enable #{name} to restore).")
+        end
+      end
+
+      # Disabling the skill that is currently PINNED active would leave a lying
+      # chip — the assembler silently drops a disabled active skill — so the
+      # pin is cleared with a note instead.
+      def clear_disabled_active_skill(name)
+        return unless Rubino::ActiveSkill.current == name
+
+        Rubino::ActiveSkill.clear
+        @ui.info("(it was the active skill — pin cleared)")
       end
 
       # The single argument to `/skills`, trimmed; nil when no argument was
