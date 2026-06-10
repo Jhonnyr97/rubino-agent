@@ -6,7 +6,7 @@ module Rubino
     # Agents can be primary (user-facing) or subagents (invokable by other agents).
     class Definition
       attr_reader :name, :type, :model, :system_prompt, :description,
-                  :permissions, :tools, :hidden, :mcp_servers
+                  :permissions, :tools, :hidden
 
       # Types: :primary (user-switchable), :subagent (invokable), :utility (hidden)
       TYPES = %i[primary subagent utility].freeze
@@ -18,7 +18,7 @@ module Rubino
         @system_prompt = attrs[:system_prompt]
         @description = attrs[:description] || ""
         @permissions = attrs[:permissions] || {}
-        @mcp_servers = attrs[:mcp_servers] || :all # :all or array of server names
+        @mcp_servers = attrs[:mcp_servers] # :all or array of server names
         @tools = attrs[:tools] || :all # :all, :read_only, or array of tool names
         @hidden = attrs[:hidden] || false
         @max_turns = attrs[:max_turns]
@@ -38,6 +38,22 @@ module Rubino
 
       def hidden?
         @hidden
+      end
+
+      # Which MCP servers this agent may use: :all, or an array of server
+      # names. An explicit value passed in code wins; otherwise the
+      # `agents.<name>.mcp_servers` block in config.yml applies (#92), and
+      # absent both the agent sees every server. YAML has no symbols, so the
+      # literal string "all" from config normalizes to :all — the value
+      # MCP::Manager#tools_for_agent compares against.
+      def mcp_servers
+        return @mcp_servers if @mcp_servers
+
+        configured = Rubino.configuration.dig("agents", name.to_s, "mcp_servers")
+        case configured
+        when Array then configured.map(&:to_s)
+        else :all
+        end
       end
 
       # Returns the max turns for this agent (falls back to global config)
