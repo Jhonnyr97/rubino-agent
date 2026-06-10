@@ -337,7 +337,7 @@ module Rubino
           return
         end
 
-        $stdout.print "\r\e[2K"
+        clear_line
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
       end
@@ -436,7 +436,7 @@ module Rubino
       def queued(text)
         return if text.nil? || text.to_s.empty?
 
-        $stdout.print "\r\e[2K"
+        clear_line
         $stdout.puts @pastel.dim("queued ▸ #{text}")
         $stdout.flush
       end
@@ -449,7 +449,7 @@ module Rubino
       def input_injected(text)
         return if text.nil? || text.to_s.empty?
 
-        $stdout.print "\r\e[2K"
+        clear_line
         $stdout.puts @pastel.dim("↳ ricevuto mentre lavoravo: #{text}")
         $stdout.flush
       end
@@ -633,6 +633,16 @@ module Rubino
         $stdout.respond_to?(:tty?) && $stdout.tty?
       rescue StandardError
         false
+      end
+
+      # In-place clear of the current row (CR + erase-line) before a committed
+      # line lands. Purely a cursor-positioning nicety, so it is gated on a real
+      # TTY: into a pipe there is no cursor and the raw `\e[2K` would leak as
+      # literal bytes into the cooked output (#56).
+      def clear_line
+        return unless tty_stdout?
+
+        $stdout.print("\r\e[2K")
       end
 
       # The active reasoning render mode (:hidden | :collapsed | :full), resolved
@@ -1026,7 +1036,7 @@ module Rubino
       def clear_plain_tail
         return if $stdout.respond_to?(:live)
 
-        $stdout.print("\r\e[2K")
+        clear_line
       end
 
       # Flush on stream end: render+commit the final block. If a fence is still
@@ -1060,11 +1070,15 @@ module Rubino
       def show_live_tail(tail)
         if $stdout.respond_to?(:live)
           $stdout.live(tail)
-        else
+        elsif tty_stdout?
           $stdout.print("\r\e[2K")
           $stdout.print(tail.tr("\n", " ")) unless tail.empty?
           $stdout.flush
         end
+        # Into a pipe (no #live, no TTY) the tail is skipped entirely: an
+        # in-place repaint needs a cursor, and its CR/clear escapes would leak
+        # into the cooked output (#56). Nothing is lost — every block is still
+        # rendered + committed in full when it completes.
       end
 
       # Commits any in-progress streaming so the next committed output (the
@@ -1113,7 +1127,7 @@ module Rubino
         if $stdout.respond_to?(:live)
           $stdout.live("")
         else
-          $stdout.print "\r\e[2K"
+          clear_line
         end
         $stdout.flush
         @thinking_indicator = false

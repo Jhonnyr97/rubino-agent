@@ -192,6 +192,9 @@ RSpec.describe Rubino::UI::CLI do
     it "clears thinking indicator when first content chunk arrives" do
       out = capture_stdout do
         ui.thinking_started
+        # The erase-line escape is TTY-only (#56): flip tty? on AFTER the
+        # static indicator printed so the clear path runs as on a terminal.
+        allow($stdout).to receive(:tty?).and_return(true)
         ui.stream(type: :content, text: "hello")
       end
       expect(out).to match(/thinking….*\r\e\[2K.*hello/m)
@@ -256,6 +259,7 @@ RSpec.describe Rubino::UI::CLI do
     it "clears the static thinking row before the error line on the plain path (#74)" do
       out = capture_stdout do
         ui.thinking_started
+        allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.error("provider failure")
       end
       expect(out).to match(/thinking….*\r\e\[2K.*provider failure/m)
@@ -473,6 +477,7 @@ RSpec.describe Rubino::UI::CLI do
     it "is erased before the first content chunk lands" do
       out = capture_stdout do
         ui.thinking_started
+        allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.stream(type: :content, text: "hello")
       end
       expect(out).to match(/thinking….*\r\e\[2K.*hello/m)
@@ -694,6 +699,7 @@ RSpec.describe Rubino::UI::CLI do
     it "clears the indicator before a non-streamed assistant answer" do
       out = capture_stdout do
         ui.thinking_started
+        allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.assistant_text("the answer")
       end
       # The erase-line sequence is emitted before the committed answer.
@@ -703,6 +709,7 @@ RSpec.describe Rubino::UI::CLI do
     it "clears the indicator before a tool activity row" do
       out = capture_stdout do
         ui.thinking_started
+        allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.tool_started("shell", arguments: { command: "ls" })
       end
       expect(out).to match(/thinking….*\r\e\[2K.*● running/m)
@@ -819,6 +826,7 @@ RSpec.describe Rubino::UI::CLI do
       stub_choice(:once)
       out = capture_stdout do
         ui.thinking_started
+        allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.confirm("Allow shell with args?")
       end
       # The clear-line escape must land BEFORE the ◆ card header, so the header
