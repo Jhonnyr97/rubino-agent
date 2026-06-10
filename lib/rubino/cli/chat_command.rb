@@ -1422,6 +1422,12 @@ module Rubino
         # via RUBYLLM_DEBUG=1 — request body was missing `tools` entirely.
         Rubino::Tools::Registry.register_defaults! if Rubino::Tools::Registry.all.empty?
 
+        # MCP is experimental and opt-in: a configured `mcp.servers` block
+        # connects the servers and registers their prefixed tools alongside
+        # the built-ins (#91). Best-effort — boot! warns and returns nil on
+        # failure, it never blocks chat.
+        Rubino::MCP.boot!
+
         # Instantiate the shared agent registry at boot so the `task` tool can
         # resolve subagents (explore/general) in chat — same delegation flow as
         # the API path. Memoized on Rubino.agent_registry.
