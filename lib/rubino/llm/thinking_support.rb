@@ -37,6 +37,25 @@ module Rubino
         !model_id.to_s.match?(ProviderResolver::PROVIDER_PATTERNS["minimax"])
       end
 
+      # providers.<name>.supports_thinking: true is the user's explicit promise
+      # that the backend accepts an Anthropic-style thinking block. ruby_llm
+      # 1.16 only renders with_thinking when the model's REGISTRY entry
+      # declares a budget_tokens reasoning option; an assume-model-exists model
+      # (MiniMax-M3 on the anthropic-compatible path) declares none, so
+      # with_thinking raised client-side before any request, the #75 rejection
+      # detector matched the message, and the documented opt-in silently died
+      # every turn (#175). On that path the adapter puts the wire payload on
+      # with_params instead, which ruby_llm deep-merges into the request body
+      # unconditionally.
+      def budget_via_params?(provider_cfg, chat)
+        return false unless provider_cfg["supports_thinking"] == true
+
+        model = chat.respond_to?(:model) ? chat.model : nil
+        !(model.respond_to?(:reasoning_option) && model.reasoning_option("budget_tokens"))
+      rescue StandardError
+        true
+      end
+
       # Records the rejection and tells the user once with a dim note (only
       # the marking path emits it). Cosmetic: a UI failure must never break
       # the retried turn.

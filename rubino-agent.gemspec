@@ -47,7 +47,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "puma", "~> 6.4"
   spec.add_dependency "rack", "~> 3.1"
   spec.add_dependency "ruby_llm", "~> 1.0"
-  spec.add_dependency "ruby_llm-mcp", "~> 0.8"
+  spec.add_dependency "ruby_llm-mcp", "~> 1.0"
   spec.add_dependency "rufus-scheduler", "~> 3.9"
   spec.add_dependency "sequel", "~> 5.0"
   spec.add_dependency "sqlite3", "~> 2.0"
