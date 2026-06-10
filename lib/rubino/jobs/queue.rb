@@ -119,6 +119,13 @@ module Rubino
         @db[:jobs].where(status: "queued").count
       end
 
+      # Returns count of failed jobs — both the inline-mode terminal "failed"
+      # and the attempts-exhausted "dead" (the two states a human must act on;
+      # surfaced by the in-chat /status jobs line, #186).
+      def failed_count
+        @db[:jobs].where(status: %w[failed dead]).count
+      end
+
       # Cleans up old completed jobs
       def cleanup!(older_than_days: 7)
         cutoff = (Time.now - (older_than_days * 86_400)).utc.iso8601

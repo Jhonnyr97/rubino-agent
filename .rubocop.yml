@@ -36,6 +36,13 @@ Style/StringLiteralsInInterpolation:
 Style/FrozenStringLiteralComment:
   Enabled: true
 
+# --- Naming ------------------------------------------------------------------
+
+# `ui` is a first-class domain word here (every command/renderer takes a UI),
+# as legitimate as the default-allowed `db`/`id`. Defaults + ui.
+Naming/MethodParameterName:
+  AllowedNames: [as, at, by, cc, db, id, if, in, io, ip, of, on, os, pp, to, ui]
+
 # --- Layout ------------------------------------------------------------------
 
 Layout/LineLength:
