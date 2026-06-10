@@ -524,13 +524,20 @@ module Rubino
         $stdout.puts
       end
 
+      # The left margin every committed markdown line is printed behind. The
+      # live tail (#show_live_tail) reuses it so the raw in-flight lines sit in
+      # the SAME column as the rendered block they become — a flush-left tail
+      # under indented committed output read as a jarring seam.
+      MD_MARGIN = "  "
+
       # Renders a markdown string to committed, styled lines above the composer
-      # (each line as `$stdout.puts "  #{line}"`). Shared by #assistant_text and
-      # the per-block streaming path so both apply the identical rendering.
+      # (each line as `$stdout.puts "#{MD_MARGIN}#{line}"`). Shared by
+      # #assistant_text and the per-block streaming path so both apply the
+      # identical rendering.
       def commit_markdown_block(text)
         return if text.nil? || text.to_s.empty?
 
-        render_markdown_block(text).each { |line| $stdout.puts "  #{line}" }
+        render_markdown_block(text).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
       end
 
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
@@ -551,7 +558,7 @@ module Rubino
       # How many trailing lines of the in-flight block stay visible live (#127).
       LIVE_TAIL_ROWS = 3
 
-      # Column budget for markdown rendering: terminal width minus the 2-space
+      # Column budget for markdown rendering: terminal width minus the MD_MARGIN
       # indent applied to every committed line. Headless-safe (falls back to 80).
       #
       # `winsize` can under-report during the bottom-composer raw-mode TUI while a
@@ -565,7 +572,7 @@ module Rubino
           nil
         end
         cols = 80 unless cols&.positive?
-        [cols - 2, MIN_MARKDOWN_WIDTH].max
+        [cols - MD_MARGIN.length, MIN_MARKDOWN_WIDTH].max
       end
 
       # --- Streaming (unchanged except visual, now uses assistant_text) ---
@@ -1232,7 +1239,7 @@ module Rubino
         clear_plain_tail if remaining
         if remaining
           if open_fence?(remaining)
-            remaining.split("\n", -1).each { |line| $stdout.puts "  #{line}" }
+            remaining.split("\n", -1).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
           else
             commit_markdown_block(remaining)
           end
@@ -1250,8 +1257,29 @@ module Rubino
       # skipped into a pipe). A blank tail just clears the transient row.
       # Nothing is lost on the skipped path — every block is still rendered +
       # committed in full when it completes.
+      #
+      # Each tail row carries the SAME MD_MARGIN the committed lines above it
+      # get (#commit_markdown_block), so the raw in-flight lines sit in the
+      # same column as the rendered block they snap into — a flush-left tail
+      # under indented output read as a jarring seam. Off-TTY this is moot:
+      # #paint_live skips pipes entirely (#56).
       def show_live_tail(tail)
-        paint_live(tail)
+        paint_live(margined_tail(tail))
+      end
+
+      # Prefixes every tail row with MD_MARGIN, pre-clamping each row to the
+      # terminal budget MINUS the margin (and the live region's one spare
+      # column) so the downstream one-row clamp (LiveRegion.clamp to cols - 1)
+      # never has to left-truncate the margin away — an over-long row keeps
+      # its margin and loses its HEAD ("  …tail"), same truncation rule as
+      # every other live row. A blank tail passes through untouched (it just
+      # clears the transient row).
+      def margined_tail(tail)
+        text = tail.to_s
+        return text if text.empty?
+
+        budget = terminal_cols - MD_MARGIN.length - 1
+        text.split("\n", -1).map { |line| "#{MD_MARGIN}#{LiveRegion.clamp(line, budget)}" }.join("\n")
       end
 
       # Commits any in-progress streaming so the next committed output (the

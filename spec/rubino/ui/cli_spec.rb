@@ -436,7 +436,35 @@ RSpec.describe Rubino::UI::CLI do
       ensure
         $stdout = old
       end
-      expect(live_io.live_calls).to include("incomplete ta")
+      expect(live_io.live_calls).to include("#{described_class::MD_MARGIN}incomplete ta")
+    end
+
+    it "prefixes every live-tail row with the committed-markdown left margin" do
+      # The raw in-flight tail must sit in the SAME column as the rendered
+      # block it snaps into: committed lines are printed behind MD_MARGIN
+      # (#commit_markdown_block), so a flush-left tail under them read as a
+      # jarring seam. Every row of a multi-line tail carries the margin.
+      live_io = Class.new(StringIO) do
+        attr_reader :live_calls
+
+        def live(str)
+          (@live_calls ||= []) << str
+          self
+        end
+      end.new
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "- one\n- two\n- thr")
+      ensure
+        $stdout = old
+      end
+
+      margin = described_class::MD_MARGIN
+      rows = live_io.live_calls.last.split("\n")
+      expect(rows).to all(start_with(margin))
+      expect(rows.last).to eq("#{margin}- thr")
     end
 
     it "shows a bounded rolling tail of the in-flight block on the live seam (#127)" do
@@ -463,7 +491,9 @@ RSpec.describe Rubino::UI::CLI do
         $stdout = old
       end
 
-      expect(live_io.live_calls.last).to eq("| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM")
+      margin = described_class::MD_MARGIN
+      expect(live_io.live_calls.last)
+        .to eq("#{margin}| Gem | Use |\n#{margin}| --- | --- |\n#{margin}| ruby_llm | LLM")
       rows = described_class::LIVE_TAIL_ROWS
       expect(live_io.live_calls).to all(satisfy { |s| s.split("\n").length <= rows })
     end
