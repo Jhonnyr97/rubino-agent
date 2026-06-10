@@ -531,6 +531,15 @@ module Rubino
           pending_queued: pending_queued
         )
         composer.start
+        # Route $stdout through the composer for the whole idle read — the SAME
+        # StdoutProxy swap a turn gets — so anything printed while the idle
+        # prompt is pinned (a background subagent's completion note, a late
+        # status line) commits ABOVE the input under the composer's render
+        # mutex instead of raw-painting over the prompt row (#169). The logger
+        # is forced to bind to the real IO first, exactly as in #start_composer.
+        real_stdout = $stdout
+        Rubino.logger
+        $stdout = UI::StdoutProxy.new(composer)
         seed_draft(composer, draft)
         paint_idle_cards
         ticker = background_children_live? ? start_idle_card_ticker(composer) : nil
@@ -577,6 +586,13 @@ module Rubino
         restore_idle_int(prev_int)
         ticker&.kill
         ticker&.join
+        # Mirror #stop_composer: restore the real $stdout, then flush any held
+        # partial line through the still-live composer before tearing it down.
+        if real_stdout
+          proxy = $stdout
+          $stdout = real_stdout
+          proxy.finish if proxy.respond_to?(:finish)
+        end
         if composer
           pending = composer.buffer.to_s
           @pending_draft = pending unless pending.strip.empty?
@@ -916,10 +932,17 @@ module Rubino
         # interrupt lambda resolves it — it is a parameter of #run_turn, not in
         # scope here, and there is no @runner ivar, so capturing it implicitly
         # raised NameError the instant an Enter-during-turn fired (BH-1).
+        # Same completion + history wiring as the idle composer: the prompt is
+        # pinned and editable for the WHOLE turn — including the post-turn
+        # window where inline jobs (memory auto-extract, skill distill) spend
+        # aux-LLM seconds after the `↳ turn` footer — so `/` and `@` dropdowns
+        # and ↑↓ history work whenever the prompt is visible (#169).
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           on_ctrl_o: ctrl_o_handler,
                                           on_mode_cycle: mode_cycle_handler,
                                           on_interrupt: interrupt_handler(runner),
+                                          completion_source: @completion_source,
+                                          history: @input_history,
                                           pending_queued: pending_queued)
         composer.start
         real_stdout = $stdout
