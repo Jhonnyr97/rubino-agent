@@ -23,6 +23,30 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  describe "display accessors (statusbar + input growth)" do
+    it "statusbar defaults to enabled" do
+      expect(config.display_statusbar?).to be true
+    end
+
+    it "only an explicit false disables the statusbar" do
+      cfg = test_configuration("display" => { "statusbar" => false })
+      expect(cfg.display_statusbar?).to be false
+    end
+
+    it "input_max_rows reads the configured cap" do
+      cfg = test_configuration("display" => { "input_max_rows" => 12 })
+      expect(cfg.display_input_max_rows).to eq(12)
+    end
+
+    it "input_max_rows falls back to the composer default for nil/zero/garbage" do
+      expect(config.display_input_max_rows).to eq(Rubino::UI::BottomComposer::MAX_INPUT_ROWS)
+      cfg = test_configuration("display" => { "input_max_rows" => 0 })
+      expect(cfg.display_input_max_rows).to eq(Rubino::UI::BottomComposer::MAX_INPUT_ROWS)
+      cfg = test_configuration("display" => { "input_max_rows" => "junk" })
+      expect(cfg.display_input_max_rows).to eq(Rubino::UI::BottomComposer::MAX_INPUT_ROWS)
+    end
+  end
+
   describe "compression accessors" do
     it "returns compression threshold" do
       expect(config.compression_threshold).to eq(0.50)
