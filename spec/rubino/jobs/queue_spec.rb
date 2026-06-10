@@ -36,6 +36,55 @@ RSpec.describe Rubino::Jobs::Queue do
     end
   end
 
+  describe "inline mode" do
+    let(:config) do
+      test_configuration(
+        "jobs" => {
+          "mode" => "inline",
+          "max_attempts" => 3,
+          "poll_interval" => 1,
+          "retry_backoff_seconds" => 0
+        }
+      )
+    end
+
+    before do
+      # The inline Runner builds its own Queue against the global database
+      # and configuration — pin both to this spec's.
+      allow(Rubino).to receive_messages(database: db_connection, configuration: config)
+    end
+
+    # Regression for #81: the handler used to self-register only when its
+    # constant happened to be loaded; with Zeitwerk lazy autoload nothing
+    # touched ExtractMemoryJob before the inline Runner ran at enqueue time,
+    # so every auto-extract turn failed with "No handler registered" and the
+    # job sat "queued" forever. The Registry now resolves handlers from the
+    # Jobs::Handlers namespace on demand, independent of load order.
+    it "completes an inline ExtractMemoryJob even when nothing pre-registered its handler (#81)" do
+      Rubino::Jobs::Registry.reset! # simulate a clean process: no constant touched yet
+      backend = instance_double(Rubino::Memory::Backends::Sqlite, extract: [])
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+
+      id = queue.enqueue("ExtractMemoryJob", { session_id: "sid-1" })
+
+      job = db_connection.db[:jobs].where(id: id).first
+      expect(job[:status]).to eq("completed")
+      expect(job[:last_error]).to be_nil
+      expect(backend).to have_received(:extract).with("sid-1")
+    end
+
+    # Regression for #84: an inline failure used to go back to "queued", but
+    # nothing ever re-runs it in inline mode — the row was orphaned forever.
+    # Inline failures are now terminal ("failed") so `jobs list` is honest.
+    it "marks an inline failure terminal instead of re-queueing it forever (#84)" do
+      id = queue.enqueue("NoSuchJob", {})
+
+      job = db_connection.db[:jobs].where(id: id).first
+      expect(job[:status]).to eq("failed")
+      expect(job[:last_error]).to include("No handler registered")
+    end
+  end
+
   describe "#dequeue" do
     it "returns and locks the next job" do
       queue.enqueue("TestJob", { data: 1 })

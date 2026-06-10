@@ -18,7 +18,7 @@ rubino memory backend          # show the active backend + available names
 rubino memory backend sqlite   # switch (writes memory.backend to config.yml)
 ```
 
-The agent loop, the in-chat `/memory` view, the `rubino memory` CLI, and the HTTP `/v1/memory` operations all use the **active** backend (fixed in #94 — the CLI previously read a hardwired legacy table and never saw the facts the agent actually persists).
+The agent loop, the in-chat `/memory` view, the `/status` panel, the `rubino memory` CLI, and the HTTP `/v1/memory` operations all use the **active** backend (fixed in #94/#106/#83 — these surfaces previously read a hardwired legacy table and never saw the facts the agent actually persists).
 
 ## The sqlite tiny-Zep backend
 
@@ -32,10 +32,12 @@ One declarative **fact** per row. Facts carry a `kind` (`user_profile`, `prefere
 
 ### How facts are extracted (write path)
 
-When `memory.auto_extract` is on, a single auxiliary-LLM call per turn looks at the recent turn and returns `{add, supersede}`:
+When `memory.auto_extract` is on, auto-extraction runs as a post-turn job (`ExtractMemoryJob` — executed immediately after the turn in the default inline jobs mode): a single auxiliary-LLM call looks at the recent turn and returns `{add, supersede}`:
 
 - **add** — new atomic facts (deduplicated via a Jaccard near-dup check against the live set, no second LLM call).
 - **supersede** — a contradicted fact is **soft-retired** (its `valid_to` is set and `superseded_by` points at the replacement), not deleted — temporal correctness without losing provenance (Graphiti-style edge invalidation collapsed to one call).
+
+When extraction stores facts, the chat prints a deterministic confirmation from the write path (`✓ saved to memory · 2 facts (e6bf776b, a91c03d2)`) — the agent's "I'll remember that" narration alone is not a save signal.
 
 Every write goes through the same injection-defense floor as the legacy store: a `ThreatScanner` (prompt-injection / exfiltration patterns) plus a character budget. A fact that trips a guard is skipped, not allowed to splice tainted/over-budget content into a future system prompt.
 
@@ -73,15 +75,24 @@ The agent persists facts autonomously via the `memory` tool (gated by `tools.mem
 - `action: remove` — hard-delete a fact.
 - `target: user` writes the user profile; `target: memory` writes general memory.
 
+The tool stores **one atomic fact per call** — separate facts go in separate calls so each can be superseded or forgotten independently. Every write is confirmed deterministically in chat by the tool-result line, e.g.:
+
+```
+✓ done · memory · Memory replaced (id=e6bf776b, kind=user_profile).
+```
+
 Content is scanned for injection/exfiltration patterns and subject to the character budget. Because this lets the agent write to its own future context, see [security.md](security.md#autonomous-memory) for the trust model.
 
 ## Inspecting and managing memory
 
 ```bash
-rubino memory list             # most recent facts (active backend)
+rubino memory list             # most recent LIVE facts (active backend)
+rubino memory list --all       # include superseded (soft-retired) facts
 rubino memory list --kind user_profile --limit 50
-rubino memory show <id>        # full fact (id prefix accepted)
+rubino memory show <id>        # full fact incl. the temporal chain (id prefix accepted)
 rubino memory delete <id>      # hard-delete
 ```
 
-In-chat, `/memory` inspects, searches, and forgets what the agent remembers. Both surfaces read the active backend.
+`list` and the in-chat `/memory` views show only **live** facts (`valid_to IS NULL`) — superseded facts are retained for provenance but hidden, so a contradicted fact is never presented as current and the header count always matches the rows. Pass `--all` to `rubino memory list` to see the supersession history; `rubino memory show <id>` prints a retired fact's `Retired:` / `Superseded by:` chain.
+
+In-chat, `/memory` inspects, searches (`/memory <query>` or `/memory search <query>`), and forgets what the agent remembers. Both surfaces read the active backend.

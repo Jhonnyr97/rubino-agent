@@ -271,10 +271,10 @@ module Rubino
         # enqueue so this aux-spending background job only runs when explicitly
         # enabled (skills.auto_distill, default true). The job then applies its
         # own deterministic gate (run succeeded AND >= N tool calls AND not
-        # already covered) before spending one aux-model call. Touching the
-        # constant registers the handler (Zeitwerk side-effect) so the inline
-        # runner can resolve it.
-        if @config.skills_auto_distill? # ensure registration
+        # already covered) before spending one aux-model call. Handler lookup
+        # is load-order independent: Jobs::Registry resolves the class from
+        # the Handlers namespace on demand (#81).
+        if @config.skills_auto_distill?
           queue.enqueue("DistillSkillJob", { session_id: @session[:id] })
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
         end

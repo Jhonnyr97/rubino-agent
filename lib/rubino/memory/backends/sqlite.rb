@@ -179,8 +179,13 @@ module Rubino
 
         # -- admin --
 
-        def list(kind: nil, limit: 20)
-          ds = @db[TABLE].order(Sequel.desc(:created_at)).limit(limit)
+        # LIVE facts only by default — a superseded fact is a tombstone, not a
+        # current memory, so listing it undecorated next to its replacement
+        # presents contradicted data as true and makes the rows disagree with
+        # #count/#retrieve (#82). `include_retired: true` opts into the full
+        # supersession history (`rubino memory list --all`).
+        def list(kind: nil, limit: 20, include_retired: false)
+          ds = (include_retired ? @db[TABLE] : live_dataset).order(Sequel.desc(:created_at)).limit(limit)
           ds = ds.where(kind: normalize_kind(kind)) if kind
           ds.all.map { |r| present(r) }
         end
@@ -612,6 +617,7 @@ module Rubino
             entities: parse_entities(row[:entities_json]),
             valid_from: row[:valid_from],
             valid_to: row[:valid_to],
+            superseded_by: row[:superseded_by],
             created_at: row[:created_at]
           }
         end

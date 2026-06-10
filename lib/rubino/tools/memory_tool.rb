@@ -34,6 +34,8 @@ module Rubino
           "replace to update an existing fact (substring match on old_text), " \
           "or remove to delete one. target=user writes to the user profile; " \
           "target=memory writes to general memory. " \
+          "Store ONE atomic fact per call — make separate calls for separate " \
+          "facts so each can be superseded or forgotten independently. " \
           "Content is scanned for prompt-injection / exfiltration patterns and " \
           "subject to a character budget — refusals are reported in the output."
       end

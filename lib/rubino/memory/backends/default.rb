@@ -72,7 +72,9 @@ module Rubino
 
         # -- admin --
 
-        def list(kind: nil, limit: 20)
+        # The legacy store hard-deletes on replace — there are no retired
+        # rows, so `include_retired` is accepted for contract parity only.
+        def list(kind: nil, limit: 20, include_retired: false)
           @store.list(kind: kind, limit: limit)
         end
 

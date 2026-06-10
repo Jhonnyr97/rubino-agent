@@ -80,7 +80,9 @@ module Rubino
 
       # -- admin (powers `rubino memory list/show/delete`) --
 
-      def list(kind: nil, limit: 20)
+      # Live entries only by default; `include_retired: true` opts into the
+      # supersession history on backends that soft-retire (sqlite).
+      def list(kind: nil, limit: 20, include_retired: false)
         raise NotImplementedError, "#{self.class} must implement #list"
       end
 
