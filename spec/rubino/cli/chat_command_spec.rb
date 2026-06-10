@@ -339,16 +339,28 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(Rubino::Tools::Registry.find("write")).not_to be_nil
     end
 
-    it "does not re-register if the registry is already populated" do
+    it "re-registers defaults when a core tool is missing from a partial registry" do
       Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register(Rubino::Tools::ShellTool.new)
-      before_count = Rubino::Tools::Registry.all.size
 
       described_class.new({}).send(:ensure_setup!)
 
-      # Idempotent: a pre-populated registry (e.g. injected by tests or
-      # by a plugin during boot) is left alone.
-      expect(Rubino::Tools::Registry.all.size).to eq(before_count)
+      # A partially-populated registry (e.g. leaked by a test or a plugin
+      # registering early) must still get the core defaults back — gating on
+      # emptiness alone caused "Unknown tool: write" boots (#163 class).
+      expect(Rubino::Tools::Registry.find("write")).not_to be_nil
+      expect(Rubino::Tools::Registry.find("read")).not_to be_nil
+    end
+
+    it "leaves a fully-populated registry alone (no churn when core tools present)" do
+      Rubino::Tools::Registry.reset!
+      Rubino::Tools::Registry.register_defaults!
+      shell_instance = Rubino::Tools::Registry.find("shell")
+
+      described_class.new({}).send(:ensure_setup!)
+
+      # Core tools present → no re-registration, existing instances kept.
+      expect(Rubino::Tools::Registry.find("shell")).to equal(shell_instance)
     end
   end
 
