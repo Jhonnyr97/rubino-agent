@@ -35,16 +35,77 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "feeds built-in slash commands into the completion source" do
-      cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
       source = described_class.new({}).send(:build_completion_source, cmd_loader)
       expect(source.candidates_for("/")).to include("/help", "/exit")
     end
 
     it "uses a lazy files proc resolving to the workspace primary root" do
-      cmd_loader = instance_double(Rubino::Commands::Loader, names: [])
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
       source = described_class.new({}).send(:build_completion_source, cmd_loader)
       files_proc = source.instance_variable_get(:@files_root_proc)
       expect(files_proc.call).to eq(Rubino::Workspace.primary_root)
+    end
+
+    # #39: the dropdown carries the same one-liners /help shows, plus the
+    # /agents subcommand usage hints, and completes the steer/probe/--stop
+    # grammar (ids first) for /agents, /tasks and the /reply blocked ids.
+    it "registers the BuiltIns descriptions plus the /agents grammar hints" do
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+      expect(source.description_for("/sessions"))
+        .to eq(Rubino::Commands::BuiltIns::DESCRIPTIONS["/sessions"])
+      expect(source.description_for("steer")).to include("note")
+      expect(source.description_for("--stop")).to include("cancel")
+    end
+
+    it "completes the /agents grammar: live ids, then steer/probe/--stop" do
+      Rubino::Tools::BackgroundTasks.reset!
+      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "look around")
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("agents", "")).to include(entry.id)
+      expect(source.arg_candidates_for("agents", "", [entry.id]))
+        .to eq(["steer", "probe", "--stop"])
+      expect(source.arg_candidates_for("tasks", "", [entry.id]))
+        .to eq(["steer", "probe", "--stop"])
+      expect(source.arg_candidates_for("agents", "", [entry.id, "steer"])).to eq([])
+    end
+  end
+
+  # #111: the composer's quiet flag routes through the interrupt handler — a
+  # quiet slash-command interrupt suppresses the UI's next `⎿ interrupted`
+  # marker, then cancels; a loud one just cancels.
+  describe "#interrupt_handler (#111)" do
+    let(:turn_runner) { instance_double(Rubino::Agent::Runner, cancel!: nil) }
+
+    it "suppresses the marker then cancels on a quiet interrupt" do
+      ui = instance_double(Rubino::UI::CLI, suppress_interrupt_marker: nil)
+      allow(Rubino).to receive(:ui).and_return(ui)
+
+      described_class.new({}).send(:interrupt_handler, turn_runner).call(true)
+
+      expect(ui).to have_received(:suppress_interrupt_marker)
+      expect(turn_runner).to have_received(:cancel!)
+    end
+
+    it "just cancels on a loud interrupt" do
+      ui = instance_double(Rubino::UI::CLI, suppress_interrupt_marker: nil)
+      allow(Rubino).to receive(:ui).and_return(ui)
+
+      described_class.new({}).send(:interrupt_handler, turn_runner).call(false)
+
+      expect(ui).not_to have_received(:suppress_interrupt_marker)
+      expect(turn_runner).to have_received(:cancel!)
+    end
+
+    it "degrades to cancel-only on a UI without the suppression seam" do
+      allow(Rubino).to receive(:ui).and_return(Rubino::UI::Null.new)
+
+      described_class.new({}).send(:interrupt_handler, turn_runner).call(true)
+
+      expect(turn_runner).to have_received(:cancel!)
     end
   end
 

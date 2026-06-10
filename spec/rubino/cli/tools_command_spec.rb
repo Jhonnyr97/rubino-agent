@@ -24,6 +24,32 @@ RSpec.describe Rubino::CLI::ToolsCommand do
       expect(tool_keys).to include("shell", "edit", "grep", "web")
     end
 
+    # #20: a `disabled` row with no pointer is a dead end — a one-line footer
+    # names the exact config command that re-enables the group.
+    it "prints an enable-hint footer when a tool group is disabled" do
+      Rubino::Tools::Registry.reset!
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig).with("tools", "web").and_return(false)
+
+      described_class.new.execute
+
+      infos = ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
+      expect(infos.join("\n")).to include("rubino config set tools.<name> true")
+      expect(infos.join("\n")).to include("tools.web")
+    end
+
+    it "prints no enable-hint when every tool group is enabled" do
+      Rubino::Tools::Registry.reset!
+      # web is disabled by default config; flip it on so every group reads enabled.
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig).with("tools", "web").and_return(true)
+
+      described_class.new.execute
+
+      infos = ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
+      expect(infos.join("\n")).not_to include("rubino config set")
+    end
+
     it "does not wipe an already-populated registry" do
       Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register(Rubino::Tools::ShellTool.new)

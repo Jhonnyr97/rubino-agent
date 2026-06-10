@@ -141,18 +141,31 @@ module Rubino
       # existing picker rather than introducing a second menu system (#145).
       # +choices+ is an array of [label, value] pairs. Returns the chosen value,
       # or nil when there's no real terminal (so the caller keeps the
-      # non-interactive shortcut). Esc/Ctrl-C cancels and returns nil.
+      # non-interactive shortcut). Esc/Ctrl-C cancels and returns nil — Esc via
+      # the #cancellable_prompt keyescape binding (#73), Ctrl-C via tty-prompt's
+      # own InputInterrupt; both land in the rescue below.
       def select(prompt, choices)
         return nil if choices.nil? || choices.empty?
         return nil unless interactive_terminal?
 
         BottomComposer.run_in_terminal do
-          @prompt.select(prompt, cycle: false, filter: true) do |menu|
+          cancellable_prompt.select(prompt, cycle: false, filter: true) do |menu|
             choices.each { |label, value| menu.choice label, value }
           end
         end
       rescue TTY::Reader::InputInterrupt
         nil
+      end
+
+      # A DEDICATED TTY::Prompt for cancellable pickers, with Esc bound to the
+      # same InputInterrupt Ctrl-C raises (#73): tty-reader parses full escape
+      # sequences, so arrows (ESC [ A…) never trip :keyescape — only a lone Esc
+      # does. Deliberately separate from the shared @prompt so the approval
+      # menu's keymap is untouched (an Esc there must not become a deny).
+      def cancellable_prompt
+        @cancellable_prompt ||= TTY::Prompt.new.tap do |picker|
+          picker.on(:keyescape) { raise TTY::Reader::InputInterrupt }
+        end
       end
 
       # Approval prompt with session memory. Mirrors UI::API#confirm: a prior
@@ -196,7 +209,13 @@ module Rubino
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
         $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
 
-        approved = apply_choice(approval_choice(rule), scope: scope, command: command, rule: rule)
+        choice   = approval_choice(rule)
+        approved = apply_choice(choice, scope: scope, command: command, rule: rule)
+        # First plain "Approve once" of the session: point at the session-scope
+        # menu options so a multi-edit refactor doesn't keep interrupting
+        # without the user knowing it can stop (#110). Presentation only — the
+        # approval model is untouched.
+        session_scope_tip(tool, choice) if approved
         # A deny is a safety action: confirm explicitly that nothing ran, in the
         # same red ✗ styling failed tools use, so "Done." can't be read as "ran"
         # (#83). Approve/allow paths are unchanged.
@@ -204,9 +223,23 @@ module Rubino
         approved
       end
 
+      # One dim line, once per session, after the FIRST "Approve once" (#110):
+      # the "this tool (this session)" option already exists in the menu, but
+      # nothing surfaced it, so users approved every single edit by hand.
+      def session_scope_tip(tool, choice)
+        return unless choice == :once
+        return if @session_scope_tip_shown
+
+        @session_scope_tip_shown = true
+        label = tool.to_s.empty? ? "this tool" : tool
+        $stdout.puts @pastel.dim(
+          %(┄ tip: choose "Approve — this tool (this session)" to stop being asked for #{label} this session ┄)
+        )
+      end
+
       # Explicit, visible confirmation that a denied command was NOT executed.
       def denied(tool = nil)
-        label = tool ? "#{tool} command" : "Command"
+        label = tool ? "#{tool} command" : "command"
         error("#{label} denied — not executed")
       end
 
@@ -276,6 +309,17 @@ module Rubino
         super
       end
 
+      # One-shot suppression of the next `⎿ interrupted` marker (#111). The
+      # chat loop sets it when a slash-command submit interrupted a turn with
+      # nothing visibly in flight (no stream, no live partial — e.g. only a
+      # subagent card animating): the turn LOOKED idle, so the marker would
+      # read as a stray artifact above the command's own output. Consumed by
+      # #turn_interrupted; the chat loop resets it at each turn start so a
+      # suppression that never fired can't leak into a later real Ctrl+C.
+      def suppress_interrupt_marker(value: true)
+        @suppress_interrupt_marker = value
+      end
+
       # Commits the standardized interrupt marker right after the partial answer
       # that was kept when a turn is cancelled (Ctrl+C, or the interrupt-by-
       # default Enter): a dim `⎿ interrupted` row, house grammar. Leading CR +
@@ -285,8 +329,14 @@ module Rubino
       # Tears down a still-ticking "thinking…" animation first, same as the
       # error path (#74) — Loop#stream_end usually already did, but an
       # interrupt raised outside the streaming bracket must settle too.
+      # Swallowed once after a QUIET slash-command interrupt (#111, above).
       def turn_interrupted
         finalize_stream
+        if @suppress_interrupt_marker
+          @suppress_interrupt_marker = false
+          return
+        end
+
         $stdout.print "\r\e[2K"
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
@@ -516,11 +566,13 @@ module Rubino
       THINKING_TICK = 0.1
 
       # Starts the animated "thinking…" row: a pulsing star glyph + a live
-      # elapsed-seconds counter, all dim, repainted ~10×/s through $stdout.live
-      # so every frame goes through the composer's render mutex (no rogue
-      # cursor/thread that would desync the frame). Off a live-capable stdout
-      # (plain mode / non-TTY) it degrades to a single static dim print, today's
-      # behavior — never animate into a pipe.
+      # elapsed-seconds counter, all dim, repainted ~10×/s. Mid-turn the frames
+      # go through $stdout.live so each one passes the composer's render mutex
+      # (no rogue cursor/thread to desync the frame); on a BARE TTY with no
+      # #live seam — the /probe wait at the idle prompt (#58) — the same
+      # animation repaints in place via CR + clear-line, so the wait never
+      # looks frozen. Into a pipe it stays a single static dim print — never
+      # animate into a non-terminal.
       def thinking_started
         return if @stream_type
         return if @thinking_indicator
@@ -528,19 +580,19 @@ module Rubino
         @thinking_started_at = monotonic_now
         @thinking_indicator  = true
 
-        unless $stdout.respond_to?(:live)
+        painter = thinking_painter
+        unless painter
           $stdout.print @pastel.dim("thinking…")
           $stdout.flush
           return
         end
 
-        out = $stdout
         @thinking_thread = Thread.new do
           i = 0
           loop do
             elapsed = (monotonic_now - @thinking_started_at).to_i
             glyph   = THINKING_GLYPHS[i % THINKING_GLYPHS.length]
-            out.live(@pastel.dim("#{glyph} thinking…  #{elapsed}s"))
+            painter.call(@pastel.dim("#{glyph} thinking…  #{elapsed}s"))
             i += 1
             sleep THINKING_TICK
           end
@@ -550,8 +602,37 @@ module Rubino
         end
       end
 
+      # Clears the "thinking…" indicator for callers that bracket a synchronous
+      # wait with no stream lifecycle of their own — the /probe side-inference
+      # (#58). Public counterpart to #thinking_started; a no-op when nothing is
+      # showing.
+      def thinking_finished
+        clear_thinking_indicator
+      end
+
       def monotonic_now
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # The per-frame paint strategy for the thinking animation, or nil when
+      # the output can't host one (a pipe): the composer's transient row when
+      # $stdout offers #live, else an in-place CR repaint on a bare TTY (#58).
+      def thinking_painter
+        if $stdout.respond_to?(:live)
+          ->(frame) { $stdout.live(frame) }
+        elsif tty_stdout?
+          lambda { |frame|
+            $stdout.print("\r\e[2K#{frame}")
+            $stdout.flush
+          }
+        end
+      end
+
+      # True when $stdout is a real terminal (guarded for IO doubles).
+      def tty_stdout?
+        $stdout.respond_to?(:tty?) && $stdout.tty?
+      rescue StandardError
+        false
       end
 
       # The active reasoning render mode (:hidden | :collapsed | :full), resolved

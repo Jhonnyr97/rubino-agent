@@ -845,6 +845,30 @@ RSpec.describe Rubino::UI::CLI do
       expect(cache.allowed?("sess-1", "shell:ls")).to be(false)
     end
 
+    # #110: the "this tool (this session)" option always existed but nothing
+    # surfaced it — a multi-edit refactor interrupted on every call. The first
+    # plain "Approve once" now prints a one-time tip naming it.
+    it "tips the session-scope option once after the first 'Approve once' (#110)" do
+      stub_choice(:once)
+      first  = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      second = capture_stdout { ui.confirm("Allow edit?", scope: "edit:b", tool: "edit") }
+      expect(first).to include(%(tip: choose "Approve — this tool (this session)"))
+      expect(first).to include("for edit this session")
+      expect(second).not_to include("tip:")
+    end
+
+    it "prints no session-scope tip on a deny (#110)" do
+      stub_choice(:no)
+      out = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      expect(out).not_to include("tip:")
+    end
+
+    it "prints no tip when the user already chose a session-wide grant (#110)" do
+      stub_choice(:always_tool)
+      out = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      expect(out).not_to include("tip:")
+    end
+
     it "returns false for 'no'" do
       stub_choice(:no)
       capture_stdout { expect(ui.confirm("ok?", scope: "shell:ls")).to be(false) }
@@ -1110,6 +1134,91 @@ RSpec.describe Rubino::UI::CLI do
         ui.confirm("Allow shell with:", tool: "shell", command: "ls")
       end
       expect(out).not_to include("not executed")
+    end
+  end
+
+  # #111: a slash-command submit that interrupted a turn with nothing visibly
+  # in flight (only a card animating) must not strand a `⎿ interrupted`
+  # artifact above the command's own output. The suppression is one-shot.
+  describe "#turn_interrupted quiet suppression (#111)" do
+    it "swallows exactly ONE marker after suppress_interrupt_marker" do
+      ui.suppress_interrupt_marker
+      first  = capture_stdout { ui.turn_interrupted }
+      second = capture_stdout { ui.turn_interrupted }
+      expect(first).to eq("")
+      expect(second).to include("⎿ interrupted")
+    end
+
+    it "can be reset at turn start so a stale suppression never leaks" do
+      ui.suppress_interrupt_marker
+      ui.suppress_interrupt_marker(value: false)
+      out = capture_stdout { ui.turn_interrupted }
+      expect(out).to include("⎿ interrupted")
+    end
+  end
+
+  # #58: the /probe wait shows the SAME thinking row a normal turn gets. On a
+  # bare TTY (idle prompt — no composer, so no $stdout.live seam) the animation
+  # repaints in place via CR + clear-line; into a pipe it stays one static
+  # print. #thinking_finished is the public clear for synchronous waits.
+  describe "#thinking_started on a bare TTY (#58)" do
+    it "animates in place via CR repaints, then clears on thinking_finished" do
+      out = capture_stdout do
+        allow($stdout).to receive(:tty?).and_return(true)
+        ui.thinking_started
+        sleep 0.25
+        ui.thinking_finished
+      end
+      expect(out).to include("thinking…")
+      expect(out.scan("\r\e[2K").size).to be >= 2 # repaint frames + final clear
+    end
+
+    it "degrades to one static print into a pipe (never animates)" do
+      out = capture_stdout do
+        ui.thinking_started
+        sleep 0.15
+        ui.thinking_finished
+      end
+      expect(out.scan("thinking…").size).to eq(1)
+    end
+  end
+
+  describe "#thinking_finished" do
+    it "is a quiet no-op when nothing is showing" do
+      out = capture_stdout { ui.thinking_finished }
+      expect(out).to eq("")
+    end
+  end
+
+  # #73: the /sessions picker advertises "(Esc to cancel)" — Esc must actually
+  # cancel. The cancellable picker prompt binds :keyescape to the same
+  # InputInterrupt Ctrl-C raises; #select rescues it to nil. tty-reader parses
+  # whole escape sequences, so an arrow key (ESC [ B…) never trips the binding.
+  describe "#select Esc cancel (#73)" do
+    def picker_with_keys(keys)
+      require "tty/prompt/test"
+      test_prompt = TTY::Prompt::Test.new
+      test_prompt.input << keys
+      test_prompt.input.rewind
+      allow(TTY::Prompt).to receive(:new).and_return(test_prompt)
+      allow(ui).to receive(:interactive_terminal?).and_return(true)
+    end
+
+    let(:choices) { [["first", 1], ["second", 2]] }
+
+    it "returns nil when the user presses Esc (the advertised cancel)" do
+      picker_with_keys("\e")
+      expect(ui.select("Resume which session? (Esc to cancel)", choices)).to be_nil
+    end
+
+    it "returns the highlighted value on Enter" do
+      picker_with_keys("\r")
+      expect(ui.select("pick", choices)).to eq(1)
+    end
+
+    it "does not mistake an arrow-key escape prefix for a cancel" do
+      picker_with_keys("\e[B\r") # ↓ then Enter — selects the second row
+      expect(ui.select("pick", choices)).to eq(2)
     end
   end
 

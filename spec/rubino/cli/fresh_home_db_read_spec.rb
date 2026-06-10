@@ -45,11 +45,12 @@ RSpec.describe "Fresh-home DB read commands (#35)" do
   end
 
   it "`sessions show` reports not-found (not a no-such-table crash)" do
+    # ONE error, in one style (#20): the Thor::Error message (which Thor
+    # prints to stderr) carries the id; no duplicate styled ui.error line.
     expect { Rubino::CLI::SessionCommand.new.show("deadbeef") }
-      .to raise_error(Thor::Error, /session not found/)
-    # The error is the clean not-found path, NOT a SQLite backtrace.
+      .to raise_error(Thor::Error, /session not found: deadbeef/)
     errors = Rubino.ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message].to_s }
-    expect(errors.join("\n")).to include("Session not found")
+    expect(errors).to be_empty
   end
 
   it "`jobs list` shows the empty state without a no-such-table crash" do

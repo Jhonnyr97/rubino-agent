@@ -42,6 +42,23 @@ module Rubino
         @discovered = false
       end
 
+      # A registry aligned with the prompt assembler's folder-trust gate (#63):
+      # in an untrusted cwd the project-local catalogue is excluded, so the
+      # /skills picker and activation surface only skills the assembler will
+      # actually pin into the system prompt — never a chip claiming an active
+      # skill whose SKILL.md is withheld.
+      def self.trusted(**)
+        new(include_project_local: project_local_trusted?, **)
+      end
+
+      # Mirrors Context::PromptAssembler#project_local_trusted?: trust-gate the
+      # cwd, but never let the check itself break discovery on a real error.
+      def self.project_local_trusted?
+        Rubino::Trust.trusted?(Rubino::Workspace.primary_root)
+      rescue StandardError
+        true
+      end
+
       # Discovers all available skills from configured paths. Both the flat
       # layout (<name>.md) and the directory layout (<name>/SKILL.md) are
       # supported. When a name collides, the directory skill wins (it is the

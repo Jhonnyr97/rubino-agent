@@ -239,7 +239,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(File).not_to exist(home)
       errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
       expect(errors.join("\n")).to include("rubino setup")
-      expect(errors.join("\n")).to include("Database not initialized")
+      expect(errors.join("\n")).to include("database not initialized")
     end
   end
 

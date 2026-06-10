@@ -805,6 +805,11 @@ module Rubino
           end
         end
 
+        # Stale-flag guard (#111): a quiet suppression armed by a prior turn
+        # that completed before observing its cancel must not swallow THIS
+        # turn's real `⎿ interrupted` marker.
+        ui.suppress_interrupt_marker(value: false) if ui.respond_to?(:suppress_interrupt_marker)
+
         composer, real_stdout = start_composer(input_queue, runner)
 
         # Mark the composer "in a turn" for the WHOLE turn — covering the THINKING
@@ -899,7 +904,7 @@ module Rubino
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           on_ctrl_o: ctrl_o_handler,
                                           on_mode_cycle: mode_cycle_handler,
-                                          on_interrupt: -> { runner.cancel! },
+                                          on_interrupt: interrupt_handler(runner),
                                           pending_queued: pending_queued)
         composer.start
         real_stdout = $stdout
@@ -916,6 +921,20 @@ module Rubino
         composer&.stop
         $stdout = real_stdout if real_stdout
         [nil, nil]
+      end
+
+      # The composer's Enter-during-turn hook: cancel the runner so the just-
+      # submitted line runs as the next turn. +quiet+ marks a slash-command
+      # submit at an idle-LOOKING moment — nothing visibly streaming, only the
+      # live cards animating (#111) — so the UI is told to swallow the
+      # upcoming `⎿ interrupted` marker instead of stranding it above the
+      # command's own output.
+      def interrupt_handler(runner)
+        lambda { |quiet = false|
+          ui = Rubino.ui
+          ui.suppress_interrupt_marker if quiet && ui.respond_to?(:suppress_interrupt_marker)
+          runner.cancel!
+        }
       end
 
       # Tears down the composer: restores the real $stdout, flushes any held
@@ -1004,17 +1023,37 @@ module Rubino
       # The Q&A is stashed in @last_probe so a `/branch` right after can promote
       # it into the fork seed (the "actually, let's pursue this" move).
       def run_probe(runner, question, ui)
+        # The probe is a synchronous side-inference with nothing streaming, so
+        # the wait used to look frozen (#58): show the SAME thinking row a
+        # normal turn gets, cleared before the aside (or failure) renders. TTY
+        # only — never an indicator into a pipe.
+        probe_thinking_started(ui)
         result = Interaction::Probe.new(
           session: runner.session,
           model_override: model_name,
           provider_override: opt(:provider)
         ).ask(question)
+        probe_thinking_finished(ui)
         ui.probe_aside(result.answer)
         @last_probe = result
       rescue StandardError => e
+        probe_thinking_finished(ui)
         # A probe is a throwaway aside — a failure must never break the REPL.
         ui.warning("probe failed: #{e.message}")
         @last_probe = nil
+      end
+
+      # The /probe wait indicator (#58): reuse the UI's thinking-row machinery
+      # when present (UI::CLI). Guarded so Null/API adapters and piped stdout
+      # stay silent.
+      def probe_thinking_started(ui)
+        return unless $stdout.tty? && ui.respond_to?(:thinking_started)
+
+        ui.thinking_started
+      end
+
+      def probe_thinking_finished(ui)
+        ui.thinking_finished if ui.respond_to?(:thinking_finished)
       end
 
       # Forks the current session at this point into a NEW saved session and
@@ -1231,16 +1270,63 @@ module Rubino
         names  = (::Rubino::Commands::BuiltIns::NAMES + custom).uniq
         files  = -> { Rubino::Workspace.primary_root }
         # ARGUMENT sources: the dropdown completes the argument of these commands
-        # the same way it completes `/command` and `@file`. `/skills <partial>`
-        # picks a skill name (lazily re-read each open so a freshly-authored skill
-        # appears). Structured as a generic command→names map so `/agents` can
-        # reuse the same mechanism later — register an "agents" entry here and the
-        # composer/CompletionSource need no change (agent picker is out of scope).
+        # the same way it completes `/command` and `@file`.
+        #   * /skills <partial> — a skill name (lazily re-read each open so a
+        #     freshly-authored skill appears), TRUST-aligned with the prompt
+        #     assembler (#63) so the picker never offers a skill that won't pin.
+        #   * /agents (alias /tasks) — the live subagent ids, then the
+        #     steer/probe/--stop subcommand grammar, so the comm surface is
+        #     discoverable from the composer (#39).
+        #   * /reply — the ids of children blocked waiting on the human.
         arg_sources = {
-          "skills" => -> { Rubino::Skills::Registry.new.names }
+          "skills" => -> { Rubino::Skills::Registry.trusted.names },
+          "agents" => ->(args) { agents_arg_candidates(args) },
+          "tasks" => ->(args) { agents_arg_candidates(args) },
+          "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] }
         }
         Rubino::UI::CompletionSource.new(commands: names, files: files,
-                                         arg_sources: arg_sources)
+                                         arg_sources: arg_sources,
+                                         descriptions: completion_descriptions(cmd_loader))
+      end
+
+      # The /agents subcommand grammar offered by the dropdown (#39): first an
+      # id, then what you can do to it.
+      AGENTS_SUBCOMMANDS = ["steer", "probe", "--stop"].freeze
+
+      # Argument candidates per /agents position: ids → subcommands → nothing.
+      def agents_arg_candidates(args)
+        case args.length
+        when 0 then Tools::BackgroundTasks.instance.list.map(&:id)
+        when 1 then AGENTS_SUBCOMMANDS
+        else []
+        end
+      end
+
+      # Children parked on an ask_parent waiting for the human — the ids /reply
+      # answers.
+      def blocked_subagent_ids
+        Tools::BackgroundTasks.instance.awaiting_human.map(&:id)
+      end
+
+      # One-line descriptions for the dropdown (#39): the SAME strings /help
+      # shows (BuiltIns + custom command frontmatter), plus usage hints for the
+      # /agents subcommand grammar. Best-effort — a loader hiccup degrades to
+      # built-ins only, never breaks the prompt.
+      def completion_descriptions(cmd_loader)
+        descriptions = ::Rubino::Commands::BuiltIns::DESCRIPTIONS.dup
+        begin
+          cmd_loader.all.each do |cmd|
+            desc = cmd.description.to_s.strip
+            descriptions["/#{cmd.name}"] = desc unless desc.empty?
+          end
+        rescue StandardError
+          nil
+        end
+        descriptions.merge(
+          "steer" => "park a note the subagent folds in at its next turn",
+          "probe" => "ask the subagent an ephemeral question (not saved)",
+          "--stop" => "cancel the running subagent"
+        )
       end
 
       # --- Helpers ---
