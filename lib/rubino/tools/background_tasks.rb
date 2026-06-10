@@ -79,6 +79,15 @@ module Rubino
         # Free snapshot probes (live:false) never touch these. Per-process, dies
         # with the registry like the rest of the live-progress state.
         :probe_count, :last_probe_at,
+        # The SPAWNING side's input queue, captured on the PARENT thread at
+        # spawn time (TaskTool#run_background) — the same spawn-captured sink
+        # the [background-task] completion notice rides. ask_parent's
+        # [subagent-question] notice for a top-level-owned child MUST use this:
+        # reading the thread-local Rubino.background_sink on the CHILD's thread
+        # resolves to the child's OWN steer_queue and misroutes the question
+        # back into the asking child (#195). nil ⇒ no queue was wired
+        # (sync/foreground spawn, headless).
+        :parent_sink,
         keyword_init: true
       )
 

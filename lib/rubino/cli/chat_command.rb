@@ -272,7 +272,10 @@ module Rubino
             # to this REPL (not the agent), so they're handled here before the
             # slash dispatcher. `/paste` grabs a clipboard image; `/clear-images`
             # drops anything queued.
-            next if image_inbox.handle_image_command(input, ui)
+            if image_inbox.handle_image_command(input, ui)
+              commit_queued_dispatch
+              next
+            end
 
             # Pull any image references (@image, dropped/quoted path) out of the
             # line into image_paths (the native vision slot); the rest stays text.
@@ -282,7 +285,10 @@ module Rubino
             # @image/dropped paths the same as /paste — the image goes out with
             # the next message that carries text.
             input = image_inbox.extract_images!(input, ui)
-            next if input.empty?
+            if input.empty?
+              commit_queued_dispatch
+              next
+            end
 
             # A leading `? ` is the one-keystroke ephemeral probe (Option A of
             # the locked UX): the rest of the line is a side-question answered
@@ -290,6 +296,7 @@ module Rubino
             # — nothing is written to the transcript. Handled BEFORE slash
             # dispatch so `? /foo` is still a probe about a literal `/foo`.
             if (question = probe_question(input))
+              commit_queued_dispatch
               run_probe(runner, question, ui)
               next
             end
@@ -306,12 +313,20 @@ module Rubino
             case bang_shell.handle(input, runner, ui)
             when :ran
               interacted = true
+              commit_queued_dispatch
               next
             when :handled
+              commit_queued_dispatch
               next
             end
 
             if input.start_with?("/")
+              # A dequeued line that resolves to a SLASH COMMAND never reaches
+              # #run_turn, so #commit_queued_prompt would never fire for it and
+              # its live "⏳ queued:" row would leak across later prompts
+              # (#192). Commit it here — echo + drop the indicator — before the
+              # command runs, whatever the dispatch result is.
+              commit_queued_dispatch
               result = cmd_executor.try_execute(input)
               case result
               when :exit    then break
@@ -856,6 +871,27 @@ module Rubino
           # commit the normal echo above the input.
           composer.commit_queued(line) if composer.respond_to?(:commit_queued)
           composer.print_above("#{build_prompt}#{line}")
+        end
+      end
+
+      # The NON-TURN counterpart of #commit_queued_prompt (#192): a dequeued
+      # line consumed by the dispatch loop WITHOUT running a model turn (a slash
+      # command, a `!` shell escape, a `? ` probe, an image command) never
+      # reaches #run_turn, so its "⏳ queued:" indicator would linger above the
+      # composer across later prompts. Commit it here instead: drop the row from
+      # the shared pending stack (the next composer renders from it) and echo
+      # the line as the normal "<prompt><line>" message — no composer is live
+      # between turns, so the echo goes straight to scrollback. No-op for an
+      # idle submit (not flagged in @input_from_queue).
+      def commit_queued_dispatch
+        lines = @input_from_queue
+        @input_from_queue = nil
+        return unless lines
+
+        lines.each do |line|
+          idx = pending_queued.index(line)
+          pending_queued.delete_at(idx) if idx
+          $stdout.puts("#{build_prompt}#{line}")
         end
       end
 

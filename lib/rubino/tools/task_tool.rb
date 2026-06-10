@@ -180,6 +180,11 @@ module Rubino
         sink      = Rubino.background_sink
         event_bus = Rubino.active_event_bus
         parent_ui = Rubino.ui
+        # Stash the spawn-captured sink on the entry so a tool running on the
+        # CHILD's thread (ask_parent) can notify the parent MODEL without
+        # reading the child's own thread-local sink — which is the child's own
+        # steer_queue, not the parent's queue (#195).
+        entry.parent_sink = sink
         # Build the child UI on the PARENT thread so the collapsed-card view is
         # wired with this run's entry id + the parent CLI (whose live region hosts
         # the card) + the approval handler. In card mode the child's per-tool
@@ -357,7 +362,9 @@ module Rubino
       # Turns a nil reserve into a clear, reason-specific model-facing string. The
       # registry records WHY it refused (last_refusal_reason) so the three caps —
       # max nesting depth, per-owner fan-out, global total — read distinctly
-      # instead of one undifferentiated "at capacity".
+      # instead of one undifferentiated "at capacity". The message must NOT
+      # recommend `background: false`: the sync path enforces the same ceilings
+      # (#196), so it is not an escape hatch.
       def capacity_message(registry_bg)
         case registry_bg.last_refusal_reason
         when :depth
@@ -366,14 +373,14 @@ module Rubino
           "directly, or report back so a shallower agent can split it up."
         when :per_owner
           "At capacity: this agent already has #{BackgroundTasks::MAX_CHILDREN_PER_NODE} " \
-          "background subagents running. Wait for one to finish (you'll get a " \
-          "`[background-task]` message), check it with task_result, or run this one " \
-          "with background: false."
+          "subagents running. Wait for one to finish (you'll get a " \
+          "`[background-task]` message), check it with task_result, or do the work " \
+          "directly."
         else # :global (or any future ceiling)
-          "At capacity: the maximum number of background subagents " \
+          "At capacity: the maximum number of subagents " \
           "(#{BackgroundTasks::MAX_CONCURRENT_TOTAL}) are already running across all " \
           "agents. Wait for one to finish (you'll get a `[background-task]` message), " \
-          "check it with task_result, or run this one with background: false."
+          "check it with task_result, or do the work directly."
         end
       end
 
@@ -499,11 +506,34 @@ module Rubino
       # the parent waits — and is capped by the subagent's own `max_turns`.
       # The nested loop's own tool events fire on the child's executor only;
       # the parent recorder sees just this tool's start/complete boundary.
+      #
+      # GOVERNED LIKE THE BACKGROUND PATH (#196): a sync child goes through the
+      # SAME single enforcement point — BackgroundTasks#reserve — so all three
+      # nesting caps apply and it counts toward the live totals for the whole
+      # inline run; and it runs under with_current_subagent_id(entry.id) so
+      # anything IT spawns is stamped with the right owner/depth. Without this,
+      # `background: false` was an uncapped escape hatch that also corrupted
+      # ownership/depth stamping for its entire subtree.
       def run_subagent(definition, prompt)
+        registry_bg = BackgroundTasks.instance
+        entry = registry_bg.reserve(
+          subagent: definition.name, prompt: prompt,
+          owner_subagent_id: Rubino.current_subagent_id, depth: 0
+        )
+        return capacity_message(registry_bg) unless entry
+
         runner = build_runner(definition)
-        result = runner.run!(prompt)
+        registry_bg.attach(entry, thread: Thread.current, runner: runner)
+        result = Rubino.with_current_subagent_id(entry.id) { runner.run!(prompt) }
         text   = result.to_s.strip
-        text.empty? ? "(subagent '#{definition.name}' #{NOOP_RESULT_SUFFIX}" : text
+        text   = "(subagent '#{definition.name}' #{NOOP_RESULT_SUFFIX}" if text.empty?
+        registry_bg.complete(entry, status: :completed, result: text)
+        text
+      rescue StandardError => e
+        # Release the reserved slot on ANY failure so a raising sync child can
+        # never wedge a live-slot leak; #call's rescue phrases the message.
+        registry_bg.complete(entry, status: :failed, error: e.message) if entry
+        raise
       end
 
       # Builds the nested Runner. Injectable via the constructor for tests
