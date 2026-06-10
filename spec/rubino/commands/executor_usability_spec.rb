@@ -524,11 +524,18 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(errors).not_to be_empty
     end
 
-    # #145: bare /sessions offers an arrow-key picker (reusing @ui.select, the
-    # same component the approval menu uses). Picking a row resumes it; off a
-    # real terminal @ui.select returns nil and the static-table + shortcut path
-    # runs (covered by the tests above with the Null UI).
-    context "interactive picker (#145)" do
+    # #145/#40: on a real terminal bare /sessions offers ONLY the arrow-key
+    # picker (reusing @ui.select, the same component the approval menu uses) —
+    # the picker IS the list, never a static table + a picker repeating the
+    # same rows. Off a TTY @ui.select can't run and the static-table +
+    # typed-shortcut fallback renders (covered by the tests above).
+    context "interactive picker (#145, #40)" do
+      before do
+        # A real terminal on both ends, so the executor offers the picker.
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdout).to receive(:tty?).and_return(true)
+      end
+
       it "resumes the session the user picks from the menu" do
         s1 = repo.create(source: "cli", title: "first")
         s2 = repo.create(source: "cli", title: "second")
@@ -546,9 +553,32 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
         end
       end
 
-      it "falls back to the static table + shortcut when the picker is cancelled" do
+      it "renders the list ONCE — no static table doubled above the picker (#40)" do
         repo.create(source: "cli", title: "only")
-        allow(ui).to receive(:select).and_return(nil) # Esc / non-TTY
+        allow(ui).to receive(:select).and_return(nil)
+
+        exec.try_execute("/sessions")
+
+        expect(ui.messages.none? { |m| m[:level] == :table }).to be(true)
+      end
+
+      it "folds msgs/recency into the picker rows so it supersedes the table" do
+        repo.create(source: "cli", title: "labelled")
+        allow(ui).to receive(:select).and_return(nil)
+
+        exec.try_execute("/sessions")
+
+        expect(ui).to have_received(:select) do |_prompt, choices|
+          label = choices.first.first
+          expect(label).to include("labelled")
+          expect(label).to match(/\d+ msgs?/)
+          expect(label).to include("ago")
+        end
+      end
+
+      it "keeps the typed-shortcut hint when the picker is cancelled (Esc)" do
+        repo.create(source: "cli", title: "only")
+        allow(ui).to receive(:select).and_return(nil) # Esc
 
         result = exec.try_execute("/sessions")
 

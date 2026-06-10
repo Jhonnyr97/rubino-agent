@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "pastel"
+require "time"
 
 module Rubino
   module Commands
@@ -942,18 +943,13 @@ module Rubino
           return :handled
         end
 
-        # Lead with the identifying fields (ID, Title, Created) so a narrow-term
-        # card fallback scans well — the key field first, not buried (#84).
-        rows = sessions.map do |s|
-          [s[:id].to_s[0..7], session_title(s), s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
-        end
-        @ui.table(headers: %w[ID Title Created Status Msgs], rows: rows)
+        # ONE surface, not two (#40): on a real terminal the arrow-key picker
+        # IS the list (Enter resumes, Esc cancels — #73, letters filter), with
+        # Created/Status folded into each row, so the same sessions are never
+        # rendered twice (static table + picker). Off a TTY the static table +
+        # typed-shortcut fallback renders instead.
+        return sessions_table_fallback(sessions) unless interactive_terminal?
 
-        # "resume one" should actually let you pick one: offer an arrow-key
-        # picker over the listed sessions (reusing the approval-menu component
-        # via @ui.select), Enter resumes the highlighted session, Esc cancels
-        # (#145). Off a real terminal @ui.select returns nil and we keep the
-        # static-table + typed-shortcut behaviour.
         choices = sessions.map { |s| [session_choice_label(s), s[:id]] }
         chosen  = @ui.select("Resume which session? (Esc to cancel)", choices)
         if chosen
@@ -962,17 +958,46 @@ module Rubino
           return { resume_session_id: chosen }
         end
 
-        @ui.info("Resume: /sessions <id|title>  (or run /sessions and pick from the menu)")
+        @ui.info("Resume: /sessions <id|title>")
         :handled
       end
 
-      # One picker row: short id + title + message count, so the highlighted
-      # entry is identifiable at a glance in the arrow-key menu.
+      # Static fallback for non-interactive callers (pipes / Null UI): the
+      # bordered table the picker replaces on a TTY. Leads with the identifying
+      # fields (ID, Title, Created) so a narrow-term card fallback scans well —
+      # the key field first, not buried (#84).
+      def sessions_table_fallback(sessions)
+        rows = sessions.map do |s|
+          [s[:id].to_s[0..7], session_title(s), s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
+        end
+        @ui.table(headers: %w[ID Title Created Status Msgs], rows: rows)
+        @ui.info("Resume: /sessions <id|title>")
+        :handled
+      end
+
+      # One picker row: short id + title + message count + recency (and status
+      # when not yet ended), so the highlighted entry is identifiable at a
+      # glance and the picker is a clean superset of the old static table (#40).
       def session_choice_label(session)
         id    = session[:id].to_s[0..7]
         title = session_title(session)
         msgs  = session[:message_count]
-        "#{id}  #{title}#{"  (#{msgs} msg#{"s" if msgs != 1})" if msgs}"
+        meta  = [
+          ("#{msgs} msg#{"s" if msgs != 1}" if msgs),
+          session_age(session),
+          (session[:status].to_s unless ["", "ended"].include?(session[:status].to_s))
+        ].compact.join(" · ")
+        meta.empty? ? "#{id}  #{title}" : "#{id}  #{title}  (#{meta})"
+      end
+
+      # "Created" humanized for the picker row — "5m ago" scans better than a
+      # raw ISO timestamp in a recency-ordered list (#40). nil when unparseable.
+      def session_age(session)
+        created = session[:created_at]
+        created = Time.parse(created.to_s) unless created.is_a?(Time)
+        "#{human_duration(Time.now - created)} ago"
+      rescue StandardError
+        nil
       end
 
       def resume_session(query)

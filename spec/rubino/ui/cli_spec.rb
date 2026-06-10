@@ -1113,6 +1113,38 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # #73: the /sessions picker advertises "(Esc to cancel)" — Esc must actually
+  # cancel. The cancellable picker prompt binds :keyescape to the same
+  # InputInterrupt Ctrl-C raises; #select rescues it to nil. tty-reader parses
+  # whole escape sequences, so an arrow key (ESC [ B…) never trips the binding.
+  describe "#select Esc cancel (#73)" do
+    def picker_with_keys(keys)
+      require "tty/prompt/test"
+      test_prompt = TTY::Prompt::Test.new
+      test_prompt.input << keys
+      test_prompt.input.rewind
+      allow(TTY::Prompt).to receive(:new).and_return(test_prompt)
+      allow(ui).to receive(:interactive_terminal?).and_return(true)
+    end
+
+    let(:choices) { [["first", 1], ["second", 2]] }
+
+    it "returns nil when the user presses Esc (the advertised cancel)" do
+      picker_with_keys("\e")
+      expect(ui.select("Resume which session? (Esc to cancel)", choices)).to be_nil
+    end
+
+    it "returns the highlighted value on Enter" do
+      picker_with_keys("\r")
+      expect(ui.select("pick", choices)).to eq(1)
+    end
+
+    it "does not mistake an arrow-key escape prefix for a cancel" do
+      picker_with_keys("\e[B\r") # ↓ then Enter — selects the second row
+      expect(ui.select("pick", choices)).to eq(2)
+    end
+  end
+
   describe "#mode_changed" do
     it "renders dim when entering non-yolo mode" do
       out = capture_stdout { ui.mode_changed(:plan) }

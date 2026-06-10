@@ -141,18 +141,31 @@ module Rubino
       # existing picker rather than introducing a second menu system (#145).
       # +choices+ is an array of [label, value] pairs. Returns the chosen value,
       # or nil when there's no real terminal (so the caller keeps the
-      # non-interactive shortcut). Esc/Ctrl-C cancels and returns nil.
+      # non-interactive shortcut). Esc/Ctrl-C cancels and returns nil — Esc via
+      # the #cancellable_prompt keyescape binding (#73), Ctrl-C via tty-prompt's
+      # own InputInterrupt; both land in the rescue below.
       def select(prompt, choices)
         return nil if choices.nil? || choices.empty?
         return nil unless interactive_terminal?
 
         BottomComposer.run_in_terminal do
-          @prompt.select(prompt, cycle: false, filter: true) do |menu|
+          cancellable_prompt.select(prompt, cycle: false, filter: true) do |menu|
             choices.each { |label, value| menu.choice label, value }
           end
         end
       rescue TTY::Reader::InputInterrupt
         nil
+      end
+
+      # A DEDICATED TTY::Prompt for cancellable pickers, with Esc bound to the
+      # same InputInterrupt Ctrl-C raises (#73): tty-reader parses full escape
+      # sequences, so arrows (ESC [ A…) never trip :keyescape — only a lone Esc
+      # does. Deliberately separate from the shared @prompt so the approval
+      # menu's keymap is untouched (an Esc there must not become a deny).
+      def cancellable_prompt
+        @cancellable_prompt ||= TTY::Prompt.new.tap do |picker|
+          picker.on(:keyescape) { raise TTY::Reader::InputInterrupt }
+        end
       end
 
       # Approval prompt with session memory. Mirrors UI::API#confirm: a prior
