@@ -101,7 +101,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "#branch_runner" do
     # Switching onto the child rebuilds a real runner; stub history replay so we
     # don't depend on render details here (covered by the UI aside assertion).
-    before { allow(cmd).to receive(:print_session_history) }
+    before { allow(cmd.send(:session_resolver)).to receive(:print_session_history) }
 
     it "forks a child with parent_session_id set, seeds inherited context, leaves the parent intact" do
       child_runner = cmd.send(:branch_runner, ui, parent_runner, "licensing-audit")

@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "time"
 require "pastel"
 require "io/console"
 
@@ -40,6 +39,22 @@ module Rubino
 
       private
 
+      # --- Collaborators (#17): cohesive REPL concerns extracted into their own
+      # classes (image inbox / session resolution + replay / idle card host);
+      # ChatCommand orchestrates them around the turn loop. ---
+
+      def image_inbox
+        @image_inbox ||= Chat::ImageInbox.new
+      end
+
+      def session_resolver
+        @session_resolver ||= Chat::SessionResolver.new(@options)
+      end
+
+      def idle_cards
+        @idle_cards ||= Chat::IdleCardHost.new
+      end
+
       # --- One-shot mode ---
 
       def run_oneshot(query)
@@ -69,16 +84,9 @@ module Rubino
         # (image_paths) — the same path the interactive REPL uses. Without this,
         # `-q` / `prompt` / `chat "..."` had no way to attach an image at all
         # (attachment was REPL-only); automation, jobs and tests can now drive it.
-        text, image_paths = resolve_oneshot_images(query)
+        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
 
-        runner = Agent::Runner.new(
-          session_id: resolve_session_id,
-          model_override: model_name,
-          provider_override: opt(:provider),
-          max_turns: max_turns_override,
-          ignore_rules: opt(:ignore_rules) || false,
-          ui: UI::Null.new
-        )
+        runner = build_runner(session_id: session_resolver.resolve_session_id, ui: UI::Null.new)
 
         # Use run! (not run) so a model/credential failure PROPAGATES instead of
         # being swallowed into a nil and printed as an empty line with exit 0.
@@ -91,44 +99,15 @@ module Rubino
 
         print_oneshot_answer(response.to_s)
         $stdout.flush
+      # rubocop:disable Lint/ShadowedException -- Interrupt is listed explicitly (doc value), though SignalException covers it
       rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
         raise
+      # rubocop:enable Lint/ShadowedException
       rescue Exception => e # rubocop:disable Lint/RescueException
         warn "rubino: #{e.message}"
         exit(1)
       ensure
         restore_logger(prev_log_io)
-      end
-
-      # Builds the [text, image_paths] pair for a one-shot turn. Pulls @image /
-      # dropped-path tokens out of the prompt (so they hit the vision slot, not
-      # the literal text) and prepends any paths given via --image. Flag paths
-      # are expanded the same way as in-line tokens; a flag path that isn't a
-      # readable image is reported and skipped rather than silently dropped.
-      #
-      # Every candidate then passes the SAME secure-by-default attachment gate
-      # as the server/run path (Attachments::Classify + Policy, via
-      # ImageInput#attachment_error) — a policy rejection is a clean one-line
-      # error BEFORE any network call, not five provider retries (#98).
-      def resolve_oneshot_images(query)
-        flag_paths = Array(opt(:image)).map { |p| Interaction::ImageInput.expand(p) }
-        flag_paths.each do |p|
-          next if LLM::ContentBuilder.image_file?(p) && File.file?(p)
-
-          warn "rubino: ignoring --image #{p} (not a readable image file)"
-        end
-        valid_flags = flag_paths.select { |p| LLM::ContentBuilder.image_file?(p) && File.file?(p) }
-        valid_flags.each do |p|
-          reason = Interaction::ImageInput.attachment_error(p)
-          raise Rubino::Error, "--image #{p}: #{reason}" if reason
-        end
-
-        result = Interaction::ImageInput.parse(query, existing: valid_flags)
-        if (rejection = result.rejected.first)
-          raise Rubino::Error, "#{rejection[:path]}: #{rejection[:reason]}"
-        end
-
-        [result.text, result.image_paths]
       end
 
       # One deterministic status line before a request that carries attachments
@@ -204,14 +183,7 @@ module Rubino
         # AGENTS.md / skills.
         setup_workspace_and_trust!(ui, interactive: true)
 
-        runner = Agent::Runner.new(
-          session_id: resolve_session_id(auto_resume: true),
-          model_override: model_name,
-          provider_override: opt(:provider),
-          max_turns: max_turns_override,
-          ignore_rules: opt(:ignore_rules) || false,
-          ui: ui
-        )
+        runner = build_runner(session_id: session_resolver.resolve_session_id(auto_resume: true), ui: ui)
 
         # The runner already announced the session ("New/Resuming session: <id>");
         # re-printing the full uuid here was the third copy of the same id on boot
@@ -232,12 +204,12 @@ module Rubino
         @completion_source = build_completion_source(cmd_loader)
         @input_history     = Rubino::UI::InputHistory.new
 
-        if resuming_session?
+        if session_resolver.resuming_session?
           # On a bare-chat auto-resume (#99) tell the user, clearly and once,
           # that we picked up their last session and how to start fresh —
           # otherwise the continuation is silent and looks like a fresh boot.
-          print_auto_resume_line(ui, runner.session) if @auto_resumed_session
-          print_session_history(ui, runner.session[:id])
+          session_resolver.print_auto_resume_line(ui, runner.session) if session_resolver.auto_resumed_session
+          session_resolver.print_session_history(ui, runner.session[:id])
         else
           # First-run welcome panel: the same assembler /status uses, trimmed.
           Rubino::Commands::Executor.welcome(runner: runner, ui: ui)
@@ -287,7 +259,7 @@ module Rubino
             # to this REPL (not the agent), so they're handled here before the
             # slash dispatcher. `/paste` grabs a clipboard image; `/clear-images`
             # drops anything queued.
-            next if handle_image_command(input, ui)
+            next if image_inbox.handle_image_command(input, ui)
 
             # Pull any image references (@image, dropped/quoted path) out of the
             # line into image_paths (the native vision slot); the rest stays text.
@@ -296,7 +268,7 @@ module Rubino
             # next message (/clear-images to drop)" window, so honour it for
             # @image/dropped paths the same as /paste — the image goes out with
             # the next message that carries text.
-            input = extract_images!(input, ui)
+            input = image_inbox.extract_images!(input, ui)
             next if input.empty?
 
             # A leading `? ` is the one-keystroke ephemeral probe (Option A of
@@ -374,7 +346,7 @@ module Rubino
 
         ui.blank_line
         ui.info("Session ended.")
-        print_resume_hint(ui, runner.session) if interacted
+        session_resolver.print_resume_hint(ui, runner.session) if interacted
       end
 
       # Best-effort: on a terminal close (SIGHUP) or kill (SIGTERM) mark the
@@ -432,7 +404,7 @@ module Rubino
       def redirect_logger_to_file
         dir = File.expand_path(Rubino.configuration.dig("paths", "logs") || "~/.rubino/logs")
         FileUtils.mkdir_p(dir)
-        file = File.open(File.join(dir, "rubino.log"), "a")
+        file = File.open(File.join(dir, "rubino.log"), "a") # rubocop:disable Style/FileOpen -- the sink must outlive this method
         file.sync = true
         Rubino.logger.reopen(file)
       rescue StandardError
@@ -500,22 +472,6 @@ module Rubino
         end
       end
 
-      # True when at least one background subagent (the `task` tool's default)
-      # is still live — running or parked on a human approval. Drives whether the
-      # idle prompt hosts the collapsed live cards (F1).
-      def background_children_live?
-        Tools::BackgroundTasks.instance.running.any?
-      rescue StandardError
-        false
-      end
-
-      # How often (seconds) the idle card region repaints on its own so the
-      # cards' elapsed-time field advances even when no child event fires, and so
-      # we promptly notice the last child finishing. Child tool start/finish
-      # already poke an immediate repaint via #set_subagent_cards; this tick only
-      # covers the quiet gaps.
-      IDLE_CARD_TICK = 1.0
-
       # Reads the user's next line at the IDLE prompt through the bottom composer
       # — the single input path. The composer pins the prompt at the bottom and
       # owns its own raw reader (full editing parity: arrows/Home/End/word-jump,
@@ -551,8 +507,8 @@ module Rubino
         Rubino.logger
         $stdout = UI::StdoutProxy.new(composer)
         seed_draft(composer, draft)
-        paint_idle_cards
-        ticker = background_children_live? ? start_idle_card_ticker(composer) : nil
+        idle_cards.paint
+        ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
 
         # Gate idle Ctrl+C through the composer (BH-2): the composer runs under
         # raw(intr: true), so a single Ctrl+C still raises SIGINT — which would
@@ -633,165 +589,10 @@ module Rubino
         nil
       end
 
-      # Repaints the idle card region from the registry's current snapshot. Mirrors
-      # UI::CLI#set_subagent_cards (which the child taps call), but is callable
-      # from the REPL's own ticker without a parent UI handle — both ultimately
-      # drive BottomComposer#set_cards under the render mutex.
-      def paint_idle_cards
-        composer = UI::BottomComposer.current
-        return unless composer
-
-        entries = Tools::BackgroundTasks.instance.running
-        composer.set_cards(idle_subagent_cards.card_lines(entries))
-      rescue StandardError
-        nil # a card repaint is cosmetic — never break the idle prompt.
-      end
-
-      def idle_subagent_cards
-        @idle_subagent_cards ||= UI::SubagentCards.new
-      end
-
-      # A low-frequency ticker that repaints the idle card region so the elapsed
-      # time advances and a finished last-child is noticed even in a quiet gap
-      # between child events. Repaints go through the composer's render mutex, so
-      # they never race the keystroke handler. Exits as soon as no child is live
-      # (it clears the region one last time) or when killed on teardown.
-      def start_idle_card_ticker(composer)
-        Thread.new do
-          loop do
-            sleep(IDLE_CARD_TICK)
-            break unless composer.equal?(UI::BottomComposer.current)
-
-            paint_idle_cards
-            break unless background_children_live?
-          end
-        rescue StandardError
-          nil
-        end
-      end
-
-      # --- Image input (attach an image from the terminal) ---
-      #
-      # Attachments live in @pending_image_paths between the prompt read and the
-      # turn; run_turn consumes + clears them so each image is sent once into the
-      # native vision slot (image_paths → Lifecycle#execute → adapter `with:`).
-
-      def pending_image_paths
-        @pending_image_paths ||= []
-      end
-
       # Seeds the interactive pending-images inbox from --image/-i flag paths
-      # (#160), through the SAME attachment gate every other staging surface
-      # uses (Attachments::Classify + Policy via ImageInput#attachment_error).
-      # A bad flag path warns and is skipped — interactive startup must not die
-      # on it the way one-shot raises. Staged images show the usual indicator
-      # and are covered by /clear-images, as documented.
+      # (#160); the attachment gate + indicator live in Chat::ImageInbox.
       def stage_flag_images(ui)
-        Array(opt(:image)).each do |raw|
-          path = Interaction::ImageInput.expand(raw)
-          unless LLM::ContentBuilder.image_file?(path) && File.file?(path)
-            ui.warning("not attached — #{raw}: not a readable image file")
-            next
-          end
-          if (reason = Interaction::ImageInput.attachment_error(path))
-            ui.warning("not attached — #{File.basename(path)}: #{reason}")
-            next
-          end
-          pending_image_paths << path unless pending_image_paths.include?(path)
-        end
-        show_image_indicator(ui, pending_image_paths) unless pending_image_paths.empty?
-      end
-
-      # Parses the line for image references (@image, dropped/quoted/escaped
-      # path), moves any into @pending_image_paths and returns the cleaned text.
-      # Non-image references are left in the text (current behaviour). Shows an
-      # in-prompt indicator for whatever is now attached. A candidate the
-      # attachment policy rejects (oversize / spoofed extension / unsafe) is
-      # dropped with a one-line warning instead of being shipped (#98).
-      def extract_images!(input, ui)
-        result = Interaction::ImageInput.parse(input, existing: pending_image_paths)
-        result.rejected.each do |rejection|
-          ui.warning("not attached — #{File.basename(rejection[:path])}: #{rejection[:reason]}")
-        end
-        newly = result.image_paths - pending_image_paths
-        @pending_image_paths = result.image_paths
-        show_image_indicator(ui, newly) unless newly.empty?
-        result.text
-      end
-
-      # Handles the REPL-local image commands. Returns true when it consumed the
-      # input (so the main loop should `next`), false otherwise.
-      #
-      #   /paste         — grab an image from the clipboard into image_paths
-      #   /clear-images  — drop all pending attachments
-      def handle_image_command(input, ui)
-        case input.strip.downcase
-        when "/clear-images", "/clear-image"
-          if pending_image_paths.empty?
-            ui.info("No attached images to clear.")
-          else
-            ui.info("Cleared #{pending_image_paths.size} attached image(s).")
-            @pending_image_paths = []
-          end
-          true
-        when "/paste"
-          paste_clipboard_image(ui)
-          true
-        else
-          false
-        end
-      end
-
-      def paste_clipboard_image(ui)
-        path = Interaction::ClipboardImage.save_to_tempfile
-        unless path
-          ui.warning("Clipboard paste failed: #{Interaction::ClipboardImage.unavailable_reason}")
-          return
-        end
-
-        # Same universal attachment gate as @image/dropped/--image paths (#98):
-        # a clipboard capture that violates policy (e.g. oversize) is dropped
-        # with a clear warning, never shipped to the provider.
-        if (reason = Interaction::ImageInput.attachment_error(path))
-          ui.warning("not attached — #{File.basename(path)}: #{reason}")
-          return
-        end
-
-        pending_image_paths << path unless pending_image_paths.include?(path)
-        show_image_indicator(ui, [path])
-      end
-
-      # In-prompt indicator of attached image(s), Claude-Code style.
-      def show_image_indicator(ui, newly)
-        newly.each { |p| ui.status("[image: #{File.basename(p)}]") }
-        total = pending_image_paths.size
-        ui.status("#{total} image#{"s" if total != 1} attached — sent with your next message (/clear-images to drop).")
-      end
-
-      # On exit, hand the user back the exact command to return to this chat.
-      # Claude Code prints no equivalent hint; without this, the session id
-      # is buried in ~/.claude state and the user has to guess at --resume
-      # or scroll back through history. Prefer the human-friendly title when
-      # one is set; fall back to the id otherwise.
-      # One-liner shown when a bare `chat` auto-resumed the last session (#99),
-      # so the continuation is never silent and the user knows how to opt out.
-      def print_auto_resume_line(ui, session)
-        return unless session
-
-        title = session[:title].to_s.strip
-        label = title.empty? ? session[:id][0..7] : %("#{title}")
-        ui.status("▸ resuming #{label} (#{session[:id][0..7]}) — /new for a fresh session")
-      end
-
-      def print_resume_hint(ui, session)
-        return unless session
-
-        id    = session[:id]
-        title = session[:title]
-        handle = title && !title.to_s.strip.empty? ? %("#{title}") : id
-        return unless handle
-
-        ui.info("Resume with: rubino chat --resume #{handle}")
+        image_inbox.stage_flag_images(opt(:image), ui)
       end
 
       # Window (seconds) for the Aider-style double-tap: a second Ctrl+C
@@ -831,9 +632,8 @@ module Rubino
         @last_probe = nil
 
         # Consume the turn's queued image attachments (the native vision slot)
-        # and reset so they're attached exactly once, not re-sent next turn.
-        image_paths = pending_image_paths
-        @pending_image_paths = []
+        # so they're attached exactly once, not re-sent next turn.
+        image_paths = image_inbox.take!
 
         # The interim idle-key GATE is retired: the bottom composer is now the
         # single input path and serializes every above-line write through its
@@ -1028,53 +828,6 @@ module Rubino
         nil
       end
 
-      # --- Session history replay (resume / continue) ---
-      #
-      # PromptAssembler feeds the past turns to the model on every request, but
-      # the inline REPL never printed them. On --resume the terminal looked
-      # empty even though the model had full context. Replay user, assistant
-      # and tool messages through the existing UI methods so the scrolled-back
-      # transcript matches what the user originally saw.
-      def print_session_history(ui, session_id)
-        return unless session_id
-
-        messages = ::Rubino::Session::Store.new.for_session(session_id)
-        return if messages.empty?
-
-        ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
-        ui.separator
-
-        messages.each do |msg|
-          at = parse_msg_timestamp(msg.created_at)
-          case msg.role.to_s
-          when "user"
-            ui.replay_user_input(msg.content, at: at)
-          when "assistant"
-            next if msg.content.nil? || msg.content.to_s.empty?
-
-            # Render the prior assistant turn as markdown, same as a live reply —
-            # not the old box (which the M2 redesign repurposed into a "● running"
-            # tool-style row, so resume showed assistant turns as fake tool runs
-            # with raw markdown).
-            ui.assistant_text(msg.content)
-          when "tool"
-            name      = msg.tool_name || "tool"
-            arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
-            ui.tool_started(name, arguments: arguments, at: at)
-            ui.tool_finished(
-              name,
-              result: ::Rubino::Tools::Result.success(
-                name: name,
-                call_id: msg.tool_call_id,
-                output: msg.content.to_s
-              )
-            )
-          end
-        end
-
-        ui.separator
-      end
-
       # The leading `? ` ephemeral-probe trigger. Returns the side-question text
       # (everything after the `? `) when the line is a probe, nil otherwise. A
       # bare `?` or `?` with no following space is NOT a probe (so a real
@@ -1174,7 +927,7 @@ module Rubino
       # Appends the immediately-preceding probe's Q&A to the branch seed when one
       # is present (the user is promoting the aside). Returns true if a probe was
       # folded in, false otherwise.
-      def seed_probe_into!(store, child_session_id)
+      def seed_probe_into!(store, child_session_id) # rubocop:disable Naming/PredicateMethod -- a seeding mutator that reports what it did
         probe = @last_probe
         return false unless probe
 
@@ -1341,20 +1094,6 @@ module Rubino
         return nil if branch.empty? && sha.empty?
 
         { branch: branch.empty? ? "(detached)" : branch, sha: sha, dirty: dirty }
-      end
-
-      # Best-effort parse of the timestamp the DB stored on a Message.
-      # Sequel hands these back as either a Time or an ISO8601 String
-      # depending on adapter and column type; the replay code wants a Time
-      # to feed to `ui.box_open(at:)`. Anything unparseable falls back to nil
-      # and the header shows "now" — better than crashing on replay.
-      def parse_msg_timestamp(value)
-        return value if value.is_a?(Time)
-        return nil if value.nil? || value.to_s.empty?
-
-        Time.parse(value.to_s)
-      rescue ArgumentError
-        nil
       end
 
       # --- Interactive line input with autocomplete ---
@@ -1704,59 +1443,11 @@ module Rubino
         opt(:max_turns) || opt(:"max-turns")
       end
 
-      # Resolves which session this invocation should run against. +auto_resume+
-      # enables the bare-`chat` auto-resume (#99) — only the interactive REPL
-      # opts in; one-shot (`-q`/scripted) keeps the old "fresh unless asked"
-      # behaviour so automation isn't silently hijacked onto a past session.
-      def resolve_session_id(auto_resume: false)
-        # Reap sessions orphaned by a hard kill (SIGKILL) or a closed terminal
-        # whose SIGHUP never landed (#11): end any "active" row whose owning
-        # process is gone before we resolve a resume target, so --continue /
-        # auto-resume never treats a dead session as live.
-        Session::Repository.new.reap_orphaned_active!
-
-        id = opt(:session)
-        return id if id
-
-        resume = opt(:resume) || opt(:r)
-        return resume if resume
-
-        if opt(:continue) || opt(:c)
-          # Explicit --continue/-c resumes the same session a bare `chat`
-          # auto-resume would (#43): the latest RESUMABLE session (any status,
-          # message_count > 0), not just an "active" one — otherwise a cleanly
-          # ended prior session is invisible and -c silently forks a fresh one,
-          # losing context. When there genuinely is none, tell the user instead
-          # of silently starting over.
-          @auto_resumed_session = Session::Repository.new.latest_resumable
-          return @auto_resumed_session[:id] if @auto_resumed_session
-
-          warn pastel.yellow("No previous session to continue — starting a new one.")
-          return nil
-        end
-
-        # --new forces a brand-new session; otherwise a BARE interactive `chat`
-        # auto-resumes the most recent resumable session so a user who closed
-        # the terminal continues where they left off. nil ⇒ no prior session
-        # (true first run) ⇒ fresh session + welcome panel.
-        return nil if opt(:new) || !auto_resume
-
-        @auto_resumed_session = Session::Repository.new.latest_resumable
-        @auto_resumed_session&.dig(:id)
-      end
-
-      # True when the chat was started against an existing session (--resume /
-      # --continue / explicit --session / bare-chat auto-resume): show its
-      # history rather than the first-run welcome panel.
-      def resuming_session?
-        !!(opt(:session) || opt(:resume) || opt(:r) || opt(:continue) || opt(:c) ||
-           @auto_resumed_session)
-      end
-
-      # Rebuilds the runner on a chosen session (the /sessions in-chat resume)
-      # and replays its history so the transcript matches what was there before.
-      def resume_runner(ui, session_id)
-        runner = Agent::Runner.new(
+      # Builds an Agent::Runner with this invocation's shared flag overrides —
+      # only the session and UI vary per call site (one-shot, interactive boot,
+      # /sessions resume, /new).
+      def build_runner(session_id:, ui:)
+        Agent::Runner.new(
           session_id: session_id,
           model_override: model_name,
           provider_override: opt(:provider),
@@ -1764,21 +1455,20 @@ module Rubino
           ignore_rules: opt(:ignore_rules) || false,
           ui: ui
         )
-        print_session_history(ui, runner.session[:id])
+      end
+
+      # Rebuilds the runner on a chosen session (the /sessions in-chat resume)
+      # and replays its history so the transcript matches what was there before.
+      def resume_runner(ui, session_id)
+        runner = build_runner(session_id: session_id, ui: ui)
+        session_resolver.print_session_history(ui, runner.session[:id])
         runner
       end
 
       # Builds a runner on a brand-new session (the in-chat `/new`), without
       # passing any session_id so the runner creates a fresh one.
       def fresh_runner(ui)
-        Agent::Runner.new(
-          session_id: nil,
-          model_override: model_name,
-          provider_override: opt(:provider),
-          max_turns: max_turns_override,
-          ignore_rules: opt(:ignore_rules) || false,
-          ui: ui
-        )
+        build_runner(session_id: nil, ui: ui)
       end
 
       # `--yolo` is the CLI flag form of `/mode yolo`. We route both through

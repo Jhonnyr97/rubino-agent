@@ -13,7 +13,7 @@ RSpec.describe Rubino::CLI::ChatCommand, "--continue resolves resumable" do
   end
 
   def resolve(opts)
-    described_class.new(opts).send(:resolve_session_id)
+    Rubino::CLI::Chat::SessionResolver.new(opts).resolve_session_id
   end
 
   it "resumes the most recent cleanly-ended session (not a new one)" do
