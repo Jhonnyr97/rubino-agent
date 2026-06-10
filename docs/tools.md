@@ -103,8 +103,10 @@ Execute a shell command. Foreground blocks until exit or `timeout`; pass `run_in
 
 Commands run under `bash -o pipefail` (foreground and background), so a failure in the **middle** of a pipeline surfaces as the pipeline's exit code instead of being masked by an innocuous last stage. One consequence: an early-closing consumer (`cmd | head -1`) makes the upstream stage exit 141 (128+SIGPIPE); the tool reports the honest exit code with a SIGPIPE note but treats it as success.
 
+Provably read-only commands (`ls`, `grep`, `git log`, ...) run without an approval prompt by default — see [Auto-allowed read-only commands](security.md#auto-allowed-read-only-commands).
+
 ```
-Risk: high (always requires approval unless in allowlist)
+Risk: high (always requires approval unless in allowlist or provably read-only)
 Parameters: command, cwd, timeout, run_in_background
 ```
 

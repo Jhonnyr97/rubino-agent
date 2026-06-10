@@ -285,8 +285,12 @@ terminal:
 ```yaml
 approvals:
   mode: "manual"               # manual | auto | skip
+  auto_allow_readonly: true    # auto-allow provably read-only shell commands (ls, grep, git log, ...) without a prompt
+  readonly_commands: []        # extra command names / leading-token prefixes (e.g. "docker ps") merged into the built-in read-only set
   wait_timeout_seconds: 900    # how long a run waits on a human decision before auto-DENYing (null = forever)
 ```
+
+See [security.md](security.md#auto-allowed-read-only-commands) for the read-only parse rules (the hardline floor and `permissions: deny` always run first).
 
 ### permissions
 

@@ -284,6 +284,19 @@ module Rubino
         raw.to_f
       end
 
+      # Auto-allow provably read-only shell commands (ls, cat, grep, git log,
+      # ...) without an approval prompt. Default ON (key absent = on); the
+      # hardline floor and permissions:deny still precede it.
+      def auto_allow_readonly?
+        dig("approvals", "auto_allow_readonly") != false
+      end
+
+      # Extra command names / leading-token prefixes merged into the built-in
+      # read-only set (Security::ReadonlyCommands::SAFE_COMMANDS).
+      def approvals_readonly_commands
+        dig("approvals", "readonly_commands") || []
+      end
+
       # When true, a `shell` tool call must always be confirmed in manual mode
       # even if the tool's own risk level wouldn't otherwise require it. Default
       # true (key absent = on) so shell-by-default stays gated behind a human.

@@ -15,7 +15,7 @@ Yes. `tools.shell` is **on by default** because the agent ships to run inside an
 3. **yolo / skip-approvals** — allow-exit (the doom-loop guard still applies).
 4. **Doom-loop guard** — breaks an autopilot stuck repeating the same call.
 5. **`permissions: allow` / `ask`** — remaining explicit rules.
-6. **Command allowlist** (prefix match) — pre-approved commands → allow.
+6. **Command allowlist** (prefix match) — pre-approved commands → allow. Then the **read-only auto-allow** at the same seam: a shell command the parser can prove read-only (see [Auto-allowed read-only commands](#auto-allowed-read-only-commands)) → allow.
 7. **Shell confirm policy** — `confirm_all` → ask; `dangerous_only` → ask only if the command matches a dangerous pattern, else allow.
 8. **Mode fallback** — `skip` allows; `auto` asks only for high-risk tools; `manual` asks for any risky tool.
 
@@ -69,6 +69,35 @@ security:
 ```
 
 An **empty** allowlist pre-approves nothing — pre-approval is opt-in.
+
+## Auto-allowed read-only commands
+
+A built-in allowlist layer (`Security::ReadonlyCommands`, **on by default**) lets provably read-only shell commands run without a prompt. It is evaluated at the same decision step as the command allowlist — *below* the hardline floor and `permissions: deny`, which always win, even for commands you add yourself.
+
+The built-in set: `ls`, `pwd`, `find`, `cat`, `head`, `tail`, `grep`, `rg`, `wc`, `file`, `stat`, `du`, `df`, `which`, `whoami`, `date`, `tree`, `echo`, plus read-only git subcommands (`git status|log|diff|show|rev-parse|blame`, `git branch` in pure listing form, `git remote`/`git remote -v`).
+
+A command auto-allows only when the **entire line** parses as safe:
+
+- no output redirection (`>`, `>>`, `2>`; `tee` is simply not in the set) — plain `<` input redirection is fine;
+- no command substitution (`` ` `` or `$(...)`) or process substitution (`<(...)`, `>(...)`) in a live context (single-quoted text is literal and stays allowed);
+- chains (`|`, `&&`, `;`, `||`) only when **every** segment starts with a command from the set — `grep -rn TODO lib | head -20` runs, `cat file; rm file` prompts;
+- no wrapper heads smuggling execution (`env`, `xargs`, `sh -c`, `bash -c`, `sudo`, `nohup` are not in the set);
+- no leading variable assignments (`FOO=bar ls` prompts — an assignment can change what the command resolves to);
+- no mutating flags on otherwise-safe heads: `find -exec/-execdir/-ok/-okdir/-delete/-fprintf/-fprint/-fls`, `date -s/--set`, `tree -o`, `git ... --output`;
+- no `&` backgrounding, comments, or unbalanced quotes;
+- no dangerous-pattern match on the whole line (defense-in-depth for user-extended sets).
+
+Anything the parser cannot prove safe **fails closed to the normal approval prompt** — never to silent execution.
+
+Configure it under `approvals`:
+
+```yaml
+approvals:
+  auto_allow_readonly: true   # set false to prompt for everything again
+  readonly_commands:          # extend the built-in set; same parse validation applies
+    - "jq"                    # bare name matches that command head
+    - "docker ps"             # multi-word entry matches those leading tokens
+```
 
 ## Deny/approve scope: once vs session
 

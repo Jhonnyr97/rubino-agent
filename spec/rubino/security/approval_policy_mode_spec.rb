@@ -30,10 +30,10 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "allows a risky shell call that would otherwise be :ask" do
-      expect(policy.decide(risky_tool, arguments: { "command" => "ls" })).to eq(:ask)
+      expect(policy.decide(risky_tool, arguments: { "command" => "make build" })).to eq(:ask)
 
       Rubino::Modes.set(:yolo)
-      expect(policy.decide(risky_tool, arguments: { "command" => "ls" })).to eq(:allow)
+      expect(policy.decide(risky_tool, arguments: { "command" => "make build" })).to eq(:allow)
     end
 
     it "STILL denies an explicit permissions:deny rule (deny-before-allow; S2)" do
