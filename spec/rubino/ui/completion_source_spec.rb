@@ -121,6 +121,32 @@ RSpec.describe Rubino::UI::CompletionSource do
     end
   end
 
+  # #188: a positional source may INCLUDE the NONE_ENTRY string in its own
+  # list (the /skills first position mixes names and the enable/disable
+  # verbs) — the entry keeps the same special matching the no-arg shape gives
+  # it instead of being dropped by the literal `✗ ` prefix filter.
+  describe "#arg_candidates_for (positional source carrying NONE_ENTRY)" do
+    subject(:source) do
+      grammar = lambda { |args|
+        args.empty? ? [described_class::NONE_ENTRY, "enable", "disable", "ruby-expert"] : []
+      }
+      described_class.new(commands: commands, arg_sources: { "skills" => grammar })
+    end
+
+    it "leads with the ✗ none entry on an empty partial" do
+      expect(source.arg_candidates_for("skills", ""))
+        .to eq([described_class::NONE_ENTRY, "enable", "disable", "ruby-expert"])
+    end
+
+    it "keeps the ✗ none entry while typing toward 'none'" do
+      expect(source.arg_candidates_for("skills", "no")).to eq([described_class::NONE_ENTRY])
+    end
+
+    it "drops the ✗ none entry once the partial diverges from 'none'" do
+      expect(source.arg_candidates_for("skills", "en")).to eq(["enable"])
+    end
+  end
+
   # #39: a POSITIONAL source (one-arg proc) owns a per-position grammar — it
   # receives the prior arguments and decides what completes next, so the
   # /agents `<id> steer|probe|--stop` surface is discoverable from the same

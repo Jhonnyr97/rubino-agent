@@ -54,7 +54,11 @@ module Rubino
       #     * a ONE-ARG proc — receives the PRIOR-argument array and decides
       #       what completes at this position (e.g. "agents": [] → live ids,
       #       [id] → steer/probe/--stop), so a subcommand grammar is
-      #       discoverable from the same dropdown (#39). No `✗ none` entry.
+      #       discoverable from the same dropdown (#39). No `✗ none` entry is
+      #       injected — but the source may INCLUDE the NONE_ENTRY string in
+      #       its own list (e.g. "skills", whose first position mixes the
+      #       activate-by-name list with the enable/disable verbs, #188), and
+      #       it keeps the same special matching the no-arg shape gives it.
       #       Closed enums (`/mode`, `/reasoning`, `/think`, #185) use this
       #       shape too — `->(args) { args.empty? ? VALUES : [] }` — exactly
       #       because it carries no `✗ none` entry (there is no "clear" for a
@@ -120,9 +124,23 @@ module Rubino
             # (e.g. a filesystem glob) and owns the matching — see #initialize.
             Array(source.call(args, partial.to_s))
           else
-            Array(source.call(args)).select { |n| n.to_s.downcase.start_with?(down) }
+            positional_candidates(source.call(args), down)
           end
         list.first(MAX_CANDIDATES)
+      end
+
+      # Prefix-filtered candidates from a positional (one-arg) source. A
+      # literal NONE_ENTRY in the source's list (the /skills first position,
+      # #188) keeps the clear entry's special matching — shown on an empty
+      # partial or while typing toward "none" — instead of being dropped by
+      # the literal `✗ ` prefix filter.
+      def positional_candidates(list, down)
+        list     = Array(list)
+        has_none = list.delete(NONE_ENTRY)
+        matched  = list.select { |n| n.to_s.downcase.start_with?(down) }
+        return matched unless has_none && (down.empty? || NONE.start_with?(down))
+
+        [NONE_ENTRY] + matched
       end
 
       # Directory candidates for a PATH-shaped argument (`/add-dir `, #185) —

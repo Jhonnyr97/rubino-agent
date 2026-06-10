@@ -44,4 +44,34 @@ RSpec.describe Rubino::CLI::ConfigCommand do
       expect(warn[:message]).to include("not found")
     end
   end
+
+  # #187: secret-named keys are MASKED on display by both `show` and `get`
+  # (CLI::ConfigCommand.redact — the same rendering the in-chat /config
+  # shares), instead of dumping credentials into the terminal scrollback.
+  describe "secret masking on display" do
+    before do
+      File.write(config_path, { "model" => { "default" => "openai/gpt-4.1",
+                                             "api_key" => "sk-super-secret-123" } }.to_yaml)
+      Rubino.reload_configuration!
+    end
+
+    after { Rubino.reload_configuration! }
+
+    it "masks api_key in `config show` while leaving plain keys readable" do
+      described_class.new.show
+
+      dump = ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }.join("\n")
+      expect(dump).not_to include("sk-super-secret-123")
+      shown = YAML.safe_load(dump)
+      expect(shown.dig("model", "api_key")).to eq("***")
+      expect(shown.dig("model", "default")).to eq("openai/gpt-4.1")
+    end
+
+    it "masks api_key in `config get`" do
+      described_class.new.get("model.api_key")
+
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message]).to eq("model.api_key = ***")
+    end
+  end
 end

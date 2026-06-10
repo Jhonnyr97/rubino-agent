@@ -25,7 +25,12 @@ module Rubino
             raise NotFoundError.new("skill", name) unless @registry.find(name)
 
             attrs = request.validate!(Schemas::ToggleSkill)
-            @state_repository.set(name, enabled: attrs[:enabled])
+            # The shared toggle write path (Skills::Toggle, #188) — the same
+            # registry-validated StateRepository write the in-chat
+            # `/skills enable|disable` and the `rubino skills` CLI verbs run.
+            ::Rubino::Skills::Toggle.set(name, enabled: attrs[:enabled],
+                                               registry: @registry,
+                                               state_repository: @state_repository)
             [200, { name: name, enabled: attrs[:enabled] }]
           end
         end

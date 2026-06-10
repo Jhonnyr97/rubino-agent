@@ -114,6 +114,21 @@ module Rubino
         dataset.all
       end
 
+      # Finds one job by full id or short-id prefix (the 8-char ids the list
+      # renders — same prefix resolution the memory store gives /memory show).
+      # nil when nothing matches; the first match wins on an ambiguous prefix.
+      def find(id)
+        return nil if id.to_s.empty?
+
+        @db[:jobs].where(Sequel.like(:id, "#{id}%")).first
+      end
+
+      # Status counts for the whole queue (status => count), one grouped
+      # query — the in-chat /jobs header line (#187). {} when the queue is empty.
+      def counts
+        @db[:jobs].group_and_count(:status).to_h { |row| [row[:status], row[:count]] }
+      end
+
       # Returns count of pending jobs
       def pending_count
         @db[:jobs].where(status: "queued").count
