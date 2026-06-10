@@ -37,10 +37,22 @@ module Rubino
 
         ui.table(headers: %w[Tool Status], rows: rows)
 
+        print_enable_hint(rows)
         print_mcp_tools
       end
 
       private
+
+      # A disabled row with no pointer is a dead end (#20): name the exact
+      # config command that turns the group back on.
+      def print_enable_hint(rows)
+        disabled = rows.select { |_, status| status == "disabled" }.map(&:first)
+        return if disabled.empty?
+
+        ui = Rubino.ui
+        ui.blank_line
+        ui.info("Enable with: rubino config set tools.<name> true   (e.g. tools.#{disabled.first})")
+      end
 
       # Lists tools from configured MCP servers (#91). Configuring
       # `mcp.servers` is the opt-in: the Manager connects, prefixes each tool
