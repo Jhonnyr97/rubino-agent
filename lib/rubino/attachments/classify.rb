@@ -35,6 +35,21 @@ module Rubino
       ].freeze
       IMAGE_EXTS = %w[.png .jpg .jpeg .gif .webp .bmp .tiff .tif].freeze
 
+      # Leading magic bytes per recognised image MIME (WebP is special-cased:
+      # RIFF container + WEBP tag). Marcel lets the file NAME break the tie
+      # when the content sniff only yields a generic type (text/plain,
+      # octet-stream), so a text file renamed fake.png came back image/png and
+      # was shipped to the provider (#158). An image verdict must therefore be
+      # backed by the actual signature.
+      IMAGE_SIGNATURES = {
+        "image/png" => ["\x89PNG\r\n\x1a\n".b],
+        "image/jpeg" => ["\xFF\xD8\xFF".b],
+        "image/gif" => ["GIF87a".b, "GIF89a".b],
+        "image/bmp" => ["BM".b],
+        "image/x-ms-bmp" => ["BM".b],
+        "image/tiff" => ["II*\x00".b, "MM\x00*".b]
+      }.freeze
+
       module_function
 
       # Returns a Classification. Never raises on suspicious input -- returns
@@ -82,6 +97,18 @@ module Rubino
         basename = File.basename(real)
         mime = Marcel::MimeType.for(Pathname(real), name: basename).to_s
 
+        # Extension-spoof gate (#158): an image verdict that the magic bytes
+        # don't back up came from the extension, not the content. Re-resolve
+        # from content alone (no name:); when that is generic too, the text/
+        # binary sniff names the honest type — so fake.png full of text is
+        # rejected at the staging gate as text/plain, before any network call.
+        if IMAGE_MIMES.include?(mime) && !image_signature?(real, mime)
+          mime = Marcel::MimeType.for(Pathname(real)).to_s
+          if mime.empty? || mime == "application/octet-stream"
+            return base_helper.send(:binary?, real) ? [:binary, "application/octet-stream"] : [:text, "text/plain"]
+          end
+        end
+
         # Octet-stream / unknown: magic gave nothing -> fall back to a
         # text-vs-binary sniff (reuse ReadTool#binary?). A binary sniff stays
         # binary (stricter); a text sniff is text.
@@ -106,6 +133,15 @@ module Rubino
         return :text     if textual_application_mime?(mime)
 
         :binary
+      end
+
+      # True when the file's leading bytes carry the signature +mime+ claims.
+      # Unknown image MIMEs fail closed (no signature -> not verified).
+      def image_signature?(real, mime)
+        head = File.binread(real, 16).to_s.b
+        return head.start_with?("RIFF") && head[8, 4] == "WEBP" if mime == "image/webp"
+
+        Array(IMAGE_SIGNATURES[mime]).any? { |sig| head.start_with?(sig) }
       end
 
       # JSON/XML/YAML/JS and friends arrive as application/* but are text.

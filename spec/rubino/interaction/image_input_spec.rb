@@ -10,9 +10,13 @@ RSpec.describe Rubino::Interaction::ImageInput do
     end
   end
 
+  # Fixtures carry REAL magic bytes for their extension: the attachment gate
+  # verifies image signatures (#158), so an extension alone no longer passes.
   def make(name)
     path = File.join(@dir, name)
-    File.binwrite(path, "x")
+    sig = { ".png" => "\x89PNG\r\n\x1a\n", ".jpg" => "\xFF\xD8\xFF", ".jpeg" => "\xFF\xD8\xFF",
+            ".gif" => "GIF89a", ".webp" => "RIFF\x20\x00\x00\x00WEBPVP8 ", ".bmp" => "BM" }[File.extname(name)]
+    File.binwrite(path, "#{sig}x".b)
     path
   end
 
@@ -153,6 +157,17 @@ RSpec.describe Rubino::Interaction::ImageInput do
       expect(result.rejected.size).to eq(1)
       expect(result.rejected.first[:path]).to eq(spoof)
       expect(result.rejected.first[:reason]).to include("not a valid image (content is application/zip)")
+    end
+
+    it "rejects a TEXT file renamed .png — Marcel's extension fallback must not win (#158)" do
+      spoof = File.join(@dir, "fake.png")
+      File.write(spoof, "this is not an image\n")
+
+      result = described_class.parse("describe @#{spoof}")
+
+      expect(result.image_paths).to be_empty
+      expect(result.text).to eq("describe")
+      expect(result.rejected.first[:reason]).to eq("not a valid image (content is text/plain)")
     end
 
     it "rejects an image exceeding max_file_bytes with a human-readable reason" do

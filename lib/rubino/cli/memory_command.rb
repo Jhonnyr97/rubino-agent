@@ -29,7 +29,7 @@ module Rubino
         end
 
         rows = memories.map do |m|
-          [m[:id][0..7], m[:kind], m[:content][0..60], m[:created_at]]
+          [m[:id][0..7], m[:kind], "#{m[:content][0..60]}#{retired_marker(m)}", m[:created_at]]
         end
 
         Rubino.ui.table(
@@ -86,6 +86,18 @@ module Rubino
       end
 
       private
+
+      # `--all` surfaces soft-retired rows next to live ones; without a flag
+      # they were indistinguishable and the supersession chain needed a `show`
+      # per id (#161). Marks a tombstone with its retirement date and, when
+      # known, the short id of the fact that replaced it.
+      def retired_marker(memory)
+        return "" unless memory[:valid_to]
+
+        marker = " (retired #{memory[:valid_to][0..9]}"
+        marker += " → #{memory[:superseded_by][0..7]}" if memory[:superseded_by]
+        "#{marker})"
+      end
 
       # Resolve the *configured* memory backend (default: sqlite tiny-Zep), the
       # same store the agent loop, the in-chat `/memory` view and the HTTP

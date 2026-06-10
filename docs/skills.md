@@ -266,9 +266,41 @@ tools:
   skill: false   # the agent can no longer load skills
 ```
 
-You can also toggle individual skills on/off (via the skill state / `/skills`),
-which removes them from the Level-1 index and makes the tool return a "disabled"
-message if invoked by name.
+Individual skills can also be toggled on/off through the **skill-state API**
+(`PUT /v1/skills/<name>` with `{ "enabled": false }`; persisted in the
+`skill_states` table, default-enabled — see [docs/api/v1.md](api/v1.md)).
+Disabling a skill removes it from the Level-1 index and makes the tool return a
+distinct "disabled" message if invoked by name.
+
+Note: the interactive `/skills` command does **not** enable or disable skills —
+it activates one (next section), which is a different concept.
+
+### Active skill (`/skills`)
+
+On top of the model-driven 3-level disclosure, the *user* can pin one skill as
+the session's **active skill** from interactive chat:
+
+- `/skills` — list the available skills, with `(disabled)` and `(active)`
+  markers.
+- `/skills <name>` — activate `<name>`: its full body is **force-loaded into the
+  system prompt every turn** (no `skill` tool call needed), until cleared or the
+  process exits. Typing `/skills ` opens a dropdown picker of skill names,
+  headed by a `✗ none` clear entry.
+- `/skills none` (or picking `✗ none`) — clear the active skill:
+  `✓ Cleared active skill (was: <name>).`
+
+While a skill is active the prompt chip shows it — `default (skill: <name>) ❯` —
+so you always know what extra instructions the model is carrying. A fresh
+`rubino chat` boots with no active skill.
+
+Activation respects the folder-trust gate: a project-local skill that lives in
+an untrusted directory is refused with a reason (its `SKILL.md` would never be
+injected), instead of showing an active chip with no effect.
+
+**Activate vs enable/disable:** activating loads one skill's body into context
+for *this session* (a per-session pin); enabling/disabling (the skill-state API
+above) controls whether a skill exists in the Level-1 index *at all*, for every
+session. They are independent surfaces.
 
 ### Skills vs custom commands
 
