@@ -36,6 +36,18 @@ module Rubino
         nil
       end
 
+      # `/mcp reload` (#182): stop every server (deregistering their tools),
+      # drop the memoized Manager, re-read config.yml fresh and boot again —
+      # so a server added to config becomes usable without restarting chat.
+      # Returns the new Manager, or nil when the re-read config leaves MCP
+      # disabled (no servers / mcp.enabled: false).
+      def reload!
+        @manager&.stop_all!
+        @manager = nil
+        Rubino.reload_configuration!
+        boot!
+      end
+
       # Clears the booted Manager (used by tests).
       def reset!
         @manager = nil

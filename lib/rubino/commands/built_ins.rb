@@ -20,6 +20,7 @@ module Rubino
         "/tasks" => "Alias for /agents",
         "/reply" => "Answer a subagent that is blocked waiting on you (ask_parent)",
         "/skills" => "List skills, or activate one for the session (/skills NAME; 'none' clears)",
+        "/mcp" => "List MCP servers and their tools; restart or disable one",
         "/add-dir" => "Add an extra allowed workspace directory (write/edit can reach it)",
         "/dirs" => "List the current workspace roots",
         "/mode" => "Show or switch mode (default | plan | yolo)",

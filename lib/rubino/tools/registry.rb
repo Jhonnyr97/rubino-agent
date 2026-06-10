@@ -23,6 +23,13 @@ module Rubino
           @tools[name.to_s]
         end
 
+        # Removes a tool by name (#182): stopping an MCP server must also drop
+        # its MCPToolWrapper instances, or the model keeps seeing tools whose
+        # client is gone and every call fails.
+        def unregister(name)
+          @tools.delete(name.to_s)
+        end
+
         # Returns all registered tools
         def all
           @tools.values

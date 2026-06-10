@@ -70,4 +70,34 @@ RSpec.describe Rubino::MCP do
       expect(warning[:message]).to include("MCP startup failed", "spawn failed")
     end
   end
+
+  # #182 — /mcp reload: stop everything, re-read config.yml, boot fresh, so a
+  # server added to config becomes usable without restarting chat.
+  describe ".reload!" do
+    let(:configured_raw) { { "mcp" => { "servers" => { "fs" => { "command" => "x" } } } } }
+
+    it "stops the old manager, re-reads config and boots a new one" do
+      stub_configuration(configured_raw)
+      allow(Rubino).to receive(:reload_configuration!)
+      old_manager = instance_double(Rubino::MCP::Manager, start_all!: {}, stop_all!: nil)
+      allow(Rubino::MCP::Manager).to receive(:new).and_return(old_manager)
+      described_class.boot!
+
+      new_manager = instance_double(Rubino::MCP::Manager, start_all!: {})
+      allow(Rubino::MCP::Manager).to receive(:new).and_return(new_manager)
+
+      expect(described_class.reload!).to be(new_manager)
+      expect(old_manager).to have_received(:stop_all!)
+      expect(Rubino).to have_received(:reload_configuration!)
+      expect(described_class.manager).to be(new_manager)
+    end
+
+    it "returns nil (and keeps no manager) when the re-read config leaves MCP disabled" do
+      stub_configuration({})
+      allow(Rubino).to receive(:reload_configuration!)
+
+      expect(described_class.reload!).to be_nil
+      expect(described_class.manager).to be_nil
+    end
+  end
 end
