@@ -69,7 +69,8 @@ is set.
 - `@` tokens and dropped paths resolve **relative to the current working directory**; a token that isn't a readable image file is left as literal text in the prompt (not an error).
 - Every candidate is validated by the attachment policy ([`attachments.policy`](configuration.md#attachments): content classification by magic bytes + the 25 MB `max_file_bytes` cap) **before** any network call. A rejected file is a clean one-line error in one-shot mode, or a warning (and the file is not attached) in interactive chat.
 - In one-shot mode a `sending image (N MB)…` status line is printed to stderr before the upload, so a large attachment doesn't look like a freeze.
-- In interactive chat, a line containing **only** an image stages the attachment — it is sent with your next message; `/clear-images` drops anything staged. A line with text *and* an image sends both immediately.
+- In interactive chat, a line containing **only** an image stages the attachment — it is sent with your next message; `/clear-images` drops **everything** staged, however it was added (`/paste`, `@image` token, `--image`, or a dropped path). A line with text *and* an image sends both immediately.
+- `/paste` reads the clipboard via an external tool: `pngpaste` on macOS, `wl-paste` or `xclip` on Linux. When none is installed it warns instead of failing silently.
 
 ### Auto-resume and continuity
 
