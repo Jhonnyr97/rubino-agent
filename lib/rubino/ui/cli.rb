@@ -615,16 +615,35 @@ module Rubino
       end
 
       # The per-frame paint strategy for the thinking animation, or nil when
-      # the output can't host one (a pipe): the composer's transient row when
-      # $stdout offers #live, else an in-place CR repaint on a bare TTY (#58).
+      # the output can't host one (a pipe with no composer). Frames go through
+      # #paint_live, which re-resolves the right seam on EVERY frame — so a
+      # ticker that outlives a composer/proxy swap can never paint through a
+      # stale handle (#169).
       def thinking_painter
+        return unless $stdout.respond_to?(:live) || BottomComposer.current || tty_stdout?
+
+        method(:paint_live)
+      end
+
+      # Paints (or, with an empty +frame+, clears) the ONE transient live row
+      # through whichever seam owns the bottom of the screen, resolved per call:
+      #   * during a turn $stdout is the StdoutProxy — #live replaces the
+      #     composer's transient row under its render mutex;
+      #   * an ACTIVE composer without the proxy is painted via
+      #     BottomComposer#set_partial — same row, same mutex — NEVER with a raw
+      #     CR repaint that would clobber the pinned prompt line (#169);
+      #   * a bare TTY with no composer (the cooked /probe wait, #58; one-shot)
+      #     repaints in place via CR + clear-line;
+      #   * a pipe hosts nothing — raw escapes must not leak into the cooked
+      #     output (#56).
+      def paint_live(frame)
         if $stdout.respond_to?(:live)
-          ->(frame) { $stdout.live(frame) }
+          $stdout.live(frame)
+        elsif (composer = BottomComposer.current)
+          composer.set_partial(frame)
         elsif tty_stdout?
-          lambda { |frame|
-            $stdout.print("\r\e[2K#{frame}")
-            $stdout.flush
-          }
+          $stdout.print("\r\e[2K#{frame.to_s.tr("\n", " ")}")
+          $stdout.flush
         end
       end
 
@@ -1061,24 +1080,13 @@ module Rubino
         text.to_s.lines.count { |l| l.match?(StreamingMarkdown::FENCE_RE) }.odd?
       end
 
-      # Shows the raw in-progress tail in the live region. With the composer
-      # active, $stdout is the StdoutProxy and #live REPLACES the transient row.
-      # On the plain path (real IO, no #live) we redraw it in place with a CR +
-      # clear-line so the partial updates live without scrolling a copy per token
-      # — it gets re-rendered + committed once its block completes. A blank tail
-      # just clears the transient row.
+      # Shows the raw in-progress tail in the live region — #paint_live resolves
+      # the seam (proxy #live / active composer row / CR repaint on a bare TTY /
+      # skipped into a pipe). A blank tail just clears the transient row.
+      # Nothing is lost on the skipped path — every block is still rendered +
+      # committed in full when it completes.
       def show_live_tail(tail)
-        if $stdout.respond_to?(:live)
-          $stdout.live(tail)
-        elsif tty_stdout?
-          $stdout.print("\r\e[2K")
-          $stdout.print(tail.tr("\n", " ")) unless tail.empty?
-          $stdout.flush
-        end
-        # Into a pipe (no #live, no TTY) the tail is skipped entirely: an
-        # in-place repaint needs a cursor, and its CR/clear escapes would leak
-        # into the cooked output (#56). Nothing is lost — every block is still
-        # rendered + committed in full when it completes.
+        paint_live(tail)
       end
 
       # Commits any in-progress streaming so the next committed output (the
@@ -1113,10 +1121,9 @@ module Rubino
         nil
       end
 
-      # Erases the transient "thinking…" line. With the composer active the
-      # indicator lives in the StdoutProxy's partial buffer, so we reset that
-      # transient row via #live("") (same seam #show_live_tail uses); on the
-      # plain path we erase the line in place with a CR + clear-line.
+      # Erases the transient "thinking…" line through the same seam the frames
+      # used (#paint_live): the proxy/composer transient row when one is active,
+      # else an in-place CR + clear-line on a bare TTY.
       def clear_thinking_indicator
         return unless @thinking_indicator
 
@@ -1124,11 +1131,7 @@ module Rubino
         # erase it (no print-after-clear leak). join is bounded by the tick.
         stop_thinking_animation
 
-        if $stdout.respond_to?(:live)
-          $stdout.live("")
-        else
-          clear_line
-        end
+        paint_live("")
         $stdout.flush
         @thinking_indicator = false
       end

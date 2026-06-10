@@ -1020,6 +1020,73 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         expect(line).to be_nil # exit
       end
+
+      # #169 — the `✓ saved to memory` class of post-turn lines: anything
+      # printed while the IDLE composer is pinned must commit ABOVE the input
+      # through the composer (the same StdoutProxy swap a turn gets), never raw
+      # onto the terminal row the composer owns. $stdout is swapped on purpose:
+      # the seam under test IS which IO the note lands in.
+      # rubocop:disable RSpec/ExpectOutput
+      it "routes $stdout through the composer so background notes commit above the prompt (#169)" do
+        ui  = Rubino::UI::CLI.new
+        old = $stdout
+        idle_tty = StringIO.new
+        $stdout = idle_tty
+        begin
+          typist = Thread.new do
+            sleep 0.05
+            ui.note("✓ saved to memory · 1 fact (a791dcd3)")
+            "ok".each_char { |c| fake_composer.handle_key(c) }
+            fake_composer.handle_key("\r")
+          end
+
+          line = cmd.send(:read_idle_line, input_queue, nil)
+          typist.join
+
+          expect(line).to eq("ok")
+          # The note went through the composer's machinery...
+          expect(output.string).to include("saved to memory")
+          # ...not raw onto the terminal the composer owns.
+          expect(idle_tty.string).not_to include("saved to memory")
+          # And the real stdout is restored after the read.
+          expect($stdout).to be(idle_tty)
+        ensure
+          $stdout = old
+        end
+      end
+      # rubocop:enable RSpec/ExpectOutput
+    end
+
+    # #169 — the IN-TURN composer must carry the same completion + history
+    # wiring as the idle one: the post-turn window (inline memory/skill jobs
+    # spending aux-LLM seconds after the `↳ turn` footer) keeps the turn
+    # composer on screen, and `/` + `@` must open their dropdowns there too.
+    describe "#start_composer completion wiring (#169)" do
+      # rubocop:disable RSpec/ExpectOutput -- start_composer swaps $stdout itself; restore it.
+      it "wires the turn composer with the shared completion source and history" do
+        cmd = described_class.new({})
+        source  = instance_double(Rubino::UI::CompletionSource)
+        history = Rubino::UI::InputHistory.new
+        cmd.instance_variable_set(:@completion_source, source)
+        cmd.instance_variable_set(:@input_history, history)
+
+        composer = instance_double(Rubino::UI::BottomComposer, start: nil)
+        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
+        expect(Rubino::UI::BottomComposer).to receive(:new)
+          .with(hash_including(completion_source: source, history: history))
+          .and_return(composer)
+
+        runner = instance_double(Rubino::Agent::Runner, cancel!: nil)
+        old = $stdout
+        begin
+          got, real = cmd.send(:start_composer, Rubino::Interaction::InputQueue.new, runner)
+          expect(got).to be(composer)
+          expect(real).to be(old)
+        ensure
+          $stdout = old
+        end
+      end
+      # rubocop:enable RSpec/ExpectOutput
     end
 
     # Drives run_turn with a runner that blocks on a latch until the test has

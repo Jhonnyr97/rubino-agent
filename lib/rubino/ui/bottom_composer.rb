@@ -327,6 +327,12 @@ module Rubino
       # in-progress line appears live and grows in place — like prompt_toolkit
       # batching a partial line. {#print_above} (a committed line) clears it.
       def set_partial(str)
+        # While SUSPENDED (run_in_terminal: an approval/ask owns the real
+        # terminal) a live repaint here would draw the partial + prompt rows
+        # straight over the interactive prompt. Drop the frame — the next
+        # #resume redraws the region and the ticker's next frame lands normally.
+        return if @suspended
+
         @render.synchronize do
           @partial = (str || "").to_s
           render_frame(committed: nil)
