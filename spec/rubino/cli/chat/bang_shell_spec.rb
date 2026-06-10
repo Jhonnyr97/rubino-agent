@@ -71,7 +71,8 @@ RSpec.describe Rubino::CLI::Chat::BangShell do
     it "runs in the workspace root" do
       out = capture_bang { bang.handle("! pwd", runner, ui) }
 
-      expect(out).to include(File.realpath(Rubino::Workspace.primary_root))
+      printed = out.lines.first.to_s.strip
+      expect(File.realpath(printed)).to eq(File.realpath(Rubino::Workspace.primary_root))
     end
 
     it "says (no output) for a command that prints nothing" do
