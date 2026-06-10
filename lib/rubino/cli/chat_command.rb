@@ -258,7 +258,7 @@ module Rubino
         interacted = false
         begin
           loop do
-            input = next_input(input_queue)
+            input = next_input(input_queue, runner)
             if input.nil? || exit_command?(input)
               break if confirm_quit?(ui)
 
@@ -504,7 +504,11 @@ module Rubino
       # newline-joined message. The remaining queued items stay parked (their
       # "⏳ queued:" indicators remain) and each runs on a later #next_input.
       # When nothing is queued, fall back to the normal readline prompt.
-      def next_input(input_queue)
+      # +runner+ (optional) feeds the status bar under the idle composer —
+      # model id + context saturation for the CURRENT session, refreshed at
+      # this turn boundary (and so on session resume/branch/new too, which all
+      # rebuild the runner before the next idle prompt).
+      def next_input(input_queue, runner = nil)
         # Take the OLDEST parked line (FIFO). Mark it so #run_turn commits the
         # normal "<prompt><line>" echo (and clears any "⏳ queued:" indicator)
         # when this line runs. The rest stay queued for their own later turns.
@@ -528,7 +532,7 @@ module Rubino
         # the background-subagent card region (F1) when children are live. The
         # plain cooked readline is the fallback for non-TTY / piped / -q input.
         if UI::BottomComposer.active?
-          read_idle_line(input_queue, draft)
+          read_idle_line(input_queue, draft, runner)
         else
           cooked_input(build_prompt, draft)
         end
@@ -547,7 +551,7 @@ module Rubino
       # polling the same InputQueue the composer's reader pushes into (reusing the
       # turn loop's hand-off). A half-typed, un-submitted draft is preserved in
       # @pending_draft on teardown so it survives into the next prompt.
-      def read_idle_line(input_queue, draft)
+      def read_idle_line(input_queue, draft, runner = nil)
         composer = UI::BottomComposer.new(
           input_queue: input_queue,
           prompt: build_prompt,
@@ -556,7 +560,9 @@ module Rubino
           completion_source: @completion_source,
           history: @input_history,
           echo: :prompt,
-          pending_queued: pending_queued
+          pending_queued: pending_queued,
+          status_line: build_status_line(runner),
+          max_input_rows: Rubino.configuration.display_input_max_rows
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -786,8 +792,52 @@ module Rubino
         # footer and the engine thread must not outlive the turn.
         ui.turn_finished if ui.respond_to?(:turn_finished)
         composer.end_turn if composer.respond_to?(:end_turn)
+        # Refresh the status bar (model + context saturation) now that the
+        # turn's messages are persisted — the "after each footer" boundary.
+        # The bar then stays correct for however long this composer remains
+        # pinned (post-turn inline jobs); the next idle composer recomputes it
+        # at build time anyway.
+        composer.set_status(build_status_line(runner)) if composer.respond_to?(:set_status)
         stop_composer(composer, real_stdout)
         Signal.trap("INT", prev) if prev
+      end
+
+      # The status-bar line for the CURRENT session (see UI::StatusBar):
+      # resolved model id + context saturation. Saturation prefers the REAL
+      # usage the provider reported for the session's last response (the
+      # input_tokens the agent loop records in the assistant message metadata
+      # — the whole assembled prompt incl. the system prompt) and falls back
+      # to the SAME estimate the compaction logic runs on —
+      # Context::TokenBudget#estimate_tokens (chars/4) over the stored
+      # messages. The window comes from `model.context_length` /
+      # `context.max_tokens` (TokenBudget's default otherwise), so the
+      # percentage tracks the compaction thresholds. nil (no bar) when
+      # disabled via display.statusbar or on any failure: a cosmetic line
+      # must never break the prompt.
+      def build_status_line(runner)
+        return nil unless runner && Rubino.configuration.display_statusbar?
+
+        session  = runner.session
+        budget   = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
+        messages = ::Rubino::Session::Store.new.for_session(session[:id])
+        UI::StatusBar.render(
+          model: session[:model] || model_name,
+          tokens: context_tokens(messages, budget),
+          window: budget.available_tokens,
+          pastel: pastel
+        )
+      rescue StandardError
+        nil
+      end
+
+      # Estimated tokens in the session's context: the last recorded REAL
+      # context size (input + output of the newest assistant response that
+      # carries usage) when available, else TokenBudget's chars/4 estimate.
+      def context_tokens(messages, budget)
+        last = messages.reverse_each.find { |m| m.metadata&.dig(:input_tokens).to_i.positive? }
+        return last.metadata[:input_tokens].to_i + last.token_count.to_i if last
+
+        budget.estimate_tokens(messages.map { |m| { content: m.content } })
       end
 
       # Commits the just-dequeued prompt as a normal "<prompt><line>" transcript
@@ -848,7 +898,9 @@ module Rubino
                                           on_interrupt: interrupt_handler(runner),
                                           completion_source: @completion_source,
                                           history: @input_history,
-                                          pending_queued: pending_queued)
+                                          pending_queued: pending_queued,
+                                          status_line: build_status_line(runner),
+                                          max_input_rows: Rubino.configuration.display_input_max_rows)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before

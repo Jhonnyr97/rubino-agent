@@ -190,7 +190,15 @@ module Rubino
           # when neither key is set.
           "language" => "en",
           "runtime_footer" => { "enabled" => false },
-          "interim_assistant_messages" => false
+          "interim_assistant_messages" => false,
+          # The dim status bar pinned UNDER the chat input (model id + context
+          # saturation), refreshed at turn boundaries. Omitted automatically
+          # off a TTY or on terminals narrower than 40 columns.
+          "statusbar" => true,
+          # Cap on the chat input's visual rows: a long/multi-line prompt
+          # wraps and grows the input downward up to this many rows, then
+          # scrolls vertically (caret kept in view).
+          "input_max_rows" => 8
         },
         "thinking" => {
           # Reasoning effort: off | low | medium | high. Mapped to an Anthropic
