@@ -72,6 +72,23 @@ RSpec.describe Rubino::CLI::ChatCommand do
         .to eq(["steer", "probe", "--stop"])
       expect(source.arg_candidates_for("agents", "", [entry.id, "steer"])).to eq([])
     end
+
+    # #182: typing `/mcp ` offers the configured server names + reload; after a
+    # server name the on/off verbs complete; reload terminates the grammar.
+    it "completes the /mcp grammar: server names + reload, then on/off" do
+      raw = { "mcp" => { "servers" => { "filesystem" => { "command" => "x" } } } }
+      allow(Rubino).to receive(:configuration).and_return(test_configuration(raw))
+      cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
+      source = described_class.new({}).send(:build_completion_source, cmd_loader)
+
+      expect(source.arg_candidates_for("mcp", "")).to eq(%w[filesystem reload])
+      expect(source.arg_candidates_for("mcp", "", ["filesystem"])).to eq(%w[on off])
+      expect(source.arg_candidates_for("mcp", "", ["reload"])).to eq([])
+      expect(source.arg_candidates_for("mcp", "", %w[filesystem on])).to eq([])
+      expect(source.description_for("/mcp")).to include("MCP servers")
+      expect(source.description_for("reload")).to include("reconnect")
+      expect(source.description_for("off")).to include("stop")
+    end
   end
 
   # #111: the composer's quiet flag routes through the interrupt handler — a

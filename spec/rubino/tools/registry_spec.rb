@@ -20,6 +20,14 @@ RSpec.describe Rubino::Tools::Registry do
     end
   end
 
+  describe ".unregister" do
+    it "removes a tool by name (#182 — MCP off drops the server's wrappers)" do
+      described_class.register(Rubino::Tools::GitTool.new)
+      described_class.unregister("git")
+      expect(described_class.find("git")).to be_nil
+    end
+  end
+
   describe ".all" do
     it "returns all registered tools" do
       described_class.register(Rubino::Tools::GitTool.new)
