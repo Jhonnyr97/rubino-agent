@@ -338,6 +338,8 @@ mcp:
       timeout: 15000
 ```
 
+Experimental. Configuring servers is the opt-in; `mcp.enabled: false` switches MCP off. The `oauth` hash is forwarded verbatim to `ruby_llm-mcp` — rubino implements no OAuth flow itself. See [mcp.md](mcp.md).
+
 ### skills
 
 ```yaml
