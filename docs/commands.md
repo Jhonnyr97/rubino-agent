@@ -194,10 +194,20 @@ The workspace sandbox confines write/edit/delete tools to the workspace roots. `
 
 ### Reasoning display and thinking effort
 
-Two orthogonal knobs (persisted to config, so they survive the session):
+While the model reasons, the CLI shows a live animated status row — a pulsing glyph with an elapsed counter (`✻ thinking…  3s`). When the first answer token arrives the row is torn down and the buffered reasoning collapses per the active render mode:
 
-- `/reasoning [hidden|collapsed|full]` controls how the model's reasoning stream is **rendered**: `hidden` (nothing shown), `collapsed` (the default — a compact indicator, with Ctrl+O revealing the last retained reasoning), or `full` (the whole stream as a dim aside). Bare `/reasoning` shows the current mode. Writes `display.reasoning`.
-- `/think [off|low|medium|high]` controls how much thinking **effort** is requested from the model (mapped to a provider thinking-token budget; `off` disables thinking). Bare `/think` shows the current effort (default `medium`). Writes `thinking.effort`.
+- `collapsed` (default) — a dim one-liner cue: `┄ ✻ thought for 3s · ctrl-o to show ┄`.
+- `full` — the whole reasoning committed as a dim `┊` aside above the answer.
+- `hidden` — nothing is shown, but the last thought is still retained.
+
+**Ctrl+O** reveals the last retained reasoning as the `┊` aside — in `collapsed` mode after the cue, and in `hidden` mode on demand. The reveal is one-way scrollback (a second press is a silent no-op until a new thought arrives).
+
+Two orthogonal knobs control all this (persisted to config, so they survive the session):
+
+- `/reasoning [hidden|collapsed|full]` controls how the reasoning stream is **rendered**, as above. Bare `/reasoning` shows the current mode. Writes `display.reasoning`.
+- `/think [off|low|medium|high]` controls how much thinking **effort** is requested from the model, mapped to an Anthropic-style thinking-token budget (`off`→0, `low`→4000, `medium`→8000, `high`→16000). Bare `/think` shows the current effort (default `medium`). Writes `thinking.effort`.
+
+**Provider caveat:** some anthropic-compatible backends reject thinking budgets. The first such turn is retried once without the budget and a dim `provider doesn't support thinking — effort off` note is printed; the rejection is remembered for the session. Set `/think off` (or `thinking.effort: "off"` in config — quote the `"off"`, bare YAML `off` parses as `false`) to skip the retry entirely. See [configuration.md](configuration.md#reasoning--thinking).
 
 ### Custom commands and `--preview`
 
