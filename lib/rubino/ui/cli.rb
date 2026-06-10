@@ -1055,8 +1055,9 @@ module Rubino
       # when a tool/activity starts with reasoning still buffered (never strand
       # the cue). After committing it retains the buffer in @last_reasoning so a
       # later ctrl-o can re-reveal it, and resets @reasoning_buffer for the next
-      # phase. A no-op in :hidden mode (just clears the animation) and when there
-      # is nothing buffered.
+      # phase. :hidden commits NOTHING but still retains the buffer, so a single
+      # Ctrl+O can pull the last thought back on demand — exactly what the
+      # hidden-mode ack promises (#76).
       def collapse_reasoning
         seconds = thinking_elapsed_seconds
         buffered = @reasoning_buffer
@@ -1065,10 +1066,10 @@ module Rubino
         stop_thinking_animation
         clear_thinking_indicator
 
-        unless buffered.strip.empty? || mode == :hidden
+        unless buffered.strip.empty?
           if mode == :full
             commit_reasoning_aside(buffered, seconds)
-          else
+          elsif mode == :collapsed
             commit_reasoning_cue(seconds)
           end
           @last_reasoning = buffered

@@ -92,6 +92,25 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("answer")
     end
 
+    # Regression for #76: the hidden-mode ack promises "ctrl-o … to bring it
+    # back", but hidden mode never retained the buffer, so Ctrl-O was a silent
+    # no-op. Hidden now commits nothing but still retains the last thought.
+    it "retains the last reasoning in hidden mode so ctrl-o can reveal it (#76)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "hidden")
+      turn = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "secret musing\n")
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(turn).not_to include("secret musing") # still hidden by default
+
+      out = capture_stdout { ui.reveal_last_reasoning }
+      expect(out).to include("┄ thinking ┄")
+      expect(out).to include("┊  secret musing")
+    end
+
     it "reveals the last retained reasoning buffer via ctrl-o (one-way)" do
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
       # Collapse a reasoning phase (collapsed mode) so the buffer is retained.

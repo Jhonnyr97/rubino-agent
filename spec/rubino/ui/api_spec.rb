@@ -30,6 +30,26 @@ RSpec.describe Rubino::UI::API do
     end
   end
 
+  # The adapter no longer drops :thinking deltas in hidden mode (the CLI
+  # retains them unrendered for the Ctrl-O reveal, #76); the HTTP wire keeps
+  # the old contract — hidden means no reasoning deltas reach API consumers.
+  describe "#stream reasoning gate (hidden mode)" do
+    it "drops :thinking chunks when display.reasoning is hidden" do
+      Rubino.configuration.set("display", "reasoning", "hidden")
+      ui.stream(type: :thinking, text: "secret musing")
+      ui.stream(type: :content, text: "answer")
+      streamed = ui.events.select { |e| e[:type] == :stream }
+      expect(streamed.map { |e| e[:payload][:chunk][:text] }).to eq(["answer"])
+    end
+
+    it "passes :thinking chunks through in collapsed/full modes" do
+      Rubino.configuration.set("display", "reasoning", "collapsed")
+      ui.stream(type: :thinking, text: "musing")
+      streamed = ui.events.select { |e| e[:type] == :stream }
+      expect(streamed.map { |e| e[:payload][:chunk][:text] }).to eq(["musing"])
+    end
+  end
+
   describe "#confirm with session-scope cache" do
     # Minimal stand-ins for the real Gate/Recorder collaborators —
     # API only needs the surface API exercised here.

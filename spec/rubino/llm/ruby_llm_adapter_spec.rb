@@ -815,6 +815,37 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
+  # Hidden render mode (#76): the adapter no longer drops :thinking deltas at
+  # the emit gate — the CLI buffers them unrendered so Ctrl-O can reveal the
+  # last thought even in hidden mode; UI::API drops them at its own boundary.
+  # -----------------------------------------------------------------------
+  describe "#stream thinking deltas in hidden mode (#76)" do
+    it "still emits :thinking chunks so the CLI can retain them for ctrl-o" do
+      cfg = test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o",
+                     "temperature" => 0.3, "context_length" => nil },
+        "display" => { "reasoning" => "hidden" }
+      )
+      chunk    = double("Chunk", content: nil, thinking: "private musing")
+      response = double("Response", content: "", input_tokens: 1, output_tokens: 1, tool_calls: nil)
+      c = double("Chat")
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      allow(c).to receive(:ask) do |_, &blk|
+        blk.call(chunk)
+        response
+      end
+      adapter = described_class.new(model_id: "gpt-4o", config: cfg)
+      allow(adapter).to receive(:build_chat).and_return(c)
+
+      seen = []
+      adapter.stream(messages: [{ role: "user", content: "hi" }]) { |ch| seen << ch }
+      expect(seen.map { |ch| ch[:type] }).to include(:thinking)
+      expect(seen.find { |ch| ch[:type] == :thinking }[:text]).to eq("private musing")
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # Graceful thinking degradation (#75): a provider on the anthropic-
   # compatible path that rejects the thinking budget must NOT hard-error the
   # turn — the adapter retries once without the budget, remembers the

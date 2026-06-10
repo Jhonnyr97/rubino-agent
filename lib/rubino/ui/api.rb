@@ -60,7 +60,18 @@ module Rubino
       def status(message) = emit_event(:status, message: message)
       def note(text) = emit_event(:note, text: text)
       def assistant_text(text) = emit_event(:assistant_text, text: text)
-      def stream(chunk) = emit_event(:stream, chunk: chunk)
+
+      # The adapter no longer drops :thinking deltas in hidden mode (the CLI
+      # retains them unrendered for the Ctrl-O reveal, #76); the HTTP wire
+      # keeps the old contract — hidden means no reasoning deltas reach
+      # API consumers, so the gate lives here now.
+      def stream(chunk)
+        return if chunk.is_a?(Hash) && chunk[:type] == :thinking &&
+                  Config::ReasoningPrefs.mode(Rubino.configuration) == :hidden
+
+        emit_event(:stream, chunk: chunk)
+      end
+
       def stream_end = emit_event(:stream_end)
       def thinking_started = emit_event(:thinking_started)
       def table(headers:, rows:) = emit_event(:table, headers: headers, rows: rows)

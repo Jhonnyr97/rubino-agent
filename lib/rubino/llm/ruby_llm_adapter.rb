@@ -185,7 +185,6 @@ module Rubino
           next if text.nil? || text.empty?
 
           buffered << text if type == :content
-          next if type == :thinking && reasoning_hidden?
 
           begin
             block.call({ type: type, text: text, message_id: message_block_id })
@@ -576,9 +575,11 @@ module Rubino
         provider_cfg["anthropic_compatible"] == true
       end
 
-      # True when reasoning is suppressed at the adapter gate. Only the "hidden"
-      # render mode drops :thinking chunks; "collapsed" and "full" both let them
-      # through so the UI can buffer them (collapse cue / full aside).
+      # True when the "hidden" render mode is active. The streaming emit no
+      # longer drops :thinking chunks on it — the CLI buffers them unrendered
+      # so Ctrl-O can reveal the last thought even in hidden mode (#76), and
+      # UI::API drops them at its own boundary. Still gates the bedrock-bearer
+      # client, which has no downstream reveal machinery.
       def reasoning_hidden?
         Config::ReasoningPrefs.mode(@config) == :hidden
       end
