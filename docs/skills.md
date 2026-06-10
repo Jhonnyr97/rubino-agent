@@ -266,13 +266,24 @@ tools:
   skill: false   # the agent can no longer load skills
 ```
 
-Individual skills can also be toggled on/off through the **skill-state API**
-(`PUT /v1/skills/<name>` with `{ "enabled": false }`; persisted in the
-`skill_states` table, default-enabled — see [docs/api/v1.md](api/v1.md)).
-Disabling a skill removes it from the Level-1 index and makes the tool return a
-distinct "disabled" message if invoked by name.
+Individual skills can also be toggled on/off (persisted in the `skill_states`
+table, default-enabled) through any of three equivalent surfaces, all running
+the same registry-validated write (`Skills::Toggle`):
 
-Note: the interactive `/skills` command does **not** enable or disable skills —
+- **In chat** — `/skills enable <name>` / `/skills disable <name>` (#188).
+  Disabling the currently *active* skill also clears the pin (the assembler
+  would silently drop a disabled skill, leaving a lying chip).
+- **CLI** — `rubino skills enable|disable NAME`; `rubino skills list` shows the
+  markers and `rubino skills show NAME` prints the `SKILL.md` body so you can
+  review a skill before enabling it.
+- **HTTP API** — `PUT /v1/skills/<name>` with `{ "enabled": false }` — see
+  [docs/api/v1.md](api/v1.md).
+
+Disabling a skill removes it from the Level-1 index, makes the tool return a
+distinct "disabled" message if invoked by name, and blocks `/skills <name>`
+activation until re-enabled.
+
+Note: a bare `/skills <name>` does **not** enable or disable —
 it activates one (next section), which is a different concept.
 
 ### Active skill (`/skills`)
@@ -284,8 +295,9 @@ the session's **active skill** from interactive chat:
   markers.
 - `/skills <name>` — activate `<name>`: its full body is **force-loaded into the
   system prompt every turn** (no `skill` tool call needed), until cleared or the
-  process exits. Typing `/skills ` opens a dropdown picker of skill names,
-  headed by a `✗ none` clear entry.
+  process exits. Typing `/skills ` opens a dropdown picker of skill names (plus
+  the `enable`/`disable` verbs), headed by a `✗ none` clear entry. A *disabled*
+  skill is refused with a pointer to `/skills enable <name>`.
 - `/skills none` (or picking `✗ none`) — clear the active skill:
   `✓ Cleared active skill (was: <name>).`
 
@@ -298,9 +310,9 @@ an untrusted directory is refused with a reason (its `SKILL.md` would never be
 injected), instead of showing an active chip with no effect.
 
 **Activate vs enable/disable:** activating loads one skill's body into context
-for *this session* (a per-session pin); enabling/disabling (the skill-state API
-above) controls whether a skill exists in the Level-1 index *at all*, for every
-session. They are independent surfaces.
+for *this session* (a per-session pin); enabling/disabling (the chat/CLI/API
+toggle above) controls whether a skill exists in the Level-1 index *at all*,
+for every session. They are independent surfaces.
 
 ### Skills vs custom commands
 

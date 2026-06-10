@@ -1402,8 +1402,12 @@ module Rubino
         #     partial (#185), via the partial-aware two-arg shape.
         #   * /sessions, /memory — verbs + recent ids (#183/#184), the same
         #     per-position grammar /agents ships.
+        #   * /jobs — recent job ids (#187); /config — the get/set/show/path
+        #     verbs + the known config keys flattened from the defaults tree.
+        #   * /skills — the `✗ none` clear entry + the enable/disable verbs +
+        #     the skill names (#188); after a toggle verb, the names again.
         arg_sources = {
-          "skills" => -> { Rubino::Skills::Registry.trusted.names },
+          "skills" => ->(args) { skills_arg_candidates(args) },
           "agents" => ->(args) { agents_arg_candidates(args) },
           "tasks" => ->(args) { agents_arg_candidates(args) },
           "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] },
@@ -1415,7 +1419,9 @@ module Rubino
             args.empty? ? Rubino::UI::CompletionSource.directory_candidates(partial) : []
           },
           "sessions" => ->(args) { sessions_arg_candidates(args) },
-          "memory" => ->(args) { memory_arg_candidates(args) }
+          "memory" => ->(args) { memory_arg_candidates(args) },
+          "jobs" => ->(args) { args.empty? ? recent_job_ids : [] },
+          "config" => ->(args) { config_arg_candidates(args) }
         }
         Rubino::UI::CompletionSource.new(commands: names, files: files,
                                          arg_sources: arg_sources,
@@ -1507,6 +1513,65 @@ module Rubino
         []
       end
 
+      # The /skills grammar (#188): position one mixes the `✗ none` clear entry
+      # (CompletionSource keeps its special matching), the enable/disable verbs
+      # and the activate-by-name skill list; after a toggle verb, the names
+      # complete again. Activate-by-name and `✗ none` behave exactly as before.
+      SKILLS_SUBCOMMANDS = %w[enable disable].freeze
+
+      def skills_arg_candidates(args)
+        case args.length
+        when 0 then [Rubino::UI::CompletionSource::NONE_ENTRY] + SKILLS_SUBCOMMANDS + skill_names
+        when 1 then SKILLS_SUBCOMMANDS.include?(args.first) ? skill_names : []
+        else []
+        end
+      end
+
+      # TRUST-aligned skill names (#63), lazily re-read each open so a
+      # freshly-authored skill appears. Best-effort, like the other sources.
+      def skill_names
+        Rubino::Skills::Registry.trusted.names
+      rescue StandardError
+        []
+      end
+
+      # Recent job ids (the short form the /jobs table renders — the queue
+      # resolves prefixes) for the /jobs dropdown (#187).
+      def recent_job_ids
+        Rubino::Jobs::Queue.new.list(limit: 10).map { |j| j[:id].to_s[0..7] }
+      rescue StandardError
+        []
+      end
+
+      # The /config grammar (#187): verbs + the known config keys first (a
+      # bare key gets, key+value sets), keys again after get/set.
+      CONFIG_SUBCOMMANDS = %w[get set show path].freeze
+
+      def config_arg_candidates(args)
+        case args.length
+        when 0 then CONFIG_SUBCOMMANDS + config_key_candidates
+        when 1 then %w[get set].include?(args.first) ? config_key_candidates : []
+        else []
+        end
+      end
+
+      # The KNOWN config vocabulary: every leaf dot-path in the defaults tree
+      # (Config::Defaults.to_hash) — the same keys `config get` resolves
+      # against. Discovery, not validation: a key only present in the user's
+      # config.yml still works typed by hand.
+      def config_key_candidates
+        flatten_config_keys(Rubino::Config::Defaults.to_hash)
+      rescue StandardError
+        []
+      end
+
+      def flatten_config_keys(tree, prefix = nil)
+        tree.flat_map do |key, value|
+          path = [prefix, key.to_s].compact.join(".")
+          value.is_a?(Hash) && !value.empty? ? flatten_config_keys(value, path) : [path]
+        end
+      end
+
       # One-line descriptions for the dropdown (#39): the SAME strings /help
       # shows (BuiltIns + custom command frontmatter), plus usage hints for the
       # /agents subcommand grammar. Best-effort — a loader hiccup degrades to
@@ -1532,13 +1597,20 @@ module Rubino
           "on" => "(re)start the MCP server and register its tools",
           "off" => "mcp: stop the server and its tools · think: no thinking budget",
           # /sessions + /memory verbs (#183/#184). "show"/"--all" are shared
-          # by both grammars, so their one-liners cover both surfaces.
-          "show" => "show full details by id",
+          # by both grammars — and "show" by /config too (#187) — so each
+          # one-liner covers all its surfaces.
+          "show" => "show full details (sessions/memory: by id · config: the whole tree)",
           "delete" => "delete a session and its messages (asks to confirm)",
           "search" => "search facts by substring",
           "forget" => "delete a fact by id",
           "backend" => "show the active memory backend",
           "--all" => "list everything (sessions: no row cap · memory: incl. retired)",
+          # /config verbs (#187) + /skills toggle verbs (#188).
+          "get" => "read one config value (dot-notation, merged over defaults)",
+          "set" => "write one config value (persisted to config.yml)",
+          "path" => "print the config file path",
+          "enable" => "put a skill back in the index (every session)",
+          "disable" => "drop a skill from the index (every session, persisted)",
           # The closed enums (#185) reuse the same wording the commands print.
           "default" => Rubino::Modes.description(:default),
           "plan" => Rubino::Modes.description(:plan),
