@@ -32,6 +32,28 @@ RSpec.describe "Rubino::Jobs::Handlers" do
       expect(Rubino::Memory::Backends).not_to receive(:build)
       described_class.new.perform({})
     end
+
+    # #87: "I'll remember X" narration is not a save signal — the handler
+    # echoes a deterministic confirmation from the actual write path.
+    it "prints a deterministic save confirmation when facts were stored (#87)" do
+      backend = instance_double(Rubino::Memory::Backends::Sqlite)
+      allow(backend).to receive(:extract).and_return([{ id: "abcdef1234567890", content: "x" }])
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+
+      described_class.new.perform(session_id: "sid-9")
+
+      notes = Rubino.ui.messages.select { |m| m[:level] == :note }.map { |m| m[:message] }
+      expect(notes).to include(a_string_matching(/saved to memory · 1 fact \(abcdef12\)/))
+    end
+
+    it "stays silent when extraction stored nothing (#87)" do
+      backend = instance_double(Rubino::Memory::Backends::Sqlite, extract: [])
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+
+      described_class.new.perform(session_id: "sid-9")
+
+      expect(Rubino.ui.messages.none? { |m| m[:level] == :note }).to be(true)
+    end
   end
 
   describe Rubino::Jobs::Handlers::SummarizeSessionJob do

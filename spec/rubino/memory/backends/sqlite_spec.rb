@@ -293,6 +293,43 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(backend.find(row[:id][0, 8])[:content]).to eq("Findable fact.")
       expect(backend.delete(row[:id][0, 8])).to be(true)
     end
+
+    # Regression for #82: a superseded fact was listed undecorated next to its
+    # replacement, so the human list showed contradicted data as current and
+    # disagreed with #count (live-only).
+    it "list hides superseded facts by default so it agrees with #count (#82)" do
+      backend.store(kind: "preference", content: "User prefers tabs over spaces.")
+      backend.replace(kind: "preference", old_text: "tabs over spaces",
+                      content: "User prefers spaces over tabs.")
+
+      listed = backend.list
+      expect(listed.map { |m| m[:content] }).to eq(["User prefers spaces over tabs."])
+      expect(listed.size).to eq(backend.count)
+    end
+
+    it "list(include_retired: true) returns the supersession history (#82)" do
+      backend.store(kind: "preference", content: "User prefers tabs over spaces.")
+      backend.replace(kind: "preference", old_text: "tabs over spaces",
+                      content: "User prefers spaces over tabs.")
+
+      all = backend.list(include_retired: true)
+      expect(all.size).to eq(2)
+      retired = all.find { |m| m[:content].include?("tabs over spaces") }
+      expect(retired[:valid_to]).not_to be_nil
+      expect(retired[:superseded_by]).not_to be_nil
+    end
+
+    # #88: the presented row carries the temporal chain so `memory show` can
+    # answer "what did this replace / what replaced this?".
+    it "find exposes valid_to and superseded_by on a retired fact (#88)" do
+      old = backend.store(kind: "fact", content: "Old fact about X.")
+      backend.replace(kind: "fact", old_text: "Old fact", content: "New fact about X.")
+
+      found = backend.find(old[:id][0, 8])
+      live_id = db[:memory_facts].where(valid_to: nil).first[:id]
+      expect(found[:valid_to]).not_to be_nil
+      expect(found[:superseded_by]).to eq(live_id)
+    end
   end
 
   describe "#user_profile / #project_context" do

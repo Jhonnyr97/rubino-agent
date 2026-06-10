@@ -332,10 +332,12 @@ module Rubino
         "#{id}  #{title}#{" · #{msgs} msgs" if msgs}"
       end
 
+      # /status must count facts on the ACTIVE backend — the same store /memory
+      # and the `rubino memory` CLI read via Memory::Backends.build — not the
+      # legacy `:memories` table Memory::Store is hardwired to (#83).
       def status_memory_line
-        store   = Memory::Store.new
         backend = Rubino.configuration.dig("memory", "backend") || Memory::Backends::DEFAULT_NAME
-        "backend: #{backend} · #{store.count} facts"
+        "backend: #{backend} · #{memory_backend.count} facts"
       rescue StandardError
         "(unavailable)"
       end
@@ -366,9 +368,10 @@ module Rubino
       # `/v1/memory` ops resolve via `Memory::Backends.build`. The agent's
       # MemoryTool does autonomous writes; this is the human's window into it.
       #
-      #   /memory               → backend + count + recent facts
-      #   /memory <query>       → substring search over content
-      #   /memory forget <id>   → delete a fact
+      #   /memory                  → backend + count + recent facts
+      #   /memory <query>          → substring search over content
+      #   /memory search <query>   → same search, explicit subcommand
+      #   /memory forget <id>      → delete a fact
 
       def handle_memory(arguments)
         args = arguments.to_s.strip
@@ -378,6 +381,12 @@ module Rubino
         elsif args.match?(/\Aforget\b/)
           id = args[/\Aforget\s+(\S+)\z/, 1]
           id ? forget_memory(id) : @ui.info("Usage: /memory forget <id>")
+        elsif args.match?(/\Asearch\b/)
+          # `search` is a subcommand token, not a query term (#59): bare
+          # `/memory search` falls back to the summary instead of searching
+          # for the literal word "search".
+          query = args[/\Asearch\s+(.+)\z/, 1]
+          query ? search_memory(query) : show_memory_summary
         else
           search_memory(args)
         end
