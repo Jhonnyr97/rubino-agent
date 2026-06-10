@@ -27,6 +27,18 @@ module Rubino
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
 
+      # 128 + SIGPIPE(13): under `pipefail`, a benign early-exit consumer
+      # (`cmd | head -1`) makes an upstream stage report SIGPIPE and the
+      # pipeline returns 141 even though nothing actually went wrong.
+      SIGPIPE_EXIT = 141
+
+      # Single decision point for "does this exit code count as success?".
+      # Used by both the [Exit code: …] suffix and the ✓/✗ presentation
+      # (via shell_error_code → Result#errorish?) so the two can't drift.
+      def self.success_exit?(code)
+        code.zero? || code == SIGPIPE_EXIT
+      end
+
       def name
         "shell"
       end
@@ -113,7 +125,7 @@ module Rubino
         return :timeout       if run[:timed_out]
         return :cancelled     if run[:cancelled]
         return :shell_error   if run[:shell_error]
-        return :exit_nonzero  if run[:exit_code] && run[:exit_code] != 0
+        return :exit_nonzero  if run[:exit_code] && !self.class.success_exit?(run[:exit_code])
 
         nil
       end
@@ -179,7 +191,11 @@ module Rubino
       def execute_foreground(command, cwd, timeout)
         rd = nil
         rd, wr = IO.pipe
-        pid = Process.spawn(command, chdir: cwd, pgroup: true, out: wr, err: wr)
+        # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
+        # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
+        # of being masked by an innocuous last stage (#156).
+        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+                            chdir: cwd, pgroup: true, out: wr, err: wr)
         pgid = pid
         wr.close
 
@@ -259,10 +275,9 @@ module Rubino
             sleep 0.05
           end
 
-          code   = status&.exitstatus
-          suffix = code && code != 0 ? "[Exit code: #{code}]" : nil
+          code = status&.exitstatus
           foreground_result(stdout: output_thr.value,
-                            suffix: suffix,
+                            suffix: exit_suffix(code),
                             exit_code: code,
                             duration_ms: elapsed_ms(started_at))
         rescue Errno::ECHILD
@@ -274,6 +289,19 @@ module Rubino
           cancelled: false, shell_error: true, duration_ms: 0 }
       ensure
         rd.close if rd && !rd.closed?
+      end
+
+      # nil for a clean exit; an honest [Exit code: N] otherwise. 141 keeps
+      # the real code in the text but carries the SIGPIPE note so neither
+      # the human nor the model reads it as a failure.
+      def exit_suffix(code)
+        return nil if code.nil? || code.zero?
+
+        if code == SIGPIPE_EXIT
+          "[Exit code: #{code} — SIGPIPE: downstream consumer closed early; treated as success]"
+        else
+          "[Exit code: #{code}]"
+        end
       end
 
       def foreground_result(stdout:, duration_ms:, suffix: nil,

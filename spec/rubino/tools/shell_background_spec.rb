@@ -66,6 +66,21 @@ RSpec.describe "Shell background tools" do
       expect(out).to match(/status=(completed|failed) exit=\d/)
     end
 
+    it "runs under pipefail: a mid-pipeline crash surfaces non-zero on completion (#156)" do
+      start = shell.call("command" => "false | cat", "run_in_background" => true)
+      run_id = start[/bg_\h+/]
+
+      30.times do
+        entry = registry.find(run_id)
+        break if entry.nil? || registry.status(entry) != :running
+
+        sleep 0.1
+      end
+
+      out = shell_output.call("run_id" => run_id, "mode" => "all")
+      expect(out).to include("status=failed exit=1")
+    end
+
     it "errors out on unknown run_id" do
       expect(shell_output.call("run_id" => "bg_deadbeef")).to include("no background shell")
       expect(shell_kill.call("run_id"   => "bg_deadbeef")).to include("no background shell")
