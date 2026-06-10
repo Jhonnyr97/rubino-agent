@@ -42,6 +42,7 @@ module Rubino
       #   4. doom loop                  break a stuck autopilot
       #   5. permissions:allow / :ask   remaining explicit rules
       #   6. command_allowlist (prefix) pre-approved commands -> :allow
+      #   6b. readonly auto-allow       parse-validated read-only shell -> :allow
       #   7-8. confirm_policy shell gate  confirm_all -> :ask; dangerous_only
       #                                 -> :ask only if dangerous?, else :allow
       #   9. mode fallback
@@ -96,6 +97,14 @@ module Rubino
         #    listed command never triggers a manual prompt.
         return :allow if command_pre_approved?(command_str)
 
+        # 6b. Built-in read-only auto-allow — the same allowlist seam as
+        #    step 6, just with a parse-validated built-in set instead of
+        #    user-configured prefixes. Runs BELOW the hardline floor (step 1)
+        #    and permissions:deny (step 2), so the floor always wins even for
+        #    commands added via approvals.readonly_commands. A line the
+        #    validator cannot prove read-only falls through to the prompt.
+        return :allow if readonly_auto_allowed?(tool, command_str)
+
         # 7-8. confirm_policy gate for a shell command not otherwise resolved.
         #    NOT under config "skip" (nor runtime yolo, handled at step 3) —
         #    those are the explicit operator overrides that mean "stop
@@ -139,6 +148,16 @@ module Rubino
       # allowlist. An empty allowlist pre-approves NOTHING.
       def command_pre_approved?(command)
         CommandAllowlist.new(config: @config).allowed?(command)
+      end
+
+      # True when the shell command is provably read-only and the
+      # approvals.auto_allow_readonly gate (default ON) is open. Shell-only:
+      # for every other tool the "command" is a path or argument fragment.
+      def readonly_auto_allowed?(tool, command)
+        return false unless tool.name == "shell"
+        return false unless @config.auto_allow_readonly?
+
+        ReadonlyCommands.auto_allowed?(command, extra: @config.approvals_readonly_commands)
       end
 
       # Builds the string representation of a tool call used both for

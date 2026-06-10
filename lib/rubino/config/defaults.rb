@@ -309,6 +309,18 @@ module Rubino
         },
         "approvals" => {
           "mode" => "manual",
+          # Auto-allow provably READ-ONLY shell commands (ls, pwd, cat, grep,
+          # git log, ...) without an approval prompt. The whole line must
+          # parse as safe (Security::ReadonlyCommands): no redirection or
+          # command/process substitution, every pipe/&&/; segment from the
+          # read-only set, no mutating flags (find -exec/-delete, ...).
+          # Anything ambiguous still prompts. The hardline floor and
+          # permissions:deny always run first, so this never weakens them.
+          "auto_allow_readonly" => true,
+          # Extra command names (or leading-token prefixes, e.g. "docker ps")
+          # merged into the built-in read-only set. The same parse validation
+          # applies to every segment.
+          "readonly_commands" => [],
           # How long (seconds) a run waits on a human approval/clarification
           # before giving up. On expiry the gate AUTO-DENIES (never approves)
           # and frees the worker thread — an abandoned approval (closed tab, no
