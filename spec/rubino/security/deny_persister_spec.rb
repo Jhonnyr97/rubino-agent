@@ -77,9 +77,10 @@ RSpec.describe Rubino::Security::DenyPersister do
       File.write(@config_path, { "approvals" => { "mode" => "manual" } }.to_yaml)
       seed = Rubino::Config::Configuration.new(raw: YAML.safe_load_file(@config_path))
 
-      # Before the deny is persisted, a fresh policy still ASKS for this command.
+      # Before the deny is persisted, a fresh policy auto-allows this
+      # read-only command (step 6b) — the persisted deny must beat that.
       before = Rubino::Security::ApprovalPolicy.new(config: seed)
-      expect(before.decide(shell_tool, arguments: { "command" => "git status" })).to eq(:ask)
+      expect(before.decide(shell_tool, arguments: { "command" => "git status" })).to eq(:allow)
 
       described_class.persist("shell git*", config: seed, config_path: @config_path)
 
@@ -90,8 +91,8 @@ RSpec.describe Rubino::Security::DenyPersister do
       expect(policy.decide(shell_tool, arguments: { "command" => "git status" })).to eq(:deny)
       # A sibling of the denied prefix is also auto-denied.
       expect(policy.decide(shell_tool, arguments: { "command" => "git push" })).to eq(:deny)
-      # An unrelated command is unaffected.
-      expect(policy.decide(shell_tool, arguments: { "command" => "ls" })).to eq(:ask)
+      # An unrelated (non-read-only) command is unaffected.
+      expect(policy.decide(shell_tool, arguments: { "command" => "make build" })).to eq(:ask)
     end
   end
 end

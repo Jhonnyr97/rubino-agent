@@ -91,13 +91,13 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(tool, arguments: { "command" => "git status -s" })).to eq(:allow)
     end
 
-    it "still :asks for a command NOT on the allowlist" do
+    it "still :asks for a command NOT on the allowlist (and not read-only)" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
         "security" => { "command_allowlist" => ["git status"] }
       )
       pol = described_class.new(config: cfg)
-      expect(pol.decide(tool, arguments: { "command" => "cat README.md" })).to eq(:ask)
+      expect(pol.decide(tool, arguments: { "command" => "bundle exec rake release" })).to eq(:ask)
     end
 
     it "deny patterns win over the allowlist" do
@@ -117,6 +117,63 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "anything not listed" })).to eq(:ask)
+    end
+  end
+
+  describe "#decide read-only auto-allow (step 6b)" do
+    let(:shell) { make_tool(name: "shell", risk_level: :high, risky: true) }
+    let(:manual_cfg) { test_configuration("approvals" => { "mode" => "manual" }) }
+
+    it "auto-allows a provably read-only command under the default confirm_all policy" do
+      pol = described_class.new(config: manual_cfg)
+      expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:allow)
+      expect(pol.decide(shell, arguments: { "command" => "grep -rn TODO lib | head -20" })).to eq(:allow)
+      expect(pol.decide(shell, arguments: { "command" => "git log --oneline -5" })).to eq(:allow)
+    end
+
+    it "still :asks for a command the validator cannot prove read-only" do
+      pol = described_class.new(config: manual_cfg)
+      expect(pol.decide(shell, arguments: { "command" => "ls > /etc/passwd" })).to eq(:ask)
+      expect(pol.decide(shell, arguments: { "command" => "cat file; rm file" })).to eq(:ask)
+      expect(pol.decide(shell, arguments: { "command" => "find / -delete" })).to eq(:ask)
+    end
+
+    it "is gated by approvals.auto_allow_readonly: false" do
+      cfg = test_configuration("approvals" => { "mode" => "manual", "auto_allow_readonly" => false })
+      pol = described_class.new(config: cfg)
+      expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:ask)
+    end
+
+    it "honours approvals.readonly_commands extensions" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual", "readonly_commands" => ["jq"] }
+      )
+      pol = described_class.new(config: cfg)
+      expect(pol.decide(shell, arguments: { "command" => "jq . a.json" })).to eq(:allow)
+    end
+
+    it "never auto-allows the shell command of a NON-shell tool" do
+      cfg = test_configuration("approvals" => { "mode" => "manual" })
+      tool = make_tool(name: "write", risk_level: :high, risky: true)
+      expect(described_class.new(config: cfg).decide(tool, arguments: { "file_path" => "ls" })).to eq(:ask)
+    end
+
+    it "hardline floor wins even when the command is added to readonly_commands" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual", "readonly_commands" => %w[rm shutdown] }
+      )
+      pol = described_class.new(config: cfg)
+      expect(pol.decide(shell, arguments: { "command" => "rm -rf /" })).to eq(:deny)
+      expect(pol.decide(shell, arguments: { "command" => "shutdown -h now" })).to eq(:deny)
+    end
+
+    it "permissions:deny wins over the read-only auto-allow" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "permissions" => { "shell ls *" => "deny" }
+      )
+      pol = described_class.new(config: cfg)
+      expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:deny)
     end
   end
 
@@ -236,9 +293,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => hardline })).to eq(:deny)
     end
 
-    it "leaves a normal safe shell command unaffected (still :ask in manual)" do
+    it "leaves a normal (non-read-only) shell command unaffected (still :ask in manual)" do
       pol = described_class.new(config: test_configuration("approvals" => { "mode" => "manual" }))
-      expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:ask)
+      expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
     end
   end
 
@@ -326,10 +383,10 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "git status -s" })).to eq(:allow)
     end
 
-    # --- a normal command under default config is unchanged ---
+    # --- a normal (non-read-only) command under default config is unchanged ---
     it "a normal shell command under default config still :asks" do
       pol = described_class.new(config: test_configuration("approvals" => { "mode" => "manual" }))
-      expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:ask)
+      expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
     end
 
     # --- DangerousPatterns signal is available but NOT yet decisive ---
@@ -367,7 +424,10 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
   describe "#decide confirm_policy (S4)" do
     let(:shell) { make_tool(name: "shell", risk_level: :high, risky: true) }
-    let(:safe)      { "ls -la" }
+    # "safe" here means not-dangerous AND not provably read-only, so the
+    # confirm-policy gate (steps 7-8) is what decides it — `ls -la` would be
+    # resolved earlier by the read-only auto-allow (step 6b).
+    let(:safe)      { "make build" }
     let(:dangerous) { "git push --force origin main" }
     let(:hardline)  { "rm -rf /" }
 
@@ -480,9 +540,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         end
       end
 
-      # ...while shell is STILL gated in the same policy, proving we did not
-      # broadly weaken the approval engine.
-      expect(policy.decide(shell, arguments: { "command" => "ls" })).to eq(:ask)
+      # ...while a non-read-only shell command is STILL gated in the same
+      # policy, proving we did not broadly weaken the approval engine.
+      expect(policy.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
     end
   end
 
