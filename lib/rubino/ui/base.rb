@@ -200,7 +200,7 @@ module Rubino
       # Phase-2 steering / "Enter injects into the current turn" affordance).
       # Distinct from #queued, which parks text for the NEXT turn: this text is
       # already part of the live turn, so the CLI renders a dim
-      # `↳ ricevuto mentre lavoravo: …` confirmation. Concrete no-op by default;
+      # `↳ received while working: …` confirmation. Concrete no-op by default;
       # only the CLI has something to render. API surfaces it via the
       # INPUT_INJECTED bus event, not this echo.
       def input_injected(text); end

@@ -24,7 +24,7 @@ RSpec.describe Rubino::UI::CLI do
   # Timeline convention: activity lines use ● / ✓ / ✗ / ◆ markers
   ACTIVITY_START = /● running/
   ACTIVITY_DONE  = /✓ done/
-  ACTIVITY_FAIL  = /✗ done/
+  ACTIVITY_FAIL  = /✗ failed/
 
   describe "#stream" do
     it "prints streamed content directly without a box" do
@@ -520,13 +520,13 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("✓ done · shell")
     end
 
-    it "renders as '✗ done · name' on failure" do
+    it "renders as '✗ failed · name' on failure" do
       result = double("Result", success?: false, truncated_preview: "error")
       out = capture_stdout do
         ui.tool_started("shell", arguments: nil)
         ui.tool_finished("shell", result: result)
       end
-      expect(out).to include("✗ done · shell")
+      expect(out).to include("✗ failed · shell")
     end
 
     it "shows metric on success when result provides it" do
@@ -544,7 +544,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("read", arguments: nil)
         ui.tool_finished("read", result: result)
       end
-      expect(out).to include("✗ done · read · not found")
+      expect(out).to include("✗ failed · read · not found")
     end
 
     # B7: a tool that signals failure by RETURNING an "Error: …" string (status
@@ -558,7 +558,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("read", arguments: nil)
         ui.tool_finished("read", result: result)
       end
-      expect(out).to include("✗ done · read")
+      expect(out).to include("✗ failed · read")
       expect(out).not_to include("✓ done · read")
     end
   end
@@ -650,6 +650,46 @@ RSpec.describe Rubino::UI::CLI do
     it "renders a free line wrapped in `┄` bookends" do
       expect { ui.note("turn · 9s · 0 tools · 1.3k tok") }
         .to output(/┄ turn · 9s · 0 tools · 1\.3k tok ┄/).to_stdout
+    end
+  end
+
+  describe "#input_injected" do
+    # #137: the fold-in confirmation leaked Italian ("ricevuto mentre
+    # lavoravo") into an English UI. It must be English.
+    it "prefixes the echo in English, never Italian (#137)" do
+      out = capture_stdout { ui.input_injected("be terse") }
+      expect(out).to include("↳ received while working: be terse")
+      expect(out).not_to include("ricevuto")
+    end
+
+    # #139: a multi-line [background-task] completion notice carries the
+    # child's markdown report — the body renders through the markdown
+    # pipeline (no literal ## / ** artifacts), prefix stays on line 1 only.
+    it "renders a multi-line notice body through the markdown pipeline (#139)" do
+      notice = "[background-task] Task sa_1 (subagent 'general') completed.\n" \
+               "Result:\n## Summary\n**Computed value:** 75025"
+      out = capture_stdout { ui.input_injected(notice) }
+      plain = out.gsub(/\e\[[0-9;]*m/, "")
+      expect(plain).to include("↳ received while working: [background-task] Task sa_1")
+      expect(plain).to include("Summary")
+      expect(plain).not_to include("## Summary")
+      expect(plain).not_to include("**Computed value:**")
+    end
+  end
+
+  describe "#subagent_ask_banner" do
+    # #145: the banner claimed "no timeout" while tasks.ask_parent_timeout
+    # defaults to 900s — the child auto-resumes. The banner must tell the truth.
+    it "reads the configured ask_parent timeout instead of claiming 'no timeout' (#145)" do
+      out = capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
+      expect(out).to include("auto-resumes with its best judgement in 15m")
+      expect(out).not_to include("no timeout")
+    end
+
+    it "says 'no timeout' only when the bound is explicitly disabled (#145)" do
+      allow(Rubino.configuration).to receive(:tasks_ask_parent_timeout).and_return(nil)
+      out = capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
+      expect(out).to include("no timeout")
     end
   end
 
@@ -1079,9 +1119,9 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("✓ done · git · clean")
     end
 
-    it "activity_finished with failed: true renders as ✗ done" do
+    it "activity_finished with failed: true renders as ✗ failed" do
       out = capture_stdout { ui.activity_finished("git", failed: true) }
-      expect(out).to include("✗ done · git")
+      expect(out).to include("✗ failed · git")
     end
   end
 

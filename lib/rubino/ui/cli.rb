@@ -264,18 +264,13 @@ module Rubino
         @activity_name = name
       end
 
-      # Activity finished: renders as `✓ done · name · metric` or `✗ done · name · message`
+      # Activity finished: renders as `✓ done · name · metric` on success, or
+      # `✗ failed · name · message` on error — the word must agree with the
+      # glyph; "✗ done" read as if the errored tool had still succeeded (#153).
       def activity_finished(name, metric: nil, failed: false)
         @activity_open = false
-        failed ? "✗" : "✓"
-        status_word = failed ? "✗ done" : "✓ done"
-        suffix = if metric
-                   " · #{metric}"
-                 elsif failed
-                   ""
-                 else
-                   ""
-                 end
+        status_word = failed ? "✗ failed" : "✓ done"
+        suffix = metric ? " · #{metric}" : ""
         line = "  └ #{status_word} · #{name}#{suffix}"
         $stdout.puts(failed ? @pastel.red(line) : @pastel.green(line))
       end
@@ -363,9 +358,21 @@ module Rubino
         $stdout.puts @pastel.dim("┄ a subagent needs you ┄")
         $stdout.puts @pastel.red.bold("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer")
         $stdout.puts @pastel.yellow("   ❓ #{question}")
-        $stdout.puts @pastel.dim("   everything it needs is paused until you answer — no timeout")
+        $stdout.puts @pastel.dim("   everything it needs is paused until you answer — #{ask_timeout_hint}")
         $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
         $stdout.flush
+      end
+
+      # The honest bound for the ⛔ banner: a blocking ask_parent waits at most
+      # tasks.ask_parent_timeout seconds, then the child proceeds with its best
+      # judgement (ask_parent_tool.rb). The banner must say so — "no timeout" was
+      # a lie unless the bound is explicitly disabled (nil/0) in config (#145).
+      def ask_timeout_hint
+        seconds = Rubino.configuration.tasks_ask_parent_timeout.to_i
+        return "no timeout" unless seconds.positive?
+
+        human = (seconds % 60).zero? ? "#{seconds / 60}m" : "#{seconds}s"
+        "auto-resumes with its best judgement in #{human}"
       end
 
       # Renders an ephemeral `probe` answer in the dim, fenced aside that the
@@ -446,11 +453,19 @@ module Rubino
       # the user sees their interjection landed without it competing with the
       # streaming assistant output. Leading CR + clear-line so it sits cleanly
       # even if the cursor is mid-stream-chunk.
+      #
+      # A multi-line injection (a `[background-task] … Result:` completion
+      # notice carrying the child's markdown report) keeps the dim `↳` prefix
+      # on its FIRST line only; the body renders through the same markdown
+      # pipeline as assistant answers, so the child's report shows styled
+      # headings/bold instead of literal `##`/`**` (#139).
       def input_injected(text)
         return if text.nil? || text.to_s.empty?
 
         clear_line
-        $stdout.puts @pastel.dim("↳ ricevuto mentre lavoravo: #{text}")
+        first, rest = text.to_s.split("\n", 2)
+        $stdout.puts @pastel.dim("↳ received while working: #{first}")
+        commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
       end
 
@@ -718,7 +733,7 @@ module Rubino
         write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
       end
 
-      # Tool finished renders as compact `✓ done · name · metric` or `✗ done · name · error`.
+      # Tool finished renders as compact `✓ done · name · metric` or `✗ failed · name · error`.
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
       def tool_finished(name, result: nil)
         return delegation_finished(result) if name == "task"

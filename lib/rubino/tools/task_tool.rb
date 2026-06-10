@@ -60,6 +60,14 @@ module Rubino
         "task"
       end
 
+      # The "NEVER claim a task was started…" sentence is the #149 guardrail:
+      # the model was observed confirming a spawn ("Started: sa_…") with a task
+      # id RECYCLED from earlier context, without calling this tool at all. The
+      # ids are unguessable (SecureRandom), so the only honest source of a NEW
+      # id is this tool's own return value — the description says so explicitly.
+      # Prompt-level by design: a render-time transcript scanner would be a far
+      # bigger surface for a model-behavior bug the user can already audit via
+      # the turn footer (0 tools) and /agents.
       def description
         "Delegate a bounded sub-task to a specialized subagent. By DEFAULT the " \
           "subagent runs in the BACKGROUND: this call returns immediately with a " \
@@ -72,7 +80,10 @@ module Rubino
           "blocks until it finishes and returns the result inline). The subagent " \
           "runs in an isolated fresh context (it does NOT see this conversation) and " \
           "returns only its final message — put every file path / error / detail it " \
-          "needs into `prompt`. Available subagents: #{available_subagents_description}."
+          "needs into `prompt`. NEVER claim a task was started unless THIS call just " \
+          "returned its id in the current turn — `sa_…` ids from earlier in the " \
+          "conversation belong to old tasks and must not be reported as new ones. " \
+          "Available subagents: #{available_subagents_description}."
       end
 
       def input_schema
@@ -216,9 +227,7 @@ module Rubino
         text     = result.to_s.strip
         text     = "(subagent '#{entry.subagent}' #{NOOP_RESULT_SUFFIX}" if text.empty?
 
-        BackgroundTasks.instance.complete(entry, status: :completed, result: text)
-        notify(sink, completion_notice(entry, text))
-        surface_completion(parent_ui, completion_summary(entry, text))
+        record_completion(entry, text, sink, parent_ui)
         repaint_parent_cards(parent_ui)
         event_bus&.emit(Interaction::Events::SUBAGENT_COMPLETED,
                         task_id: entry.id, subagent: entry.subagent,
@@ -242,6 +251,24 @@ module Rubino
                         error: e.message)
       end
 
+      # Records the terminal :completed state and notifies the parent.
+      # Deliver-or-report for /agents steer (#140): a parked note the child
+      # never got another turn to fold in would otherwise vanish silently —
+      # the user believes the child was steered when it wasn't. Drain what's
+      # left NOW (the child is done; nothing can consume it anymore) and say
+      # so, on the parent UI and in the completion notice.
+      def record_completion(entry, text, sink, parent_ui)
+        undelivered = entry.steer_queue&.drain || []
+        BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+        notify(sink, completion_notice(entry, text, undelivered: undelivered))
+        unless undelivered.empty?
+          surface_completion(parent_ui,
+                             "⚠ #{entry.id} · steer note not delivered (task completed first): " \
+                             "#{truncate(undelivered.join(" | "), 80)}")
+        end
+        surface_completion(parent_ui, completion_summary(entry, text))
+      end
+
       # One committed summary line for a finished subagent, folded above the
       # prompt by #surface_completion (the card itself clears when the registry
       # snapshot no longer lists it as running). Mirrors the blueprint's
@@ -252,11 +279,12 @@ module Rubino
       # read as a success (#16). The error path renders ✗ in #run_child_thread.
       def completion_summary(entry, text)
         count = entry.tool_count.to_i
+        tools = "#{count} tool#{"s" if count != 1}"
         head  = truncate(text.lines.first.to_s.strip, 80)
         if self.class.noop_result?(text)
-          "⊘ #{entry.id} · #{entry.subagent} · no-op · #{count} tools — #{head}"
+          "⊘ #{entry.id} · #{entry.subagent} · no-op · #{tools} — #{head}"
         else
-          "✓ #{entry.id} · #{entry.subagent} · done · #{count} tools — #{head}"
+          "✓ #{entry.id} · #{entry.subagent} · done · #{tools} — #{head}"
         end
       end
 
@@ -288,19 +316,35 @@ module Rubino
         sink&.push_notice(text)
       end
 
-      def completion_notice(entry, text)
-        "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') completed.\n" \
-          "Result:\n#{truncate(text, 4000)}\n" \
-          "(full result via task_result(\"#{entry.id}\"))"
+      def completion_notice(entry, text, undelivered: [])
+        notice = "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') completed.\n" \
+                 "Result:\n#{truncate(text, 4000)}\n" \
+                 "(full result via task_result(\"#{entry.id}\"))"
+        return notice if undelivered.empty?
+
+        notice + "\nNote: a steer note was NOT delivered (the task completed first): " \
+                 "#{truncate(undelivered.join(" | "), 200)}"
       end
 
       def failure_notice(entry, message)
         "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') failed: #{message}"
       end
 
+      # The stopped notice must carry the ground truth about PARTIAL progress:
+      # "no action needed" with zero detail led the parent model to assert that
+      # nothing was produced while completed side effects (an approved write,
+      # …) were already on disk (#150). Include the tool count + the activity
+      # tail from the registry entry so neither the model nor the human is misled.
       def stopped_notice(entry)
-        "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') was stopped " \
-          "at the user's request — no action needed."
+        base  = "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') was stopped " \
+                "at the user's request"
+        count = entry.tool_count.to_i
+        return "#{base} before it ran any tools — no action needed." if count.zero?
+
+        recent = Array(entry.activity_log).last(3).join("; ")
+        detail = recent.empty? ? "" : " (recent: #{recent})"
+        "#{base} after #{count} tool#{"s" if count != 1} had already run#{detail} — " \
+          "completed tools' side effects may exist."
       end
 
       def spawn_handle(entry, definition)
@@ -391,9 +435,15 @@ module Rubino
             entry.id, gate: gate, approval_id: approval_id,
                       question: question, command: cmd
           )
+          # The committed parent note shows a ONE-LINE elided preview. A
+          # multi-line command (ruby code, often starting with a blank line)
+          # truncated by raw character count committed its first code lines as
+          # bare unframed rows under the card — and an empty first line left
+          # "needs approval:" with no body at all (#141). Fall back to the
+          # question when the command has no usable line.
+          preview = approval_preview(cmd, question)
           surface_completion(entry_parent_ui,
-                             "● #{entry.id} · #{entry.subagent} · needs approval: #{truncate(cmd,
-                                                                                             80)} — /agents #{entry.id}")
+                             "● #{entry.id} · #{entry.subagent} · needs approval: #{preview} — /agents #{entry.id}")
           repaint_parent_cards(entry_parent_ui)
           begin
             decision = gate.await(approval_id)
@@ -427,6 +477,18 @@ module Rubino
       def truncate(text, max)
         s = text.to_s
         s.length > max ? "#{s[0, max]}…" : s
+      end
+
+      # One-line approval preview for the parent note (#141): the first
+      # NON-BLANK line of the command (elided), falling back to the question.
+      def approval_preview(cmd, question)
+        line = first_nonblank_line(cmd)
+        line = first_nonblank_line(question) if line.empty?
+        truncate(line, 80)
+      end
+
+      def first_nonblank_line(text)
+        text.to_s.each_line.map(&:strip).find { |l| !l.empty? }.to_s
       end
 
       # Runs a FRESH nested agent turn for the given subagent definition and

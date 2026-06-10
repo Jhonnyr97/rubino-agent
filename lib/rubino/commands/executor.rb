@@ -552,9 +552,30 @@ module Rubino
                               "context is still empty; probe again in a moment)"))
         end
         @ui.info("?  #{question}")
-        answer = Tools::SubagentProbe.new.peek(entry: entry, question: question)
+        # The peek is a synchronous side-inference (seconds of model wait) with
+        # nothing streaming — show the same thinking row /probe got in #58 so
+        # the gap before the ⟵ answer never looks frozen (#146). TTY only;
+        # Null/API adapters and pipes stay silent.
+        probe_thinking_started
+        answer = begin
+          Tools::SubagentProbe.new.peek(entry: entry, question: question)
+        ensure
+          probe_thinking_finished
+        end
         @ui.info("⟵  #{answer}")
         @ui.info(pastel.dim("┄┄ end probe (nothing was saved to #{id}) ┄┄"))
+      end
+
+      # The /agents probe wait indicator (#146) — same machinery and guards as
+      # CLI::ChatCommand#probe_thinking_started gave /probe (#58).
+      def probe_thinking_started
+        return unless $stdout.tty? && @ui.respond_to?(:thinking_started)
+
+        @ui.thinking_started
+      end
+
+      def probe_thinking_finished
+        @ui.thinking_finished if @ui.respond_to?(:thinking_finished)
       end
 
       # child->parent ASK_PARENT answer: /reply <id> <answer>. Resolves the
@@ -689,9 +710,38 @@ module Rubino
         when :failed
           @ui.error(entry.error.to_s.empty? ? "(failed, no error message)" : entry.error.to_s)
         when :stopped
-          @ui.info("(stopped at your request — no result)")
+          show_stopped_summary(entry)
         else
-          @ui.info(entry.result.to_s.empty? ? "(no output)" : entry.result.to_s)
+          render_agent_report(entry.result.to_s)
+        end
+      end
+
+      # The child's final report is markdown (it is a model answer): render it
+      # through the SAME pipeline assistant answers use instead of dumping
+      # literal `##`/`**` into the transcript (#139). Adapters without the
+      # markdown seam (Null/API) keep the plain info fallback.
+      def render_agent_report(result)
+        return @ui.info("(no output)") if result.empty?
+
+        if @ui.respond_to?(:commit_markdown_block)
+          @ui.commit_markdown_block(result)
+        else
+          @ui.info(result)
+        end
+      end
+
+      # A stopped child may have COMPLETED side effects before the stop (#150):
+      # "no result" alone led the parent/human to assert nothing was produced
+      # while an approved write was already on disk. Surface the tool count and
+      # the registry's activity tail as ground truth.
+      def show_stopped_summary(entry)
+        count = entry.tool_count.to_i
+        if count.zero?
+          @ui.info("(stopped at your request before it ran any tools — no result)")
+        else
+          @ui.info("(stopped at your request after #{count} tool#{"s" if count != 1} had already run — " \
+                   "completed tools' side effects may exist)")
+          Array(entry.activity_log).last(3).each { |line| @ui.info("  #{line}") }
         end
       end
 

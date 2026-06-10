@@ -553,6 +553,129 @@ RSpec.describe Rubino::Tools::TaskTool do
 
       Rubino::Tools::BackgroundTasks::MAX_CONCURRENT.times { latch << :go }
     end
+
+    # #140: a parked /agents steer note the child never got a turn to fold in
+    # must be REPORTED, not silently dropped, when the child completes first.
+    it "reports an undelivered steer note in the completion notice (#140)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = gated_runner("done", latch)
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      task_id = out[/sa_[0-9a-f]+/]
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "also include the word PINEAPPLE")
+
+      latch << :go
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).to include("steer note was NOT delivered (the task completed first)")
+      expect(notice).to include("also include the word PINEAPPLE")
+    end
+
+    it "keeps the completion notice clean when no steer note was pending (#140)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = gated_runner("done", latch)
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      latch << :go
+      wait_until { sink.pending? }
+
+      expect(sink.drain.join("\n")).not_to include("steer note")
+    end
+
+    # #150: the stopped notice must carry ground truth about partial progress
+    # (tools already run + recent activity) so the parent model can't honestly
+    # claim "nothing was produced" over completed side effects.
+    it "includes the tool count + activity tail in the stopped notice (#150)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = Class.new do
+        define_method(:run!) do |_input, **_opts|
+          latch.pop
+          raise Rubino::Interrupted, "interrupted by user"
+        end
+        define_method(:cancel!) {}
+      end.new
+      tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "general", "prompt" => "x") }
+      task_id  = out[/sa_[0-9a-f]+/]
+      registry = Rubino::Tools::BackgroundTasks.instance
+      registry.record_tool_started(task_id, "write docs/USAGE.md")
+      registry.record_tool_finished(task_id, "✓ write · docs/USAGE.md")
+
+      registry.request_stop(task_id)
+      latch << :go
+      wait_until { registry.find(task_id).status == :stopped }
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).to include("after 1 tool had already run")
+      expect(notice).to include("✓ write · docs/USAGE.md")
+      expect(notice).to include("side effects may exist")
+      expect(notice).not_to include("no action needed")
+    end
+
+    it "keeps 'no action needed' for a stopped child that ran no tools (#150)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = Class.new do
+        define_method(:run!) do |_input, **_opts|
+          latch.pop
+          raise Rubino::Interrupted, "interrupted by user"
+        end
+        define_method(:cancel!) {}
+      end.new
+      tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "general", "prompt" => "x") }
+      task_id = out[/sa_[0-9a-f]+/]
+
+      Rubino::Tools::BackgroundTasks.instance.request_stop(task_id)
+      latch << :go
+      wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).status == :stopped }
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).to include("before it ran any tools — no action needed")
+    end
+  end
+
+  # #141: the committed "needs approval:" parent note must show a one-line
+  # elided preview — a multi-line ruby command truncated by raw char count
+  # committed its first code lines as bare rows under the card, and a leading
+  # blank line left the label empty.
+  describe "approval note preview (#141)" do
+    let(:tool) { described_class.new }
+
+    it "uses the first non-blank command line" do
+      preview = tool.send(:approval_preview, "\n# Method 1: Iterative\nfib_iter = 1", "Allow ruby?")
+      expect(preview).to eq("# Method 1: Iterative")
+    end
+
+    it "falls back to the question when the command has no usable line" do
+      expect(tool.send(:approval_preview, " \n ", "Allow ruby?")).to eq("Allow ruby?")
+    end
+
+    it "elides long lines to one line" do
+      preview = tool.send(:approval_preview, "x" * 200, "q")
+      expect(preview.length).to be <= 81 # 80 + ellipsis
+      expect(preview).not_to include("\n")
+    end
+  end
+
+  # #149: the model was observed confirming a spawn with a RECYCLED sa_ id and
+  # zero tool calls. The prompt-level guardrail lives in the tool description.
+  describe "spawn-confirmation guardrail (#149)" do
+    it "tells the model never to claim a start without a fresh id from this tool" do
+      desc = described_class.new.description
+      expect(desc).to include("NEVER claim a task was started")
+      expect(desc).to include("current turn")
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -584,6 +707,13 @@ RSpec.describe Rubino::Tools::TaskTool do
         expect(line).to start_with("⊘")
         expect(line).to include("· no-op ·")
         expect(line).not_to start_with("✓")
+      end
+
+      it "pluralizes the tool count (1 tool, 3 tools) (#141)" do
+        one = tool.send(:completion_summary, entry(tool_count: 1), "ok")
+        expect(one).to include("· 1 tool —")
+        many = tool.send(:completion_summary, entry(tool_count: 3), "ok")
+        expect(many).to include("· 3 tools —")
       end
     end
 

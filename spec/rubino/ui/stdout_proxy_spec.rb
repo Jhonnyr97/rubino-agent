@@ -75,6 +75,18 @@ RSpec.describe Rubino::UI::StdoutProxy do
       expect(composer.committed).to eq(["a finished line"])
     end
 
+    # #153: puts used to append the text and its newline SEPARATELY, so the
+    # line flashed as a transient partial row below the subagent cards before
+    # committing above them — the user saw the same line twice around the live
+    # card block. A puts-committed line must never pass through set_partial.
+    it "never shows a committed line as a transient partial (#153)" do
+      partials = []
+      composer.define_singleton_method(:set_partial) { |str| partials << str.to_s }
+      proxy.puts("└ ✓ general: Started background subagent")
+      expect(partials).not_to include("└ ✓ general: Started background subagent")
+      expect(composer.committed).to eq(["└ ✓ general: Started background subagent"])
+    end
+
     it "splits a multi-line argument into one commit per line" do
       proxy.puts("line one\nline two")
       expect(composer.committed).to eq(["line one", "line two"])

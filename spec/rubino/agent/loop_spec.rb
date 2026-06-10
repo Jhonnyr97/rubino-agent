@@ -766,6 +766,47 @@ RSpec.describe Rubino::Agent::Loop do
       expect(queue.pending?).to be(false)
     end
 
+    # #148: screens of completion reports folded in AFTER the user's just-sent
+    # prompt drowned it — the model answered the notices and ignored the
+    # request. At turn start the notices must be FRAMED as context and inserted
+    # BEFORE the user message, which stays last (most salient).
+    it "keeps the user's message LAST and frames turn-start notices as context (#148)" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue.push_notice("[background-task] Task sa_1 (subagent 'general') completed.\nResult:\nlong report")
+
+      fake_llm.enqueue_text("on it")
+
+      build_loop(input_queue: queue).run(messages: user_messages, tools: [])
+
+      seen       = fake_llm.calls.last[:messages]
+      notice_idx = seen.index { |m| m[:content].to_s.include?("[background-task]") }
+      user_idx   = seen.rindex { |m| m[:role] == "user" }
+
+      # The notice sits BEFORE the user message; the user message is the LAST
+      # user message the model sees.
+      expect(notice_idx).to be < user_idx
+      expect(seen[user_idx][:content]).not_to include("[background-task]")
+      # And the notice is framed so the model treats it as context.
+      expect(seen[notice_idx][:content])
+        .to include("the user's message AFTER these notices is the instruction to act on")
+    end
+
+    it "still APPENDS mid-turn injections at later iterations, unframed (#148)" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue_with_push_on_tool(queue, "change of plan")
+
+      fake_llm.enqueue_tool_call("echo", { "text" => "ping" })
+      fake_llm.enqueue_text("done")
+
+      build_loop(input_queue: queue).run(messages: user_messages, tools: [])
+
+      seen = fake_llm.calls.last[:messages]
+      injected = seen.find { |m| m[:content].to_s.include?("change of plan") }
+      expect(injected[:content]).not_to include("background notices")
+      # Appended after the tool result, the normal steering position.
+      expect(seen.index(injected)).to be > seen.index { |m| m[:role] == "tool" }
+    end
+
     it "does NOT inject on the first iteration (initial user input is already the turn)" do
       queue = Rubino::Interaction::InputQueue.new
       queue.push("typed in the gap before the turn started")
