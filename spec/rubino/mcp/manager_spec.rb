@@ -73,32 +73,19 @@ RSpec.describe Rubino::MCP::Manager do
     end
   end
 
-  describe "#tools_for_agent" do
-    before do
-      allow(RubyLLM::MCP).to receive(:client) do |**opts|
-        opts[:name] == "filesystem" ? fake_client(%w[read_file]) : fake_client(%w[query])
-      end
-      manager.start_all!
-    end
+  # Per-agent mcp_servers scoping is enforced in Agent::Definition#resolved_tools
+  # (#173) — see definition_mcp_servers_spec.rb. The Manager only registers tools.
 
-    after { Rubino::Tools::Registry.reset! }
+  # #174 — ruby_llm-mcp logs to $stdout by default, including every line a
+  # stdio server prints on its stderr (relayed at INFO). That corrupted
+  # one-shot `rubino prompt` output and polluted doctor/tools/chat boot.
+  describe "MCP gem logging (#174)" do
+    it "routes ruby_llm-mcp's logger to a file under the rubino home, never $stdout" do
+      described_class.new(config: config)
 
-    it "returns every server's tools for an :all agent" do
-      definition = Rubino::Agent::Definition.new(name: "build", mcp_servers: :all)
-
-      expect(manager.tools_for_agent(definition).map(&:name)).to contain_exactly("read_file", "query")
-    end
-
-    it "returns only the allowed servers' tools for a scoped agent" do
-      definition = Rubino::Agent::Definition.new(name: "explore", mcp_servers: ["filesystem"])
-
-      expect(manager.tools_for_agent(definition).map(&:name)).to eq(["read_file"])
-    end
-
-    it "returns no tools for an agent scoped to []" do
-      definition = Rubino::Agent::Definition.new(name: "plan", mcp_servers: [])
-
-      expect(manager.tools_for_agent(definition)).to be_empty
+      dev = RubyLLM::MCP.config.logger.instance_variable_get(:@logdev).dev
+      expect(dev).not_to eq($stdout)
+      expect(dev.path).to eq(File.join(TEST_HOME, "logs", "mcp.log"))
     end
   end
 

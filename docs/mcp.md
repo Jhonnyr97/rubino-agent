@@ -45,9 +45,10 @@ mcp:
 ## How It Works
 
 1. At chat boot (and in `rubino tools`), `MCP::Manager` connects to all configured servers — best-effort: a server that fails to start prints a warning and is skipped, it never blocks the session
-2. Each server's tools are wrapped in `MCPToolWrapper` (adapts to `Tools::Base` interface)
+2. Each server's tools are wrapped in `MCPToolWrapper` (adapts to `Tools::Base` interface), forwarding the server-declared input schema so the model calls them with the right argument names
 3. Wrapped tools are registered in `Tools::Registry` with a prefix (`servername_toolname`)
-4. The agent can use MCP tools like any built-in tool
+4. The agent can use MCP tools like any built-in tool; a failed MCP call (including a server-side argument rejection) surfaces as an `Error: …` tool result and renders ✗ like any failed built-in tool
+5. `ruby_llm-mcp`'s own log lines (including everything a stdio server prints on its stderr) go to `<home>/logs/mcp.log`, never to stdout — one-shot `rubino prompt` output stays machine-readable
 
 MCP tools are dynamic — they come from whatever servers you configure — so they are not part of the drift-checked built-in tool list in [tools.md](tools.md) and have no `tools.<key>` config gate; disable a server (or set `mcp.enabled: false`) to remove its tools.
 
@@ -65,7 +66,7 @@ agents:
     mcp_servers: []               # No MCP tools
 ```
 
-An agent with no `mcp_servers` key sees every server. The YAML string `all` is normalized to the `:all` value the Manager compares against.
+An agent with no `mcp_servers` key sees every server. The YAML string `all` is normalized to `:all`. The scoping is enforced in `Agent::Definition#resolved_tools` — the single seam every consumer of an agent's tool set (chat lifecycle, prompt assembler) goes through — so a scoped agent's model request simply does not contain the out-of-scope servers' tool definitions.
 
 In code (an explicit value here wins over config):
 
@@ -89,8 +90,8 @@ An `oauth` hash on a `streamable` server is forwarded verbatim to `ruby_llm-mcp`
 manager = Rubino::MCP::Manager.new
 manager.start_all!
 
-# Get tools for a specific agent
-tools = manager.tools_for_agent(agent_definition)
+# Get tools for a specific agent (mcp_servers scoping applied)
+tools = agent_definition.resolved_tools
 
 # Health check
 manager.health_check

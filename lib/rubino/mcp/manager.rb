@@ -13,6 +13,7 @@ module Rubino
       def initialize(config: nil)
         @config = config || Rubino.configuration
         @clients = {}
+        route_mcp_logging!
       end
 
       # Initializes all configured MCP servers
@@ -59,33 +60,10 @@ module Rubino
         client&.stop
       end
 
-      # Returns all tools from all connected MCP servers
-      def all_tools
-        @clients.flat_map do |_name, client|
-          client.tools
-        rescue StandardError
-          []
-        end
-      end
-
-      # Returns tools scoped to a specific agent (based on agent config)
-      # If the agent has mcp_servers defined, only those servers' tools are returned.
-      def tools_for_agent(agent_definition)
-        allowed_servers = agent_definition.respond_to?(:mcp_servers) ? agent_definition.mcp_servers : nil
-
-        if allowed_servers.nil? || allowed_servers == :all
-          all_tools
-        else
-          allowed_servers.flat_map do |server_name|
-            client = @clients[server_name.to_s]
-            client ? client.tools : []
-          rescue StandardError
-            []
-          end
-        end
-      end
-
-      # Registers all MCP tools into the agent's tool registry
+      # Registers all MCP tools into the agent's tool registry.
+      # Per-agent mcp_servers scoping is NOT applied here — it lives in
+      # Agent::Definition#resolved_tools (#173), the single seam every
+      # consumer of an agent's tool set goes through.
       def register_all_tools!
         @clients.each do |server_name, client|
           client.tools.each do |mcp_tool|
@@ -116,6 +94,22 @@ module Rubino
       end
 
       private
+
+      # ruby_llm-mcp logs to $stdout by default — including every line the
+      # stdio server prints on ITS stderr (e.g. "Secure MCP Filesystem Server
+      # running on stdio"), relayed at INFO. That raw logger line pollutes
+      # one-shot `rubino prompt` output, doctor, tools and the chat banner
+      # (#174 — same class as the fixed #99). Route the gem's logger to a file
+      # under the resolved home, next to RUBYLLM_DEBUG's ruby_llm.log.
+      def route_mcp_logging!
+        log_path = File.join(Config::Loader.default_home_path, "logs", "mcp.log")
+        FileUtils.mkdir_p(File.dirname(log_path))
+        RubyLLM::MCP.config.logger = ::Logger.new(log_path, progname: "RubyLLM::MCP", level: ::Logger::INFO)
+      rescue StandardError
+        # Logging is never worth breaking MCP boot; worst case the gem keeps
+        # its default logger.
+        nil
+      end
 
       def build_client_options(name, transport, server_config)
         opts = {
