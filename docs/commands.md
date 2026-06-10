@@ -150,8 +150,8 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/think` | Show or switch thinking effort (off \| low \| medium \| high) |
 | `/commands` | List custom commands (and how to make them) |
 | `/help` | Show this help |
-| `/paste` | Attach an image from the clipboard (requires `pngpaste` on macOS, `wl-paste` or `xclip` on Linux; warns when none is installed) |
-| `/clear-images` | Drop **all** pending image attachments, however they were staged (`/paste`, `@image` token, or a dropped path on an image-only line) |
+| `/paste` | Attach an image from the clipboard |
+| `/clear-images` | Drop pending image attachments |
 | `/exit` | End session |
 | `/quit` | End session |
 
