@@ -766,7 +766,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to include("@lib/a.rb")
       "src".each_char { |ch| c.handle_key(ch) }
       expect(c.menu_open?).to be(true)
-      expect(c.instance_variable_get(:@menu)[:items]).to eq(%w[@src/b.rb])
+      expect(c.instance_variable_get(:@menu).items).to eq(%w[@src/b.rb])
     end
 
     it "closes the menu when the cursor moves off the token" do
@@ -1089,7 +1089,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       io = StringIO.new("[Z")
       expect do
         composer.handle_key("\e")
-        composer.send(:read_nonblock_char)
+        composer.instance_variable_get(:@escapes).send(:read_nonblock_char)
       end.not_to raise_error
       composer2 = described_class.new(input_queue: queue, input: io, output: output)
       expect { composer2.handle_key("\e") }.not_to raise_error

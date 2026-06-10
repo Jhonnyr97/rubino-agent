@@ -680,6 +680,48 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # #62: integration coverage for the CLI ↔ composer Ctrl+O reveal-deferral
+  # seam (mirrors the interrupt-wiring regression test). mark_content_streaming
+  # has no respond_to?/blanket-rescue safety net anymore, so a signature drift
+  # on begin/end_content_stream fails HERE instead of silently un-gating the
+  # mid-stream reveal (D1).
+  describe "#mark_content_streaming (Ctrl+O reveal-deferral seam, #62)" do
+    after { Rubino::UI::BottomComposer.current = nil }
+
+    def composer_with_reveal_spy(reveals)
+      Rubino::UI::BottomComposer.new(
+        input_queue: Rubino::Interaction::InputQueue.new,
+        input: StringIO.new, output: StringIO.new,
+        on_ctrl_o: -> { reveals << :reveal }
+      )
+    end
+
+    it "defers a mid-stream Ctrl+O and flushes it when the CLI ends the stream" do
+      reveals  = []
+      composer = composer_with_reveal_spy(reveals)
+      Rubino::UI::BottomComposer.current = composer
+
+      ui.send(:mark_content_streaming, true) # CLI: first answer token arrived
+      expect(composer.streaming?).to be(true)
+
+      composer.handle_key("\x0f") # Ctrl+O mid-stream: deferred, not fired
+      expect(reveals).to be_empty
+
+      ui.send(:mark_content_streaming, false) # CLI: stream_end / finalize
+      expect(composer.streaming?).to be(false)
+      expect(reveals).to eq([:reveal]) # the deferred reveal flushed once
+    end
+
+    it "reveals immediately when no content stream is active" do
+      reveals  = []
+      composer = composer_with_reveal_spy(reveals)
+      Rubino::UI::BottomComposer.current = composer
+
+      composer.handle_key("\x0f")
+      expect(reveals).to eq([:reveal])
+    end
+  end
+
   describe "#input_injected" do
     after { Rubino::UI::BottomComposer.current = nil }
 
