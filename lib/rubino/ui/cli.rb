@@ -154,6 +154,10 @@ module Rubino
           end
         end
       rescue TTY::Reader::InputInterrupt
+        # Esc aborts tty-prompt mid-render, leaving the cursor parked at the END
+        # of the last menu row — the next committed line (the caller's cancel
+        # hint) would glue straight onto it (#138). Restore line discipline.
+        $stdout.puts
         nil
       end
 
@@ -459,9 +463,20 @@ module Rubino
       # on its FIRST line only; the body renders through the same markdown
       # pipeline as assistant answers, so the child's report shows styled
       # headings/bold instead of literal `##`/`**` (#139).
+      #
+      # An injected line that carried a live "⏳ queued:" indicator (an
+      # Alt+Enter / "/queued" item the loop folded into the current turn) has
+      # been CONSUMED — drop its indicator, or it would sit above the input
+      # forever for a message that already ran (#129).
       def input_injected(text)
         return if text.nil? || text.to_s.empty?
 
+        if (composer = BottomComposer.current)
+          # The loop coalesces several drained lines into one injection — match
+          # the whole text AND each line so every consumed indicator clears.
+          composer.commit_queued(text)
+          text.to_s.split("\n").each { |line| composer.commit_queued(line) }
+        end
         clear_line
         first, rest = text.to_s.split("\n", 2)
         $stdout.puts @pastel.dim("↳ received while working: #{first}")
@@ -507,6 +522,9 @@ module Rubino
       # Smallest usable markdown/table budget. Below this a streamed table's
       # columns collapse to ~1 char each (#95), so we floor here rather than at 1.
       MIN_MARKDOWN_WIDTH = 40
+
+      # How many trailing lines of the in-flight block stay visible live (#127).
+      LIVE_TAIL_ROWS = 3
 
       # Column budget for markdown rendering: terminal width minus the 2-space
       # indent applied to every committed line. Headless-safe (falls back to 80).
@@ -657,7 +675,10 @@ module Rubino
         elsif (composer = BottomComposer.current)
           composer.set_partial(frame)
         elsif tty_stdout?
-          $stdout.print("\r\e[2K#{frame.to_s.tr("\n", " ")}")
+          # The bare-TTY repaint owns ONE row (CR + clear-line): show only the
+          # last line of a multi-line frame so the in-place repaint can't wrap
+          # and leave residue it can never erase.
+          $stdout.print("\r\e[2K#{frame.to_s.split("\n").last}")
           $stdout.flush
         end
       end
@@ -704,7 +725,19 @@ module Rubino
       # Tool started renders as compact `● running  name · hint`.
       # The `task` (delegation) tool gets a dedicated row so the timeline reads
       # as a hand-off, not a generic tool call: `● delegated → <subagent>  <prompt>`.
+      #
+      # Finalize any OPEN content stream first (#136): on the streaming path the
+      # model can emit answer text right up to the tool call (ruby_llm runs the
+      # tool mid-stream, so no stream_end intervenes). Without this the pre-tool
+      # text stayed buffered in the stream splitter, committed only AFTER the
+      # tool card, glued straight onto the post-tool continuation
+      # ("…number.Confirmed — …"). Committing it here preserves stream order
+      # (text → tool card → text) and the block boundary between the segments.
+      # Idempotent: the non-streaming path already closed the stream
+      # (Loop#close_intermediate_stream), so this is a no-op there — the same
+      # contract #confirm uses before the approval card.
       def tool_started(name, arguments: nil, at: nil)
+        finalize_stream
         return delegation_started(arguments) if name == "task"
 
         hint = args_hint(arguments)
@@ -766,7 +799,19 @@ module Rubino
       # Wired as the BottomComposer's on_ctrl_o callback; prints through $stdout
       # so it lands above the prompt under the composer's render mutex.
       def reveal_last_reasoning
-        return if @last_reasoning.nil? || @last_reasoning.strip.empty?
+        # NOTHING retained (hidden mode never buffered one, or — the common case
+        # on providers that stream no thinking blocks at all — no reasoning ever
+        # arrived): give the advertised key ONE dim line of feedback instead of
+        # a forever-silent no-op that reads as a broken keybinding (#133). One
+        # note per dry spell: further presses stay silent until reasoning is
+        # actually retained (which resets the flag below).
+        if @last_reasoning.nil? || @last_reasoning.strip.empty?
+          unless @no_reasoning_note_shown
+            @no_reasoning_note_shown = true
+            note("no reasoning retained — this provider streamed no thinking blocks")
+          end
+          return
+        end
 
         # IDEMPOTENT + SILENT: a scrollback aside can't be un-printed, so
         # revealing the SAME retained buffer twice would just stack an identical
@@ -1059,11 +1104,13 @@ module Rubino
         # transient row, so this is a no-op there.)
         clear_plain_tail if completed.any?
         completed.each { |block| commit_markdown_block(block) }
-        # Live region is ONE row: show only the in-progress LINE (live_tail), not
-        # the whole multi-line in-flight block. A partial table/fence body shown
-        # whole was collapsed to one over-wide, ellipsis-clipped line; its earlier
-        # lines stay buffered until the block completes and renders as markdown.
-        show_live_tail(@stream_md.live_tail)
+        # Live region: a small ROLLING window over the in-flight block — its last
+        # few raw lines, so a long list/table block keeps its recent context
+        # visible while it streams instead of vanishing to a single flickering
+        # line until the whole block commits (#127). Bounded, so a long open
+        # fence can never push the prompt off-screen; the block still snaps to
+        # rendered markdown the moment it completes.
+        show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
       end
 
       # Erases an in-place raw tail on the plain (no-#live) path before a commit.
@@ -1188,8 +1235,10 @@ module Rubino
           @last_reasoning = buffered
           @last_reasoning_seconds = seconds
           # A new thought is retained — reset the reveal guard so the first
-          # Ctrl+O on THIS thought re-emits its aside (Fix 1 idempotency).
+          # Ctrl+O on THIS thought re-emits its aside (Fix 1 idempotency), and
+          # re-arm the "no reasoning retained" note (#133) for a later dry spell.
           @last_reasoning_revealed = false
+          @no_reasoning_note_shown = false
         end
 
         @reasoning_buffer = +""

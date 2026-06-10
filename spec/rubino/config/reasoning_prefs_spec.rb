@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "yaml"
+require "tmpdir"
 
 RSpec.describe Rubino::Config::ReasoningPrefs do
   # A minimal config double that only needs #dig, like Configuration.
@@ -32,6 +33,40 @@ RSpec.describe Rubino::Config::ReasoningPrefs do
       expect(described_class.mode(config("display" => { "reasoning" => "bogus" }))).to eq(:collapsed)
       expect(described_class.mode(config({}))).to eq(:collapsed)
       expect(described_class.mode(nil)).to eq(:collapsed)
+    end
+
+    # Regression for #132: Defaults used to seed display.reasoning, so after
+    # the defaults merge the key was NEVER unset and the documented legacy
+    # mapping above was dead code on every config loaded normally — a real
+    # pre-tri-state config with show_reasoning: false silently rendered
+    # collapsed cues the user had opted out of. The mapping must survive the
+    # FULL load path (user file deep-merged with Defaults).
+    context "with the full Loader/Defaults merge (upgrade-shape configs, #132)" do
+      def loaded_mode(display_yaml)
+        Dir.mktmpdir do |home|
+          File.write(File.join(home, "config.yml"), display_yaml)
+          raw = Rubino::Config::Loader.new(home_path: home).load
+          return described_class.mode(config(raw))
+        end
+      end
+
+      it "maps show_reasoning: false to :hidden" do
+        expect(loaded_mode("display:\n  show_reasoning: false\n")).to eq(:hidden)
+      end
+
+      it "maps show_reasoning: true to :full" do
+        expect(loaded_mode("display:\n  show_reasoning: true\n")).to eq(:full)
+      end
+
+      it "keeps the collapsed default when neither key is set" do
+        expect(loaded_mode("display:\n  streaming: true\n")).to eq(:collapsed)
+      end
+
+      it "does not seed display.reasoning (or the legacy boolean) in Defaults" do
+        defaults = Rubino::Config::Defaults.to_hash
+        expect(defaults.dig("display", "reasoning")).to be_nil
+        expect(defaults.dig("display", "show_reasoning")).to be_nil
+      end
     end
   end
 

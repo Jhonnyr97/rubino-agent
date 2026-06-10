@@ -1121,6 +1121,67 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
     end
 
+    # #129 end-to-end at the loop level: items the user EXPLICITLY queued
+    # (Alt+Enter) during a turn that ends by an Enter-INTERRUPT must drain at
+    # the boundaries that follow — the interrupting line runs first (it jumped
+    # the queue), then each queued item in submission order, each as its own
+    # visible turn (echo + indicator removed at commit). Nothing parks
+    # invisibly behind a later send.
+    describe "Enter-interrupt with explicitly queued items (#129)" do
+      let(:input_queue) { Rubino::Interaction::InputQueue.new }
+      let(:runner)      { instance_double(Rubino::Agent::Runner, cancel!: nil) }
+
+      before do
+        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
+        # Real composers over StringIO (no raw reader thread / termios).
+        allow(Rubino::UI::BottomComposer).to receive(:new).and_wrap_original do |orig, **kw|
+          composer = orig.call(**kw, input: StringIO.new, output: StringIO.new)
+          allow(composer).to receive(:start_reader).and_return(Thread.new { nil })
+          composer
+        end
+      end
+
+      it "drains the queue in order across the boundaries after the interrupt" do
+        runs = []
+        allow(runner).to receive(:run) do |prompt, **|
+          runs << prompt
+          if runs.length == 1
+            # Mid-turn: the user Alt+Enters AAA and BBB, then Enter-interrupts
+            # with CHERRY (front of the queue + cancel).
+            composer = Rubino::UI::BottomComposer.current
+            "AAA".each_char { |ch| composer.handle_key(ch) }
+            composer.instance_variable_set(:@input, StringIO.new("\r"))
+            composer.handle_key("\e") # Alt+Enter
+            "BBB".each_char { |ch| composer.handle_key(ch) }
+            composer.instance_variable_set(:@input, StringIO.new("\r"))
+            composer.handle_key("\e") # Alt+Enter
+            "CHERRY".each_char { |ch| composer.handle_key(ch) }
+            composer.handle_key("\r") # Enter-interrupt
+            nil # the interrupted turn yields no answer
+          else
+            "ok"
+          end
+        end
+
+        cmd.send(:run_turn, runner, "long essay", ui, input_queue)
+
+        # Every parked line is VISIBLE while pending (#129): the interrupting
+        # line and the queued items all carry a "⏳ queued:" indicator.
+        expect(cmd.send(:pending_queued)).to eq(%w[CHERRY AAA BBB])
+
+        # The boundaries that follow consume everything, in order, with no
+        # fresh read in between — and each commit clears its indicator.
+        3.times do
+          line = cmd.send(:next_input, input_queue)
+          cmd.send(:run_turn, runner, line, ui, input_queue)
+        end
+
+        expect(runs).to eq(["long essay", "CHERRY", "AAA", "BBB"])
+        expect(cmd.send(:pending_queued)).to eq([])    # all indicators cleared
+        expect(input_queue.pending?).to be(false)      # nothing left parked
+      end
+    end
+
     # The composer (and any termios mutation / $stdout swap) must be gated
     # entirely on a real TTY: piped / -q / server input is a no-op so nothing
     # touches terminal modes, no thread is spawned, and $stdout is untouched.

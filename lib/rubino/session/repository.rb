@@ -223,15 +223,22 @@ module Rubino
           .first
       end
 
+      # A first prompt shorter than this is junk for titling purposes (#128): a
+      # throwaway "y"/"ok" the user immediately interrupted would otherwise
+      # become the session title and a useless one-char `--resume "y"` matcher.
+      TITLE_MIN_CHARS = 3
+
       # Derives a short, human-readable session title from the first user
       # message. Deterministic and model-free (#103): collapse whitespace, strip
       # a leading slash-command word, take the first line, and truncate on a word
-      # boundary. Returns nil for empty/blank input so the caller can leave the
-      # session untitled rather than store an empty string.
+      # boundary. Returns nil for empty/blank input — and for junk-short input
+      # (#128) — so the caller leaves the session untitled; the next MEANINGFUL
+      # prompt titles it instead (Lifecycle#maybe_set_title retries every turn
+      # until a title sticks), and the resume hint falls back to the session id.
       def self.derive_title(text, max: 60)
         cleaned = text.to_s.split("\n").first.to_s.strip.gsub(/\s+/, " ")
         cleaned = cleaned.sub(%r{\A/\S+\s*}, "") # drop a leading slash command
-        return nil if cleaned.empty?
+        return nil if cleaned.length < TITLE_MIN_CHARS
         return cleaned if cleaned.length <= max
 
         truncated = cleaned[0, max].sub(/\s+\S*\z/, "")
