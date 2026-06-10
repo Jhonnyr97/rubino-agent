@@ -173,6 +173,56 @@ RSpec.describe Rubino::Tools::ProbeTool do
     end
   end
 
+  # #198 — a live peek of a child parked on a BLOCKING ask_parent replays the
+  # PERSISTED transcript, where the pending tool_use does not exist yet: the
+  # child's own model honestly answers "I never called ask_parent", flatly
+  # contradicting task_result's blocked status. Probe now short-circuits with
+  # the parked question and the one action that unblocks it — no billed peek.
+  describe "child parked on a blocking ask_parent (#198)" do
+    def park_on_ask(child, owner_id:, blocking: true)
+      gate = Rubino::Run::ApprovalGate.new
+      gate.register("ask_#{child.id}")
+      registry.begin_ask(child.id, gate: gate, ask_id: "ask_#{child.id}",
+                                   question: "sqlite or postgres?", blocking: blocking, owner_id: owner_id)
+    end
+
+    it "short-circuits a live probe with the parked question — no billed peek, budget untouched" do
+      parent = reserve
+      child  = reserve(owner: parent.id)
+      park_on_ask(child, owner_id: parent.id)
+
+      out = call_as(parent.id, tool, "task_id" => child.id, "question" => "did you ask me anything?", "live" => true)
+
+      expect(out).to include("BLOCKED on ask_parent")
+      expect(out).to include("sqlite or postgres?")
+      expect(out).to include("answer_child(task_id: \"#{child.id}\"")
+      expect(peek_spy.calls).to be_empty            # no billed peek
+      expect(child.probe_count.to_i).to eq(0)       # budget untouched
+    end
+
+    it "answers the free snapshot with the same honest blocked status" do
+      child = reserve(owner: nil)
+      park_on_ask(child, owner_id: nil) # → :blocked_on_human
+
+      out = call_as(nil, tool, "task_id" => child.id, "question" => "status?")
+
+      expect(out).to include("BLOCKED on ask_parent")
+      expect(out).to include("answer_child(task_id: \"#{child.id}\"")
+    end
+
+    it "probes a NON-blocking ask as normal (the child keeps working)" do
+      parent = reserve
+      child  = reserve(owner: parent.id)
+      park_on_ask(child, owner_id: parent.id, blocking: false)
+      registry.record_tool_started(child.id, "read lib/auth.rb")
+
+      out = call_as(parent.id, tool, "task_id" => child.id, "question" => "how far?", "live" => true)
+
+      expect(out).to eq("probe #{child.id} (live) ⟵ the child says: working on auth")
+      expect(peek_spy.calls.size).to eq(1)
+    end
+  end
+
   # EPHEMERAL invariant on the REAL SubagentProbe + a real session: a live probe
   # appends NOTHING to the child's persisted messages.
   describe "EPHEMERAL invariant (real SubagentProbe, real session)" do

@@ -329,6 +329,63 @@ RSpec.describe "parent <-> subagent communication" do
     end
   end
 
+  # --- #195: the [subagent-question] notice reaches the SPAWNING parent ------
+  #
+  # The bug: surface_and_notify read the thread-local Rubino.background_sink on
+  # the CHILD's thread — where the child Lifecycle had bound the child's OWN
+  # steer_queue — so the question was misrouted into the asking child itself
+  # and the parent MODEL never saw it. The notice now rides the spawn-captured
+  # sink stored on the registry Entry (entry.parent_sink), exactly like the
+  # [background-task] completion notice. Exercised on the REAL TaskTool
+  # background path + the REAL AskParentTool (2-level tree: parent agent →
+  # asking child).
+  describe "ask_parent notice routing to the spawning parent (#195)" do
+    before do
+      Rubino::Tools::Registry.register_defaults!
+      Rubino.agent_registry = Rubino::Agent::AgentRegistry.new
+    end
+
+    after { Rubino.agent_registry = nil }
+
+    it "pushes the [subagent-question] note onto the PARENT's input queue, not the child's own steer queue" do
+      registry       = Rubino::Tools::BackgroundTasks.instance
+      parent_queue   = Rubino::Interaction::InputQueue.new
+      before_threads = Thread.list.size
+      child_runner   = Class.new do
+        def run!(_prompt, **_opts)
+          Rubino::Tools::AskParentTool.new.call("question" => "split into how many files?", "blocking" => true)
+        end
+
+        def cancel!; end
+      end.new
+
+      # Spawn with the parent's input queue bound, the way Lifecycle#run_turn
+      # binds it around the parent loop's run.
+      handle = Rubino.with_background_sink(parent_queue) do
+        Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { child_runner })
+                               .call("subagent" => "general", "prompt" => "do it")
+      end
+      id = handle[/sa_[0-9a-f]+/]
+      wait_until { registry.find(id).status == :blocked_on_human }
+
+      # The note landed on the PARENT's queue (as a notice — it folds into the
+      # parent's next real turn instead of firing a standalone one, #13) …
+      note = parent_queue.drain.find { |n| n.include?("[subagent-question]") }
+      expect(note).to include("split into how many files?")
+      # … and it names the MODEL-callable answer_child, not the human-only /reply.
+      expect(note).to include("answer_child(task_id: \"#{id}\"")
+      # The asking child's OWN steer queue got NOTHING (the misroute).
+      expect(registry.find(id).steer_queue.drain).to eq([])
+
+      # The unbroken half of the chain still works: answering unblocks the child.
+      registry.deliver_answer(id, "three files")
+      wait_until { registry.find(id).status == :completed }
+      expect(registry.find(id).result).to include("Your parent answered: three files")
+      registry.find(id).thread&.join(2)
+      wait_until { Thread.list.size <= before_threads }
+    end
+  end
+
   # --- blocked-state surfaces on the card ------------------------------------
   describe "blocked-state visibility" do
     it "renders the ⛔ waiting-on-you card + counts it as live" do

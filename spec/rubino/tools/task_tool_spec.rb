@@ -915,6 +915,125 @@ RSpec.describe Rubino::Tools::TaskTool do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # #196 — sync delegation (background: false) goes through the SAME single
+  # enforcement point as the background path: reserve applies every nesting
+  # cap, the child counts toward the live totals for its inline run, and it
+  # runs under with_current_subagent_id so its own spawns are stamped with the
+  # right owner/depth. Previously it bypassed all of this — and the at-capacity
+  # message recommended exactly that bypass.
+  # ---------------------------------------------------------------------------
+
+  describe "sync delegation governance (#196)" do
+    before { Rubino::Tools::BackgroundTasks.reset! }
+    after  { Rubino::Tools::BackgroundTasks.reset! }
+
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+
+    it "refuses a sync spawn past the depth cap (same reserve gate as background)" do
+      depth1 = registry.reserve(subagent: "general", prompt: "p",
+                                owner_subagent_id: registry.reserve(subagent: "explore", prompt: "root").id)
+      expect(depth1.depth).to eq(1)
+      never_runs = Class.new do
+        def run!(_input, **_opts) = raise("must not run — reserve refuses first")
+        def cancel!; end
+      end.new
+
+      out = Rubino.with_current_subagent_id(depth1.id) do
+        described_class.new(runner_factory: ->(_d) { never_runs })
+                       .call("subagent" => "general", "prompt" => "too deep", "background" => false)
+      end
+
+      expect(out).to include("Max nesting depth reached")
+    end
+
+    it "counts a sync child toward the live totals while it runs and frees the slot after" do
+      seen_running = nil
+      probe = lambda do
+        seen_running = registry.running.size
+        "done"
+      end
+      runner = Class.new do
+        define_method(:run!) { |_i, **_o| probe.call }
+        define_method(:cancel!) {}
+      end.new
+
+      out = described_class.new(runner_factory: ->(_d) { runner })
+                           .call("subagent" => "explore", "prompt" => "x", "background" => false)
+
+      expect(out).to eq("done")
+      expect(seen_running).to eq(1)        # held a live slot during the run
+      expect(registry.running).to be_empty # released on completion
+      expect(registry.list.first.status).to eq(:completed)
+    end
+
+    it "releases the slot when the sync child raises" do
+      boom = Class.new do
+        def run!(_input, **_opts) = raise("child blew up")
+        def cancel!; end
+      end.new
+
+      out = described_class.new(runner_factory: ->(_d) { boom })
+                           .call("subagent" => "explore", "prompt" => "x", "background" => false)
+
+      expect(out).to include("failed: child blew up")
+      expect(registry.running).to be_empty
+      expect(registry.list.first.status).to eq(:failed)
+    end
+
+    it "stamps a bg grandchild spawned through a sync hop with the sync child's owner id" do
+      before_threads = Thread.list.size
+      latch   = Queue.new
+      handles = []
+      grandchild_runner = Class.new do
+        define_method(:run!) do |_i, **_o|
+          latch.pop
+          "g done"
+        end
+        define_method(:cancel!) {}
+      end.new
+      sync_runner = Class.new do
+        define_method(:run!) do |_i, **_o|
+          inner = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { grandchild_runner })
+          handles << inner.call("subagent" => "general", "prompt" => "bg from sync")
+          "sync done"
+        end
+        define_method(:cancel!) {}
+      end.new
+
+      out = described_class.new(runner_factory: ->(_d) { sync_runner })
+                           .call("subagent" => "explore", "prompt" => "sync hop", "background" => false)
+      expect(out).to eq("sync done")
+
+      sync_entry    = registry.list.find { |e| e.subagent == "explore" }
+      grandchild_id = handles.first[/sa_[0-9a-f]+/]
+      grandchild    = registry.find(grandchild_id)
+      expect(grandchild.owner_subagent_id).to eq(sync_entry.id) # not nil — no ownership corruption
+      expect(grandchild.depth).to eq(1)                         # owner.depth + 1, caps apply downstream
+
+      latch << :go
+      wait_until { registry.find(grandchild_id).status == :completed }
+      registry.find(grandchild_id).thread&.join(2)
+      wait_until { Thread.list.size <= before_threads }
+    end
+
+    it "the at-capacity refusal no longer recommends the background:false bypass" do
+      Rubino::Tools::BackgroundTasks::MAX_CHILDREN_PER_NODE.times do
+        registry.reserve(subagent: "general", prompt: "filler")
+      end
+      never_runs = Class.new do
+        def run!(_input, **_opts) = raise("must not run")
+        def cancel!; end
+      end.new
+
+      out = described_class.new(runner_factory: ->(_d) { never_runs })
+                           .call("subagent" => "explore", "prompt" => "one too many")
+
+      expect(out).to include("At capacity")
+      expect(out).not_to include("background: false")
+    end
+  end
+
   describe "task_stop tool" do
     before { Rubino::Tools::BackgroundTasks.reset! }
     after  { Rubino::Tools::BackgroundTasks.reset! }
@@ -938,6 +1057,52 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(cancelled).to eq([true])
 
       latch << :go # release so the worker thread exits cleanly
+    end
+
+    # #197 — a child parked on a blocking ask_parent is LIVE (it holds a thread
+    # + a concurrency slot); task_stop must cancel its ask gate and unwind it,
+    # not refuse with "already blocked_on_human — nothing to stop" and leave a
+    # zombie holding its slot until the 15m gate timeout.
+    it "stops a child parked on a blocking ask_parent: gate cancelled, ⊘ stopped, slot freed (#197)" do
+      registry       = Rubino::Tools::BackgroundTasks.instance
+      before_threads = Thread.list.size
+      runner = Class.new do
+        def initialize = @cancelled = false
+
+        def run!(_input, **_opts)
+          out = Rubino::Tools::AskParentTool.new.call("question" => "which db?", "blocking" => true)
+          # Mimic the real Loop's cancel checkpoint: task_stop flips the runner
+          # token BEFORE cancelling the gate, so the woken child unwinds with
+          # Interrupted right after the cancelled ask returns.
+          raise Rubino::Interrupted, "stopped" if @cancelled
+
+          out
+        end
+
+        def cancel! = @cancelled = true
+      end.new
+      tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+      out     = tool.call("subagent" => "explore", "prompt" => "x")
+      task_id = out[/sa_[0-9a-f]+/]
+      wait_until { registry.find(task_id).status == :blocked_on_human }
+
+      stop_out = Rubino::Tools::TaskStopTool.new.call("task_id" => task_id)
+      expect(stop_out).to include("stop requested")
+      expect(stop_out).not_to include("nothing to stop")
+
+      wait_until { registry.find(task_id).status == :stopped } # ⊘ stopped, never ✗ failed
+      expect(registry.running).to be_empty                     # slot freed
+      registry.find(task_id).thread&.join(2)
+      wait_until { Thread.list.size <= before_threads }        # thread delta 0
+    end
+
+    it "still refuses a TERMINAL child" do
+      registry = Rubino::Tools::BackgroundTasks.instance
+      entry    = registry.reserve(subagent: "explore", prompt: "x")
+      registry.complete(entry, status: :completed, result: "done")
+
+      out = Rubino::Tools::TaskStopTool.new.call("task_id" => entry.id)
+      expect(out).to eq("[#{entry.id}] already completed — nothing to stop.")
     end
   end
 end

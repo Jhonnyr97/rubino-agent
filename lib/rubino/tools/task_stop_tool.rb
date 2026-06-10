@@ -15,8 +15,17 @@ module Rubino
         "task"
       end
 
+      # The live statuses a stop applies to. A child parked on a human approval
+      # or an ask_parent gate still holds its thread + concurrency slot
+      # (BackgroundTasks#live_status?), so it MUST be stoppable — refusing left
+      # a blocked child as a zombie holding its slot until the ask-gate timeout
+      # (#197). :stopping is excluded: a second stop is honestly "already
+      # stopping — nothing to stop".
+      STOPPABLE = %i[running needs_approval blocked_on_human blocked_on_parent].freeze
+
       def description
-        "Stop a running background subagent started by `task`. Cancels the " \
+        "Stop a running background subagent started by `task` — including one " \
+          "parked on an approval or an ask_parent question. Cancels the " \
           "subagent's nested run; its task_result will then report failed/cancelled."
       end
 
@@ -45,12 +54,21 @@ module Rubino
         entry    = registry.find(task_id)
         return "Error: no background subagent with task_id=#{task_id}" unless entry
 
-        return "[#{task_id}] already #{entry.status} — nothing to stop." unless entry.status == :running
+        return "[#{task_id}] already #{entry.status} — nothing to stop." unless STOPPABLE.include?(entry.status)
 
         # Mark the stop first so the list/cards immediately show ◌ stopping and
         # the unwind records as :stopped, not failed (#108/#13).
         registry.request_stop(task_id)
+        # Flip the runner's CancelToken BEFORE waking any gate, so a child woken
+        # from a parked wait observes the flipped token at its very next
+        # checkpoint and unwinds immediately.
         entry.runner&.cancel!
+        # A child parked on its OWN approval or ask gate is blocked inside the
+        # gate's wait; cancel the gates so it wakes (Interrupted → deny/cancel)
+        # and unwinds NOW instead of holding its thread + slot until the bound
+        # elapses (#197) — exactly what the human /agents <id> --stop path does.
+        entry.approval_gate&.cancel!
+        entry.ask_gate&.cancel!
         # Stop-cascade (S5a): wake any descendant parked on a blocking ask_parent
         # so the whole subtree unwinds at once (no orphaned blocked grandchild).
         registry.cancel_descendant_ask_gates(task_id)

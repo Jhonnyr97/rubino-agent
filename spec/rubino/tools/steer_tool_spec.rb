@@ -99,4 +99,53 @@ RSpec.describe Rubino::Tools::SteerTool do
     out = call_as(nil, "task_id" => child.id, "note" => "narrow scope")
     expect(out).to eq("steer ▸ #{child.id} ← narrow scope  (parked · enters child context next turn)")
   end
+
+  # #198 — a child parked on a BLOCKING ask_parent has no next turn until the
+  # ask is answered, so "enters child context next turn" misled the parent
+  # into believing the redirect took effect. The note is still queued
+  # (deliver-on-unblock), but the answer must be honest and point at
+  # answer_child as the unblocking move.
+  describe "child parked on a blocking ask_parent (#198)" do
+    def park_on_ask(child, owner_id:, blocking: true)
+      gate = Rubino::Run::ApprovalGate.new
+      gate.register("ask_#{child.id}")
+      registry.begin_ask(child.id, gate: gate, ask_id: "ask_#{child.id}",
+                                   question: "sqlite or postgres?", blocking: blocking, owner_id: owner_id)
+    end
+
+    it "queues the note but says the child will NOT see it until answer_child (agent owner)" do
+      parent = reserve
+      child  = reserve(owner: parent.id)
+      park_on_ask(child, owner_id: parent.id) # → :blocked_on_parent
+
+      out = call_as(parent.id, "task_id" => child.id, "note" => "be terse")
+
+      expect(out).to include("BLOCKED on ask_parent")
+      expect(out).to include("sqlite or postgres?")
+      expect(out).to include("answer_child(task_id: \"#{child.id}\"")
+      expect(out).not_to include("enters child context next turn")
+      # The note IS queued — it folds in once the child is unblocked.
+      expect(child.steer_queue.drain).to eq(["be terse"])
+    end
+
+    it "is honest for a top-level-owned blocked child too (:blocked_on_human)" do
+      child = reserve(owner: nil)
+      park_on_ask(child, owner_id: nil) # → :blocked_on_human
+
+      out = call_as(nil, "task_id" => child.id, "note" => "skip the tests")
+
+      expect(out).to include("BLOCKED on ask_parent")
+      expect(out).to include("answer_child(task_id: \"#{child.id}\"")
+    end
+
+    it "keeps the normal parked confirmation for a NON-blocking ask (the child keeps working)" do
+      parent = reserve
+      child  = reserve(owner: parent.id)
+      park_on_ask(child, owner_id: parent.id, blocking: false)
+
+      out = call_as(parent.id, "task_id" => child.id, "note" => "be terse")
+
+      expect(out).to eq("steer ▸ #{child.id} ← be terse  (parked · enters child context next turn)")
+    end
+  end
 end

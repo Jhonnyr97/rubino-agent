@@ -792,6 +792,57 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # #192 — a dequeued line that resolves to a SLASH COMMAND (or any non-turn
+  # branch: `!` shell escape, `? ` probe, image command) never reaches
+  # #run_turn, so #commit_queued_prompt never fired for it and its live
+  # "⏳ queued:" indicator leaked across later prompts. The dispatch loop now
+  # commits it via #commit_queued_dispatch when the line is consumed.
+  describe "queued line consumed off the turn path (#192)" do
+    let(:cmd) { described_class.new({}) }
+
+    it "commit_queued_dispatch drops the pending row and echoes the line" do
+      cmd.send(:pending_queued) << "/status"
+      cmd.instance_variable_set(:@input_from_queue, ["/status"])
+      allow(cmd).to receive(:build_prompt).and_return("default ❯ ")
+
+      expect { cmd.send(:commit_queued_dispatch) }.to output("default ❯ /status\n").to_stdout
+
+      expect(cmd.send(:pending_queued)).to eq([])
+      expect(cmd.instance_variable_get(:@input_from_queue)).to be_nil
+    end
+
+    it "is a no-op for an idle submit (not flagged)" do
+      cmd.send(:pending_queued) << "later"
+      cmd.instance_variable_set(:@input_from_queue, nil)
+
+      expect { cmd.send(:commit_queued_dispatch) }.not_to output.to_stdout
+
+      expect(cmd.send(:pending_queued)).to eq(["later"]) # untouched: still pending
+    end
+
+    it "clears the indicator end-to-end when a queued line runs as a slash command" do
+      allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+      allow(Rubino::Commands::Executor).to receive(:welcome)
+      allow(fake_runner).to receive_messages(session: { id: "sess-192", title: nil, model: "m" },
+                                             end_session!: nil)
+      allow(cmd).to receive_messages(setup_workspace_and_trust!: nil, git_context: nil,
+                                     redirect_logger_to_file: nil)
+      allow($stdin).to receive(:gets).and_return("go\n", nil)
+      allow(fake_runner).to receive(:run) do |_prompt, input_queue:, **|
+        # Mid-turn the user explicitly queues a slash command (Alt+Enter / /queued).
+        cmd.send(:pending_queued) << "/help"
+        input_queue.push("/help")
+        "ok"
+      end
+
+      expect { cmd.send(:run_interactive) }.to output(%r{/help}).to_stdout
+
+      expect(cmd.send(:pending_queued)).to eq([])                    # the ⏳ row is gone
+      expect(cmd.instance_variable_get(:@input_from_queue)).to be_nil
+      expect(fake_runner).to have_received(:run).once                # /help never ran a model turn
+    end
+  end
+
   # -----------------------------------------------------------------------
   # ensure_setup!
   # -----------------------------------------------------------------------
