@@ -196,12 +196,18 @@ module Rubino
 
       # Surfaces the blocked state on the parent CLI (a committed banner in
       # scrollback + a card repaint so the persistent ⛔ marker shows) and pushes
-      # a note onto the parent\'s InputQueue so the parent MODEL learns of the
-      # question at its next turn and may answer it. DISPLAY/notify only — the
-      # authoritative answer delivery is the gate decision (/reply) or, for the
-      # parent-model answer, a future gate-decide path.
+      # a note onto the PARENT\'s InputQueue so the parent MODEL learns of the
+      # question at its next turn and may answer it (answer_child). The sink is
+      # the one TaskTool captured on the PARENT thread at spawn time
+      # (entry.parent_sink) — NEVER the thread-local Rubino.background_sink,
+      # which on this (the child\'s) thread is the child\'s own steer_queue and
+      # would misroute the question back into the asking child (#195). Pushed as
+      # a NOTICE so it rides the parent\'s next real turn instead of firing a
+      # standalone synthetic user turn at the idle prompt (#13). DISPLAY/notify
+      # only — the authoritative answer delivery is the gate decision
+      # (/reply or answer_child).
       def surface_and_notify(entry, question)
-        Rubino.background_sink&.push(parent_notice(entry, question))
+        entry.parent_sink&.push_notice(parent_notice(entry, question))
         parent_ui = Rubino.instance_variable_get(:@ui)
         return unless parent_ui.is_a?(UI::CLI)
 
@@ -211,8 +217,15 @@ module Rubino
         nil
       end
 
+      # The top-level agent has answer_child registered too — the notice must
+      # name the MODEL-callable tool, not the human-only /reply command the
+      # model cannot invoke (#195).
       def parent_notice(entry, question)
-        "[subagent-question] Task #{entry.id} (subagent '#{entry.subagent}') is asking you:\n" + "#{question}\n" + "If you can answer from your own context, reply to it with " + "/reply #{entry.id} <answer> (or tell the user). If not, the human will be asked."
+        "[subagent-question] Task #{entry.id} (subagent '#{entry.subagent}') is asking you:\n" \
+          "#{question}\n" \
+          "Answer it with answer_child(task_id: \"#{entry.id}\", answer: \"…\") if you can. " \
+          "If you cannot answer from your own context, tell the user — the human can also " \
+          "answer via /reply #{entry.id}."
       end
     end
   end

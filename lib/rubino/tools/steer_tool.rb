@@ -83,15 +83,35 @@ module Rubino
         # queue vanished between checks (a just-finished child) — treat as gone.
         return "Cannot steer #{task_id} — no such running subagent." unless registry.steer(task_id, note)
 
+        # A child parked on a BLOCKING ask_parent has no next turn until the ask
+        # is answered — the note IS queued (deliver-on-unblock), but saying
+        # "enters child context next turn" would let the parent believe the
+        # redirect took effect (#198). Be honest and point at the one action
+        # that unblocks the child.
+        if parked_on_ask?(entry)
+          return "steer ▸ #{task_id} ← #{truncate(note, 80)}  (queued — but #{task_id} is BLOCKED " \
+                 "on ask_parent and will NOT see it until you answer its question: " \
+                 "#{truncate(entry.ask_question, 120)} — unblock it with " \
+                 "answer_child(task_id: \"#{task_id}\", answer: \"…\"))"
+        end
+
         "steer ▸ #{task_id} ← #{truncate(note, 80)}  (parked · enters child context next turn)"
       end
 
       private
 
       # Mirrors BackgroundTasks#live_status? — a child still holds a loop (its
-      # thread is alive) while running, awaiting approval, or blocked on the human.
+      # thread is alive) while running, awaiting approval, or blocked on an
+      # escalated ask_parent (waiting on the human OR on its agent-parent).
       def live?(status)
-        %i[running needs_approval blocked_on_human].include?(status)
+        %i[running needs_approval blocked_on_human blocked_on_parent].include?(status)
+      end
+
+      # True when the child's thread is PARKED on a blocking ask_parent gate (a
+      # non-blocking ask keeps working, so its steer is consumable as normal).
+      def parked_on_ask?(entry)
+        entry.ask_gate && entry.ask_blocking &&
+          %i[blocked_on_human blocked_on_parent].include?(entry.status)
       end
 
       def truncate(text, max)

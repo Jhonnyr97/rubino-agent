@@ -96,6 +96,12 @@ module Rubino
         unless registry.owned_by?(caller_id, task_id)
           return "Error: #{task_id} is not one of your subagents — you can only probe children you started."
         end
+        # A child parked on a BLOCKING ask_parent has no live activity to peek
+        # at — its pending tool_use is not in the persisted snapshot, so a
+        # billed live peek would honestly answer "I never called ask_parent"
+        # while task_result says blocked (#198). Short-circuit with the parked
+        # question and the one action that unblocks it (no billed peek).
+        return blocked_on_ask_answer(entry) if parked_on_ask?(entry)
 
         live ? probe_live(registry, entry, question) : probe_cheap(entry)
       end
@@ -111,6 +117,20 @@ module Rubino
 
       def just_started?(entry)
         entry.tool_count.to_i.zero?
+      end
+
+      # True when the child's thread is PARKED on a blocking ask_parent gate
+      # (a non-blocking ask keeps the blocked status on the card but the child
+      # keeps working, so it stays probeable).
+      def parked_on_ask?(entry)
+        entry.ask_gate && entry.ask_blocking &&
+          %i[blocked_on_human blocked_on_parent].include?(entry.status)
+      end
+
+      def blocked_on_ask_answer(entry)
+        "probe #{entry.id} · #{entry.subagent} · BLOCKED on ask_parent waiting for YOUR answer — " \
+          "question:\n#{entry.ask_question}\n" \
+          "Answer with answer_child(task_id: \"#{entry.id}\", answer: \"…\") to unblock it."
       end
 
       # FREE path: render the live-progress fields only. NO model call.
