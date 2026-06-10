@@ -52,4 +52,27 @@ RSpec.describe Rubino::LLM::InlineThinkFilter do
     expect(collect(["a<Think>x</THINK>b<think>y</Think>c"]))
       .to eq(content: "abc", thinking: "xy")
   end
+
+  # #2 investigation: exhaustive chunk-boundary coverage. The filter holds
+  # back TAG_MAX_LEN-1 chars across feeds, so a tag split at ANY byte boundary
+  # — even one character per delta — must never leak thinking into the
+  # content channel.
+  it "never leaks thinking when the stream arrives one character at a time (#2)" do
+    text = "Hello <think>private plan</think> world<think>more</think>!"
+    expect(collect(text.chars))
+      .to eq(content: "Hello  world!", thinking: "private planmore")
+  end
+
+  it "handles every possible two-chunk split point of a tagged stream (#2)" do
+    full = "ab<think>xy</think>cd"
+    (1...full.length).each do |i|
+      expect(collect([full[0...i], full[i..]]))
+        .to eq({ content: "abcd", thinking: "xy" }), "leak at split index #{i}"
+    end
+  end
+
+  it "keeps routing to thinking after an open tag split across three chunks (#2)" do
+    expect(collect(["pre<th", "in", "k>reasoning unfinished"]))
+      .to eq(content: "pre", thinking: "reasoning unfinished")
+  end
 end

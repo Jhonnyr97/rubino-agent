@@ -101,7 +101,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::Modes.set(:default)
       out = capture_stdout { @new_prompt = cmd.send(:cycle_mode) }
       expect(strip_ansi(@new_prompt)).to eq("plan ❯ ")
-      expect(strip_ansi(out)).to include("┄ mode · plan — #{Rubino::Modes.description(:plan)}, shift+tab to cycle ┄")
+      # Same `<old> → <new>` arrow grammar as the /mode footer (#78).
+      expect(strip_ansi(out))
+        .to include("┄ mode default → plan — #{Rubino::Modes.description(:plan)}, shift+tab to cycle ┄")
     ensure
       Rubino::Modes.set(:default)
     end
@@ -122,7 +124,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       cmd.send(:cycle_mode) # → plan
       cmd.send(:cycle_mode) # → yolo
-      expect(strip_ansi(announced.last)).to include("mode · yolo")
+      expect(strip_ansi(announced.last)).to include("mode plan → yolo")
       expect(announced.size).to eq(2) # one transient toast per press, replaced not stacked
     ensure
       Rubino::Modes.set(:default)

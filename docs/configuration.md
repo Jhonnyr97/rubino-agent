@@ -37,7 +37,7 @@ model:
   context_length: null          # Override context window (null = use model default)
   temperature: 0.3              # Generation temperature
   max_tokens: null              # Max output tokens (anthropic-family path); null = adapter default (16384)
-  thinking_budget: null         # Reasoning token budget (anthropic-family); null = adapter default (8000), 0 disables
+  thinking_budget: null         # LEGACY — superseded by thinking.effort (below); null = adapter default (8000), 0 disables
   max_tokens_text_headroom: 4096  # Visible-output headroom reserved on top of the thinking budget
   supports_vision: null         # null = auto-detect from model id; true/false to override
 ```
@@ -148,12 +148,32 @@ ui:
   verbose: false
 ```
 
+### reasoning & thinking
+
+Two orthogonal first-class knobs — these are what `/reasoning` and `/think` write:
+
+```yaml
+display:
+  reasoning: collapsed   # hidden | collapsed | full — how reasoning is RENDERED
+
+thinking:
+  effort: "off"          # "off" | low | medium | high — how hard the model thinks
+```
+
+- `display.reasoning` controls rendering: `hidden` (nothing shown; Ctrl+O can still reveal the last thought), `collapsed` (default — a dim "✻ thought for Ns · ctrl-o to show" cue), `full` (the whole reasoning as a dim `┊` aside).
+- `thinking.effort` maps to an Anthropic-style thinking-token budget (`off`→0, `low`→4000, `medium`→8000, `high`→16000) on the anthropic-family path. Unset (`null`) falls back to the `thinking_budget` chain, whose default is 8000 — i.e. the effective default effort is `medium`.
+- **Quote `"off"`**: bare YAML `off` parses as the boolean `false`. The reader coerces `false` back to `off`, but quoting keeps `config get thinking.effort` honest.
+- **Provider caveat**: some anthropic-compatible backends reject thinking budgets. The adapter detects the rejection, retries the turn once without the budget, and prints `provider doesn't support thinking — effort off` — set `effort: "off"` to skip the first-turn retry entirely.
+
+The legacy `display.show_reasoning` boolean maps in only when `display.reasoning` is unset (`true`→full, `false`→hidden); `model.thinking_budget` is likewise superseded by `thinking.effort`.
+
 ### streaming
 
 ```yaml
 display:
   streaming: true
-  show_reasoning: true
+  reasoning: collapsed   # see "reasoning & thinking" above
+  show_reasoning: true   # LEGACY — superseded by display.reasoning
   language: "en"
   runtime_footer: { enabled: false }
   interim_assistant_messages: false

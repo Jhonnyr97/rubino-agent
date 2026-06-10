@@ -134,6 +134,16 @@ module Rubino
           # we hand the REPL a {probe:} signal it runs against the live runner's
           # session, then renders+discards. Bare `/probe` just teaches the tip.
           handle_probe(arguments)
+        when "queued"
+          # `/queued <msg>` is normally intercepted by the BottomComposer
+          # before it ever reaches the Executor (it queues the message for the
+          # next turn, like Alt+Enter). Reaching here means there was nothing
+          # to queue (bare `/queued`) or no composer owns the input (API/piped
+          # mode) — teach the usage instead of "Unknown command".
+          @ui.info("Queue a message to run after the current turn: /queued <message>")
+          @ui.info("(Alt+Enter queues the current input line the same way; " \
+                   "plain Enter interrupts the turn and runs the line next.)")
+          :handled
         when "branch"
           # `/branch [name]` forks the CURRENT session at this point into a new
           # saved one and switches into it. The REPL owns the runner/session, so
@@ -1042,7 +1052,10 @@ module Rubino
         # Tab completes. One compact reference line covers it.
         @ui.info("Keys:")
         @ui.info("  ↑/↓ + Enter   - choose in the approval menu")
-        @ui.info("  Enter         - send (or inject mid-turn)")
+        @ui.info("  Enter         - send; during a turn, interrupt it and run this next")
+        @ui.info("  Alt-Enter     - queue this to run after the current turn (or /queued <msg>)")
+        @ui.info("  Shift-Tab     - cycle mode (default → plan → yolo)")
+        @ui.info("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
         @ui.info("  Ctrl-C        - cancel the turn (twice to exit)")
         @ui.info("  Tab           - complete the highlighted /command or @file")
         @ui.info("  /             - start a command;  @  attach a file/image")

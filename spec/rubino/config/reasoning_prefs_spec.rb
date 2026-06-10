@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "yaml"
+
 RSpec.describe Rubino::Config::ReasoningPrefs do
   # A minimal config double that only needs #dig, like Configuration.
   def config(raw)
@@ -47,6 +49,15 @@ RSpec.describe Rubino::Config::ReasoningPrefs do
 
     it "returns nil for an unknown value" do
       expect(described_class.effort(config("thinking" => { "effort" => "extreme" }))).to be_nil
+    end
+
+    # Regression for #79: an UNQUOTED `effort: off` in config.yml parses as the
+    # YAML boolean false, which used to fall through to nil and silently break
+    # the thinking-budget gating. Boolean false must read as :off.
+    it "coerces the YAML boolean false (unquoted `off`) to :off" do
+      raw = YAML.safe_load("thinking:\n  effort: off\n")
+      expect(raw.dig("thinking", "effort")).to be(false) # YAML parses bare off as false
+      expect(described_class.effort(config(raw))).to eq(:off)
     end
   end
 

@@ -92,6 +92,25 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("answer")
     end
 
+    # Regression for #76: the hidden-mode ack promises "ctrl-o … to bring it
+    # back", but hidden mode never retained the buffer, so Ctrl-O was a silent
+    # no-op. Hidden now commits nothing but still retains the last thought.
+    it "retains the last reasoning in hidden mode so ctrl-o can reveal it (#76)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "hidden")
+      turn = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "secret musing\n")
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(turn).not_to include("secret musing") # still hidden by default
+
+      out = capture_stdout { ui.reveal_last_reasoning }
+      expect(out).to include("┄ thinking ┄")
+      expect(out).to include("┊  secret musing")
+    end
+
     it "reveals the last retained reasoning buffer via ctrl-o (one-way)" do
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
       # Collapse a reasoning phase (collapsed mode) so the buffer is retained.
@@ -211,6 +230,46 @@ RSpec.describe Rubino::UI::CLI do
         ui.send(:clear_thinking_indicator)
         ui.send(:clear_thinking_indicator)
       end.not_to raise_error
+    end
+
+    # Regression for #74: a turn that ends in ERROR used to leave the animated
+    # "thinking…" row ticking forever — the runner's rescue printed the error
+    # without ever tearing the animation down, corrupting all later output.
+    it "tears down the live thinking animation when the turn ends in error (#74)" do
+      live = Class.new(StringIO) do
+        def live(str) = print(str)
+      end.new
+      old = $stdout
+      $stdout = live
+      begin
+        ui.thinking_started
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_a(Thread)
+        ui.error("model exploded")
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+        expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+        expect(live.string).to include("model exploded")
+      ensure
+        $stdout = old
+      end
+    end
+
+    it "clears the static thinking row before the error line on the plain path (#74)" do
+      out = capture_stdout do
+        ui.thinking_started
+        ui.error("provider failure")
+      end
+      expect(out).to match(/thinking….*\r\e\[2K.*provider failure/m)
+      expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+    end
+
+    it "tears down a still-live thinking row on interrupt too (#74)" do
+      out = capture_stdout do
+        ui.thinking_started
+        ui.turn_interrupted
+      end
+      expect(out).to include("⎿ interrupted")
+      expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+      expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
     end
 
     it "handles multi-line streamed text" do
