@@ -19,7 +19,7 @@ module Rubino
         "/agents" => "List background subagents; steer/probe a running one, or view output",
         "/tasks" => "Alias for /agents",
         "/reply" => "Answer a subagent that is blocked waiting on you (ask_parent)",
-        "/skills" => "List available skills",
+        "/skills" => "List skills, or activate one for the session (/skills NAME; 'none' clears)",
         "/add-dir" => "Add an extra allowed workspace directory (write/edit can reach it)",
         "/dirs" => "List the current workspace roots",
         "/mode" => "Show or switch mode (default | plan | yolo)",

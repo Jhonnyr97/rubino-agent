@@ -77,6 +77,21 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       described_class.new([], { "limit" => 20, "all" => true }).list
     end
 
+    it "marks retired rows in list --all with their retirement date and successor (#161)" do
+      old = backend.store(kind: "preference", content: "User prefers tabs over spaces.")
+      backend.replace(kind: "preference", old_text: "tabs over spaces",
+                      content: "User prefers spaces over tabs.")
+      successor_id = backend.find(old[:id])[:superseded_by]
+
+      expect(Rubino.ui).to receive(:table) do |rows:, **|
+        retired_row = rows.find { |r| r[0] == old[:id][0..7] }
+        live_row    = rows.find { |r| r[2].include?("spaces over tabs") }
+        expect(retired_row[2]).to match(/\(retired \d{4}-\d{2}-\d{2} → #{successor_id[0..7]}\)/)
+        expect(live_row[2]).not_to include("(retired")
+      end
+      described_class.new([], { "limit" => 20, "all" => true }).list
+    end
+
     it "show prints the temporal chain of a retired fact (#88)" do
       old = backend.store(kind: "fact", content: "User works at Acme.")
       backend.replace(kind: "fact", old_text: "Acme", content: "User works at Globex.")
