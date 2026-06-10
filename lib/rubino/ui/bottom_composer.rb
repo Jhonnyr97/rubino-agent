@@ -349,6 +349,13 @@ module Rubino
       # sane bound by the caller (UI::SubagentCards), but we also cap it here so a
       # buggy caller can never grow the live region past the screen.
       def set_cards(lines)
+        # While SUSPENDED (run_in_terminal: an approval/ask owns the real
+        # terminal) a card repaint here would draw straight over the
+        # interactive prompt and can abort its blocked TTY read (#144). Drop
+        # the frame, like #set_partial — the cards converge from the registry
+        # snapshot on the next repaint after #resume.
+        return if @suspended
+
         capped = Array(lines).first(MAX_CARD_ROWS)
         @render.synchronize do
           @cards = capped
@@ -1175,7 +1182,8 @@ module Rubino
 
         items, start, len = ctx
         @render.synchronize do
-          @menu = { items: items, selected: 0, top: 0, start: start, token_len: len }
+          @menu = { items: items, selected: 0, top: 0, start: start, token_len: len,
+                    navigated: false }
           redraw
         end
       end
@@ -1206,7 +1214,8 @@ module Rubino
         items, start, len = ctx
         sel = (@menu ? @menu[:selected] : 0).clamp(0, items.size - 1)
         @menu = { items: items, selected: sel, top: menu_top(sel, items.size),
-                  start: start, token_len: len }
+                  start: start, token_len: len,
+                  navigated: @menu ? @menu[:navigated] : false }
       end
 
       def candidates(token)
@@ -1228,10 +1237,14 @@ module Rubino
       end
 
       # ↑/↓ within the menu (routed from history_up/down when the menu is open).
+      # Arrowing marks the menu as NAVIGATED — an explicit accept intent, so
+      # Enter on an empty argument token accepts the highlight instead of
+      # submitting the buffer (see #buffer_is_exact_command?).
       def menu_up
         @render.synchronize do
           @menu[:selected] = [@menu[:selected] - 1, 0].max
           @menu[:top] = menu_top(@menu[:selected], @menu[:items].size)
+          @menu[:navigated] = true
           redraw
         end
       end
@@ -1240,6 +1253,7 @@ module Rubino
         @render.synchronize do
           @menu[:selected] = [@menu[:selected] + 1, @menu[:items].size - 1].min
           @menu[:top] = menu_top(@menu[:selected], @menu[:items].size)
+          @menu[:navigated] = true
           redraw
         end
       end
@@ -1272,15 +1286,24 @@ module Rubino
       end
 
       # True when the buffer is ALREADY an exact, complete command, so Enter
-      # should SUBMIT it rather than accept-and-space (D5). The safe heuristic:
-      # the whole trimmed buffer equals a candidate string exactly AND that exact
-      # match is the menu's current selection (or the only candidate) — so a
-      # partial/ambiguous token (e.g. "/re" with /reasoning + /reset) still
-      # accepts the highlight on Enter as before. Tab-accept is untouched.
+      # should SUBMIT it rather than accept-and-space (D5/#147). Compares the
+      # TOKEN the menu would splice (not the whole buffer, which never matches
+      # a bare argument candidate — that's what swallowed Enter on a fully
+      # typed `/agents sa_xxx`): submit when the typed token equals a
+      # candidate exactly AND that match is the menu's current selection (or
+      # the only candidate) — so a partial/ambiguous token (e.g. "/re" with
+      # /reasoning + /reset) still accepts the highlight on Enter as before.
+      # An EMPTY argument token (`/agents sa_xxx ` with the verb dropdown
+      # open) also submits — the buffer is already a complete command and
+      # accepting would splice a verb the user never typed — UNLESS the user
+      # explicitly arrow-navigated onto a candidate, which is an accept
+      # intent. Tab-accept is untouched.
       def buffer_is_exact_command?
         return false unless @menu
 
-        typed = @buffer.strip
+        typed = Array(@buffer.chars[@menu[:start], @menu[:token_len]]).join
+        return !@menu[:navigated] if typed.empty?
+
         items = @menu[:items]
         return false unless items.include?(typed)
 

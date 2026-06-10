@@ -202,6 +202,12 @@ module Rubino
           ui: @ui,
           config: @config,
           cancel_token: @cancel_token,
+          # SESSION-scoped read-before-edit tracker (#151): a read in an
+          # earlier turn of this session still satisfies the gate while the
+          # file's mtime is unchanged, so an edit in the next turn doesn't
+          # force a redundant re-read + a second approval round-trip. The
+          # gate itself still re-prompts on any on-disk change.
+          read_tracker: Tools::ReadTracker.for_session(@session[:id]),
           event_bus: @event_bus
         )
 

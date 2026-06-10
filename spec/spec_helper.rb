@@ -66,6 +66,10 @@ RSpec.configure do |config|
     # one spec leaks into every spec that runs after it under
     # `config.order = :random`, surfacing as approval-policy false-passes.
     Rubino::Modes.reset!
+    # The session-scoped read-before-edit trackers are process state (#151);
+    # without this a read registered in one spec could satisfy the gate in
+    # another spec reusing the same session id.
+    Rubino::Tools::ReadTracker.reset!
     # Use null UI and in-memory SQLite for tests
     Rubino.ui = Rubino::UI::Null.new
   end

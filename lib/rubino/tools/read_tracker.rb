@@ -2,22 +2,44 @@
 
 module Rubino
   module Tools
-    # Tracks which files the model has Read during the current turn so Edit
-    # and MultiEdit can refuse to write to a file the model never opened.
-    # Without this, the model is free to "remember" the contents of a file
-    # from training-time priors and edit a string that isn't actually there,
-    # corrupting the file silently when the gsub goes through anyway because
-    # the match happens to occur by accident.
+    # Tracks which files the model has Read during the current session so
+    # Edit and MultiEdit can refuse to write to a file the model never
+    # opened. Without this, the model is free to "remember" the contents of
+    # a file from training-time priors and edit a string that isn't actually
+    # there, corrupting the file silently when the gsub goes through anyway
+    # because the match happens to occur by accident.
     #
     # The tracker also stashes the mtime at the moment of read so the edit
     # path can detect "file changed under us" — the user saving from a
-    # separate editor, or another tool mutating the file in the same turn.
+    # separate editor, or another tool mutating the file after the read.
     #
-    # Lifecycle: one instance per ToolExecutor (per turn). Resume of a prior
-    # session does NOT carry the tracker — the model must re-read after a
-    # resume before editing. That's the conservative call: the file may have
-    # changed on disk in the gap.
+    # Lifecycle: one instance PER SESSION (see .for_session), shared by
+    # every turn's ToolExecutor in this process — a read in turn 1 still
+    # satisfies the gate in turn 2 while the file is unchanged on disk; any
+    # mtime bump forces a re-read (#151). Resume in a NEW process does NOT
+    # carry the tracker — the model must re-read after a resume before
+    # editing. That's the conservative call: the file may have changed on
+    # disk in the gap.
     class ReadTracker
+      # One tracker per session id, lazily created, process-local. A nil or
+      # empty id (one-shot calls without a session) gets a throwaway
+      # instance, preserving the old per-executor behaviour there.
+      @registry = {}
+      @registry_mutex = Mutex.new
+
+      class << self
+        def for_session(session_id)
+          key = session_id.to_s
+          return new if key.empty?
+
+          @registry_mutex.synchronize { @registry[key] ||= new }
+        end
+
+        def reset!
+          @registry_mutex.synchronize { @registry = {} }
+        end
+      end
+
       def initialize
         @reads   = {}
         @windows = Hash.new(0)
@@ -32,7 +54,7 @@ module Rubino
 
       # Records a read of an exact (path, offset, limit, mtime) window and
       # returns how many times that identical window has now been requested in
-      # this turn. >1 means the model is re-reading bytes it already has in
+      # this session. >1 means the model is re-reading bytes it already has in
       # context — ReadTool uses this to return a [DUPLICATE READ] nudge instead
       # of re-emitting the same content. Keyed on mtime so a real edit between
       # reads (mtime bump) is NOT treated as a duplicate.

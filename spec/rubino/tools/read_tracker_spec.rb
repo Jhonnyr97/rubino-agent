@@ -53,4 +53,59 @@ RSpec.describe Rubino::Tools::ReadTracker do
     expect(tracker.seen?(nil)).to be(false)
     expect(tracker.seen?("")).to be(false)
   end
+
+  # #151: the tracker is SESSION-scoped, not per-turn — a read in turn 1
+  # still satisfies the read-before-edit gate in turn 2 (same process, same
+  # session) while the file is unchanged; the existing mtime check in
+  # Base#read_gate_error forces a re-read on any on-disk change.
+  describe ".for_session" do
+    # The edit-tool examples below write inside tmp_dir — point the workspace
+    # sandbox there, exactly as the read-gate spec does.
+    before { Rubino.configuration.set("terminal", "cwd", tmp_dir) }
+
+    after { Rubino.configuration.set("terminal", "cwd", nil) }
+
+    it "returns the same instance for the same session id across turns" do
+      first = described_class.for_session("s1")
+      expect(described_class.for_session("s1")).to be(first)
+    end
+
+    it "isolates sessions from each other" do
+      expect(described_class.for_session("s1")).not_to be(described_class.for_session("s2"))
+    end
+
+    it "hands a nil/empty session id a throwaway tracker" do
+      expect(described_class.for_session(nil)).not_to be(described_class.for_session(nil))
+      expect(described_class.for_session("")).not_to be(described_class.for_session(""))
+    end
+
+    it "reset! clears the registry (test isolation)" do
+      first = described_class.for_session("s1")
+      described_class.reset!
+      expect(described_class.for_session("s1")).not_to be(first)
+    end
+
+    it "carries a turn-1 read into a turn-2 executor: the edit gate passes without a re-read" do
+      path = write_file("session.rb", "hello")
+      # Turn 1: the read registers on the session tracker.
+      reader = Rubino::Tools::ReadTool.new.tap { |t| t.read_tracker = described_class.for_session("sess") }
+      reader.call("file_path" => path)
+      # Turn 2: a FRESH tool instance (as a new turn's executor would build)
+      # sharing only the session tracker may edit without re-reading.
+      editor = Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = described_class.for_session("sess") }
+      out = editor.call("file_path" => path, "old_string" => "hello", "new_string" => "world")
+      expect(out).to be_a(Hash)
+      expect(File.read(path)).to eq("world")
+    end
+
+    it "still demands a re-read when the file changed on disk between turns" do
+      path = write_file("changed.rb", "hello")
+      tracker = described_class.for_session("sess2")
+      tracker.register(path, File.mtime(path) - 5) # the turn-1 read is stale now
+      editor = Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = described_class.for_session("sess2") }
+      out = editor.call("file_path" => path, "old_string" => "hello", "new_string" => "world")
+      expect(out[:output]).to include("changed on disk since the last read")
+      expect(File.read(path)).to eq("hello")
+    end
+  end
 end

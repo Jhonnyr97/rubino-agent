@@ -56,6 +56,31 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(result.denied?).to be true
     end
 
+    # #143: the model-facing output must say WHO/WHAT denied. Only a real
+    # human rejection reads "denied by user"; a policy deny threads the
+    # policy's recorded reason through Tools::Result.denied.
+    describe "denial messages name who denied (#143)" do
+      it "a policy deny carries the reason-specific message, not 'denied by user'" do
+        allow(policy).to receive_messages(decide: :deny, last_deny_reason: :doom_loop)
+        result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c10")
+        expect(result.output).to include("doom-loop guard")
+        expect(result.output).not_to include("denied by user")
+      end
+
+      it "a policy deny without an exposed reason still reads as policy, not user" do
+        allow(policy).to receive(:decide).and_return(:deny) # no last_deny_reason on the double
+        result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c11")
+        expect(result.output).to eq("Tool execution denied by policy (not by the user).")
+      end
+
+      it "a user rejection still reads 'denied by user'" do
+        allow(policy).to receive(:decide).and_return(:ask)
+        allow(ui).to receive(:confirm).and_return(false)
+        result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c12")
+        expect(result.output).to eq("Tool execution denied by user.")
+      end
+    end
+
     it "passes the arguments to the approval policy so patterns can match (#17)" do
       allow(policy).to receive(:decide).and_return(:allow)
       expect(policy).to receive(:decide).with(tool, arguments: { "x" => 1 })

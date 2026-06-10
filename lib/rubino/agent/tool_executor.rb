@@ -33,10 +33,12 @@ module Rubino
         # through here and dropped them, so the web UI timeline never saw
         # the tool call as a discrete event.
         @event_bus            = event_bus
-        # One tracker shared across every tool call in this turn so the read
-        # registered by ReadTool is visible to a later EditTool in the same
-        # turn. Default to a fresh tracker if the caller didn't supply one;
-        # an isolated unit test can pass `read_tracker: nil` to skip the gate.
+        # One tracker shared across every tool call so the read registered by
+        # ReadTool is visible to a later EditTool. The production path
+        # (Interaction::Lifecycle) injects the SESSION-scoped tracker so the
+        # gate spans turns (#151). Default to a fresh tracker if the caller
+        # didn't supply one; an isolated unit test can pass
+        # `read_tracker: nil` to skip the gate.
         @read_tracker         = read_tracker.equal?(false) ? nil : (read_tracker || Tools::ReadTracker.new)
       end
 
@@ -47,12 +49,20 @@ module Rubino
 
         case @approval_policy.decide(tool, arguments: arguments)
         when :deny
-          record_denied(name: name, call_id: call_id, arguments: arguments, reason: "policy-denied")
-          return finish(name, arguments, call_id, Tools::Result.denied(name: name, call_id: call_id))
+          # A policy denial must NOT read "denied by user" to the model — the
+          # policy records why it fired (#last_deny_reason) and the Result
+          # maps it to a reason-specific message, so a child agent never
+          # blames the human for an automatic deny (#143).
+          denied = Tools::Result.denied(name: name, call_id: call_id, reason: policy_deny_reason)
+          record_denied(name: name, call_id: call_id, arguments: arguments,
+                        result: denied, reason: "policy-denied")
+          return finish(name, arguments, call_id, denied)
         when :ask
           unless request_approval(tool, arguments)
-            record_denied(name: name, call_id: call_id, arguments: arguments, reason: "user-denied")
-            return finish(name, arguments, call_id, Tools::Result.denied(name: name, call_id: call_id))
+            denied = Tools::Result.denied(name: name, call_id: call_id, reason: :user)
+            record_denied(name: name, call_id: call_id, arguments: arguments,
+                          result: denied, reason: "user-denied")
+            return finish(name, arguments, call_id, denied)
           end
         end
 
@@ -252,17 +262,25 @@ module Rubino
         @event_bus&.emit(Interaction::Events::ARTIFACT_CREATED, **result.artifact)
       end
 
-      def record_denied(name:, call_id:, arguments:, reason:)
+      def record_denied(name:, call_id:, arguments:, result:, reason:)
         @tool_call_repository.record(
           name: name,
           call_id: call_id,
           arguments: arguments,
-          result: Tools::Result.denied(name: name, call_id: call_id),
+          result: result,
           status: "denied",
           error: reason
         )
       rescue StandardError
         # Don't fail the user's request just because the audit write failed.
+      end
+
+      # The reason behind the policy's :deny, when the policy exposes one
+      # (test doubles may not). nil falls back to the generic policy message.
+      def policy_deny_reason
+        return :policy unless @approval_policy.respond_to?(:last_deny_reason)
+
+        @approval_policy.last_deny_reason || :policy
       end
 
       def request_approval(tool, arguments)

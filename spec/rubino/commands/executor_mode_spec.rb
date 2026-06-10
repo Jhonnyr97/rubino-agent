@@ -27,6 +27,26 @@ RSpec.describe Rubino::Commands::Executor do
       expect(Rubino::Modes.current).to eq(:yolo)
     end
 
+    # #152: an explicit /mode yolo stays direct (no confirm step — it's a
+    # deliberate command), but when background children are LIVE their gates
+    # drop the same instant, so one warning line says so.
+    it "warns about live background children when switching to yolo" do
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
+      exec.try_execute("/mode yolo")
+      expect(Rubino::Modes.current).to eq(:yolo)
+      warning = ui.messages.find { |m| m[:level] == :warning }
+      expect(warning[:message]).to include("1 running background subagent(s)")
+      expect(warning[:message]).to include("unprompted")
+    ensure
+      Rubino::Tools::BackgroundTasks.reset!
+    end
+
+    it "stays quiet about children when none are live, and when leaving yolo" do
+      exec.try_execute("/mode yolo")
+      exec.try_execute("/mode default")
+      expect(ui.messages.none? { |m| m[:level] == :warning }).to be(true)
+    end
+
     it "accepts trailing whitespace and capitalisation" do
       exec.try_execute("/mode   PLAN  ")
       expect(Rubino::Modes.current).to eq(:plan)
