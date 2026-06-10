@@ -41,4 +41,46 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       expect(a.send(:thinking_budget)).to eq(1234)
     end
   end
+
+  # #2 — capability gate. A provider that ACCEPTS a thinking budget but lacks a
+  # separate reasoning channel dumps its chain-of-thought as plain content
+  # deltas (observed live on MiniMax). providers.<name>.supports_thinking
+  # gates the budget at the source; unset, MiniMax-family model ids default
+  # to off and everything else stays on.
+  describe "#thinking_budget — supports_thinking capability gate (#2)" do
+    def minimax_adapter(supports_thinking: :unset, effort: nil)
+      overrides = {}
+      overrides["thinking"] = { "effort" => effort } unless effort.nil?
+      unless supports_thinking == :unset
+        minimax = { "minimax" => { "supports_thinking" => supports_thinking } }
+        overrides["providers"] = Rubino::Config::Defaults.to_hash["providers"].merge(minimax)
+      end
+      described_class.new(model_id: "MiniMax-M2.7", config: test_configuration(overrides))
+    end
+
+    it "defaults MiniMax-family model ids to no thinking budget" do
+      expect(minimax_adapter.send(:thinking_budget)).to eq(0)
+    end
+
+    it "beats an explicit thinking.effort (capability over request)" do
+      expect(minimax_adapter(effort: "high").send(:thinking_budget)).to eq(0)
+    end
+
+    it "re-enables the budget chain with supports_thinking: true" do
+      expect(minimax_adapter(supports_thinking: true).send(:thinking_budget)).to eq(8_000)
+    end
+
+    it "disables any provider with supports_thinking: false" do
+      providers = Rubino::Config::Defaults.to_hash["providers"]
+                                          .merge("anthropic" => { "supports_thinking" => false })
+      a = described_class.new(model_id: "anthropic/claude",
+                              config: test_configuration("providers" => providers))
+      expect(a.send(:thinking_budget)).to eq(0)
+    end
+
+    it "leaves non-MiniMax providers on by default" do
+      a = described_class.new(model_id: "anthropic/claude", config: test_configuration)
+      expect(a.send(:thinking_budget)).to eq(8_000)
+    end
+  end
 end

@@ -649,12 +649,16 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
     context "anthropic-compatible provider (MiniMax-M2.7)" do
       let(:cfg) do
+        # supports_thinking: true opts back into the budget — MiniMax-family
+        # model ids default to no-thinking (#2); these specs exercise the
+        # wire-shaping machinery, not the capability default.
         test_configuration(
           "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7",
                        "temperature" => 0.3, "context_length" => nil },
           "providers" => { "minimax" => {
             "anthropic_compatible" => true, "assume_model_exists" => true,
-            "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic"
+            "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
+            "supports_thinking" => true
           } }
         )
       end
@@ -712,7 +716,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
           "providers" => { "minimax" => {
             "anthropic_compatible" => true, "assume_model_exists" => true,
             "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
-            "thinking_budget" => 30_000
+            "thinking_budget" => 30_000, "supports_thinking" => true
           } }
         )
         a = described_class.new(model_id: "MiniMax-M2.7", config: c2)
@@ -853,12 +857,15 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   # -----------------------------------------------------------------------
   describe "#call thinking-budget rejection (#75)" do
     let(:cfg) do
+      # supports_thinking: true opts back into the budget (MiniMax-family ids
+      # default to no-thinking, #2) so the rejection path has one to drop.
       test_configuration(
         "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7",
                      "temperature" => 0.3, "context_length" => nil },
         "providers" => { "minimax" => {
           "anthropic_compatible" => true, "assume_model_exists" => true,
-          "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic"
+          "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
+          "supports_thinking" => true
         } }
       )
     end

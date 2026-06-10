@@ -306,11 +306,11 @@ module Rubino
 
             runner.cancel!
             # The CancelToken only halts the loop/stream at a poll point. If the
-            # worker is parked inside ApprovalGate#await (queue.pop, up to a 24h
-            # timeout) it never reaches one, so wake the gate too — it raises
-            # Interrupted in the awaiting thread and frees the worker. Without
-            # this a cancelled/abandoned approval holds a Solid Queue thread for
-            # the whole 24h window (W1).
+            # worker is parked inside ApprovalGate#await (queue.pop, up to the
+            # configured wait bound — default 15 min) it never reaches one, so
+            # wake the gate too — it raises Interrupted in the awaiting thread
+            # and frees the worker. Without this a cancelled/abandoned approval
+            # holds a Solid Queue thread for the whole wait window (W1).
             GateRegistry.fetch(run_id)&.cancel!
             yield if block_given?
             break
