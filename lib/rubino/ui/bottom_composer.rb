@@ -30,10 +30,11 @@ module Rubino
     # Known limitations (verify live, then iterate):
     #   * ONE-ROW composer: a buffer longer than the terminal width is shown
     #     left-truncated with a leading "…" instead of wrapping to a second row.
-    #     True multi-row wrap is deferred. A multi-line PASTE is therefore
-    #     collapsed onto the single row — its newlines become single spaces
-    #     (see #flatten_paste_lines); preserving pasted newlines is tracked
-    #     in issue #57.
+    #     True multi-row wrap is deferred. A multi-line PASTE keeps its REAL
+    #     newlines in the buffer and the submitted payload; the one-row view
+    #     renders each as a visible ⏎ mark (#57 — see #display_view /
+    #     #submit_paste), so structure survives even though the EDITING view
+    #     stays single-row.
     #
     # (Two earlier MVP limitations no longer apply: arrows/Home/End/Delete/
     # word-jump now drive the cursor via #consume_escape_sequence, and the
@@ -54,11 +55,10 @@ module Rubino
       # Bracketed paste (DEC 2004): the terminal wraps pasted text in
       # ESC[200~ … ESC[201~ so we can tell a PASTE from typed keystrokes and
       # keep each embedded \n from submitting a half-line (L1 — "pasteline2"
-      # glue). The body is inserted as ONE editable string with its newlines
-      # currently COLLAPSED to single spaces — the one-row composer cannot hold
-      # a literal newline (see #submit_paste; preserving them is issue #57). We
-      # enable it on start, disable on stop/suspend, and accumulate the body
-      # between the markers.
+      # glue). The body is inserted as ONE editable string with its REAL
+      # newlines preserved; the one-row view draws each as a ⏎ mark (#57, see
+      # #submit_paste). We enable it on start, disable on stop/suspend, and
+      # accumulate the body between the markers.
       PASTE_ON   = "\e[?2004h"
       PASTE_OFF  = "\e[?2004l"
       PASTE_END  = "201~"
@@ -499,13 +499,14 @@ module Rubino
         avail = @cols - @prompt_width - 1
         avail = 1 if avail < 1
 
-        chars  = @buffer.chars
+        view   = display_view
+        chars  = view.chars
         cursor = @cursor.clamp(0, chars.length)
 
-        if display_width(@buffer) <= avail
+        if display_width(view) <= avail
           # Whole buffer fits: draw it highlighted, then move the caret left from
           # the line end to the cursor's display column.
-          @output.print("\r\e[2K#{@prompt}#{highlight_line(@buffer)}")
+          @output.print("\r\e[2K#{@prompt}#{highlight_line(view)}")
           tail_cols = display_width(chars[cursor..].join)
           @output.print("\e[#{tail_cols}D") if tail_cols.positive?
         else
@@ -549,6 +550,18 @@ module Rubino
 
       # The current editable buffer (test/inspection helper).
       attr_reader :buffer
+
+      # How a buffer NEWLINE renders on the one-row composer: a visible ⏎ mark
+      # (display width 1), so a pasted multi-line draft keeps its structure
+      # visible without a literal newline desyncing the single-row redraw. The
+      # buffer holds REAL newlines — this is a draw-time view transform, 1:1 by
+      # codepoint, so all cursor/width math is unchanged (#57).
+      NEWLINE_MARK = "⏎"
+
+      # The buffer as drawn: newlines swapped for the visible ⏎ mark.
+      def display_view
+        @buffer.tr("\n", NEWLINE_MARK)
+      end
 
       # Feeds a single character through the edit logic. Public so the PTY/unit
       # tests can drive editing without a live raw read. Returns :submit when the
@@ -826,12 +839,29 @@ module Rubino
           # this turn, THEN fire the interrupt. No echo here — run_turn commits
           # the next turn's "<prompt><line>" when it runs.
           @input_queue&.push_front(line)
-          @on_interrupt.call
+          fire_interrupt(line)
         else
           # No active turn (or no interrupt hook wired): a plain queued submit,
           # echoed immediately as before.
           @input_queue&.push(line)
           print_above("queued ▸ #{line}")
+        end
+      end
+
+      # Fire the on_interrupt hook for a mid-turn submit. A SLASH COMMAND
+      # entered while nothing is visibly in flight (no content stream, no live
+      # partial row — e.g. the turn is only repainting a subagent card) is a
+      # QUIET interrupt (#111): the hook receives quiet=true so the chat loop
+      # can suppress the `⎿ interrupted` marker, which would otherwise strand
+      # a stray artifact above the command's own output even though the turn
+      # LOOKED idle. A hook that takes no parameter (tests/embedders) keeps
+      # the old no-arg contract.
+      def fire_interrupt(line)
+        if @on_interrupt.arity.zero?
+          @on_interrupt.call
+        else
+          quiet = line.start_with?("/") && !@content_streaming && @partial.empty?
+          @on_interrupt.call(quiet)
         end
       end
 
@@ -1099,8 +1129,8 @@ module Rubino
         return nil unless @completion
 
         if (arg = command_arg_context)
-          command, partial, start = arg
-          items = arg_candidates(command, partial)
+          command, partial, start, args = arg
+          items = arg_candidates(command, partial, args)
           return nil if items.empty?
 
           return [items, start, partial.chars.length]
@@ -1116,19 +1146,20 @@ module Rubino
         [items, start, token.chars.length]
       end
 
-      # When the buffer is the ARGUMENT position of a slash command — i.e.
-      # `/<cmd> <partial>` with the cursor in the (single) argument — returns
-      # [command, partial, partial_start] so {#completion_context} can complete
-      # the argument; nil otherwise. Only the first argument completes (MVP: one
-      # skill at a time), and only when the cursor is within/at the end of that
-      # argument run (no second space). Generic by command name so `/agents`
-      # could reuse it with no change here.
+      # When the buffer is an ARGUMENT position of a slash command — i.e.
+      # `/<cmd> [args…] <partial>` with the cursor in the trailing argument —
+      # returns [command, partial, partial_start, args] so
+      # {#completion_context} can complete it; nil otherwise. +args+ are the
+      # COMPLETE arguments before the partial, so a positional source can own a
+      # subcommand grammar (`/agents <id> steer|probe|--stop`, #39); whether a
+      # position completes at all is the CompletionSource's call (a
+      # single-argument command like /skills stops after its first).
       def command_arg_context
         prefix = @buffer.chars.first(@cursor).join
-        m = prefix.match(%r{\A/(\S+)[ \t]+(\S*)\z})
+        m = prefix.match(%r{\A/(\S+)((?:[ \t]+\S+)*)[ \t]+(\S*)\z})
         return nil unless m
 
-        [m[1], m[2], m.begin(2)]
+        [m[1], m[3], m.begin(3), m[2].split]
       end
 
       # Open the menu for the current completion context if it has candidates.
@@ -1178,13 +1209,14 @@ module Rubino
         []
       end
 
-      # Argument candidates for a slash command (e.g. skill names for `/skills`),
-      # via the CompletionSource. Guarded so a registry hiccup degrades the menu
-      # to closed rather than crashing the prompt — same contract as #candidates.
-      def arg_candidates(command, partial)
+      # Argument candidates for a slash command (e.g. skill names for `/skills`,
+      # ids + steer/probe/--stop for `/agents`), via the CompletionSource.
+      # Guarded so a registry hiccup degrades the menu to closed rather than
+      # crashing the prompt — same contract as #candidates.
+      def arg_candidates(command, partial, args)
         return [] unless @completion.respond_to?(:arg_candidates_for)
 
-        @completion.arg_candidates_for(command, partial)
+        @completion.arg_candidates_for(command, partial, args)
       rescue StandardError
         []
       end
@@ -1223,7 +1255,13 @@ module Rubino
           @cursor = start + replacement.chars.length
           @menu = nil
           @menu_suppressed = false # accepting ends this token; a new one can auto-open
-          redraw # repaint to CLEAR the now-closed menu rows above the prompt
+          # Re-run the menu refresh for the spliced buffer (#63): accepting a
+          # command name lands the cursor in its ARGUMENT position (`/skills `),
+          # so the next-context dropdown (skill names, /agents ids…) opens
+          # immediately instead of one keystroke late. With nothing to complete
+          # there it stays closed — the redraw then just clears the old rows.
+          auto_update_menu
+          redraw
         end
       end
 
@@ -1263,7 +1301,9 @@ module Rubino
 
       # The rendered menu rows (the slice in view, the selected one marked with a
       # cyan ❯ and inverse highlight), or [] when no menu is open. House grammar:
-      # a dim aside bar leads each row.
+      # a dim aside bar leads each row. Candidates with a registered description
+      # (BuiltIns/custom command one-liners, the /agents subcommand hints) show
+      # it dim in an aligned column next to the name (#39).
       def menu_rows
         return [] unless @menu
 
@@ -1271,16 +1311,41 @@ module Rubino
         top   = @menu[:top]
         sel   = @menu[:selected]
         slice = items[top, MENU_MAX_ROWS] || []
+        pad   = slice.map { |item| display_width(item.to_s) }.max.to_i
         rows = slice.each_with_index.map do |item, i|
-          idx = top + i
-          if idx == sel
-            "#{menu_pastel.cyan("❯")} #{menu_pastel.inverse(" #{item} ")}"
-          else
-            "#{menu_pastel.dim("┊")} #{item}"
+          selected = top + i == sel
+          row = if selected
+                  "#{menu_pastel.cyan("❯")} #{menu_pastel.inverse(" #{item} ")}"
+                else
+                  "#{menu_pastel.dim("┊")} #{item}"
+                end
+          desc = menu_description(item, pad)
+          if desc
+            # Align the description column across rows: the inverse highlight
+            # already widens the selected name by 2 (its padding spaces).
+            row += (" " * (pad - display_width(item.to_s) + (selected ? 0 : 2)))
+            row += menu_pastel.dim(desc)
           end
+          row
         end
         rows << menu_pastel.dim("┄ #{sel + 1}/#{items.size} ┄") if items.size > MENU_MAX_ROWS
         rows
+      end
+
+      # The dim description for a menu candidate, fitted to the row budget so a
+      # long one-liner is right-truncated here instead of the shared row clamp
+      # left-truncating the candidate NAME away. nil when the source has none
+      # (files, skill names) or the row is too narrow to show one usefully.
+      def menu_description(item, pad)
+        return nil unless @completion.respond_to?(:description_for)
+
+        desc = @completion.description_for(item).to_s
+        return nil if desc.empty?
+
+        budget = @cols - pad - 6 # glyph + gaps + the one-column scroll guard
+        return nil if budget < 8
+
+        desc.length > budget ? "#{desc[0, budget - 1]}…" : desc
       end
 
       def menu_pastel
@@ -1306,28 +1371,27 @@ module Rubino
       end
 
       # Handle a bracketed-paste body. The composer is a ONE-ROW editor, so a
-      # paste is inserted into the editable buffer at the cursor like fast typing
-      # — still editable before submit. A MULTI-LINE paste is collapsed to a
-      # single row with its line breaks turned into single SPACES so adjacent
-      # words don't fuse ("word1word2") and a literal newline never desyncs the
-      # single-row redraw (D6).
+      # paste is inserted into the editable buffer at the cursor like fast
+      # typing — still editable before submit. A MULTI-LINE paste keeps its
+      # REAL newlines in the buffer (and so in the submitted message payload —
+      # pasted code arrives at the model with its line structure intact); the
+      # one-row view renders each newline as a visible ⏎ mark instead of
+      # silently flattening them to spaces (#57; supersedes the D6 collapse).
       def submit_paste(text)
         return if text.nil? || text.empty?
 
-        flat = flatten_paste_lines(text)
-        return if flat.empty?
+        body = normalize_paste_newlines(text)
+        return if body.empty?
 
-        insert(flat) # at the cursor, like fast typing
+        insert(body) # at the cursor, like fast typing
       end
 
-      # Collapse a pasted body's line breaks to single spaces. The composer is a
-      # ONE-ROW editor, so a literal newline in @buffer would desync the redraw
-      # AND fuse the adjacent words ("word1word2") when shown on the single row.
-      # Joining with a space keeps the words separated and the row well-formed
-      # (D6). Collapses runs of blank lines to one space too, so a paste with
-      # double newlines doesn't insert a wall of spaces. Trims a trailing newline.
-      def flatten_paste_lines(text)
-        text.to_s.gsub(/\r\n|\r|\n/, "\n").sub(/\n+\z/, "").gsub(/\n+/, " ")
+      # Normalize a pasted body's line endings to "\n" (terminals deliver CR
+      # for Enter in raw mode) and trim TRAILING newlines so a paste that ends
+      # with one never reads as a blank extra line. Interior newlines — and
+      # the indentation after them — are PRESERVED end-to-end (#57).
+      def normalize_paste_newlines(text)
+        text.to_s.gsub(/\r\n|\r/, "\n").sub(/\n+\z/, "")
       end
 
       # After ESC, parse and ACT on the escape sequence so arrows / Home / End /

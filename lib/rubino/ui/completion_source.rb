@@ -45,18 +45,25 @@ module Rubino
       # @param commands [Array<String>] the slash-command names (incl. leading /)
       # @param files [#call, nil] lazy proc returning the workspace root to scan
       # @param arg_sources [Hash{String=>#call}] maps a BARE command name (no
-      #   leading slash, e.g. "skills") to a no-arg proc returning that command's
-      #   argument candidates (e.g. the skill names). When the buffer is an
-      #   argument to such a command (`/skills <partial>`), the dropdown completes
-      #   from these instead of the commands/files. Structured as a generic map so
-      #   the SAME mechanism can later serve `/agents` — just register another
-      #   entry; nothing here is skills-specific. The candidate set is prefixed
-      #   with a `✗ none` clear entry (NONE_ENTRY) so the picker can clear the
-      #   active selection from the top of the list.
-      def initialize(commands: [], files: nil, arg_sources: {})
+      #   leading slash, e.g. "skills") to a proc returning that command's
+      #   argument candidates. Two shapes:
+      #     * a NO-ARG proc — a single-argument command (e.g. "skills" → the
+      #       skill names); only the FIRST argument completes, and the list is
+      #       prefixed with the `✗ none` clear entry (NONE_ENTRY) so the picker
+      #       can clear the active selection from the top.
+      #     * a ONE-ARG proc — receives the PRIOR-argument array and decides
+      #       what completes at this position (e.g. "agents": [] → live ids,
+      #       [id] → steer/probe/--stop), so a subcommand grammar is
+      #       discoverable from the same dropdown (#39). No `✗ none` entry.
+      # @param descriptions [Hash{String=>String}] one-line description per
+      #   candidate string (e.g. BuiltIns::DESCRIPTIONS), rendered dim next to
+      #   the name in the dropdown (#39). Candidates without an entry show
+      #   bare, as before.
+      def initialize(commands: [], files: nil, arg_sources: {}, descriptions: {})
         @commands        = Array(commands).uniq
         @files_root_proc = files
         @arg_sources     = arg_sources || {}
+        @descriptions    = descriptions || {}
         @pastel          = Pastel.new
       end
 
@@ -77,33 +84,46 @@ module Rubino
 
       # Candidates for the ARGUMENT of a command, e.g. the skill names when the
       # buffer is `/skills <partial>`. +command+ is the bare command name (no
-      # leading slash); +partial+ is the text typed so far for the argument (may
-      # be empty). Returns [] when the command has no registered argument source.
+      # leading slash); +partial+ is the text typed so far for the argument
+      # (may be empty); +args+ the COMPLETE arguments typed before it. Returns
+      # [] when the command has no registered argument source.
       #
-      # The list leads with the `✗ none` clear entry (so the picker can clear the
-      # active selection from the top), then the source's candidates filtered by
-      # case-insensitive prefix and capped at MAX_CANDIDATES — the SAME cap the
-      # `/command` and `@file` lists honor.
-      #
-      # Generic by command name so the same dropdown can later serve `/agents`:
-      # register an "agents" => names_proc entry and nothing else changes here.
-      def arg_candidates_for(command, partial)
+      # Candidates are filtered by case-insensitive prefix and capped at
+      # MAX_CANDIDATES — the SAME cap the `/command` and `@file` lists honor.
+      # A no-arg source (single-argument command) completes only the first
+      # argument and leads with the `✗ none` clear entry; a one-arg source is
+      # called with +args+ and owns the per-position grammar (#39) — see
+      # #initialize.
+      def arg_candidates_for(command, partial, args = [])
         source = @arg_sources[command.to_s]
         return [] unless source
 
-        down  = partial.to_s.downcase
-        names = Array(source.call)
-        # The `✗ none` clear entry matches an empty partial or a "n"/"no…"/"none"
-        # prefix, so typing toward "none" keeps it in view.
-        list = []
-        list << NONE_ENTRY if down.empty? || NONE.start_with?(down)
-        list.concat(names.select { |n| n.to_s.downcase.start_with?(down) })
+        down = partial.to_s.downcase
+        list =
+          if source.arity.zero?
+            return [] unless args.empty? # single-argument command: first arg only
+
+            # The `✗ none` clear entry matches an empty partial or a
+            # "n"/"no…"/"none" prefix, so typing toward "none" keeps it in view.
+            none = down.empty? || NONE.start_with?(down) ? [NONE_ENTRY] : []
+            none + Array(source.call).select { |n| n.to_s.downcase.start_with?(down) }
+          else
+            Array(source.call(args)).select { |n| n.to_s.downcase.start_with?(down) }
+          end
         list.first(MAX_CANDIDATES)
       end
 
       # The sentinel a `✗ none` selection resolves to once spliced + submitted —
       # the command handler treats this argument as "clear the active selection".
       NONE = "none"
+
+      # The one-line description for a dropdown candidate (#39): the same
+      # strings /help shows for a `/command`, a usage hint for a subcommand.
+      # nil when the candidate has none (files, skill names) — the menu row
+      # renders bare, exactly as before.
+      def description_for(candidate)
+        @descriptions[candidate.to_s]
+      end
 
       # Subtly colorize a leading /command or @mention token (cyan). Plain text
       # and non-strings are returned unchanged. Matches LineInput#highlight_line.

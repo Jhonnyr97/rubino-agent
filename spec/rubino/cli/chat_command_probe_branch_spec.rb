@@ -65,6 +65,37 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(aside[:message]).to eq("MIT.")
       expect(store.for_session(parent_session[:id]).size).to eq(before_count)
     end
+
+    # #58: the probe wait shows the thinking indicator (on a TTY) and clears
+    # it BEFORE the aside renders — the wait must never look frozen, and the
+    # stale row must never glue onto the answer.
+    it "brackets the wait with thinking started/finished on a TTY (#58)" do
+      allow($stdout).to receive(:tty?).and_return(true)
+
+      cmd.send(:run_probe, parent_runner, "is this MIT?", ui)
+
+      levels = ui.messages.map { |m| m[:level] }
+      expect(levels.index(:thinking_started)).to be < levels.index(:thinking_finished)
+      expect(levels.index(:thinking_finished)).to be < levels.index(:probe_aside)
+    end
+
+    it "clears the indicator on a probe failure too (#58)" do
+      allow($stdout).to receive(:tty?).and_return(true)
+      allow(Rubino::LLM::AdapterFactory).to receive(:build).and_raise("boom")
+
+      cmd.send(:run_probe, parent_runner, "is this MIT?", ui)
+
+      levels = ui.messages.map { |m| m[:level] }
+      expect(levels.index(:thinking_finished)).to be < levels.index(:warning)
+      warning = ui.messages.find { |m| m[:level] == :warning }
+      expect(warning[:message]).to include("probe failed")
+    end
+
+    it "shows no indicator off a TTY (piped)" do
+      cmd.send(:run_probe, parent_runner, "is this MIT?", ui)
+
+      expect(ui.messages.map { |m| m[:level] }).not_to include(:thinking_started)
+    end
   end
 
   describe "#branch_runner" do

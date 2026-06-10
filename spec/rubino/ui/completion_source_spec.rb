@@ -115,6 +115,47 @@ RSpec.describe Rubino::UI::CompletionSource do
     it "returns [] for a command with no registered argument source" do
       expect(source.arg_candidates_for("agents", "")).to eq([])
     end
+
+    it "completes the FIRST argument only (single-argument command)" do
+      expect(source.arg_candidates_for("skills", "", ["ruby-expert"])).to eq([])
+    end
+  end
+
+  # #39: a POSITIONAL source (one-arg proc) owns a per-position grammar — it
+  # receives the prior arguments and decides what completes next, so the
+  # /agents `<id> steer|probe|--stop` surface is discoverable from the same
+  # dropdown. No `✗ none` clear entry is injected for these.
+  describe "#arg_candidates_for (positional source: agents)" do
+    subject(:source) do
+      described_class.new(arg_sources: { "agents" => lambda { |args|
+        args.empty? ? %w[sa_1 sa_2] : ["steer", "probe", "--stop"]
+      } })
+    end
+
+    it "asks the source per position: ids first, then the subcommands" do
+      expect(source.arg_candidates_for("agents", "")).to eq(%w[sa_1 sa_2])
+      expect(source.arg_candidates_for("agents", "", ["sa_1"]))
+        .to eq(["steer", "probe", "--stop"])
+    end
+
+    it "prefix-filters positional candidates" do
+      expect(source.arg_candidates_for("agents", "--s", ["sa_1"])).to eq(["--stop"])
+      expect(source.arg_candidates_for("agents", "sa_2")).to eq(["sa_2"])
+    end
+
+    it "injects no ✗ none clear entry into a positional grammar" do
+      expect(source.arg_candidates_for("agents", "")).not_to include(described_class::NONE_ENTRY)
+    end
+  end
+
+  # #39: the dropdown shows a one-line description next to a candidate when
+  # one is registered (BuiltIns/custom one-liners, subcommand usage hints).
+  describe "#description_for" do
+    it "returns the registered one-liner, nil otherwise" do
+      source = described_class.new(descriptions: { "/help" => "Show this help" })
+      expect(source.description_for("/help")).to eq("Show this help")
+      expect(source.description_for("/unknown")).to be_nil
+    end
   end
 
   describe "#highlight_line" do

@@ -69,7 +69,7 @@ module Rubino
           ui.success("Config file exists: #{loader.config_path}")
           { name: "config", status: :ok }
         else
-          ui.error("Config file missing. Run 'rubino setup'")
+          ui.error("config file missing. Run 'rubino setup'")
           { name: "config", status: :fail }
         end
       end
@@ -77,7 +77,7 @@ module Rubino
       def check_database
         ui = Rubino.ui
         unless database_on_disk?
-          ui.error("Database not initialized: #{Rubino.database.db_path}. Run 'rubino setup'")
+          ui.error("database not initialized: #{Rubino.database.db_path}. Run 'rubino setup'")
           return { name: "database", status: :fail }
         end
 
@@ -85,18 +85,18 @@ module Rubino
           ui.success("Database accessible: #{Rubino.database.db_path}")
           { name: "database", status: :ok }
         else
-          ui.error("Database not accessible")
+          ui.error("database not accessible")
           { name: "database", status: :fail }
         end
       rescue StandardError => e
-        ui.error("Database error: #{e.message}")
+        ui.error("database error: #{e.message}")
         { name: "database", status: :fail }
       end
 
       def check_migrations
         ui = Rubino.ui
         unless database_on_disk?
-          ui.error("Migrations not run — no database. Run 'rubino setup'")
+          ui.error("migrations not run — no database. Run 'rubino setup'")
           return { name: "migrations", status: :fail }
         end
 
@@ -110,7 +110,7 @@ module Rubino
           { name: "migrations", status: :ok }
         end
       rescue StandardError => e
-        ui.error("Migration check failed: #{e.message}")
+        ui.error("migration check failed: #{e.message}")
         { name: "migrations", status: :fail }
       end
 
@@ -133,7 +133,7 @@ module Rubino
           ui.success("Home directory exists: #{home}")
           { name: "directories", status: :ok }
         else
-          ui.error("Home directory missing: #{home}. Run 'rubino setup'")
+          ui.error("home directory missing: #{home}. Run 'rubino setup'")
           { name: "directories", status: :fail }
         end
       end
@@ -164,7 +164,7 @@ module Rubino
           ui.success("Model configured: #{model}")
           { name: "model", status: :ok }
         else
-          ui.error("No model configured")
+          ui.error("no model configured")
           { name: "model", status: :fail }
         end
       end

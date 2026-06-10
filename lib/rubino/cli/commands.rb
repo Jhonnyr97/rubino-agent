@@ -43,7 +43,7 @@ module Rubino
       # ----------------------------------------------------------------
       # chat — interactive and non-interactive
       # ----------------------------------------------------------------
-      desc "chat [PROMPT]", "Chat with the agent (interactive or one-shot with -q)"
+      desc "chat [PROMPT]", "Chat with the agent (one-shot with -q)"
 
       # One-shot / non-interactive
       option :query,    aliases: "-q", type: :string, desc: "One-shot prompt (non-interactive)"
@@ -89,7 +89,7 @@ module Rubino
       # ----------------------------------------------------------------
       # Shorthand: rubino prompt "my question"
       # ----------------------------------------------------------------
-      desc "prompt PROMPT", "Run a one-shot prompt (non-interactive, alias for chat -q)"
+      desc "prompt PROMPT", "Run a one-shot prompt (alias for chat -q)"
       option :model,        aliases: "-m", type: :string,  desc: "Override model"
       option :provider,                    type: :string,  desc: "Override provider"
       option :image,        aliases: "-i", type: :string, repeatable: true, desc: "Attach image file (repeatable)"
@@ -132,7 +132,10 @@ module Rubino
         ServerCommand.new(options).execute
       end
 
-      desc "tls-cert", "Print the agent's self-signed TLS certificate PEM (generating it if absent)"
+      # The usage label matches the registered command name (tls_cert) so
+      # `--help` and `tree` render the SAME name (#20); Thor still dispatches
+      # the hyphenated spelling (`rubino tls-cert`) via its name normalization.
+      desc "tls_cert", "Print the self-signed TLS certificate PEM"
       def tls_cert
         $stdout.write(API::TLS.ensure_cert!)
       end

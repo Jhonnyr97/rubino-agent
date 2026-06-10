@@ -49,10 +49,10 @@ module Rubino
         repo = Session::Repository.new
         session = repo.find(id)
 
-        if session.nil?
-          Rubino.ui.error("Session not found: #{id}")
-          raise Thor::Error, "session not found"
-        end
+        # One error, one style (#20): Thor already prints the Thor::Error message
+        # to stderr and exits non-zero (exit_on_failure?), so the extra styled
+        # ui.error line was the same failure repeated in a second format.
+        raise Thor::Error, "session not found: #{id}" if session.nil?
 
         Rubino.ui.info("Session: #{session[:id]}")
         Rubino.ui.info("Title: #{session[:title] || "(untitled)"}")
@@ -76,10 +76,8 @@ module Rubino
         repo = Session::Repository.new
         session = repo.find(id)
 
-        if session.nil?
-          Rubino.ui.error("Session not found: #{id}")
-          raise Thor::Error, "session not found"
-        end
+        # Single-styled not-found error (#20), as in #show above.
+        raise Thor::Error, "session not found: #{id}" if session.nil?
 
         unless options[:force]
           confirmed = Rubino.ui.confirm(
@@ -102,10 +100,8 @@ module Rubino
         repo = Session::Repository.new
         session = repo.find(id)
 
-        if session.nil?
-          Rubino.ui.error("Session not found: #{id}")
-          raise Thor::Error, "session not found"
-        end
+        # Single-styled not-found error (#20), as in #show above.
+        raise Thor::Error, "session not found: #{id}" if session.nil?
 
         Rubino.ui.info("Compacting session #{id}...")
         compressor = Context::Compressor.new(session_id: id)

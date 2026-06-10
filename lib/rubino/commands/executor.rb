@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "pastel"
+require "time"
 
 module Rubino
   module Commands
@@ -33,7 +34,7 @@ module Rubino
         # Look up custom command
         command = @loader.find(name)
         unless command
-          @ui.error("Unknown command: /#{name}")
+          @ui.error("unknown command: /#{name}")
           @ui.info("Available: #{available_commands.join(", ")}")
           return :handled # Signal that it was handled (even if failed)
         end
@@ -353,7 +354,7 @@ module Rubino
       end
 
       def status_skills_line
-        registry = Skills::Registry.new
+        registry = Skills::Registry.trusted
         all      = registry.all
         enabled  = all.count { |s| registry.enabled?(s.name) }
         "#{all.size} available, #{enabled} enabled"
@@ -446,7 +447,7 @@ module Rubino
         store  = memory_backend
         memory = store.find(id)
         if memory.nil?
-          @ui.error("No fact with id #{id}.")
+          @ui.error("no fact with id #{id}.")
           return
         end
 
@@ -512,7 +513,7 @@ module Rubino
       # (▸, "enters child context") + a card repaint so the parked note shows.
       def steer_agent(id, text)
         if text.to_s.strip.empty?
-          @ui.error(%(Usage: /agents #{id} steer "your note"))
+          @ui.error(%(usage: /agents #{id} steer "your note"))
           return
         end
 
@@ -520,7 +521,7 @@ module Rubino
           @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}  (parked · enters child context next turn)")
           @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
         else
-          @ui.error("Cannot steer #{id} — no such running subagent.")
+          @ui.error("cannot steer #{id} — no such running subagent.")
         end
       end
 
@@ -532,13 +533,13 @@ module Rubino
       # entry is itself the signal that the peek changed nothing.
       def probe_agent(id, question)
         if question.to_s.strip.empty?
-          @ui.error(%(Usage: /agents #{id} probe "your question"))
+          @ui.error(%(usage: /agents #{id} probe "your question"))
           return
         end
 
         entry = Tools::BackgroundTasks.instance.find(id)
         unless entry
-          @ui.error("Cannot probe #{id} — no such subagent.")
+          @ui.error("cannot probe #{id} — no such subagent.")
           return
         end
 
@@ -660,7 +661,7 @@ module Rubino
       def show_agent_detail(id)
         entry = Tools::BackgroundTasks.instance.find(id)
         unless entry
-          @ui.error("No background subagent with id #{id}.")
+          @ui.error("no background subagent with id #{id}.")
           return
         end
 
@@ -806,7 +807,7 @@ module Rubino
         registry = Tools::BackgroundTasks.instance
         entry    = registry.find(id)
         unless entry
-          @ui.error("No background subagent with id #{id}.")
+          @ui.error("no background subagent with id #{id}.")
           return
         end
 
@@ -942,18 +943,13 @@ module Rubino
           return :handled
         end
 
-        # Lead with the identifying fields (ID, Title, Created) so a narrow-term
-        # card fallback scans well — the key field first, not buried (#84).
-        rows = sessions.map do |s|
-          [s[:id].to_s[0..7], session_title(s), s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
-        end
-        @ui.table(headers: %w[ID Title Created Status Msgs], rows: rows)
+        # ONE surface, not two (#40): on a real terminal the arrow-key picker
+        # IS the list (Enter resumes, Esc cancels — #73, letters filter), with
+        # Created/Status folded into each row, so the same sessions are never
+        # rendered twice (static table + picker). Off a TTY the static table +
+        # typed-shortcut fallback renders instead.
+        return sessions_table_fallback(sessions) unless interactive_terminal?
 
-        # "resume one" should actually let you pick one: offer an arrow-key
-        # picker over the listed sessions (reusing the approval-menu component
-        # via @ui.select), Enter resumes the highlighted session, Esc cancels
-        # (#145). Off a real terminal @ui.select returns nil and we keep the
-        # static-table + typed-shortcut behaviour.
         choices = sessions.map { |s| [session_choice_label(s), s[:id]] }
         chosen  = @ui.select("Resume which session? (Esc to cancel)", choices)
         if chosen
@@ -962,23 +958,52 @@ module Rubino
           return { resume_session_id: chosen }
         end
 
-        @ui.info("Resume: /sessions <id|title>  (or run /sessions and pick from the menu)")
+        @ui.info("Resume: /sessions <id|title>")
         :handled
       end
 
-      # One picker row: short id + title + message count, so the highlighted
-      # entry is identifiable at a glance in the arrow-key menu.
+      # Static fallback for non-interactive callers (pipes / Null UI): the
+      # bordered table the picker replaces on a TTY. Leads with the identifying
+      # fields (ID, Title, Created) so a narrow-term card fallback scans well —
+      # the key field first, not buried (#84).
+      def sessions_table_fallback(sessions)
+        rows = sessions.map do |s|
+          [s[:id].to_s[0..7], session_title(s), s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
+        end
+        @ui.table(headers: %w[ID Title Created Status Msgs], rows: rows)
+        @ui.info("Resume: /sessions <id|title>")
+        :handled
+      end
+
+      # One picker row: short id + title + message count + recency (and status
+      # when not yet ended), so the highlighted entry is identifiable at a
+      # glance and the picker is a clean superset of the old static table (#40).
       def session_choice_label(session)
         id    = session[:id].to_s[0..7]
         title = session_title(session)
         msgs  = session[:message_count]
-        "#{id}  #{title}#{"  (#{msgs} msg#{"s" if msgs != 1})" if msgs}"
+        meta  = [
+          ("#{msgs} msg#{"s" if msgs != 1}" if msgs),
+          session_age(session),
+          (session[:status].to_s unless ["", "ended"].include?(session[:status].to_s))
+        ].compact.join(" · ")
+        meta.empty? ? "#{id}  #{title}" : "#{id}  #{title}  (#{meta})"
+      end
+
+      # "Created" humanized for the picker row — "5m ago" scans better than a
+      # raw ISO timestamp in a recency-ordered list (#40). nil when unparseable.
+      def session_age(session)
+        created = session[:created_at]
+        created = Time.parse(created.to_s) unless created.is_a?(Time)
+        "#{human_duration(Time.now - created)} ago"
+      rescue StandardError
+        nil
       end
 
       def resume_session(query)
         session = Session::Repository.new.find_by_id_or_title(query)
         if session.nil?
-          @ui.error("No session matching #{query.inspect}.")
+          @ui.error("no session matching #{query.inspect}.")
           @ui.info("List them with /sessions")
           return :handled
         end
@@ -1180,12 +1205,20 @@ module Rubino
           return
         end
 
-        registry = Skills::Registry.new
+        # Trust-aligned discovery (#63): activate only skills the assembler
+        # will actually pin — in an untrusted cwd a project-local skill is
+        # refused (with a reason) instead of chip-active-but-not-injected.
+        registry = Skills::Registry.trusted
         skill = registry.find(arg)
         unless skill
-          @ui.error("Unknown skill: #{arg}")
-          available = registry.names
-          @ui.info("Available: #{available.join(", ")}") unless available.empty?
+          if Skills::Registry.new.find(arg)
+            @ui.error("skill #{arg} is in this directory's .rubino/skills, but the directory " \
+                      "isn't trusted — its SKILL.md would not be loaded, so it can't be activated")
+          else
+            @ui.error("unknown skill: #{arg}")
+            available = registry.names
+            @ui.info("Available: #{available.join(", ")}") unless available.empty?
+          end
           return
         end
 
@@ -1210,7 +1243,7 @@ module Rubino
       end
 
       def show_skills
-        registry = Skills::Registry.new
+        registry = Skills::Registry.trusted
         skills = registry.all
         if skills.empty?
           @ui.info("No skills found.")

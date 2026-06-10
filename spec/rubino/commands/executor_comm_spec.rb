@@ -38,7 +38,7 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
 
     it "errors on an unknown id" do
       exec.try_execute(%(/agents sa_nope steer "hi"))
-      expect(info_lines.join("\n")).to include("Cannot steer sa_nope")
+      expect(info_lines.join("\n")).to include("cannot steer sa_nope")
     end
   end
 
