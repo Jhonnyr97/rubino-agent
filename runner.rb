@@ -3,83 +3,71 @@
 
 require 'io/console'
 
-# Salva posizione cursore, nasconde cursore, imposta scrolling dalla riga 2
-SETUP = "\e[s\e[?25l\e[2;999r"
-# Ripristina tutto
-TEARDOWN = "\e[r\e[?25h\e[u"
-
-WIDTH = (IO.console&.winsize&.[](1) || 80) - 1
-
-GROUND  = WIDTH - 1
+WIDTH    = (IO.console&.winsize&.[](1) || 80) - 1
 PLAYER_X = 5
-JUMP_HEIGHT = 3
+
+# Scrolling parte dalla riga 3 (le prime 2 sono il gioco)
+SETUP    = "\e[?25l\e[3;999r"
+TEARDOWN = "\e[r\e[?25h"
 
 @running   = true
-@jump      = 0        # frame rimanenti del salto
-@obstacles = []       # array di posizioni x
+@jump      = 0   # frame rimanenti del salto (0 = a terra)
+@obstacles = []
 @frame     = 0
 @score     = 0
 
-def player_y
-  if @jump > 0
-    row = JUMP_HEIGHT - ((@jump - 1) % (JUMP_HEIGHT * 2 + 1) - JUMP_HEIGHT).abs
-    row = [row, 0].max
-    GROUND - row
-  else
-    GROUND
-  end
+JUMP_FRAMES = 10  # durata totale salto (andata + ritorno)
+
+def in_air?
+  @jump > 0
 end
 
 def spawn_obstacle
   last = @obstacles.last || 0
-  gap = rand(12..22)
-  @obstacles << (last + gap + WIDTH)
+  @obstacles << (last + rand(14..22) + WIDTH)
 end
 
 def render
-  # Muovi a riga 1, colonna 1
-  row = Array.new(WIDTH + 1, ' ')
+  # Riga ARIA (riga 1): personaggio quando salta, spazi altrimenti
+  air = Array.new(WIDTH, ' ')
+  air[PLAYER_X] = 'o' if in_air?
 
-  # Terra
-  (0..WIDTH).each { |i| row[i] = '_' }
-
-  # Ostacoli (cactus)
+  # Riga TERRA (riga 2): pedana, ostacoli, personaggio a terra
+  ground = Array.new(WIDTH, '_')
   @obstacles.each do |ox|
     sx = ox - @frame
-    row[sx] = '|' if sx.between?(0, WIDTH)
+    if sx.between?(0, WIDTH - 1)
+      ground[sx] = '█'
+    end
   end
+  ground[PLAYER_X] = in_air? ? ' ' : 'O'
 
-  # Personaggio
-  py = player_y
-  row[PLAYER_X] = py < GROUND ? 'o' : 'O'
+  score_tag = " Score:#{@score.to_s.rjust(4)} "
 
-  # Costruisci la riga con sfondo colorato
-  bar = "\e[1;1H\e[48;5;235m\e[97m" \
-        "#{row.join}" \
-        "  Score:#{@score.to_s.rjust(4)}" \
-        "\e[0m"
-  $stdout.print bar
+  buf  = "\e[1;1H\e[48;5;236m\e[97m #{air.join[0, WIDTH - score_tag.length - 1]}#{score_tag}\e[0m"
+  buf += "\e[2;1H\e[48;5;236m\e[93m #{ground.join[0, WIDTH - score_tag.length - 1]}#{score_tag}\e[0m"
+  $stdout.print buf
   $stdout.flush
 end
 
 def game_loop
   spawn_obstacle
 
-  until !@running
+  while @running
     sleep 0.08
-
     @frame += 1
-    @jump -= 1 if @jump > 0
+    @jump  -= 1 if @jump > 0
 
-    # Scorri ostacoli
     @obstacles.reject! { |ox| ox - @frame < 0 }
     spawn_obstacle if @obstacles.empty? || (@obstacles.last - @frame) < WIDTH
 
-    # Collisione
-    @obstacles.each do |ox|
-      if (ox - @frame) == PLAYER_X && player_y == GROUND
-        @running = false
-        break
+    # Collisione solo quando è a terra
+    unless in_air?
+      @obstacles.each do |ox|
+        if (ox - @frame) == PLAYER_X
+          @running = false
+          break
+        end
       end
     end
 
@@ -87,41 +75,41 @@ def game_loop
     render
   end
 
-  # Game over
-  $stdout.print "\e[1;1H\e[41m\e[97m GAME OVER! Score: #{@score} — premi INVIO per uscire \e[0m"
+  $stdout.print "\e[1;1H\e[41m\e[97m GAME OVER! Score: #{@score}#{' ' * (WIDTH - 20)} \e[0m"
+  $stdout.print "\e[2;1H\e[41m\e[97m#{' ' * WIDTH}\e[0m"
   $stdout.flush
 end
 
 def input_loop
-  $stdout.print "\e[2;1H"  # cursore a riga 2
+  rows = IO.console.winsize[0]
+  $stdout.print "\e[3;1H"
 
   while @running
-    print "\e[#{IO.console.winsize[0]};1H> "
+    print "\e[#{rows};1H\e[K> "
     line = $stdin.gets&.chomp
     break if line.nil?
 
-    case line.downcase
-    when 'jump', 'j', ' ', ''
-      @jump = JUMP_HEIGHT * 2 + 1 if @jump == 0
-      print "\e[#{IO.console.winsize[0] - 1};1H[saltato!]\n"
+    rows = IO.console.winsize[0]
+    case line.downcase.strip
+    when 'jump', 'j', '', ' '
+      @jump = JUMP_FRAMES if @jump == 0
+      print "\e[#{rows - 1};1H\e[K[salto!]\n"
     when 'quit', 'exit', 'q'
       @running = false
       break
     else
-      rows = IO.console.winsize[0]
-      print "\e[#{rows - 1};1HHai scritto: #{line}\n"
+      print "\e[#{rows - 1};1H\e[KHai scritto: #{line}\n"
     end
   end
 end
 
-# Setup terminale
 $stdout.print SETUP
 $stdout.flush
 
 at_exit do
   $stdout.print TEARDOWN
   $stdout.flush
-  puts "\nUscito. Score finale: #{@score}"
+  puts "\n\nUscito. Score finale: #{@score}"
 end
 
 trap('INT') { @running = false }

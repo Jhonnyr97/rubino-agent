@@ -1,64 +1,50 @@
 #!/usr/bin/env ruby
-# Versione headless/demo del runner per la registrazione asciinema
-# Simula 5 secondi di gioco con 2 salti automatici
+# Demo headless del runner a 2 righe per asciinema
 
-require 'io/console'
-
-WIDTH = 78
-GROUND = 1   # riga di terra (0-indexed dall'alto, nella barra è sempre riga 0)
+WIDTH    = 78
 PLAYER_X = 5
-JUMP_HEIGHT = 3
+JUMP_FRAMES = 10
 
 @frame     = 0
 @jump      = 0
 @obstacles = []
 @score     = 0
 
-def player_row
-  if @jump > 0
-    h = JUMP_HEIGHT - ((@jump - 1) % (JUMP_HEIGHT * 2 + 1) - JUMP_HEIGHT).abs
-    h = [h, 0].max
-    h   # righe sopra il suolo
-  else
-    0
-  end
-end
+def in_air? = @jump > 0
 
 def spawn_obstacle
   last = @obstacles.last || 0
-  gap  = rand(14..20)
-  @obstacles << (last + gap + WIDTH)
+  @obstacles << (last + rand(14..20) + WIDTH)
 end
 
-def render_bar
-  row = Array.new(WIDTH + 2, '_')
+def render
+  air    = Array.new(WIDTH, ' ')
+  ground = Array.new(WIDTH, '_')
 
-  # ostacoli
+  air[PLAYER_X]    = 'o' if in_air?
+  ground[PLAYER_X] = in_air? ? ' ' : 'O'
+
   @obstacles.each do |ox|
     sx = ox - @frame
-    row[sx] = '|' if sx.between?(0, WIDTH)
+    ground[sx] = '█' if sx.between?(0, WIDTH - 1)
   end
 
-  # personaggio — sale sopra il suolo
-  pr = player_row
-  ch = pr > 0 ? 'o' : 'O'
-  # la "riga" è una sola linea; mostriamo il salto alzando il carattere
-  # ma siccome abbiamo 1 linea usiamo solo il simbolo diverso
-  row[PLAYER_X] = ch
+  score_tag = " Score:#{@score.to_s.rjust(4)} "
+  w = WIDTH - score_tag.length - 1
 
-  "\e[1;1H\e[48;5;235m\e[97m#{row.join[0, WIDTH]}  Score:#{@score.to_s.rjust(4)}\e[0m"
+  buf  = "\e[1;1H\e[48;5;236m\e[97m #{air.join[0, w]}#{score_tag}\e[0m"
+  buf += "\e[2;1H\e[48;5;236m\e[93m #{ground.join[0, w]}#{score_tag}\e[0m"
+  $stdout.print buf
+  $stdout.flush
 end
 
-# Setup: scroll da riga 2 in giù, nascondi cursore
-print "\e[?25l\e[2;99r"
-
-# Riga 2: istruzioni fisse
-print "\e[2;1H\e[2mdigita 'jump' + INVIO per saltare, 'quit' per uscire\e[0m"
+print "\e[?25l\e[3;99r"
+print "\e[3;1H\e[2mdigita 'jump' + INVIO per saltare, 'quit' per uscire\e[0m"
 
 spawn_obstacle
 
-auto_jumps = [18, 36, 54, 72, 90]   # frame in cui il demo salta da solo
-total_frames = 100
+auto_jumps = [15, 33, 52, 70, 88]
+total_frames = 105
 
 total_frames.times do |i|
   @frame += 1
@@ -67,25 +53,24 @@ total_frames.times do |i|
   @obstacles.reject! { |ox| ox - @frame < 0 }
   spawn_obstacle if @obstacles.empty? || (@obstacles.last - @frame) < WIDTH
 
-  # salto automatico
-  @jump = JUMP_HEIGHT * 2 + 1 if auto_jumps.include?(i) && @jump == 0
+  @jump = JUMP_FRAMES if auto_jumps.include?(i) && @jump == 0
 
   @score += 1
+  render
 
-  print render_bar
-
-  # Stampa un messaggio di "input" ogni tanto
   if auto_jumps.include?(i)
-    print "\e[3;1H\e[K> jump"
-  elsif i % 30 == 0 && !auto_jumps.include?(i)
-    print "\e[3;1H\e[K> ciao, sto scrivendo normalmente..."
+    print "\e[4;1H\e[K> jump"
+    $stdout.flush
+  elsif i % 35 == 0
+    print "\e[4;1H\e[K> ciao, scrivo normalmente qui sotto..."
+    $stdout.flush
   end
 
-  $stdout.flush
   sleep 0.09
 end
 
 print "\e[1;1H\e[42m\e[97m Demo finita! Score: #{@score} \e[0m"
+print "\e[2;1H\e[42m\e[97m#{' ' * WIDTH}\e[0m"
 print "\e[?25h\e[r"
 $stdout.flush
-sleep 0.5
+sleep 0.8
