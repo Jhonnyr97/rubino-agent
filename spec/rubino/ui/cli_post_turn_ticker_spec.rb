@@ -45,11 +45,11 @@ RSpec.describe Rubino::UI::CLI do
 
         # No raw repaint reached the terminal the composer owns.
         expect($stdout.string).not_to include("\r\e[2K")
-        expect($stdout.string).not_to include("thinking…")
+        expect($stdout.string).not_to include("thinking")
         # Frames went through the composer's transient row, and every frame
         # redrew the prompt line below it — the bottom line is never clobbered.
-        expect(output.string).to include("thinking…")
-        last_frame = output.string.split("thinking…").last
+        expect(output.string).to include("thinking")
+        last_frame = output.string.split("thinking").last
         expect(last_frame).to include("default ❯")
       ensure
         $stdout = old
@@ -96,7 +96,87 @@ RSpec.describe Rubino::UI::CLI do
         ui.thinking_finished
 
         expect($stdout.string).to include("\r\e[2K")
-        expect($stdout.string).to include("thinking…")
+        expect($stdout.string).to include("thinking")
+      ensure
+        $stdout = old
+      end
+    end
+  end
+
+  describe "turn-scoped status row (V3 'Ruby facet')" do
+    # A live-capable stdout double: frames route through #live (the StdoutProxy
+    # seam), committed rows through the normal print path.
+    def live_stringio
+      Class.new(StringIO) do
+        def live(str)
+          write(str)
+          self
+        end
+
+        def tty? = true
+      end.new
+    end
+
+    it "keeps ONE engine thread across label swaps (thinking → tool → thinking) and stops at turn end" do
+      old = $stdout
+      $stdout = live_stringio
+      begin
+        ui = described_class.new
+        ui.turn_started
+        thread = ui.instance_variable_get(:@thinking_thread)
+        expect(thread).to be_a(Thread)
+        sleep 0.15
+        expect($stdout.string).to include("thinking · 0")
+
+        ui.tool_started("shell", arguments: { command: "npm test" })
+        # Label swap, not thread churn: the SAME engine thread keeps ticking.
+        expect(ui.instance_variable_get(:@thinking_thread)).to equal(thread)
+        sleep 0.15
+        expect($stdout.string).to include("shell · npm test · 0")
+
+        ui.tool_finished("shell", result: nil)
+        expect(ui.instance_variable_get(:@thinking_thread)).to equal(thread)
+        sleep 0.15
+        expect($stdout.string).to include("1 tool")
+
+        ui.turn_finished
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+        expect(thread).not_to be_alive
+      ensure
+        $stdout = old
+      end
+    end
+
+    it "switches to 'polishing · <job>' for the post-turn inline jobs (P6)" do
+      old = $stdout
+      $stdout = live_stringio
+      begin
+        ui = described_class.new
+        ui.turn_started
+        ui.job_started("ExtractMemoryJob")
+        sleep 0.15
+        expect($stdout.string).to include("polishing · memory · 0")
+
+        ui.job_finished("ExtractMemoryJob")
+        ui.job_started("DistillSkillJob")
+        sleep 0.15
+        expect($stdout.string).to include("polishing · skills · 0")
+
+        ui.turn_finished
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+      ensure
+        $stdout = old
+      end
+    end
+
+    it "renders the landed facet in the `◆ turn` footer note" do
+      ui = described_class.new
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      old = $stdout
+      $stdout = StringIO.new
+      begin
+        ui.note("◆ turn · 7.1s · 1 tool · 371 tok")
+        expect($stdout.string).to include("┄ ◆ turn · 7.1s · 1 tool · 371 tok ┄")
       ensure
         $stdout = old
       end

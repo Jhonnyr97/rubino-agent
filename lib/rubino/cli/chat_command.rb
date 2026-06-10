@@ -256,6 +256,15 @@ module Rubino
         # no copy/paste — instead of blocking on a fresh readline.
         input_queue = Rubino::Interaction::InputQueue.new
 
+        # Drive the turn-scoped status row from bus events the UI doesn't see
+        # directly: MESSAGE_COMPLETED (a streamed block ended — commit its tail
+        # and resume the row between blocks, the P4 inter-tool gap) and
+        # JOB_STARTED/JOB_FINISHED (the post-turn inline jobs spending aux-LLM
+        # seconds after the footer — the P6 "polishing" phase). Both arrive on
+        # the process-global bus the interactive runner and the inline job
+        # runner emit on. Best-effort: a UI hiccup must never fail the source.
+        subscribe_status_row_events(ui)
+
         # Reset the shared explicit-queue stack for this interactive session (see
         # #pending_queued): live "⏳ queued: <msg>" rows the composers render and
         # the loop commits as normal messages when their turn runs.
@@ -448,6 +457,38 @@ module Rubino
         Rubino.logger.reopen(prev)
       rescue StandardError
         nil
+      end
+
+      # Relays bus events into the turn-scoped status row. Subscribed once per
+      # interactive session on the process-global bus:
+      #   MESSAGE_COMPLETED — the adapter closed one streamed content block;
+      #     the UI commits the block's tail and resumes the row so the gap
+      #     until the next tool/block isn't dead air (P4). Subagents run on
+      #     their own per-task bus, so their blocks never reach this listener.
+      #   JOB_STARTED/JOB_FINISHED — the inline post-turn jobs (memory extract,
+      #     skill distill); the row shows "polishing · memory|skills" (P6).
+      # Every callback is fully rescued: a cosmetic repaint failure must never
+      # bubble into the emitter (it would fail the job / abort the stream).
+      def subscribe_status_row_events(ui)
+        return if @status_row_subscribed
+
+        @status_row_subscribed = true
+        bus = Rubino.event_bus
+        bus.on(Rubino::Interaction::Events::MESSAGE_COMPLETED) do |payload|
+          ui.stream_block_end(payload[:message_id]) if ui.respond_to?(:stream_block_end)
+        rescue StandardError
+          nil
+        end
+        bus.on(Rubino::Interaction::Events::JOB_STARTED) do |payload|
+          ui.job_started(payload[:type]) if ui.respond_to?(:job_started)
+        rescue StandardError
+          nil
+        end
+        bus.on(Rubino::Interaction::Events::JOB_FINISHED) do |payload|
+          ui.job_finished(payload[:type]) if ui.respond_to?(:job_finished)
+        rescue StandardError
+          nil
+        end
       end
 
       # Shared stack of EXPLICITLY-queued messages (Alt+Enter / "/queued"),
@@ -891,6 +932,13 @@ module Rubino
         # marked and is skipped here (no double echo).
         commit_queued_prompt(composer)
 
+        # Open the TURN-SCOPED status row (the "Ruby facet" ticker): one engine
+        # thread for the whole turn — model waits, tools, inter-tool gaps AND
+        # the post-turn inline jobs all just swap its label. Closed in the
+        # ensure below (turn end / error / interrupt), so the post-footer
+        # polishing phase stays animated instead of freezing the UI.
+        ui.turn_started if ui.respond_to?(:turn_started)
+
         # Pass the SAME queue the composer pushes into through to the agent loop:
         # the loop drains it at each iteration boundary (Phase-2 mid-turn
         # steering). Anything still queued in the gap after the turn ends falls
@@ -912,6 +960,10 @@ module Rubino
         # via the still-live composer's print_above, so they land AFTER the footer
         # (answer → reveal → `↳ turn` → `queued ▸`). A no-content/aborted turn
         # still flushes here, so a mid-turn type-ahead is never stranded.
+        # The status row stops FIRST — the post-turn jobs have drained by the
+        # time the runner returns, so the facet has already landed in the
+        # footer and the engine thread must not outlive the turn.
+        ui.turn_finished if ui.respond_to?(:turn_finished)
         composer.end_turn if composer.respond_to?(:end_turn)
         stop_composer(composer, real_stdout)
         Signal.trap("INT", prev) if prev

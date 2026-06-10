@@ -226,7 +226,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.send(:clear_thinking_indicator)
         expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
         expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
-        expect(live.string).to include("thinking…")
+        expect(live.string).to include("thinking")
       ensure
         $stdout = old
       end
@@ -1289,7 +1289,7 @@ RSpec.describe Rubino::UI::CLI do
         sleep 0.25
         ui.thinking_finished
       end
-      expect(out).to include("thinking…")
+      expect(out).to include("thinking")
       expect(out.scan("\r\e[2K").size).to be >= 2 # repaint frames + final clear
     end
 
