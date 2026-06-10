@@ -152,13 +152,13 @@ RSpec.describe "Agent behaviour observable from the UI" do
       fake_llm.enqueue_text("risposta")
       build_streaming_loop.run(messages: user_messages, tools: [])
 
-      # Loop now ends every turn with a `↳ turn · …` note so the cost
+      # Loop now ends every turn with a `◆ turn · …` note so the cost
       # stays visible. The stream must be closed first; otherwise the
       # note would land on the same line as the streamed text.
       levels = ui.messages.map { |m| m[:level] }
       expect(levels.last).to eq(:note)
       expect(levels[-2]).to eq(:stream_end)
-      expect(ui.messages.last[:message]).to include("↳ turn · ")
+      expect(ui.messages.last[:message]).to include("◆ turn · ")
     end
   end
 
