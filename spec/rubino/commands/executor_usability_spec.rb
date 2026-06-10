@@ -664,6 +664,45 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(joined).to include("Ctrl-C")
       expect(joined).to include("Tab")
     end
+
+    # #78/#80: the in-turn input vocabulary was undiscoverable or wrong —
+    # Enter does NOT inject mid-turn (it interrupts and runs next), Alt+Enter
+    # queues, Shift+Tab cycles modes, and Ctrl-O reveals reasoning.
+    it "describes Enter as interrupt-and-run-next, plus Alt-Enter / Shift-Tab / Ctrl-O rows (#78, #80)" do
+      exec.try_execute("/help")
+      joined = info_lines.join("\n")
+      expect(joined).to include("interrupt it and run this next")
+      expect(joined).not_to include("inject mid-turn")
+      expect(joined).to include("Alt-Enter")
+      expect(joined).to include("Shift-Tab")
+      expect(joined).to match(/Shift-Tab.*default → plan → yolo/)
+      expect(joined).to include("Ctrl-O")
+    end
+
+    it "lists /queued among the built-in commands (#80)" do
+      exec.try_execute("/help")
+      joined = info_lines.join("\n")
+      expect(joined).to match(%r{/queued\s+- Queue a message to run after the current turn})
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # /queued — registered fallback (#80)
+  # -----------------------------------------------------------------------
+  describe "/queued" do
+    # The composer intercepts "/queued <msg>" before the Executor ever sees
+    # it; a bare "/queued" (or a non-composer input path) lands here and must
+    # teach the usage instead of "Unknown command".
+    it "is handled and teaches the usage" do
+      expect(exec.try_execute("/queued")).to eq(:handled)
+      joined = info_lines.join("\n")
+      expect(joined).to include("/queued <message>")
+      expect(joined).to include("Alt+Enter")
+    end
+
+    it "is a registered built-in (completion + /help see it)" do
+      expect(Rubino::Commands::BuiltIns::NAMES).to include("/queued")
+    end
   end
 
   # -----------------------------------------------------------------------

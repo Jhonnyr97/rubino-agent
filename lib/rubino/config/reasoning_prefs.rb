@@ -48,6 +48,10 @@ module Rubino
       def effort(config)
         raw = config&.dig("thinking", "effort")
         return nil if raw.nil?
+        # YAML parses an unquoted `off` as the boolean false, which used to
+        # silently break thinking-budget gating (#79) — coerce it back to :off
+        # here, the single read boundary, so a doc-following config keeps working.
+        return :off if raw == false
 
         sym = raw.to_s.strip.downcase.to_sym
         EFFORTS.include?(sym) ? sym : nil

@@ -265,13 +265,28 @@ module Rubino
         end
       end
 
+      # A turn that ends in ERROR must tear down the live "thinking…" animation
+      # (and any open stream) BEFORE the error line prints — otherwise the
+      # ticking row strands below the error and keeps interleaving into every
+      # subsequent print until a full repaint (#74). The success path settles
+      # via stream_end/collapse_reasoning; this gives the error path the same
+      # cleanup. Idempotent — a no-op for errors printed outside a turn.
+      def error(message)
+        finalize_stream
+        super
+      end
+
       # Commits the standardized interrupt marker right after the partial answer
       # that was kept when a turn is cancelled (Ctrl+C, or the interrupt-by-
       # default Enter): a dim `⎿ interrupted` row, house grammar. Leading CR +
       # clear-line so it lands cleanly even if the cursor is sitting after a
       # partial stream chunk. This is the single visible interrupt notice — the
       # runner no longer also prints a separate "interrupted by user" warning.
+      # Tears down a still-ticking "thinking…" animation first, same as the
+      # error path (#74) — Loop#stream_end usually already did, but an
+      # interrupt raised outside the streaming bracket must settle too.
       def turn_interrupted
+        finalize_stream
         $stdout.print "\r\e[2K"
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
@@ -1040,8 +1055,9 @@ module Rubino
       # when a tool/activity starts with reasoning still buffered (never strand
       # the cue). After committing it retains the buffer in @last_reasoning so a
       # later ctrl-o can re-reveal it, and resets @reasoning_buffer for the next
-      # phase. A no-op in :hidden mode (just clears the animation) and when there
-      # is nothing buffered.
+      # phase. :hidden commits NOTHING but still retains the buffer, so a single
+      # Ctrl+O can pull the last thought back on demand — exactly what the
+      # hidden-mode ack promises (#76).
       def collapse_reasoning
         seconds = thinking_elapsed_seconds
         buffered = @reasoning_buffer
@@ -1050,10 +1066,10 @@ module Rubino
         stop_thinking_animation
         clear_thinking_indicator
 
-        unless buffered.strip.empty? || mode == :hidden
+        unless buffered.strip.empty?
           if mode == :full
             commit_reasoning_aside(buffered, seconds)
-          else
+          elsif mode == :collapsed
             commit_reasoning_cue(seconds)
           end
           @last_reasoning = buffered
