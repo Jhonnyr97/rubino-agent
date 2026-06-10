@@ -1618,7 +1618,11 @@ module Rubino
         # returns [], no `tools: [...]` is sent on the wire, and the model
         # has no choice but to roleplay bash in markdown. Symptom verified
         # via RUBYLLM_DEBUG=1 — request body was missing `tools` entirely.
-        Rubino::Tools::Registry.register_defaults! if Rubino::Tools::Registry.all.empty?
+        # Gate on a missing CORE tool, not on emptiness: a partially-populated
+        # registry (e.g. only "shell" left behind) must still get the defaults
+        # re-registered — #register is idempotent by name and never touches
+        # MCP-prefixed wrappers.
+        Rubino::Tools::Registry.register_defaults! unless Rubino::Tools::Registry.find("write")
 
         # MCP is experimental and opt-in: a configured `mcp.servers` block
         # connects the servers and registers their prefixed tools alongside
