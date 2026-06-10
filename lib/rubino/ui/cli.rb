@@ -209,12 +209,32 @@ module Rubino
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
         $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
 
-        approved = apply_choice(approval_choice(rule), scope: scope, command: command, rule: rule)
+        choice   = approval_choice(rule)
+        approved = apply_choice(choice, scope: scope, command: command, rule: rule)
+        # First plain "Approve once" of the session: point at the session-scope
+        # menu options so a multi-edit refactor doesn't keep interrupting
+        # without the user knowing it can stop (#110). Presentation only — the
+        # approval model is untouched.
+        session_scope_tip(tool, choice) if approved
         # A deny is a safety action: confirm explicitly that nothing ran, in the
         # same red ✗ styling failed tools use, so "Done." can't be read as "ran"
         # (#83). Approve/allow paths are unchanged.
         denied(tool) unless approved
         approved
+      end
+
+      # One dim line, once per session, after the FIRST "Approve once" (#110):
+      # the "this tool (this session)" option already exists in the menu, but
+      # nothing surfaced it, so users approved every single edit by hand.
+      def session_scope_tip(tool, choice)
+        return unless choice == :once
+        return if @session_scope_tip_shown
+
+        @session_scope_tip_shown = true
+        label = tool.to_s.empty? ? "this tool" : tool
+        $stdout.puts @pastel.dim(
+          %(┄ tip: choose "Approve — this tool (this session)" to stop being asked for #{label} this session ┄)
+        )
       end
 
       # Explicit, visible confirmation that a denied command was NOT executed.

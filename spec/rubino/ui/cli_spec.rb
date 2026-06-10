@@ -845,6 +845,30 @@ RSpec.describe Rubino::UI::CLI do
       expect(cache.allowed?("sess-1", "shell:ls")).to be(false)
     end
 
+    # #110: the "this tool (this session)" option always existed but nothing
+    # surfaced it — a multi-edit refactor interrupted on every call. The first
+    # plain "Approve once" now prints a one-time tip naming it.
+    it "tips the session-scope option once after the first 'Approve once' (#110)" do
+      stub_choice(:once)
+      first  = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      second = capture_stdout { ui.confirm("Allow edit?", scope: "edit:b", tool: "edit") }
+      expect(first).to include(%(tip: choose "Approve — this tool (this session)"))
+      expect(first).to include("for edit this session")
+      expect(second).not_to include("tip:")
+    end
+
+    it "prints no session-scope tip on a deny (#110)" do
+      stub_choice(:no)
+      out = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      expect(out).not_to include("tip:")
+    end
+
+    it "prints no tip when the user already chose a session-wide grant (#110)" do
+      stub_choice(:always_tool)
+      out = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      expect(out).not_to include("tip:")
+    end
+
     it "returns false for 'no'" do
       stub_choice(:no)
       capture_stdout { expect(ui.confirm("ok?", scope: "shell:ls")).to be(false) }
