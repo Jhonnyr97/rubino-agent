@@ -11,6 +11,11 @@ RSpec.describe Rubino::Commands::Executor do
   let(:loader)   { Rubino::Commands::Loader.new(config: test_configuration) }
 
   describe "/mode" do
+    # Own the singleton preconditions: a live-children warning depends on the
+    # BackgroundTasks registry, which other spec files may leak into (#163
+    # class — order-dependent under e.g. --seed 62637).
+    before { Rubino::Tools::BackgroundTasks.reset! }
+
     it "switches mode and emits mode_changed with the previous value" do
       expect(Rubino::Modes.current).to eq(:default)
 
