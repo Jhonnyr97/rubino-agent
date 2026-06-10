@@ -85,11 +85,21 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "#cycle_mode (Shift+Tab)" do
     def strip_ansi(s) = s.gsub(/\e\[[0-9;]*m/, "")
 
-    it "cycles default→plan→yolo→default, persisting via Modes" do
+    # Marks the yolo two-step (#152) as armed at a deliberate-beat distance in
+    # the past, so the NEXT cycle_mode press counts as the explicit confirm.
+    def arm_yolo_confirm(seconds_ago: 1.0)
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      cmd.instance_variable_set(:@yolo_armed_at, now - seconds_ago)
+    end
+
+    it "cycles default→plan→yolo→default, with yolo behind a confirm press (#152)" do
       Rubino::Modes.set(:default)
       cmd.send(:cycle_mode)
       expect(Rubino::Modes.current).to eq(:plan)
-      cmd.send(:cycle_mode)
+      cmd.send(:cycle_mode) # lands on yolo → ARMS, does not switch
+      expect(Rubino::Modes.current).to eq(:plan)
+      arm_yolo_confirm
+      cmd.send(:cycle_mode) # deliberate second press confirms
       expect(Rubino::Modes.current).to eq(:yolo)
       cmd.send(:cycle_mode)
       expect(Rubino::Modes.current).to eq(:default)
@@ -108,6 +118,52 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::Modes.set(:default)
     end
 
+    # #152: blind Shift+Tab mashing used to land on "approvals skipped" with
+    # only a dim banner — and the gates of RUNNING background children dropped
+    # the same instant. The press that lands on yolo now only ARMS it.
+    describe "yolo two-step confirm (#152)" do
+      before { Rubino::Modes.set(:plan) }
+
+      after { Rubino::Modes.set(:default) }
+
+      it "the press that reaches yolo arms + announces instead of switching" do
+        out = capture_stdout { @prompt = cmd.send(:cycle_mode) }
+        expect(Rubino::Modes.current).to eq(:plan) # unchanged
+        expect(strip_ansi(@prompt)).to eq("plan ❯ ") # chip unchanged too
+        expect(strip_ansi(out)).to include("yolo skips ALL approvals")
+        expect(strip_ansi(out)).to include("press shift+tab again to confirm")
+      end
+
+      it "a deliberate second press (after the minimum beat) confirms yolo" do
+        capture_stdout { cmd.send(:cycle_mode) } # arm
+        arm_yolo_confirm(seconds_ago: 1.0)
+        out = capture_stdout { cmd.send(:cycle_mode) }
+        expect(Rubino::Modes.current).to eq(:yolo)
+        expect(strip_ansi(out)).to include("mode plan → yolo")
+      end
+
+      it "a blind mash (presses faster than the minimum beat) keeps re-arming, never confirms" do
+        5.times { capture_stdout { cmd.send(:cycle_mode) } } # ~0s apart
+        expect(Rubino::Modes.current).to eq(:plan)
+      end
+
+      it "a stale arm (window expired) re-arms instead of confirming" do
+        capture_stdout { cmd.send(:cycle_mode) } # arm
+        arm_yolo_confirm(seconds_ago: 60.0)      # way past the window
+        out = capture_stdout { cmd.send(:cycle_mode) }
+        expect(Rubino::Modes.current).to eq(:plan)
+        expect(strip_ansi(out)).to include("press shift+tab again to confirm")
+      end
+
+      it "the confirm toast counts live background children whose gates would drop" do
+        Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
+        out = capture_stdout { cmd.send(:cycle_mode) }
+        expect(strip_ansi(out)).to include("1 running subagent(s) will run gated actions unprompted")
+      ensure
+        Rubino::Tools::BackgroundTasks.reset!
+      end
+    end
+
     # D2/D3: with a live composer the confirmation is a TRANSIENT toast routed
     # through composer#announce (live region, never committed), NOT print_above.
     # So cycling N times never stacks scrollback banners — each press just
@@ -123,8 +179,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(composer).to receive(:print_above) { raise "mode banner must not be committed via print_above" }
 
       cmd.send(:cycle_mode) # → plan
-      cmd.send(:cycle_mode) # → yolo
-      expect(strip_ansi(announced.last)).to include("mode plan → yolo")
+      cmd.send(:cycle_mode) # → yolo arm toast (#152: a transient announce too)
+      expect(strip_ansi(announced.last)).to include("press shift+tab again to confirm")
       expect(announced.size).to eq(2) # one transient toast per press, replaced not stacked
     ensure
       Rubino::Modes.set(:default)

@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Fixed — approval-model safety (W3: #152 #144 #143 #147 #151)
+
+- **Shift+Tab can no longer blind-cycle into yolo** (#152). The press that
+  lands on yolo only ARMS it and shows a confirm toast ("press shift+tab again
+  to confirm"); a deliberate second press confirms, a blind mash keeps
+  re-arming and never confirms. The toast counts running background subagents
+  whose approval gates would drop. An explicit `/mode yolo` stays direct but
+  now warns once when live children would start running gated actions
+  unprompted.
+- **A background-task event can no longer auto-deny an open child approval
+  prompt** (#144). The `/agents <id>` `[o]nce/[a]lways/[n]o` prompt treats an
+  empty/aborted read as "ask again" (never as an answer); after repeated empty
+  reads it leaves the child parked instead of denying. Card repaints are also
+  suppressed while an interactive prompt owns the terminal, so a completion
+  fold-in can't paint over (or abort) the blocked read. Denying now requires
+  an explicit keypress.
+- **Policy denials are no longer reported to the model as "denied by user"**
+  (#143). `Tools::Result.denied` now threads the deny reason: the hardline
+  floor, a `permissions: deny` rule and the doom-loop guard each get their own
+  message (all stating "not by the user"), and the doom-loop one nudges the
+  model to change strategy instead of retrying. Only a real human rejection
+  still reads "Tool execution denied by user."
+- **Enter is no longer swallowed by the verb-suggestion dropdown on a complete
+  command** (#147). With the menu open, Enter submits when the typed token
+  already equals the (sole/selected) candidate — e.g. the exact
+  `/agents sa_xxx` the approval hint tells you to run — and when the argument
+  slot is empty (`/agents sa_xxx ` with the steer/probe/--stop menu open).
+  Arrow-navigating onto a candidate still makes Enter accept it.
+- **read-before-edit is now enforced per SESSION, not per turn** (#151). The
+  `ReadTracker` is keyed on the session id, so an edit in a later turn no
+  longer forces a redundant re-read (and a second approval round-trip) of an
+  unchanged file; any on-disk mtime change still demands a fresh read, and a
+  resumed session in a new process still starts conservative.
+
 ### Added — built-in `ruby-expert` skill
 
 Rubino now ships a built-in **`ruby-expert`** skill so every install makes the

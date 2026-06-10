@@ -16,6 +16,14 @@ module Rubino
     class ApprovalPolicy
       MODES = %w[manual auto skip].freeze
 
+      # Why the most recent #decide returned :deny — :hardline (the
+      # non-bypassable floor), :permission_rule (an explicit permissions deny
+      # rule), or :doom_loop (the repeated-identical-call guard). nil when the
+      # last decision wasn't a deny. ToolExecutor reads this right after
+      # #decide to build a reason-specific model-facing denial message, so a
+      # policy denial is never reported as "denied by user" (#143).
+      attr_reader :last_deny_reason
+
       def initialize(config: nil, agent_overrides: nil)
         @config = config || Rubino.configuration
         @mode = @config.approvals_mode
@@ -52,6 +60,7 @@ module Rubino
       # permissions:allow, command_allowlist), so neither can be overridden
       # by a fast-path the way yolo used to override deny rules.
       def decide(tool, arguments: {})
+        @last_deny_reason = nil
         command_str = self.class.command_string(tool, arguments)
 
         # 1. Hardline floor — a floor BELOW yolo. Catastrophic, unrecoverable
@@ -62,7 +71,7 @@ module Rubino
         #    yolo trusts the agent with your files, NOT to wipe the disk.
         #    Mirrors the reference approval module (enforced first).
         blocked, = HardlineGuard.detect(command_str)
-        return :deny if blocked
+        return deny_with(:hardline) if blocked
 
         # 2. Explicit permissions:deny — like hardline, a deny rule is a
         #    deny-class check and must beat every allow path. We evaluate the
@@ -72,20 +81,20 @@ module Rubino
         #    original precedence. Mirrors the deny-before-allow ordering in the
         #    plan (hardline -> permissions:deny -> yolo -> doom -> allow/ask).
         pattern_result = @pattern_matcher.match(tool.name, command_str)
-        return :deny if pattern_result == :deny
+        return deny_with(:permission_rule) if pattern_result == :deny
 
         # 3. Modes.yolo short-circuits the remaining allow/ask logic. We still
         #    run the doom detector AFTER, because an autopilot stuck in a loop
         #    is the one thing yolo isn't supposed to license.
         if Rubino::Modes.skip_approvals?
-          return :deny if @doom_detector.record(tool_name: tool.name, arguments: arguments)
+          return deny_with(:doom_loop) if @doom_detector.record(tool_name: tool.name, arguments: arguments)
 
           return :allow
         end
 
         # 4. Doom loop guard.
         if @doom_detector.record(tool_name: tool.name, arguments: arguments)
-          return :deny # Break the loop
+          return deny_with(:doom_loop) # Break the loop
         end
 
         # 5. Remaining explicit pattern rules (allow / ask). deny was already
@@ -184,6 +193,12 @@ module Rubino
       end
 
       private
+
+      # Records WHY this deny fired before returning it (see #last_deny_reason).
+      def deny_with(reason)
+        @last_deny_reason = reason
+        :deny
+      end
 
       def mode_based_decision(tool)
         case @mode

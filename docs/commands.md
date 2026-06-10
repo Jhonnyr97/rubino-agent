@@ -222,7 +222,7 @@ Custom commands live as Markdown templates in `.rubino/commands/` (project) or `
 
 ### Modes
 
-`/mode` (or the `--yolo` flag) switches between the modes below. **Shift+Tab** cycles them from the prompt (default → plan → yolo) and shows a transient `mode <old> → <new>` footer.
+`/mode` (or the `--yolo` flag) switches between the modes below. **Shift+Tab** cycles them from the prompt (default → plan → yolo) and shows a transient `mode <old> → <new>` footer. Entering `yolo` from the cycle takes a second deliberate Shift+Tab to confirm (the toast says so, and warns when running background subagents would lose their approval gates); an explicit `/mode yolo` switches directly.
 
 - `default` — approval-gated tools prompt as configured.
 - `plan` — read-only: the registry is pared down so mutating tools (`edit`, `shell`, `git`, …) aren't even offered to the model.

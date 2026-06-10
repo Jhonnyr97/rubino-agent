@@ -1187,14 +1187,60 @@ module Rubino
       # ZERO stacked banner lines (D3) and a mid-stream Shift+Tab can't wedge a
       # banner between answer chunks (D2). With no composer (cooked fallback) it
       # falls back to a plain dim line.
+      #
+      # Entering YOLO from the cycle is gated behind a second press (#152):
+      # the press that lands on yolo only ARMS it and shows a confirm toast;
+      # blind mashing past plan can no longer silently drop the approval gates
+      # of the session AND its running background children. An explicit
+      # `/mode yolo` stays direct.
       def cycle_mode
         previous = Rubino::Modes.current
         idx      = Rubino::Modes::ALL.index(previous) || 0
         nxt      = Rubino::Modes::ALL[(idx + 1) % Rubino::Modes::ALL.length]
+        return announce_yolo_confirm if nxt == Rubino::Modes::YOLO && !yolo_cycle_confirmed?
+
+        @yolo_armed_at = nil
         Rubino::Modes.set(nxt)
         # Same `<old> → <new>` arrow grammar as the /mode footer (#78), plus
         # the description and the cycle hint only this transient toast carries.
-        footer = pastel.dim("┄ mode #{previous} → #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        show_mode_footer("┄ mode #{previous} → #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
+        build_prompt
+      end
+
+      # The confirm press must come after a deliberate beat (a blind mash
+      # re-arms instead of confirming — the exact failure mode of #152 was
+      # 2-5 quick presses while watching the stream) and before the arm goes
+      # stale (the toast is long gone; a lone later press must re-confirm).
+      YOLO_CONFIRM_MIN_SECONDS    = 0.3
+      YOLO_CONFIRM_WINDOW_SECONDS = 5.0
+
+      # True when THIS Shift+Tab press is the deliberate second press that
+      # confirms entering yolo. Anything else (first press, mash, stale arm)
+      # (re-)arms and returns false.
+      def yolo_cycle_confirmed?
+        now     = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        elapsed = @yolo_armed_at ? now - @yolo_armed_at : nil
+        return true if elapsed&.between?(YOLO_CONFIRM_MIN_SECONDS, YOLO_CONFIRM_WINDOW_SECONDS)
+
+        @yolo_armed_at = now
+        false
+      end
+
+      # The arm toast: says what yolo will do — including to RUNNING background
+      # children, whose gates drop the moment the mode flips — and how to
+      # confirm. Returns the unchanged prompt chip (the mode did not change).
+      def announce_yolo_confirm
+        live = Tools::BackgroundTasks.instance.running.size
+        children = live.positive? ? " — #{live} running subagent(s) will run gated actions unprompted" : ""
+        show_mode_footer("┄ yolo skips ALL approvals#{children} — press shift+tab again to confirm ┄")
+        build_prompt
+      end
+
+      # Routes a transient mode footer through the live composer's #announce
+      # (never committed to scrollback, D2/D3) or, with no composer (cooked
+      # fallback), prints a plain dim line.
+      def show_mode_footer(text)
+        footer   = pastel.dim(text)
         composer = UI::BottomComposer.current
         if composer
           composer.announce(footer)
@@ -1202,7 +1248,6 @@ module Rubino
           $stdout.print "\n#{footer}\n"
           $stdout.flush
         end
-        build_prompt
       end
 
       def build_prompt

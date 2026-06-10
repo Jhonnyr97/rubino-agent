@@ -13,6 +13,10 @@ module Rubino
     # don't exercise those commands), in which case those commands degrade
     # gracefully instead of raising.
     class Executor
+      # How many times the parked-child approval prompt re-renders after an
+      # empty/aborted read (#144) before giving up and leaving the child parked.
+      APPROVAL_ASK_ATTEMPTS = 3
+
       def initialize(loader: nil, ui: nil, runner: nil)
         @loader = loader || Loader.new
         @ui = ui || Rubino.ui
@@ -178,9 +182,23 @@ module Rubino
         previous = Rubino::Modes.current
         Rubino::Modes.set(name)
         @ui.mode_changed(Rubino::Modes.current, previous: previous)
+        warn_yolo_live_children(previous)
       rescue ArgumentError => e
         @ui.error(e.message)
         @ui.info("Available: #{Rubino::Modes::ALL.join(", ")}")
+      end
+
+      # One warning line when an explicit `/mode yolo` lands while background
+      # children are live (#152): the gates of already-running subagents drop
+      # the moment the mode flips, which is easy to forget mid-session. The
+      # explicit command stays unconfirmed — this is information, not friction.
+      def warn_yolo_live_children(previous)
+        return unless Rubino::Modes.current == Rubino::Modes::YOLO && previous != Rubino::Modes::YOLO
+
+        live = Tools::BackgroundTasks.instance.running.size
+        return unless live.positive?
+
+        @ui.warning("⚡ yolo: #{live} running background subagent(s) will now run gated actions unprompted")
       end
 
       def show_modes
@@ -755,7 +773,8 @@ module Rubino
         @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
         @ui.info("needs approval to run:")
         @ui.info("  #{entry.approval_command.to_s.empty? ? entry.approval_question : entry.approval_command}")
-        answer = @ui.ask("Approve? [o]nce / [a]lways / [N]o deny: ").to_s.strip.downcase
+        answer = ask_approval_answer(entry)
+        return if answer.nil?
 
         decision =
           case answer
@@ -766,6 +785,24 @@ module Rubino
           end
         gate.decide(entry.approval_id, decision)
         @ui.info(decision ? "Approved #{entry.id}." : "Denied #{entry.id}.")
+      end
+
+      # Reads the approval answer, re-rendering the prompt on an EMPTY read.
+      # A background event (another child's completion fold-in) landing while
+      # the prompt is open can abort the underlying TTY read, which used to
+      # surface as an empty answer and silently resolve the gate to DENIED
+      # (#144). An empty/aborted read is therefore never an answer: re-ask,
+      # and after APPROVAL_ASK_ATTEMPTS empty reads return nil WITHOUT
+      # touching the gate — the child stays parked and `/agents <id>`
+      # re-opens the prompt. Denying requires an explicit keypress ("n", or
+      # any other non-approving answer).
+      def ask_approval_answer(entry)
+        APPROVAL_ASK_ATTEMPTS.times do
+          answer = @ui.ask("Approve? [o]nce / [a]lways / [n]o deny: ").to_s.strip.downcase
+          return answer unless answer.empty?
+        end
+        @ui.info("no answer read — #{entry.id} is still waiting; /agents #{entry.id} to decide.")
+        nil
       end
 
       # Persists an "approve always" for a parked subagent's command via the same
