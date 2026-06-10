@@ -71,12 +71,12 @@ RSpec.describe Rubino::UI::CLI do
 
         composer.handle_key("/")
         expect(composer.menu_open?).to be(true)
-        expect(composer.instance_variable_get(:@menu)[:items]).to include("/help")
+        expect(composer.instance_variable_get(:@menu).items).to include("/help")
 
         composer.handle_key("\x7F") # backspace the "/"
         composer.handle_key("@")
         expect(composer.menu_open?).to be(true)
-        expect(composer.instance_variable_get(:@menu)[:items]).not_to be_empty
+        expect(composer.instance_variable_get(:@menu).items).not_to be_empty
 
         ui.thinking_finished
       ensure

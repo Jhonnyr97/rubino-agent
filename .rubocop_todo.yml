@@ -166,7 +166,6 @@ Lint/ShadowedException:
     - 'lib/rubino/tools/ask_parent_tool.rb'
     - 'lib/rubino/tools/background_tasks.rb'
     - 'lib/rubino/tools/probe_tool.rb'
-    - 'lib/rubino/ui/bottom_composer.rb'
 
 # Offense count: 1
 Lint/StructNewOverride:
@@ -217,7 +216,6 @@ Lint/UselessConstantScoping:
     - 'lib/rubino/tools/read_tool.rb'
     - 'lib/rubino/tools/ruby_tool.rb'
     - 'lib/rubino/tools/webfetch_tool.rb'
-    - 'lib/rubino/ui/bottom_composer.rb'
     - 'lib/rubino/ui/markdown_renderer.rb'
 
 # Offense count: 1
@@ -955,7 +953,6 @@ Style/StringConcatenation:
     - 'lib/rubino/tools/read_tool.rb'
     - 'lib/rubino/tools/shell_kill_tool.rb'
     - 'lib/rubino/tools/subagent_probe.rb'
-    - 'lib/rubino/ui/bottom_composer.rb'
     - 'spec/rubino/memory/extractor_spec.rb'
     - 'spec/rubino/no_direct_output_spec.rb'
     - 'spec/rubino/tools/read_binary_spec.rb'
