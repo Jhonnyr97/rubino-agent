@@ -63,6 +63,20 @@ module Rubino
         dig("display", "streaming") == true
       end
 
+      # The status bar under the chat input (display.statusbar, default true).
+      # Only an explicit false disables it.
+      def display_statusbar?
+        dig("display", "statusbar") != false
+      end
+
+      # Cap on the chat input's visual rows (display.input_max_rows). Falls
+      # back to the composer default for nil/zero/garbage so a bad value can
+      # never collapse or unbound the input block.
+      def display_input_max_rows
+        value = dig("display", "input_max_rows").to_i
+        value.positive? ? value : UI::BottomComposer::MAX_INPUT_ROWS
+      end
+
       # -- Streaming section --
       def streaming_enabled?
         dig("streaming", "enabled") == true

@@ -495,6 +495,14 @@ module Rubino
         # they see tool result messages with no matching toolUse upstream.
         metadata = response.has_tool_calls? ? { tool_calls: response.tool_calls } : {}
 
+        # Record the REAL context size the provider saw for this response:
+        # input_tokens covers the whole assembled prompt (system prompt +
+        # history + tools), which no local chars/4 estimate can reproduce
+        # without re-assembling. The status bar under the chat input prefers
+        # this over the estimate when present. Omitted when the provider
+        # reports no usage (same rule as the `↳ turn` footer, #86).
+        metadata[:input_tokens] = response.input_tokens if response.input_tokens.to_i.positive?
+
         with_db_retries do
           @message_store.create(
             session_id: @session[:id],

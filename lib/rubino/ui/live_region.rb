@@ -23,17 +23,50 @@ module Rubino
     class LiveRegion
       def initialize(output)
         @output = output
-        # How many rows the live region currently occupies ABOVE the prompt row.
-        # The clear walks up exactly this many rows, so a multi-line block
-        # clears cleanly without a single-row \e[1A desyncing it.
+        # How many rows the live region currently occupies ABOVE the input
+        # block. The clear walks up exactly this many rows, so a multi-line
+        # block clears cleanly without a single-row \e[1A desyncing it.
         @rows_above = 0
+        # INPUT-BLOCK geometry, relative to the row the terminal cursor is
+        # parked on (the caret's visual row): how many input rows sit ABOVE it
+        # and how many rows sit BELOW it (wrapped input rows after the caret +
+        # the status bar). The composer records these after every #draw_input
+        # via {#input_drawn}, so {#clear_input_block} can erase the whole block
+        # — multi-row input + status bar — before the next draw.
+        @input_above = 0
+        @input_below = 0
       end
 
-      attr_reader :rows_above
+      attr_reader :rows_above, :input_above, :input_below
 
-      # True when any rows are currently drawn above the prompt.
+      # True when any rows are currently drawn above the input block.
       def live?
         @rows_above.positive?
+      end
+
+      # Record the input block's geometry for the frame just drawn (see
+      # ivar docs above). Called by the composer at the end of #draw_input.
+      def input_drawn(above:, below:)
+        @input_above = above
+        @input_below = below
+      end
+
+      # Erase the INPUT BLOCK in place (every wrapped input row + the status
+      # bar) and park the cursor, column 0, on the block's TOP row — where the
+      # next #draw_input begins. Walks DOWN from the caret row clearing the
+      # rows below first (status bar + wrapped rows after the caret), returns,
+      # clears the caret row, then walks UP clearing the rows above. All moves
+      # are relative and happen BEFORE any printing, so nothing has scrolled
+      # and the walk is valid. Leaves the above-block live rows untouched.
+      def clear_input_block
+        if @input_below.positive?
+          @input_below.times { @output.print("\e[1B\e[2K") }
+          @output.print("\e[#{@input_below}A")
+        end
+        @output.print("\r\e[2K")
+        @input_above.times { @output.print("\e[1A\e[2K") }
+        @input_above = 0
+        @input_below = 0
       end
 
       # Draws one atomic frame. Layout (top → bottom): the committed lines (only
@@ -48,14 +81,15 @@ module Rubino
         yield # the prompt row — ALWAYS last, so it survives every scroll
       end
 
-      # Erase the live region IN PLACE and park the cursor on its TOP row: clear
-      # the prompt row, then walk UP and clear each of the rows above it in
-      # turn, leaving the cursor on the now-blank top row. This runs BEFORE any
-      # output is printed, so the screen has not scrolled yet and the relative
-      # \e[1A walks are valid; afterward the cursor sits on a blank row with
+      # Erase the live region IN PLACE and park the cursor on its TOP row:
+      # clear the input block (wrapped rows + status bar, see
+      # {#clear_input_block}), then walk UP and clear each of the rows above it
+      # in turn, leaving the cursor on the now-blank top row. This runs BEFORE
+      # any output is printed, so the screen has not scrolled yet and the
+      # relative walks are valid; afterward the cursor sits on a blank row with
       # nothing stale below.
       def clear
-        @output.print("\r\e[2K")
+        clear_input_block
         @rows_above.times { @output.print("\e[1A\e[2K") }
         @rows_above = 0
       end

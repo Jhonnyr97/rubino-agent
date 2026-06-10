@@ -30,22 +30,26 @@ module Rubino
     # {EscapeReader} (escape-sequence byte reading/parsing → semantic actions),
     # {CompletionMenu} (the /command + @file dropdown state machine + rows),
     # {QueuedIndicators} (the "⏳ queued:" stack + rows) and {LiveRegion} (the
-    # erase→commit→redraw frame discipline + width math).
+    # erase→commit→redraw frame discipline + width math). {StatusBar} formats
+    # the model/context line the composer pins BELOW the input (see below).
     #
-    # Known limitations (verify live, then iterate):
-    #   * ONE-ROW composer: a buffer longer than the terminal width is shown
-    #     left-truncated with a leading "…" instead of wrapping to a second row.
-    #     True multi-row wrap is deferred. A multi-line PASTE keeps its REAL
-    #     newlines in the buffer and the submitted payload; the one-row view
-    #     renders each as a visible ⏎ mark (#57 — see #display_view /
-    #     #submit_paste), so structure survives even though the EDITING view
-    #     stays single-row.
+    # The INPUT BLOCK is multi-row: a buffer longer than the terminal width
+    # WRAPS and the input grows downward as the user types (like Claude Code),
+    # up to +max_input_rows+ visual rows; past the cap it scrolls vertically,
+    # keeping the caret row in view. A multi-line PASTE keeps its REAL newlines
+    # in the buffer and the submitted payload (#57) and each newline now renders
+    # as a REAL row break in the editing view. ↑/↓ move by visual row while the
+    # caret is inside a multi-row buffer and fall back to history navigation on
+    # the first/last row (the readline/Claude Code convention). Below the input
+    # block an optional dim STATUS BAR shows the model id + context saturation;
+    # it is the live region's LAST row, redrawn with every frame and omitted on
+    # narrow (< MIN_STATUS_COLS) terminals.
     #
     # (Two earlier MVP limitations no longer apply: arrows/Home/End/Delete/
     # word-jump now drive the cursor via #consume_escape_sequence, and the
-    # draw/scroll/clamp paths all measure by DISPLAY width — a wide CJK/emoji
-    # glyph counts as two columns — so long fullwidth lines truncate at the
-    # right column instead of "slightly early".)
+    # draw/wrap/clamp paths all measure by DISPLAY width — a wide CJK/emoji
+    # glyph counts as two columns — so fullwidth lines wrap at the right
+    # column instead of "slightly early".)
     class BottomComposer
       PROMPT = "❯ "
       ANSI_RE = /\e\[[0-9;]*m/
@@ -61,6 +65,16 @@ module Rubino
       # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block).
       MAX_PARTIAL_ROWS = 4
 
+      # Default cap on the input block's visual rows (config:
+      # display.input_max_rows, threaded in by the chat command). Past it the
+      # block scrolls vertically, keeping the caret row in view, so a huge
+      # paste can never push the live region off-screen.
+      MAX_INPUT_ROWS = 8
+
+      # The status bar is omitted on terminals narrower than this — at that
+      # width the truncated line carries no information worth a row.
+      MIN_STATUS_COLS = 40
+
       # QUEUED-message prefix: submitting a line that starts with this queues the
       # REST instead of interrupting — the discoverable, terminal-independent
       # fallback for Alt+Enter (which some terminals don't deliver).
@@ -70,9 +84,10 @@ module Rubino
       # ESC[200~ … ESC[201~ so we can tell a PASTE from typed keystrokes and
       # keep each embedded \n from submitting a half-line (L1 — "pasteline2"
       # glue). The body is inserted as ONE editable string with its REAL
-      # newlines preserved; the one-row view draws each as a ⏎ mark (#57, see
-      # #submit_paste). We enable it on start, disable on stop/suspend; the
-      # {EscapeReader} accumulates the body between the markers.
+      # newlines preserved (#57, see #submit_paste); each renders as a real
+      # row break in the multi-row input block. We enable it on start, disable
+      # on stop/suspend; the {EscapeReader} accumulates the body between the
+      # markers.
       PASTE_ON  = "\e[?2004h"
       PASTE_OFF = "\e[?2004l"
 
@@ -113,10 +128,16 @@ module Rubino
       #   so the indicator survives a composer teardown and is removed/committed as
       #   a normal message when the queued item's turn runs. nil ⇒ a private list
       #   (standalone / tests).
+      # @param status_line [String, nil] the styled model/context line pinned
+      #   BELOW the input row (see {StatusBar}). nil/empty ⇒ no bar. Updated
+      #   at turn boundaries via {#set_status} — never per-delta.
+      # @param max_input_rows [Integer, nil] cap on the input block's visual
+      #   rows (config display.input_max_rows); nil ⇒ MAX_INPUT_ROWS.
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
                      on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
-                     on_interrupt: nil, pending_queued: nil)
+                     on_interrupt: nil, pending_queued: nil,
+                     status_line: nil, max_input_rows: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -143,7 +164,7 @@ module Rubino
         # callable indirection keeps it on the composer's CURRENT input.
         @escapes       = EscapeReader.new(-> { @input })
         @prompt = prompt.to_s.empty? ? PROMPT : prompt
-        # Visible width ignores ANSI color escapes so the one-row clamp math is
+        # Visible width ignores ANSI color escapes so the wrap math is
         # correct for a colored mode prompt.
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
         @buffer      = +""
@@ -184,6 +205,16 @@ module Rubino
         # the prompt and the scroll-safe erase→commit→redraw frame discipline
         # (see LiveRegion).
         @region = LiveRegion.new(output)
+        # The dim status line pinned BELOW the input block (model + context
+        # saturation). Drawn as the live region's LAST row on every frame;
+        # empty ⇒ no bar (one fewer row). Updated via #set_status at turn
+        # boundaries only — it rides the existing redraws, never repaints on
+        # its own per stream delta.
+        @status = (status_line || "").to_s
+        # Input-block geometry: the visual-row cap and the vertical scroll
+        # offset (top visible layout row) once the buffer outgrows the cap.
+        @max_input_rows = positive_int(max_input_rows) || MAX_INPUT_ROWS
+        @input_scroll   = 0
         @render      = Mutex.new
         @reader      = nil
         @stop_pipe   = nil # self-pipe write end used to wake the reader's select
@@ -446,6 +477,21 @@ module Rubino
         end
       end
 
+      # Updates the status bar pinned below the input (model + context
+      # saturation — see {StatusBar}) and repaints in place. Called at TURN
+      # BOUNDARIES only (after the footer / on session resume), never per
+      # stream delta, so the bar can't busy-repaint. nil/empty clears the bar
+      # (its row disappears on the next frame). Dropped while suspended, like
+      # every other live repaint — the next #resume redraws.
+      def set_status(text)
+        return if @suspended
+
+        @render.synchronize do
+          @status = (text || "").to_s
+          redraw
+        end
+      end
+
       # Handle a Ctrl+C pressed at the IDLE prompt (BH-2). Mirrors the industry
       # norm (Claude Code / Codex / readline) and the during-turn double-tap so a
       # single Ctrl+C never silently discards a typed draft:
@@ -493,80 +539,151 @@ module Rubino
         @menu.open?
       end
 
-      # Redraws the bottom input line from @buffer and parks the terminal cursor
-      # at the insertion point (@cursor). The visible buffer is clamped to the
-      # terminal width (one row): when it fits, the highlighted buffer is drawn
-      # whole and the caret moved to the cursor column; when it's wider than the
-      # row we scroll a WINDOW that keeps the cursor visible (a leading "…" marks
-      # text scrolled off the left, a trailing "…" text scrolled off the right),
-      # so editing mid-line never desyncs the one-row model. Must be called under
+      # Redraws the INPUT BLOCK — the wrapped buffer rows plus the status bar —
+      # and parks the terminal cursor at the insertion point (@cursor). The
+      # buffer WRAPS at the terminal width (a real newline forces a row break),
+      # growing the block downward up to @max_input_rows visual rows; past the
+      # cap a vertical window keeps the caret row in view. The block manages
+      # its own erase: the previous frame's rows (recorded in the LiveRegion as
+      # input geometry) are cleared first, so a shrinking buffer never leaves
+      # stale rows, and the cheap keystroke path stays correct without a full
+      # live-region frame. All caret repositioning happens AFTER the last byte
+      # is printed, so a natural scroll while the block grows at the bottom of
+      # the screen can never desync the relative moves. Must be called under
       # @render (callers below already hold it).
       def draw_input
-        avail = @cols - @prompt_width - 1
-        avail = 1 if avail < 1
+        rows, caret_row, caret_col = visible_input_rows
+        status = status_row
 
-        view   = display_view
-        chars  = view.chars
-        cursor = @cursor.clamp(0, chars.length)
-
-        if display_width(view) <= avail
-          # Whole buffer fits: draw it highlighted, then move the caret left from
-          # the line end to the cursor's display column.
-          @output.print("\r\e[2K#{@prompt}#{highlight_line(view)}")
-          tail_cols = display_width(chars[cursor..].join)
-          @output.print("\e[#{tail_cols}D") if tail_cols.positive?
-        else
-          window, caret_col = scroll_window(chars, cursor, avail)
-          @output.print("\r\e[2K#{@prompt}#{window}")
-          # Park the caret: window starts at column @prompt_width; move to the
-          # cursor's column within it. We re-home with \r then step right so the
-          # math is independent of any trailing "…".
-          @output.print("\r")
-          @output.print("\e[#{@prompt_width + caret_col}C") if (@prompt_width + caret_col).positive?
+        @region.clear_input_block
+        rows.each_with_index do |row, i|
+          @output.print("\r\e[2K#{row}")
+          @output.print("\r\n") if i < rows.length - 1 || status
         end
+        @output.print("\r\e[2K#{status}") if status
+
+        below = (rows.length - 1 - caret_row) + (status ? 1 : 0)
+        park_caret(rows, caret_col, below)
+        @region.input_drawn(above: caret_row, below: below)
         @output.flush
       end
 
-      # Builds the visible WINDOW of a buffer wider than the row, keeping the
-      # cursor in view. Returns [window_string, caret_display_col] where
-      # caret_display_col is the cursor's display column WITHIN the window
-      # (0-based). A leading/trailing "…" marks elided text and each costs one
-      # column. Plain text only (no token highlight): the leading `/`+`@` token
-      # has scrolled off by the time a line is this long, so highlighting a
-      # partial window would be both useless and miscolor mid-line content.
-      def scroll_window(chars, cursor, avail)
-        # Show as much as fits ENDING at the cursor (keep a column of right
-        # context when possible), reserving one column for a trailing "…".
-        lead_budget  = avail - 1 # leave room for a trailing "…"
-        right        = [cursor + 1, chars.length].min
-        # Walk left from the window's right edge until the slice fills the budget.
-        left = right
-        left -= 1 while left.positive? && display_width(chars[(left - 1)...right].join) <= (lead_budget - 1)
-        lead  = left.positive?
-        trail = right < chars.length
-        # Re-trim from the left for the leading "…" cost so the row never wraps.
-        room = avail - (lead ? 1 : 0) - (trail ? 1 : 0)
-        left += 1 while left < right && display_width(chars[left...right].join) > room
+      # Park the terminal cursor at the caret after the block is fully printed
+      # (relative moves are only safe once nothing else will scroll): walk up
+      # past the rows below the caret row, re-home, and step right to the
+      # caret column. Skipped entirely when printing already left the cursor
+      # there — the caret at the end of a frame's last row, the common typing
+      # case — so those frames end with the buffer text, byte-minimal.
+      def park_caret(rows, caret_col, below)
+        return if below.zero? && caret_col == display_width(rows.last.gsub(ANSI_RE, ""))
 
-        body = chars[left...right].join
-        window = "#{"…" if lead}#{body}#{"…" if trail}"
-        caret_col = (lead ? 1 : 0) + display_width(chars[left...cursor].join)
-        [window, caret_col]
+        @output.print("\e[#{below}A") if below.positive?
+        @output.print("\r")
+        @output.print("\e[#{caret_col}C") if caret_col.positive?
       end
 
       # The current editable buffer (test/inspection helper).
       attr_reader :buffer
 
-      # How a buffer NEWLINE renders on the one-row composer: a visible ⏎ mark
-      # (display width 1), so a pasted multi-line draft keeps its structure
-      # visible without a literal newline desyncing the single-row redraw. The
-      # buffer holds REAL newlines — this is a draw-time view transform, 1:1 by
-      # codepoint, so all cursor/width math is unchanged (#57).
-      NEWLINE_MARK = "⏎"
+      # Lays out @buffer into wrapped VISUAL rows at the current width.
+      # Returns [rows, caret_row, caret_col] where each row is
+      # { chars:, start:, prompt: } — its codepoints, the buffer index of its
+      # first char, and whether it carries the prompt prefix (only the first) —
+      # and caret_row/caret_col locate the insertion point (col in DISPLAY
+      # columns from the screen's left edge, so the caret column is comparable
+      # across rows for ↑/↓ navigation). A real "\n" forces a row break; a char
+      # that would overflow the per-row budget wraps whole (wide glyphs are
+      # never split across rows). The caret is placed where the NEXT typed char
+      # will land.
+      def layout_input
+        budget = row_budget
+        rows   = [{ chars: [], start: 0, prompt: true }]
+        width  = @prompt_width
 
-      # The buffer as drawn: newlines swapped for the visible ⏎ mark.
-      def display_view
-        @buffer.tr("\n", NEWLINE_MARK)
+        @buffer.each_char.with_index do |ch, i|
+          if ch == "\n"
+            rows << { chars: [], start: i + 1, prompt: false }
+            width = 0
+            next
+          end
+          w = display_width(ch)
+          if width + w > budget
+            rows << { chars: [], start: i, prompt: false }
+            width = 0
+          end
+          rows.last[:chars] << ch
+          width += w
+        end
+        [rows, *caret_position(rows)]
+      end
+
+      # The caret's [visual_row, display_col] within a layout. The owning row
+      # is the LAST one starting at-or-before @cursor: a caret exactly on a
+      # WRAP boundary therefore lands on the wrapped row (where the next char
+      # will print), while a caret on a "\n" stays at the END of the broken
+      # row (the next row starts one past the newline) — the readline feel.
+      def caret_position(rows)
+        idx = rows.rindex { |r| @cursor >= r[:start] } || 0
+        row = rows[idx]
+        col = row[:prompt] ? @prompt_width : 0
+        row[:chars].each_with_index do |ch, j|
+          break if row[:start] + j >= @cursor
+
+          col += display_width(ch)
+        end
+        [idx, col]
+      end
+
+      # The display columns available per input row: one short of the width so
+      # a glyph in the final column never arms the terminal's deferred
+      # auto-wrap (the same rule LiveRegion#emit_row applies). Guarded so a
+      # degenerate narrow terminal still fits at least one char after the
+      # prompt instead of looping.
+      def row_budget
+        [@cols - 1, @prompt_width + 1].max
+      end
+
+      # The PRINTED input rows for this frame plus the caret position within
+      # them: the layout, windowed to @max_input_rows when the buffer outgrows
+      # the cap (the window follows the caret row minimally, like a scrolling
+      # viewport), each row rendered to its final string (prompt prefix +
+      # token highlight on a single-row buffer; plain continuation rows).
+      def visible_input_rows
+        rows, caret_row, caret_col = layout_input
+
+        if rows.length > @max_input_rows
+          top = @input_scroll.clamp(0, rows.length - @max_input_rows)
+          top = caret_row if caret_row < top
+          top = caret_row - @max_input_rows + 1 if caret_row > top + @max_input_rows - 1
+          @input_scroll = top
+          rows = rows[top, @max_input_rows]
+          caret_row -= top
+        else
+          @input_scroll = 0
+        end
+
+        single = rows.length == 1 && rows.first[:prompt]
+        texts = rows.map do |row|
+          body = row[:chars].join
+          if row[:prompt]
+            "#{@prompt}#{single ? highlight_line(body) : body}"
+          else
+            body
+          end
+        end
+        [texts, caret_row, caret_col]
+      end
+
+      # The status-bar row for this frame, or nil when there is no bar: the
+      # status text is empty, the terminal is too narrow to be useful, or the
+      # styled line wouldn't fit the row (omit whole rather than truncate
+      # mid-ANSI — a cut escape sequence would leak attributes into the
+      # terminal).
+      def status_row
+        return nil if @status.empty? || @cols < MIN_STATUS_COLS
+        return nil if display_width(@status.gsub(ANSI_RE, "")) > @cols - 1
+
+        @status
       end
 
       # Feeds a single character through the edit logic. Public so the PTY/unit
@@ -657,7 +774,10 @@ module Rubino
       #   [live rows]         ← cards, completion menu, transient announce,
       #                         "⏳ queued:" indicators, streamed partial —
       #                         redrawn in place every frame (do NOT scroll)
-      #   [prompt row]        ← "❯ " + buffer, where the cursor parks
+      #   [input block]       ← "❯ " + buffer, wrapped over up to
+      #                         @max_input_rows visual rows; the cursor parks
+      #                         at the caret's row/column
+      #   [status bar]        ← the dim model + context line (when set/fits)
       #
       # The +@buffer+ is redrawn on every frame, so it can never be lost across
       # a scroll. Must be called while holding @render.
@@ -695,8 +815,8 @@ module Rubino
       end
 
       # Width math delegators (see LiveRegion for the display-column semantics):
-      # the draw/scroll paths here measure with the SAME rules the live-row
-      # clamp uses, so the one-row model can never disagree with the renderer.
+      # the draw/wrap paths here measure with the SAME rules the live-row
+      # clamp uses, so the input-block model can never disagree with the renderer.
       def clamp(str, cols) = LiveRegion.clamp(str, cols)
       def display_width(str) = LiveRegion.display_width(str)
 
@@ -943,10 +1063,13 @@ module Rubino
         end
       end
 
-      # ↑: navigate the completion menu when open, else walk history back to an
-      # older entry (cursor parked at its end). No-op when there's nothing older.
+      # ↑: navigate the completion menu when open; inside a MULTI-ROW buffer
+      # move the caret up one visual row (column preserved) — only from the
+      # FIRST row does ↑ fall back to walking history to an older entry, the
+      # readline/Claude Code convention. No-op when there's nothing older.
       def history_up
         return menu_up if menu_open?
+        return if move_caret_row(-1)
 
         @render.synchronize do
           entry = @history.up(@buffer)
@@ -958,10 +1081,13 @@ module Rubino
         end
       end
 
-      # ↓: navigate the menu when open, else walk history forward (newer entry,
-      # or back to the stashed draft). No-op when not navigating history.
+      # ↓: navigate the menu when open; inside a multi-row buffer move the
+      # caret down one visual row — only from the LAST row does ↓ fall back to
+      # walking history forward (newer entry, or back to the stashed draft).
+      # No-op when not navigating history.
       def history_down
         return menu_down if menu_open?
+        return if move_caret_row(1)
 
         @render.synchronize do
           entry = @history.down(@buffer)
@@ -971,6 +1097,44 @@ module Rubino
           @cursor = @buffer.length
           redraw
         end
+      end
+
+      # Move the caret one VISUAL row up/down within a wrapped multi-row
+      # buffer, keeping the screen column (clamped to the target row's
+      # content). Returns true when it moved — ↑/↓ then stay inside the block;
+      # false (single-row buffer, or already on the first/last row) lets the
+      # caller fall back to history navigation.
+      def move_caret_row(delta)
+        moved = false
+        @render.synchronize do
+          rows, caret_row, caret_col = layout_input
+          target = caret_row + delta
+          next unless rows.length > 1 && target.between?(0, rows.length - 1)
+
+          @cursor = char_index_at(rows[target], caret_col)
+          auto_update_menu # moving off the token closes the menu
+          redraw
+          moved = true
+        end
+        moved
+      end
+
+      # The buffer index of the char at (or before) screen column +col+ on a
+      # layout row — where the caret lands when ↑/↓ carries the column across
+      # rows. Walks the row's chars by display width (a wide glyph is never
+      # split: a column inside it resolves to its start). Clamps to the row's
+      # end, and to its start when the column falls inside the prompt prefix.
+      def char_index_at(row, col)
+        width = row[:prompt] ? @prompt_width : 0
+        index = row[:start]
+        row[:chars].each do |ch|
+          w = display_width(ch)
+          break if width + w > col
+
+          width += w
+          index += 1
+        end
+        index
       end
 
       # Cyan the leading /command / @mention token (shared with the old prompt).
@@ -1045,13 +1209,13 @@ module Rubino
         end
       end
 
-      # Handle a bracketed-paste body. The composer is a ONE-ROW editor, so a
-      # paste is inserted into the editable buffer at the cursor like fast
-      # typing — still editable before submit. A MULTI-LINE paste keeps its
-      # REAL newlines in the buffer (and so in the submitted message payload —
-      # pasted code arrives at the model with its line structure intact); the
-      # one-row view renders each newline as a visible ⏎ mark instead of
-      # silently flattening them to spaces (#57; supersedes the D6 collapse).
+      # Handle a bracketed-paste body. The paste is inserted into the editable
+      # buffer at the cursor like fast typing — still editable before submit.
+      # A MULTI-LINE paste keeps its REAL newlines in the buffer (and so in the
+      # submitted message payload — pasted code arrives at the model with its
+      # line structure intact, #57); each newline renders as a real row break
+      # in the multi-row input block (which supersedes the old single-row
+      # ⏎-mark view), so pasted code reads back as the rows it is.
       def submit_paste(text)
         return if text.nil? || text.empty?
 

@@ -252,6 +252,69 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # The status bar under the composer input: model id + context saturation,
+  # built from the SAME estimator compaction runs on (Context::TokenBudget,
+  # chars/4 over the stored session messages).
+  describe "#build_status_line" do
+    let(:cmd) { described_class.new({}) }
+    let(:status_runner) do
+      instance_double(Rubino::Agent::Runner, session: { id: "sess-1", model: "minimax-m3" })
+    end
+
+    def stub_store_with(messages)
+      store = instance_double(Rubino::Session::Store)
+      msgs  = messages.map do |attrs|
+        instance_double(Rubino::Session::Message,
+                        { content: "", metadata: {}, token_count: 0 }.merge(attrs))
+      end
+      allow(Rubino::Session::Store).to receive(:new).and_return(store)
+      allow(store).to receive(:for_session).with("sess-1").and_return(msgs)
+    end
+
+    it "renders model + ctx % + tokens from the TokenBudget estimate" do
+      stub_store_with([{ content: "x" * 4_000 }]) # 4000 chars / 4 = ~1000 tokens of the 128k default
+      line = cmd.send(:build_status_line, status_runner)
+      expect(line).to include("minimax-m3")
+      expect(line).to include("ctx ")
+      expect(line).to include("1%")
+      expect(line).to include("~1k/128k tok")
+    end
+
+    it "prefers the last response's REAL recorded usage over the estimate" do
+      # The newest assistant message carries the provider-reported context
+      # (input_tokens, persisted by the agent loop) — that wins over chars/4.
+      stub_store_with([
+                        { content: "hi" },
+                        { content: "ok", metadata: { input_tokens: 7_800 }, token_count: 200 }
+                      ])
+      line = cmd.send(:build_status_line, status_runner)
+      expect(line).to include("~8k/128k tok") # 7800 + 200
+      expect(line).to include("6%")
+    end
+
+    it "honours model.context_length as the window" do
+      stub_store_with([{ content: "x" * 256_000 }]) # ~64k tokens
+      allow(Rubino).to receive(:configuration)
+        .and_return(test_configuration("model" => { "context_length" => 64_000 }))
+      expect(cmd.send(:build_status_line, status_runner)).to include("100%")
+    end
+
+    it "returns nil when display.statusbar is disabled" do
+      allow(Rubino).to receive(:configuration)
+        .and_return(test_configuration("display" => { "statusbar" => false }))
+      expect(cmd.send(:build_status_line, status_runner)).to be_nil
+    end
+
+    it "returns nil without a runner (cooked/standalone paths)" do
+      expect(cmd.send(:build_status_line, nil)).to be_nil
+    end
+
+    it "never raises — a store failure degrades to no bar" do
+      allow(Rubino::Session::Store).to receive(:new).and_raise(RuntimeError, "db gone")
+      expect(cmd.send(:build_status_line, status_runner)).to be_nil
+    end
+  end
+
   # Regression: ensure_setup! must populate the tool registry. If it doesn't,
   # Lifecycle#load_tools returns []; RubyLLMAdapter#build_chat never calls
   # chat.with_tool; the request body sent to the provider has no `tools`
@@ -1225,7 +1288,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
           .with(hash_including(completion_source: source, history: history))
           .and_return(composer)
 
-        runner = instance_double(Rubino::Agent::Runner, cancel!: nil)
+        runner = instance_double(Rubino::Agent::Runner, cancel!: nil,
+                                                        session: { id: "sess-x", model: "m" })
         old = $stdout
         begin
           got, real = cmd.send(:start_composer, Rubino::Interaction::InputQueue.new, runner)
@@ -1272,7 +1336,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # invisibly behind a later send.
     describe "Enter-interrupt with explicitly queued items (#129)" do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
-      let(:runner)      { instance_double(Rubino::Agent::Runner, cancel!: nil) }
+      let(:runner) do
+        instance_double(Rubino::Agent::Runner, cancel!: nil,
+                                               session: { id: "sess-x", model: "m" })
+      end
 
       before do
         allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
@@ -1367,7 +1434,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # handler while a turn is active, and assert the interrupt resolves `runner`
     # and calls #cancel! with NO NameError.
     describe "interrupt-by-default wiring (BH-1)" do
-      let(:runner)      { instance_double(Rubino::Agent::Runner, run: "ok") }
+      let(:runner) do
+        instance_double(Rubino::Agent::Runner, run: "ok",
+                                               session: { id: "sess-x", model: "m" })
+      end
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
 
       before do
@@ -1415,7 +1485,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # Raw mode must never leak and $stdout must be restored: even if the turn
     # raises, the ensure tears down the composer (cooked mode + real $stdout).
     describe "terminal restore on raise" do
-      let(:runner)      { instance_double(Rubino::Agent::Runner) }
+      let(:runner) do
+        instance_double(Rubino::Agent::Runner, session: { id: "sess-x", model: "m" })
+      end
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
 
       it "restores cooked mode and $stdout in ensure when the turn raises (TTY path)" do

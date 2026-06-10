@@ -54,16 +54,16 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to end_with("\r\e[2K#{PROMPT}hi")
     end
 
-    it "truncates a buffer wider than the row with a leading ellipsis" do
-      # avail = 40 - PROMPT.length - 1. Type more than that. The cursor is at the
-      # end, so the scroll-window keeps the tail in view with a leading "…"; the
-      # frame then re-homes (\r) and steps the caret right to park it. Read the
-      # VISIBLE segment (prompt + window) before that caret re-home.
+    it "WRAPS a buffer wider than the row onto a second visual row (no ellipsis)" do
+      # Row budget = cols - 1 = 39; row 0 carries the prompt (2 cols) so it
+      # holds 37 chars — the rest wraps to a continuation row below instead of
+      # the old single-row scroll-window with its "…" elision.
       50.times { |i| composer.handle_key((97 + (i % 26)).chr) }
-      last_frame = output.string.split("\r\e[2K").last
-      visible = last_frame.split("\r").first.sub(PROMPT, "")
-      expect(visible.length).to be <= 40 - PROMPT.length - 1 + 1 # incl. the "…"
-      expect(visible).to start_with("…")
+      typed = composer.buffer
+      frame = output.string.split("\r\e[2K#{PROMPT}").last
+      expect(frame).to start_with("#{typed[0, 37]}\r\n")
+      expect(frame).to include("\r\e[2K#{typed[37..]}")
+      expect(frame).not_to include("…")
     end
   end
 
@@ -1166,11 +1166,14 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(queue.drain).to eq(["line1\nline2"])
     end
 
-    it "draws buffer newlines as visible ⏎ marks, never a literal newline (#57)" do
+    it "draws buffer newlines as REAL row breaks in the multi-row input block" do
       paste("line1\nline2")
-      frame = output.string.split("\r\e[2K").last
-      expect(frame).to include("line1⏎line2")
-      expect(frame).not_to include("line1\nline2")
+      # The final frame draws each logical line on its own visual row: the
+      # prompt row ends in a CRLF row break, then the continuation row.
+      frame = output.string.split("\r\e[2K#{PROMPT}").last
+      expect(frame).to start_with("line1\r\n")
+      expect(frame).to include("\r\e[2Kline2")
+      expect(frame).not_to include("⏎")
     end
 
     it "normalizes CR / CRLF pasted line breaks to \n" do
@@ -1518,6 +1521,312 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.resume
       composer.set_cards(["● sa_1 · explore · running"])
       expect(output.string).to include("sa_1")
+    end
+  end
+
+  # Multi-row input growth: a buffer longer than the terminal width WRAPS and
+  # the input block grows downward (like Claude Code), instead of the old
+  # single-row horizontal scroll-window. winsize is [24, 40] → the per-row
+  # budget is 39 columns; row 0 carries the 2-col "❯ " prompt, so it holds 37
+  # chars and continuation rows hold 39.
+  describe "multi-row input growth" do
+    def type(text, into: composer)
+      text.each_char { |ch| into.handle_key(ch) }
+    end
+
+    # Feed an escape sequence (e.g. "[A" for ↑) the way the arrow specs do:
+    # preload the byte tail, then trigger the consumer with ESC.
+    def escape(seq, into: composer)
+      into.instance_variable_set(:@input, StringIO.new(seq))
+      into.handle_key("\e")
+    end
+
+    # The last full input-block frame: everything from the final prompt draw.
+    def last_block
+      output.string.split("\r\e[2K#{PROMPT}").last
+    end
+
+    it "stays one visual row while the buffer fits (no row break)" do
+      type("a" * 37)
+      expect(last_block).to eq("a" * 37) # no CRLF, caret already at EOL
+    end
+
+    it "grows a second visual row at the wrap boundary (38th char)" do
+      type("a" * 38)
+      expect(last_block).to eq("#{"a" * 37}\r\n\r\e[2Ka")
+    end
+
+    it "grows one row per width multiple (37 + 39 + …)" do
+      type("a" * (37 + 39 + 5))
+      expect(last_block).to eq("#{"a" * 37}\r\n\r\e[2K#{"a" * 39}\r\n\r\e[2K#{"a" * 5}")
+    end
+
+    it "wraps a wide (CJK) glyph WHOLE to the next row, never split mid-cell" do
+      # 36 ASCII chars leave 1 column on row 0; a width-2 glyph can't fit and
+      # must open row 1 whole.
+      type("#{"a" * 36}中")
+      expect(last_block).to eq("#{"a" * 36}\r\n\r\e[2K中")
+    end
+
+    describe "caret math across wrapped rows" do
+      it "parks the caret at EOL of the last row with no repositioning bytes" do
+        type("a" * 38)
+        expect(output.string).to end_with("\r\e[2Ka") # printing ended at the caret
+      end
+
+      it "Home (Ctrl+A) walks the caret up to row 0, prompt column" do
+        type("a" * 38)
+        composer.handle_key("\x01")
+        # Park: one row up from the last row, re-home, step right past "❯ ".
+        expect(output.string).to end_with("\e[1A\r\e[2C")
+      end
+
+      it "End (Ctrl+E) returns the caret to the buffer end on the last row" do
+        type("a" * 38)
+        composer.handle_key("\x01")
+        composer.handle_key("\x05")
+        expect(output.string).to end_with("\r\e[2Ka") # EOL again, no repositioning
+      end
+
+      it "← across the wrap boundary lands at col 0 of the continuation row" do
+        type("a" * 38) # caret after char 38 (row 1, col 1)
+        composer.handle_key("\x02") # Ctrl+B ← : caret at index 37 = row 1, col 0
+        frame = output.string
+        expect(frame).to end_with("\r") # below 0, col 0: re-home only
+      end
+
+      it "→ from the boundary steps back onto the wrapped char" do
+        type("a" * 38)
+        composer.handle_key("\x02")
+        composer.handle_key("\x06") # Ctrl+F → : caret back to EOL (row 1, col 1)
+        expect(output.string).to end_with("\r\e[2Ka")
+      end
+
+      it "a caret ON a newline stays at the end of the broken row" do
+        composer.instance_variable_set(:@input, StringIO.new("[200~ab\ncd\e[201~"))
+        composer.handle_key("\e")
+        composer.handle_key("\x01") # Home: index 0 (row 0)
+        2.times { composer.handle_key("\x06") } # → → : caret at index 2 (the \n)
+        # Row 1 below the caret (+ no status): park walks up one row to col 4.
+        expect(output.string).to end_with("\e[1A\r\e[4C")
+      end
+    end
+
+    describe "↑/↓ by visual row vs history" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output, history: history)
+      end
+
+      let(:history) { Rubino::UI::InputHistory.new(store: ["older entry"]) }
+
+      it "↑ inside a multi-row buffer moves the caret up one visual row, same column" do
+        type("a" * 60) # rows: 37 + 23; caret row 1, col 23
+        escape("[A")
+        # Row 0 col 23 → 2 prompt cols → buffer index 21. Buffer untouched.
+        expect(composer.buffer).to eq("a" * 60)
+        expect(composer.instance_variable_get(:@cursor)).to eq(21)
+      end
+
+      it "↓ moves back down a visual row, preserving the column" do
+        type("a" * 60)
+        escape("[A")
+        escape("[B")
+        expect(composer.instance_variable_get(:@cursor)).to eq(60) # row 1 col 23
+        expect(composer.buffer).to eq("a" * 60)
+      end
+
+      it "↑ from the FIRST visual row falls back to history" do
+        type("a" * 60)
+        composer.handle_key("\x01") # Home → first row
+        escape("[A")
+        expect(composer.buffer).to eq("older entry")
+      end
+
+      it "↓ from the LAST visual row falls back to history (restores the draft)" do
+        type("a" * 60)
+        composer.handle_key("\x01")
+        escape("[A") # history: older entry
+        escape("[B") # back down: restores the 60-char draft
+        expect(composer.buffer).to eq("a" * 60)
+      end
+
+      it "↑ in a single-row buffer is history, exactly as before" do
+        type("short")
+        escape("[A")
+        expect(composer.buffer).to eq("older entry")
+      end
+
+      it "navigates real newline rows (pasted block) by visual row too" do
+        composer.instance_variable_set(:@input, StringIO.new("[200~first\nsecond\e[201~"))
+        composer.handle_key("\e") # caret at end of "second" (row 1, col 6)
+        escape("[A")
+        # Row 0, screen column preserved: col 6 = 2 prompt cols + 4 chars → index 4.
+        expect(composer.instance_variable_get(:@cursor)).to eq(4)
+        expect(composer.buffer).to eq("first\nsecond")
+      end
+    end
+
+    describe "growth cap + vertical scroll (max_input_rows)" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output, max_input_rows: 3)
+      end
+
+      it "shows only the cap's worth of rows, keeping the caret row in view" do
+        composer.instance_variable_set(:@input, StringIO.new("[200~r1\nr2\nr3\nr4\nr5\e[201~"))
+        composer.handle_key("\e") # 5 logical rows, caret on the last
+        block = last_block
+        # The window slides to the caret: rows r3..r5 visible, r1/r2 scrolled out.
+        expect(block).to include("r3\r\n")
+        expect(block).to include("r4\r\n")
+        expect(block).to end_with("r5")
+        expect(block).not_to include("r1")
+        # NOTE: last_block splits on the prompt draw; with the prompt row
+        # scrolled out of the window the block starts at the first visible row.
+      end
+
+      it "scrolls back up when the caret moves to the top (Home)" do
+        composer.instance_variable_set(:@input, StringIO.new("[200~r1\nr2\nr3\nr4\nr5\e[201~"))
+        composer.handle_key("\e")
+        composer.handle_key("\x01") # Home: caret to index 0 → window follows up
+        block = output.string.split("\r\e[2K#{PROMPT}").last
+        expect(block).to include("r1\r\n")
+        expect(block).to include("r2\r\n")
+        expect(block).not_to include("r4")
+      end
+    end
+
+    it "submit clears ALL rows and the payload keeps its newlines" do
+      composer.instance_variable_set(:@input, StringIO.new("[200~l1\nl2\nl3\e[201~"))
+      composer.handle_key("\e")
+      composer.handle_key("\r")
+      expect(queue.drain).to eq(["l1\nl2\nl3"])
+      # The post-submit frame walks UP clearing the stale continuation rows
+      # (the caret sat on the last row) and redraws a bare one-row prompt.
+      expect(output.string).to include("\e[1A\e[2K")
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}")
+    end
+
+    it "idle Ctrl+C clears a multi-row draft down to a bare one-row prompt" do
+      composer.instance_variable_set(:@input, StringIO.new("[200~l1\nl2\nl3\e[201~"))
+      composer.handle_key("\e")
+      expect(composer.idle_interrupt).to eq(:cleared)
+      expect(composer.buffer).to eq("")
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}")
+    end
+
+    it "re-wraps on resize while multi-row" do
+      io = Class.new(StringIO) do
+        attr_accessor :cols
+
+        def winsize = [24, cols || 40]
+      end.new
+      c = described_class.new(input_queue: queue, input: input, output: io)
+      "x".ljust(50, "x").each_char { |ch| c.handle_key(ch) } # 2 rows at 40 cols
+      io.cols = 60 # row budget 59; 50 + prompt 2 = 52 → fits one row again
+      c.resize
+      expect(io.string.split("\r\e[2K#{PROMPT}").last).to eq("x" * 50)
+    end
+
+    it "print_above while multi-row commits above and redraws the whole block" do
+      composer.instance_variable_set(:@input, StringIO.new("[200~l1\nl2\e[201~"))
+      composer.handle_key("\e")
+      composer.print_above("agent line")
+      tail = output.string.split("agent line\r\n").last
+      expect(tail).to include("\r\e[2K#{PROMPT}l1\r\n")
+      expect(tail).to end_with("l2")
+    end
+  end
+
+  # The status bar: a dim model + context line pinned BELOW the input row —
+  # the live region's last row, redrawn with every frame, updated only at turn
+  # boundaries via #set_status.
+  describe "status bar (below the input)" do
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output, status_line: status)
+    end
+
+    let(:status) { "m1 · ctx 12% · ~8.4k/64k tok" }
+
+    it "draws the bar on the row below the input and parks the caret back on the input row" do
+      composer.handle_key("h")
+      composer.handle_key("i")
+      # Input row, CRLF, status row, then walk back up to the caret (col 4).
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}hi\r\n\r\e[2K#{status}\e[1A\r\e[4C")
+    end
+
+    it "stays the LAST row under a multi-row input block" do
+      composer.instance_variable_set(:@input, StringIO.new("[200~l1\nl2\e[201~"))
+      composer.handle_key("\e")
+      # Caret at the end of "l2" (col 2); the park walks up past the bar only.
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}l1\r\n\r\e[2Kl2\r\n\r\e[2K#{status}\e[1A\r\e[2C")
+    end
+
+    it "stays below while committed output scrolls above (print_above)" do
+      composer.print_above("agent line")
+      s = output.string
+      expect(s.index("agent line")).to be < s.index(status)
+      expect(s).to end_with("#{status}\e[1A\r\e[2C")
+    end
+
+    it "#set_status repaints the bar in place at a turn boundary" do
+      composer.handle_key("x")
+      composer.set_status("m1 · ctx 47% · ~30k/64k tok")
+      # The stale bar row below the caret is walked down + cleared, then redrawn.
+      expect(output.string).to include("\e[1B\e[2K")
+      expect(output.string).to include("m1 · ctx 47% · ~30k/64k tok")
+    end
+
+    it "#set_status(nil) removes the bar row" do
+      composer.handle_key("x")
+      composer.set_status(nil)
+      expect(output.string.split("\r\e[2K#{PROMPT}").last).to eq("x")
+    end
+
+    it "no bar is drawn without a status line (default)" do
+      c = described_class.new(input_queue: queue, input: input, output: output)
+      c.handle_key("x")
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}x")
+    end
+
+    it "is omitted on a terminal narrower than 40 columns" do
+      narrow = Class.new(StringIO) { def winsize = [24, 39] }.new
+      c = described_class.new(input_queue: queue, input: input, output: narrow,
+                              status_line: status)
+      c.handle_key("x")
+      expect(narrow.string).not_to include(status)
+      expect(narrow.string).to end_with("#{PROMPT}x")
+    end
+
+    it "is omitted whole (never truncated mid-ANSI) when wider than the row" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              status_line: "s" * 60) # 40-col terminal
+      c.handle_key("x")
+      expect(output.string).not_to include("s" * 10)
+      expect(output.string).to end_with("#{PROMPT}x")
+    end
+
+    it "measures fit on the ANSI-stripped width (a styled bar that fits is drawn)" do
+      styled = "\e[2m#{"s" * 30}\e[0m" # 30 visible cols on a 40-col terminal
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              status_line: styled)
+      c.handle_key("x")
+      expect(output.string).to include(styled)
+    end
+
+    it "records the bar in the LiveRegion's below-geometry" do
+      composer.handle_key("x")
+      region = composer.instance_variable_get(:@region)
+      expect(region.input_below).to eq(1)
+    end
+
+    it "teardown clears the bar row along with the input block" do
+      composer.handle_key("x")
+      # Drive the shared #stop/#suspend teardown directly (no live reader).
+      composer.instance_variable_get(:@render).synchronize do
+        composer.send(:clear_live_region_to_clean_line)
+      end
+      # The teardown clear walks DOWN over the status row before re-homing.
+      expect(output.string).to include("\e[1B\e[2K")
     end
   end
 end
