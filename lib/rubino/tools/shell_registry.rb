@@ -43,7 +43,10 @@ module Rubino
         in_rd, in_wr = IO.pipe
         # pgroup: true → child becomes leader of a new process group whose
         # pgid == child pid. Lets shell_kill send SIGTERM to the whole tree.
-        pid = Process.spawn(command, chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
+        # bash -o pipefail keeps this path consistent with the foreground
+        # shell: a mid-pipeline crash surfaces as the exit status (#156).
+        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+                            chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
         wr.close
         in_rd.close
 
@@ -112,11 +115,10 @@ module Rubino
       end
 
       def status(entry)
-        if entry.wait_thr.alive?
-          :running
-        else
-          entry.wait_thr.value.success? ? :completed : :failed
-        end
+        return :running if entry.wait_thr.alive?
+
+        code = entry.wait_thr.value.exitstatus
+        code && ShellTool.success_exit?(code) ? :completed : :failed
       end
 
       def exit_code(entry)
