@@ -553,4 +553,52 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect { policy.reset_turn! }.not_to raise_error
     end
   end
+
+  # #143: every :deny records WHY, so ToolExecutor can build a reason-specific
+  # model-facing message instead of blaming "the user" for a policy denial.
+  describe "#last_deny_reason" do
+    let(:config) { test_configuration("approvals" => { "mode" => "manual" }) }
+    let(:policy) { described_class.new(config: config) }
+    let(:shell)  { make_tool(name: "shell", risk_level: :high, risky: true) }
+
+    it "is :hardline for a hardline-floor deny" do
+      expect(policy.decide(shell, arguments: { "command" => "rm -rf /" })).to eq(:deny)
+      expect(policy.last_deny_reason).to eq(:hardline)
+    end
+
+    it "is :permission_rule for an explicit permissions deny" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "permissions" => { "shell rm *" => "deny" }
+      )
+      pol = described_class.new(config: cfg)
+      expect(pol.decide(shell, arguments: { "command" => "rm build.log" })).to eq(:deny)
+      expect(pol.last_deny_reason).to eq(:permission_rule)
+    end
+
+    it "is :doom_loop when the identical call repeats past the threshold" do
+      tool = make_tool(name: "task_result", risk_level: :low, risky: false)
+      args = { "task_id" => "sa_1" }
+      decisions = 4.times.map { policy.decide(tool, arguments: args) }
+      expect(decisions.last).to eq(:deny)
+      expect(policy.last_deny_reason).to eq(:doom_loop)
+    end
+
+    it "is :doom_loop under yolo too (the guard yolo cannot bypass)" do
+      Rubino::Modes.set(:yolo)
+      args = { "command" => "ls" }
+      decisions = 4.times.map { policy.decide(shell, arguments: args) }
+      expect(decisions.last).to eq(:deny)
+      expect(policy.last_deny_reason).to eq(:doom_loop)
+    ensure
+      Rubino::Modes.reset!
+    end
+
+    it "clears on the next non-deny decision so a stale reason never leaks" do
+      expect(policy.decide(shell, arguments: { "command" => "rm -rf /" })).to eq(:deny)
+      expect(policy.last_deny_reason).to eq(:hardline)
+      expect(policy.decide(shell, arguments: { "command" => "ls" })).not_to eq(:deny)
+      expect(policy.last_deny_reason).to be_nil
+    end
+  end
 end

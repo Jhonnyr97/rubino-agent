@@ -10,10 +10,11 @@ module Rubino
       # tool should treat that as "no cancellation possible" and not crash.
       attr_accessor :cancel_token
 
-      # Per-turn ReadTracker injected by ToolExecutor. ReadTool registers
-      # successful reads; EditTool / MultiEditTool consult it before writing
-      # so they can refuse to edit a file the model never opened in this
-      # turn. Nil-tolerant: tools that don't care just ignore it.
+      # Session-scoped ReadTracker injected by ToolExecutor. ReadTool
+      # registers successful reads; EditTool / MultiEditTool consult it
+      # before writing so they can refuse to edit a file the model never
+      # opened in this session. Nil-tolerant: tools that don't care just
+      # ignore it.
       attr_accessor :read_tracker
 
       # Optional Proc, injected by ToolExecutor, that the tool can call with
@@ -191,8 +192,8 @@ module Rubino
       end
 
       # Read-before-edit gate shared by EditTool and MultiEditTool. Refuses the
-      # write when the model never read this file in the current turn, or read
-      # it but the file changed on disk since. Returns nil (proceed) or an
+      # write when the model never read this file in the current session, or
+      # read it but the file changed on disk since. Returns nil (proceed) or an
       # error Hash carrying error_code: :stale_read for the model to recover
       # from. No tracker injected → no gate (single-tool unit tests, MCP calls).
       #
@@ -202,7 +203,7 @@ module Rubino
         return nil unless @read_tracker
 
         unless @read_tracker.seen?(expanded)
-          return { output: "Error: must use the read tool on #{display_path} in this turn before editing it. " \
+          return { output: "Error: must use the read tool on #{display_path} in this session before editing it. " \
                            "Read it first so the #{verb} can verify the surrounding context.",
                    error_code: :stale_read }
         end
@@ -211,7 +212,7 @@ module Rubino
         current = File.mtime(expanded)
         return nil if stashed.nil? || current <= stashed
 
-        { output: "Error: #{display_path} changed on disk since the last read in this turn " \
+        { output: "Error: #{display_path} changed on disk since the last read " \
                   "(read at #{stashed.utc.iso8601}, now #{current.utc.iso8601}). " \
                   "Re-read the file before editing so the #{verb} reflect the current contents.",
           error_code: :stale_read }

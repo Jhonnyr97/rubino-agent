@@ -82,8 +82,26 @@ module Rubino
             error: error, error_code: error_code)
       end
 
-      def self.denied(name:, call_id:)
-        new(name: name, call_id: call_id, output: "Tool execution denied by user.", status: :denied)
+      # Model-facing text per denial reason (#143). Only a real human decision
+      # may read "denied by user" — an automatic denial must name the policy
+      # that fired, otherwise a child agent reports (and propagates upward)
+      # that "the user denied my tools" when no human ever decided anything.
+      DENIED_OUTPUTS = {
+        user: "Tool execution denied by user.",
+        policy: "Tool execution denied by policy (not by the user).",
+        hardline: "Tool execution blocked by policy (hardline safety floor, not by the user): " \
+                  "this command is never allowed.",
+        permission_rule: "Tool execution blocked by policy (a configured permissions deny rule, " \
+                         "not by the user).",
+        doom_loop: "Tool execution blocked by the doom-loop guard (policy, not by the user): " \
+                   "this exact call was already made repeatedly. Change strategy instead of " \
+                   "retrying it — e.g. wait for the background-task completion notice instead " \
+                   "of polling."
+      }.freeze
+
+      def self.denied(name:, call_id:, reason: :user)
+        key = DENIED_OUTPUTS.key?(reason) ? reason : :policy
+        new(name: name, call_id: call_id, output: DENIED_OUTPUTS[key], status: :denied)
       end
 
       def self.normalize_output(output)

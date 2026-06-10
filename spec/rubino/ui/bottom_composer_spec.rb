@@ -796,6 +796,58 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
+    # #147: the approval hint says "/agents sa_xxx to approve". Typing exactly
+    # that pops the argument dropdown (the id, then the verb grammar), and
+    # Enter used to be swallowed by it — the exact command the hint dictated
+    # did nothing. Enter with the buffer already a complete valid command must
+    # SUBMIT; accepting stays for partial tokens and arrow-navigated picks.
+    describe "Enter on a complete command with the argument dropdown open (#147)" do
+      let(:source) do
+        Rubino::UI::CompletionSource.new(
+          commands: %w[/agents /help],
+          arg_sources: { "agents" => lambda { |args|
+            case args.length
+            when 0 then %w[sa_1855c6ef]
+            when 1 then ["steer", "probe", "--stop"]
+            else []
+            end
+          } }
+        )
+      end
+
+      it "submits a fully-typed `/agents <id>` even with the id dropdown open" do
+        "/agents sa_1855c6ef".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true) # the dropdown is up — the trap
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit)
+        expect(queue.drain).to eq(["/agents sa_1855c6ef"])
+      end
+
+      it "submits when the verb dropdown is open on an EMPTY argument (`/agents <id> `)" do
+        "/agents sa_1855c6ef ".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true) # steer/probe/--stop showing
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit) # NOT a spliced "steer " the user never typed
+        expect(queue.drain).to eq(["/agents sa_1855c6ef "])
+      end
+
+      it "still accepts on Enter when the user arrow-navigated onto a verb" do
+        "/agents sa_1855c6ef ".each_char { |ch| composer.handle_key(ch) }
+        arrow(composer, "B") # ↓ → probe (explicit accept intent)
+        composer.handle_key("\r")
+        expect(composer.buffer).to eq("/agents sa_1855c6ef probe ")
+        expect(queue.drain).to eq([])
+      end
+
+      it "still accepts on Enter for a partial argument token" do
+        "/agents sa_1855c6ef st".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true) # "st" → steer
+        composer.handle_key("\r")
+        expect(composer.buffer).to eq("/agents sa_1855c6ef steer ")
+        expect(queue.drain).to eq([])
+      end
+    end
+
     # The SAME dropdown picks the ARGUMENT of /skills (a skill name), reusing the
     # menu/accept plumbing — not a new widget. The CompletionSource resolves the
     # argument via its registered arg_sources entry.
@@ -1401,6 +1453,23 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("draft")
     ensure
       $stdout = STDOUT
+    end
+
+    # #144: while an approval/ask owns the real terminal (suspended), a
+    # background subagent's card repaint must NOT paint over the interactive
+    # prompt — a frame racing the blocked TTY read is what auto-resolved the
+    # [o/a/n] prompt to Denied. Frames are dropped like #set_partial's; the
+    # registry snapshot converges on the next repaint after #resume.
+    it "drops #set_cards frames while suspended, paints again after resume (#144)" do
+      composer.start
+      composer.suspend
+      before_len = output.string.length
+      composer.set_cards(["● sa_1 · explore · running"])
+      expect(output.string.length).to eq(before_len) # nothing drawn over the prompt
+
+      composer.resume
+      composer.set_cards(["● sa_1 · explore · running"])
+      expect(output.string).to include("sa_1")
     end
   end
 end
