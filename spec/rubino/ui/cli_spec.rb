@@ -213,6 +213,46 @@ RSpec.describe Rubino::UI::CLI do
       end.not_to raise_error
     end
 
+    # Regression for #74: a turn that ends in ERROR used to leave the animated
+    # "thinking…" row ticking forever — the runner's rescue printed the error
+    # without ever tearing the animation down, corrupting all later output.
+    it "tears down the live thinking animation when the turn ends in error (#74)" do
+      live = Class.new(StringIO) do
+        def live(str) = print(str)
+      end.new
+      old = $stdout
+      $stdout = live
+      begin
+        ui.thinking_started
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_a(Thread)
+        ui.error("model exploded")
+        expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+        expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+        expect(live.string).to include("model exploded")
+      ensure
+        $stdout = old
+      end
+    end
+
+    it "clears the static thinking row before the error line on the plain path (#74)" do
+      out = capture_stdout do
+        ui.thinking_started
+        ui.error("provider failure")
+      end
+      expect(out).to match(/thinking….*\r\e\[2K.*provider failure/m)
+      expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+    end
+
+    it "tears down a still-live thinking row on interrupt too (#74)" do
+      out = capture_stdout do
+        ui.thinking_started
+        ui.turn_interrupted
+      end
+      expect(out).to include("⎿ interrupted")
+      expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
+      expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+    end
+
     it "handles multi-line streamed text" do
       out = capture_stdout do
         ui.stream(type: :content, text: "first\nsecond\n")

@@ -265,13 +265,28 @@ module Rubino
         end
       end
 
+      # A turn that ends in ERROR must tear down the live "thinking…" animation
+      # (and any open stream) BEFORE the error line prints — otherwise the
+      # ticking row strands below the error and keeps interleaving into every
+      # subsequent print until a full repaint (#74). The success path settles
+      # via stream_end/collapse_reasoning; this gives the error path the same
+      # cleanup. Idempotent — a no-op for errors printed outside a turn.
+      def error(message)
+        finalize_stream
+        super
+      end
+
       # Commits the standardized interrupt marker right after the partial answer
       # that was kept when a turn is cancelled (Ctrl+C, or the interrupt-by-
       # default Enter): a dim `⎿ interrupted` row, house grammar. Leading CR +
       # clear-line so it lands cleanly even if the cursor is sitting after a
       # partial stream chunk. This is the single visible interrupt notice — the
       # runner no longer also prints a separate "interrupted by user" warning.
+      # Tears down a still-ticking "thinking…" animation first, same as the
+      # error path (#74) — Loop#stream_end usually already did, but an
+      # interrupt raised outside the streaming bracket must settle too.
       def turn_interrupted
+        finalize_stream
         $stdout.print "\r\e[2K"
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
