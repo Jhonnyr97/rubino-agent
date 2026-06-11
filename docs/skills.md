@@ -301,7 +301,7 @@ the session's **active skill** from interactive chat:
 - `/skills none` (or picking `✗ none`) — clear the active skill:
   `✓ Cleared active skill (was: <name>).`
 
-While a skill is active the prompt chip shows it — `default (skill: <name>) ❯` —
+While a skill is active the status bar under the input shows it — `default · skill <name> · …` —
 so you always know what extra instructions the model is carrying. A fresh
 `rubino chat` boots with no active skill.
 

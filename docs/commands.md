@@ -308,7 +308,7 @@ The workspace sandbox confines write/edit/delete tools to the workspace roots. `
 ### Skills: `/skills`
 
 - Bare `/skills` lists the available skills (with `(disabled)` / `(active)` markers).
-- `/skills <name>` **activates** a skill for the session: its body is force-loaded into the system prompt each turn and the prompt chip shows it — `default (skill: <name>) ❯`. Typing `/skills ` opens a dropdown picker of skill names (plus the `enable`/`disable` verbs), headed by a `✗ none` clear entry.
+- `/skills <name>` **activates** a skill for the session: its body is force-loaded into the system prompt each turn and the status bar under the input shows it — `default · skill <name> · …`. Typing `/skills ` opens a dropdown picker of skill names (plus the `enable`/`disable` verbs), headed by a `✗ none` clear entry.
 - `/skills none` (or picking `✗ none`) clears the active skill: `✓ Cleared active skill (was: <name>).`
 - `/skills enable <name>` / `/skills disable <name>` **persistently** toggle a skill in or out of the Level-1 index for *every* session — the same `skill_states` write the HTTP API (`PUT /v1/skills/<name>`) and the `rubino skills enable|disable` CLI verbs run. A disabled skill is marked `(disabled)` in the list, drops out of the index, and **cannot be activated** until re-enabled; disabling the currently active skill also clears the pin.
 - Activation is trust-gated: a project-local skill in an untrusted directory is refused with a reason instead of being pinned without effect.
@@ -360,7 +360,7 @@ Custom commands live as Markdown templates in `.rubino/commands/` (project) or `
 
 ### Modes
 
-`/mode` (or the `--yolo` flag) switches between the modes below. **Shift+Tab** cycles them from the prompt (default → plan → yolo) and shows a transient `mode <old> → <new>` footer. Entering `yolo` from the cycle takes a second deliberate Shift+Tab to confirm (the toast says so, and warns when running background subagents would lose their approval gates); an explicit `/mode yolo` switches directly.
+`/mode` (or the `--yolo` flag) switches between the modes below. **Shift+Tab** cycles them from the prompt (default → plan → yolo), updates the mode token that LEADS the status bar under the input (dim `default`, yellow `plan`, red `yolo`), and shows a transient `mode <old> → <new>` footer. Entering `yolo` from the cycle takes a second deliberate Shift+Tab to confirm (the toast says so, and warns when running background subagents would lose their approval gates); an explicit `/mode yolo` switches directly.
 
 - `default` — approval-gated tools prompt as configured.
 - `plan` — read-only: the registry is pared down so mutating tools (`edit`, `shell`, `git`, …) aren't even offered to the model.

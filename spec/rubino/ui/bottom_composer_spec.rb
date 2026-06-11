@@ -68,6 +68,72 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # Rail rubino: the one-column red rail leads EVERY input row — the prompt
+  # row and each wrapped/newline continuation — while committed echoes stay
+  # rail-free in scrollback. All caret/wrap math re-anchors to the 3-column
+  # "▍❯ " prefix; the ANSI color on the rail is invisible to the width math.
+  describe "rail (Rail rubino)" do
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output,
+                          rail: rail, echo: :prompt)
+    end
+    let(:rail) { "\e[31m▍\e[0m" } # pastel.red("▍"), as the chat command passes it
+
+    it "draws the rail before the prompt on the input row" do
+      composer.handle_key("h")
+      composer.handle_key("i")
+      expect(output.string).to end_with("\r\e[2K#{rail}#{PROMPT}hi")
+    end
+
+    it "draws the rail + hanging indent on every WRAPPED continuation row" do
+      # Budget 39, prefix "▍❯ " = 3 cols → 36 chars on row 0, rest wraps.
+      40.times { |i| composer.handle_key((97 + (i % 26)).chr) }
+      typed = composer.buffer
+      frame = output.string.split("\r\e[2K#{rail}#{PROMPT}").last
+      expect(frame).to start_with("#{typed[0, 36]}\r\n")
+      # Continuation: rail, then 2 spaces (hanging indent under the text start).
+      expect(frame).to include("\r\e[2K#{rail}  #{typed[36..]}")
+    end
+
+    it "draws the rail on every REAL-newline continuation row too" do
+      composer.send(:submit_paste, "line1\nline2\nline3")
+      frame = output.string.split("\r\e[2K#{rail}#{PROMPT}").last
+      expect(frame).to start_with("line1\r\n")
+      expect(frame).to include("\r\e[2K#{rail}  line2")
+      expect(frame).to include("\r\e[2K#{rail}  line3")
+    end
+
+    it "anchors the caret math to the rail+prompt prefix (Home → column 3)" do
+      "abcdef".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\x01") # Ctrl+A → line start
+      # Park: re-home, then step right past the 3-col "▍❯ " prefix.
+      expect(output.string).to end_with("\r\e[3C")
+    end
+
+    it "keeps the committed echo rail-free (no rail in scrollback)" do
+      "hi".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\r")
+      # The committed echo row (freshly cleared, ends in CRLF) carries the
+      # bare "❯ hi" — the rail never enters scrollback.
+      expect(output.string).to include("\e[2K#{PROMPT}hi\r\n")
+      expect(output.string).not_to include("#{rail}#{PROMPT}hi\r\n")
+    end
+
+    it "suspend clears the railed input rows (no leak into approval surfaces)" do
+      orig_stdout = $stdout # suspend swaps $stdout to the composer's output
+      allow(input).to receive(:tty?).and_return(false)
+      composer.handle_key("x")
+      composer.instance_variable_set(:@running, true)
+      composer.suspend
+      # Teardown order: bracketed paste OFF, then the erase of the railed
+      # input row — the stream ENDS on the clear, so nothing re-draws the
+      # rail over the suspended-composer surface (approval prompts).
+      expect(output.string).to end_with("\e[?2004l\r\e[2K")
+    ensure
+      $stdout = orig_stdout
+    end
+  end
+
   # The streaming-table trail bug: a live partial row containing wide glyphs
   # (CJK/emoji, display width 2) must be clamped by DISPLAY columns, not char
   # count, or it renders wider than the row, wraps, and the single-row clear
@@ -167,13 +233,13 @@ RSpec.describe Rubino::UI::BottomComposer do
     context "with echo: :prompt (idle path)" do
       subject(:composer) do
         described_class.new(input_queue: queue, input: input, output: output,
-                            prompt: "default ❯ ", echo: :prompt)
+                            echo: :prompt)
       end
 
       it "echoes the submitted line above the prompt as <prompt><line>" do
         "hi".each_char { |c| composer.handle_key(c) }
         composer.handle_key("\r")
-        expect(output.string).to include("default ❯ hi\r\n")
+        expect(output.string).to include("❯ hi\r\n")
         expect(output.string).not_to include("queued ▸")
         expect(queue.drain).to eq(["hi"]) # still pushed for the REPL to consume
       end
@@ -185,7 +251,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.begin_content_stream
         "hi".each_char { |c| composer.handle_key(c) }
         composer.handle_key("\r")
-        expect(output.string).to include("default ❯ hi\r\n")
+        expect(output.string).to include("❯ hi\r\n")
       end
 
       # #55: hammering Enter on an EMPTY idle buffer must be a FULL no-op for
@@ -195,7 +261,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       it "swallows empty Enter spam with no committed prompt echo (#55)" do
         3.times { composer.handle_key("\r") }
         expect(queue.drain).to eq([])
-        expect(output.string).not_to include("default ❯ \r\n")
+        expect(output.string).not_to include("❯ \r\n")
       end
 
       it "swallows a whitespace-only submit the same way (#55)" do
@@ -203,7 +269,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(queue.drain).to eq([])
         # No COMMITTED echo (a committed row ends in CRLF); the live
         # editing row legitimately shows the typed spaces before Enter.
-        expect(output.string).not_to match(/default ❯ {2}\r\n/)
+        expect(output.string).not_to match(/❯ {2}\r\n/)
       end
     end
 
@@ -389,14 +455,14 @@ RSpec.describe Rubino::UI::BottomComposer do
       it "Alt+Enter at idle submits like plain Enter on the :prompt composer (#130)" do
         pending = []
         c = described_class.new(input_queue: queue, input: input, output: output,
-                                prompt: "default ❯ ", echo: :prompt, pending_queued: pending)
+                                echo: :prompt, pending_queued: pending)
         "what is 6+6?".each_char { |ch| c.handle_key(ch) }
         c.instance_variable_set(:@input, StringIO.new("\r"))
         c.handle_key("\e")
 
         expect(queue.drain).to eq(["what is 6+6?"])          # submitted, not parked
         expect(pending).to eq([])                            # no indicator left behind
-        expect(output.string).to include("default ❯ what is 6+6?") # normal prompt echo
+        expect(output.string).to include("❯ what is 6+6?") # normal prompt echo
         expect(output.string).not_to include("⏳ queued")
       end
 
@@ -436,7 +502,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         # A fresh composer built on the same list still renders it.
         out2 = FakeTermIO.new
         c2 = described_class.new(input_queue: queue, input: input, output: out2,
-                                 prompt: "default ❯ ", echo: :prompt, pending_queued: pending)
+                                 echo: :prompt, pending_queued: pending)
         c2.set_partial("") # force a frame
         expect(out2.string).to include("⏳ queued: later")
         expect(c2.commit_queued("later")).to be(true)
@@ -1073,17 +1139,27 @@ RSpec.describe Rubino::UI::BottomComposer do
   describe "#handle_key Shift+Tab (mode cycle)" do
     # Shift+Tab arrives as ESC[Z: preload the bytes after ESC, then trigger the
     # escape consumer via handle_key("\e") — the same way the paste specs drive it.
-    it "invokes on_mode_cycle and adopts the returned prompt chip" do
+    it "invokes on_mode_cycle and adopts the returned STATUS line (mode lives in the statusbar)" do
       cycles = 0
       io = StringIO.new("[Z")
       c = described_class.new(input_queue: queue, input: io, output: output,
                               on_mode_cycle: lambda {
                                 cycles += 1
-                                "yolo ❯ "
+                                " yolo · m3 · ctx ~1k/64k"
                               })
       c.handle_key("\e")
       expect(cycles).to eq(1)
-      expect(output.string).to include("yolo ❯ ") # the new chip was redrawn
+      expect(output.string).to include(" yolo · m3 · ctx ~1k/64k") # the statusbar was redrawn live
+    end
+
+    it "a nil return (e.g. the yolo arm toast) leaves the statusbar untouched" do
+      io = StringIO.new("[Z")
+      c = described_class.new(input_queue: queue, input: io, output: output,
+                              status_line: " plan · m3", on_mode_cycle: -> {})
+      c.set_partial("") # force one frame so the bar is on screen
+      c.handle_key("\e")
+      frames = output.string
+      expect(frames).to include(" plan · m3") # still the original bar
     end
 
     it "is a quiet no-op when no callback is wired" do
