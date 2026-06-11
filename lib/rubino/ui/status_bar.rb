@@ -7,14 +7,16 @@ module Rubino
     # Formats the dim one-line status bar the {BottomComposer} renders BELOW
     # the pinned input row:
     #
-    #   minimax-m3 · ctx 12% · ~8.4k/64k tok
+    #   minimax-m3 · ctx ~8.4k/64k (13%)
     #
     # Content: the resolved model id and the context saturation — the SAME
     # estimate the compaction logic runs on (Context::TokenBudget: chars/4
     # over the session messages, window from `model.context_length` /
     # `context.max_tokens` with the TokenBudget default). The caller passes
-    # the numbers; this module only formats. With no usable window the bar
-    # degrades to `~8.4k tok` (no percentage).
+    # the numbers; this module only formats. ONE encoding of the saturation
+    # (P9): the used/window pair, with the percentage in parentheses —
+    # omitted entirely below 1% so a fresh session doesn't carry a "(0%)".
+    # With no usable window the bar degrades to `~8.4k tok`.
     #
     # Color: everything dim, except the percentage when high — yellow ≥ 70%,
     # red ≥ 90% — matching the existing pastel usage. Each segment is styled
@@ -34,8 +36,9 @@ module Rubino
         segments = [pastel.dim(model.to_s)]
         if window.to_i.positive?
           pct = (tokens.to_i * 100.0 / window.to_i).round
-          segments << (pastel.dim("ctx ") + percent_segment(pct, pastel))
-          segments << pastel.dim("~#{abbreviate(tokens)}/#{abbreviate(window)} tok")
+          ctx = pastel.dim("ctx ~#{abbreviate(tokens)}/#{abbreviate(window)}")
+          ctx += " #{pastel.dim("(")}#{percent_segment(pct, pastel)}#{pastel.dim(")")}" if pct >= 1
+          segments << ctx
         else
           segments << pastel.dim("~#{abbreviate(tokens)} tok")
         end

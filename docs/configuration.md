@@ -181,6 +181,7 @@ display:
   runtime_footer: { enabled: false }
   interim_assistant_messages: false
   statusbar: true        # the model + context bar under the chat input
+  tool_output_preview_lines: 3  # head lines of tool output shown in the transcript (0 = full dump)
   input_max_rows: 8      # chat input grows up to this many rows, then scrolls
 
 streaming:
@@ -195,7 +196,8 @@ context:
   max_tokens: null
 ```
 
-- `display.statusbar` (default `true`) pins a dim one-line bar UNDER the chat input — the resolved model id plus context saturation, e.g. `minimax-m3 · ctx 12% · ~8.4k/64k tok`. Saturation uses the REAL usage the provider reported for the last response when available (the full assembled prompt, recorded by the agent loop), else the same chars/4 estimate compaction runs on (`Context::TokenBudget`); the window comes from `model.context_length` / `context.max_tokens`. It refreshes at turn boundaries (after each turn footer, and on session resume), never per stream delta. The percentage turns yellow at 70% and red at 90%; with no usable window only the token count shows. The bar is omitted off a TTY or on terminals narrower than 40 columns.
+- `display.statusbar` (default `true`) pins a dim one-line bar UNDER the chat input — the resolved model id plus context saturation, e.g. `minimax-m3 · ctx ~8.4k/64k (13%)` (the percentage is omitted below 1%). Saturation uses the REAL usage the provider reported for the last response when available (the full assembled prompt, recorded by the agent loop), else the same chars/4 estimate compaction runs on (`Context::TokenBudget`); the window comes from `model.context_length` / `context.max_tokens`. It refreshes at turn boundaries (after each turn footer, and on session resume), never per stream delta. The percentage turns yellow at 70% and red at 90%; with no usable window only the token count shows. The bar is omitted off a TTY or on terminals narrower than 40 columns.
+- `display.tool_output_preview_lines` (default `3`) caps how many head lines of each tool's output the transcript shows before a dim `… +N lines (full output → context)` marker. DISPLAY-ONLY: the model always receives the full output (subject to the `tool_output` truncation caps) — only the scrollback rendering collapses. Set `0` to restore the old full dump.
 - `display.input_max_rows` (default `8`) caps how many visual rows the chat input grows to as a long or multi-line prompt wraps; past the cap the input scrolls vertically, keeping the caret row in view.
 
 ### compression

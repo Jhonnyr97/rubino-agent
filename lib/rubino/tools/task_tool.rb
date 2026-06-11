@@ -244,10 +244,12 @@ module Rubino
         # must not surface as a ✗ "failed" notice (#108/#13).
         if entry.status == :stopped
           notify(sink, stopped_notice(entry))
-          surface_completion(parent_ui, "⊘ #{entry.id} · #{entry.subagent} · stopped at your request")
+          surface_completion(parent_ui, "▸ #{entry.id} · #{entry.subagent} · stopped at your request",
+                             id: entry.id, status: "stopped")
         else
           notify(sink, failure_notice(entry, e.message))
-          surface_completion(parent_ui, "✗ #{entry.id} · #{entry.subagent} · failed: #{e.message}")
+          surface_completion(parent_ui, "▸ #{entry.id} · #{entry.subagent} · failed: #{e.message}",
+                             id: entry.id, status: "failed")
         end
         repaint_parent_cards(parent_ui)
         event_bus&.emit(Interaction::Events::SUBAGENT_FAILED,
@@ -271,26 +273,37 @@ module Rubino
                              "⚠ #{entry.id} · steer note not delivered (task completed first): " \
                              "#{truncate(undelivered.join(" | "), 80)}")
         end
-        surface_completion(parent_ui, completion_summary(entry, text))
+        surface_completion(parent_ui, completion_summary(entry, text),
+                           id: entry.id, status: self.class.noop_result?(text) ? "no-op" : "done",
+                           report: text)
       end
 
       # One committed summary line for a finished subagent, folded above the
       # prompt by #surface_completion (the card itself clears when the registry
-      # snapshot no longer lists it as running). Mirrors the blueprint's
-      # `✓ sa_… · explore · done · 47s · 18 tools — <result head>`.
-      # The glyph reflects the OUTCOME: a genuine completion shows ✓, while a
-      # no-op / fully-denied run (final text is the no-op placeholder) shows a
-      # neutral ⊘ "no-op" instead — a denied subagent that did nothing must not
-      # read as a success (#16). The error path renders ✗ in #run_child_thread.
+      # snapshot no longer lists it as running). Reuses the LIVE-CARD row shape
+      # (P6) so the lifecycle reads in one grammar:
+      #   ▸ sa_e488 · explore · completed · 1 tool · 12s
+      # The status word reflects the OUTCOME: a no-op / fully-denied run (final
+      # text is the no-op placeholder) says "no-op" — a denied subagent that
+      # did nothing must not read as a success (#16). The full report travels
+      # SEPARATELY (surface_completion report:) so the CLI can render it whole
+      # under `↳ report:` instead of an amputated one-line head.
       def completion_summary(entry, text)
         count = entry.tool_count.to_i
         tools = "#{count} tool#{"s" if count != 1}"
-        head  = truncate(text.lines.first.to_s.strip, 80)
-        if self.class.noop_result?(text)
-          "⊘ #{entry.id} · #{entry.subagent} · no-op · #{tools} — #{head}"
-        else
-          "✓ #{entry.id} · #{entry.subagent} · done · #{tools} — #{head}"
-        end
+        word  = self.class.noop_result?(text) ? "no-op" : "completed"
+        ["▸ #{entry.id}", entry.subagent, word, tools, entry_elapsed(entry)].compact.join(" · ")
+      end
+
+      # Human elapsed time for the lifecycle row, or nil when unknown.
+      def entry_elapsed(entry)
+        return nil unless entry.started_at
+
+        secs = ((entry.finished_at || Time.now) - entry.started_at).to_i
+        return "#{secs}s" if secs < 60
+        return "#{secs / 60}m" if secs < 3600
+
+        "#{secs / 3600}h"
       end
 
       # Repaints the parent's collapsed card block from the registry snapshot.
@@ -305,8 +318,17 @@ module Rubino
       # to how a background shell's exit surfaces. DISPLAY-ONLY (a note on the
       # parent UI) — the authoritative delivery to the MODEL is the InputQueue
       # notice + the registry. No-op on Null/API (note is a quiet annotation).
-      def surface_completion(parent_ui, line)
-        parent_ui&.note(line) if parent_ui.is_a?(UI::CLI)
+      # A terminal-state notice (id + status given) goes through the CLI's
+      # #subagent_finished so a completion landing at turn end folds into the
+      # turn footer instead of stacking a second `┄ ┄` rail (P4).
+      def surface_completion(parent_ui, line, id: nil, status: nil, report: nil)
+        return unless parent_ui.is_a?(UI::CLI)
+
+        if id && parent_ui.respond_to?(:subagent_finished)
+          parent_ui.subagent_finished(line, id: id, status: status || "done", report: report)
+        else
+          parent_ui.note(line)
+        end
       rescue StandardError
         # A UI hiccup must never wedge the worker's terminal-state bookkeeping.
       end

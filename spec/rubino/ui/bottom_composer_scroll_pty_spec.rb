@@ -189,6 +189,28 @@ RSpec.describe "BottomComposer scroll-boundary PTY" do
     expect(prompt_rows).to eq(1)
   end
 
+  # P3 rhythm blanks ride through the SAME erase→commit→redraw discipline:
+  # an EMPTY committed line must scroll exactly ONE real blank row at the
+  # bottom of the screen — never dropped (the pre-fix LiveRegion#commit
+  # swallowed it), never doubled, and never desyncing the input row.
+  it "scrolls one real blank row for an EMPTY commit at the scroll boundary" do
+    raw = capture(<<~RUBY)
+      "hello".each_char { |ch| composer.handle_key(ch) }
+      6.times { |i| composer.print_above("line " + i.to_s) }
+      composer.print_above("")
+      composer.print_above("after")
+    RUBY
+    grid = VTGrid.new(ROWS, COLS).feed(raw)
+    expect(grid.bottom).to eq("#{PROMPT}hello")
+    expect(grid.rows.count { |r| r.include?("#{PROMPT}hello") }).to eq(1)
+    # The blank committed between "line 5" and "after" occupies exactly one row.
+    five  = grid.rows.index { |r| r.start_with?("line 5") }
+    after = grid.rows.index { |r| r.start_with?("after") }
+    expect(five).not_to be_nil
+    expect(after).to eq(five + 2) # one blank row between, not zero, not two
+    expect(grid.rows[five + 1].strip).to eq("")
+  end
+
   it "preserves the typed input across a scroll while a FULL-WIDTH partial streams" do
     # A full-width streamed line is the real trigger: it writes the last column,
     # arming the terminal's deferred wrap; the following CRLF then double-scrolls

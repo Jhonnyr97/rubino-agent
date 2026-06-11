@@ -158,7 +158,7 @@ RSpec.describe "Agent behaviour observable from the UI" do
       levels = ui.messages.map { |m| m[:level] }
       expect(levels.last).to eq(:note)
       expect(levels[-2]).to eq(:stream_end)
-      expect(ui.messages.last[:message]).to include("◆ turn · ")
+      expect(ui.messages.last[:message]).to include("turn · ")
     end
   end
 

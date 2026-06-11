@@ -49,15 +49,15 @@ RSpec.describe Rubino::Commands::Executor do
   describe "/mcp (list)" do
     it "lists each configured server with transport, reachability and tool count" do
       expect(exec.try_execute("/mcp")).to eq(:handled)
-      expect(output).to include("filesystem (stdio)", "reachable", "2 tools")
-      expect(output).to include("api (sse)", "down", "1 tool")
+      expect(output).to include("filesystem", "(stdio)", "reachable", "2 tools")
+      expect(output).to include("api", "(sse)", "down", "1 tool")
       expect(output).to include("/mcp <server> on|off", "/mcp reload")
     end
 
     it "marks a server with no live client as not started" do
       manager.clients.delete("api")
       exec.try_execute("/mcp")
-      expect(output).to include("api (sse)", "not started")
+      expect(output).to include("api", "(sse)", "not started")
     end
   end
 

@@ -195,6 +195,11 @@ module Rubino
           # saturation), refreshed at turn boundaries. Omitted automatically
           # off a TTY or on terminals narrower than 40 columns.
           "statusbar" => true,
+          # Head lines of each tool's output shown in the transcript before a
+          # dim "… +N lines (full output → context)" marker. DISPLAY-ONLY —
+          # the model always receives the full (truncation-capped) output.
+          # 0 disables the collapse (old full dump).
+          "tool_output_preview_lines" => 3,
           # Cap on the chat input's visual rows: a long/multi-line prompt
           # wraps and grows the input downward up to this many rows, then
           # scrolls vertically (caret kept in view).

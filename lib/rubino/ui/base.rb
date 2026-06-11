@@ -62,8 +62,25 @@ module Rubino
         body(text)
       end
 
-      # Small metadata line, dim, no header. Used for the `↳ turn · Xs · N
-      # tools · Y tok` summary after the final assistant message, and any
+      # A status-panel key/value row (`  model      minimax-m3`), optionally
+      # followed by an actionable pointer (`(use /mcp)`). The CLI styles it
+      # per the panel color diet (dim label, plain value, cyan pointer — P8);
+      # the default assembles one plain info line so recording adapters keep
+      # the full content.
+      def panel_line(label, value, pointer: nil)
+        info(["  #{label.to_s.ljust(10)} #{value}", pointer].compact.join("   "))
+      end
+
+      # A "try this" hint row: an actionable command plus its description
+      # (`    /status   what's going on right now`). The CLI renders the
+      # command cyan (the one accent color) and the description plain.
+      def hint_row(command, description)
+        info("    #{command.to_s.ljust(9)} #{description}")
+      end
+
+      # Small metadata line, dim, no header. Used for the `turn · Xs · N
+      # tools · Y tok` summary after the final assistant message (on adapters
+      # without a dedicated #turn_footer), and any
       # similar low-priority annotation that should sit close to the block
       # it describes without competing visually.
       def note(text)

@@ -231,11 +231,17 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   end
 
   describe "approval question formatting" do
-    # #109: a no-args tool call (e.g. a bare run_tests) used to render
-    # "Allow run_tests with:" followed by nothing — reading as truncated.
-    it "omits the 'with:' line entirely when there are no arguments (#109)" do
-      expect(executor.send(:approval_question, tool, {})).to eq("Allow #{tool.name}")
-      expect(executor.send(:approval_question, tool, nil)).to eq("Allow #{tool.name}")
+    # #109: a no-args tool call (e.g. a bare run_tests) must not render a
+    # dangling "wants:" header followed by nothing — reading as truncated.
+    it "omits the dangling 'wants:' header entirely when there are no arguments (#109)" do
+      expect(executor.send(:approval_question, tool, {})).to eq("#{tool.name} wants to run")
+      expect(executor.send(:approval_question, tool, nil)).to eq("#{tool.name} wants to run")
+    end
+
+    # P7: the common one-short-arg case inlines onto the header.
+    it "inlines a single short argument onto the 'wants:' header (P7)" do
+      question = executor.send(:approval_question, tool, { "command" => "touch hello.txt" })
+      expect(question).to eq("#{tool.name} wants:  touch hello.txt")
     end
 
     it "lays each argument on its own line" do
