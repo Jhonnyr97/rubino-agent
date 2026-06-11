@@ -560,7 +560,9 @@ RSpec.describe "ChatCommand slash command integration" do
     allow(Rubino::Commands::Executor).to receive(:new).and_return(fake_executor)
     allow(Rubino).to receive(:database).and_return(db)
     allow(db).to receive(:healthy?).and_return(true)
-    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:build_completion_source)
+    allow(Rubino::CLI::Chat::CompletionBuilder).to receive(:new).and_return(
+      instance_double(Rubino::CLI::Chat::CompletionBuilder, build: nil)
+    )
     # These specs exercise slash-command routing, not the credential gate;
     # without this stub a keyless environment makes ensure_model_configured!
     # warn + exit(1), killing the whole suite mid-run (SystemExit is not
@@ -578,7 +580,9 @@ RSpec.describe "ChatCommand slash command integration" do
       call_count += 1
       inputs[call_count]
     end
-    allow_any_instance_of(Rubino::CLI::ChatCommand).to receive(:build_completion_source)
+    allow(Rubino::CLI::Chat::CompletionBuilder).to receive(:new).and_return(
+      instance_double(Rubino::CLI::Chat::CompletionBuilder, build: nil)
+    )
   end
 
   describe "slash command routing in interactive mode" do
