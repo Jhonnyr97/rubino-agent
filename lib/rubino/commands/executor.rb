@@ -25,6 +25,10 @@ module Rubino
       # StateRepository write the HTTP API and `rubino skills` CLI run.
       SKILL_TOGGLE_VERBS = %w[enable disable].freeze
 
+      # How many model ids the bare `/model` listing renders before deferring
+      # the rest to the completion dropdown.
+      MODEL_LIST_LIMIT = 12
+
       def initialize(loader: nil, ui: nil, runner: nil)
         @loader = loader || Loader.new
         @ui = ui || Rubino.ui
@@ -121,6 +125,14 @@ module Rubino
         when "mode"
           handle_mode(arguments)
           :handled
+        when "model"
+          handle_model(arguments)
+          :handled
+        when "compact"
+          handle_compact
+        when "export"
+          handle_export(arguments)
+          :handled
         when "reasoning"
           handle_reasoning(arguments)
           :handled
@@ -172,10 +184,11 @@ module Rubino
           # we return a {branch_from:, title:} signal on the SAME channel /new
           # and /sessions use, and it does the build/seed/swap.
           handle_branch(arguments)
-        when "new"
+        when "new", "clear"
           # Hand the REPL a signal to rebuild the runner on a brand-new session.
           # The current session is left intact (and will be marked ended on the
           # eventual teardown), so /new is the in-chat counterpart to `--new`.
+          # /clear is the muscle-memory alias every other agent CLI ships.
           @ui.success("Starting a fresh session.")
           { new_session: true }
         end
@@ -282,6 +295,144 @@ module Rubino
         Rubino.configuration.set("thinking", "effort", sym.to_s)
         persist_config("thinking.effort", sym.to_s)
         @ui.think_changed(sym, previous: previous) if @ui.respond_to?(:think_changed)
+      end
+
+      # `/model`          → show current model/provider + the known models
+      # `/model <name>`   → switch the LIVE session model
+      #
+      # The switch writes model.default through Config::Writer (the same
+      # persist path /think uses) AND retargets the live runner, so the very
+      # next turn hits the new model — no restart. The known-models list comes
+      # from the ruby_llm registry for the ACTIVE provider; custom backends
+      # (minimax/gateway) aren't enumerable there, so they degrade to the
+      # current model + a usage hint instead of an invented hardcoded list.
+      def handle_model(arguments)
+        name = arguments.to_s.strip.split(/\s+/).first
+
+        if name.nil? || name.empty?
+          show_model
+          return
+        end
+
+        previous = status_model
+        if name == previous
+          @ui.info("Already on #{name}.")
+          return
+        end
+
+        Rubino.configuration.set("model", "default", name)
+        persist_config("model.default", name)
+        @runner.switch_model!(name) if @runner.respond_to?(:switch_model!)
+        # Forget per-provider thinking rejections recorded this session: the
+        # new model may sit on a provider that does support a budget (and the
+        # MiniMax-family default is re-derived per turn from the new id).
+        LLM::ThinkingSupport.reset!
+        @ui.success("model: #{previous} → #{name} (persisted; applies from the next turn)")
+        warn_cross_provider_model(name)
+      end
+
+      def show_model
+        current  = status_model
+        provider = active_provider(current)
+        @ui.info("Current model: #{current} (provider: #{provider})")
+
+        ids = LLM::ModelCatalog.ids_for(provider)
+        if ids.empty?
+          @ui.info("No model catalog for provider '#{provider}' — /model <name> switches anyway.")
+          return
+        end
+
+        @ui.info("Known models for #{provider}:")
+        ids.first(MODEL_LIST_LIMIT).each do |id|
+          marker = id == current ? "▸" : " "
+          @ui.info("  #{marker} /model #{id}")
+        end
+        rest = ids.size - MODEL_LIST_LIMIT
+        @ui.info("  … and #{rest} more (type `/model ` for the full dropdown)") if rest.positive?
+      end
+
+      # The provider the next turn will actually route through — the single
+      # ProviderResolver seam AdapterFactory uses, fed with the configured
+      # explicit provider (or "auto" pattern-matching the model id).
+      def active_provider(model_id)
+        LLM::ProviderResolver.resolve(model_id, explicit_provider: Rubino.configuration.model_provider)
+      rescue StandardError
+        "(unknown)"
+      end
+
+      # An explicit model.provider pins routing regardless of model id, so
+      # `/model claude-x` under provider "minimax" keeps hitting MiniMax's
+      # endpoint. One informational line when the new id pattern-matches a
+      # different provider than the pinned one — gateway excepted, since a
+      # gateway proxies arbitrary model ids by design.
+      def warn_cross_provider_model(model_id)
+        explicit = Rubino.configuration.model_provider
+        return if explicit.nil? || explicit == "auto" || explicit == "gateway"
+
+        implied = LLM::ProviderResolver.resolve(model_id)
+        return if implied == explicit
+
+        @ui.info("Requests still route via provider '#{explicit}' — set model.provider to switch backends.")
+      rescue StandardError
+        nil
+      end
+
+      # `/compact` — manual compaction NOW, the same Context::Compressor +
+      # compression_started/finished pipeline the automatic threshold path
+      # runs, plus a tokens before→after report. Compaction lands in a CHILD
+      # session (head + summary + tail), so on success we hand the REPL a
+      # {compact_into:} signal and it swaps the runner into the child — the
+      # next turn runs on the compacted context.
+      def handle_compact
+        session = @runner&.session
+        unless session && Session::Repository.new.persisted?(session[:id])
+          @ui.error("nothing to compact — this session has no saved messages yet")
+          return :handled
+        end
+
+        store  = Session::Store.new
+        before = estimate_session_tokens(store, session[:id], model_id: session[:model])
+
+        @ui.compression_started
+        result = Context::Compressor.new(session_id: session[:id]).compact!
+
+        if result[:skipped]
+          @ui.info("Nothing to compact yet — the session is still below the protected head/tail size.")
+          return :handled
+        end
+
+        @ui.compression_finished(result)
+        after = estimate_session_tokens(store, result[:target_session_id], model_id: session[:model])
+        @ui.info("Context: ~#{before} → ~#{after} tokens (#{result[:original_messages]} → " \
+                 "#{result[:compacted_messages]} messages).")
+        { compact_into: result[:target_session_id] }
+      rescue StandardError => e
+        @ui.error("compaction failed: #{e.message}")
+        :handled
+      end
+
+      # The same chars/4 estimate the compaction thresholds and the status bar
+      # run on, over a session's stored messages.
+      def estimate_session_tokens(store, session_id, model_id:)
+        budget = Context::TokenBudget.new(model_id: model_id, config: Rubino.configuration)
+        budget.estimate_tokens(store.for_session(session_id).map { |m| { content: m.content } })
+      end
+
+      # `/export [path]` — write the session transcript as clean markdown via
+      # Session::Exporter (user/assistant turns, tool calls as one-liners,
+      # reasoning omitted). Default path ./rubino-session-<id8>.md.
+      def handle_export(arguments)
+        session = @runner&.session
+        unless session
+          @ui.error("no live session to export")
+          return
+        end
+
+        path = arguments.to_s.strip
+        target = Session::Exporter.new(session).write(path.empty? ? nil : path)
+        @ui.success("exported → #{target}")
+      rescue StandardError => e
+        @ui.error("export failed: #{e.message}")
       end
 
       # Write-through of a /reasoning // /think switch to config.yml so it

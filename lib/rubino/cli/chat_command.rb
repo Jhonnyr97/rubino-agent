@@ -357,6 +357,15 @@ module Rubino
                   cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
                   next
                 end
+                if result[:compact_into]
+                  # /compact: the compactor wrote head+summary+tail into a
+                  # child session (the source is now status "compacted") —
+                  # swap the runner into the child WITHOUT replaying history,
+                  # so the next turn runs on the compacted context.
+                  runner = build_runner(session_id: result[:compact_into], ui: ui)
+                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  next
+                end
                 if result[:new_session]
                   # /new: end the current session and rebuild the runner on a
                   # fresh one in place — the counterpart to the bare-chat resume.
@@ -1298,6 +1307,9 @@ module Rubino
         #   * /mode, /reasoning, /think — the closed enums (#185), via the
         #     positional shape so no `✗ none` clear entry is injected (there
         #     is no "clear" for a mode — see CompletionSource#initialize).
+        #   * /model — the ruby_llm-registry model ids for the active provider
+        #     (empty for custom backends like minimax/gateway, which aren't
+        #     enumerable — the dropdown just shows nothing extra there).
         #   * /add-dir — filesystem DIRECTORY candidates from the typed
         #     partial (#185), via the partial-aware two-arg shape.
         #   * /sessions, /memory — verbs + recent ids (#183/#184), the same
@@ -1313,6 +1325,7 @@ module Rubino
           "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] },
           "mcp" => ->(args) { mcp_arg_candidates(args) },
           "mode" => ->(args) { args.empty? ? Rubino::Modes::ALL.map(&:to_s) : [] },
+          "model" => ->(args) { args.empty? ? model_arg_candidates : [] },
           "reasoning" => ->(args) { args.empty? ? Rubino::Config::ReasoningPrefs::RENDER_MODES.map(&:to_s) : [] },
           "think" => ->(args) { args.empty? ? Rubino::Config::ReasoningPrefs::EFFORTS.map(&:to_s) : [] },
           "add-dir" => lambda { |args, partial|
@@ -1345,6 +1358,19 @@ module Rubino
       # answers.
       def blocked_subagent_ids
         Tools::BackgroundTasks.instance.awaiting_human.map(&:id)
+      end
+
+      # The /model candidates: the registry's model ids for the provider the
+      # next turn would route through. Resolved lazily on each dropdown open so
+      # a /model or /config provider switch is reflected immediately.
+      def model_arg_candidates
+        config  = Rubino.configuration
+        current = config.model_default
+        Rubino::LLM::ModelCatalog.ids_for(
+          Rubino::LLM::ProviderResolver.resolve(current, explicit_provider: config.model_provider)
+        )
+      rescue StandardError
+        []
       end
 
       # The /mcp subcommand grammar (#182): configured server names + reload
