@@ -83,6 +83,63 @@ RSpec.describe Rubino::Jobs::Queue do
       expect(job[:status]).to eq("failed")
       expect(job[:last_error]).to include("No handler registered")
     end
+
+    # Regression for #224 (re-#84): in inline mode run_job is invoked directly
+    # (never locked) and Interrupt is not a StandardError, so a turn whose
+    # post-turn extraction was cut short — e.g. the user quit the session while
+    # "polishing · memory" was still running — leaves a row at status=queued,
+    # attempts=0, locked_by=nil, last_error=nil. Nothing re-runs it; #84's fix
+    # only made inline *failures* terminal, never reaped an orphaned *queued*
+    # row. The next inline enqueue (the next `rubino` turn) must drain it. The
+    # original #84 test never covered this state — it asserted only the failure
+    # path.
+    context "when reaping orphaned queued rows (#224)" do
+      before do
+        # A trivial no-op handler so enqueued TestJobs complete (vs. the
+        # handler-resolution failure path covered by the #84 test above).
+        Rubino::Jobs::Registry.register("TestJob", Class.new { def perform(_payload) = nil })
+      end
+
+      after { Rubino::Jobs::Registry.reset! }
+
+      it "drains a queued row orphaned by a prior interrupted inline run on the next enqueue (#224)" do
+        now = Time.now.utc.iso8601
+        orphan = SecureRandom.uuid
+        # An ExtractMemoryJob left exactly as an interrupted inline run would:
+        # queued, never locked, no attempts, no error.
+        db_connection.db[:jobs].insert(
+          id: orphan, type: "TestJob", status: "queued", priority: 100,
+          payload_json: "{}", attempts: 0, max_attempts: 3,
+          run_at: now, created_at: now, updated_at: now
+        )
+        # Pre-fix: it stays queued across runs; only `jobs process` clears it.
+        expect(queue.pending_count).to eq(1)
+
+        # The next turn boots the inline runner again by enqueuing a fresh job.
+        fresh = queue.enqueue("TestJob", { data: 1 })
+
+        jobs = db_connection.db[:jobs].to_h { |j| [j[:id], j[:status]] }
+        # The orphan is now drained terminally, not left queued forever.
+        expect(jobs[orphan]).to eq("completed")
+        expect(jobs[fresh]).to eq("completed")
+        expect(queue.pending_count).to eq(0)
+      end
+
+      it "does not reap a queued row that is not yet due (run_at in the future)" do
+        future = (Time.now + 3600).utc.iso8601
+        now = Time.now.utc.iso8601
+        scheduled = SecureRandom.uuid
+        db_connection.db[:jobs].insert(
+          id: scheduled, type: "TestJob", status: "queued", priority: 100,
+          payload_json: "{}", attempts: 0, max_attempts: 3,
+          run_at: future, created_at: now, updated_at: now
+        )
+
+        queue.enqueue("TestJob", { data: 1 })
+
+        expect(db_connection.db[:jobs].where(id: scheduled).first[:status]).to eq("queued")
+      end
+    end
   end
 
   describe "#dequeue" do
