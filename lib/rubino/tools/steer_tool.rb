@@ -89,13 +89,13 @@ module Rubino
         # redirect took effect (#198). Be honest and point at the one action
         # that unblocks the child.
         if parked_on_ask?(entry)
-          return "steer ▸ #{task_id} ← #{truncate(note, 80)}  (queued — but #{task_id} is BLOCKED " \
+          return "steer ▸ #{task_id} ← #{Rubino::Util::Output.elide(note, 80)}  (queued — but #{task_id} is BLOCKED " \
                  "on ask_parent and will NOT see it until you answer its question: " \
-                 "#{truncate(entry.ask_question, 120)} — unblock it with " \
+                 "#{Rubino::Util::Output.elide(entry.ask_question, 120)} — unblock it with " \
                  "answer_child(task_id: \"#{task_id}\", answer: \"…\"))"
         end
 
-        "steer ▸ #{task_id} ← #{truncate(note, 80)}  (parked · enters child context next turn)"
+        "steer ▸ #{task_id} ← #{Rubino::Util::Output.elide(note, 80)}  (parked · enters child context next turn)"
       end
 
       private
@@ -112,11 +112,6 @@ module Rubino
       def parked_on_ask?(entry)
         entry.ask_gate && entry.ask_blocking &&
           %i[blocked_on_human blocked_on_parent].include?(entry.status)
-      end
-
-      def truncate(text, max)
-        s = text.to_s
-        s.length > max ? "#{s[0, max]}…" : s
       end
     end
   end

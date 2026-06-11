@@ -10,14 +10,7 @@ RSpec.describe Rubino::CLI::ToolsCommand do
   # boots one. It now registers the defaults (idempotently) so the table lists
   # the real, available tools.
   describe "#execute" do
-    # The "does not wipe" example leaves a registry holding ONLY shell;
-    # without this reset any later spec relying on "register defaults when
-    # empty" dies with "Unknown tool: write" (#163, seed 62637).
-    after { Rubino::Tools::Registry.reset! }
-
     it "lists the registered default tools (non-empty) on a cold registry" do
-      Rubino::Tools::Registry.reset!
-
       described_class.new.execute
 
       table = ui.messages.find { |m| m[:level] == :table }
@@ -32,7 +25,6 @@ RSpec.describe Rubino::CLI::ToolsCommand do
     # #20: a `disabled` row with no pointer is a dead end — a one-line footer
     # names the exact config command that re-enables the group.
     it "prints an enable-hint footer when a tool group is disabled" do
-      Rubino::Tools::Registry.reset!
       allow(Rubino.configuration).to receive(:dig).and_call_original
       allow(Rubino.configuration).to receive(:dig).with("tools", "web").and_return(false)
 
@@ -44,7 +36,6 @@ RSpec.describe Rubino::CLI::ToolsCommand do
     end
 
     it "prints no enable-hint when every tool group is enabled" do
-      Rubino::Tools::Registry.reset!
       # web is disabled by default config; flip it on so every group reads enabled.
       allow(Rubino.configuration).to receive(:dig).and_call_original
       allow(Rubino.configuration).to receive(:dig).with("tools", "web").and_return(true)
@@ -56,7 +47,6 @@ RSpec.describe Rubino::CLI::ToolsCommand do
     end
 
     it "does not wipe an already-populated registry" do
-      Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register(Rubino::Tools::ShellTool.new)
       before = Rubino::Tools::Registry.all.size
 

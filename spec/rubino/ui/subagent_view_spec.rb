@@ -113,11 +113,8 @@ RSpec.describe Rubino::UI::SubagentView do
     end
 
     before do
-      Rubino::Tools::BackgroundTasks.reset!
       allow(parent).to receive(:set_subagent_cards) { repaints << :paint }
     end
-
-    after { Rubino::Tools::BackgroundTasks.reset! }
 
     let(:registry) { Rubino::Tools::BackgroundTasks.instance }
     let(:entry)    { registry.reserve(subagent: "explore", prompt: "find the bug") }

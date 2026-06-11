@@ -32,15 +32,8 @@ RSpec.describe "3-level ask_parent → answer_child on a real Loop" do
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
     Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
     Rubino::Tools::Registry.register(Rubino::Tools::AnswerChildTool.new)
-  end
-
-  after do
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
   end
 
   def wait_until(timeout: 3.0)

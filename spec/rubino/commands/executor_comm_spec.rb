@@ -13,13 +13,6 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
   before do
     allow(Rubino).to receive(:database).and_return(db)
     allow(Rubino).to receive(:configuration).and_return(test_configuration)
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
-  end
-
-  after do
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
   end
 
   def info_lines

@@ -8,12 +8,7 @@ require "spec_helper"
 # the old hardcoded counts did (29 vs 23 vs 26 — issue #113).
 RSpec.describe Rubino::Tools::Registry do
   describe "docs/tools.md built-in tool inventory" do
-    before do
-      described_class.reset!
-      described_class.register_defaults!
-    end
-
-    after { described_class.reset! }
+    before { described_class.register_defaults! }
 
     let(:doc) { File.read(File.expand_path("../../docs/tools.md", __dir__)) }
 

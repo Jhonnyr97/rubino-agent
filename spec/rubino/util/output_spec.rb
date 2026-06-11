@@ -46,4 +46,23 @@ RSpec.describe Rubino::Util::Output do
       expect { described_class.preview(frozen) }.not_to raise_error
     end
   end
+
+  describe ".elide" do
+    it "returns the text unchanged when within the budget" do
+      expect(described_class.elide("hello", 80)).to eq("hello")
+    end
+
+    it "returns the text unchanged when exactly at the budget" do
+      expect(described_class.elide("abcde", 5)).to eq("abcde")
+    end
+
+    it "cuts to max chars and appends an ellipsis when over budget" do
+      expect(described_class.elide("abcdef", 3)).to eq("abc…")
+    end
+
+    it "coerces non-string input via #to_s" do
+      expect(described_class.elide(12_345, 3)).to eq("123…")
+      expect(described_class.elide(nil, 10)).to eq("")
+    end
+  end
 end

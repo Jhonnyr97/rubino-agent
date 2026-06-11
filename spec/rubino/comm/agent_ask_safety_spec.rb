@@ -11,9 +11,6 @@
 RSpec.describe "safe blocking ask (S5a)" do
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
-  before { Rubino::Tools::BackgroundTasks.reset! }
-  after  { Rubino::Tools::BackgroundTasks.reset! }
-
   def wait_until(timeout: 2.0)
     deadline = Time.now + timeout
     sleep 0.005 until yield || Time.now > deadline

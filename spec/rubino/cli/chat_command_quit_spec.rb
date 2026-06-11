@@ -10,9 +10,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
-  before { Rubino::Tools::BackgroundTasks.reset! }
-  after  { Rubino::Tools::BackgroundTasks.reset! }
-
   # A Null UI that records the warning/info lines and can play an interactive
   # terminal answering the confirm prompt.
   def recording_ui(interactive: false, answer: nil)

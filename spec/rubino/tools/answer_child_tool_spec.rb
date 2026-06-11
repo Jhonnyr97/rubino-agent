@@ -9,9 +9,6 @@ RSpec.describe Rubino::Tools::AnswerChildTool do
 
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
-  before { Rubino::Tools::BackgroundTasks.reset! }
-  after  { Rubino::Tools::BackgroundTasks.reset! }
-
   # A child OWNED by `owner`, parked on a registered ask gate (the state
   # ask_parent leaves it in when the owner is an agent).
   def waiting_child(owner_id:)

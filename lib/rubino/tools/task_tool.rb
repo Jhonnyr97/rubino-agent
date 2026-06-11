@@ -199,7 +199,7 @@ module Rubino
 
         event_bus&.emit(Interaction::Events::SUBAGENT_SPAWNED,
                         task_id: entry.id, subagent: definition.name,
-                        prompt: truncate(prompt, 200))
+                        prompt: Rubino::Util::Output.elide(prompt, 200))
         # Paint the collapsed card for this just-spawned subagent immediately so
         # it shows "running · 0 tools" the instant delegation starts, not only
         # after its first child tool fires.
@@ -236,7 +236,7 @@ module Rubino
         repaint_parent_cards(parent_ui)
         event_bus&.emit(Interaction::Events::SUBAGENT_COMPLETED,
                         task_id: entry.id, subagent: entry.subagent,
-                        status: "completed", output: truncate(text, 400))
+                        status: "completed", output: Rubino::Util::Output.elide(text, 400))
       rescue Exception => e # rubocop:disable Lint/RescueException
         BackgroundTasks.instance.complete(entry, status: :failed, error: e.message)
         # A failure landing on a stop-requested entry was recorded as :stopped
@@ -271,7 +271,7 @@ module Rubino
         unless undelivered.empty?
           surface_completion(parent_ui,
                              "⚠ #{entry.id} · steer note not delivered (task completed first): " \
-                             "#{truncate(undelivered.join(" | "), 80)}")
+                             "#{Rubino::Util::Output.elide(undelivered.join(" | "), 80)}")
         end
         surface_completion(parent_ui, completion_summary(entry, text),
                            id: entry.id, status: self.class.noop_result?(text) ? "no-op" : "done",
@@ -357,12 +357,12 @@ module Rubino
 
       def completion_notice(entry, text, undelivered: [])
         notice = "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') completed.\n" \
-                 "Result:\n#{truncate(text, 4000)}\n" \
+                 "Result:\n#{Rubino::Util::Output.elide(text, 4000)}\n" \
                  "(full result via task_result(\"#{entry.id}\"))"
         return notice if undelivered.empty?
 
         notice + "\nNote: a steer note was NOT delivered (the task completed first): " \
-                 "#{truncate(undelivered.join(" | "), 200)}"
+                 "#{Rubino::Util::Output.elide(undelivered.join(" | "), 200)}"
       end
 
       def failure_notice(entry, message)
@@ -516,17 +516,12 @@ module Rubino
         !!decision
       end
 
-      def truncate(text, max)
-        s = text.to_s
-        s.length > max ? "#{s[0, max]}…" : s
-      end
-
       # One-line approval preview for the parent note (#141): the first
       # NON-BLANK line of the command (elided), falling back to the question.
       def approval_preview(cmd, question)
         line = first_nonblank_line(cmd)
         line = first_nonblank_line(question) if line.empty?
-        truncate(line, 80)
+        Rubino::Util::Output.elide(line, 80)
       end
 
       def first_nonblank_line(text)

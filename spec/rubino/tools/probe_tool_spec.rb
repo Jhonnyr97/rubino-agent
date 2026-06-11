@@ -24,9 +24,6 @@ RSpec.describe Rubino::Tools::ProbeTool do
     end.new
   end
 
-  before { Rubino::Tools::BackgroundTasks.reset! }
-  after  { Rubino::Tools::BackgroundTasks.reset! }
-
   def reserve(owner: nil, subagent: "explore")
     registry.reserve(subagent: subagent, prompt: "x", owner_subagent_id: owner)
   end

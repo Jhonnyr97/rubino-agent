@@ -5,15 +5,7 @@
 #   - expose vision when aux is configured (regardless of primary capability)
 #   - expose vision when primary supports vision (even without aux)
 RSpec.describe Rubino::Tools::Registry do
-  before do
-    described_class.reset!
-    described_class.register(Rubino::Tools::VisionTool.new)
-  end
-
-  after do
-    described_class.reset!
-    described_class.register_defaults!
-  end
+  before { described_class.register(Rubino::Tools::VisionTool.new) }
 
   def stub_config(aux_model:, primary_vision:)
     cfg = Marshal.load(Marshal.dump(Rubino.configuration))

@@ -29,10 +29,7 @@ RSpec.describe Rubino::MCP::Manager do
   end
 
   describe "#start_all!" do
-    after { Rubino::Tools::Registry.reset! }
-
     it "starts a client per configured server and registers prefixed tools" do
-      Rubino::Tools::Registry.reset!
       allow(RubyLLM::MCP).to receive(:client) do |**opts|
         opts[:name] == "filesystem" ? fake_client(%w[read_file write_file]) : fake_client(%w[query])
       end
@@ -89,10 +86,7 @@ RSpec.describe Rubino::MCP::Manager do
   # MCPToolWrapper instances from Tools::Registry (before, nothing ever
   # unregistered them, so the model kept seeing tools whose client was gone).
   describe "#stop_server" do
-    after { Rubino::Tools::Registry.reset! }
-
     def start_both
-      Rubino::Tools::Registry.reset!
       allow(RubyLLM::MCP).to receive(:client) do |**opts|
         opts[:name] == "filesystem" ? fake_client(%w[read_file]) : fake_client(%w[query])
       end
@@ -130,10 +124,7 @@ RSpec.describe Rubino::MCP::Manager do
   # #182 — /mcp <server> on re-registers ONE server's tools without
   # re-reading every other client's tool list.
   describe "#register_server_tools" do
-    after { Rubino::Tools::Registry.reset! }
-
     it "registers only the named server's tools" do
-      Rubino::Tools::Registry.reset!
       allow(RubyLLM::MCP).to receive(:client) do |**opts|
         opts[:name] == "filesystem" ? fake_client(%w[read_file]) : fake_client(%w[query])
       end
