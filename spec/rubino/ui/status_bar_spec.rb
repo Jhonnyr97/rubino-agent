@@ -8,9 +8,16 @@ RSpec.describe Rubino::UI::StatusBar do
   let(:plain) { Pastel.new(enabled: false) }
 
   describe ".render" do
-    it "formats model · ctx % · ~used/window tok" do
+    # P9: ONE encoding of the saturation — used/window with the % alongside.
+    it "formats model · ctx ~used/window (%)" do
       line = described_class.render(model: "minimax-m3", tokens: 8_421, window: 64_000, pastel: plain)
-      expect(line).to eq("  minimax-m3 · ctx 13% · ~8.4k/64k tok")
+      expect(line).to eq("  minimax-m3 · ctx ~8.4k/64k (13%)")
+    end
+
+    # P9: a fresh session must not carry a permanent "(0%)".
+    it "drops the percentage entirely below 1%" do
+      line = described_class.render(model: "minimax-m3", tokens: 105, window: 128_000, pastel: plain)
+      expect(line).to eq("  minimax-m3 · ctx ~105/128k")
     end
 
     it "drops the percentage when the window is unknown (nil)" do

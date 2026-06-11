@@ -319,38 +319,42 @@ module Rubino
         nil
       end
 
+      # Color diet (P8): ONE cyan identity line; the hint commands are the
+      # only other accent (they're actionable pointers); descriptions plain.
       def show_welcome
         @ui.separator
         @ui.info("rubino — ask in plain language; it reads, edits, and runs things for you.")
         @ui.blank_line
-        @ui.info("  Ask anything, or try:  /status   what's going on right now")
-        @ui.info("                         /sessions resume past work")
-        @ui.info("                         /memory   what I recall about you")
-        @ui.info("                         /help     all commands and keys")
+        @ui.status("  Ask anything, or try:")
+        @ui.hint_row("/status", "what's going on right now")
+        @ui.hint_row("/sessions", "resume past work")
+        @ui.hint_row("/memory", "what I recall about you")
+        @ui.hint_row("/help", "all commands and keys")
         @ui.separator
       end
 
+      # Labels dim, values plain, cyan only on the actionable pointers (P8).
       def show_status
         @ui.separator
-        @ui.info("  model      #{status_model}")
-        @ui.info("  provider   #{status_provider_line}")
-        @ui.info("  mode       #{Rubino::Modes.current} — #{Rubino::Modes.description}")
-        @ui.info("  display    #{status_display_line}   (use /reasoning · /think)")
-        @ui.info("  approvals  #{status_approvals_line}")
-        @ui.info("  session    #{status_session_line}")
-        @ui.info("  tools      #{status_tools_line}")
+        @ui.panel_line("model", status_model)
+        @ui.panel_line("provider", status_provider_line)
+        @ui.panel_line("mode", "#{Rubino::Modes.current} — #{Rubino::Modes.description}")
+        @ui.panel_line("display", status_display_line, pointer: "(use /reasoning · /think)")
+        @ui.panel_line("approvals", status_approvals_line)
+        @ui.panel_line("session", status_session_line)
+        @ui.panel_line("tools", status_tools_line)
         # MCP only when servers are configured (#182/#186) — a non-MCP user's
         # /status stays exactly as before, and MCP tools stop being invisibly
         # mixed into the truncated tools line as the only trace of MCP.
-        @ui.info("  mcp        #{status_mcp_line}   (use /mcp)") if Rubino::MCP.enabled?
+        @ui.panel_line("mcp", status_mcp_line, pointer: "(use /mcp)") if Rubino::MCP.enabled?
         if (dirs = status_dirs_line)
-          @ui.info("  dirs       #{dirs}   (use /dirs)")
+          @ui.panel_line("dirs", dirs, pointer: "(use /dirs)")
         end
-        @ui.info("  memory     #{status_memory_line}   (use /memory)")
-        @ui.info("  skills     #{status_skills_line}   (use /skills)")
-        @ui.info("  background #{status_background_line}   (use /agents)")
+        @ui.panel_line("memory", status_memory_line, pointer: "(use /memory)")
+        @ui.panel_line("skills", status_skills_line, pointer: "(use /skills)")
+        @ui.panel_line("background", status_background_line, pointer: "(use /agents)")
         if (jobs = status_jobs_line)
-          @ui.info("  jobs       #{jobs}   (use /jobs)")
+          @ui.panel_line("jobs", jobs, pointer: "(use /jobs)")
         end
         @ui.separator
       end
@@ -1776,23 +1780,25 @@ module Rubino
 
       # The two empty states the issue calls out: no servers at all vs the
       # mcp.enabled kill switch.
+      # Empty states are quiet facts, not successes/calls-to-celebrate:
+      # dim, never colored (P8).
       def show_mcp_empty_state
         if mcp_servers_config.any?
-          @ui.info("MCP is disabled (mcp.enabled: false in config.yml) — " \
-                   "#{mcp_servers_config.size} server(s) defined but not started.")
+          @ui.status("MCP is disabled (mcp.enabled: false in config.yml) — " \
+                     "#{mcp_servers_config.size} server(s) defined but not started.")
         else
-          @ui.info("No MCP servers configured.")
-          @ui.info("Add an mcp.servers block to config.yml (see docs/mcp.md), then /mcp reload.")
+          @ui.status("No MCP servers configured.")
+          @ui.status("Add an mcp.servers block to config.yml (see docs/mcp.md), then /mcp reload.")
         end
       end
 
       def show_mcp_list
         mcp_servers_config.each do |name, server_config|
           tools = mcp_tools_for(name).size
-          @ui.info("  #{name} (#{server_config["transport"] || "stdio"})  " \
-                   "#{mcp_status_icon(name)}  ·  #{tools} tool#{"s" if tools != 1}")
+          @ui.panel_line(name, "(#{server_config["transport"] || "stdio"})  " \
+                               "#{mcp_status_icon(name)}  ·  #{tools} tool#{"s" if tools != 1}")
         end
-        @ui.info("/mcp <server> for its tools   ·   /mcp <server> on|off   ·   /mcp reload")
+        @ui.status("/mcp <server> for its tools   ·   /mcp <server> on|off   ·   /mcp reload")
       end
 
       def handle_mcp_server(name, action)
@@ -1822,9 +1828,9 @@ module Rubino
                         end
 
         @ui.info("#{name}  #{mcp_status_icon(name)}")
-        @ui.info("  transport  #{transport}  ·  #{target}")
+        @ui.panel_line("transport", "#{transport}  ·  #{target}")
         last_error = Rubino::MCP.manager&.last_errors&.dig(name)
-        @ui.info("  last error #{last_error}") if last_error
+        @ui.panel_line("last error", last_error) if last_error
         show_mcp_server_tools(name)
       end
 

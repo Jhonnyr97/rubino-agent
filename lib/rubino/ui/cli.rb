@@ -214,16 +214,17 @@ module Rubino
         return true if approval_cached?(scope)
 
         # Finalize any live streaming state before the approval card so the card
-        # header doesn't glue onto it ("thinking…◆ Allow shell with:" or a
-        # reasoning tail like "Let me run this.◆ Allow…"). The model emits
-        # reasoning/content right up to the tool call, so the transient
+        # header doesn't glue onto it ("thinking…⚠ shell wants:" or a
+        # reasoning tail like "Let me run this.⚠ shell wants…"). The model
+        # emits reasoning/content right up to the tool call, so the transient
         # indicator or the in-progress stream tail is still on the current line
         # when approval is requested. #finalize_stream commits the tail and
         # clears the indicator, mirroring a normal stream_end.
         finalize_stream
 
+        # ⚠ is the attention glyph (P7): ◆ belongs to the animated status row.
         rule = derive_rule(tool, command, pattern_key)
-        $stdout.puts @pastel.yellow("◆ #{question}")
+        $stdout.puts @pastel.yellow("⚠ #{question}")
         # The danger annotation is the single most safety-relevant line on the
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
         $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
@@ -264,6 +265,21 @@ module Rubino
 
       def separator
         $stdout.puts @pastel.dim("─" * 80)
+      end
+
+      # Panel color diet (P8): dim label, PLAIN value, cyan reserved for the
+      # actionable pointer (`(use /mcp)`). The ljust width matches the
+      # /status grid so values line up in one column.
+      def panel_line(label, value, pointer: nil)
+        row = "  #{@pastel.dim(label.to_s.ljust(10))} #{value}"
+        row += "   #{@pastel.cyan(pointer)}" if pointer
+        $stdout.puts row
+      end
+
+      # Welcome-panel hint row (P8): the actionable command is the ONE cyan
+      # accent; its description stays plain.
+      def hint_row(command, description)
+        $stdout.puts "    #{@pastel.cyan(command.to_s.ljust(9))} #{description}"
       end
 
       # --- Compact timeline rendering (M2) ---
@@ -1227,6 +1243,14 @@ module Rubino
         Security::PrefixDeriver.narrow_rule_for(tool: "shell", command: command.to_s)
       end
 
+      # A DEDICATED TTY::Prompt for the approval menu whose output is wrapped
+      # in IndentedIO, so the question + menu render in the SAME column as the
+      # card's body (P7) instead of flush-left under a split card. Separate
+      # from @prompt so #ask and other prompts keep their flush layout.
+      def approval_prompt
+        @approval_prompt ||= TTY::Prompt.new(output: IndentedIO.new)
+      end
+
       # Prompts for the approval choice. The menu is built from the derived
       # rule: an "always — allow `<prefix>` commands" item is offered only when
       # a :prefix rule is derivable (non-dangerous command). For a dangerous
@@ -1244,7 +1268,7 @@ module Rubino
           # "<Approve|Deny> — <scope>" verb phrase, so the affirmatives and
           # denies read symmetrically instead of mixing "yes, once" with
           # "no — deny this once".
-          @prompt.select("approve?", cycle: false) do |menu|
+          approval_prompt.select("approve?", cycle: false) do |menu|
             menu.choice "Approve once", :once
             menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
             menu.choice "Approve — this command (always)",       :always_command

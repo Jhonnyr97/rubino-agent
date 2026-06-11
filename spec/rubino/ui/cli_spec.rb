@@ -1145,18 +1145,18 @@ RSpec.describe Rubino::UI::CLI do
 
     let(:cache) { Rubino::Run::SessionApprovalCache.new }
 
-    # Stubs @prompt.select to return the choice symbol the menu would yield.
+    # Stubs the approval prompt's select to return the menu's choice symbol.
     def stub_choice(symbol)
       prompt = instance_double(TTY::Prompt)
       allow(prompt).to receive(:select).and_return(symbol)
-      ui.instance_variable_set(:@prompt, prompt)
+      ui.instance_variable_set(:@approval_prompt, prompt)
       prompt
     end
 
-    it "prints the question with ◆ prefix before prompting" do
+    it "prints the question with the yellow ⚠ prefix before prompting (P7)" do
       stub_choice(:once)
       expect { ui.confirm("Allow shell with args?") }
-        .to output(/◆ Allow shell with args/).to_stdout
+        .to output(/⚠ Allow shell with args/).to_stdout
     end
 
     it "clears a live 'thinking…' indicator before the approval card" do
@@ -1166,10 +1166,10 @@ RSpec.describe Rubino::UI::CLI do
         allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.confirm("Allow shell with args?")
       end
-      # The clear-line escape must land BEFORE the ◆ card header, so the header
+      # The clear-line escape must land BEFORE the ⚠ card header, so the header
       # never glues onto "thinking…".
-      expect(out).to match(/thinking….*\r\e\[2K.*◆ Allow shell with args/m)
-      expect(out).not_to include("thinking…◆")
+      expect(out).to match(/thinking….*\r\e\[2K.*⚠ Allow shell with args/m)
+      expect(out).not_to include("thinking…⚠")
     end
 
     it "finalizes an in-progress content stream before the approval card" do
@@ -1180,8 +1180,8 @@ RSpec.describe Rubino::UI::CLI do
       end
       # The reasoning tail must be committed on its own line — the card header
       # never glues onto it ("Let me run this.◆ Allow…").
-      expect(out).not_to include("Let me run this.◆")
-      expect(out).to include("◆ Allow shell with args")
+      expect(out).not_to include("Let me run this.⚠")
+      expect(out).to include("⚠ Allow shell with args")
     end
 
     it "returns true for 'yes once' without remembering" do
@@ -1300,7 +1300,7 @@ RSpec.describe Rubino::UI::CLI do
         blk.call(menu)
         :no
       end
-      ui.instance_variable_set(:@prompt, prompt)
+      ui.instance_variable_set(:@approval_prompt, prompt)
       capture_stdout do
         ui.confirm("ok?", scope: "shell:rm -rf /tmp/x", tool: "shell",
                           command: "rm -rf /tmp/x", pattern_key: key, description: desc)
@@ -1377,7 +1377,7 @@ RSpec.describe Rubino::UI::CLI do
         blk.call(menu)
         :no
       end
-      ui.instance_variable_set(:@prompt, prompt)
+      ui.instance_variable_set(:@approval_prompt, prompt)
       capture_stdout do
         ui.confirm("ok?", scope: "shell:git status", tool: "shell", command: "git status")
       end

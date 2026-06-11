@@ -275,9 +275,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
       stub_store_with([{ content: "x" * 4_000 }]) # 4000 chars / 4 = ~1000 tokens of the 128k default
       line = cmd.send(:build_status_line, status_runner)
       expect(line).to include("minimax-m3")
-      expect(line).to include("ctx ")
-      expect(line).to include("1%")
-      expect(line).to include("~1k/128k tok")
+      expect(line).to include("ctx ~1k/128k")
+      expect(line).to include("(1%)")
     end
 
     it "prefers the last response's REAL recorded usage over the estimate" do
@@ -288,8 +287,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
                         { content: "ok", metadata: { input_tokens: 7_800 }, token_count: 200 }
                       ])
       line = cmd.send(:build_status_line, status_runner)
-      expect(line).to include("~8k/128k tok") # 7800 + 200
-      expect(line).to include("6%")
+      expect(line).to include("ctx ~8k/128k") # 7800 + 200
+      expect(line).to include("(6%)")
     end
 
     it "honours model.context_length as the window" do
