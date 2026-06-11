@@ -185,6 +185,10 @@ You can keep typing while a turn is running — the pinned input stays live:
 - **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does. At idle (no turn running) there is nothing to queue behind, so Alt+Enter submits the line immediately, same as Enter.
 - **`/queued <message>`** is the terminal-independent fallback for Alt+Enter (some terminals don't deliver the chord) — it queues the message the same way.
 
+### Keys: `Esc Esc` — rewind to an earlier message
+
+Press **Esc twice** (within ~0.4s) at the idle prompt to rewind: a picker opens over your previous messages in this session, most recent first (`5m ago · <first 60 chars>`; arrows + Enter, Esc cancels). Picking one **forks the session at the point before that message** — the same copy-truncated lineage `/branch` uses, so the original session stays intact — switches into the fork (a dim `┄ rewound to message N — editing ┄` note marks it), and pre-fills the input with that message, multiline and all, ready to edit; Enter resends it as the next turn on the fork. Esc in the picker cancels with nothing changed. A single Esc keeps its usual meaning (dismissing the completion menu — that first Esc also arms the chord, so Esc-Esc over an open menu dismisses then rewinds), and during a turn the chord does nothing — rewind is idle-only.
+
 ### The `!` prefix: run a shell command yourself
 
 Start a line with `!` to run the rest of it as a shell command, immediately — the same bash-mode escape Claude Code, Gemini CLI, Codex CLI and opencode ship:

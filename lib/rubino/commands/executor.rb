@@ -1660,6 +1660,7 @@ module Rubino
         @ui.info("  Shift-Tab     - cycle mode (default → plan → yolo)")
         @ui.info("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
         @ui.info("  Ctrl-C        - cancel the turn (twice to exit)")
+        @ui.info("  Esc Esc       - rewind to an earlier message (fork + edit & resend)")
         @ui.info("  Tab           - complete the highlighted /command or @file")
         @ui.info("  /             - start a command;  @  attach a file/image")
         @ui.blank_line

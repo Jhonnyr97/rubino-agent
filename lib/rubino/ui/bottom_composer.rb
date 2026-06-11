@@ -80,6 +80,13 @@ module Rubino
       # fallback for Alt+Enter (which some terminals don't deliver).
       QUEUED_PREFIX = "/queued "
 
+      # Double-Esc window (seconds): two LONE Esc presses within this at the
+      # IDLE prompt fire the +on_double_esc+ hook (the Esc-Esc rewind picker —
+      # the Claude Code muscle-memory chord). Tight enough that a deliberate
+      # single Esc (menu dismiss) followed by an unrelated Esc later never
+      # reads as a chord.
+      DOUBLE_ESC_SECONDS = 0.4
+
       # Bracketed paste (DEC 2004): the terminal wraps pasted text in
       # ESC[200~ … ESC[201~ so we can tell a PASTE from typed keystrokes and
       # keep each embedded \n from submitting a half-line (L1 — "pasteline2"
@@ -150,16 +157,30 @@ module Rubino
       #   on a placeholder deletes it WHOLE. Shared across the per-turn
       #   composers by the chat command, like +pending_queued+. nil ⇒ every
       #   paste inlines into the buffer (standalone / tests), as before.
+      # @param on_double_esc [#call, nil] invoked when the user presses Esc
+      #   twice within {DOUBLE_ESC_SECONDS} at the IDLE prompt — the Esc-Esc
+      #   rewind chord. Wired only on the IDLE composer (the chat loop opens
+      #   the rewind picker from it); the in-turn composer leaves it nil, so
+      #   Esc keeps no double-tap meaning during a turn. With a menu open the
+      #   first Esc keeps its dismiss meaning AND arms the chord, so Esc-Esc
+      #   over a menu reads dismiss-then-rewind. The hook runs on the reader
+      #   thread — callers must only flip a flag, never block or take the
+      #   composer's locks (the idle loop drains it, like the Ctrl+C trap).
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
                      rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
-                     status_line: nil, max_input_rows: nil, paste_store: nil)
+                     status_line: nil, max_input_rows: nil, paste_store: nil,
+                     on_double_esc: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
         @on_ctrl_o     = on_ctrl_o
         @on_mode_cycle = on_mode_cycle
+        @on_double_esc = on_double_esc
+        # Monotonic time of the last LONE Esc (nil when unarmed) — the
+        # double-tap window the Esc-Esc rewind chord measures against.
+        @last_esc_at   = nil
         @echo          = echo
         @on_interrupt  = on_interrupt
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
@@ -557,6 +578,24 @@ module Rubino
         @last_idle_int_at = now
         announce("(press Ctrl+C again to exit)")
         :hint
+      end
+
+      # Replaces the editable buffer with +text+ — MULTILINE-SAFE: real
+      # newlines stay in the buffer and render as real row breaks, exactly
+      # like a bracketed paste — parking the caret at the end, ready to edit.
+      # Used by the Esc-Esc rewind to pre-fill the picked message for
+      # edit-and-resend. Any open completion menu is closed (the text is a
+      # finished message, not a token being typed; typing afterwards reopens
+      # it via the normal auto-update) and history navigation resets so a
+      # fresh ↑ starts from the newest entry. nil/empty clears the buffer.
+      def prefill(text)
+        @render.synchronize do
+          @menu.close!
+          @buffer.replace(text.to_s)
+          @cursor = @buffer.length
+          @history.reset!
+          redraw
+        end
       end
 
       # The card rows currently shown (test/inspection helper).
@@ -1313,7 +1352,11 @@ module Rubino
       def consume_escape_sequence
         action, arg = @escapes.read_action
         case action
-        when :esc            then dismiss_menu_or_noop
+        when :esc            then handle_lone_esc
+        # A fast double-tap whose two ESC bytes landed in one read burst:
+        # exactly two lone Escs back-to-back (dismiss/arm then fire — same
+        # path, so menu and idle gating behave identically).
+        when :esc_esc        then 2.times { handle_lone_esc }
         when :alt_enter      then queue_alt_enter
         when :paste          then submit_paste(arg)
         when :mode_cycle     then cycle_mode # Shift+Tab
@@ -1330,15 +1373,38 @@ module Rubino
 
       # Lone ESC: dismiss an open completion menu (immediate — no keyseq_timeout),
       # leaving the buffer exactly as the user typed it (no fused candidate). The
-      # dismiss STICKS for the current token (see CompletionMenu#dismiss!). When
-      # no menu is open it's a harmless no-op.
-      def dismiss_menu_or_noop
-        return unless menu_open?
+      # dismiss STICKS for the current token (see CompletionMenu#dismiss!).
+      #
+      # Every lone Esc also ARMS the Esc-Esc double-tap: a second lone Esc
+      # within {DOUBLE_ESC_SECONDS} fires +on_double_esc+ (the idle rewind
+      # picker). The menu dismiss keeps its meaning — Esc-Esc over an open
+      # menu reads dismiss-then-arm, with the SECOND Esc (menu now closed)
+      # triggering the chord. Idle-only: with no hook wired (the in-turn
+      # composer) or while a turn is active, the chord never fires, so Esc
+      # mashing mid-turn stays a quiet no-op.
+      def handle_lone_esc
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        @render.synchronize do
-          @menu.dismiss!
-          redraw # repaint to CLEAR the now-closed menu rows above the prompt
+        if menu_open?
+          @render.synchronize do
+            @menu.dismiss!
+            redraw # repaint to CLEAR the now-closed menu rows above the prompt
+          end
+        elsif double_esc_armed?(now)
+          @last_esc_at = nil
+          @on_double_esc.call
+          return
         end
+
+        @last_esc_at = now
+      end
+
+      # True when a prior lone Esc armed the chord within the window and the
+      # composer may fire it: a hook is wired AND the prompt is idle (no turn
+      # running, no content streaming) — rewind is an idle-only gesture.
+      def double_esc_armed?(now)
+        @on_double_esc && !@turn_active && !@content_streaming &&
+          @last_esc_at && (now - @last_esc_at) <= DOUBLE_ESC_SECONDS
       end
 
       # Shift+Tab: ask the callback to cycle + persist the mode, then adopt the

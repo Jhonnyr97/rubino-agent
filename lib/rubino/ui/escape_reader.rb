@@ -31,6 +31,7 @@ module Rubino
       # return what it MEANS, as one of:
       #
       #   [:esc]                      lone ESC (no following bytes)
+      #   [:esc_esc]                  two ESC bytes in ONE burst (fast double-tap)
       #   [:alt_enter]                Alt/Meta+Enter (ESC CR / ESC LF)
       #   [:paste, body]              bracketed paste with its raw body
       #   [:mode_cycle]               Shift+Tab (ESC[Z)
@@ -45,6 +46,7 @@ module Rubino
       def read_action
         case read_nonblock_char
         when nil        then [:esc]
+        when "\e"       then double_escape_action
         when "\r", "\n" then [:alt_enter]
         when "["        then csi_action(read_csi)
         when "O"        then final_action(read_nonblock_char, modifier: 1)
@@ -54,6 +56,18 @@ module Rubino
       end
 
       private
+
+      # Two ESC bytes arrived in ONE burst: a fast Esc-Esc double-tap lands
+      # both before the reader wakes, so the second ESC shows up as the tail
+      # of the first. With nothing after it that IS the double-tap
+      # ([:esc_esc] — the composer treats it as two lone Escs for the rewind
+      # chord); with a real sequence after it (ESC ESC [ A — a Meta-prefixed
+      # arrow on some terminals) the leading ESC is just the Meta prefix, so
+      # the inner action passes through unchanged.
+      def double_escape_action
+        inner = read_action
+        inner == [:esc] ? [:esc_esc] : inner
+      end
 
       # Acts on a parsed CSI sequence. Bracketed paste and Shift+Tab are
       # special; everything else splits into "params;…final" so a modified
