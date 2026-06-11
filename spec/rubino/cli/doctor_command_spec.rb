@@ -185,7 +185,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       verdict = ui.messages.last
       expect(verdict[:level]).to eq(:info) # informational note about optional check
-      success = ui.messages.find { |m| m[:level] == :success }
+      success = ui.messages.find { |m| m[:level] == :success && m[:message].to_s.include?("checks passed") }
       expect(success[:message]).to include("All 6 checks passed!")
       # The summary must NOT contain a "6/7" warning verdict.
       expect(ui.messages.none? { |m| m[:level] == :warning && m[:message].to_s.match?(%r{\d/\d}) }).to be(true)
@@ -270,6 +270,25 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       expect(result[:status]).to eq(:fail)
       expect(ui.messages.last).to include(level: :error)
+    end
+  end
+
+  describe "#check_document_converters (#6, non-scoring)" do
+    it "reports the always-available pure-ruby formats as success" do
+      doctor.send(:check_document_converters)
+      successes = ui.messages.select { |m| m[:level] == :success }.map { |m| m[:message].to_s }
+      expect(successes).to include(a_string_including("plain/code supported"))
+      expect(successes).to include(a_string_including("csv supported"))
+      expect(successes).to include(a_string_including("html supported"))
+    end
+
+    it "warns (never fails) for a format whose optional gem is absent" do
+      allow(Rubino::Documents::Registry).to receive(:capabilities)
+        .and_return("pdf" => false)
+      doctor.send(:check_document_converters)
+      warning = ui.messages.find { |m| m[:level] == :warning }
+      expect(warning[:message]).to include("pdf not available")
+      expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
     end
   end
 end

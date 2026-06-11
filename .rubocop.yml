@@ -24,6 +24,9 @@ AllCops:
     - "doc/**/*"
     - "_yardoc/**/*"
     - "Gemfile.lock"
+    # Test fixtures are sample input documents (e.g. a .rb code sample for the
+    # plain-text converter), not project source -- they must not be linted.
+    - "spec/fixtures/**/*"
 
 # --- House style: strings ----------------------------------------------------
 

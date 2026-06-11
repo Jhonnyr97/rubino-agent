@@ -93,6 +93,10 @@ module Rubino
           register(Rubino::Tools::MemoryTool.new)
           register(Rubino::Tools::SessionSearchTool.new)
           register(Rubino::Tools::AttachFileTool.new)
+          # Gated, on-demand attachment reader (#6): converts a document to
+          # Markdown IN-PROCESS (Rubino::Documents) and frames it as untrusted
+          # data, so attachment bytes enter context only when the model asks.
+          register(Rubino::Tools::ReadAttachmentTool.new)
           register(Rubino::Tools::VisionTool.new)
           # Skills tool: loads a skill body (Level 2) and bundled files
           # (Level 3) on demand. Gated like any tool via `tools.skill`.

@@ -35,6 +35,12 @@ module Rubino
         ui.info("Optional (API/OAuth server):")
         optional = [check_encryption_key]
 
+        # Document converters are an optional in-process capability (#6): report
+        # which CORE formats can be read in-process (their optional gem is
+        # loadable), but never let an absent gem fail doctor — pure-ruby formats
+        # always work and missing extraction gems only narrow the supported set.
+        check_document_converters
+
         # MCP servers are optional integrations (#90): report each configured
         # server's reachability best-effort, but never let a down MCP server
         # fail doctor — it is informational, not a required check, so non-MCP
@@ -218,6 +224,27 @@ module Rubino
         manager.stop_all!
       rescue StandardError => e
         ui.warning("MCP check failed: #{e.message}")
+      end
+
+      # Non-scoring report of the in-process document-conversion capability
+      # (#6), mirroring the MCP "Optional (…)" pattern. Pure-ruby formats are
+      # always green; a gem-backed format whose optional gem isn't installed is
+      # a warning (never a fail), so a healthy default install never shows red
+      # for a capability it can extend by installing an optional gem.
+      def check_document_converters
+        ui = Rubino.ui
+        ui.blank_line
+        ui.info("Optional (document converters, in-process via read_attachment):")
+
+        Rubino::Documents::Registry.capabilities.each do |format, available|
+          if available
+            ui.success("#{format} supported")
+          else
+            ui.warning("#{format} not available (install its optional gem to enable)")
+          end
+        end
+      rescue StandardError => e
+        ui.warning("Document-converter check failed: #{e.message}")
       end
     end
   end

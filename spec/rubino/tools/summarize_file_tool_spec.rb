@@ -67,7 +67,7 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
     File.binwrite(path, "PDF\x00\x01\x02binary")
     result = tool.call("file_path" => path)
     expect(result).to include("looks binary")
-    expect(result).to include("markitdown")
+    expect(result).to include("read_attachment")
     expect(fake_aux.prompts).to be_empty
   end
 

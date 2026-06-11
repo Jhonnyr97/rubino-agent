@@ -123,4 +123,36 @@ RSpec.describe Rubino::Documents do
         .to include("plain/code", "csv", "json", "xml", "html")
     end
   end
+
+  describe "degradation — optional gem not loadable" do
+    # The core safety contract: when a converter's optional gem can't be
+    # required, the converter reports itself unavailable and to_markdown returns
+    # nil (so the caller falls back to the shell hint) -- never raises.
+    it "returns nil for a format whose converter is unavailable, without raising" do
+      Dir.mktmpdir do |d|
+        path = File.join(d, "sheet.xlsx")
+        File.binwrite(path, "PK\x03\x04#{"\x00" * 64}")
+
+        allow_any_instance_of(Rubino::Documents::Converters::Xlsx) # rubocop:disable RSpec/AnyInstance
+          .to receive(:available?).and_return(false)
+
+        xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        result = nil
+        expect { result = described_class.to_markdown(path, mime: xlsx_mime) }
+          .not_to raise_error
+        expect(result).to be_nil
+      end
+    end
+
+    it "never raises out of to_markdown even on a converter exception" do
+      Dir.mktmpdir do |d|
+        path = File.join(d, "x.csv")
+        File.write(path, "a,b\n1,2\n")
+        allow_any_instance_of(Rubino::Documents::Converters::Csv) # rubocop:disable RSpec/AnyInstance
+          .to receive(:convert).and_raise(RuntimeError, "boom")
+        expect { described_class.to_markdown(path, mime: "text/csv") }.not_to raise_error
+        expect(described_class.to_markdown(path, mime: "text/csv")).to be_nil
+      end
+    end
+  end
 end
