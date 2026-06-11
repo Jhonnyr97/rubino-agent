@@ -534,6 +534,11 @@ module Rubino
       # The card rows currently shown (test/inspection helper).
       attr_reader :cards
 
+      # The REAL terminal IO captured before the StdoutProxy swap. UI::Notifier
+      # rings the attention bell here while a turn owns the screen — BEL never
+      # moves the cursor, so it can't disturb the pinned input block.
+      attr_reader :output
+
       # True when the /command + @file completion menu is open (inspection
       # helper; the reader/specs check it to branch Tab/Enter/Esc handling).
       def menu_open?

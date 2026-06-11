@@ -47,6 +47,33 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  describe "notification accessors (attention bell + command hook)" do
+    it "defaults: enabled, bell on, no command, 10s long-turn threshold" do
+      expect(config.notifications_enabled?).to be true
+      expect(config.notifications_bell?).to be true
+      expect(config.notifications_command).to be_nil
+      expect(config.notifications_min_turn_seconds).to eq(10.0)
+    end
+
+    it "only an explicit false disables the channel switches" do
+      cfg = test_configuration("notifications" => { "enabled" => false, "bell" => false })
+      expect(cfg.notifications_enabled?).to be false
+      expect(cfg.notifications_bell?).to be false
+    end
+
+    it "returns the configured command, treating blank as nil" do
+      cfg = test_configuration("notifications" => { "command" => "notify-send rubino" })
+      expect(cfg.notifications_command).to eq("notify-send rubino")
+      expect(test_configuration("notifications" => { "command" => "" }).notifications_command).to be_nil
+    end
+
+    it "min_turn_seconds reads the override and falls back to the default for nil" do
+      cfg = test_configuration("notifications" => { "min_turn_seconds" => 30 })
+      expect(cfg.notifications_min_turn_seconds).to eq(30.0)
+      expect(test_configuration("notifications" => {}).notifications_min_turn_seconds).to eq(10.0)
+    end
+  end
+
   describe "compression accessors" do
     it "returns compression threshold" do
       expect(config.compression_threshold).to eq(0.50)

@@ -848,6 +848,23 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(registry.find(entry.id).approval_gate).to be_nil
     end
 
+    it "rings the parent CLI's attention notifier when the child parks on approval" do
+      notifier  = instance_spy(Rubino::UI::Notifier)
+      parent_ui = instance_double(Rubino::UI::CLI, notifier: notifier)
+      allow(parent_ui).to receive(:is_a?).and_return(false) # quiet surface_completion
+      allow(tool).to receive(:entry_parent_ui).and_return(parent_ui)
+
+      h = handler
+      th = Thread.new { h.call("Allow shell?", scope: "shell:ls", command: "ls -la") }
+      wait_until { registry.find(entry.id).status == :needs_approval }
+
+      e = registry.find(entry.id)
+      e.approval_gate.decide(e.approval_id, true)
+      th.join(2)
+      # The ring strictly precedes the gate wait, so after join it has fired.
+      expect(notifier).to have_received(:needs_approval).with(/subagent #{entry.id} needs approval: ls -la/)
+    end
+
     it "resolves to DENY when the user denies" do
       h = handler
       decided = nil

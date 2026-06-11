@@ -150,6 +150,23 @@ ui:
   verbose: false
 ```
 
+### notifications
+
+Attention signals for the moments the agent needs human eyes: a long turn finishing, an approval prompt parking the run on a decision, or a background subagent escalating an `ask_parent` to you (the ⛔ banner).
+
+```yaml
+notifications:
+  enabled: true          # master switch for all attention signals
+  bell: true             # terminal bell (BEL) per event; on iTerm2 an OSC 9 escape is also sent (native macOS notification)
+  command: null          # optional shell command spawned non-blocking per event, e.g. "osascript -e \"display notification ...\""
+  min_turn_seconds: 10   # a turn must run at least this long before its completion notifies; quick turns stay silent
+```
+
+- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`), `blocked` (a background child escalated `ask_parent` to the human).
+- **Bell hygiene**: the BEL byte is only ever written to a real terminal — never into a pipe — and is routed to the real terminal IO even while the bottom composer owns the screen (BEL doesn't move the cursor).
+- **`command` hook**: runs detached and best-effort (stdio nulled, errors swallowed to the log) with `RUBINO_EVENT` (`turn_finished` | `needs_approval` | `blocked`) and `RUBINO_MESSAGE` in its environment — the seam for `osascript` (macOS), `notify-send` (Linux), or any custom notifier.
+- **Spam control**: events within ~1s of the last emitted one coalesce into a single signal.
+
 ### reasoning & thinking
 
 Two orthogonal first-class knobs — these are what `/reasoning` and `/think` write:
