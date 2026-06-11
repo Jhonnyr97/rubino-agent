@@ -157,11 +157,18 @@ RSpec.describe "BottomComposer scroll-boundary PTY" do
           exec("ruby", file)
         end
         slave.close
+        # Read until the CHILD EXITS (EOF/EIO on the master), not until a
+        # quiet window elapses: the old `select(0.5) or break` raced the
+        # child's boot (`require "rubino"` alone can cross 0.5s under load),
+        # capturing a prefix — or nothing — and tripping the grid asserts
+        # (issue #236). The deadline is only a safety net for a hung child.
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
         loop do
           chunk = master.read_nonblock(4096)
           out << chunk.force_encoding(Encoding::UTF_8)
         rescue IO::WaitReadable
-          IO.select([master], nil, nil, 0.5) or break
+          break if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          IO.select([master], nil, nil, 0.5)
           retry
         rescue Errno::EIO, EOFError
           break
