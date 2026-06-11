@@ -69,7 +69,7 @@ API's `parent_session_id` path.
 - `Runner` — Executes jobs, records runs
 - `Worker` — Polling loop for background processing
 - `Registry` — Maps job types to handler classes
-- Handlers: ExtractMemory, SummarizeSession, CompactSession, Cleanup, IndexMemory
+- Handlers: ExtractMemory, SummarizeSession, CompactSession, CleanupSessions, DistillSkill
 
 ### `tools/`
 - `Base` — Abstract tool interface (name, description, input_schema, risk_level, call)

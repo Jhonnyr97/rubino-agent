@@ -267,6 +267,19 @@ jobs:
   retry_backoff_seconds: 30
 ```
 
+### tasks
+
+Caps on the nested-subagent (`task` delegation) tree, all enforced in one place (`Tools::BackgroundTasks#reserve`). See [agents.md](agents.md#nesting-and-caps) for the model.
+
+```yaml
+tasks:
+  max_depth: 2                   # max nesting depth (human → child → grandchild)
+  max_children_per_node: 3       # max LIVE direct children per node
+  max_concurrent_total: 8        # hard ceiling on total LIVE subagents across the tree
+  max_live_probes_per_child: 5   # per-child budget for billed live probes (probe(live: true))
+  ask_parent_timeout: 900        # seconds a blocking ask_parent waits before the child self-heals
+```
+
 ### tools
 
 ```yaml
@@ -402,6 +415,8 @@ Experimental. Configuring servers is the opt-in; `mcp.enabled: false` switches M
 ```yaml
 skills:
   enabled: true
+  auto_distill: true        # post-turn skill distillation (DistillSkillJob); separate from `enabled`
+  include_builtin: true     # also scan the gem-bundled skills/ catalogue (e.g. ruby-expert)
   paths:
     - ".rubino/skills"
     - "~/.rubino/skills"

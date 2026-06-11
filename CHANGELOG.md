@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added — CLI redesign & in-chat surfaces
+
+A scroll-native `rubino chat` refresh plus several new slash commands and input affordances. All are documented under [docs/commands.md](docs/commands.md) and [docs/configuration.md](docs/configuration.md).
+
+- **Rail input + status bar.** The chat input now leads with a red `▍` rail and a clean `❯` caret; a dim status bar pinned under the input shows the session mode (dim `default` / yellow `plan` / red `yolo`), the resolved model id, and context saturation. Configurable via `display.statusbar` (default on), `display.tool_output_preview_lines`, and `display.input_max_rows`.
+- **File-backed paste pipeline.** A multi-line paste collapses to a `[Pasted text #N +M lines]` placeholder that expands on send; a very large paste overflows to `<home>/sessions/<id>/paste_N.txt` with a read-tool pointer. Tuned by `paste.collapse_lines` and `paste.file_threshold_tokens`.
+- **`/model`** — show or switch the live session model (persists `model.default`, retargets the running session).
+- **Context hygiene** — `/compact` (compact now), `/clear` (alias for `/new`), `/export [path]` (write the transcript as markdown).
+- **`Esc Esc` rewind** — at the idle prompt, opens a picker over previous messages and forks the session before the chosen one, pre-filled for editing.
+- **Notifications** (`notifications.*`) — attention signals (terminal bell / iTerm2 OSC 9 / optional `command` hook) on a long turn finishing, an approval prompt, or a blocked subagent.
+- **Auto-allow read-only shell** (`approvals.auto_allow_readonly`, default on; `approvals.readonly_commands` to extend) — provably read-only commands (`ls`, `grep`, `git log`, …) run without a prompt, below the hardline floor and `permissions: deny`. See [docs/security.md](docs/security.md#auto-allowed-read-only-commands).
+- **`!` bang prefix** — run a shell line yourself, no approval gate; output streams into the transcript and is injected so the next turn can act on it.
+- **In-chat management surfaces** — `/mcp` (list/restart/disable MCP servers), `/jobs` (the persistent job queue), and `/config` (read/set effective config in the REPL).
+- **Type-ahead while working** — Enter interrupts and runs your line next; Alt+Enter (or `/queued`) queues it after the current turn.
+
 ### Fixed — approval-model safety (W3: #152 #144 #143 #147 #151)
 
 - **Shift+Tab can no longer blind-cycle into yolo** (#152). The press that
