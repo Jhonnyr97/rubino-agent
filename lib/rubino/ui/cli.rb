@@ -65,6 +65,10 @@ module Rubino
         # (frames butt together), :gap (a trailing blank is already open, so
         # the next separator is skipped), :answer, :other.
         @last_block         = :other
+        # Task ids whose FULL report the lifecycle block already rendered
+        # (#subagent_lifecycle): the injected completion notice for one of
+        # these drops its duplicated Result body (#elide_shown_reports).
+        @reported_subagent_ids = []
         @session_id         = session_id || SecureRandom.uuid
         @approval_cache     = approval_cache || Rubino::Run::SessionApprovalCache.instance
       end
@@ -429,9 +433,9 @@ module Rubino
       def subagent_finished(line, id: nil, status: "done", report: nil)
         if @turn_active && id
           (@pending_subagent_footers ||= []) << { fold: "#{id} #{status}",
-                                                  line: line, status: status, report: report }
+                                                  line: line, status: status, report: report, id: id }
         else
-          subagent_lifecycle(line, status: status, report: report)
+          subagent_lifecycle(line, status: status, report: report, id: id)
         end
       end
 
@@ -439,13 +443,16 @@ module Rubino
       # (`▸ sa_e488 · explore · completed · 1 tool · 12s`) — dim; red only on
       # failure — and the child's FULL report markdown-rendered under its own
       # `↳ report:` lead (the #139 fold-in treatment), never amputated to a
-      # one-line head.
-      def subagent_lifecycle(line, status: "done", report: nil)
+      # one-line head. The id is remembered so the completion notice the model
+      # receives next turn doesn't ECHO the same report a second time
+      # (#input_injected elides the already-shown Result body).
+      def subagent_lifecycle(line, status: "done", report: nil, id: nil)
         $stdout.puts unless @last_block == :gap
         $stdout.puts(status == "failed" ? @pastel.red(line) : @pastel.dim(line))
         if report && !report.to_s.strip.empty?
           $stdout.puts @pastel.dim("  ↳ report:")
           commit_markdown_block(report)
+          remember_reported_subagent(id)
         end
         @last_block = :other
       end
@@ -579,10 +586,48 @@ module Rubino
           text.to_s.split("\n").each { |line| composer.commit_queued(line) }
         end
         clear_line
-        first, rest = text.to_s.split("\n", 2)
+        first, rest = elide_shown_reports(text.to_s).split("\n", 2)
         $stdout.puts @pastel.dim("↳ received while working: #{first}")
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
+      end
+
+      # Drops the Result body from a completion notice whose report the
+      # lifecycle block ALREADY rendered in full (#subagent_lifecycle), so the
+      # user doesn't read the same report twice — once at completion and again
+      # when the queued notice is injected next turn. DISPLAY-ONLY: the
+      # model-facing injected text is untouched. Anchored to the notice shape
+      # TaskTool#completion_notice emits; an unmatched notice renders whole
+      # (duplicated beats lost). Each id is consumed on first elision.
+      def elide_shown_reports(text)
+        ids = @reported_subagent_ids
+        return text if ids.nil? || ids.empty?
+
+        ids.dup.each do |id|
+          quoted  = Regexp.escape(id)
+          pattern = Regexp.new(
+            "^(\\[background-task\\] Task #{quoted} \\([^)]*\\) completed\\.)\n" \
+            "Result:\n.*?\n\\(full result via task_result\\(\"#{quoted}\"\\)\\)",
+            Regexp::MULTILINE
+          )
+          replaced = text.sub(pattern) do
+            "#{::Regexp.last_match(1)} (report shown above — full result via task_result(\"#{id}\"))"
+          end
+          next if replaced == text
+
+          text = replaced
+          ids.delete(id)
+        end
+        text
+      end
+
+      # Bounded memory of lifecycle-rendered report ids (see #elide_shown_reports).
+      def remember_reported_subagent(id)
+        return unless id
+
+        @reported_subagent_ids ||= []
+        @reported_subagent_ids << id.to_s
+        @reported_subagent_ids.shift while @reported_subagent_ids.size > 32
       end
 
       # Markdown rendering: assistant output rendered as readable text with
@@ -780,7 +825,9 @@ module Rubino
         # turn that never got one) must not vanish — flush the full block.
         pending = Array(@pending_subagent_footers)
         @pending_subagent_footers = nil
-        pending.each { |p| subagent_lifecycle(p[:line], status: p[:status] || "done", report: p[:report]) }
+        pending.each do |p|
+          subagent_lifecycle(p[:line], status: p[:status] || "done", report: p[:report], id: p[:id])
+        end
       end
 
       # Shows the status row during the model wait. Mid-turn this only swaps
@@ -896,7 +943,7 @@ module Rubino
         @last_block = :gap
       end
 
-      # Tool started renders as compact `● running  name · hint`.
+      # Tool started renders as the quiet `● name hint` open row (P1).
       # The `task` (delegation) tool gets a dedicated row so the timeline reads
       # as a hand-off, not a generic tool call: `● delegated → <subagent>  <prompt>`.
       #
@@ -916,7 +963,7 @@ module Rubino
 
         hint = args_hint(arguments)
         activity_started(name, hint: hint)
-        # The committed `● running` row is in scrollback; SWITCH the status-row
+        # The committed `● name` open row is in scrollback; SWITCH the status-row
         # label to the tool (P3) instead of leaving the live region dead while
         # the tool runs. The engine thread stays the same — label swap only.
         status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
@@ -972,7 +1019,8 @@ module Rubino
         @last_block = :tool
       end
 
-      # Tool finished renders as compact `✓ done · name · metric` or `✗ failed · name · error`.
+      # Tool finished renders as the compact `└ ✓ metric` close row, or
+      # `└ ✗ failed · name · error` in red (P10).
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
       def tool_finished(name, result: nil)
         return delegation_finished(result) if name == "task"
@@ -988,7 +1036,7 @@ module Rubino
         status_back_to_thinking
       end
 
-      # After a tool's `✓ done` row commits, swap the status row back to the
+      # After a tool's `└ ✓` close row commits, swap the status row back to the
       # thinking phase (the P4 inter-tool gap) with the accumulated stats. The
       # live row count is a simple per-turn UI tally — the footer's exact
       # ran/denied split from the Loop stays authoritative.

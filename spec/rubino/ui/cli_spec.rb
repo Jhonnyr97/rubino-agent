@@ -1005,6 +1005,47 @@ RSpec.describe Rubino::UI::CLI do
       end
       expect(out).not_to include("↳ report:")
     end
+
+    # A between-turns completion renders the FULL report immediately; the
+    # queued completion notice injected next turn must not ECHO the same
+    # report body a second time — the head line still confirms the model
+    # received it, the body is elided once already shown.
+    it "does not render the same report twice when the completion notice is injected later" do
+      report = "## Findings\n\n- the bug is in lib/x.rb:42\n\nClosing paragraph."
+      notice = "[background-task] Task sa_e488 (subagent 'explore') completed.\n" \
+               "Result:\n#{report}\n(full result via task_result(\"sa_e488\"))"
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
+                             id: "sa_e488", status: "done", report: report)
+        ui.input_injected(notice)
+      end
+      expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # shown once, at completion
+      expect(out).to include("↳ received while working: [background-task] Task sa_e488")
+      expect(out).to include("report shown above")
+    end
+
+    it "still echoes the full injected notice for a report that was NEVER lifecycle-rendered" do
+      notice = "[background-task] Task sa_x1 (subagent 'explore') completed.\n" \
+               "Result:\nFOUND: lib/y.rb:7\n(full result via task_result(\"sa_x1\"))"
+      out = capture_stdout { ui.input_injected(notice) }
+      expect(out).to include("FOUND: lib/y.rb:7")
+      expect(out).not_to include("report shown above")
+    end
+
+    it "elides only the matching notice when several are injected together" do
+      shown = "shown-report body"
+      other = "other-report body"
+      coalesced = "[background-task] Task sa_a (subagent 'explore') completed.\n" \
+                  "Result:\n#{shown}\n(full result via task_result(\"sa_a\"))\n" \
+                  "[background-task] Task sa_b (subagent 'explore') completed.\n" \
+                  "Result:\n#{other}\n(full result via task_result(\"sa_b\"))"
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_a · explore · completed", id: "sa_a", status: "done", report: shown)
+        ui.input_injected(coalesced)
+      end
+      expect(out.scan(shown).size).to eq(1) # elided in the echo
+      expect(out.scan(other).size).to eq(1) # untouched
+    end
   end
 
   # P12: the live tail WRAPS the in-flight block to the terminal width and
