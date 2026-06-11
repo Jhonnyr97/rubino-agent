@@ -205,6 +205,22 @@ module Rubino
           # scrolls vertically (caret kept in view).
           "input_max_rows" => 8
         },
+        "notifications" => {
+          # Attention signals (UI::Notifier) for the moments the agent needs
+          # human eyes: a long turn finishing, an approval prompt, a blocked
+          # subagent. CLI-only; never emitted into a pipe.
+          "enabled" => true,
+          # Ring the terminal bell (BEL). On iTerm2 an OSC 9 escape is also
+          # sent so it surfaces as a native macOS notification.
+          "bell" => true,
+          # Optional shell command spawned non-blocking per event with
+          # RUBINO_EVENT (turn_finished|needs_approval|blocked) and
+          # RUBINO_MESSAGE in its env — e.g. osascript / notify-send.
+          "command" => nil,
+          # A turn must run at least this many seconds before its completion
+          # notifies; quick turns stay silent.
+          "min_turn_seconds" => 10
+        },
         "thinking" => {
           # Reasoning effort: off | low | medium | high. Mapped to an Anthropic
           # thinking-token budget (off→0, low→4000, medium→8000, high→16000) on

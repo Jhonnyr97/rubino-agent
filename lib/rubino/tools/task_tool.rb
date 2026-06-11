@@ -306,6 +306,18 @@ module Rubino
         "#{secs / 3600}h"
       end
 
+      # Rings the parent's attention notifier (bell/command hook) for a child
+      # parked on an approval — the same best-effort contract as the card
+      # repaint. No-op off the CLI (Null/API expose no notifier).
+      def ring_parent_attention(entry, preview)
+        parent_ui = entry_parent_ui
+        return unless parent_ui.respond_to?(:notifier)
+
+        parent_ui.notifier.needs_approval("subagent #{entry.id} needs approval: #{preview}")
+      rescue StandardError
+        nil
+      end
+
       # Repaints the parent's collapsed card block from the registry snapshot.
       # Best-effort: cosmetic, never breaks the worker. No-op off the CLI.
       def repaint_parent_cards(parent_ui)
@@ -474,6 +486,7 @@ module Rubino
           surface_completion(entry_parent_ui,
                              "● #{entry.id} · #{entry.subagent} · needs approval: #{preview} — /agents #{entry.id}")
           repaint_parent_cards(entry_parent_ui)
+          ring_parent_attention(entry, preview)
           begin
             decision = gate.await(approval_id)
             approved = decision_to_bool(decision)
