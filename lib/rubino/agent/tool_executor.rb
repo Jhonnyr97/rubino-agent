@@ -148,7 +148,9 @@ module Rubino
         result = Tools::Result.success(
           name: name,
           call_id: call_id,
-          output: truncate_output(text, call_id: call_id),
+          output: Util::Output.truncate(text, max_bytes: @config.tool_output_max_bytes,
+                                              max_lines: @config.tool_output_max_lines,
+                                              spill: ->(full) { spill_full_output(full, call_id) }),
           metrics: metrics,
           error_code: error_code&.to_sym,
           artifact: artifact
@@ -376,39 +378,12 @@ module Rubino
         end
       end
 
-      # Truncates long tool output to stay within configured limits, with
-      # tail-bias because the part the agent (and a human reading the log)
-      # actually need is at the end: exit-code suffix, error message,
-      # backtrace, "X failures" line. Head-only truncation drops exactly
-      # the bytes that matter when something blows up at byte 49,999.
-      #
-      # Shape: keep ~10% head + bulk of the budget in the tail + a marker
-      # in the middle saying how many bytes/lines were elided. Mirrors the
-      # pattern Util::Output.preview already uses for the scrollback body.
-      #
-      # When output overflows, the FULL text is also spilled to
-      # <home>/tool-results/<call_id>.txt and the marker points the model at
-      # it, so the elided middle isn't lost — the model can `read` the file
-      # with offset/limit to recover any part. (Claude-Code-style spill.)
-      def truncate_output(output, call_id: nil)
-        max_bytes = @config.tool_output_max_bytes
-        max_lines = @config.tool_output_max_lines
-        text      = output.to_s
-
-        over_bytes = text.bytesize > max_bytes
-        over_lines = text.lines.size > max_lines
-        return text unless over_bytes || over_lines
-
-        spill_path = spill_full_output(text, call_id)
-        text = tail_bias_truncate_bytes(text, max_bytes, spill_path) if over_bytes
-        text = tail_bias_truncate_lines(text, max_lines, spill_path) if text.lines.size > max_lines
-        text
-      end
-
       # Persists the complete (pre-truncation) output to a per-call file under
       # the rubino home so the model can read back whatever the inline
-      # head+tail elided. Best-effort: a write failure just yields no path and
-      # the marker falls back to its grep/head hint. Returns the path or nil.
+      # head+tail elided (the spill seam Util::Output.truncate calls back into
+      # on overflow — Util keeps the pure shaping, the executor keeps the IO).
+      # Best-effort: a write failure just yields no path and the marker falls
+      # back to its grep/head hint. Returns the path or nil.
       def spill_full_output(text, call_id)
         id = call_id.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")
         return nil if id.empty?
@@ -421,48 +396,6 @@ module Rubino
       rescue StandardError => e
         Rubino.logger&.warn(event: "tool_output.spill_failed", error: e.message)
         nil
-      end
-
-      def tail_bias_truncate_bytes(text, max_bytes, spill_path = nil)
-        encoding        = text.encoding
-        recover         = spill_path ? " · full output saved to #{spill_path} — read it with offset/limit" : ""
-        marker_template = "\n... [%d bytes elided#{recover} · use grep/head to narrow] ...\n"
-        marker_max      = (marker_template % 999_999_999).bytesize
-        head_budget     = (max_bytes * 0.1).to_i
-        tail_budget     = max_bytes - head_budget - marker_max
-
-        # Below ~200 bytes the marker eats the entire budget, so fall back
-        # to a simple head truncation (old behavior). Realistic caps go
-        # through the head+tail path.
-        if tail_budget <= 0
-          truncated = text.byteslice(0, max_bytes).to_s.force_encoding(encoding).scrub("")
-          tail_note = spill_path ? " · full output: #{spill_path}" : ""
-          return "#{truncated}\n... [truncated at #{max_bytes} bytes#{tail_note}]"
-        end
-
-        head   = text.byteslice(0, head_budget).to_s.force_encoding(encoding).scrub("")
-        tail   = text.byteslice(-tail_budget, tail_budget).to_s.force_encoding(encoding).scrub("")
-        elided = text.bytesize - head.bytesize - tail.bytesize
-        "#{head}#{format(marker_template, elided)}#{tail}"
-      end
-
-      def tail_bias_truncate_lines(text, max_lines, spill_path = nil)
-        lines = text.lines
-        return text if lines.size <= max_lines
-
-        recover    = spill_path ? " · full output saved to #{spill_path} — read it with offset/limit" : ""
-        head_count = [max_lines / 10, 5].max
-        tail_count = max_lines - head_count - 1
-        # Vanishing budget falls back to head-only truncation.
-        if tail_count <= 0
-          tail_note = spill_path ? " · full output: #{spill_path}" : ""
-          return "#{lines.first(max_lines).join}\n... [truncated at #{max_lines} lines#{tail_note}]"
-        end
-
-        elided = lines.size - head_count - tail_count
-        head   = lines.first(head_count).join
-        tail   = lines.last(tail_count).join
-        "#{head}... [#{elided} lines elided#{recover} · use grep/head to narrow] ...\n#{tail}"
       end
     end
   end

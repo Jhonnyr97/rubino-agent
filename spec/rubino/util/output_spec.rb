@@ -65,4 +65,27 @@ RSpec.describe Rubino::Util::Output do
       expect(described_class.elide(nil, 10)).to eq("")
     end
   end
+
+  # The head+marker+tail SHAPE is pinned at the executor boundary by
+  # tool_output_tail_bias_spec; here we only pin the new spill SEAM (the
+  # injected callback that ToolExecutor wires to its home-dir spill).
+  describe ".truncate spill seam" do
+    it "calls the spill callback with the full pre-truncation text and references its path" do
+      captured = nil
+      result = described_class.truncate("HEAD#{"x" * 5_000}TAIL", max_bytes: 1_000, max_lines: 10_000,
+                                                                  spill: lambda { |text|
+                                                                    captured = text
+                                                                    "/tmp/spill.txt"
+                                                                  })
+      expect(captured).to eq("HEAD#{"x" * 5_000}TAIL")
+      expect(result).to include("/tmp/spill.txt").and include("read it with offset/limit")
+    end
+
+    it "does not call the spill callback when within budget" do
+      called = false
+      expect(described_class.truncate("short", max_bytes: 1_000, max_lines: 100,
+                                               spill: ->(_t) { called = true })).to eq("short")
+      expect(called).to be(false)
+    end
+  end
 end
