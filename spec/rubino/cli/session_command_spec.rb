@@ -43,7 +43,7 @@ RSpec.describe Rubino::CLI::SessionCommand do
     it "destroys the session and its records after the confirm" do
       repo.create(source: "cli", title: "junk")
       session = repo.list(limit: 1).first
-      allow(ui).to receive(:confirm).and_return(true)
+      allow(ui).to receive(:confirm_destructive).and_return(true)
 
       cmd = described_class.new
       cmd.options = { force: false }
@@ -56,7 +56,7 @@ RSpec.describe Rubino::CLI::SessionCommand do
     it "aborts (and keeps the session) when the confirm is declined" do
       repo.create(source: "cli", title: "keep me")
       session = repo.list(limit: 1).first
-      allow(ui).to receive(:confirm).and_return(false)
+      allow(ui).to receive(:confirm_destructive).and_return(false)
 
       cmd = described_class.new
       cmd.options = { force: false }
@@ -66,16 +66,46 @@ RSpec.describe Rubino::CLI::SessionCommand do
       expect(info_lines.join("\n")).to include("Aborted.")
     end
 
+    # #218: a non-interactive / piped / EOF answer must DEFAULT to No and must
+    # NOT delete. UI::Null#confirm_destructive fails closed (false), modelling the
+    # piped `echo n | rubino sessions delete` path — the session must survive.
+    it "keeps the session on a non-interactive (fail-closed) confirm" do
+      repo.create(source: "cli", title: "data loss guard")
+      session = repo.list(limit: 1).first
+
+      cmd = described_class.new
+      cmd.options = { force: false }
+      cmd.delete(session[:id])
+
+      expect(repo.find(session[:id])).not_to be_nil
+      expect(info_lines.join("\n")).to include("Aborted.")
+    end
+
+    # #218: a destructive confirm must never reuse the tool-approval menu.
+    it "uses the destructive yes/No confirm, never the tool-approval prompt" do
+      repo.create(source: "cli", title: "no approval menu")
+      session = repo.list(limit: 1).first
+      allow(ui).to receive(:confirm_destructive).and_return(true)
+      allow(ui).to receive(:confirm)
+
+      cmd = described_class.new
+      cmd.options = { force: false }
+      cmd.delete(session[:id])
+
+      expect(ui).to have_received(:confirm_destructive)
+      expect(ui).not_to have_received(:confirm)
+    end
+
     it "skips the confirm with --force" do
       repo.create(source: "cli", title: "forced")
       session = repo.list(limit: 1).first
-      allow(ui).to receive(:confirm)
+      allow(ui).to receive(:confirm_destructive)
 
       cmd = described_class.new
       cmd.options = { force: true }
       cmd.delete(session[:id])
 
-      expect(ui).not_to have_received(:confirm)
+      expect(ui).not_to have_received(:confirm_destructive)
       expect(repo.find(session[:id])).to be_nil
     end
   end

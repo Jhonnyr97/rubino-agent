@@ -108,6 +108,12 @@ module Rubino
         true
       end
 
+      # Destructive confirm (#218): no human to ask, so fail closed (decline)
+      # — never destroy on the non-interactive Null adapter.
+      def confirm_destructive(_question)
+        false
+      end
+
       def tool_started(name, arguments: nil, at: nil)
         @messages << { level: :tool_started, message: name, arguments: arguments, at: at }
       end

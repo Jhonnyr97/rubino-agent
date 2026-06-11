@@ -773,6 +773,16 @@ module Rubino
           return
         end
 
+        # Destructive, irreversible delete — confirm first, default No (#218).
+        # A piped/Esc/EOF decline must NOT forget the fact.
+        confirmed = @ui.confirm_destructive(
+          %(Forget fact #{memory[:id][0..7]} "#{truncate(memory[:content], 60)}"? This cannot be undone.)
+        )
+        unless confirmed
+          @ui.info("Aborted.")
+          return
+        end
+
         store.delete(memory[:id])
         @ui.success(%(Forgot #{memory[:id][0..7]} "#{truncate(memory[:content], 60)}"))
       end
