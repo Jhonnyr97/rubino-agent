@@ -26,7 +26,7 @@ module Rubino
         git gh rg jq curl wget
         ruby python3 node npm bundle
         docker psql sqlite3 redis-cli
-        ffmpeg pandoc markitdown pdftotext tesseract
+        ffmpeg pandoc markitdown pdftotext tesseract soffice qpdf
       ].freeze
 
       class << self
