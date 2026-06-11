@@ -97,17 +97,27 @@ module Rubino
       # @param input [IO] keystroke source (default $stdin).
       # @param output [IO] where the prompt + above-output is written
       #   (default $stdout).
-      # @param prompt [String] the input-line prefix, e.g. the mode-aware
-      #   "default ❯ " / "yolo ❯ " (may contain ANSI color). Defaults to the
-      #   bare caret for standalone use / tests.
+      # @param prompt [String] the input-line prefix after the rail — the
+      #   plain "❯ " caret (may contain ANSI color). Defaults to the bare
+      #   caret for standalone use / tests. The mode/skill chip that used to
+      #   ride here lives in the STATUS BAR now (the Rail rubino redesign).
+      # @param rail [String, nil] the one-column brand rail (the red "▍")
+      #   drawn as the FIRST column of EVERY input row — the first row AND
+      #   each wrapped/newline continuation — so a multi-row draft reads as
+      #   one block. May carry ANSI color. nil/empty ⇒ no rail (standalone /
+      #   tests / the cooked fallback), with the exact pre-rail geometry.
+      #   The rail is pure input-block chrome: committed echoes
+      #   ("<prompt><line>") never carry it, so scrollback stays clean.
       # @param on_ctrl_o [#call, nil] invoked when the user presses Ctrl+O — the
       #   CLI uses it to REVEAL the last retained reasoning buffer as a `┊` aside
       #   committed into scrollback. The composer never formats reasoning itself;
       #   it only dispatches the keystroke. nil = no-op.
       # @param on_mode_cycle [#call, nil] invoked when the user presses Shift+Tab
       #   to cycle the mode. The callback owns the mode logic (persist + emit the
-      #   transition footer) and RETURNS the freshly-built prompt string (the mode
-      #   chip), which the composer adopts and redraws. The composer holds no mode
+      #   transition footer) and RETURNS the freshly-built STATUS-BAR line (the
+      #   mode token leads it), which the composer adopts and redraws — the mode
+      #   lives in the status bar now, not in a prompt chip. nil return ⇒ no
+      #   status change (e.g. the yolo arm toast). The composer holds no mode
       #   knowledge itself. nil = Shift+Tab is a no-op.
       # @param echo [Symbol] how a submitted line is echoed into scrollback:
       #   :queued (default) is the IN-TURN composer — Enter INTERRUPTS the active
@@ -134,7 +144,7 @@ module Rubino
       # @param max_input_rows [Integer, nil] cap on the input block's visual
       #   rows (config display.input_max_rows); nil ⇒ MAX_INPUT_ROWS.
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
-                     on_ctrl_o: nil, on_mode_cycle: nil,
+                     rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil)
@@ -164,9 +174,17 @@ module Rubino
         # callable indirection keeps it on the composer's CURRENT input.
         @escapes       = EscapeReader.new(-> { @input })
         @prompt = prompt.to_s.empty? ? PROMPT : prompt
-        # Visible width ignores ANSI color escapes so the wrap math is
-        # correct for a colored mode prompt.
+        # The brand rail (red "▍"): the first column of EVERY input row.
+        # Empty ⇒ railless, the exact legacy geometry.
+        @rail = (rail || "").to_s
+        # Visible widths ignore ANSI color escapes so the wrap math is
+        # correct for a colored rail/prompt. @prefix_width is the column the
+        # input text starts in on EVERY row (rail + prompt on the first,
+        # rail + hanging indent on continuations) — all caret/wrap math
+        # anchors to it.
+        @rail_width   = @rail.gsub(ANSI_RE, "").length
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
+        @prefix_width = @rail_width + @prompt_width
         @buffer      = +""
         # Insertion point, measured in CHARACTERS (codepoints) into @buffer.
         # Always in 0..@buffer.length; the terminal cursor is parked here on
@@ -597,26 +615,26 @@ module Rubino
       # never split across rows). The caret is placed where the NEXT typed char
       # will land.
       #
-      # Continuation rows (wrap or "\n") carry a HANGING INDENT of the prompt
+      # Continuation rows (wrap or "\n") carry a HANGING INDENT of the prefix
       # width (P12): every row's text starts in the same column as the first
-      # row's, instead of dropping flush-left to column 0 under an indented
-      # prompt. The indent is pure layout (spaces on render, width here) —
-      # never buffer content.
+      # row's — after the rail + prompt — instead of dropping flush-left to
+      # column 0. The indent is pure layout (rail + spaces on render, width
+      # here) — never buffer content.
       def layout_input
         budget = row_budget
         rows   = [{ chars: [], start: 0, prompt: true }]
-        width  = @prompt_width
+        width  = @prefix_width
 
         @buffer.each_char.with_index do |ch, i|
           if ch == "\n"
             rows << { chars: [], start: i + 1, prompt: false }
-            width = @prompt_width
+            width = @prefix_width
             next
           end
           w = display_width(ch)
           if width + w > budget
             rows << { chars: [], start: i, prompt: false }
-            width = @prompt_width
+            width = @prefix_width
           end
           rows.last[:chars] << ch
           width += w
@@ -632,9 +650,9 @@ module Rubino
       def caret_position(rows)
         idx = rows.rindex { |r| @cursor >= r[:start] } || 0
         row = rows[idx]
-        # Every row's text hangs at the prompt width (P12), so the caret
+        # Every row's text hangs at the prefix width (P12), so the caret
         # column starts there on continuation rows too.
-        col = @prompt_width
+        col = @prefix_width
         row[:chars].each_with_index do |ch, j|
           break if row[:start] + j >= @cursor
 
@@ -649,7 +667,7 @@ module Rubino
       # degenerate narrow terminal still fits at least one char after the
       # prompt instead of looping.
       def row_budget
-        [@cols - 1, @prompt_width + 1].max
+        [@cols - 1, @prefix_width + 1].max
       end
 
       # The PRINTED input rows for this frame plus the caret position within
@@ -672,11 +690,13 @@ module Rubino
         end
 
         single = rows.length == 1 && rows.first[:prompt]
-        indent = " " * @prompt_width
+        # The rail leads EVERY row; continuations hang-indent under the text
+        # start (P12), so the indent fills the prompt columns after the rail.
+        indent = "#{@rail}#{" " * @prompt_width}"
         texts = rows.map do |row|
           body = row[:chars].join
           if row[:prompt]
-            "#{@prompt}#{single ? highlight_line(body) : body}"
+            "#{@rail}#{@prompt}#{single ? highlight_line(body) : body}"
           else
             # Hanging indent (P12): continuations align under the text start.
             "#{indent}#{body}"
@@ -785,9 +805,10 @@ module Rubino
       #   [live rows]         ← cards, completion menu, transient announce,
       #                         "⏳ queued:" indicators, streamed partial —
       #                         redrawn in place every frame (do NOT scroll)
-      #   [input block]       ← "❯ " + buffer, wrapped over up to
-      #                         @max_input_rows visual rows; the cursor parks
-      #                         at the caret's row/column
+      #   [input block]       ← "▍❯ " + buffer (the rail leads every row),
+      #                         wrapped over up to @max_input_rows visual
+      #                         rows; the cursor parks at the caret's
+      #                         row/column
       #   [status bar]        ← the dim model + context line (when set/fits)
       #
       # The +@buffer+ is redrawn on every frame, so it can never be lost across
@@ -1136,8 +1157,8 @@ module Rubino
       # split: a column inside it resolves to its start). Clamps to the row's
       # end, and to its start when the column falls inside the prompt prefix.
       def char_index_at(row, col)
-        # Continuation rows hang at the prompt width too (P12).
-        width = @prompt_width
+        # Continuation rows hang at the prefix width too (P12).
+        width = @prefix_width
         index = row[:start]
         row[:chars].each do |ch|
           w = display_width(ch)
@@ -1284,20 +1305,20 @@ module Rubino
       end
 
       # Shift+Tab: ask the callback to cycle + persist the mode, then adopt the
-      # new prompt chip it returns and redraw the prompt under the render mutex.
-      # The callback returns the new chip; if it ALSO returns a confirmation
-      # banner (via the composer's #announce, which the handler now calls instead
-      # of print_above) that banner is a transient row, not committed scrollback
-      # (D2/D3). The composer owns NO mode logic.
+      # new STATUS-BAR line it returns (the mode token leads the bar now — the
+      # prompt is a constant "▍❯ ") and redraw under the render mutex. A nil
+      # return means the mode did not change (e.g. the yolo arm toast) — no
+      # repaint. The confirmation banner goes through the composer's #announce
+      # (a transient row, not committed scrollback, D2/D3). The composer owns
+      # NO mode logic.
       def cycle_mode
         return unless @on_mode_cycle
 
-        new_prompt = @on_mode_cycle.call
-        return if new_prompt.nil?
+        new_status = @on_mode_cycle.call
+        return if new_status.nil?
 
         @render.synchronize do
-          @prompt = new_prompt.to_s.empty? ? PROMPT : new_prompt.to_s
-          @prompt_width = @prompt.gsub(ANSI_RE, "").length
+          @status = new_status.to_s
           redraw
         end
       end

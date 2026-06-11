@@ -351,7 +351,7 @@ module Rubino
                   # /sessions <id|title>: rebuild the runner on the chosen
                   # session in place and replay its history, then go back to the
                   # prompt — no process restart needed. Leaving a branch (e.g.
-                  # back to the parent) drops the branch chip.
+                  # back to the parent) drops the branch token from the status bar.
                   @branch_short_id = nil
                   runner = resume_runner(ui, result[:resume_session_id])
                   cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
@@ -543,7 +543,8 @@ module Rubino
 
         # The bottom composer is the single idle input path on a real TTY: it
         # pins the prompt at the bottom, owns its own raw reader (so keys can't
-        # smear the stream), redraws the mode chip LIVE on Shift+Tab, and hosts
+        # smear the stream), updates the status bar's mode token LIVE on
+        # Shift+Tab, and hosts
         # the background-subagent card region (F1) when children are live. The
         # plain cooked readline is the fallback for non-TTY / piped / -q input.
         if UI::BottomComposer.active?
@@ -557,7 +558,8 @@ module Rubino
       # — the single input path. The composer pins the prompt at the bottom and
       # owns its own raw reader (full editing parity: arrows/Home/End/word-jump,
       # ↑↓ history, /command + @file completion menu with immediate-Esc dismiss,
-      # cyan token highlight), redraws the mode chip LIVE on Shift+Tab, reveals
+      # cyan token highlight), updates the status bar's mode token LIVE on
+      # Shift+Tab, reveals
       # reasoning on Ctrl+O, and hosts the collapsed subagent card region (F1)
       # when background children are live — repaints land above the prompt and
       # update in place, serialized through the composer's render mutex.
@@ -570,8 +572,9 @@ module Rubino
         composer = UI::BottomComposer.new(
           input_queue: input_queue,
           prompt: build_prompt,
+          rail: composer_rail,
           on_ctrl_o: ctrl_o_handler,
-          on_mode_cycle: mode_cycle_handler,
+          on_mode_cycle: mode_cycle_handler(runner),
           completion_source: @completion_source,
           history: @input_history,
           echo: :prompt,
@@ -818,7 +821,8 @@ module Rubino
       end
 
       # The status-bar line for the CURRENT session (see UI::StatusBar):
-      # resolved model id + context saturation. Saturation prefers the REAL
+      # mode (+ branch/skill when set) · resolved model id · context
+      # saturation. Saturation prefers the REAL
       # usage the provider reported for the session's last response (the
       # input_tokens the agent loop records in the assistant message metadata
       # — the whole assembled prompt incl. the system prompt) and falls back
@@ -836,6 +840,8 @@ module Rubino
         budget   = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
         messages = ::Rubino::Session::Store.new.for_session(session[:id])
         UI::StatusBar.render(
+          chips: { mode: Rubino::Modes.current, branch: @branch_short_id,
+                   skill: Rubino::ActiveSkill.current },
           model: session[:model] || model_name,
           tokens: context_tokens(messages, budget),
           window: budget.available_tokens,
@@ -858,7 +864,7 @@ module Rubino
       # Commits the just-dequeued prompt as a normal "<prompt><line>" transcript
       # message and removes its "⏳ queued:" indicator. Each line the previous
       # turn parked (set in #next_input as @input_from_queue) is echoed in the
-      # mode-aware prompt, so a queued/interrupt-sent message reads back exactly
+      # clean "❯ " prompt, so a queued/interrupt-sent message reads back exactly
       # like an idle submit. No-op when the prompt was an idle submit (already
       # echoed) or there's no composer (piped / -q). Clears the marker after.
       def commit_queued_prompt(composer)
@@ -917,8 +923,8 @@ module Rubino
       def start_composer(input_queue, runner)
         return [nil, nil] unless input_queue && UI::BottomComposer.active?
 
-        # Use the SAME mode-aware prompt as the between-turns Reline prompt
-        # (default / plan / yolo ❯) so the bottom composer doesn't drop the mode.
+        # The mode/branch/skill context rides the STATUS BAR (build_status_line);
+        # the prompt itself is the constant clean "❯ " behind the red rail.
         # `runner` is threaded in (not captured from an enclosing scope) so the
         # interrupt lambda resolves it — it is a parameter of #run_turn, not in
         # scope here, and there is no @runner ivar, so capturing it implicitly
@@ -929,8 +935,9 @@ module Rubino
         # aux-LLM seconds after the `↳ turn` footer — so `/` and `@` dropdowns
         # and ↑↓ history work whenever the prompt is visible (#169).
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
+                                          rail: composer_rail,
                                           on_ctrl_o: ctrl_o_handler,
-                                          on_mode_cycle: mode_cycle_handler,
+                                          on_mode_cycle: mode_cycle_handler(runner),
                                           on_interrupt: interrupt_handler(runner),
                                           completion_source: @completion_source,
                                           history: @input_history,
@@ -1097,12 +1104,6 @@ module Rubino
         true
       end
 
-      # Agent composer prompt — looks like an input field, not Bash/Zsh.
-      # Mode is the only live context shown. Workspace, git, model, and
-      # session are printed once at startup in startup_banner.
-      #
-      # After a `/branch`, the chip leads with `branch:<id>` so the user always
-      # knows they're in a fork (and which one), composing with the mode chip.
       # The Ctrl+O callback for the composer: reveal the last retained reasoning
       # aside via the UI adapter (the CLI keeps the buffer). The reveal commits
       # through the composer's serialized print_above, so it lands cleanly above
@@ -1116,30 +1117,32 @@ module Rubino
       end
 
       # The Shift+Tab callback for the composer: cycle the mode to the next in
-      # Modes::ALL (default→plan→yolo→default), PERSIST it via Modes.set, commit a
-      # transition footer above the pinned prompt, and RETURN the freshly-built
-      # prompt chip so the composer redraws the chip LIVE. The composer holds no
-      # mode logic — it just adopts the returned prompt.
-      def mode_cycle_handler
-        -> { cycle_mode }
+      # Modes::ALL (default→plan→yolo→default), PERSIST it via Modes.set, show
+      # the transition toast, and RETURN the freshly-built STATUS-BAR line so
+      # the composer updates the mode token LIVE (the mode lives in the status
+      # bar now, not in a prompt chip). +runner+ feeds the bar's model/context
+      # numbers. The composer holds no mode logic — it just adopts the
+      # returned status line.
+      def mode_cycle_handler(runner)
+        -> { cycle_mode(runner) }
       end
 
       # Shift+Tab: cycle the mode, show a SINGLE TRANSIENT confirmation banner,
-      # and RETURN the freshly-built prompt chip so the composer adopts it and
-      # redraws the chip LIVE (fixes the stale-chip D7). The persistent indicator
-      # is the prompt CHIP; the banner is a one-shot toast rendered in the
-      # composer's live region via #announce — redrawn in place, cleared on the
-      # next keystroke, NEVER committed to scrollback. So cycling N times leaves
-      # ZERO stacked banner lines (D3) and a mid-stream Shift+Tab can't wedge a
-      # banner between answer chunks (D2). With no composer (cooked fallback) it
-      # falls back to a plain dim line.
+      # and RETURN the freshly-built status-bar line so the composer redraws the
+      # mode token LIVE (fixes the stale-chip D7). The persistent indicator is
+      # the STATUS BAR's leading mode token; the banner is a one-shot toast
+      # rendered in the composer's live region via #announce — redrawn in place,
+      # cleared on the next keystroke, NEVER committed to scrollback. So cycling
+      # N times leaves ZERO stacked banner lines (D3) and a mid-stream Shift+Tab
+      # can't wedge a banner between answer chunks (D2). With no composer
+      # (cooked fallback) it falls back to a plain dim line.
       #
       # Entering YOLO from the cycle is gated behind a second press (#152):
       # the press that lands on yolo only ARMS it and shows a confirm toast;
       # blind mashing past plan can no longer silently drop the approval gates
       # of the session AND its running background children. An explicit
       # `/mode yolo` stays direct.
-      def cycle_mode
+      def cycle_mode(runner = nil)
         previous = Rubino::Modes.current
         idx      = Rubino::Modes::ALL.index(previous) || 0
         nxt      = Rubino::Modes::ALL[(idx + 1) % Rubino::Modes::ALL.length]
@@ -1150,7 +1153,7 @@ module Rubino
         # Same `<old> → <new>` arrow grammar as the /mode footer (#78), plus
         # the description and the cycle hint only this transient toast carries.
         show_mode_footer("┄ mode #{previous} → #{nxt} — #{Rubino::Modes.description(nxt)}, shift+tab to cycle ┄")
-        build_prompt
+        build_status_line(runner)
       end
 
       # The confirm press must come after a deliberate beat (a blind mash
@@ -1174,12 +1177,12 @@ module Rubino
 
       # The arm toast: says what yolo will do — including to RUNNING background
       # children, whose gates drop the moment the mode flips — and how to
-      # confirm. Returns the unchanged prompt chip (the mode did not change).
+      # confirm. Returns nil (the mode did not change ⇒ no status-bar update).
       def announce_yolo_confirm
         live = Tools::BackgroundTasks.instance.running.size
         children = live.positive? ? " — #{live} running subagent(s) will run gated actions unprompted" : ""
         show_mode_footer("┄ yolo skips ALL approvals#{children} — press shift+tab again to confirm ┄")
-        build_prompt
+        nil
       end
 
       # Routes a transient mode footer through the live composer's #announce
@@ -1196,41 +1199,25 @@ module Rubino
         end
       end
 
+      # The clean Rail-rubino prompt: a bare "❯ " caret. The mode/branch/skill
+      # chip that used to lead it lives in the STATUS BAR now (see
+      # #build_status_line / UI::StatusBar) — the composer prepends the red
+      # rail itself (#composer_rail), so committed echoes built from this
+      # ("❯ <line>") stay rail-free in scrollback.
       def build_prompt
-        chip = mode_label
-        chip = "#{pastel.cyan("branch:#{@branch_short_id}")} #{chip}" if @branch_short_id
-        chip = "#{chip}#{skill_label}"
-        "#{chip} #{PROMPT_CARET} "
+        "#{PROMPT_CARET} "
       end
 
-      # The active-skill segment of the prompt chip: a dim ` (skill: <name>)`
-      # appended after the mode chip, e.g. `default (skill: ruby-expert) ❯`. Empty
-      # when no skill is pinned (Rubino::ActiveSkill), so the chip returns to a
-      # plain `default ❯`. Styled dim to match the mode chip's quiet register.
-      # The chip refreshes live: each idle prompt rebuilds the composer with a
-      # freshly-built prompt, so activating/clearing a skill updates it next turn.
-      def skill_label
-        skill = Rubino::ActiveSkill.current
-        return "" unless skill
-
-        pastel.dim(" (skill: #{skill})")
-      end
-
-      def mode_label
-        p = pastel
-        mode = Rubino::Modes.current
-        case mode
-        when Rubino::Modes::PLAN then p.cyan("plan")
-        when Rubino::Modes::YOLO then p.yellow.bold("yolo")
-        # The prompt chip must match the canonical mode name used everywhere
-        # else — Modes::DEFAULT, `/mode default | plan | yolo`, and the
-        # `mode default → plan` transition banner — instead of inventing a
-        # second label "general" for the same mode (F9).
-        else p.dim("default")
-        end
+      # The one-column brand rail (the red ◆ accent) the composer draws as
+      # the first column of EVERY input row — first row and continuations.
+      # Pastel auto-disables color off a TTY, and the composer itself only
+      # runs on a real TTY, so the rail never reaches piped output.
+      def composer_rail
+        pastel.red(PROMPT_RAIL)
       end
 
       PROMPT_CARET = "❯"
+      PROMPT_RAIL  = "▍"
 
       def pastel
         @pastel ||= Pastel.new
@@ -1633,7 +1620,7 @@ module Rubino
       end
 
       # `--yolo` is the CLI flag form of `/mode yolo`. We route both through
-      # Rubino::Modes so the chip in build_prompt, the API event, and the
+      # Rubino::Modes so the status bar's mode token, the API event, and the
       # ApprovalPolicy short-circuit all see a single source of truth.
       def apply_yolo!
         Rubino::Modes.set(:yolo)
