@@ -213,9 +213,19 @@ RSpec.describe Rubino::Attachments do
       expect(out).not_to include("PK")
     end
 
-    it "renders a document hint pointing at markitdown" do
+    it "points a document at read_attachment when an in-process converter exists" do
       p = File.join(dir, "a.pdf")
       File.binwrite(p, "%PDF-1.4\n")
+      allow(Rubino::Documents).to receive(:supported?).and_return(true)
+      out = described_class::Preamble.for(classify(p))
+      expect(out).to include("[Attached document:")
+      expect(out).to include("read_attachment")
+    end
+
+    it "falls back to the shell-extraction hint when no in-process converter exists" do
+      p = File.join(dir, "a.pdf")
+      File.binwrite(p, "%PDF-1.4\n")
+      allow(Rubino::Documents).to receive(:supported?).and_return(false)
       out = described_class::Preamble.for(classify(p))
       expect(out).to include("[Attached document:")
       expect(out).to include("markitdown")

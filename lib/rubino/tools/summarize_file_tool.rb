@@ -39,7 +39,8 @@ module Rubino
           "final summary returns here, so the raw bytes never enter context. " \
           "PREFER this over `read` whenever you need the gist of a big document — converted " \
           "PDFs, logs, transcripts, anything more than a few hundred lines. For binary docs " \
-          "(PDF/DOCX) convert to text first (e.g. markitdown), then summarize the text file. " \
+          "(PDF/DOCX/XLSX/PPTX) use the `read_attachment` tool, which converts them to text " \
+          "in-process and summarizes oversized output automatically. " \
           "Use `focus` to steer what the summary must preserve."
       end
 
@@ -76,8 +77,9 @@ module Rubino
         size = File.size(expanded)
         return "#{file_path} is empty — nothing to summarize." if size.zero?
         if binary?(expanded)
-          return "Error: #{file_path} looks binary. Convert it to text first " \
-                 "(e.g. `markitdown #{file_path} > out.md`), then summarize the text file."
+          return "Error: #{file_path} looks binary. Read it with the `read_attachment` tool " \
+                 "(it converts documents to text in-process and summarizes oversized output), " \
+                 "rather than summarizing raw bytes."
         end
         if size > MAX_FILE_BYTES
           return "Error: #{file_path} is #{size / 1_000_000}MB, over the " \

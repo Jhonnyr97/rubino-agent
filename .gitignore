@@ -7,6 +7,14 @@
 /spec/reports/
 /spec/examples.txt
 /tmp/
+
+# Binary document fixtures (xlsx/docx/pdf) are regenerated deterministically
+# from spec/support/document_fixtures.rb in a before(:suite) hook; the OOXML
+# zip writer emits non-deterministic bytes (timestamps), so committing them
+# would dirty the working tree on every run. The text fixtures stay committed.
+/spec/fixtures/documents/*.xlsx
+/spec/fixtures/documents/*.docx
+/spec/fixtures/documents/*.pdf
 *.gem
 Gemfile.lock
 

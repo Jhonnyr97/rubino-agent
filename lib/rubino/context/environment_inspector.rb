@@ -62,7 +62,24 @@ module Rubino
         lines << "- Runtimes: #{runtimes}"
         utilities = available_utilities
         lines << "- Available CLI tools on PATH: #{utilities.join(", ")}" if utilities.any?
+        docs = document_formats
+        if docs.any?
+          lines << "- Document reading: the `read_attachment` tool converts these formats " \
+                   "to Markdown in-process (no external binary needed): #{docs.join(", ")}"
+        end
         lines.join("\n")
+      end
+
+      # The CORE document formats readable in-process via read_attachment
+      # (driven by which optional extraction gems loaded). Advertised so the
+      # model knows it can read a docx/pdf even when no `markitdown` binary
+      # exists on PATH -- closing the gap this file's own comment describes.
+      def document_formats
+        self.class.cache[:document_formats] ||= begin
+          Rubino::Documents::Registry.available_formats
+        rescue StandardError
+          []
+        end
       end
 
       # Public for spec inspection. The list is sorted to keep the prompt

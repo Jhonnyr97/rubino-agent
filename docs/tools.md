@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **33 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **34 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
+The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
 
-Several tools share one config gate, so `rubino tools` shows **26 rows** (config groups), not 33: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **27 rows** (config groups), not 34: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -246,6 +246,15 @@ Attach a previously-written file to the current turn as a downloadable artifact 
 ```
 Risk: low
 Parameters: file_path, filename
+```
+
+### read_attachment
+
+Read an attached document on demand, converting it to Markdown **in-process** (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, plain/code) and returning the text framed as untrusted user data (nonce-delimited, defanged). Prefer this over shelling out to `markitdown`/`pdftotext`. The path is classified by the fail-closed attachment safety pipeline (regular-file check, workspace confine, size cap, magic-bytes MIME) before any conversion. Oversized documents are routed through the `summarize` auxiliary model instead of flooding the conversation; if the format has no in-process converter (its optional extraction gem isn't installed), an actionable shell-extraction hint is returned instead of raising. The conversion is provided by the in-repo `Rubino::Documents` module; its CORE converters lean on optional MIT gems (`roo`, `docx`, `pdf-reader`, `ruby_powerpoint`) that are lazily required — none is a hard dependency, and `rubino doctor` reports which formats are available in-process.
+
+```
+Risk: low
+Parameters: file_path, summarize, focus
 ```
 
 ### vision
