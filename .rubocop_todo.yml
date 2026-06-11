@@ -206,11 +206,10 @@ Lint/UnusedMethodArgument:
     - 'spec/rubino/run/executor_bus_isolation_spec.rb'
     - 'spec/support/fake_llm_adapter.rb'
 
-# Offense count: 18
+# Offense count: 12
 Lint/UselessConstantScoping:
   Exclude:
     - 'lib/rubino/agent/tool_executor.rb'
-    - 'lib/rubino/cli/chat_command.rb'
     - 'lib/rubino/skills/skill.rb'
     - 'lib/rubino/tools/edit_tool.rb'
     - 'lib/rubino/tools/read_tool.rb'
