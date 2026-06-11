@@ -85,7 +85,7 @@ The first thing you see is a banner with the workspace, git branch, and model. T
 
 ```
 ▍❯ what does this project do?
- default · minimax-m3 · ctx ~1k/128k
+ default · MiniMax-M3 · ctx ~0/128k
 ```
 
 > If you skipped the wizard during `setup`, a bare `rubino chat` re-runs it before the first turn (when on a TTY). If you're piping input or using `-q`, there's no prompt to run — instead you get a clear, actionable error telling you how to set a key (see below).

@@ -111,10 +111,21 @@ module Rubino
         # actionable error to stderr and exit non-zero so automation/the user can
         # actually tell it failed.
         announce_attachment_upload(image_paths)
+        started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         response = runner.run!(text, image_paths: image_paths)
 
         print_oneshot_answer(response.to_s)
         $stdout.flush
+
+        # Fire the turn-finished attention seam for headless runs (#215). A
+        # scripted `rubino prompt`/-q run never goes through UI::CLI#turn_finished
+        # (it uses UI::Null), so the documented notifications.command hook —
+        # exactly what automation wants to ping a human on completion — never
+        # fired. Drive the same notifier here: the BELL self-suppresses into a
+        # pipe (bell_sink is nil off a TTY), so only the detached command hook
+        # actually does anything headless, which is the intent. Best-effort: a
+        # notification must never fail the run or contaminate the piped answer.
+        notify_oneshot_finished(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at)
       # rubocop:disable Lint/ShadowedException -- Interrupt is listed explicitly (doc value), though SignalException covers it
       rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
         raise
@@ -151,6 +162,19 @@ module Rubino
         else
           $stdout.puts text
         end
+      end
+
+      # Drives the turn-finished attention notifier after a one-shot run (#215),
+      # so the documented notifications.command hook fires for headless/scripted
+      # `rubino prompt` / -q completions too — the seam automation uses to ping a
+      # human. The notifier's own min_turn_seconds gate still applies (quick runs
+      # stay silent) and the bell self-suppresses into a pipe, so off a TTY only
+      # the detached command hook runs. Wholly best-effort: a notification detail
+      # must never fail the run.
+      def notify_oneshot_finished(elapsed)
+        UI::Notifier.new.turn_finished(elapsed)
+      rescue StandardError
+        nil
       end
 
       # Routes the structured logger to stderr for the one-shot run (#99).
