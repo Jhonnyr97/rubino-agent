@@ -25,6 +25,7 @@ module Rubino
         "/add-dir" => "Add an extra allowed workspace directory (write/edit can reach it)",
         "/dirs" => "List the current workspace roots",
         "/config" => "Read or set configuration (/config <key> [value]; 'show' = full view)",
+        "/model" => "Show or switch the model for this session (/model <name>)",
         "/mode" => "Show or switch mode (default | plan | yolo)",
         "/reasoning" => "Show or switch how reasoning is shown (hidden | collapsed | full)",
         "/think" => "Show or switch thinking effort (off | low | medium | high)",

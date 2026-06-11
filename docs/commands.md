@@ -157,6 +157,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/add-dir` | Add an extra allowed workspace directory (write/edit can reach it) |
 | `/dirs` | List the current workspace roots |
 | `/config` | Read or set configuration (/config <key> [value]; 'show' = full view) |
+| `/model` | Show or switch the model for this session (/model <name>) |
 | `/mode` | Show or switch mode (default \| plan \| yolo) |
 | `/reasoning` | Show or switch how reasoning is shown (hidden \| collapsed \| full) |
 | `/think` | Show or switch thinking effort (off \| low \| medium \| high) |
@@ -203,6 +204,16 @@ Start a line with `!` to run the rest of it as a shell command, immediately — 
 
 - `/probe <question>` is the discoverable alias for the `? ` prefix: an **ephemeral** side-question answered from the current context but **never saved** to the session — the next turn proceeds as if it never happened. Bare `/probe` just teaches the `? ` prefix.
 - `/branch [title]` forks the current session here into a **new saved session** (optionally titled) and switches into it, so you can explore an alternative direction; the original session stays intact.
+
+### Model in-chat: `/model`
+
+Bare `/model` shows the current model and provider plus a short list of the models the [ruby_llm](https://rubyllm.com) registry knows for the **active provider** (custom backends like MiniMax or a gateway aren't enumerable there, so they show the current model and a usage hint instead — `/model <name>` still switches). `/model <name>` switches the **live session** model:
+
+- writes `model.default` through `Config::Writer` (the same persist path `/reasoning` and `/think` use), so it survives the session,
+- retargets the running session, so the **very next turn** hits the new model — no restart,
+- resets the session's thinking-rejection memo, so a provider that supports thinking budgets is re-probed after the switch.
+
+An explicit `model.provider` keeps pinning the routing: switching to a model id that pattern-matches a different provider prints a note instead of silently re-routing. Typing `/model ` opens the dropdown with the known model ids.
 
 ### Status at a glance: `/status`
 
