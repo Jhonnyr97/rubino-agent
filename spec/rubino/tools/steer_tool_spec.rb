@@ -9,9 +9,6 @@ RSpec.describe Rubino::Tools::SteerTool do
 
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
-  before { Rubino::Tools::BackgroundTasks.reset! }
-  after  { Rubino::Tools::BackgroundTasks.reset! }
-
   # Seed a child entry owned by `owner` (nil ⇒ human/top-level).
   def reserve(owner: nil, subagent: "explore")
     registry.reserve(subagent: subagent, prompt: "x", owner_subagent_id: owner)

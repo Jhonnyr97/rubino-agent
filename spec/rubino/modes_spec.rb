@@ -102,7 +102,6 @@ RSpec.describe Rubino::Modes do
   # READ_ONLY_TOOLS isn't updated, this test fails.
   describe "READ_ONLY_TOOLS coherence with Tools::Registry" do
     it "every entry maps to a real registered tool" do
-      Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register_defaults!
       registered = Rubino::Tools::Registry.all.map(&:name)
       missing    = described_class::READ_ONLY_TOOLS - registered

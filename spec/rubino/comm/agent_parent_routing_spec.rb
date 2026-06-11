@@ -11,16 +11,6 @@
 RSpec.describe "agent-parent routing (S4)" do
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
-  before do
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
-  end
-
-  after do
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
-  end
-
   # --- S4.1 routing: agent-parent vs human owner -----------------------------
   describe "ask_parent routing by owner" do
     let(:tool) { Rubino::Tools::AskParentTool.new }

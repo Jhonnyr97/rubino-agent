@@ -70,6 +70,14 @@ RSpec.configure do |config|
     # without this a read registered in one spec could satisfy the gate in
     # another spec reusing the same session id.
     Rubino::Tools::ReadTracker.reset!
+    # The remaining process-wide singletons that specs previously reset
+    # ad-hoc (across ~32 files, plus the 4fcabd1 band-aid for /mode under
+    # seed 62637). Centralizing here kills that order-dependence class and
+    # lets coupled specs (e.g. executor_mcp_spec) run standalone. Guarded so
+    # specs that don't load a given const still pass.
+    Rubino::Tools::Registry.reset! if defined?(Rubino::Tools::Registry)
+    Rubino::Tools::BackgroundTasks.reset! if defined?(Rubino::Tools::BackgroundTasks)
+    Rubino::Run::GateRegistry.reset! if defined?(Rubino::Run::GateRegistry)
     # Use null UI and in-memory SQLite for tests
     Rubino.ui = Rubino::UI::Null.new
   end

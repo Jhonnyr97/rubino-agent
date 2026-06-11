@@ -15,6 +15,8 @@ module Rubino
     #   --max-turns   override max tool iterations
     #   --ignore-rules skip AGENTS.md and context files
     class ChatCommand
+      include Rubino::UI::ProbeWaitIndicator
+
       def initialize(options = {})
         @options = options
       end
@@ -1105,19 +1107,6 @@ module Rubino
         @last_probe = nil
       end
 
-      # The /probe wait indicator (#58): reuse the UI's thinking-row machinery
-      # when present (UI::CLI). Guarded so Null/API adapters and piped stdout
-      # stay silent.
-      def probe_thinking_started(ui)
-        return unless $stdout.tty? && ui.respond_to?(:thinking_started)
-
-        ui.thinking_started
-      end
-
-      def probe_thinking_finished(ui)
-        ui.thinking_finished if ui.respond_to?(:thinking_finished)
-      end
-
       # Forks the current session at this point into a NEW saved session and
       # returns a runner switched into it (the REPL replaces its runner with
       # this). The original session is left untouched.
@@ -1244,17 +1233,9 @@ module Rubino
       def message_age(msg)
         created = msg.created_at
         created = Time.parse(created.to_s) unless created.is_a?(Time)
-        "#{human_duration(Time.now - created)} ago"
+        "#{Rubino::Util::Duration.human_duration(Time.now - created)} ago"
       rescue StandardError
         nil
-      end
-
-      def human_duration(seconds)
-        secs = seconds.to_i
-        return "#{secs}s" if secs < 60
-        return "#{secs / 60}m" if secs < 3600
-
-        "#{secs / 3600}h"
       end
 
       # The copy-truncated fork (the /branch infra, cut at the rewind point):

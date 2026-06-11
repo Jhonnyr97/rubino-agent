@@ -95,10 +95,7 @@ RSpec.describe Rubino::Run::ApprovalGate, "idempotency + id validation" do
   end
 
   describe "DecideOperation integration" do
-    before do
-      with_test_db
-      Rubino::Run::GateRegistry.reset!
-    end
+    before { with_test_db }
 
     let(:session_repo) { Rubino::Session::Repository.new }
     let(:run_repo)     { Rubino::Run::Repository.new }

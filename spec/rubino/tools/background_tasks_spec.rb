@@ -8,9 +8,6 @@
 RSpec.describe Rubino::Tools::BackgroundTasks do
   subject(:registry) { described_class.instance }
 
-  before { described_class.reset! }
-  after  { described_class.reset! }
-
   def reserve(subagent: "explore", prompt: "do it")
     registry.reserve(subagent: subagent, prompt: prompt)
   end

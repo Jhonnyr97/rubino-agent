@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+# Load the MCP Manager up front so RubyLLM::MCP (required by manager.rb) is
+# defined before the `before` block stubs it — otherwise this spec only ran
+# coupled to a sibling that happened to load the Manager first.
+require "rubino/mcp/manager"
+
 # Covers the `/mcp` slash command (#182) — the in-chat MCP management surface,
 # shaped like /skills: bare list, per-server drill-in, session-scoped on/off
 # (off must ALSO deregister the server's wrappers from Tools::Registry), and
@@ -24,15 +29,12 @@ RSpec.describe Rubino::Commands::Executor do
   before do
     Rubino.ui = ui
     allow(Rubino).to receive(:configuration).and_return(config)
-    Rubino::Tools::Registry.reset!
     allow(RubyLLM::MCP).to receive(:client) do |**opts|
       opts[:name] == "filesystem" ? fake_client(%w[read_file write_file]) : fake_client(%w[query], alive: false)
     end
     manager.start_all!
     allow(Rubino::MCP).to receive(:manager).and_return(manager)
   end
-
-  after { Rubino::Tools::Registry.reset! }
 
   def fake_tool(name)
     double("mcp_tool", name: name, description: "#{name} tool")

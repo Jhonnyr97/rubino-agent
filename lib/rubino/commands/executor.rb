@@ -13,6 +13,8 @@ module Rubino
     # don't exercise those commands), in which case those commands degrade
     # gracefully instead of raising.
     class Executor
+      include Rubino::UI::ProbeWaitIndicator
+
       # How many times the parked-child approval prompt re-renders after an
       # empty/aborted read (#144) before giving up and leaving the child parked.
       APPROVAL_ASK_ATTEMPTS = 3
@@ -1004,26 +1006,14 @@ module Rubino
         # nothing streaming — show the same thinking row /probe got in #58 so
         # the gap before the ⟵ answer never looks frozen (#146). TTY only;
         # Null/API adapters and pipes stay silent.
-        probe_thinking_started
+        probe_thinking_started(@ui)
         answer = begin
           Tools::SubagentProbe.new.peek(entry: entry, question: question)
         ensure
-          probe_thinking_finished
+          probe_thinking_finished(@ui)
         end
         @ui.info("⟵  #{answer}")
         @ui.info(pastel.dim("┄┄ end probe (nothing was saved to #{id}) ┄┄"))
-      end
-
-      # The /agents probe wait indicator (#146) — same machinery and guards as
-      # CLI::ChatCommand#probe_thinking_started gave /probe (#58).
-      def probe_thinking_started
-        return unless $stdout.tty? && @ui.respond_to?(:thinking_started)
-
-        @ui.thinking_started
-      end
-
-      def probe_thinking_finished
-        @ui.thinking_finished if @ui.respond_to?(:thinking_finished)
       end
 
       # child->parent ASK_PARENT answer: /reply <id> <answer>. Resolves the
@@ -1405,15 +1395,7 @@ module Rubino
         finish = entry.finished_at || Time.now
         return "" unless entry.started_at
 
-        human_duration(finish - entry.started_at)
-      end
-
-      def human_duration(seconds)
-        secs = seconds.to_i
-        return "#{secs}s" if secs < 60
-        return "#{secs / 60}m" if secs < 3600
-
-        "#{secs / 3600}h"
+        Rubino::Util::Duration.human_duration(finish - entry.started_at)
       end
 
       # --- /sessions ---------------------------------------------------------
@@ -1563,7 +1545,7 @@ module Rubino
       def session_age(session)
         created = session[:created_at]
         created = Time.parse(created.to_s) unless created.is_a?(Time)
-        "#{human_duration(Time.now - created)} ago"
+        "#{Rubino::Util::Duration.human_duration(Time.now - created)} ago"
       rescue StandardError
         nil
       end

@@ -120,15 +120,7 @@ module Rubino
         return "" unless entry.started_at
 
         finish = entry.finished_at || Time.now
-        human_duration(finish - entry.started_at)
-      end
-
-      def human_duration(seconds)
-        secs = seconds.to_i
-        return "#{secs}s" if secs < 60
-        return "#{secs / 60}m" if secs < 3600
-
-        "#{secs / 3600}h"
+        Rubino::Util::Duration.human_duration(finish - entry.started_at)
       end
 
       # First NON-BLANK line, elided to +max+. A ruby/shell approval command

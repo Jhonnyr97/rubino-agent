@@ -58,7 +58,6 @@ RSpec.describe Rubino::Agent::Definition do
     end
 
     before do
-      Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register(Rubino::Tools::ReadTool.new)
       Rubino::Tools::Registry.register(
         Rubino::MCP::MCPToolWrapper.new(fake_mcp_tool("read_file"), server_name: "filesystem")
@@ -67,8 +66,6 @@ RSpec.describe Rubino::Agent::Definition do
         Rubino::MCP::MCPToolWrapper.new(fake_mcp_tool("query"), server_name: "api")
       )
     end
-
-    after { Rubino::Tools::Registry.reset! }
 
     it "exposes no MCP tools to an agent scoped to [] in config" do
       stub_configuration("agents" => { "build" => { "mcp_servers" => [] } })

@@ -7,10 +7,7 @@
 RSpec.describe Rubino::Tools::Registry do
   before(:all) { Rubino.loader.eager_load }
 
-  before do
-    described_class.reset!
-    described_class.register_defaults!
-  end
+  before { described_class.register_defaults! }
 
   describe ".enabled_tools" do
     context "in :default" do

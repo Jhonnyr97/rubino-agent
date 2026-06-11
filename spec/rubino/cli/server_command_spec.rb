@@ -9,7 +9,6 @@ RSpec.describe Rubino::CLI::ServerCommand do
   # bug shipped in 0.1.0/0.1.1.
   describe "tool registration" do
     before do
-      Rubino::Tools::Registry.reset!
       # Stub the parts of ServerCommand#execute that would otherwise try to
       # bind a TCP socket or touch external state. We only care about the
       # registry side effect of execute.
@@ -20,11 +19,6 @@ RSpec.describe Rubino::CLI::ServerCommand do
       server = instance_double(Rubino::API::Server, start!: nil)
       allow(Rubino::API::Server).to receive(:new).and_return(server)
     end
-
-    # The "does not re-register" example leaves a registry holding ONLY shell;
-    # without this reset any later spec relying on "register defaults when
-    # empty" dies with "Unknown tool: write" (#163, seed 62637).
-    after { Rubino::Tools::Registry.reset! }
 
     it "registers default tools before starting the server" do
       expect(Rubino::Tools::Registry.all.size).to eq(0)
@@ -53,7 +47,6 @@ RSpec.describe Rubino::CLI::ServerCommand do
   # opt-in env flag is the only way to get past the guard.
   describe "fake provider guard" do
     before do
-      Rubino::Tools::Registry.reset!
       allow(Rubino::Boot::EncryptionKey).to receive(:validate!)
       allow(Rubino::OAuth::Registry).to receive(:load_from_config!)
       scheduler = instance_double(Rubino::Jobs::Scheduler, load_all!: nil, resume_pending_webhooks!: nil)
@@ -94,7 +87,6 @@ RSpec.describe Rubino::CLI::ServerCommand do
     let(:server) { instance_double(Rubino::API::Server, start!: nil) }
 
     before do
-      Rubino::Tools::Registry.reset!
       allow(Rubino::Boot::EncryptionKey).to receive(:validate!)
       allow(Rubino::OAuth::Registry).to receive(:load_from_config!)
       scheduler = instance_double(Rubino::Jobs::Scheduler, load_all!: nil, resume_pending_webhooks!: nil)

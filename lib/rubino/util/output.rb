@@ -41,6 +41,18 @@ module Rubino
 
         (head_pt + [marker] + tail_pt).join("\n")
       end
+
+      # Single-line elision to +max+ characters with a trailing ellipsis.
+      # Shared by the parent-note tools (AnswerChild/Task/Steer) that all
+      # carried a byte-identical private `truncate`. Pure function.
+      #
+      # @param text [#to_s] the raw text (nil becomes "")
+      # @param max  [Integer] character budget before eliding
+      # @return [String] the text, or its first +max+ chars + "…"
+      def self.elide(text, max)
+        s = text.to_s
+        s.length > max ? "#{s[0, max]}…" : s
+      end
     end
   end
 end

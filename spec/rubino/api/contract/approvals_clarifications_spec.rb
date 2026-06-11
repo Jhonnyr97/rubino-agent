@@ -8,12 +8,7 @@ require "spec_helper"
 # resolve an in-process GateRegistry entry, forward the decision. We register
 # a real ApprovalGate per spec so the happy path actually unblocks an awaiter.
 RSpec.describe "API contract: approvals + clarifications" do
-  before do
-    with_test_db
-    Rubino::Run::GateRegistry.reset!
-  end
-
-  after { Rubino::Run::GateRegistry.reset! }
+  before { with_test_db }
 
   let(:session_repo) { Rubino::Session::Repository.new }
   let(:run_repo)     { Rubino::Run::Repository.new }

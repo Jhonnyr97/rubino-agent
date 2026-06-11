@@ -28,13 +28,6 @@ RSpec.describe "parent <-> subagent communication" do
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
-  end
-
-  after do
-    Rubino::Tools::Registry.reset!
-    Rubino::Tools::BackgroundTasks.reset!
   end
 
   def wait_until(timeout: 2.0)

@@ -76,14 +76,7 @@ module Rubino
         # live ask_gate). Covers a missing/finished/not-blocked child uniformly.
         return "#{task_id} is not waiting on you." unless registry.deliver_answer(task_id, answer)
 
-        "↳ answered #{task_id}: #{truncate(answer, 80)}\n✓ #{task_id} resumes at its next turn"
-      end
-
-      private
-
-      def truncate(text, max)
-        s = text.to_s
-        s.length > max ? "#{s[0, max]}…" : s
+        "↳ answered #{task_id}: #{Rubino::Util::Output.elide(answer, 80)}\n✓ #{task_id} resumes at its next turn"
       end
     end
   end

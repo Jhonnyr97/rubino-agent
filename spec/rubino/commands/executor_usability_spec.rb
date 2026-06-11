@@ -18,7 +18,6 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
   before do
     allow(Rubino).to receive(:database).and_return(db)
     allow(Rubino).to receive(:configuration).and_return(test_configuration)
-    Rubino::Tools::BackgroundTasks.reset!
   end
 
   def info_lines
