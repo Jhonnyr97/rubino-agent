@@ -357,6 +357,15 @@ module Rubino
                   cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
                   next
                 end
+                if result[:compact_into]
+                  # /compact: the compactor wrote head+summary+tail into a
+                  # child session (the source is now status "compacted") —
+                  # swap the runner into the child WITHOUT replaying history,
+                  # so the next turn runs on the compacted context.
+                  runner = build_runner(session_id: result[:compact_into], ui: ui)
+                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  next
+                end
                 if result[:new_session]
                   # /new: end the current session and rebuild the runner on a
                   # fresh one in place — the counterpart to the bare-chat resume.

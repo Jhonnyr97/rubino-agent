@@ -128,6 +128,11 @@ module Rubino
         when "model"
           handle_model(arguments)
           :handled
+        when "compact"
+          handle_compact
+        when "export"
+          handle_export(arguments)
+          :handled
         when "reasoning"
           handle_reasoning(arguments)
           :handled
@@ -179,10 +184,11 @@ module Rubino
           # we return a {branch_from:, title:} signal on the SAME channel /new
           # and /sessions use, and it does the build/seed/swap.
           handle_branch(arguments)
-        when "new"
+        when "new", "clear"
           # Hand the REPL a signal to rebuild the runner on a brand-new session.
           # The current session is left intact (and will be marked ended on the
           # eventual teardown), so /new is the in-chat counterpart to `--new`.
+          # /clear is the muscle-memory alias every other agent CLI ships.
           @ui.success("Starting a fresh session.")
           { new_session: true }
         end
@@ -369,6 +375,64 @@ module Rubino
         @ui.info("Requests still route via provider '#{explicit}' — set model.provider to switch backends.")
       rescue StandardError
         nil
+      end
+
+      # `/compact` — manual compaction NOW, the same Context::Compressor +
+      # compression_started/finished pipeline the automatic threshold path
+      # runs, plus a tokens before→after report. Compaction lands in a CHILD
+      # session (head + summary + tail), so on success we hand the REPL a
+      # {compact_into:} signal and it swaps the runner into the child — the
+      # next turn runs on the compacted context.
+      def handle_compact
+        session = @runner&.session
+        unless session && Session::Repository.new.persisted?(session[:id])
+          @ui.error("nothing to compact — this session has no saved messages yet")
+          return :handled
+        end
+
+        store  = Session::Store.new
+        before = estimate_session_tokens(store, session[:id], model_id: session[:model])
+
+        @ui.compression_started
+        result = Context::Compressor.new(session_id: session[:id]).compact!
+
+        if result[:skipped]
+          @ui.info("Nothing to compact yet — the session is still below the protected head/tail size.")
+          return :handled
+        end
+
+        @ui.compression_finished(result)
+        after = estimate_session_tokens(store, result[:target_session_id], model_id: session[:model])
+        @ui.info("Context: ~#{before} → ~#{after} tokens (#{result[:original_messages]} → " \
+                 "#{result[:compacted_messages]} messages).")
+        { compact_into: result[:target_session_id] }
+      rescue StandardError => e
+        @ui.error("compaction failed: #{e.message}")
+        :handled
+      end
+
+      # The same chars/4 estimate the compaction thresholds and the status bar
+      # run on, over a session's stored messages.
+      def estimate_session_tokens(store, session_id, model_id:)
+        budget = Context::TokenBudget.new(model_id: model_id, config: Rubino.configuration)
+        budget.estimate_tokens(store.for_session(session_id).map { |m| { content: m.content } })
+      end
+
+      # `/export [path]` — write the session transcript as clean markdown via
+      # Session::Exporter (user/assistant turns, tool calls as one-liners,
+      # reasoning omitted). Default path ./rubino-session-<id8>.md.
+      def handle_export(arguments)
+        session = @runner&.session
+        unless session
+          @ui.error("no live session to export")
+          return
+        end
+
+        path = arguments.to_s.strip
+        target = Session::Exporter.new(session).write(path.empty? ? nil : path)
+        @ui.success("exported → #{target}")
+      rescue StandardError => e
+        @ui.error("export failed: #{e.message}")
       end
 
       # Write-through of a /reasoning // /think switch to config.yml so it

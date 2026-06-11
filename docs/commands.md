@@ -144,9 +144,12 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/status` | Overview: model, mode, session, memory, background work |
 | `/sessions` | List recent sessions; resume, show, or delete one (--all lifts the cap) |
 | `/new` | Start a fresh session (the current one is left intact) |
+| `/clear` | Alias for /new — start a fresh session |
 | `/probe` | Ask an ephemeral side-question (not saved); tip: start a line with '? ' |
 | `/queued` | Queue a message to run after the current turn (Alt+Enter does the same) |
 | `/branch` | Fork the current session into a new one and switch into it |
+| `/compact` | Compact the context now: older turns become a summary |
+| `/export` | Write the session transcript as markdown (/export [path]) |
 | `/memory` | Inspect/search/forget what the agent remembers (show ID, backend, --all) |
 | `/agents` | List background subagents; steer/probe a running one, or view output |
 | `/tasks` | Alias for /agents |
@@ -214,6 +217,12 @@ Bare `/model` shows the current model and provider plus a short list of the mode
 - resets the session's thinking-rejection memo, so a provider that supports thinking budgets is re-probed after the switch.
 
 An explicit `model.provider` keeps pinning the routing: switching to a model id that pattern-matches a different provider prints a note instead of silently re-routing. Typing `/model ` opens the dropdown with the known model ids.
+
+### Context hygiene: `/compact`, `/clear`, `/export`
+
+- `/compact` compacts the context **now** — the same compressor the automatic threshold path runs (protected head + LLM summary of the middle + protected tail, landing in a child session the chat switches into), rendered with the same `┄ compacting context… ┄` marker, plus a `Context: ~before → ~after tokens` report. A session still below the protected head/tail size reports there is nothing to compact yet.
+- `/clear` is the muscle-memory alias for `/new`: start a fresh session, leaving the current one intact.
+- `/export [path]` writes the session transcript as clean markdown — user/assistant turns verbatim, tool calls and results as one-liners, reasoning omitted. Default path: `./rubino-session-<id8>.md`; the written path is printed.
 
 ### Status at a glance: `/status`
 
