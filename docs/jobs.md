@@ -21,7 +21,7 @@ Defer slow or out-of-band work off the request and chat paths. Anything an agent
 CREATE TABLE jobs (
   id           text PRIMARY KEY,        -- uuid
   type         text NOT NULL,           -- Jobs::Registry key
-  status       text NOT NULL,           -- queued | running | completed | dead
+  status       text NOT NULL,           -- queued | running | completed | failed | dead
   priority     integer NOT NULL,        -- lower runs first
   payload_json text NOT NULL,           -- JSON-serialised hash
   attempts     integer NOT NULL,
@@ -68,8 +68,8 @@ Retry uses linear backoff: `retry_backoff_seconds * attempts`. After `max_attemp
 
 | Mode | Behavior | When to use |
 |---|---|---|
-| `inline` | `Queue#enqueue` runs the handler synchronously in the same call stack. | dev, tests, smoke runs |
-| `manual` | enqueue only — nothing runs until `rubino jobs run` is invoked. | air-gapped or CI batch flows |
+| `inline` | `Queue#enqueue` runs the handler synchronously in the same call stack. A failed inline job is marked terminal (`failed`) rather than re-queued, since nothing drains it. | dev, tests, smoke runs |
+| `manual` | enqueue only — nothing runs until `rubino jobs process` is invoked. | air-gapped or CI batch flows |
 | `worker` | a long-running `rubino jobs worker` polls and dequeues. | production single-process |
 
 The worker is a single-threaded poll loop with `SIGINT`/`SIGTERM` graceful stop. It is not safe to run more than one worker per SQLite file — locking is row-level but `WAL` contention will dominate. Multi-process scaling is what the [Backend Adapter](#backend-adapter-planned-design) section is for.
@@ -110,12 +110,13 @@ Rubino::Jobs::Queue.new.enqueue("MyJob", session_id: "abc")
 | `CompactSessionJob` | `Handlers::CompactSessionJob` | `{session_id}` | `Context::Compressor#compact!` |
 | `SummarizeSessionJob` | `Handlers::SummarizeSessionJob` | `{session_id}` | `Context::SummaryBuilder#build_and_save!` |
 | `CleanupSessionsJob` | `Handlers::CleanupSessionsJob` | `{retention_days?}` | deletes `sessions` rows with `status="ended"` older than retention (default 30d) |
+| `DistillSkillJob` | `Handlers::DistillSkillJob` | `{session_id}` | post-turn skill distillation — one aux-LLM call distils a tool-heavy turn into a reusable `SKILL.md` (gated on `skills.auto_distill`; see [skills.md](skills.md#creating-skills)) |
 
 ### CLI
 
 ```bash
 rubino jobs list          # show recent rows from jobs table
-rubino jobs run           # drain queued rows once (uses Runner#run_pending)
+rubino jobs process       # drain queued rows once (uses Runner#run_pending)
 rubino jobs worker        # start the polling worker (long-running)
 ```
 
