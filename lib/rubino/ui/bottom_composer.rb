@@ -347,7 +347,8 @@ module Rubino
       # emitted with a trailing "\r\n" because OPOST is off in raw mode (a bare
       # "\n" would not return the carriage and the next line would stair-step).
       # Any live streamed partial is cleared first so it doesn't duplicate.
-      # An empty/nil +str+ just repaints the prompt.
+      # A nil +str+ just repaints the prompt; an EMPTY string commits one
+      # deliberate blank row (the P3 rhythm gaps — see LiveRegion#commit).
       def print_above(str)
         @render.synchronize do
           @partial = +""

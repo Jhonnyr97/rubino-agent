@@ -78,8 +78,9 @@ module Rubino
         info("    #{command.to_s.ljust(9)} #{description}")
       end
 
-      # Small metadata line, dim, no header. Used for the `↳ turn · Xs · N
-      # tools · Y tok` summary after the final assistant message, and any
+      # Small metadata line, dim, no header. Used for the `turn · Xs · N
+      # tools · Y tok` summary after the final assistant message (on adapters
+      # without a dedicated #turn_footer), and any
       # similar low-priority annotation that should sit close to the block
       # it describes without competing visually.
       def note(text)
