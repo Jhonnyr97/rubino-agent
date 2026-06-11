@@ -205,6 +205,17 @@ module Rubino
           # scrolls vertically (caret kept in view).
           "input_max_rows" => 8
         },
+        "paste" => {
+          # File-backed paste pipeline (UI::PasteStore). A paste with MORE
+          # than collapse_lines lines collapses to a "[Pasted text #N +M
+          # lines]" placeholder in the chat input, expanded to the full body
+          # when the message is sent (the transcript echo keeps the
+          # placeholder). A paste estimated above file_threshold_tokens
+          # (chars/4) is written to <home>/sessions/<id>/paste_N.txt instead
+          # and the sent message carries a read-tool pointer to it.
+          "collapse_lines" => 5,
+          "file_threshold_tokens" => 8000
+        },
         "notifications" => {
           # Attention signals (UI::Notifier) for the moments the agent needs
           # human eyes: a long turn finishing, an approval prompt, a blocked

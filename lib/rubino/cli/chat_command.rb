@@ -47,6 +47,16 @@ module Rubino
         @image_inbox ||= Chat::ImageInbox.new
       end
 
+      # The per-session paste store behind the file-backed paste pipeline:
+      # large pastes collapse to "[Pasted text #N +M lines]" placeholders in
+      # the composer and are expanded back to the full body (or to a
+      # paste_N.txt read-tool pointer for oversized ones) in #run_turn, the
+      # message-build seam. Shared across the per-turn composers, like
+      # #pending_queued; /clear-images never touches it (different inbox).
+      def paste_store
+        @paste_store ||= Rubino::UI::PasteStore.new
+      end
+
       def session_resolver
         @session_resolver ||= Chat::SessionResolver.new(@options)
       end
@@ -188,6 +198,12 @@ module Rubino
         setup_workspace_and_trust!(ui, interactive: true)
 
         runner = build_runner(session_id: session_resolver.resolve_session_id(auto_resume: true), ui: ui)
+
+        # Scope tier-2 paste files under the CURRENT session's artifacts dir
+        # (<home>/sessions/<id>/paste_N.txt). The closure reads the local
+        # `runner` at write time, so /new //sessions //branch — which reassign
+        # it — re-scope the files without re-wiring.
+        paste_store.session_source = -> { runner.session[:id] }
 
         # The runner already announced the session ("New/Resuming session: <id>");
         # re-printing the full uuid here was the third copy of the same id on boot
@@ -589,7 +605,8 @@ module Rubino
           echo: :prompt,
           pending_queued: pending_queued,
           status_line: build_status_line(runner),
-          max_input_rows: Rubino.configuration.display_input_max_rows
+          max_input_rows: Rubino.configuration.display_input_max_rows,
+          paste_store: paste_store
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -729,6 +746,18 @@ module Rubino
         # Consume the turn's queued image attachments (the native vision slot)
         # so they're attached exactly once, not re-sent next turn.
         image_paths = image_inbox.take!
+
+        # The message-build seam of the paste pipeline: expand each
+        # "[Pasted text #N +M lines]" placeholder to its full pasted body
+        # (or the paste_N.txt read-tool pointer for oversized ones) in the
+        # MODEL-FACING prompt only. This is where the line leaves the
+        # composer for the loop — after slash dispatch and AFTER the echoes
+        # (the idle submit echoed at submit; #commit_queued_prompt below uses
+        # the original @input_from_queue line), so the transcript keeps the
+        # compact placeholder while the model sees everything. Queued
+        # (Alt+Enter) and history-recalled drafts expand here too, whichever
+        # turn they finally run as.
+        prompt = paste_store.expand(prompt)
 
         # The interim idle-key GATE is retired: the bottom composer is now the
         # single input path and serializes every above-line write through its
@@ -952,7 +981,8 @@ module Rubino
                                           history: @input_history,
                                           pending_queued: pending_queued,
                                           status_line: build_status_line(runner),
-                                          max_input_rows: Rubino.configuration.display_input_max_rows)
+                                          max_input_rows: Rubino.configuration.display_input_max_rows,
+                                          paste_store: paste_store)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before

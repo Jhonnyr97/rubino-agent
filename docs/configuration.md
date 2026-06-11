@@ -201,6 +201,10 @@ display:
   tool_output_preview_lines: 3  # head lines of tool output shown in the transcript (0 = full dump)
   input_max_rows: 8      # chat input grows up to this many rows, then scrolls
 
+paste:
+  collapse_lines: 5            # pastes longer than this collapse to a placeholder
+  file_threshold_tokens: 8000  # bigger pastes overflow to a session paste_N.txt
+
 streaming:
   enabled: true
   transport: "off"
@@ -216,6 +220,8 @@ context:
 - `display.statusbar` (default `true`) pins a dim one-line bar UNDER the chat input — the session mode first (plus the branch/skill tokens when set), then the resolved model id and context saturation, e.g. `default · minimax-m3 · ctx ~8.4k/64k (13%)` (the percentage is omitted below 1%). The mode token is the live mode indicator (the prompt itself is a constant `▍❯ `): dim `default`, yellow `plan`, red `yolo`. Saturation uses the REAL usage the provider reported for the last response when available (the full assembled prompt, recorded by the agent loop), else the same chars/4 estimate compaction runs on (`Context::TokenBudget`); the window comes from `model.context_length` / `context.max_tokens`. It refreshes at turn boundaries (after each turn footer, and on session resume), never per stream delta. The percentage turns yellow at 70% and red at 90%; with no usable window only the token count shows. The bar is omitted off a TTY or on terminals narrower than 40 columns.
 - `display.tool_output_preview_lines` (default `3`) caps how many head lines of each tool's output the transcript shows before a dim `… +N lines (full output → context)` marker. DISPLAY-ONLY: the model always receives the full output (subject to the `tool_output` truncation caps) — only the scrollback rendering collapses. Set `0` to restore the old full dump.
 - `display.input_max_rows` (default `8`) caps how many visual rows the chat input grows to as a long or multi-line prompt wraps; past the cap the input scrolls vertically, keeping the caret row in view.
+- `paste.collapse_lines` (default `5`) — the file-backed paste pipeline's first tier. Pasting MORE than this many lines into the chat input inserts a single cyan `[Pasted text #N +M lines]` placeholder instead of flooding the composer; the placeholder is one editable token (backspace deletes it whole, you can type around it, it survives ↑ draft recall and Alt+Enter queueing) and expands to the full pasted body when the message is sent — the model sees everything, while the transcript echo keeps the compact placeholder. Pastes at or under the threshold inline as real rows, exactly as before.
+- `paste.file_threshold_tokens` (default `8000`) — the second tier. A paste estimated above this many tokens (chars/4, the same rule compaction uses) is written to `<RUBINO_HOME>/sessions/<session-id>/paste_N.txt` instead of being held inline, and the sent message carries `[Pasted text #N saved to <path> — too large to inline; read it with the read tool]` so the model reads just the parts it needs. The files persist for the session; `/clear-images` does not touch them (it only drops staged image attachments).
 
 ### compression
 
