@@ -55,14 +55,15 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
 
     it "WRAPS a buffer wider than the row onto a second visual row (no ellipsis)" do
-      # Row budget = cols - 1 = 39; row 0 carries the prompt (2 cols) so it
-      # holds 37 chars — the rest wraps to a continuation row below instead of
-      # the old single-row scroll-window with its "…" elision.
+      # Row budget = cols - 1 = 39; every row's text hangs at the prompt
+      # width (P12), so each row holds 37 chars — the rest wraps to an
+      # INDENTED continuation row below instead of the old single-row
+      # scroll-window with its "…" elision.
       50.times { |i| composer.handle_key((97 + (i % 26)).chr) }
       typed = composer.buffer
       frame = output.string.split("\r\e[2K#{PROMPT}").last
       expect(frame).to start_with("#{typed[0, 37]}\r\n")
-      expect(frame).to include("\r\e[2K#{typed[37..]}")
+      expect(frame).to include("\r\e[2K  #{typed[37..]}")
       expect(frame).not_to include("…")
     end
   end
@@ -1172,7 +1173,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       # prompt row ends in a CRLF row break, then the continuation row.
       frame = output.string.split("\r\e[2K#{PROMPT}").last
       expect(frame).to start_with("line1\r\n")
-      expect(frame).to include("\r\e[2Kline2")
+      expect(frame).to include("\r\e[2K  line2") # hanging indent (P12)
       expect(frame).not_to include("⏎")
     end
 
@@ -1220,11 +1221,15 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to include("a\r\nb\r\n")
     end
 
-    it "an empty argument just repaints the prompt" do
+    # P3: an empty committed line is a DELIBERATE blank row (the rhythm gaps
+    # before the answer / before a tool run) — it must scroll one real row,
+    # not be silently dropped.
+    it "an empty argument commits one blank row above the prompt" do
       composer.handle_key("x")
       output.truncate(0)
       output.rewind
       composer.print_above("")
+      expect(output.string).to include("\r\n")
       expect(output.string).to end_with("#{PROMPT}x")
     end
   end
@@ -1553,25 +1558,25 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "grows a second visual row at the wrap boundary (38th char)" do
       type("a" * 38)
-      expect(last_block).to eq("#{"a" * 37}\r\n\r\e[2Ka")
+      expect(last_block).to eq("#{"a" * 37}\r\n\r\e[2K  a") # indented continuation (P12)
     end
 
-    it "grows one row per width multiple (37 + 39 + …)" do
-      type("a" * (37 + 39 + 5))
-      expect(last_block).to eq("#{"a" * 37}\r\n\r\e[2K#{"a" * 39}\r\n\r\e[2K#{"a" * 5}")
+    it "grows one row per width multiple (37 + 37 + … — hanging indent, P12)" do
+      type("a" * (37 + 37 + 5))
+      expect(last_block).to eq("#{"a" * 37}\r\n\r\e[2K  #{"a" * 37}\r\n\r\e[2K  #{"a" * 5}")
     end
 
     it "wraps a wide (CJK) glyph WHOLE to the next row, never split mid-cell" do
       # 36 ASCII chars leave 1 column on row 0; a width-2 glyph can't fit and
       # must open row 1 whole.
       type("#{"a" * 36}中")
-      expect(last_block).to eq("#{"a" * 36}\r\n\r\e[2K中")
+      expect(last_block).to eq("#{"a" * 36}\r\n\r\e[2K  中")
     end
 
     describe "caret math across wrapped rows" do
       it "parks the caret at EOL of the last row with no repositioning bytes" do
         type("a" * 38)
-        expect(output.string).to end_with("\r\e[2Ka") # printing ended at the caret
+        expect(output.string).to end_with("\r\e[2K  a") # printing ended at the caret
       end
 
       it "Home (Ctrl+A) walks the caret up to row 0, prompt column" do
@@ -1585,21 +1590,21 @@ RSpec.describe Rubino::UI::BottomComposer do
         type("a" * 38)
         composer.handle_key("\x01")
         composer.handle_key("\x05")
-        expect(output.string).to end_with("\r\e[2Ka") # EOL again, no repositioning
+        expect(output.string).to end_with("\r\e[2K  a") # EOL again, no repositioning
       end
 
-      it "← across the wrap boundary lands at col 0 of the continuation row" do
-        type("a" * 38) # caret after char 38 (row 1, col 1)
-        composer.handle_key("\x02") # Ctrl+B ← : caret at index 37 = row 1, col 0
+      it "← across the wrap boundary lands at the hanging-indent column of the continuation row" do
+        type("a" * 38) # caret after char 38 (row 1, indent col + 1)
+        composer.handle_key("\x02") # Ctrl+B ← : caret at index 37 = row 1, the indent column
         frame = output.string
-        expect(frame).to end_with("\r") # below 0, col 0: re-home only
+        expect(frame).to end_with("\r\e[2C") # re-home + step to the hanging indent (P12)
       end
 
       it "→ from the boundary steps back onto the wrapped char" do
         type("a" * 38)
         composer.handle_key("\x02")
-        composer.handle_key("\x06") # Ctrl+F → : caret back to EOL (row 1, col 1)
-        expect(output.string).to end_with("\r\e[2Ka")
+        composer.handle_key("\x06") # Ctrl+F → : caret back to EOL of the indented row
+        expect(output.string).to end_with("\r\e[2K  a")
       end
 
       it "a caret ON a newline stays at the end of the broken row" do
@@ -1620,11 +1625,11 @@ RSpec.describe Rubino::UI::BottomComposer do
       let(:history) { Rubino::UI::InputHistory.new(store: ["older entry"]) }
 
       it "↑ inside a multi-row buffer moves the caret up one visual row, same column" do
-        type("a" * 60) # rows: 37 + 23; caret row 1, col 23
+        type("a" * 60) # rows: 37 + 23; caret row 1, screen col 25 (indent + 23)
         escape("[A")
-        # Row 0 col 23 → 2 prompt cols → buffer index 21. Buffer untouched.
+        # Row 0 col 25 → 2 prompt cols → buffer index 23. Buffer untouched.
         expect(composer.buffer).to eq("a" * 60)
-        expect(composer.instance_variable_get(:@cursor)).to eq(21)
+        expect(composer.instance_variable_get(:@cursor)).to eq(23)
       end
 
       it "↓ moves back down a visual row, preserving the column" do
@@ -1658,10 +1663,10 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       it "navigates real newline rows (pasted block) by visual row too" do
         composer.instance_variable_set(:@input, StringIO.new("[200~first\nsecond\e[201~"))
-        composer.handle_key("\e") # caret at end of "second" (row 1, col 6)
+        composer.handle_key("\e") # caret at end of "second" (row 1, screen col 8)
         escape("[A")
-        # Row 0, screen column preserved: col 6 = 2 prompt cols + 4 chars → index 4.
-        expect(composer.instance_variable_get(:@cursor)).to eq(4)
+        # Row 0, screen column preserved: col 8 clamps to the end of "first" → index 5.
+        expect(composer.instance_variable_get(:@cursor)).to eq(5)
         expect(composer.buffer).to eq("first\nsecond")
       end
     end
@@ -1757,8 +1762,8 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "stays the LAST row under a multi-row input block" do
       composer.instance_variable_set(:@input, StringIO.new("[200~l1\nl2\e[201~"))
       composer.handle_key("\e")
-      # Caret at the end of "l2" (col 2); the park walks up past the bar only.
-      expect(output.string).to end_with("\r\e[2K#{PROMPT}l1\r\n\r\e[2Kl2\r\n\r\e[2K#{status}\e[1A\r\e[2C")
+      # Caret at the end of "l2" (indent col + 2); the park walks up past the bar only.
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}l1\r\n\r\e[2K  l2\r\n\r\e[2K#{status}\e[1A\r\e[4C")
     end
 
     it "stays below while committed output scrolls above (print_above)" do

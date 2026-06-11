@@ -140,6 +140,17 @@ module Rubino
         false
       end
 
+      # Compact gutter for the TRANSCRIPT body only: line numbers right-aligned
+      # to the widest number shown, then two spaces (` 1  # Calc`), instead of
+      # the model-facing cat -n gutter (6-wide + tab ≈ 14 columns of padding).
+      # The model output keeps the cat -n shape unchanged.
+      def display_gutter(out, last_shown)
+        width = last_shown.to_s.length
+        out.lines.map do |line|
+          line.sub(/\A\s*(\d+)\t/) { "#{::Regexp.last_match(1).rjust(width)}  " }
+        end.join
+      end
+
       # Streams the file line-by-line so we never load a 2 GB log into memory
       # just to print 50 lines from the middle.
       def render(expanded, display_path, offset, limit)
@@ -192,7 +203,7 @@ module Rubino
           full = out + footer
           { output: full,
             metrics: "#{printed} line#{"s" if printed != 1}",
-            body: Util::Output.preview(full),
+            body: Util::Output.preview(display_gutter(out, last_shown) + footer),
             body_kind: :plain }
         end
       end

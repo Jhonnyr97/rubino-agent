@@ -78,7 +78,7 @@ The agent persists facts autonomously via the `memory` tool (gated by `tools.mem
 The tool stores **one atomic fact per call** — separate facts go in separate calls so each can be superseded or forgotten independently. Every write is confirmed deterministically in chat by the tool-result line, e.g.:
 
 ```
-✓ done · memory · Memory replaced (id=e6bf776b, kind=user_profile).
+└ ✓ Memory replaced (id=e6bf776b, kind=user_profile).
 ```
 
 Content is scanned for injection/exfiltration patterns and subject to the character budget. Because this lets the agent write to its own future context, see [security.md](security.md#autonomous-memory) for the trust model.

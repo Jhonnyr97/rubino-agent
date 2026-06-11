@@ -341,11 +341,20 @@ module Rubino
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
         pairs = Array(arguments)
-        # No arguments (e.g. a bare run_tests run) ⇒ no "with:" — a trailing
-        # "with:" followed by nothing reads as a truncated/broken card (#109).
-        return "Allow #{tool.name}" if pairs.empty?
+        # No arguments (e.g. a bare run_tests run) ⇒ no dangling "wants:" — a
+        # header followed by nothing reads as a truncated/broken card (#109).
+        return "#{tool.name} wants to run" if pairs.empty?
 
-        lines = ["Allow #{tool.name} with:"]
+        # The common case — ONE short single-line argument (a shell command, a
+        # file path) — inlines onto the header: `shell wants:  touch hello.txt`
+        # (P7). Multi-arg / multi-line calls keep the per-key layout below.
+        if pairs.size == 1
+          key, value = pairs.first
+          text = Util::SecretsMask.mask_value(value, key: key).to_s
+          return "#{tool.name} wants:  #{text}" if !text.include?("\n") && text.length <= 120
+        end
+
+        lines = ["#{tool.name} wants:"]
         pairs.each { |key, value| lines.concat(format_arg_pair(key, value)) }
         lines.join("\n")
       end

@@ -69,6 +69,15 @@ module Rubino
         dig("display", "statusbar") != false
       end
 
+      # Transcript preview budget for tool output
+      # (display.tool_output_preview_lines): head lines shown before the
+      # "… +N lines (full output → context)" marker. 0 = no collapse (full
+      # dump). Display-only — the model-facing output is untouched.
+      def display_tool_output_preview_lines
+        value = dig("display", "tool_output_preview_lines")
+        value.nil? ? 3 : value.to_i
+      end
+
       # Cap on the chat input's visual rows (display.input_max_rows). Falls
       # back to the composer default for nil/zero/garbage so a bad value can
       # never collapse or unbound the input block.

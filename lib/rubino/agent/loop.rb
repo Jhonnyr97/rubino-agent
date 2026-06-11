@@ -543,9 +543,19 @@ module Rubino
         # Drop the token field entirely when usage is unknown/zero rather than
         # printing a permanent "0 tok" that reads as broken (#86). Providers
         # that don't report usage simply omit the segment.
-        parts = ["◆ turn", format_duration(duration), tool_count_label]
+        # No "◆ " prefix: the static footer is all dim — red is the error
+        # color, and the only red ◆ left is the ANIMATED status row (P4).
+        parts = ["turn", format_duration(duration), tool_count_label]
         parts << format_tokens(token_total) if token_total.to_i.positive?
-        @ui.note(parts.join(" · "))
+        summary = parts.join(" · ")
+        # The CLI renders the footer attached directly under the answer (no
+        # blank, P3) and folds pending subagent completions into its grammar
+        # (P4); other adapters keep the plain note path.
+        if @ui.respond_to?(:turn_footer)
+          @ui.turn_footer(summary)
+        else
+          @ui.note(summary)
+        end
       end
 
       # "1 tool" normally; "2 tools · 1 denied" when something was denied; and

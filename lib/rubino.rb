@@ -64,6 +64,7 @@ module Rubino
           "mcp_tool_wrapper" => "MCPToolWrapper",
           "bedrock_bearer_client" => "BedrockBearerClient",
           "adapter_response" => "AdapterResponse",
+          "indented_io" => "IndentedIO",
           "webfetch_tool" => "WebFetchTool",
           "websearch_tool" => "WebSearchTool",
           "github_tool" => "GitHubTool",

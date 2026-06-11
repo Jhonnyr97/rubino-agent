@@ -169,14 +169,54 @@ RSpec.describe Rubino::UI::CLI do
       end
     end
 
-    it "renders the landed facet in the `◆ turn` footer note" do
+    # P4: the STATIC footer carries no red ◆ — red is the error color; the
+    # animated status row keeps the facet. All-dim rail, no leading blank
+    # (it attaches directly under the answer, P3).
+    it "renders the all-dim `turn` footer with no ◆ and no leading blank" do
+      ui = described_class.new
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      old = $stdout
+      $stdout = StringIO.new
+      begin
+        ui.turn_footer("turn · 7.1s · 1 tool · 371 tok")
+        out = $stdout.string
+        expect(out).to include("┄ turn · 7.1s · 1 tool · 371 tok ┄")
+        expect(out).not_to include("◆")
+        expect(out).not_to include("\e[31m") # nothing red in the static footer
+        expect(out).not_to start_with("\n")
+      ensure
+        $stdout = old
+      end
+    end
+
+    # P4: a subagent completion stashed mid-turn folds into the footer grammar
+    # instead of stacking a second `┄ ┄` rail right at turn end.
+    it "folds a mid-turn subagent completion into the footer grammar" do
       ui = described_class.new
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
       old = $stdout
       $stdout = StringIO.new
       begin
-        ui.note("◆ turn · 7.1s · 1 tool · 371 tok")
-        expect($stdout.string).to include("┄ ◆ turn · 7.1s · 1 tool · 371 tok ┄")
+        ui.instance_variable_set(:@turn_active, true)
+        ui.subagent_finished("✓ sa_e488 · explore · done · 1 tool — report", id: "sa_e488", status: "done")
+        ui.turn_footer("turn · 16.6s · 3 tools · 105 tok")
+        out = $stdout.string
+        expect(out).to include("┄ turn · 16.6s · 3 tools · 105 tok · sa_e488 done ┄")
+        expect(out.scan("┄ ").size).to eq(1) # one rail, not two stacked
+      ensure
+        ui.instance_variable_set(:@turn_active, false)
+        $stdout = old
+      end
+    end
+
+    it "renders a subagent completion note immediately when no turn is active" do
+      ui = described_class.new
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      old = $stdout
+      $stdout = StringIO.new
+      begin
+        ui.subagent_finished("✓ sa_e488 · explore · done · 1 tool — report", id: "sa_e488")
+        expect($stdout.string).to include("✓ sa_e488 · explore · done · 1 tool — report")
       ensure
         $stdout = old
       end

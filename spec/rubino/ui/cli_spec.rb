@@ -22,8 +22,8 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   # Timeline convention: activity lines use ● / ✓ / ✗ / ◆ markers
-  ACTIVITY_START = /● running/
-  ACTIVITY_DONE  = /✓ done/
+  ACTIVITY_START = /● /
+  ACTIVITY_DONE  = /└ ✓/
   ACTIVITY_FAIL  = /✗ failed/
 
   describe "#stream" do
@@ -529,17 +529,29 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#tool_started" do
-    it "renders as compact '● running name · hint'" do
+    # P1 polarity: the open row is QUIET — dim name + hint, only the ● cyan.
+    it "renders as compact '● name hint'" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: { command: "ls" })
       end
-      expect(out).to include("● running  shell · ls")
+      expect(out).to include("● shell ls")
+      expect(out).not_to include("running")
       expect(out).not_to include("┌─")
     end
 
-    it "renders as '● running name' when no args given" do
+    it "renders only the ● in cyan; the name/hint stay dim (P1)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "ls" })
+      end
+      expect(out).to include("\e[36m●\e[0m")          # cyan glyph only
+      expect(out).to include("\e[2mshell ls\e[0m")    # dim name + hint
+      expect(out).not_to include("\e[36m●\e[0m\e[36m") # nothing else cyan
+    end
+
+    it "renders as '● name' when no args given" do
       out = capture_stdout { ui.tool_started("ping", arguments: nil) }
-      expect(out).to include("● running  ping")
+      expect(out).to include("● ping")
       expect(out).not_to match(/· \S/)
     end
 
@@ -576,12 +588,26 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#tool_finished" do
-    it "renders as '✓ done · name' on success" do
+    # P10: success close is compact — the ✓ says done, the opener said the
+    # name. Dim, not green (P1: color only on failure).
+    it "renders a compact '└ ✓' on success" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: { command: "ls" })
         ui.tool_finished("shell", result: nil)
       end
-      expect(out).to include("✓ done · shell")
+      expect(out).to include("└ ✓")
+      expect(out).not_to include("✓ done")
+    end
+
+    it "renders the success close dim, never green (P1)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      result = double("Result", truncated_preview: "11 lines", success?: true, metrics: "11 lines")
+      out = capture_stdout do
+        ui.tool_started("read", arguments: nil)
+        ui.tool_finished("read", result: result)
+      end
+      expect(out).to include("\e[2m  └ ✓ 11 lines\e[0m")
+      expect(out).not_to include("\e[32m  └")
     end
 
     it "renders as '✗ failed · name' on failure" do
@@ -599,7 +625,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("ls", arguments: nil)
         ui.tool_finished("ls", result: result)
       end
-      expect(out).to include("✓ done · ls · 42 files")
+      expect(out).to include("└ ✓ 42 files")
     end
 
     it "shows error message on failure" do
@@ -647,9 +673,23 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("delegato")
     end
 
-    it "renders ✓ when the delegation succeeded" do
+    # P6: a background spawn only STARTED — the close row reuses the live-card
+    # shape, dim, with no green ✓ and none of the verbose spawn-handle sentence.
+    it "renders a quiet '▸ <id> · <name> · started' row for a background spawn (P6)" do
       result = Rubino::Tools::Result.success(
-        name: "task", call_id: "t1", output: "Started background subagent 'explore' as task sa_1."
+        name: "task", call_id: "t1",
+        output: "Started background subagent 'explore' as task sa_1. " \
+                "It is running now — keep working on other things."
+      )
+      out = render_delegation(result)
+      expect(out).to include("└ ▸ sa_1 · explore · started")
+      expect(out).not_to include("✓")
+      expect(out).not_to include("It is running now")
+    end
+
+    it "renders ✓ when a synchronous delegation succeeded" do
+      result = Rubino::Tools::Result.success(
+        name: "task", call_id: "t1", output: "FOUND: lib/x.rb:42"
       )
       out = render_delegation(result)
       expect(out).to include("✓ explore")
@@ -896,7 +936,7 @@ RSpec.describe Rubino::UI::CLI do
         allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.tool_started("shell", arguments: { command: "ls" })
       end
-      expect(out).to match(/thinking….*\r\e\[2K.*● running/m)
+      expect(out).to match(/thinking….*\r\e\[2K.*● shell/m)
     end
   end
 
@@ -932,6 +972,234 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_finished("shell", result: nil)
       end
       expect(out).not_to match(/\e\[31m.*- something/)
+    end
+  end
+
+  # P6: one lifecycle grammar — terminal-state events reuse the live-card row
+  # shape, and the child's report renders WHOLE (markdown) under `↳ report:`.
+  describe "#subagent_finished lifecycle rendering (P6)" do
+    it "renders the dim ▸ row plus the FULL report, markdown-rendered" do
+      report = "## Findings\n\n- first\n- second\n\nA much longer closing paragraph of the report."
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
+                             id: "sa_e488", status: "done", report: report)
+      end
+      expect(out).to include("▸ sa_e488 · explore · completed · 1 tool · 12s")
+      expect(out).to include("↳ report:")
+      expect(out).to include("Findings")
+      expect(out).to include("closing paragraph of the report.") # not amputated
+      expect(out).not_to include("##") # markdown-rendered, not raw
+    end
+
+    it "renders a failed lifecycle row in red" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_e488 · explore · failed: boom", id: "sa_e488", status: "failed")
+      end
+      expect(out).to include("\e[31m")
+    end
+
+    it "skips the report block when there is none" do
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_1 · explore · no-op · 0 tools", id: "sa_1", status: "no-op")
+      end
+      expect(out).not_to include("↳ report:")
+    end
+
+    # A between-turns completion renders the FULL report immediately; the
+    # queued completion notice injected next turn must not ECHO the same
+    # report body a second time — the head line still confirms the model
+    # received it, the body is elided once already shown.
+    it "does not render the same report twice when the completion notice is injected later" do
+      report = "## Findings\n\n- the bug is in lib/x.rb:42\n\nClosing paragraph."
+      notice = "[background-task] Task sa_e488 (subagent 'explore') completed.\n" \
+               "Result:\n#{report}\n(full result via task_result(\"sa_e488\"))"
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
+                             id: "sa_e488", status: "done", report: report)
+        ui.input_injected(notice)
+      end
+      expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # shown once, at completion
+      expect(out).to include("↳ received while working: [background-task] Task sa_e488")
+      expect(out).to include("report shown above")
+    end
+
+    it "still echoes the full injected notice for a report that was NEVER lifecycle-rendered" do
+      notice = "[background-task] Task sa_x1 (subagent 'explore') completed.\n" \
+               "Result:\nFOUND: lib/y.rb:7\n(full result via task_result(\"sa_x1\"))"
+      out = capture_stdout { ui.input_injected(notice) }
+      expect(out).to include("FOUND: lib/y.rb:7")
+      expect(out).not_to include("report shown above")
+    end
+
+    it "elides only the matching notice when several are injected together" do
+      shown = "shown-report body"
+      other = "other-report body"
+      coalesced = "[background-task] Task sa_a (subagent 'explore') completed.\n" \
+                  "Result:\n#{shown}\n(full result via task_result(\"sa_a\"))\n" \
+                  "[background-task] Task sa_b (subagent 'explore') completed.\n" \
+                  "Result:\n#{other}\n(full result via task_result(\"sa_b\"))"
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_a · explore · completed", id: "sa_a", status: "done", report: shown)
+        ui.input_injected(coalesced)
+      end
+      expect(out.scan(shown).size).to eq(1) # elided in the echo
+      expect(out.scan(other).size).to eq(1) # untouched
+    end
+  end
+
+  # P12: the live tail WRAPS the in-flight block to the terminal width and
+  # shows the last LIVE_TAIL_ROWS wrapped rows — a long streamed paragraph
+  # must not collapse into one head-truncated row.
+  describe "#margined_tail wrapping (P12)" do
+    it "wraps one long raw line into width-budgeted rows and keeps the last 3" do
+      allow(ui).to receive(:terminal_cols).and_return(23) # budget = 23 - 2 - 1 = 20
+      tail = ("abcdefghij" * 7) # 70 chars -> 4 wrapped rows of 20/20/20/10
+      rows = ui.send(:margined_tail, tail).split("\n")
+      expect(rows.length).to eq(3)
+      expect(rows).to all(start_with("  "))
+      expect(rows.last).to end_with("abcdefghij")
+      expect(rows.map { |r| r.delete_prefix("  ") }.join).to eq(tail[-50..]) # the wrapped TAIL, no head-truncation ellipsis
+      expect(rows.join).not_to include("…")
+    end
+
+    it "keeps short multi-line tails as-is, one margined row per line" do
+      allow(ui).to receive(:terminal_cols).and_return(80)
+      out = ui.send(:margined_tail, "one\ntwo\nthree")
+      expect(out).to eq("  one\n  two\n  three")
+    end
+
+    it "wraps wide glyphs by display width, never splitting one across rows" do
+      allow(ui).to receive(:terminal_cols).and_return(9) # budget = 6
+      rows = ui.send(:margined_tail, "中中中中").split("\n") # width 8 -> 6 + 2
+      expect(rows.map { |r| r.delete_prefix("  ") }).to eq(%w[中中中 中])
+    end
+  end
+
+  # P3: one blank-line rule — frames inside a tool run butt together, exactly
+  # ONE blank line before the answer payload, footer attached with no blank,
+  # streamed and non-streamed paths identical.
+  describe "turn rhythm (P3)" do
+    it "butts consecutive tool frames together (no blank inside a tool run)" do
+      out = capture_stdout do
+        ui.tool_started("read", arguments: { file_path: "a.rb" })
+        ui.tool_finished("read", result: nil)
+        ui.tool_started("shell", arguments: { command: "ls" })
+        ui.tool_finished("shell", result: nil)
+      end
+      run = out[out.index("└ ✓")..]
+      expect(run.lines[1]).to include("● shell") # close row → next open row, no blank between
+    end
+
+    it "puts exactly ONE blank line between the echoed input and the answer" do
+      out = capture_stdout do
+        ui.replay_user_input("hello")
+        ui.assistant_text("the answer")
+      end
+      expect(out).to include("hello\n\n  the answer")
+      expect(out).not_to include("hello\n\n\n")
+    end
+
+    it "puts exactly ONE blank line between the last tool frame and the answer" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "ls" })
+        ui.tool_finished("shell", result: nil)
+        ui.assistant_text("done looking")
+      end
+      expect(out).to match(/└ ✓\n\n  done looking/)
+    end
+
+    it "attaches the footer directly under the answer (no blank)" do
+      out = capture_stdout do
+        ui.assistant_text("the answer")
+        ui.turn_footer("turn · 1.0s · 0 tools")
+      end
+      expect(out).to match(/the answer\n┄ turn/)
+    end
+
+    it "renders the streamed path with the same rhythm as the non-streamed one" do
+      streamed = capture_stdout do
+        ui.replay_user_input("hello")
+        ui.stream(type: :content, text: "the answer\n\n")
+        ui.stream_end
+        ui.turn_footer("turn · 1.0s · 0 tools")
+      end
+      plain = capture_stdout do
+        ui.replay_user_input("hello")
+        ui.assistant_text("the answer")
+        ui.turn_footer("turn · 1.0s · 0 tools")
+      end
+      expect(streamed).to include("hello\n\n  the answer")
+      expect(plain).to include("hello\n\n  the answer")
+      expect(streamed).to match(/the answer\n┄ turn/)
+      expect(plain).to match(/the answer\n┄ turn/)
+    end
+  end
+
+  # P2: DISPLAY-ONLY collapse of tool output in the transcript — head lines +
+  # a "… +N lines (full output → context)" marker. The model-facing output is
+  # produced elsewhere (ToolExecutor) and is untouched by this render path.
+  describe "tool output preview collapse (P2)" do
+    it "shows only the head 3 lines of a long #tool_body plus the marker" do
+      out = capture_stdout do
+        ui.tool_started("read", arguments: nil)
+        ui.tool_body((1..10).map { |i| "line #{i}" }.join("\n"))
+        ui.tool_finished("read", result: nil)
+      end
+      expect(out).to include("line 3")
+      expect(out).not_to include("line 4")
+      expect(out).to include("… +7 lines (full output → context)")
+    end
+
+    it "collapses streamed #tool_chunk lines, flushing the marker before the close row" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "seq 9" })
+        (1..9).each { |i| ui.tool_chunk("shell", "out #{i}\n") }
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("out 3")
+      expect(out).not_to include("out 4")
+      marker = out.index("… +6 lines (full output → context)")
+      close  = out.index("└ ✓")
+      expect(marker).not_to be_nil
+      expect(marker).to be < close
+    end
+
+    it "keeps a short body intact, with no marker" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_body("one\ntwo")
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("one")
+      expect(out).to include("two")
+      expect(out).not_to include("full output → context")
+    end
+
+    it "honors display.tool_output_preview_lines = 0 as the old full dump" do
+      allow(Rubino.configuration).to receive(:display_tool_output_preview_lines).and_return(0)
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_body((1..10).map { |i| "line #{i}" }.join("\n"))
+        (1..5).each { |i| ui.tool_chunk("shell", "chunk #{i}\n") }
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("line 10")
+      expect(out).to include("chunk 5")
+      expect(out).not_to include("full output → context")
+    end
+
+    it "resets the streamed-overflow counter between tool runs" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        (1..9).each { |i| ui.tool_chunk("shell", "first #{i}\n") }
+        ui.tool_finished("shell", result: nil)
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_chunk("shell", "second 1\n")
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out.scan("full output → context").size).to eq(1)
+      expect(out).to include("second 1")
     end
   end
 
@@ -992,18 +1260,18 @@ RSpec.describe Rubino::UI::CLI do
 
     let(:cache) { Rubino::Run::SessionApprovalCache.new }
 
-    # Stubs @prompt.select to return the choice symbol the menu would yield.
+    # Stubs the approval prompt's select to return the menu's choice symbol.
     def stub_choice(symbol)
       prompt = instance_double(TTY::Prompt)
       allow(prompt).to receive(:select).and_return(symbol)
-      ui.instance_variable_set(:@prompt, prompt)
+      ui.instance_variable_set(:@approval_prompt, prompt)
       prompt
     end
 
-    it "prints the question with ◆ prefix before prompting" do
+    it "prints the question with the yellow ⚠ prefix before prompting (P7)" do
       stub_choice(:once)
       expect { ui.confirm("Allow shell with args?") }
-        .to output(/◆ Allow shell with args/).to_stdout
+        .to output(/⚠ Allow shell with args/).to_stdout
     end
 
     it "clears a live 'thinking…' indicator before the approval card" do
@@ -1013,10 +1281,10 @@ RSpec.describe Rubino::UI::CLI do
         allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.confirm("Allow shell with args?")
       end
-      # The clear-line escape must land BEFORE the ◆ card header, so the header
+      # The clear-line escape must land BEFORE the ⚠ card header, so the header
       # never glues onto "thinking…".
-      expect(out).to match(/thinking….*\r\e\[2K.*◆ Allow shell with args/m)
-      expect(out).not_to include("thinking…◆")
+      expect(out).to match(/thinking….*\r\e\[2K.*⚠ Allow shell with args/m)
+      expect(out).not_to include("thinking…⚠")
     end
 
     it "finalizes an in-progress content stream before the approval card" do
@@ -1027,8 +1295,8 @@ RSpec.describe Rubino::UI::CLI do
       end
       # The reasoning tail must be committed on its own line — the card header
       # never glues onto it ("Let me run this.◆ Allow…").
-      expect(out).not_to include("Let me run this.◆")
-      expect(out).to include("◆ Allow shell with args")
+      expect(out).not_to include("Let me run this.⚠")
+      expect(out).to include("⚠ Allow shell with args")
     end
 
     it "returns true for 'yes once' without remembering" do
@@ -1147,7 +1415,7 @@ RSpec.describe Rubino::UI::CLI do
         blk.call(menu)
         :no
       end
-      ui.instance_variable_set(:@prompt, prompt)
+      ui.instance_variable_set(:@approval_prompt, prompt)
       capture_stdout do
         ui.confirm("ok?", scope: "shell:rm -rf /tmp/x", tool: "shell",
                           command: "rm -rf /tmp/x", pattern_key: key, description: desc)
@@ -1224,7 +1492,7 @@ RSpec.describe Rubino::UI::CLI do
         blk.call(menu)
         :no
       end
-      ui.instance_variable_set(:@prompt, prompt)
+      ui.instance_variable_set(:@approval_prompt, prompt)
       capture_stdout do
         ui.confirm("ok?", scope: "shell:git status", tool: "shell", command: "git status")
       end
@@ -1253,19 +1521,31 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#activity_started / #activity_finished" do
-    it "activity_started renders as ● running with optional hint" do
+    it "activity_started renders as a quiet ● row with optional hint" do
       out = capture_stdout { ui.activity_started("git", hint: "status") }
-      expect(out).to include("● running  git · status")
+      expect(out).to include("● git status")
     end
 
-    it "activity_finished renders as ✓ done with optional metric" do
+    it "activity_finished renders as compact └ ✓ with optional metric" do
       out = capture_stdout { ui.activity_finished("git", metric: "clean") }
-      expect(out).to include("✓ done · git · clean")
+      expect(out).to include("└ ✓ clean")
     end
 
     it "activity_finished with failed: true renders as ✗ failed" do
       out = capture_stdout { ui.activity_finished("git", failed: true) }
       expect(out).to include("✗ failed · git")
+    end
+
+    # A multiline metric (e.g. a task_result body) used to be interpolated raw,
+    # so everything after the first newline continued flush-left and unstyled.
+    # It must collapse into ONE styled row, newlines joined as " — ".
+    it "activity_finished inlines a newline-bearing metric into one styled row" do
+      out = capture_stdout do
+        ui.activity_finished("task_result", metric: "[sa_e488] status=completed\nreport line two")
+      end
+      lines = out.split("\n").reject(&:empty?)
+      expect(lines.length).to eq(1)
+      expect(lines.first).to include("[sa_e488] status=completed — report line two")
     end
   end
 

@@ -61,6 +61,14 @@ module Rubino
         @last_reasoning_seconds = nil
         @activity_open      = false
         @activity_name      = nil
+        # Rhythm tracker (P3): the kind of the last committed block — :tool
+        # (frames butt together), :gap (a trailing blank is already open, so
+        # the next separator is skipped), :answer, :other.
+        @last_block         = :other
+        # Task ids whose FULL report the lifecycle block already rendered
+        # (#subagent_lifecycle): the injected completion notice for one of
+        # these drops its duplicated Result body (#elide_shown_reports).
+        @reported_subagent_ids = []
         @session_id         = session_id || SecureRandom.uuid
         @approval_cache     = approval_cache || Rubino::Run::SessionApprovalCache.instance
       end
@@ -210,16 +218,17 @@ module Rubino
         return true if approval_cached?(scope)
 
         # Finalize any live streaming state before the approval card so the card
-        # header doesn't glue onto it ("thinking…◆ Allow shell with:" or a
-        # reasoning tail like "Let me run this.◆ Allow…"). The model emits
-        # reasoning/content right up to the tool call, so the transient
+        # header doesn't glue onto it ("thinking…⚠ shell wants:" or a
+        # reasoning tail like "Let me run this.⚠ shell wants…"). The model
+        # emits reasoning/content right up to the tool call, so the transient
         # indicator or the in-progress stream tail is still on the current line
         # when approval is requested. #finalize_stream commits the tail and
         # clears the indicator, mirroring a normal stream_end.
         finalize_stream
 
+        # ⚠ is the attention glyph (P7): ◆ belongs to the animated status row.
         rule = derive_rule(tool, command, pattern_key)
-        $stdout.puts @pastel.yellow("◆ #{question}")
+        $stdout.puts @pastel.yellow("⚠ #{question}")
         # The danger annotation is the single most safety-relevant line on the
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
         $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
@@ -262,9 +271,26 @@ module Rubino
         $stdout.puts @pastel.dim("─" * 80)
       end
 
+      # Panel color diet (P8): dim label, PLAIN value, cyan reserved for the
+      # actionable pointer (`(use /mcp)`). The ljust width matches the
+      # /status grid so values line up in one column.
+      def panel_line(label, value, pointer: nil)
+        row = "  #{@pastel.dim(label.to_s.ljust(10))} #{value}"
+        row += "   #{@pastel.cyan(pointer)}" if pointer
+        $stdout.puts row
+      end
+
+      # Welcome-panel hint row (P8): the actionable command is the ONE cyan
+      # accent; its description stays plain.
+      def hint_row(command, description)
+        $stdout.puts "    #{@pastel.cyan(command.to_s.ljust(9))} #{description}"
+      end
+
       # --- Compact timeline rendering (M2) ---
 
-      # Activity started: renders as `● running  name` or `● running  name · hint`
+      # Activity started: renders as `● name` or `● name hint` — a QUIET dim
+      # row with only the ● in cyan. The tool frame is plumbing, not payload:
+      # a fully cyan "● running read · path" row outshouted the answer (P1).
       def activity_started(name, hint: nil)
         # Replace a still-showing "thinking…" indicator before the committed
         # activity row so it isn't stranded above it (#86): the model emits the
@@ -272,22 +298,38 @@ module Rubino
         # buffered reasoning into the cue/aside FIRST so a reasoning→tool turn
         # (no answer text) never strands the thought.
         collapse_reasoning
-        hint_str = hint ? " · #{hint}" : ""
-        $stdout.puts
-        $stdout.puts @pastel.cyan("● running  #{name}#{hint_str}")
+        hint_str = hint ? " #{hint}" : ""
+        # ONE blank before the first frame of a tool run; frames inside a run
+        # butt together, and a gap left by the previous block isn't doubled (P3).
+        $stdout.puts unless %i[tool gap].include?(@last_block)
+        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}"
         @activity_open = true
         @activity_name = name
+        @last_block = :tool
+        reset_tool_preview
       end
 
-      # Activity finished: renders as `✓ done · name · metric` on success, or
-      # `✗ failed · name · message` on error — the word must agree with the
-      # glyph; "✗ done" read as if the errored tool had still succeeded (#153).
+      # Activity finished. Success is QUIET and compact: `└ ✓ 11 lines` — the
+      # ✓ already says "done" and the opener row said the name, so repeating
+      # both was noise (P10); dim, not green — color is reserved for the one
+      # outcome that needs eyes (P1). Failure keeps name + wording, in red:
+      # `└ ✗ failed · shell · exit 1` — the word must agree with the glyph;
+      # "✗ done" read as if the errored tool had still succeeded (#153).
       def activity_finished(name, metric: nil, failed: false)
         @activity_open = false
-        status_word = failed ? "✗ failed" : "✓ done"
-        suffix = metric ? " · #{metric}" : ""
-        line = "  └ #{status_word} · #{name}#{suffix}"
-        $stdout.puts(failed ? @pastel.red(line) : @pastel.green(line))
+        flush_tool_preview_overflow
+        # The metric can carry newlines (e.g. a task_result body): interpolating
+        # it raw would continue flush-left and unstyled on the next lines —
+        # inline it into the ONE styled row instead.
+        inline = metric ? truncate_inline(metric, 120) : nil
+        if failed
+          suffix = inline && !inline.empty? ? " · #{inline}" : ""
+          $stdout.puts @pastel.red("  └ ✗ failed · #{name}#{suffix}")
+        else
+          suffix = inline && !inline.empty? ? " #{inline}" : ""
+          $stdout.puts @pastel.dim("  └ ✓#{suffix}")
+        end
+        @last_block = :tool
       end
 
       # Approval requested: renders as `◆ summary`
@@ -359,19 +401,60 @@ module Rubino
         $stdout.flush
       end
 
-      # Free-line annotation rendered as `┄ message ┄`, dim. A note opening
-      # with "◆ " (the turn footer: `◆ turn · 7.1s · 1 tool · 371 tok`) gets
-      # its facet rendered red — the sweeping ◆ of the status row "lands" in
-      # the footer at turn end.
+      # Free-line annotation rendered as `┄ message ┄`, dim.
       def note(text)
         return if text.nil? || text.to_s.empty?
 
-        $stdout.puts
-        if text.to_s.start_with?("◆ ")
-          $stdout.puts "#{@pastel.dim("┄ ")}#{@pastel.red("◆")}#{@pastel.dim(" #{text.to_s[2..]} ┄")}"
+        $stdout.puts unless @last_block == :gap
+        $stdout.puts @pastel.dim("┄ #{text} ┄")
+        @last_block = :other
+      end
+
+      # The STATIC turn footer rail, all dim: `┄ turn · 16.6s · 3 tools ┄`.
+      # No red ◆ — red is the error color; the animated status row keeps its
+      # red facet as the living brand mark (P4). Attached directly under the
+      # answer with no leading blank (P3). Subagent completions stashed
+      # mid-turn (#subagent_finished) fold into the grammar instead of
+      # stacking a second `┄ ┄` rail right at turn end:
+      #   ┄ turn · 16.6s · 3 tools · 105 tok · sa_e488 done ┄
+      def turn_footer(text)
+        pending = Array(@pending_subagent_footers)
+        @pending_subagent_footers = nil
+        line = ([text] + pending.map { |p| p[:fold] }).join(" · ")
+        $stdout.puts @pastel.dim("┄ #{line} ┄")
+        @last_block = :other
+      end
+
+      # A background subagent reached a terminal state. Mid-turn the one-line
+      # summary is STASHED and folded into the turn footer (P4) so two `┄ ┄`
+      # rails never stack at turn end (the report still reaches the model via
+      # the InputQueue notice, rendered by #input_injected); between turns the
+      # full lifecycle block renders immediately.
+      def subagent_finished(line, id: nil, status: "done", report: nil)
+        if @turn_active && id
+          (@pending_subagent_footers ||= []) << { fold: "#{id} #{status}",
+                                                  line: line, status: status, report: report, id: id }
         else
-          $stdout.puts @pastel.dim("┄ #{text} ┄")
+          subagent_lifecycle(line, status: status, report: report, id: id)
         end
+      end
+
+      # ONE lifecycle grammar (P6): the live-card-shaped row
+      # (`▸ sa_e488 · explore · completed · 1 tool · 12s`) — dim; red only on
+      # failure — and the child's FULL report markdown-rendered under its own
+      # `↳ report:` lead (the #139 fold-in treatment), never amputated to a
+      # one-line head. The id is remembered so the completion notice the model
+      # receives next turn doesn't ECHO the same report a second time
+      # (#input_injected elides the already-shown Result body).
+      def subagent_lifecycle(line, status: "done", report: nil, id: nil)
+        $stdout.puts unless @last_block == :gap
+        $stdout.puts(status == "failed" ? @pastel.red(line) : @pastel.dim(line))
+        if report && !report.to_s.strip.empty?
+          $stdout.puts @pastel.dim("  ↳ report:")
+          commit_markdown_block(report)
+          remember_reported_subagent(id)
+        end
+        @last_block = :other
       end
 
       # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
@@ -503,10 +586,48 @@ module Rubino
           text.to_s.split("\n").each { |line| composer.commit_queued(line) }
         end
         clear_line
-        first, rest = text.to_s.split("\n", 2)
+        first, rest = elide_shown_reports(text.to_s).split("\n", 2)
         $stdout.puts @pastel.dim("↳ received while working: #{first}")
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
+      end
+
+      # Drops the Result body from a completion notice whose report the
+      # lifecycle block ALREADY rendered in full (#subagent_lifecycle), so the
+      # user doesn't read the same report twice — once at completion and again
+      # when the queued notice is injected next turn. DISPLAY-ONLY: the
+      # model-facing injected text is untouched. Anchored to the notice shape
+      # TaskTool#completion_notice emits; an unmatched notice renders whole
+      # (duplicated beats lost). Each id is consumed on first elision.
+      def elide_shown_reports(text)
+        ids = @reported_subagent_ids
+        return text if ids.nil? || ids.empty?
+
+        ids.dup.each do |id|
+          quoted  = Regexp.escape(id)
+          pattern = Regexp.new(
+            "^(\\[background-task\\] Task #{quoted} \\([^)]*\\) completed\\.)\n" \
+            "Result:\n.*?\n\\(full result via task_result\\(\"#{quoted}\"\\)\\)",
+            Regexp::MULTILINE
+          )
+          replaced = text.sub(pattern) do
+            "#{::Regexp.last_match(1)} (report shown above — full result via task_result(\"#{id}\"))"
+          end
+          next if replaced == text
+
+          text = replaced
+          ids.delete(id)
+        end
+        text
+      end
+
+      # Bounded memory of lifecycle-rendered report ids (see #elide_shown_reports).
+      def remember_reported_subagent(id)
+        return unless id
+
+        @reported_subagent_ids ||= []
+        @reported_subagent_ids << id.to_s
+        @reported_subagent_ids.shift while @reported_subagent_ids.size > 32
       end
 
       # Markdown rendering: assistant output rendered as readable text with
@@ -519,9 +640,18 @@ module Rubino
         # else clears the transient "thinking…" line before the committed
         # answer, so collapse any buffered reasoning + clear the animation first.
         collapse_reasoning
-        $stdout.puts
+        answer_gap
         commit_markdown_block(text)
-        $stdout.puts
+      end
+
+      # Exactly ONE blank line before the answer payload (P3) — skipped when
+      # the previous committed block already left a gap open. No trailing
+      # blank: the turn footer attaches directly under the answer. Shared by
+      # the non-streamed (#assistant_text) and streamed (#stream) paths so
+      # both turns read identically.
+      def answer_gap
+        $stdout.puts unless @last_block == :gap
+        @last_block = :answer
       end
 
       # The left margin every committed markdown line is printed behind. The
@@ -557,6 +687,11 @@ module Rubino
 
       # How many trailing lines of the in-flight block stay visible live (#127).
       LIVE_TAIL_ROWS = 3
+
+      # A spawn handle: the verbose model-facing acknowledgement the task tool
+      # returns for a BACKGROUND child. The model needs the whole instruction;
+      # the human only needs "it started".
+      SPAWN_HANDLE_RE = /\AStarted background subagent '([^']+)' as task (\S+?)\.(?:\s|\z)/
 
       # Column budget for markdown rendering: terminal width minus the MD_MARGIN
       # indent applied to every committed line. Headless-safe (falls back to 80).
@@ -609,6 +744,9 @@ module Rubino
         if type != @stream_type
           stream_end if @stream_type
           @stream_type = type
+          # The streamed answer gets the SAME single committed gap the
+          # non-streamed path gets (P3) — once, when the content stream opens.
+          answer_gap if type == :content
         end
 
         # Signal the bottom composer that ANSWER content is now actively
@@ -683,6 +821,13 @@ module Rubino
         @turn_active = false
         @thinking_indicator = false
         status_stop
+        # A completion stashed after the footer printed (or on an interrupted
+        # turn that never got one) must not vanish — flush the full block.
+        pending = Array(@pending_subagent_footers)
+        @pending_subagent_footers = nil
+        pending.each do |p|
+          subagent_lifecycle(p[:line], status: p[:status] || "done", report: p[:report], id: p[:id])
+        end
       end
 
       # Shows the status row during the model wait. Mid-turn this only swaps
@@ -795,9 +940,10 @@ module Rubino
         $stdout.puts
         $stdout.puts @pastel.green("#{text}")
         $stdout.puts
+        @last_block = :gap
       end
 
-      # Tool started renders as compact `● running  name · hint`.
+      # Tool started renders as the quiet `● name hint` open row (P1).
       # The `task` (delegation) tool gets a dedicated row so the timeline reads
       # as a hand-off, not a generic tool call: `● delegated → <subagent>  <prompt>`.
       #
@@ -817,16 +963,24 @@ module Rubino
 
         hint = args_hint(arguments)
         activity_started(name, hint: hint)
-        # The committed `● running` row is in scrollback; SWITCH the status-row
+        # The committed `● name` open row is in scrollback; SWITCH the status-row
         # label to the tool (P3) instead of leaving the live region dead while
         # the tool runs. The engine thread stays the same — label swap only.
         status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
       end
 
+      # DISPLAY-ONLY collapse (P2): the transcript shows the head few lines of
+      # a tool's output plus a `… +N lines (full output → context)` marker —
+      # the FULL output still goes to the model/context unchanged. Governed by
+      # display.tool_output_preview_lines (0 = old full dump).
       def tool_body(text, kind: :plain)
         return if text.nil? || text.to_s.empty?
 
-        write_body_lines(text.to_s) do |chomped|
+        limit  = tool_preview_limit
+        lines  = text.to_s.lines
+        shown  = limit.positive? ? lines.first(limit) : lines
+        hidden = lines.size - shown.size
+        write_body_lines(shown.join) do |chomped|
           if kind == :diff
             case chomped[0]
             when "+" then @pastel.green(chomped)
@@ -837,15 +991,36 @@ module Rubino
             @pastel.dim(chomped)
           end
         end
+        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
+        @last_block = :tool
       end
 
+      # Streamed tool output (shell): same display-only collapse as #tool_body,
+      # accumulated across chunks. Lines past the preview budget are counted
+      # silently; #activity_finished flushes the `… +N lines` marker right
+      # before the close row.
       def tool_chunk(_name, chunk)
         return if chunk.nil? || chunk.to_s.empty?
 
-        write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
+        limit = tool_preview_limit
+        unless limit.positive?
+          write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
+          return
+        end
+
+        chunk.to_s.each_line do |line|
+          if @tool_preview_shown.to_i < limit
+            @tool_preview_shown = @tool_preview_shown.to_i + 1
+            write_body_lines(line) { |chomped| @pastel.dim(chomped) }
+          else
+            @tool_preview_hidden = @tool_preview_hidden.to_i + 1
+          end
+        end
+        @last_block = :tool
       end
 
-      # Tool finished renders as compact `✓ done · name · metric` or `✗ failed · name · error`.
+      # Tool finished renders as the compact `└ ✓ metric` close row, or
+      # `└ ✗ failed · name · error` in red (P10).
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
       def tool_finished(name, result: nil)
         return delegation_finished(result) if name == "task"
@@ -861,7 +1036,7 @@ module Rubino
         status_back_to_thinking
       end
 
-      # After a tool's `✓ done` row commits, swap the status row back to the
+      # After a tool's `└ ✓` close row commits, swap the status row back to the
       # thinking phase (the P4 inter-tool gap) with the accumulated stats. The
       # live row count is a simple per-turn UI tally — the footer's exact
       # ran/denied split from the Loop stays authoritative.
@@ -1139,6 +1314,14 @@ module Rubino
         Security::PrefixDeriver.narrow_rule_for(tool: "shell", command: command.to_s)
       end
 
+      # A DEDICATED TTY::Prompt for the approval menu whose output is wrapped
+      # in IndentedIO, so the question + menu render in the SAME column as the
+      # card's body (P7) instead of flush-left under a split card. Separate
+      # from @prompt so #ask and other prompts keep their flush layout.
+      def approval_prompt
+        @approval_prompt ||= TTY::Prompt.new(output: IndentedIO.new)
+      end
+
       # Prompts for the approval choice. The menu is built from the derived
       # rule: an "always — allow `<prefix>` commands" item is offered only when
       # a :prefix rule is derivable (non-dangerous command). For a dangerous
@@ -1156,7 +1339,7 @@ module Rubino
           # "<Approve|Deny> — <scope>" verb phrase, so the affirmatives and
           # denies read symmetrically instead of mixing "yes, once" with
           # "no — deny this once".
-          @prompt.select("approve?", cycle: false) do |menu|
+          approval_prompt.select("approve?", cycle: false) do |menu|
             menu.choice "Approve once", :once
             menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
             menu.choice "Approve — this command (always)",       :always_command
@@ -1165,6 +1348,32 @@ module Rubino
             menu.choice "Deny — this command (always)",          :deny_always
           end
         end
+      end
+
+      # Head lines of tool output the transcript shows (P2). Resolved from
+      # config on every call so /config changes apply mid-session.
+      def tool_preview_limit
+        Rubino.configuration.display_tool_output_preview_lines
+      end
+
+      def reset_tool_preview
+        @tool_preview_shown  = 0
+        @tool_preview_hidden = 0
+      end
+
+      # The dim collapse marker: `… +N lines (full output → context)`.
+      def hidden_lines_marker(hidden)
+        "… +#{hidden} line#{"s" if hidden != 1} (full output → context)"
+      end
+
+      # Commits the marker for streamed lines the preview budget swallowed
+      # (#tool_chunk), right before the close row. Idempotent per tool run.
+      def flush_tool_preview_overflow
+        hidden = @tool_preview_hidden.to_i
+        reset_tool_preview
+        return unless hidden.positive?
+
+        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}")
       end
 
       # Renders body text with the current activity open.
@@ -1267,19 +1476,40 @@ module Rubino
         paint_live(margined_tail(tail))
       end
 
-      # Prefixes every tail row with MD_MARGIN, pre-clamping each row to the
-      # terminal budget MINUS the margin (and the live region's one spare
-      # column) so the downstream one-row clamp (LiveRegion.clamp to cols - 1)
-      # never has to left-truncate the margin away — an over-long row keeps
-      # its margin and loses its HEAD ("  …tail"), same truncation rule as
-      # every other live row. A blank tail passes through untouched (it just
-      # clears the transient row).
+      # WRAPS the in-flight tail to the terminal width and keeps the last
+      # LIVE_TAIL_ROWS wrapped rows (P12): a long streamed paragraph used to
+      # collapse into ONE head-truncated row ("…the very end of it") because
+      # the raw tail was clamped per LINE, not wrapped. Each visible row
+      # carries the SAME MD_MARGIN the committed lines above it get
+      # (#commit_markdown_block), so the raw in-flight rows sit in the same
+      # column as the rendered block they snap into. A blank tail passes
+      # through untouched (it just clears the transient row).
       def margined_tail(tail)
         text = tail.to_s
         return text if text.empty?
 
         budget = terminal_cols - MD_MARGIN.length - 1
-        text.split("\n", -1).map { |line| "#{MD_MARGIN}#{LiveRegion.clamp(line, budget)}" }.join("\n")
+        rows = text.split("\n", -1).flat_map { |line| wrap_tail_row(line, budget) }
+        rows.last(LIVE_TAIL_ROWS).map { |row| "#{MD_MARGIN}#{row}" }.join("\n")
+      end
+
+      # Splits one raw line into display-width-budgeted rows (wide glyphs are
+      # never split across rows — same measurement the composer/live region
+      # use). An empty line stays one empty row.
+      def wrap_tail_row(line, budget)
+        budget = 1 if budget < 1
+        rows = [+""]
+        width = 0
+        line.each_char do |ch|
+          w = LiveRegion.display_width(ch)
+          if width + w > budget && !rows.last.empty?
+            rows << +""
+            width = 0
+          end
+          rows.last << ch
+          width += w
+        end
+        rows
       end
 
       # Commits any in-progress streaming so the next committed output (the
@@ -1517,10 +1747,11 @@ module Rubino
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub
         preview = prompt ? "  #{truncate_inline(prompt, 60)}" : ""
-        $stdout.puts
-        $stdout.puts @pastel.cyan("● delegated → #{sub}#{preview}")
+        $stdout.puts unless %i[tool gap].include?(@last_block)
+        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{sub}#{preview}")}"
         @activity_open = true
         @activity_name = "task"
+        @last_block = :tool
         status_show("task", phase: :tool, hint: sub) if @turn_active
       end
 
@@ -1535,15 +1766,23 @@ module Rubino
       # delegation renders the red ✗ variant — consistent with regular tools.
       def delegation_finished(result)
         @activity_open = false
-        sub     = @delegation_subagent || "subagent"
-        summary = truncate_inline(result&.output.to_s.strip, 80)
-        icon, color =
-          if delegation_failed?(result)        then ["✗", :red]
-          elsif delegation_noop?(result)       then ["⊘", :dim]
-          else                                      ["✓", :green]
-          end
-        $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
+        sub    = @delegation_subagent || "subagent"
+        output = (result.respond_to?(:output) ? result.output : result).to_s
+        if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
+          # Background spawn: ONE lifecycle grammar (P6) — the live-card row
+          # shape, dim, no green ✓ (nothing finished yet; it only started).
+          $stdout.puts @pastel.dim("  └ ▸ #{m[2]} · #{m[1]} · started")
+        else
+          summary = truncate_inline(output.strip, 80)
+          icon, color =
+            if delegation_failed?(result)        then ["✗", :red]
+            elsif delegation_noop?(result)       then ["⊘", :dim]
+            else                                      ["✓", :dim] # quiet close — color only on failure (P1)
+            end
+          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
+        end
         @delegation_subagent = nil
+        @last_block = :tool
         status_back_to_thinking
       end
 
@@ -1579,9 +1818,13 @@ module Rubino
         v.empty? ? nil : v
       end
 
+      # Collapses a possibly-multiline text into ONE inline segment: lines are
+      # joined with " — " (instead of dropping everything after the first), then
+      # clamped to +max+ chars. Keeps multi-line tool metrics / subagent
+      # summaries on a single styled row.
       def truncate_inline(text, max)
-        first = text.to_s.lines.first.to_s.strip
-        first.length > max ? "#{first[0, max - 1]}…" : first
+        inline = text.to_s.lines.map(&:strip).reject(&:empty?).join(" — ")
+        inline.length > max ? "#{inline[0, max - 1]}…" : inline
       end
 
       # Short identifier piece for the tool header.

@@ -116,8 +116,12 @@ module Rubino
       # scroll here can never desync the redraw. Each line is emitted with a
       # trailing "\r\n" because OPOST is off in raw mode (a bare "\n" would not
       # return the carriage and the next line would stair-step).
+      # An EMPTY committed line is a deliberate blank row (the P3 rhythm gaps —
+      # one blank before the answer block, the separator before a tool run):
+      # it must scroll a real row, not be dropped, or the in-turn rhythm
+      # differs from the between-turns one. Only nil is a no-op.
       def commit(committed)
-        return if committed.nil? || committed.empty?
+        return if committed.nil?
 
         normalized = committed.to_s.gsub("\r\n", "\n").gsub("\n", "\r\n")
         @output.print(normalized)
