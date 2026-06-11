@@ -53,4 +53,26 @@ RSpec.describe "API contract: sessions" do
     get_json "/v1/sessions/#{id}"
     expect(last_response.status).to eq(404)
   end
+
+  # #226: a session that HAS a run used to 500 (FK violation) because destroy!
+  # never deleted the runs rows — the session became undeletable over the API.
+  # Create a session + a run (+ a run-scoped event) and assert a clean delete.
+  it "DELETE /v1/sessions/:id deletes a session that has a run (no 500, #226)" do
+    post_json "/v1/sessions", {}
+    id = json_body.fetch("id")
+
+    run = Rubino::Run::Repository.new.create(session_id: id, input_text: "say hi")
+    Rubino::Run::EventStore.new.append(
+      session_id: id, run_id: run[:id], type: "run.started", payload: {}
+    )
+
+    delete "/v1/sessions/#{id}", {}, auth_headers
+    expect(last_response.status).to eq(204)
+    expect(Rubino.database.db[:runs].where(session_id: id).count).to eq(0)
+    expect(Rubino.database.db[:events].where(session_id: id).count).to eq(0)
+
+    # The documented terminal: a second DELETE now reaches 404, not another 500.
+    delete "/v1/sessions/#{id}", {}, auth_headers
+    expect(last_response.status).to eq(404)
+  end
 end

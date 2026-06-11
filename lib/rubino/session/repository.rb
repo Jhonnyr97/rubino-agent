@@ -12,8 +12,9 @@ module Rubino
     # - #find supports prefix matching on the UUID so short ids from the CLI
     #   resolve to a full session row.
     # - #latest_active is used to resume the most recently touched session.
-    # - #destroy! cascades manually to events, tool_calls, messages and
-    #   session_summaries inside a single transaction (no FK cascade in schema).
+    # - #destroy! cascades manually to events, tool_calls, messages,
+    #   session_summaries and runs inside a single transaction (no FK cascade
+    #   in schema; the runs FK would otherwise block the session delete).
     class Repository
       def initialize(db: nil)
         @db = db || Rubino.database.db
@@ -253,6 +254,7 @@ module Rubino
           @db[:tool_calls].where(session_id: id).delete
           @db[:messages].where(session_id: id).delete
           @db[:session_summaries].where(session_id: id).delete
+          @db[:runs].where(session_id: id).delete
           @db[:sessions].where(id: id).delete
         end
       end

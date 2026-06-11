@@ -308,11 +308,22 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to include("No facts matching")
     end
 
-    it "forgets a fact by id" do
+    it "forgets a fact by id after the destructive confirm" do
       m = store.store(kind: "fact", content: "delete me")
+      allow(ui).to receive(:confirm_destructive).and_return(true)
       exec.try_execute("/memory forget #{m[:id]}")
       expect(store.find(m[:id])).to be_nil
       expect(info_lines.join("\n")).to include("Forgot")
+    end
+
+    # #218: forget is destructive — a declined / non-interactive / piped answer
+    # must DEFAULT to No and must NOT delete the fact. UI::Null#confirm_destructive
+    # fails closed (false), so the fact survives.
+    it "keeps the fact on a non-interactive (fail-closed) forget confirm" do
+      m = store.store(kind: "fact", content: "keep me")
+      exec.try_execute("/memory forget #{m[:id]}")
+      expect(store.find(m[:id])).not_to be_nil
+      expect(info_lines.join("\n")).to include("Aborted.")
     end
 
     # Regression for #59: `/memory search` with no query used to search for the
@@ -888,22 +899,37 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       it "deletes a session after the confirm (shared CLI flow)" do
         repo.create(source: "cli", title: "junk")
         s = repo.list(limit: 1).first
-        allow(ui).to receive(:confirm).and_return(true)
+        allow(ui).to receive(:confirm_destructive).and_return(true)
 
         expect(exec.try_execute("/sessions delete #{s[:id][0..7]}")).to eq(:handled)
         expect(repo.find(s[:id])).to be_nil
         expect(info_lines.join("\n")).to include("Deleted session #{s[:id][0..7]}")
-        expect(ui).to have_received(:confirm).with(/Delete session #{s[:id][0..7]}/)
+        expect(ui).to have_received(:confirm_destructive).with(/Delete session #{s[:id][0..7]}/)
       end
 
       it "keeps the session when the confirm is declined" do
         repo.create(source: "cli", title: "keep me")
         s = repo.list(limit: 1).first
-        allow(ui).to receive(:confirm).and_return(false)
+        allow(ui).to receive(:confirm_destructive).and_return(false)
 
         exec.try_execute("/sessions delete #{s[:id][0..7]}")
         expect(repo.find(s[:id])).not_to be_nil
         expect(info_lines.join("\n")).to include("Aborted.")
+      end
+
+      # #218: a non-interactive / piped / EOF answer must DEFAULT to No and must
+      # NOT delete. UI::Null#confirm_destructive fails closed (false), modelling
+      # `echo n | rubino sessions delete` — the session must survive, and the
+      # tool-approval menu (#confirm) must never be used for a destructive verb.
+      it "keeps the session on a non-interactive (fail-closed) confirm" do
+        repo.create(source: "cli", title: "data loss guard")
+        s = repo.list(limit: 1).first
+        allow(ui).to receive(:confirm)
+
+        exec.try_execute("/sessions delete #{s[:id][0..7]}")
+        expect(repo.find(s[:id])).not_to be_nil
+        expect(info_lines.join("\n")).to include("Aborted.")
+        expect(ui).not_to have_received(:confirm)
       end
 
       it "refuses to delete the ACTIVE session" do

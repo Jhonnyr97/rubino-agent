@@ -257,7 +257,7 @@ module Rubino
             if stopped || @repository.stop_requested?(run_id)
               final_status = "stopped"
               @repository.mark_stopped!(run_id)
-              recorder.emit("run.stopped")
+              recorder.emit("run.stopped", {})
             else
               final_status = "failed"
               safe_mark_failed(run_id, "interrupted")

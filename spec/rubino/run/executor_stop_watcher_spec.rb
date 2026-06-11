@@ -113,4 +113,39 @@ RSpec.describe Rubino::Run::Executor do
       expect(token.cancelled?).to be(true)
     end
   end
+
+  # #227: the clean cooperative-stop branch (executor.rb:260) emitted
+  # `recorder.emit("run.stopped")` with ONE arg, but Recorder#emit needs TWO —
+  # the ArgumentError killed the worker thread and `run.stopped` was never
+  # produced. Drive #start end-to-end with a runner that unwinds via Interrupted
+  # on a stop-requested run and assert the terminal frame lands AND the worker
+  # finishes cleanly (no dead thread, on_complete fires with status "stopped").
+  describe "clean stop emits run.stopped (#227)" do
+    let(:db)        { test_database }
+    let(:real_repo) { Rubino::Run::Repository.new(db: db.db) }
+    let(:executor)  { described_class.new(repository: real_repo) }
+
+    before { allow(Rubino).to receive(:database).and_return(db) }
+
+    it "emits a run.stopped terminal event and the worker thread does not die" do
+      session = Rubino::Session::Repository.new.create(source: "spec", model: "fake", provider: "fake")
+      run = real_repo.create(session_id: session[:id], input_text: "hi")
+      real_repo.request_stop!(run[:id])
+
+      # The runner unwinds via Interrupted (the loop saw the flipped token).
+      fake_runner = instance_double(Rubino::Agent::Runner, cancel!: nil)
+      allow(fake_runner).to receive(:run!).and_raise(Rubino::Interrupted)
+      allow(Rubino::Agent::Runner).to receive(:new).and_return(fake_runner)
+
+      completed = nil
+      worker = executor.start(run, on_complete: ->(status:, **) { completed = status })
+      expect(worker.join(5)).to eq(worker)
+      expect(worker).not_to be_alive
+      expect(worker.status).to be(false) # ran to completion, not killed by an exception
+
+      expect(completed).to eq("stopped")
+      events = Rubino::Run::EventStore.new.for_run(run[:id]).map { |e| e[:type] }
+      expect(events).to include("run.stopped")
+    end
+  end
 end
