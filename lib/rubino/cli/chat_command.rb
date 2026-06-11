@@ -275,6 +275,15 @@ module Rubino
         begin
           loop do
             input = next_input(input_queue, runner)
+            # Esc-Esc rewind: the idle read forked the session at the picked
+            # message and parked the fork's runner — adopt it BEFORE dispatch
+            # so the edited message runs as the next turn on the fork (the
+            # same swap-in-place /branch and /compact do).
+            if (rewound = @rewound_runner)
+              @rewound_runner = nil
+              runner = rewound
+              cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+            end
             if input.nil? || exit_command?(input)
               break if confirm_quit?(ui)
 
@@ -594,6 +603,12 @@ module Rubino
       # turn loop's hand-off). A half-typed, un-submitted draft is preserved in
       # @pending_draft on teardown so it survives into the next prompt.
       def read_idle_line(input_queue, draft, runner = nil)
+        # Esc-Esc rewind flag, flipped from the composer's reader thread and
+        # drained by the poll loop below — the same trap-safe split the idle
+        # Ctrl+C uses (the hook must never take the render mutex over there).
+        # Declared BEFORE the composer so the lambda captures this local.
+        # Without a runner there is no session to rewind, so no hook.
+        rewind_pending = false
         composer = UI::BottomComposer.new(
           input_queue: input_queue,
           prompt: build_prompt,
@@ -606,7 +621,8 @@ module Rubino
           pending_queued: pending_queued,
           status_line: build_status_line(runner),
           max_input_rows: Rubino.configuration.display_input_max_rows,
-          paste_store: paste_store
+          paste_store: paste_store,
+          on_double_esc: runner ? -> { rewind_pending = true } : nil
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -645,7 +661,10 @@ module Rubino
 
           # Take ONE parked line (FIFO) so several items queued at idle each run
           # as their OWN turn (B4), in submission order — never coalesced. The
-          # rest stay parked for the next #next_input / loop pass.
+          # rest stay parked for the next #next_input / loop pass. Checked
+          # BEFORE the rewind flag: a line the user already submitted wins over
+          # an Esc-Esc that raced it (the pending rewind dies with the break —
+          # a picker must never pop over a turn that is about to start).
           queued = input_queue.shift
           unless queued.nil?
             # An idle plain submit already echoed "<prompt><line>" at submit time;
@@ -656,6 +675,19 @@ module Rubino
             @input_from_queue = pending_queued.include?(queued) ? [queued] : nil
             line = queued
             break
+          end
+
+          # Drain an Esc-Esc the reader recorded: open the rewind picker (it
+          # suspends the composer via run_in_terminal, so it must run on THIS
+          # thread, never the reader's). A pick forks the session, parks the
+          # fork in @rewound_runner for the REPL to adopt, and pre-fills the
+          # composer with the picked message; Esc-cancel changes nothing.
+          if rewind_pending
+            rewind_pending = false
+            if (rewound = handle_rewind(composer, runner, Rubino.ui))
+              runner = rewound
+              @rewound_runner = rewound
+            end
           end
           sleep(0.05)
         end
@@ -1141,6 +1173,113 @@ module Rubino
         store.create(session_id: child_session_id, role: "user", content: probe.question)
         store.create(session_id: child_session_id, role: "assistant", content: probe.answer)
         true
+      end
+
+      # --- Esc-Esc rewind (edit-and-resend) -----------------------------------
+      #
+      # Double-Esc at the idle prompt walks back through the session's USER
+      # messages: a picker (the same arrow-key machinery /sessions uses, Esc
+      # cancels) lists them most recent first; picking one FORKS the session at
+      # the point BEFORE that message (the /branch copy-truncated infra), parks
+      # the fork's runner for the REPL to adopt, and pre-fills the composer
+      # with the message text ready to edit — Enter sends it as the next turn
+      # on the fork. The original session is never touched.
+
+      # Picker snippet length — enough to recognize the message at a glance.
+      REWIND_SNIPPET_CHARS = 60
+
+      # Run the rewind flow. Returns the fork's runner on a pick, nil on
+      # cancel / nothing to rewind to. Must run OFF the composer's reader
+      # thread: ui.select suspends the composer (run_in_terminal), which joins
+      # that thread.
+      def handle_rewind(composer, runner, ui)
+        messages = ::Rubino::Session::Store.new.for_session(runner.session[:id])
+        user_idx = messages.each_index.select { |i| rewindable_message?(messages[i]) }
+        if user_idx.empty?
+          composer.announce("(no earlier message to rewind to)")
+          return nil
+        end
+
+        choices = user_idx.reverse.map { |i| [rewind_choice_label(messages[i]), i] }
+        chosen  = ui.select("Rewind to which message? (Esc to cancel)", choices)
+        return nil if chosen.nil?
+
+        rewind_onto_fork(composer, runner, ui, messages, chosen,
+                         ordinal: user_idx.index(chosen) + 1)
+      end
+
+      # Fork the session at the picked message and switch onto it: seed the
+      # child with everything BEFORE the message (copy-truncated), adopt the
+      # fork's runner + status bar, print the dim note, and pre-fill the
+      # composer with the message text (multiline-safe) for edit-and-resend.
+      def rewind_onto_fork(composer, runner, ui, messages, index, ordinal:)
+        child      = rewind_fork(runner, messages.first(index))
+        new_runner = build_runner(session_id: child[:id], ui: ui)
+        @branch_short_id = child[:id][0..3]
+        ui.note("rewound to message #{ordinal} — editing")
+        composer.set_status(build_status_line(new_runner))
+        composer.prefill(messages[index].content)
+        new_runner
+      end
+
+      # A row the rewind picker offers: a REAL typed user message — not a tool
+      # result riding the user role, and not the `!` bang-shell injections
+      # (<bash-input>/<bash-stdout> context glue is not something to resend).
+      def rewindable_message?(msg)
+        msg.role == "user" && msg.tool_call_id.nil? &&
+          !msg.content.to_s.start_with?("<bash-")
+      end
+
+      # One picker row: `N ago · <first 60 chars>` — recency + a flattened
+      # snippet, enough to recognize the turn at a glance.
+      def rewind_choice_label(msg)
+        snippet = msg.content.to_s.gsub(/\s+/, " ").strip
+        snippet = "#{snippet[0, REWIND_SNIPPET_CHARS]}…" if snippet.length > REWIND_SNIPPET_CHARS
+        age = message_age(msg)
+        age ? "#{age} · #{snippet}" : snippet
+      end
+
+      # "5m ago" for a message row (same humanization as the /sessions picker);
+      # nil when the timestamp is unparseable — the row renders without it.
+      def message_age(msg)
+        created = msg.created_at
+        created = Time.parse(created.to_s) unless created.is_a?(Time)
+        "#{human_duration(Time.now - created)} ago"
+      rescue StandardError
+        nil
+      end
+
+      def human_duration(seconds)
+        secs = seconds.to_i
+        return "#{secs}s" if secs < 60
+        return "#{secs / 60}m" if secs < 3600
+
+        "#{secs / 3600}h"
+      end
+
+      # The copy-truncated fork (the /branch infra, cut at the rewind point):
+      # a child session with lineage set, seeded with +seed_messages+ — every
+      # message BEFORE the picked one — leaving the original untouched.
+      def rewind_fork(runner, seed_messages)
+        parent = runner.session
+        repo   = Session::Repository.new
+        # Persist a lazily-built, never-saved parent first, exactly as /branch
+        # does, so parent_session_id points at a real row.
+        repo.persist!(parent) if parent[:persisted] == false
+
+        child = repo.create(
+          source: "cli",
+          model: parent[:model],
+          provider: parent[:provider],
+          title: nil,
+          parent_session_id: parent[:id]
+        )
+        store = ::Rubino::Session::Store.new
+        store.copy_into(child[:id], seed_messages)
+        # copy_into writes message rows but not the cached message_count —
+        # sync it once, same as /branch (#/sessions would show "0 msgs").
+        repo.update(child[:id], message_count: store.count(child[:id]))
+        child
       end
 
       # The Ctrl+O callback for the composer: reveal the last retained reasoning

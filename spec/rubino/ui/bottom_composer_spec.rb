@@ -2029,4 +2029,142 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to include("\e[1B\e[2K")
     end
   end
+
+  describe "Esc-Esc double-tap (the rewind chord)" do
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output,
+                          completion_source: source, on_double_esc: hook)
+    end
+
+    let(:source) { Rubino::UI::CompletionSource.new(commands: %w[/help /reset]) }
+    let(:fired)  { [] }
+    let(:hook)   { -> { fired << :rewind } }
+
+    # A LONE Esc: the reader sees no following bytes.
+    def esc(c)
+      c.instance_variable_set(:@input, StringIO.new(""))
+      c.handle_key("\e")
+    end
+
+    # Pin the monotonic clock the chord measures against.
+    def clock_returns(*times)
+      allow(Process).to receive(:clock_gettime)
+        .with(Process::CLOCK_MONOTONIC).and_return(*times)
+    end
+
+    it "fires the hook on two lone ESCs within the window at the idle prompt" do
+      clock_returns(0.0, 0.2)
+      esc(composer)
+      expect(fired).to be_empty # first Esc only arms
+      esc(composer)
+      expect(fired).to eq([:rewind])
+    end
+
+    it "does not fire when the second Esc falls outside the window" do
+      clock_returns(0.0, 1.0)
+      esc(composer)
+      esc(composer)
+      expect(fired).to be_empty
+    end
+
+    it "a late second Esc re-arms: a third within the window still fires" do
+      clock_returns(0.0, 1.0, 1.2)
+      3.times { esc(composer) }
+      expect(fired).to eq([:rewind])
+    end
+
+    it "with a menu open the first Esc dismisses AND arms; the second fires" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      expect(composer.menu_open?).to be(true)
+
+      clock_returns(0.0, 0.2)
+      esc(composer)
+      expect(composer.menu_open?).to be(false) # dismiss kept its meaning
+      expect(fired).to be_empty
+      esc(composer)
+      expect(fired).to eq([:rewind])
+    end
+
+    it "never fires during a turn (idle-only), however fast the mash" do
+      composer.begin_turn
+      clock_returns(0.0, 0.1, 0.2, 0.3, 5.0, 5.1)
+      4.times { esc(composer) }
+      expect(fired).to be_empty
+      composer.end_turn
+
+      2.times { esc(composer) }
+      expect(fired).to eq([:rewind]) # idle again — the chord works
+    end
+
+    it "never fires while content is streaming" do
+      composer.begin_content_stream
+      clock_returns(0.0, 0.1)
+      2.times { esc(composer) }
+      expect(fired).to be_empty
+    end
+
+    it "fires when both ESC bytes land in ONE read burst (fast double-tap)" do
+      clock_returns(0.0, 0.0)
+      composer.instance_variable_set(:@input, StringIO.new("\e")) # the 2nd ESC is the 1st's tail
+      composer.handle_key("\e")
+      expect(fired).to eq([:rewind])
+    end
+
+    it "a one-burst ESC ESC over an open menu dismisses it and fires" do
+      "/re".each_char { |ch| composer.handle_key(ch) }
+      clock_returns(0.0, 0.0)
+      composer.instance_variable_set(:@input, StringIO.new("\e"))
+      composer.handle_key("\e")
+      expect(composer.menu_open?).to be(false)
+      expect(fired).to eq([:rewind])
+    end
+
+    it "leaves a Meta-prefixed sequence (ESC ESC [ A) to its real action" do
+      composer.handle_key("x")
+      composer.instance_variable_set(:@input, StringIO.new("\e[D")) # ESC ESC [ D
+      composer.handle_key("\e")
+      expect(fired).to be_empty # a Meta-arrow, not the chord
+    end
+
+    it "is a quiet no-op without a hook wired (the in-turn composer)" do
+      c = described_class.new(input_queue: queue, input: input, output: output)
+      expect { 3.times { esc(c) } }.not_to raise_error
+    end
+  end
+
+  describe "#prefill (Esc-Esc rewind edit-and-resend)" do
+    it "replaces the buffer with multiline text and parks the caret at the end" do
+      composer.handle_key("d") # a stale draft the prefill replaces
+      composer.prefill("fix the spec\nthen rerun")
+
+      expect(composer.buffer).to eq("fix the spec\nthen rerun")
+      composer.handle_key("!") # proves the caret sits at the very end
+      expect(composer.buffer).to eq("fix the spec\nthen rerun!")
+    end
+
+    it "submits the prefilled multiline text intact" do
+      composer.prefill("line one\nline two")
+      composer.handle_key("\r")
+      expect(queue.shift).to eq("line one\nline two")
+    end
+
+    it "closes an open completion menu (the text is a message, not a token)" do
+      c = described_class.new(
+        input_queue: queue, input: input, output: output,
+        completion_source: Rubino::UI::CompletionSource.new(commands: %w[/help])
+      )
+      "/he".each_char { |ch| c.handle_key(ch) }
+      expect(c.menu_open?).to be(true)
+
+      c.prefill("try again with --verbose")
+      expect(c.menu_open?).to be(false)
+      expect(c.buffer).to eq("try again with --verbose")
+    end
+
+    it "clears the buffer on nil/empty" do
+      composer.prefill("draft")
+      composer.prefill(nil)
+      expect(composer.buffer).to eq("")
+    end
+  end
 end
