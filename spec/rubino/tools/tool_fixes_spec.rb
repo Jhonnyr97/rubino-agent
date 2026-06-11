@@ -8,9 +8,6 @@ require "timeout"
 # Registry — tool_enabled_in_config? passes config_key, not nil
 # ---------------------------------------------------------------------------
 RSpec.describe Rubino::Tools::Registry do
-  before { described_class.reset! }
-  after  { described_class.reset! }
-
   describe ".enabled_tools" do
     it "returns tools when the config enables them" do
       described_class.register(Rubino::Tools::GlobTool.new)
@@ -86,11 +83,8 @@ RSpec.describe Rubino::CLI::ToolsCommand do
 
   before do
     allow(Rubino).to receive(:ui).and_return(ui)
-    Rubino::Tools::Registry.reset!
     Rubino::Tools::Registry.register_defaults!
   end
-
-  after { Rubino::Tools::Registry.reset! }
 
   def web_status
     described_class.new.execute

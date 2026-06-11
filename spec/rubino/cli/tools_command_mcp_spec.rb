@@ -8,13 +8,9 @@ RSpec.describe Rubino::CLI::ToolsCommand do
   before do
     Rubino.ui = ui
     Rubino::MCP.reset!
-    Rubino::Tools::Registry.reset!
   end
 
-  after do
-    Rubino::MCP.reset!
-    Rubino::Tools::Registry.reset!
-  end
+  after { Rubino::MCP.reset! }
 
   def stub_configuration(raw)
     config = Rubino::Config::Configuration.new(raw: raw, home_path: TEST_HOME)

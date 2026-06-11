@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Tools::Registry do
-  before { described_class.reset! }
-
   # Force Zeitwerk to load all tool classes before tests run
   before(:all) do
     Rubino.loader.eager_load

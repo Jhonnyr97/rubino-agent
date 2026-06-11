@@ -60,7 +60,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "completes the /agents grammar: live ids, then steer/probe/--stop" do
-      Rubino::Tools::BackgroundTasks.reset!
       entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "look around")
       cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
       source = described_class.new({}).send(:build_completion_source, cmd_loader)
@@ -345,14 +344,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # field; the model can only roleplay bash in markdown. Verified against
   # real wire traffic via RUBYLLM_DEBUG=1 before this fix.
   describe "#ensure_setup!" do
-    # These examples mutate the process-global tool registry (one leaves it
-    # holding ONLY shell). Without this reset, any later spec relying on
-    # "register defaults when empty" sees a non-empty registry with no
-    # write/read/... and dies with "Unknown tool" (#163, seed 62637).
-    after { Rubino::Tools::Registry.reset! }
-
     it "registers default tools when the registry is empty" do
-      Rubino::Tools::Registry.reset!
       expect(Rubino::Tools::Registry.all.size).to eq(0)
 
       described_class.new({}).send(:ensure_setup!)
@@ -364,7 +356,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "re-registers defaults when a core tool is missing from a partial registry" do
-      Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register(Rubino::Tools::ShellTool.new)
 
       described_class.new({}).send(:ensure_setup!)
@@ -377,7 +368,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "leaves a fully-populated registry alone (no churn when core tools present)" do
-      Rubino::Tools::Registry.reset!
       Rubino::Tools::Registry.register_defaults!
       shell_instance = Rubino::Tools::Registry.find("shell")
 
@@ -1168,12 +1158,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       let(:registry)    { Rubino::Tools::BackgroundTasks.instance }
 
       before do
-        Rubino::Tools::BackgroundTasks.reset!
         # Both ends look like a TTY so the composer idle path is eligible.
         allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
       end
-
-      after { Rubino::Tools::BackgroundTasks.reset! }
 
       it "reads the next line through the bottom composer (NOT the cooked fallback)" do
         expect(cmd).to receive(:read_idle_line).and_return("typed at the composer")
@@ -1214,12 +1201,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         )
       end
 
-      before { Rubino::Tools::BackgroundTasks.reset! }
-
-      after do
-        Rubino::Tools::BackgroundTasks.reset!
-        Rubino::UI::BottomComposer.current = nil
-      end
+      after { Rubino::UI::BottomComposer.current = nil }
 
       it "renders a card per running child onto the current composer (idle, no turn)" do
         registry.reserve(subagent: "explore", prompt: "find the bug")
@@ -1266,14 +1248,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
 
       before do
-        Rubino::Tools::BackgroundTasks.reset!
         # Avoid spawning the real raw reader thread (no TTY here); we feed
         # keystrokes synchronously through #handle_key instead.
         allow(fake_composer).to receive(:start_reader).and_return(Thread.new { nil })
         allow(Rubino::UI::BottomComposer).to receive(:new).and_return(fake_composer)
       end
-
-      after { Rubino::Tools::BackgroundTasks.reset! }
 
       it "returns the submitted line typed at the idle prompt" do
         typist = Thread.new do

@@ -40,10 +40,7 @@ RSpec.describe "Agent behaviour observable from the UI" do
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
-    Rubino::Tools::Registry.reset!
   end
-
-  after { Rubino::Tools::Registry.reset! }
 
   def build_loop(llm: fake_llm)
     Rubino::Agent::Loop.new(

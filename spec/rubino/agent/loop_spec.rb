@@ -33,13 +33,9 @@ RSpec.describe Rubino::Agent::Loop do
     Rubino::Agent::IterationBudget.new(config: config)
   end
 
-  # Registry is a class-level singleton; reset it before each test and restore after
   before do
-    Rubino::Tools::Registry.reset!
     allow(Rubino).to receive(:database).and_return(db)
   end
-
-  after { Rubino::Tools::Registry.reset! }
 
   def build_loop(llm: fake_llm, cancel_token: nil, input_queue: nil)
     described_class.new(

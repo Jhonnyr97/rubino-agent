@@ -32,16 +32,12 @@ RSpec.describe Rubino::Tools::TaskTool do
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
-    Rubino::Tools::Registry.reset!
     Rubino::Tools::Registry.register_defaults!
     # Fresh agent registry per example so subagent resolution is isolated.
     Rubino.agent_registry = Rubino::Agent::AgentRegistry.new
   end
 
-  after do
-    Rubino::Tools::Registry.reset!
-    Rubino.agent_registry = nil
-  end
+  after { Rubino.agent_registry = nil }
 
   # A minimal stand-in for Agent::Runner that records the prompt it was seeded
   # with and replays a canned final message — lets us assert isolation (only the
@@ -404,9 +400,6 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
 
   describe "background delegation (default)" do
-    before { Rubino::Tools::BackgroundTasks.reset! }
-    after  { Rubino::Tools::BackgroundTasks.reset! }
-
     # A runner whose #run! blocks on a latch the test controls, so we can assert
     # the `task` call returned WITHOUT waiting for the child to finish.
     def gated_runner(final, latch)
@@ -764,15 +757,9 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
 
   describe "live-activity card feed (Variant A, #124/#71)" do
-    before do
-      Rubino::Tools::BackgroundTasks.reset!
-      Rubino.ui = Rubino::UI::CLI.new
-    end
+    before { Rubino.ui = Rubino::UI::CLI.new }
 
-    after do
-      Rubino::Tools::BackgroundTasks.reset!
-      Rubino.ui = nil
-    end
+    after { Rubino.ui = nil }
 
     # A runner whose #run! drives a child tool through the card-mode child UI
     # (the SAME view TaskTool wires) so we exercise the registry feed path. The
@@ -816,9 +803,6 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
 
   describe "approval-surfacing handler (Option 2)" do
-    before { Rubino::Tools::BackgroundTasks.reset! }
-    after  { Rubino::Tools::BackgroundTasks.reset! }
-
     let(:registry) { Rubino::Tools::BackgroundTasks.instance }
     let(:entry)    { registry.reserve(subagent: "explore", prompt: "x") }
     let(:tool)     { described_class.new }
@@ -909,9 +893,6 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
 
   describe "task_result tool" do
-    before { Rubino::Tools::BackgroundTasks.reset! }
-    after  { Rubino::Tools::BackgroundTasks.reset! }
-
     it "reports the full result of a completed background subagent" do
       latch  = Queue.new
       runner = Class.new do
@@ -952,9 +933,6 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
 
   describe "sync delegation governance (#196)" do
-    before { Rubino::Tools::BackgroundTasks.reset! }
-    after  { Rubino::Tools::BackgroundTasks.reset! }
-
     let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
     it "refuses a sync spawn past the depth cap (same reserve gate as background)" do
@@ -1062,9 +1040,6 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   describe "task_stop tool" do
-    before { Rubino::Tools::BackgroundTasks.reset! }
-    after  { Rubino::Tools::BackgroundTasks.reset! }
-
     it "flips the child runner's cancel token" do
       latch     = Queue.new
       cancelled = []

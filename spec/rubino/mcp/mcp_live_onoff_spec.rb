@@ -14,10 +14,7 @@ require "ruby_llm/mcp"
 RSpec.describe Rubino::MCP::Manager, :live_mcp do
   before do
     skip "set LIVE_MCP=1 to run the live MCP stdio on/off smoke test" unless ENV["LIVE_MCP"] == "1"
-    Rubino::Tools::Registry.reset!
   end
-
-  after { Rubino::Tools::Registry.reset! }
 
   def registered_wrappers
     Rubino::Tools::Registry.all.grep(Rubino::MCP::MCPToolWrapper)

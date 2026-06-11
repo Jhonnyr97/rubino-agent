@@ -3,10 +3,7 @@
 require "spec_helper"
 
 RSpec.describe Rubino::API::Operations::Clarifications::DecideOperation do
-  before do
-    with_test_db
-    Rubino::Run::GateRegistry.reset!
-  end
+  before { with_test_db }
 
   let(:session_repo) { Rubino::Session::Repository.new }
   let(:run_repo)     { Rubino::Run::Repository.new }
