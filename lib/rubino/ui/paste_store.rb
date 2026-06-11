@@ -92,6 +92,20 @@ module Rubino
         text.gsub(TOKEN_RE) { |token| @entries.delete(token) || token }
       end
 
+      # The registered [token, body] pairs whose placeholder appears in +text+,
+      # CONSUMING them like #expand does (re-submitting from history later leaves
+      # the literal placeholder). Returned as an array of pairs so the tokens
+      # survive JSON round-trips intact (a token is not a valid symbol key).
+      # Empty array when +text+ carries no live placeholder.
+      def expansions_in(text)
+        return [] unless text.is_a?(String)
+
+        text.scan(TOKEN_RE).uniq.filter_map do |token|
+          body = @entries.delete(token)
+          [token, body] if body
+        end
+      end
+
       # The [start, length] (codepoint) span of the registered placeholder
       # covering the char just BEFORE +cursor+ in +buffer+, or nil. The
       # composer's backspace uses it to delete a placeholder WHOLE — a

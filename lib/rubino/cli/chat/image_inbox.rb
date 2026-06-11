@@ -89,7 +89,15 @@ module Rubino
           end
           newly = result.image_paths - pending_image_paths
           @pending_image_paths = result.image_paths
-          show_image_indicator(ui, newly) unless newly.empty?
+          # A line with text AND an @image sends BOTH on THIS turn (the cleaned
+          # text is non-empty, so the main loop submits now); an image-only line
+          # stages for the next message. The indicator must match that
+          # disposition — saying "sent with your next message" on a text+image
+          # line is wrong (#225).
+          unless newly.empty?
+            attached_now = !result.text.strip.empty?
+            show_image_indicator(ui, newly, attached_now: attached_now)
+          end
           result.text
         end
 
@@ -139,12 +147,20 @@ module Rubino
           show_image_indicator(ui, [path])
         end
 
-        # In-prompt indicator of attached image(s), Claude-Code style.
-        def show_image_indicator(ui, newly)
+        # In-prompt indicator of attached image(s), Claude-Code style. When the
+        # image rides a line that ALSO carries text (+attached_now+), it goes out
+        # with THIS turn, so the indicator says so; an image-only line stages for
+        # the next message and keeps the "sent with your next message" wording
+        # (#225).
+        def show_image_indicator(ui, newly, attached_now: false)
           newly.each { |p| ui.status("[image: #{File.basename(p)}]") }
           total = pending_image_paths.size
-          ui.status("#{total} image#{"s" if total != 1} attached — " \
-                    "sent with your next message (/clear-images to drop).")
+          disposition = if attached_now
+                          "attached to this message"
+                        else
+                          "sent with your next message (/clear-images to drop)"
+                        end
+          ui.status("#{total} image#{"s" if total != 1} attached — #{disposition}.")
         end
       end
     end

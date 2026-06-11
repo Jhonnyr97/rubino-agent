@@ -583,6 +583,13 @@ module Rubino
       # model id + context saturation for the CURRENT session, refreshed at
       # this turn boundary (and so on session resume/branch/new too, which all
       # rebuild the runner before the next idle prompt).
+      # Pops any text the user typed during a synchronous /probe wait (#221),
+      # parked on the UI by ProbeWaitIndicator. nil on adapters that don't stash.
+      def probe_draft_stash
+        ui = Rubino.ui
+        ui.take_probe_draft if ui.respond_to?(:take_probe_draft)
+      end
+
       def next_input(input_queue, runner = nil)
         # Take the OLDEST parked line (FIFO). Mark it so #run_turn commits the
         # normal "<prompt><line>" echo (and clears any "⏳ queued:" indicator)
@@ -600,6 +607,12 @@ module Rubino
         # vanish. Consume it once — the next idle prompt starts empty again.
         draft = @pending_draft
         @pending_draft = nil
+        # A synchronous /probe wait owned a transient composer to echo input
+        # (#221); anything typed there was parked on the UI and is restored into
+        # this prompt's draft so it reappears in `❯` after the peek.
+        if (probe_draft = probe_draft_stash) && !probe_draft.empty?
+          draft = draft.to_s.empty? ? probe_draft : "#{draft}#{probe_draft}"
+        end
 
         # The bottom composer is the single idle input path on a real TTY: it
         # pins the prompt at the bottom, owns its own raw reader (so keys can't
@@ -805,17 +818,15 @@ module Rubino
         # so they're attached exactly once, not re-sent next turn.
         image_paths = image_inbox.take!
 
-        # The message-build seam of the paste pipeline: expand each
-        # "[Pasted text #N +M lines]" placeholder to its full pasted body
-        # (or the paste_N.txt read-tool pointer for oversized ones) in the
-        # MODEL-FACING prompt only. This is where the line leaves the
-        # composer for the loop — after slash dispatch and AFTER the echoes
-        # (the idle submit echoed at submit; #commit_queued_prompt below uses
-        # the original @input_from_queue line), so the transcript keeps the
-        # compact placeholder while the model sees everything. Queued
-        # (Alt+Enter) and history-recalled drafts expand here too, whichever
-        # turn they finally run as.
-        prompt = paste_store.expand(prompt)
+        # The message-build seam of the paste pipeline: COLLECT each
+        # "[Pasted text #N +M lines]" placeholder's full body (or the paste_N.txt
+        # read-tool pointer for oversized ones) WITHOUT mutating the prompt. The
+        # placeholder stays in the prompt — the message PERSISTED to the session
+        # keeps it, so live echo AND resume replay show the compact token (#213)
+        # — while the expansion map rides alongside as metadata, expanded into
+        # the MODEL-FACING content by Message#to_context. Queued (Alt+Enter) and
+        # history-recalled drafts collect here too, whichever turn they run as.
+        paste_expansions = paste_store.expansions_in(prompt)
 
         # The interim idle-key GATE is retired: the bottom composer is now the
         # single input path and serializes every above-line write through its
@@ -885,7 +896,11 @@ module Rubino
         # steering). Anything still queued in the gap after the turn ends falls
         # back to #next_input for the NEXT turn (the MVP behaviour). nil ⇒ no
         # injection (piped/-q input has no composer anyway).
-        runner.run(prompt, image_paths: image_paths, input_queue: input_queue)
+        run_kwargs = { image_paths: image_paths, input_queue: input_queue }
+        # Only thread the paste expansions when a placeholder was actually
+        # collected, so a normal turn's runner.run signature is unchanged.
+        run_kwargs[:paste_expansions] = paste_expansions unless paste_expansions.empty?
+        runner.run(prompt, **run_kwargs)
       rescue Interrupt
         # Reached on the second tap (raised from the trap) or a stray INT that
         # escaped the cooperative path. Cancel and re-raise so run_interactive's
@@ -1227,7 +1242,10 @@ module Rubino
       # composer with the message text (multiline-safe) for edit-and-resend.
       def rewind_onto_fork(composer, runner, ui, messages, index, ordinal:)
         child      = rewind_fork(runner, messages.first(index))
-        new_runner = build_runner(session_id: child[:id], ui: ui)
+        # The rewind has its own "┄ rewound to message N — editing ┄" marker, so
+        # suppress the generic "Resuming session: <id>…" plumbing line the runner
+        # would otherwise emit on the fork switch (#220).
+        new_runner = build_runner(session_id: child[:id], ui: ui, announce_session: false)
         @branch_short_id = child[:id][0..3]
         ui.note("rewound to message #{ordinal} — editing")
         composer.set_status(build_status_line(new_runner))
@@ -1794,14 +1812,15 @@ module Rubino
       # Builds an Agent::Runner with this invocation's shared flag overrides —
       # only the session and UI vary per call site (one-shot, interactive boot,
       # /sessions resume, /new).
-      def build_runner(session_id:, ui:)
+      def build_runner(session_id:, ui:, announce_session: true)
         Agent::Runner.new(
           session_id: session_id,
           model_override: model_name,
           provider_override: opt(:provider),
           max_turns: max_turns_override,
           ignore_rules: opt(:ignore_rules) || false,
-          ui: ui
+          ui: ui,
+          announce_session: announce_session
         )
       end
 

@@ -13,8 +13,13 @@ module Rubino
 
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
-                     event_bus: nil)
+                     event_bus: nil, announce_session: true)
         @ui = ui || Rubino.ui
+        # An in-chat rewind/fork builds a runner on the child session but has its
+        # own purpose-built "┄ rewound to message N — editing ┄" marker, so the
+        # generic "Resuming session: <id>…" plumbing line must not also leak into
+        # the transcript (#220). Off-rewind callers keep the announcement.
+        @announce_session = announce_session
         # Defaults to the process-global bus for the single-run CLI path; the
         # HTTP Executor injects a fresh per-run bus so concurrent runs don't
         # cross-contaminate each other's events/output (architecture audit A1).
@@ -43,8 +48,9 @@ module Rubino
       # truth for that, and it already emitted before re-raising. Use
       # +run!+ from non-CLI callers (HTTP executor) that need the
       # exception to propagate so the run row can be marked failed.
-      def run(input, image_paths: [], input_queue: nil)
-        run!(input, image_paths: image_paths, input_queue: input_queue)
+      def run(input, image_paths: [], input_queue: nil, paste_expansions: [])
+        run!(input, image_paths: image_paths, input_queue: input_queue,
+                    paste_expansions: paste_expansions)
       rescue Interrupted
         # Standardized single interrupt notice: a dim `⎿ interrupted` marker
         # right after the partial answer the Loop already committed via
@@ -64,7 +70,7 @@ module Rubino
       # (instead of mark_completed!) when the lifecycle raises. The
       # ScriptError / Exception net is kept here too so the Executor sees
       # LoadError etc. as a real failure rather than nil-and-completed.
-      def run!(input, image_paths: [], input_queue: nil)
+      def run!(input, image_paths: [], input_queue: nil, paste_expansions: [])
         # Each turn gets a fresh token. A CancelToken is one-shot, so reusing a
         # cancelled one would poison every subsequent turn (it would raise
         # Interrupted immediately at the first poll point). The per-turn SIGINT
@@ -86,7 +92,8 @@ module Rubino
           max_tool_iterations: @max_turns
         )
 
-        lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue)
+        lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
+                                 paste_expansions: paste_expansions)
       end
 
       # Flips the current turn's cancel token. Called from the UI thread when
@@ -166,7 +173,7 @@ module Rubino
           # An existing row is already in the DB; mark it so the lazy-persist
           # path (#144) treats it as persisted and never re-inserts.
           session[:persisted] = true
-          @ui.status("Resuming session: #{session[:id][0..7]}...")
+          @ui.status("Resuming session: #{session[:id][0..7]}...") if @announce_session
           session
         else
           # Build an UNSAVED session: no row is written until the first user
