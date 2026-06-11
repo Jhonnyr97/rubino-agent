@@ -1267,6 +1267,18 @@ RSpec.describe Rubino::UI::CLI do
       out = capture_stdout { ui.activity_finished("git", failed: true) }
       expect(out).to include("✗ failed · git")
     end
+
+    # A multiline metric (e.g. a task_result body) used to be interpolated raw,
+    # so everything after the first newline continued flush-left and unstyled.
+    # It must collapse into ONE styled row, newlines joined as " — ".
+    it "activity_finished inlines a newline-bearing metric into one styled row" do
+      out = capture_stdout do
+        ui.activity_finished("task_result", metric: "[sa_e488] status=completed\nreport line two")
+      end
+      lines = out.split("\n").reject(&:empty?)
+      expect(lines.length).to eq(1)
+      expect(lines.first).to include("[sa_e488] status=completed — report line two")
+    end
   end
 
   describe "#approval_requested" do

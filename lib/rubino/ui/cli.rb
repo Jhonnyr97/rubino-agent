@@ -285,7 +285,11 @@ module Rubino
       def activity_finished(name, metric: nil, failed: false)
         @activity_open = false
         status_word = failed ? "✗ failed" : "✓ done"
-        suffix = metric ? " · #{metric}" : ""
+        # The metric can carry newlines (e.g. a task_result body): interpolating
+        # it raw would continue flush-left and unstyled on the next lines —
+        # inline it into the ONE styled row instead.
+        inline = metric ? truncate_inline(metric, 120) : nil
+        suffix = inline && !inline.empty? ? " · #{inline}" : ""
         line = "  └ #{status_word} · #{name}#{suffix}"
         $stdout.puts(failed ? @pastel.red(line) : @pastel.green(line))
       end
@@ -1579,9 +1583,13 @@ module Rubino
         v.empty? ? nil : v
       end
 
+      # Collapses a possibly-multiline text into ONE inline segment: lines are
+      # joined with " — " (instead of dropping everything after the first), then
+      # clamped to +max+ chars. Keeps multi-line tool metrics / subagent
+      # summaries on a single styled row.
       def truncate_inline(text, max)
-        first = text.to_s.lines.first.to_s.strip
-        first.length > max ? "#{first[0, max - 1]}…" : first
+        inline = text.to_s.lines.map(&:strip).reject(&:empty?).join(" — ")
+        inline.length > max ? "#{inline[0, max - 1]}…" : inline
       end
 
       # Short identifier piece for the tool header.
