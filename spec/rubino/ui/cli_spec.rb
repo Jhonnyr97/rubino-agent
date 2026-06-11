@@ -22,8 +22,8 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   # Timeline convention: activity lines use ● / ✓ / ✗ / ◆ markers
-  ACTIVITY_START = /● running/
-  ACTIVITY_DONE  = /✓ done/
+  ACTIVITY_START = /● /
+  ACTIVITY_DONE  = /└ ✓/
   ACTIVITY_FAIL  = /✗ failed/
 
   describe "#stream" do
@@ -529,17 +529,29 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#tool_started" do
-    it "renders as compact '● running name · hint'" do
+    # P1 polarity: the open row is QUIET — dim name + hint, only the ● cyan.
+    it "renders as compact '● name hint'" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: { command: "ls" })
       end
-      expect(out).to include("● running  shell · ls")
+      expect(out).to include("● shell ls")
+      expect(out).not_to include("running")
       expect(out).not_to include("┌─")
     end
 
-    it "renders as '● running name' when no args given" do
+    it "renders only the ● in cyan; the name/hint stay dim (P1)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "ls" })
+      end
+      expect(out).to include("\e[36m●\e[0m")          # cyan glyph only
+      expect(out).to include("\e[2mshell ls\e[0m")    # dim name + hint
+      expect(out).not_to include("\e[36m●\e[0m\e[36m") # nothing else cyan
+    end
+
+    it "renders as '● name' when no args given" do
       out = capture_stdout { ui.tool_started("ping", arguments: nil) }
-      expect(out).to include("● running  ping")
+      expect(out).to include("● ping")
       expect(out).not_to match(/· \S/)
     end
 
@@ -576,12 +588,26 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#tool_finished" do
-    it "renders as '✓ done · name' on success" do
+    # P10: success close is compact — the ✓ says done, the opener said the
+    # name. Dim, not green (P1: color only on failure).
+    it "renders a compact '└ ✓' on success" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: { command: "ls" })
         ui.tool_finished("shell", result: nil)
       end
-      expect(out).to include("✓ done · shell")
+      expect(out).to include("└ ✓")
+      expect(out).not_to include("✓ done")
+    end
+
+    it "renders the success close dim, never green (P1)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      result = double("Result", truncated_preview: "11 lines", success?: true, metrics: "11 lines")
+      out = capture_stdout do
+        ui.tool_started("read", arguments: nil)
+        ui.tool_finished("read", result: result)
+      end
+      expect(out).to include("\e[2m  └ ✓ 11 lines\e[0m")
+      expect(out).not_to include("\e[32m  └")
     end
 
     it "renders as '✗ failed · name' on failure" do
@@ -599,7 +625,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_started("ls", arguments: nil)
         ui.tool_finished("ls", result: result)
       end
-      expect(out).to include("✓ done · ls · 42 files")
+      expect(out).to include("└ ✓ 42 files")
     end
 
     it "shows error message on failure" do
@@ -896,7 +922,7 @@ RSpec.describe Rubino::UI::CLI do
         allow($stdout).to receive(:tty?).and_return(true) # erase is TTY-only (#56)
         ui.tool_started("shell", arguments: { command: "ls" })
       end
-      expect(out).to match(/thinking….*\r\e\[2K.*● running/m)
+      expect(out).to match(/thinking….*\r\e\[2K.*● shell/m)
     end
   end
 
@@ -932,6 +958,73 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_finished("shell", result: nil)
       end
       expect(out).not_to match(/\e\[31m.*- something/)
+    end
+  end
+
+  # P2: DISPLAY-ONLY collapse of tool output in the transcript — head lines +
+  # a "… +N lines (full output → context)" marker. The model-facing output is
+  # produced elsewhere (ToolExecutor) and is untouched by this render path.
+  describe "tool output preview collapse (P2)" do
+    it "shows only the head 3 lines of a long #tool_body plus the marker" do
+      out = capture_stdout do
+        ui.tool_started("read", arguments: nil)
+        ui.tool_body((1..10).map { |i| "line #{i}" }.join("\n"))
+        ui.tool_finished("read", result: nil)
+      end
+      expect(out).to include("line 3")
+      expect(out).not_to include("line 4")
+      expect(out).to include("… +7 lines (full output → context)")
+    end
+
+    it "collapses streamed #tool_chunk lines, flushing the marker before the close row" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "seq 9" })
+        (1..9).each { |i| ui.tool_chunk("shell", "out #{i}\n") }
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("out 3")
+      expect(out).not_to include("out 4")
+      marker = out.index("… +6 lines (full output → context)")
+      close  = out.index("└ ✓")
+      expect(marker).not_to be_nil
+      expect(marker).to be < close
+    end
+
+    it "keeps a short body intact, with no marker" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_body("one\ntwo")
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("one")
+      expect(out).to include("two")
+      expect(out).not_to include("full output → context")
+    end
+
+    it "honors display.tool_output_preview_lines = 0 as the old full dump" do
+      allow(Rubino.configuration).to receive(:display_tool_output_preview_lines).and_return(0)
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_body((1..10).map { |i| "line #{i}" }.join("\n"))
+        (1..5).each { |i| ui.tool_chunk("shell", "chunk #{i}\n") }
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("line 10")
+      expect(out).to include("chunk 5")
+      expect(out).not_to include("full output → context")
+    end
+
+    it "resets the streamed-overflow counter between tool runs" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        (1..9).each { |i| ui.tool_chunk("shell", "first #{i}\n") }
+        ui.tool_finished("shell", result: nil)
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_chunk("shell", "second 1\n")
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out.scan("full output → context").size).to eq(1)
+      expect(out).to include("second 1")
     end
   end
 
@@ -1253,14 +1346,14 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#activity_started / #activity_finished" do
-    it "activity_started renders as ● running with optional hint" do
+    it "activity_started renders as a quiet ● row with optional hint" do
       out = capture_stdout { ui.activity_started("git", hint: "status") }
-      expect(out).to include("● running  git · status")
+      expect(out).to include("● git status")
     end
 
-    it "activity_finished renders as ✓ done with optional metric" do
+    it "activity_finished renders as compact └ ✓ with optional metric" do
       out = capture_stdout { ui.activity_finished("git", metric: "clean") }
-      expect(out).to include("✓ done · git · clean")
+      expect(out).to include("└ ✓ clean")
     end
 
     it "activity_finished with failed: true renders as ✗ failed" do

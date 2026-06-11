@@ -264,7 +264,9 @@ module Rubino
 
       # --- Compact timeline rendering (M2) ---
 
-      # Activity started: renders as `● running  name` or `● running  name · hint`
+      # Activity started: renders as `● name` or `● name hint` — a QUIET dim
+      # row with only the ● in cyan. The tool frame is plumbing, not payload:
+      # a fully cyan "● running read · path" row outshouted the answer (P1).
       def activity_started(name, hint: nil)
         # Replace a still-showing "thinking…" indicator before the committed
         # activity row so it isn't stranded above it (#86): the model emits the
@@ -272,26 +274,34 @@ module Rubino
         # buffered reasoning into the cue/aside FIRST so a reasoning→tool turn
         # (no answer text) never strands the thought.
         collapse_reasoning
-        hint_str = hint ? " · #{hint}" : ""
+        hint_str = hint ? " #{hint}" : ""
         $stdout.puts
-        $stdout.puts @pastel.cyan("● running  #{name}#{hint_str}")
+        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}"
         @activity_open = true
         @activity_name = name
+        reset_tool_preview
       end
 
-      # Activity finished: renders as `✓ done · name · metric` on success, or
-      # `✗ failed · name · message` on error — the word must agree with the
-      # glyph; "✗ done" read as if the errored tool had still succeeded (#153).
+      # Activity finished. Success is QUIET and compact: `└ ✓ 11 lines` — the
+      # ✓ already says "done" and the opener row said the name, so repeating
+      # both was noise (P10); dim, not green — color is reserved for the one
+      # outcome that needs eyes (P1). Failure keeps name + wording, in red:
+      # `└ ✗ failed · shell · exit 1` — the word must agree with the glyph;
+      # "✗ done" read as if the errored tool had still succeeded (#153).
       def activity_finished(name, metric: nil, failed: false)
         @activity_open = false
-        status_word = failed ? "✗ failed" : "✓ done"
+        flush_tool_preview_overflow
         # The metric can carry newlines (e.g. a task_result body): interpolating
         # it raw would continue flush-left and unstyled on the next lines —
         # inline it into the ONE styled row instead.
         inline = metric ? truncate_inline(metric, 120) : nil
-        suffix = inline && !inline.empty? ? " · #{inline}" : ""
-        line = "  └ #{status_word} · #{name}#{suffix}"
-        $stdout.puts(failed ? @pastel.red(line) : @pastel.green(line))
+        if failed
+          suffix = inline && !inline.empty? ? " · #{inline}" : ""
+          $stdout.puts @pastel.red("  └ ✗ failed · #{name}#{suffix}")
+        else
+          suffix = inline && !inline.empty? ? " #{inline}" : ""
+          $stdout.puts @pastel.dim("  └ ✓#{suffix}")
+        end
       end
 
       # Approval requested: renders as `◆ summary`
@@ -827,10 +837,18 @@ module Rubino
         status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
       end
 
+      # DISPLAY-ONLY collapse (P2): the transcript shows the head few lines of
+      # a tool's output plus a `… +N lines (full output → context)` marker —
+      # the FULL output still goes to the model/context unchanged. Governed by
+      # display.tool_output_preview_lines (0 = old full dump).
       def tool_body(text, kind: :plain)
         return if text.nil? || text.to_s.empty?
 
-        write_body_lines(text.to_s) do |chomped|
+        limit  = tool_preview_limit
+        lines  = text.to_s.lines
+        shown  = limit.positive? ? lines.first(limit) : lines
+        hidden = lines.size - shown.size
+        write_body_lines(shown.join) do |chomped|
           if kind == :diff
             case chomped[0]
             when "+" then @pastel.green(chomped)
@@ -841,12 +859,30 @@ module Rubino
             @pastel.dim(chomped)
           end
         end
+        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
       end
 
+      # Streamed tool output (shell): same display-only collapse as #tool_body,
+      # accumulated across chunks. Lines past the preview budget are counted
+      # silently; #activity_finished flushes the `… +N lines` marker right
+      # before the close row.
       def tool_chunk(_name, chunk)
         return if chunk.nil? || chunk.to_s.empty?
 
-        write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
+        limit = tool_preview_limit
+        unless limit.positive?
+          write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
+          return
+        end
+
+        chunk.to_s.each_line do |line|
+          if @tool_preview_shown.to_i < limit
+            @tool_preview_shown = @tool_preview_shown.to_i + 1
+            write_body_lines(line) { |chomped| @pastel.dim(chomped) }
+          else
+            @tool_preview_hidden = @tool_preview_hidden.to_i + 1
+          end
+        end
       end
 
       # Tool finished renders as compact `✓ done · name · metric` or `✗ failed · name · error`.
@@ -1169,6 +1205,32 @@ module Rubino
             menu.choice "Deny — this command (always)",          :deny_always
           end
         end
+      end
+
+      # Head lines of tool output the transcript shows (P2). Resolved from
+      # config on every call so /config changes apply mid-session.
+      def tool_preview_limit
+        Rubino.configuration.display_tool_output_preview_lines
+      end
+
+      def reset_tool_preview
+        @tool_preview_shown  = 0
+        @tool_preview_hidden = 0
+      end
+
+      # The dim collapse marker: `… +N lines (full output → context)`.
+      def hidden_lines_marker(hidden)
+        "… +#{hidden} line#{"s" if hidden != 1} (full output → context)"
+      end
+
+      # Commits the marker for streamed lines the preview budget swallowed
+      # (#tool_chunk), right before the close row. Idempotent per tool run.
+      def flush_tool_preview_overflow
+        hidden = @tool_preview_hidden.to_i
+        reset_tool_preview
+        return unless hidden.positive?
+
+        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}")
       end
 
       # Renders body text with the current activity open.

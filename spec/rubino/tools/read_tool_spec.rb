@@ -26,6 +26,18 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(out).to match(/^\s*3\tgamma$/)
   end
 
+  # P11: the transcript body gets a COMPACT gutter — line numbers right-aligned
+  # to the widest number shown, then two spaces — while the model-facing output
+  # keeps the cat -n shape (asserted above).
+  it "renders the display body with a compact right-aligned gutter" do
+    path = File.join(tmp_dir, "calc.rb")
+    File.write(path, (1..10).map { |i| "row#{i}" }.join("\n"))
+    body = tool.call("file_path" => path)[:body]
+    expect(body).to include(" 1  row1")
+    expect(body).to include("10  row10")
+    expect(body).not_to include("\t")
+  end
+
   it "reports `N lines` metric for the done header" do
     path = File.join(tmp_dir, "a.txt")
     File.write(path, "alpha\nbeta\ngamma\n")
