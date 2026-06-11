@@ -45,15 +45,32 @@ module Rubino
         }
       end
 
-      # Returns a hash for LLM context building
+      # Returns a hash for LLM context building. A user message that collapsed a
+      # large paste keeps the compact "[Pasted text #N …]" placeholder in its
+      # stored/displayed content (#213); here we expand each placeholder back to
+      # its full body for the model, so the provider sees everything while the
+      # transcript echo (live AND on resume) stays clean.
       def to_context
-        msg = { role: @role, content: @content }
+        msg = { role: @role, content: expand_pastes(@content) }
         msg[:tool_call_id] = @tool_call_id if @tool_call_id
         msg[:name] = @tool_name if @tool_name
         # Surface assistant tool_calls (persisted as metadata) so the adapter
         # can rebuild the toolUse block expected by strict providers on resume.
         msg[:tool_calls] = @metadata[:tool_calls] if @metadata.is_a?(Hash) && @metadata[:tool_calls]
         msg
+      end
+
+      private
+
+      # Substitutes each stored [token, body] paste expansion back into +text+.
+      # The pairs are stored as an array (not a hash) so the placeholder tokens
+      # survive the metadata JSON round-trip without being mangled into symbols.
+      def expand_pastes(text)
+        return text unless text.is_a?(String) && @metadata.is_a?(Hash)
+
+        Array(@metadata[:paste_expansions]).reduce(text) do |acc, (token, body)|
+          token && body ? acc.gsub(token, body) : acc
+        end
       end
     end
   end

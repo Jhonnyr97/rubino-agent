@@ -1066,17 +1066,19 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
-  # The paste pipeline's message-build seam: run_turn expands each
-  # "[Pasted text #N +M lines]" placeholder the composer inserted into the
-  # MODEL-FACING prompt (full body for tier 1, the paste_N.txt read-tool
-  # pointer for tier 2) right before runner.run — after the echoes, so the
-  # transcript keeps the compact placeholder.
+  # The paste pipeline's message-build seam: run_turn keeps the compact
+  # "[Pasted text #N +M lines]" placeholder IN the prompt (so the persisted
+  # message — and thus the live echo AND resume replay — stays clean, #213)
+  # while COLLECTING each placeholder's expansion (full body for tier 1, the
+  # paste_N.txt read-tool pointer for tier 2) and handing it to runner.run as
+  # paste_expansions metadata. The expansion is folded into the model-facing
+  # content downstream by Message#to_context.
   describe "#run_turn — paste placeholder expansion" do
     let(:runner) { instance_double(Rubino::Agent::Runner) }
     let(:ui)     { Rubino::UI::Null.new }
     let(:cmd)    { described_class.new({}) }
 
-    it "hands the model the FULL pasted body for a tier-1 placeholder" do
+    it "keeps the placeholder in the prompt and carries the FULL body as metadata (tier 1, #213)" do
       body  = Array.new(50) { |i| "line #{i + 1}" }.join("\n")
       token = cmd.send(:paste_store).register(body)
       allow(runner).to receive(:run).and_return("ok")
@@ -1084,22 +1086,28 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:run_turn, runner, "quote #{token} please", ui)
 
       expect(runner).to have_received(:run)
-        .with("quote #{body} please", image_paths: [], input_queue: nil)
+        .with("quote #{token} please",
+              image_paths: [], input_queue: nil,
+              paste_expansions: [[token, body]])
     end
 
-    it "hands the model the read-tool pointer for a tier-2 overflowed paste" do
+    it "carries the read-tool pointer as metadata for a tier-2 overflowed paste" do
       body  = Array.new(10_000) { |i| "overflow line #{i + 1}" }.join("\n") # ≫ 8k tokens
       token = cmd.send(:paste_store).register(body)
       allow(runner).to receive(:run).and_return("ok")
 
       cmd.send(:run_turn, runner, token, ui)
 
-      expect(runner).to have_received(:run) do |prompt, **_kw|
-        expect(prompt).to include("saved to")
-        expect(prompt).to include("paste_1.txt")
-        expect(prompt).to include("read it with the read tool")
+      expect(runner).to have_received(:run) do |prompt, paste_expansions:, **_kw|
+        # The PROMPT keeps the compact placeholder, never the body.
+        expect(prompt).to eq(token)
         expect(prompt).not_to include("overflow line 42")
-        path = prompt[/saved to (\S+)/, 1]
+
+        pointer = paste_expansions.first.last
+        expect(pointer).to include("saved to")
+        expect(pointer).to include("paste_1.txt")
+        expect(pointer).to include("read it with the read tool")
+        path = pointer[/saved to (\S+)/, 1]
         expect(File.read(path)).to eq(body)
       end
     end
@@ -1789,6 +1797,29 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:image_inbox).extract_images!("@#{b} @#{a}", ui)
 
         expect(cmd.send(:image_inbox).pending_image_paths).to eq([a, b])
+      end
+
+      # #225: a line with text AND an @image sends BOTH on THIS turn (the cleaned
+      # text is non-empty), so the indicator must say so — the old "sent with
+      # your next message" wording contradicted the actual disposition.
+      it "says 'attached to this message' when the line ALSO carries text (#225)" do
+        img = make("pic.png")
+
+        cmd.send(:image_inbox).extract_images!("@#{img} what color is this?", ui)
+
+        statuses = ui.messages.select { |m| m[:level] == :status }.map { |m| m[:message] }
+        expect(statuses).to include("1 image attached — attached to this message.")
+        expect(statuses).not_to include(a_string_matching(/sent with your next message/))
+      end
+
+      it "keeps the 'sent with your next message' staging wording for an image-only line (#225)" do
+        img = make("only.png")
+
+        cmd.send(:image_inbox).extract_images!("@#{img}", ui)
+
+        statuses = ui.messages.select { |m| m[:level] == :status }.map { |m| m[:message] }
+        expect(statuses)
+          .to include("1 image attached — sent with your next message (/clear-images to drop).")
       end
     end
 
