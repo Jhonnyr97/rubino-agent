@@ -1221,11 +1221,15 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to include("a\r\nb\r\n")
     end
 
-    it "an empty argument just repaints the prompt" do
+    # P3: an empty committed line is a DELIBERATE blank row (the rhythm gaps
+    # before the answer / before a tool run) — it must scroll one real row,
+    # not be silently dropped.
+    it "an empty argument commits one blank row above the prompt" do
       composer.handle_key("x")
       output.truncate(0)
       output.rewind
       composer.print_above("")
+      expect(output.string).to include("\r\n")
       expect(output.string).to end_with("#{PROMPT}x")
     end
   end
