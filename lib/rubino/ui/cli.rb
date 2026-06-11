@@ -61,6 +61,10 @@ module Rubino
         @last_reasoning_seconds = nil
         @activity_open      = false
         @activity_name      = nil
+        # Rhythm tracker (P3): the kind of the last committed block — :tool
+        # (frames butt together), :gap (a trailing blank is already open, so
+        # the next separator is skipped), :answer, :other.
+        @last_block         = :other
         @session_id         = session_id || SecureRandom.uuid
         @approval_cache     = approval_cache || Rubino::Run::SessionApprovalCache.instance
       end
@@ -275,10 +279,13 @@ module Rubino
         # (no answer text) never strands the thought.
         collapse_reasoning
         hint_str = hint ? " #{hint}" : ""
-        $stdout.puts
+        # ONE blank before the first frame of a tool run; frames inside a run
+        # butt together, and a gap left by the previous block isn't doubled (P3).
+        $stdout.puts unless %i[tool gap].include?(@last_block)
         $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}"
         @activity_open = true
         @activity_name = name
+        @last_block = :tool
         reset_tool_preview
       end
 
@@ -302,6 +309,7 @@ module Rubino
           suffix = inline && !inline.empty? ? " #{inline}" : ""
           $stdout.puts @pastel.dim("  └ ✓#{suffix}")
         end
+        @last_block = :tool
       end
 
       # Approval requested: renders as `◆ summary`
@@ -373,18 +381,38 @@ module Rubino
         $stdout.flush
       end
 
-      # Free-line annotation rendered as `┄ message ┄`, dim. A note opening
-      # with "◆ " (the turn footer: `◆ turn · 7.1s · 1 tool · 371 tok`) gets
-      # its facet rendered red — the sweeping ◆ of the status row "lands" in
-      # the footer at turn end.
+      # Free-line annotation rendered as `┄ message ┄`, dim.
       def note(text)
         return if text.nil? || text.to_s.empty?
 
-        $stdout.puts
-        if text.to_s.start_with?("◆ ")
-          $stdout.puts "#{@pastel.dim("┄ ")}#{@pastel.red("◆")}#{@pastel.dim(" #{text.to_s[2..]} ┄")}"
+        $stdout.puts unless @last_block == :gap
+        $stdout.puts @pastel.dim("┄ #{text} ┄")
+        @last_block = :other
+      end
+
+      # The STATIC turn footer rail, all dim: `┄ turn · 16.6s · 3 tools ┄`.
+      # No red ◆ — red is the error color; the animated status row keeps its
+      # red facet as the living brand mark (P4). Attached directly under the
+      # answer with no leading blank (P3). Subagent completions stashed
+      # mid-turn (#subagent_finished) fold into the grammar instead of
+      # stacking a second `┄ ┄` rail right at turn end:
+      #   ┄ turn · 16.6s · 3 tools · 105 tok · sa_e488 done ┄
+      def turn_footer(text)
+        pending = Array(@pending_subagent_footers)
+        @pending_subagent_footers = nil
+        line = ([text] + pending.map { |p| p[:fold] }).join(" · ")
+        $stdout.puts @pastel.dim("┄ #{line} ┄")
+        @last_block = :other
+      end
+
+      # A background subagent reached a terminal state. Mid-turn the one-line
+      # summary is STASHED and folded into the turn footer (P4) so two `┄ ┄`
+      # rails never stack at turn end; between turns it renders immediately.
+      def subagent_finished(line, id: nil, status: "done")
+        if @turn_active && id
+          (@pending_subagent_footers ||= []) << { fold: "#{id} #{status}", line: line }
         else
-          $stdout.puts @pastel.dim("┄ #{text} ┄")
+          note(line)
         end
       end
 
@@ -533,9 +561,18 @@ module Rubino
         # else clears the transient "thinking…" line before the committed
         # answer, so collapse any buffered reasoning + clear the animation first.
         collapse_reasoning
-        $stdout.puts
+        answer_gap
         commit_markdown_block(text)
-        $stdout.puts
+      end
+
+      # Exactly ONE blank line before the answer payload (P3) — skipped when
+      # the previous committed block already left a gap open. No trailing
+      # blank: the turn footer attaches directly under the answer. Shared by
+      # the non-streamed (#assistant_text) and streamed (#stream) paths so
+      # both turns read identically.
+      def answer_gap
+        $stdout.puts unless @last_block == :gap
+        @last_block = :answer
       end
 
       # The left margin every committed markdown line is printed behind. The
@@ -623,6 +660,9 @@ module Rubino
         if type != @stream_type
           stream_end if @stream_type
           @stream_type = type
+          # The streamed answer gets the SAME single committed gap the
+          # non-streamed path gets (P3) — once, when the content stream opens.
+          answer_gap if type == :content
         end
 
         # Signal the bottom composer that ANSWER content is now actively
@@ -697,6 +737,11 @@ module Rubino
         @turn_active = false
         @thinking_indicator = false
         status_stop
+        # A completion stashed after the footer printed (or on an interrupted
+        # turn that never got one) must not vanish — flush it as a plain note.
+        pending = Array(@pending_subagent_footers)
+        @pending_subagent_footers = nil
+        pending.each { |p| note(p[:line]) }
       end
 
       # Shows the status row during the model wait. Mid-turn this only swaps
@@ -809,6 +854,7 @@ module Rubino
         $stdout.puts
         $stdout.puts @pastel.green("#{text}")
         $stdout.puts
+        @last_block = :gap
       end
 
       # Tool started renders as compact `● running  name · hint`.
@@ -860,6 +906,7 @@ module Rubino
           end
         end
         $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
+        @last_block = :tool
       end
 
       # Streamed tool output (shell): same display-only collapse as #tool_body,
@@ -883,6 +930,7 @@ module Rubino
             @tool_preview_hidden = @tool_preview_hidden.to_i + 1
           end
         end
+        @last_block = :tool
       end
 
       # Tool finished renders as compact `✓ done · name · metric` or `✗ failed · name · error`.
@@ -1583,10 +1631,11 @@ module Rubino
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub
         preview = prompt ? "  #{truncate_inline(prompt, 60)}" : ""
-        $stdout.puts
-        $stdout.puts @pastel.cyan("● delegated → #{sub}#{preview}")
+        $stdout.puts unless %i[tool gap].include?(@last_block)
+        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{sub}#{preview}")}"
         @activity_open = true
         @activity_name = "task"
+        @last_block = :tool
         status_show("task", phase: :tool, hint: sub) if @turn_active
       end
 
@@ -1610,6 +1659,7 @@ module Rubino
           end
         $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
         @delegation_subagent = nil
+        @last_block = :tool
         status_back_to_thinking
       end
 

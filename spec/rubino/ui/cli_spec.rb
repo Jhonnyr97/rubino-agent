@@ -961,6 +961,66 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # P3: one blank-line rule — frames inside a tool run butt together, exactly
+  # ONE blank line before the answer payload, footer attached with no blank,
+  # streamed and non-streamed paths identical.
+  describe "turn rhythm (P3)" do
+    it "butts consecutive tool frames together (no blank inside a tool run)" do
+      out = capture_stdout do
+        ui.tool_started("read", arguments: { file_path: "a.rb" })
+        ui.tool_finished("read", result: nil)
+        ui.tool_started("shell", arguments: { command: "ls" })
+        ui.tool_finished("shell", result: nil)
+      end
+      run = out[out.index("└ ✓")..]
+      expect(run.lines[1]).to include("● shell") # close row → next open row, no blank between
+    end
+
+    it "puts exactly ONE blank line between the echoed input and the answer" do
+      out = capture_stdout do
+        ui.replay_user_input("hello")
+        ui.assistant_text("the answer")
+      end
+      expect(out).to include("hello\n\n  the answer")
+      expect(out).not_to include("hello\n\n\n")
+    end
+
+    it "puts exactly ONE blank line between the last tool frame and the answer" do
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "ls" })
+        ui.tool_finished("shell", result: nil)
+        ui.assistant_text("done looking")
+      end
+      expect(out).to match(/└ ✓\n\n  done looking/)
+    end
+
+    it "attaches the footer directly under the answer (no blank)" do
+      out = capture_stdout do
+        ui.assistant_text("the answer")
+        ui.turn_footer("turn · 1.0s · 0 tools")
+      end
+      expect(out).to match(/the answer\n┄ turn/)
+    end
+
+    it "renders the streamed path with the same rhythm as the non-streamed one" do
+      streamed = capture_stdout do
+        ui.replay_user_input("hello")
+        ui.stream(type: :content, text: "the answer\n\n")
+        ui.stream_end
+        ui.turn_footer("turn · 1.0s · 0 tools")
+      end
+      plain = capture_stdout do
+        ui.replay_user_input("hello")
+        ui.assistant_text("the answer")
+        ui.turn_footer("turn · 1.0s · 0 tools")
+      end
+      expect(streamed).to include("hello\n\n  the answer")
+      expect(plain).to include("hello\n\n  the answer")
+      expect(streamed).to match(/the answer\n┄ turn/)
+      expect(plain).to match(/the answer\n┄ turn/)
+    end
+  end
+
   # P2: DISPLAY-ONLY collapse of tool output in the transcript — head lines +
   # a "… +N lines (full output → context)" marker. The model-facing output is
   # produced elsewhere (ToolExecutor) and is untouched by this render path.

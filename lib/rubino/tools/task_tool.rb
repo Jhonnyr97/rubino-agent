@@ -244,10 +244,12 @@ module Rubino
         # must not surface as a ✗ "failed" notice (#108/#13).
         if entry.status == :stopped
           notify(sink, stopped_notice(entry))
-          surface_completion(parent_ui, "⊘ #{entry.id} · #{entry.subagent} · stopped at your request")
+          surface_completion(parent_ui, "⊘ #{entry.id} · #{entry.subagent} · stopped at your request",
+                             id: entry.id, status: "stopped")
         else
           notify(sink, failure_notice(entry, e.message))
-          surface_completion(parent_ui, "✗ #{entry.id} · #{entry.subagent} · failed: #{e.message}")
+          surface_completion(parent_ui, "✗ #{entry.id} · #{entry.subagent} · failed: #{e.message}",
+                             id: entry.id, status: "failed")
         end
         repaint_parent_cards(parent_ui)
         event_bus&.emit(Interaction::Events::SUBAGENT_FAILED,
@@ -271,7 +273,8 @@ module Rubino
                              "⚠ #{entry.id} · steer note not delivered (task completed first): " \
                              "#{truncate(undelivered.join(" | "), 80)}")
         end
-        surface_completion(parent_ui, completion_summary(entry, text))
+        surface_completion(parent_ui, completion_summary(entry, text),
+                           id: entry.id, status: self.class.noop_result?(text) ? "no-op" : "done")
       end
 
       # One committed summary line for a finished subagent, folded above the
@@ -305,8 +308,17 @@ module Rubino
       # to how a background shell's exit surfaces. DISPLAY-ONLY (a note on the
       # parent UI) — the authoritative delivery to the MODEL is the InputQueue
       # notice + the registry. No-op on Null/API (note is a quiet annotation).
-      def surface_completion(parent_ui, line)
-        parent_ui&.note(line) if parent_ui.is_a?(UI::CLI)
+      # A terminal-state notice (id + status given) goes through the CLI's
+      # #subagent_finished so a completion landing at turn end folds into the
+      # turn footer instead of stacking a second `┄ ┄` rail (P4).
+      def surface_completion(parent_ui, line, id: nil, status: nil)
+        return unless parent_ui.is_a?(UI::CLI)
+
+        if id && parent_ui.respond_to?(:subagent_finished)
+          parent_ui.subagent_finished(line, id: id, status: status || "done")
+        else
+          parent_ui.note(line)
+        end
       rescue StandardError
         # A UI hiccup must never wedge the worker's terminal-state bookkeeping.
       end
