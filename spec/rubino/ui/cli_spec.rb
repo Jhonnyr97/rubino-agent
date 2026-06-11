@@ -738,6 +738,24 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # While a composer owns the screen $stdout is the write-only StdoutProxy
+  # (tty? false), but the terminal IS real — the .active? gate proved it when
+  # the composer started. The interactive gate must answer from the live
+  # composer, or a picker opened under the pinned prompt (the Esc-Esc rewind)
+  # silently bails to nil.
+  describe "#interactive_terminal? with a live composer" do
+    after { Rubino::UI::BottomComposer.current = nil }
+
+    it "is true while a composer is current, even with a non-TTY $stdout" do
+      Rubino::UI::BottomComposer.current = instance_double(Rubino::UI::BottomComposer)
+      expect(ui.send(:interactive_terminal?)).to be(true)
+    end
+
+    it "stays false off a TTY with no composer" do
+      expect(ui.send(:interactive_terminal?)).to be(false)
+    end
+  end
+
   describe "#replay_user_input" do
     it "renders the past user turn as plain text" do
       out = capture_stdout { ui.replay_user_input("hello again") }

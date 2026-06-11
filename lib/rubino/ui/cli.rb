@@ -156,7 +156,17 @@ module Rubino
       # True when both ends are a real interactive terminal — the shared gate
       # for every interactive prompt/menu (#ask / #select): off a TTY they
       # return nil instead of rendering ANSI into a pipe.
+      #
+      # While a bottom composer owns the screen, $stdout is the WRITE-ONLY
+      # StdoutProxy (tty? deliberately false) but the terminal itself is real —
+      # BottomComposer.active? gates composer creation on both ends being TTYs.
+      # Probing the swapped global would wrongly bail a picker opened from
+      # under the pinned prompt (the Esc-Esc rewind), so a live composer
+      # answers the question directly; run_in_terminal then restores the real
+      # IOs for the prompt's lifetime.
       def interactive_terminal?
+        return true if BottomComposer.current
+
         $stdin.respond_to?(:tty?) && $stdin.tty? && $stdout.respond_to?(:tty?) && $stdout.tty?
       rescue StandardError
         false
