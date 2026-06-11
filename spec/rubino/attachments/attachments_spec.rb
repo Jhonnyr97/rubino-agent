@@ -76,6 +76,35 @@ RSpec.describe Rubino::Attachments do
       expect(c.mime).to eq("application/octet-stream")
     end
 
+    it "does NOT classify a text file named .docx as document (content-spoof, #239) — reads as text" do
+      p = File.join(dir, "report.docx")
+      File.write(p, "just plain text, not OOXML\n")
+      c = described_class::Classify.call(p)
+      expect(c.kind).to eq(:text)
+      expect(c.mime).to eq("text/plain")
+    end
+
+    it "does NOT classify a text file named .doc as document (content-spoof, #239, legacy OLE2)" do
+      p = File.join(dir, "notes.doc")
+      File.write(p, "meeting notes in plain text\n")
+      expect(described_class::Classify.call(p).kind).to eq(:text)
+    end
+
+    it "does NOT classify a binary blob named .pdf as document (content-spoof, #239)" do
+      p = File.join(dir, "fake.pdf")
+      File.binwrite(p, ("\x00\x01\x02\x03" * 16).b)
+      c = described_class::Classify.call(p)
+      expect(c.kind).to eq(:binary)
+      expect(c.mime).to eq("application/octet-stream")
+    end
+
+    it "still classifies a real .docx (ZIP magic) as :document" do
+      p = File.join(dir, "real.docx")
+      File.binwrite(p, zip_bytes)
+      c = described_class::Classify.call(p)
+      expect(c.kind).to eq(:document)
+    end
+
     it "still classifies a real WebP as :image (RIFF container signature)" do
       p = File.join(dir, "a.webp")
       File.binwrite(p, "RIFF#{[40].pack("V")}WEBPVP8 ".b + ("\x00" * 16).b)
