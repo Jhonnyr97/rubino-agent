@@ -1412,7 +1412,7 @@ module Rubino
         "#{PROMPT_CARET} "
       end
 
-      # The one-column brand rail (the red ◆ accent) the composer draws as
+      # The one-column brand rail (the red ▍ glyph) the composer draws as
       # the first column of EVERY input row — first row and continuations.
       # Pastel auto-disables color off a TTY, and the composer itself only
       # runs on a real TTY, so the rail never reaches piped output.
