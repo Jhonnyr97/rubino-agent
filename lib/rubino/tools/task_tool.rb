@@ -299,11 +299,7 @@ module Rubino
       def entry_elapsed(entry)
         return nil unless entry.started_at
 
-        secs = ((entry.finished_at || Time.now) - entry.started_at).to_i
-        return "#{secs}s" if secs < 60
-        return "#{secs / 60}m" if secs < 3600
-
-        "#{secs / 3600}h"
+        Util::Duration.human_duration((entry.finished_at || Time.now) - entry.started_at)
       end
 
       # Rings the parent's attention notifier (bell/command hook) for a child
@@ -519,13 +515,9 @@ module Rubino
       # One-line approval preview for the parent note (#141): the first
       # NON-BLANK line of the command (elided), falling back to the question.
       def approval_preview(cmd, question)
-        line = first_nonblank_line(cmd)
-        line = first_nonblank_line(question) if line.empty?
+        line = Rubino::Util::Output.first_nonblank_line(cmd)
+        line = Rubino::Util::Output.first_nonblank_line(question) if line.empty?
         Rubino::Util::Output.elide(line, 80)
-      end
-
-      def first_nonblank_line(text)
-        text.to_s.each_line.map(&:strip).find { |l| !l.empty? }.to_s
       end
 
       # Runs a FRESH nested agent turn for the given subagent definition and

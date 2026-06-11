@@ -127,8 +127,7 @@ module Rubino
       # often starts with a newline or a blank line — taking `.lines.first`
       # there rendered an EMPTY "needs approval:" body on the card (#141).
       def first_line(text, max)
-        first = text.to_s.each_line.map(&:strip).find { |l| !l.empty? }.to_s
-        first.length > max ? "#{first[0, max - 1]}…" : first
+        Rubino::Util::Output.first_line(text, max)
       end
     end
   end

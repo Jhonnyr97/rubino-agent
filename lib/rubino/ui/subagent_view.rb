@@ -248,8 +248,7 @@ module Rubino
       # First NON-BLANK line, elided to +max+ — a multi-line ruby/shell command
       # often starts with a blank line, which would render an empty hint (#141).
       def first_line(text, max)
-        first = text.to_s.each_line.map(&:strip).find { |l| !l.empty? }.to_s
-        first.length > max ? "#{first[0, max - 1]}…" : first
+        Rubino::Util::Output.first_line(text, max)
       end
     end
   end
