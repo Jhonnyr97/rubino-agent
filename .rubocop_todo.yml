@@ -104,10 +104,9 @@ Lint/IncompatibleIoSelectWithFiberScheduler:
     - 'spec/rubino/ui/bottom_composer_pty_spec.rb'
     - 'spec/rubino/ui/bottom_composer_scroll_pty_spec.rb'
 
-# Offense count: 5
+# Offense count: 4
 Lint/IneffectiveAccessModifier:
   Exclude:
-    - 'lib/rubino/commands/executor.rb'
     - 'lib/rubino/commands/loader.rb'
     - 'lib/rubino/tools/base.rb'
 
@@ -253,12 +252,11 @@ Metrics/BlockLength:
     - 'lib/rubino/run/executor.rb'
     - 'lib/rubino/tools/shell_tool.rb'
 
-# Offense count: 4
+# Offense count: 3
 # Configuration parameters: CountComments, Max, CountAsOne.
 Metrics/ClassLength:
   Exclude:
     - 'lib/rubino/cli/chat_command.rb'
-    - 'lib/rubino/commands/executor.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
     - 'lib/rubino/ui/cli.rb'
 
@@ -906,7 +904,7 @@ Style/RedundantInterpolation:
   Exclude:
     - 'lib/rubino/ui/cli.rb'
 
-# Offense count: 5
+# Offense count: 4
 # This cop supports unsafe autocorrection (--autocorrect-all).
 # Configuration parameters: ConvertCodeThatCanStartToReturnNil, AllowedMethods, MaxChainLength.
 # AllowedMethods: present?, blank?, presence, try, try!
@@ -915,7 +913,6 @@ Style/SafeNavigation:
     - 'lib/rubino/agent/iteration_budget.rb'
     - 'lib/rubino/agent/truncation_continuation.rb'
     - 'lib/rubino/api/operations/runs/events_operation.rb'
-    - 'lib/rubino/commands/executor.rb'
     - 'lib/rubino/memory/backends/sqlite.rb'
 
 # Offense count: 1

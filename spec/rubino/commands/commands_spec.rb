@@ -428,7 +428,7 @@ RSpec.describe Rubino::Commands::Executor do
       skill = instance_double(Rubino::Skills::Skill, name: "deep-research", description: desc)
       allow(registry).to receive(:all).and_return([skill])
       allow(registry).to receive(:enabled?).with("deep-research").and_return(true)
-      allow(executor).to receive(:terminal_width).and_return(40)
+      allow_any_instance_of(Rubino::Commands::Handlers::Skills).to receive(:terminal_width).and_return(40)
 
       executor.try_execute("/skills")
       lines = null_ui.messages.map { |m| m[:message] }.grep(/\S/)
