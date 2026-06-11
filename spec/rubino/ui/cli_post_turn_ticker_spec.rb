@@ -32,7 +32,7 @@ RSpec.describe Rubino::UI::CLI do
   describe "thinking ticker with an ACTIVE composer (no #live proxy)" do
     it "paints frames through the composer row and never CR-repaints the prompt line" do
       composer = Rubino::UI::BottomComposer.new(input_queue: queue, input: StringIO.new,
-                                                output: output, prompt: "default ❯ ")
+                                                output: output)
       Rubino::UI::BottomComposer.current = composer
 
       old = $stdout
@@ -50,7 +50,7 @@ RSpec.describe Rubino::UI::CLI do
         # redrew the prompt line below it — the bottom line is never clobbered.
         expect(output.string).to include("thinking")
         last_frame = output.string.split("thinking").last
-        expect(last_frame).to include("default ❯")
+        expect(last_frame).to include("❯")
       ensure
         $stdout = old
       end

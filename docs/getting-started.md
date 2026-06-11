@@ -81,10 +81,11 @@ Press **Enter** at the provider prompt to skip. You can also configure things by
 rubino chat
 ```
 
-The first thing you see is a banner with the workspace, git branch, and model. Then ask something:
+The first thing you see is a banner with the workspace, git branch, and model. The input line leads with a red `▍` rail and a clean `❯` caret; the dim status bar underneath shows the session mode, model, and context saturation. Then ask something:
 
 ```
-default ❯ what does this project do?
+▍❯ what does this project do?
+ default · minimax-m3 · ctx ~1k/128k
 ```
 
 > If you skipped the wizard during `setup`, a bare `rubino chat` re-runs it before the first turn (when on a TTY). If you're piping input or using `-q`, there's no prompt to run — instead you get a clear, actionable error telling you how to set a key (see below).
@@ -94,7 +95,7 @@ default ❯ what does this project do?
 Ask the agent to change something:
 
 ```
-default ❯ add a docstring to the top of lib/foo.rb
+▍❯ add a docstring to the top of lib/foo.rb
 ```
 
 When the agent wants to run `shell` (or any approval-gated tool), it pauses and asks for your decision. Approve once, approve for the session, or deny — see [security.md](security.md) for the full approval model.
