@@ -45,14 +45,14 @@ rubino setup
 Welcome to rubino — let's get you connected to a model.
 No API key is configured yet. Pick a provider (or press Enter to skip).
 
-  1) OpenAI (GPT) (recommended default)
+  1) OpenAI (GPT) — recommended default
   2) MiniMax (Anthropic-compatible)
   3) Anthropic (Claude)
   4) Google (Gemini)
   5) OpenAI-compatible gateway
 Choose a provider [1-5, Enter to skip]: 1
 Paste your OPENAI_API_KEY (input hidden; Enter to skip): ••••••••
-Configured OpenAI (GPT) (recommended default) with model gpt-4.1.
+Configured OpenAI (GPT) — recommended default with model gpt-4.1.
 Saved to ~/.rubino/config.yml and ~/.rubino/.env.
 ```
 
