@@ -302,6 +302,40 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
         .to eq(["User runs the full test suite with bundler exec rspec on each single commit."])
     end
 
+    # Regression for #223 (re-#157): the memory tool replaces a fact in-turn,
+    # then the post-turn extractor's supersede targets THAT very row and
+    # "updates" it to its own identical text. The #157 exclude guard hides the
+    # target from duplicate_of, so before the fix the supersede minted a
+    # byte-identical twin and a useless 1-link self-supersede chain. This
+    # exercises the tool+extractor race in ONE turn end-to-end — the path the
+    # original #157 test missed (it only superseded a DIFFERENT row whose text
+    # matched a separate live fact).
+    it "treats an extractor supersede that re-states its target verbatim as a no-op (#223)" do
+      # Turn: the tool replaces "Turin" -> "Milan" (Milan is now the live row).
+      backend.store(kind: "user_profile", content: "User lives in Turin.")
+      milan = backend.replace(kind: "user_profile", old_text: "Turin", content: "User lives in Milan.")
+      live_milan = db[:memory_facts].where(kind: "user_profile", valid_to: nil).first
+
+      # The extractor then "supersedes" the live Milan row with the SAME text.
+      stub_llm(<<~JSON)
+        {"add":[],"supersede":[{"id":"#{live_milan[:id][0, 8]}",
+        "by_text":"User lives in Milan.","kind":"user_profile"}]}
+      JSON
+
+      stored = backend.extract("s1")
+
+      expect(stored).to be_empty
+      live = db[:memory_facts].where(kind: "user_profile", valid_to: nil).select_map(%i[id text])
+      # Exactly ONE live Milan row, still the tool's — not retired, no twin.
+      expect(live).to eq([[live_milan[:id], "User lives in Milan."]])
+      expect(live_milan[:id]).not_to eq(milan[:id]) # sanity: replace minted a new id
+      # The tool's Milan row was NOT retired by the no-op self-supersede, so no
+      # useless 1-link "Milan -> Milan" chain was created.
+      milan_row = db[:memory_facts].where(id: live_milan[:id]).first
+      expect(milan_row[:valid_to]).to be_nil
+      expect(milan_row[:superseded_by]).to be_nil
+    end
+
     it "supersedes by text match when no id is given" do
       backend.store(kind: "fact", content: "User works at Acme Corp.")
       stub_llm('{"add":[],"supersede":[{"match":"Acme Corp","by_text":"User works at Globex.","kind":"fact"}]}')

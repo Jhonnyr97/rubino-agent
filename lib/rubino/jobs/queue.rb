@@ -31,8 +31,19 @@ module Rubino
           updated_at: now
         )
 
-        # If inline mode, execute immediately
-        Runner.new.run_job(id) if @config.jobs_mode == "inline"
+        # If inline mode, execute immediately — but first drain any stale rows
+        # a previous inline run left orphaned (#84/#224). Inline mode has no
+        # background drainer, so a `queued` row whose enqueuing process was
+        # interrupted mid-run (e.g. the user quit the session while the
+        # post-turn extraction was still finishing) — run_job is called
+        # directly, never locked, and Interrupt is not a StandardError, so the
+        # row never reaches complete!/fail! — sits "queued" forever and is the
+        # behaviour #84 closed. Every inline enqueue means a live process is
+        # here and willing to drain, so reap those orphans on this boot.
+        if @config.jobs_mode == "inline"
+          reap_inline_orphans(before: id)
+          Runner.new.run_job(id)
+        end
 
         id
       end
@@ -139,6 +150,25 @@ module Rubino
       # surfaced by the in-chat /status jobs line, #186).
       def failed_count
         @db[:jobs].where(status: %w[failed dead]).count
+      end
+
+      # Drains `queued` rows left orphaned by an interrupted prior inline run
+      # (#84/#224). Runs every still-queued, due, unlocked row that was
+      # enqueued before +before+ (the row this enqueue is about to run itself),
+      # so a turn whose extraction was interrupted is recovered on the next
+      # inline boot instead of sitting "queued" forever. Each is taken through
+      # run_job, which marks it completed / failed (inline) / dead terminally.
+      def reap_inline_orphans(before: nil)
+        now = Time.now.utc.iso8601
+        runner = Runner.new(db: @db)
+
+        dataset = @db[:jobs]
+                  .where(status: "queued", locked_by: nil)
+                  .where { run_at <= now }
+                  .order(:priority, :run_at)
+        dataset = dataset.exclude(id: before) if before
+
+        dataset.select_map(:id).each { |orphan_id| runner.run_job(orphan_id) }
       end
 
       # Cleans up old completed jobs
