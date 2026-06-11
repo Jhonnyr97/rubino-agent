@@ -144,9 +144,12 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/status` | Overview: model, mode, session, memory, background work |
 | `/sessions` | List recent sessions; resume, show, or delete one (--all lifts the cap) |
 | `/new` | Start a fresh session (the current one is left intact) |
+| `/clear` | Alias for /new — start a fresh session |
 | `/probe` | Ask an ephemeral side-question (not saved); tip: start a line with '? ' |
 | `/queued` | Queue a message to run after the current turn (Alt+Enter does the same) |
 | `/branch` | Fork the current session into a new one and switch into it |
+| `/compact` | Compact the context now: older turns become a summary |
+| `/export` | Write the session transcript as markdown (/export [path]) |
 | `/memory` | Inspect/search/forget what the agent remembers (show ID, backend, --all) |
 | `/agents` | List background subagents; steer/probe a running one, or view output |
 | `/tasks` | Alias for /agents |
@@ -157,6 +160,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/add-dir` | Add an extra allowed workspace directory (write/edit can reach it) |
 | `/dirs` | List the current workspace roots |
 | `/config` | Read or set configuration (/config <key> [value]; 'show' = full view) |
+| `/model` | Show or switch the model for this session (/model <name>) |
 | `/mode` | Show or switch mode (default \| plan \| yolo) |
 | `/reasoning` | Show or switch how reasoning is shown (hidden \| collapsed \| full) |
 | `/think` | Show or switch thinking effort (off \| low \| medium \| high) |
@@ -203,6 +207,22 @@ Start a line with `!` to run the rest of it as a shell command, immediately — 
 
 - `/probe <question>` is the discoverable alias for the `? ` prefix: an **ephemeral** side-question answered from the current context but **never saved** to the session — the next turn proceeds as if it never happened. Bare `/probe` just teaches the `? ` prefix.
 - `/branch [title]` forks the current session here into a **new saved session** (optionally titled) and switches into it, so you can explore an alternative direction; the original session stays intact.
+
+### Model in-chat: `/model`
+
+Bare `/model` shows the current model and provider plus a short list of the models the [ruby_llm](https://rubyllm.com) registry knows for the **active provider** (custom backends like MiniMax or a gateway aren't enumerable there, so they show the current model and a usage hint instead — `/model <name>` still switches). `/model <name>` switches the **live session** model:
+
+- writes `model.default` through `Config::Writer` (the same persist path `/reasoning` and `/think` use), so it survives the session,
+- retargets the running session, so the **very next turn** hits the new model — no restart,
+- resets the session's thinking-rejection memo, so a provider that supports thinking budgets is re-probed after the switch.
+
+An explicit `model.provider` keeps pinning the routing: switching to a model id that pattern-matches a different provider prints a note instead of silently re-routing. Typing `/model ` opens the dropdown with the known model ids.
+
+### Context hygiene: `/compact`, `/clear`, `/export`
+
+- `/compact` compacts the context **now** — the same compressor the automatic threshold path runs (protected head + LLM summary of the middle + protected tail, landing in a child session the chat switches into), rendered with the same `┄ compacting context… ┄` marker, plus a `Context: ~before → ~after tokens` report. A session still below the protected head/tail size reports there is nothing to compact yet.
+- `/clear` is the muscle-memory alias for `/new`: start a fresh session, leaving the current one intact.
+- `/export [path]` writes the session transcript as clean markdown — user/assistant turns verbatim, tool calls and results as one-liners, reasoning omitted. Default path: `./rubino-session-<id8>.md`; the written path is printed.
 
 ### Status at a glance: `/status`
 

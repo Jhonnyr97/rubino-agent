@@ -215,4 +215,42 @@ RSpec.describe Rubino::Agent::Runner do
       expect(second.cancelled?).to be false
     end
   end
+
+  # -----------------------------------------------------------------------
+  # live model switch (/model)
+  # -----------------------------------------------------------------------
+  describe "#switch_model!" do
+    let(:repo) { Rubino::Session::Repository.new(db: db.db) }
+
+    it "retargets model_id, the session hash, and the persisted row" do
+      session = repo.create(source: "cli", model: "gpt-4o", provider: "openai")
+      runner = described_class.new(session_id: session[:id], model_override: "gpt-4o", ui: null_ui)
+
+      runner.switch_model!("claude-sonnet-4-5")
+
+      expect(runner.model_id).to eq("claude-sonnet-4-5")
+      expect(runner.session[:model]).to eq("claude-sonnet-4-5")
+      expect(repo.find(session[:id])[:model]).to eq("claude-sonnet-4-5")
+      expect(repo.find(session[:id])[:provider]).to eq("anthropic")
+    end
+
+    it "makes the NEXT turn's lifecycle use the new model (override beats session)" do
+      allow(Rubino::Interaction::Lifecycle).to receive(:new).and_return(fake_lifecycle)
+      runner = described_class.new(model_override: "gpt-4o", ui: null_ui)
+      runner.switch_model!("claude-sonnet-4-5")
+
+      runner.run!("hello")
+
+      expect(Rubino::Interaction::Lifecycle)
+        .to have_received(:new).with(hash_including(model_override: "claude-sonnet-4-5"))
+    end
+
+    it "leaves an unpersisted lazy session consistent (no phantom row)" do
+      runner = described_class.new(model_override: "gpt-4o", ui: null_ui)
+      runner.switch_model!("gpt-5.2")
+
+      expect(runner.session[:model]).to eq("gpt-5.2")
+      expect(repo.persisted?(runner.session[:id])).to be false
+    end
+  end
 end

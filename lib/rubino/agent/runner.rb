@@ -96,6 +96,26 @@ module Rubino
         @cancel_token&.cancel!
       end
 
+      # Switches the LIVE model for this runner (the in-chat `/model <name>`).
+      # Lifecycle builds the adapter per turn from
+      # `@explicit_model_override || @session[:model]`, and the CLI always
+      # passes a model_override at boot — so both fields must move for the
+      # NEXT turn to actually hit the new model. The session hash is mutated
+      # in place (statusbar and /status read it) and the persisted row is
+      # updated so resume/--continue agree; an unpersisted lazy session gets
+      # the new value via Repository#persist! on its first message instead.
+      def switch_model!(model_id)
+        @explicit_model_override = model_id
+        @model_id = model_id
+        @session[:model] = model_id
+        @session[:provider] = @provider_override ||
+                              LLM::ProviderResolver.resolve(model_id, explicit_provider: @config.model_provider)
+        if @session_repo.persisted?(@session[:id])
+          @session_repo.update(@session[:id], model: model_id, provider: @session[:provider])
+        end
+        model_id
+      end
+
       # Marks the current session ended (#100). Called from the CLI on a clean
       # REPL teardown (and best-effort on terminal close) so a session stops
       # showing as "active" forever and cleanup/list/--continue can tell a
