@@ -69,6 +69,32 @@ Gem::Specification.new do |spec|
   # the interactive prompt (history, completion, multi-line editing).
   spec.add_dependency "reline", "~> 0.5"
 
+  # `csv` left the default gems in Ruby 3.4. The in-repo document converter
+  # (Rubino::Documents) uses it for the CORE csv->Markdown format, so it is a
+  # hard runtime dependency (the converter still falls back to a built-in
+  # splitter if it is ever absent, but we ship it so csv always works).
+  spec.add_dependency "csv", "~> 3.2"
+
+  # Optional document-conversion extraction gems (Rubino::Documents, #6). These
+  # are NOT hard runtime dependencies: each converter `require`s its gem lazily
+  # inside begin/rescue LoadError and reports itself unavailable when the gem is
+  # absent, so the module loads and runs with none of them installed (callers
+  # then fall back to the shell-extraction hint). They are declared as
+  # development dependencies so CI/specs can exercise the gem-backed converters;
+  # an end user installs only the formats they need (e.g. `gem install roo`).
+  # All MIT-licensed. html/xml use kramdown/rexml which are already present.
+  #
+  # NOTE: `ruby_powerpoint` is deliberately NOT in the dev bundle -- it pins
+  # `rubyzip ~> 1.0`, which is irreconcilable with `docx`/`roo` (rubyzip ~> 2.x)
+  # in a single Gemfile. The Pptx converter is therefore exercised by its
+  # degradation path and unit-level shaping (a stubbed gem interface) rather
+  # than the live gem; an end user who needs pptx installs ruby_powerpoint into
+  # their own (compatible) environment. This is exactly the optional-require
+  # design: a missing/absent gem never breaks the module.
+  spec.add_development_dependency "docx", "~> 0.8"
+  spec.add_development_dependency "pdf-reader", "~> 2.12"
+  spec.add_development_dependency "roo", "~> 2.10"
+
   # Development dependencies
   spec.add_development_dependency "rack-test", "~> 2.1"
   spec.add_development_dependency "rspec", "~> 3.12"

@@ -54,6 +54,10 @@ RSpec.configure do |config|
 
   config.before(:suite) do
     FileUtils.mkdir_p(TEST_HOME)
+    # Regenerate the binary document fixtures (xlsx/docx/pdf) so the
+    # Rubino::Documents specs run against deterministically-built files rather
+    # than depending on a committed blob staying fresh.
+    DocumentFixtures.generate!(File.join(__dir__, "fixtures", "documents"))
   end
 
   config.after(:suite) do
