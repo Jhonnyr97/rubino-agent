@@ -139,6 +139,15 @@ module Rubino
         raise NotImplementedError, "#{self.class}#confirm not implemented"
       end
 
+      # A destructive yes/No confirm, default No — distinct from the tool-approval
+      # #confirm above (#218). Used for the in-chat/CLI destructive verbs (session
+      # delete, memory forget), so only the CLI and Null adapters implement it;
+      # both fail closed (decline) off a real terminal so a piped/EOF answer can
+      # never destroy. The API/subagent adapters don't host these verbs and raise.
+      def confirm_destructive(question)
+        raise NotImplementedError, "#{self.class}#confirm_destructive not implemented"
+      end
+
       # `at:` overrides the timestamp on the tool box top — replay uses it so
       # historical tool calls show when they actually happened, not "now".
       # Live calls leave `at:` nil and get current time.

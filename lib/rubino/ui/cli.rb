@@ -268,6 +268,29 @@ module Rubino
         approved
       end
 
+      # A destructive yes/No confirm — NOT the tool-approval menu (#218).
+      # Deleting a session or forgetting a fact is not a tool/command the model
+      # proposed, so the "Approve once / this command / this tool" vocabulary is
+      # wrong, and its highlighted default (Approve) turns a stray Enter or a
+      # piped answer into a data-loss. This defaults to **No**: blank/Esc/EOF and
+      # every non-interactive path (piped stdin) decline, and only an explicit
+      # "y"/"yes" proceeds. Returns true only when the user affirmatively agreed.
+      def confirm_destructive(question)
+        $stdout.puts @pastel.yellow("⚠ #{question}")
+        # Off a real terminal there is no one to answer; fail closed (decline)
+        # so a piped `n` — or any pipe at all — can never destroy (#218).
+        return false unless interactive_terminal?
+
+        answer = BottomComposer.run_in_terminal do
+          @prompt.yes?(@pastel.bold("Proceed?"), default: false)
+        end
+        !!answer
+      rescue TTY::Reader::InputInterrupt
+        # Esc / Ctrl-C mid-prompt: treat as decline, never destroy.
+        $stdout.puts
+        false
+      end
+
       # One dim line, once per session, after the FIRST "Approve once" (#110):
       # the "this tool (this session)" option already exists in the menu, but
       # nothing surfaced it, so users approved every single edit by hand.

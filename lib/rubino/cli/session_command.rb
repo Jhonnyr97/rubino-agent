@@ -92,7 +92,7 @@ module Rubino
       # above and the in-chat `/sessions delete <id>`.
       def self.destroy_with_confirm(session, repo:, ui:, force: false)
         unless force
-          confirmed = ui.confirm(
+          confirmed = ui.confirm_destructive(
             "Delete session #{session[:id][0..7]} '#{session[:title] || "(untitled)"}'? " \
             "This will also remove its messages, events, and tool calls."
           )
