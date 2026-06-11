@@ -35,19 +35,35 @@ module Rubino
       ].freeze
       IMAGE_EXTS = %w[.png .jpg .jpeg .gif .webp .bmp .tiff .tif].freeze
 
-      # Leading magic bytes per recognised image MIME (WebP is special-cased:
-      # RIFF container + WEBP tag). Marcel lets the file NAME break the tie
-      # when the content sniff only yields a generic type (text/plain,
-      # octet-stream), so a text file renamed fake.png came back image/png and
-      # was shipped to the provider (#158). An image verdict must therefore be
-      # backed by the actual signature.
-      IMAGE_SIGNATURES = {
+      # Leading magic bytes per recognised image/document MIME (WebP is
+      # special-cased: RIFF container + WEBP tag). Marcel lets the file NAME
+      # break the tie when the content sniff only yields a generic type
+      # (text/plain, octet-stream), so a text file renamed fake.png came back
+      # image/png and was shipped to the provider (#158) — and a text file
+      # renamed report.docx came back as :document and got a shell-hint
+      # instead of reading inline (#239). An image or document verdict must
+      # therefore be backed by the actual signature.
+      OLE2 = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1".b
+      SIGNATURES = {
         "image/png" => ["\x89PNG\r\n\x1a\n".b],
         "image/jpeg" => ["\xFF\xD8\xFF".b],
         "image/gif" => ["GIF87a".b, "GIF89a".b],
         "image/bmp" => ["BM".b],
         "image/x-ms-bmp" => ["BM".b],
-        "image/tiff" => ["II*\x00".b, "MM\x00*".b]
+        "image/tiff" => ["II*\x00".b, "MM\x00*".b],
+        "application/pdf" => ["%PDF".b],
+        # OOXML and ODF are ZIP containers.
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ["PK".b],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ["PK".b],
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ["PK".b],
+        "application/vnd.oasis.opendocument.text" => ["PK".b],
+        "application/vnd.oasis.opendocument.spreadsheet" => ["PK".b],
+        # Legacy Office is an OLE2 compound file.
+        "application/msword" => [OLE2],
+        "application/vnd.ms-excel" => [OLE2],
+        "application/vnd.ms-powerpoint" => [OLE2],
+        "application/rtf" => ["{\\rtf".b],
+        "text/rtf" => ["{\\rtf".b]
       }.freeze
 
       module_function
@@ -97,12 +113,14 @@ module Rubino
         basename = File.basename(real)
         mime = Marcel::MimeType.for(Pathname(real), name: basename).to_s
 
-        # Extension-spoof gate (#158): an image verdict that the magic bytes
-        # don't back up came from the extension, not the content. Re-resolve
-        # from content alone (no name:); when that is generic too, the text/
-        # binary sniff names the honest type — so fake.png full of text is
-        # rejected at the staging gate as text/plain, before any network call.
-        if IMAGE_MIMES.include?(mime) && !image_signature?(real, mime)
+        # Extension-spoof gate (#158, #239): an image or document verdict that
+        # the magic bytes don't back up came from the extension, not the
+        # content. Re-resolve from content alone (no name:); when that is
+        # generic too, the text/binary sniff names the honest type — so
+        # fake.png full of text is rejected at the staging gate as text/plain
+        # before any network call, and report.docx full of text reads inline
+        # as text instead of bouncing off the document converter.
+        if (IMAGE_MIMES.include?(mime) || DOCUMENT_MIMES.include?(mime)) && !signature?(real, mime)
           mime = Marcel::MimeType.for(Pathname(real)).to_s
           if mime.empty? || mime == "application/octet-stream"
             return base_helper.send(:binary?, real) ? [:binary, "application/octet-stream"] : [:text, "text/plain"]
@@ -136,12 +154,12 @@ module Rubino
       end
 
       # True when the file's leading bytes carry the signature +mime+ claims.
-      # Unknown image MIMEs fail closed (no signature -> not verified).
-      def image_signature?(real, mime)
+      # MIMEs without a known signature fail closed (not verified).
+      def signature?(real, mime)
         head = File.binread(real, 16).to_s.b
         return head.start_with?("RIFF") && head[8, 4] == "WEBP" if mime == "image/webp"
 
-        Array(IMAGE_SIGNATURES[mime]).any? { |sig| head.start_with?(sig) }
+        Array(SIGNATURES[mime]).any? { |sig| head.start_with?(sig) }
       end
 
       # JSON/XML/YAML/JS and friends arrive as application/* but are text.
