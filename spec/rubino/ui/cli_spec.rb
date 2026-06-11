@@ -1489,6 +1489,39 @@ RSpec.describe Rubino::UI::CLI do
       expect(offered.map(&:last)).not_to include(:always_prefix)
     end
 
+    # #222: the narrow "always" scope label was the shell-flavored "this command"
+    # for EVERY tool — confusing on an `edit`/`write` card (which has no command,
+    # just file_path/old_string). It must read in the tool's own terms.
+    def offered_labels_for(tool:, command:)
+      offered = nil
+      prompt = instance_double(TTY::Prompt)
+      allow(prompt).to receive(:select) do |*, &blk|
+        menu = double("menu")
+        offered = {}
+        allow(menu).to receive(:choice) { |label, sym| offered[sym] = label }
+        blk.call(menu)
+        :no
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      capture_stdout do
+        ui.confirm("ok?", scope: "#{tool}:#{command}", tool: tool, command: command)
+      end
+      offered
+    end
+
+    it "labels the narrow scope 'this command' for a SHELL tool (#222)" do
+      labels = offered_labels_for(tool: "shell", command: "ls")
+      expect(labels[:always_command]).to eq("Approve — this command (always)")
+      expect(labels[:deny_always]).to eq("Deny — this command (always)")
+    end
+
+    it "labels the narrow scope 'this exact call' for a non-shell tool like edit (#222)" do
+      labels = offered_labels_for(tool: "edit", command: "edit foo.rb")
+      expect(labels[:always_command]).to eq("Approve — this exact call (always)")
+      expect(labels[:deny_always]).to eq("Deny — this exact call (always)")
+      expect(labels.values).not_to include(a_string_matching(/this command/))
+    end
+
     it "shows the dangerous pattern description above the menu" do
       _hit, key, desc = Rubino::Security::DangerousPatterns.detect("rm -rf /tmp/x")
       stub_choice(:no)
@@ -1759,14 +1792,22 @@ RSpec.describe Rubino::UI::CLI do
       expect(ui.select("pick", choices)).to eq(2)
     end
 
-    # Regression for #138: Esc aborts tty-prompt mid-render, parking the cursor
-    # at the END of the last menu row — the caller's cancel hint then glued
-    # straight onto it ("… · active)Resume: /sessions <id|title>"). The cancel
-    # path must restore line discipline with a newline before returning.
-    it "emits a newline on Esc so the next committed line never glues onto the last row (#138)" do
+    # Regression for #219 (and #138): Esc aborts tty-prompt mid-render, so its
+    # per-frame refresh never clears the header + menu it just drew — the dead
+    # frame is left in the scrollback and repeated cancels stack corpses. The
+    # cancel path must ERASE that frame (walk the cursor up over every drawn row
+    # and clear to the end of the screen), leaving the terminal as it was before
+    # the picker opened — which also fixes #138 (no cancel-hint glue onto a stale
+    # last row, since the cursor lands at column 1 on a clean line).
+    it "erases the cancelled picker frame so nothing is left in the scrollback (#219)" do
       picker_with_keys("\e")
       out = capture_stdout { expect(ui.select("pick", choices)).to be_nil }
-      expect(out).to end_with("\n")
+
+      # 1 header row + the 2 visible choice rows = 3 rows walked back, then
+      # everything below the header is wiped.
+      expect(out).to include(TTY::Cursor.up(3))
+      expect(out).to include(TTY::Cursor.clear_screen_down)
+      expect(out).to include(TTY::Cursor.column(1))
     end
   end
 

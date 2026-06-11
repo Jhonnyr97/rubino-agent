@@ -36,13 +36,13 @@ module Rubino
       # the user typed while it was working and folds it into the turn at a safe
       # iteration boundary. Nil for the API/server path and for nested SUBAGENT
       # runs, which stay isolated — no user injection, exactly as before.
-      def execute(input, image_paths: [], input_queue: nil)
+      def execute(input, image_paths: [], input_queue: nil, paste_expansions: [])
         @event_bus.emit(Events::INTERACTION_STARTED, input: input)
         @state.transition_to!(:receiving_input, event_bus: @event_bus)
 
         # 1. Persist user message
         @state.transition_to!(:loading_session, event_bus: @event_bus)
-        persist_user_message(input)
+        persist_user_message(input, paste_expansions: paste_expansions)
 
         # 2. Load memory (if enabled)
         @state.transition_to!(:loading_memory, event_bus: @event_bus)
@@ -89,7 +89,7 @@ module Rubino
 
       private
 
-      def persist_user_message(input)
+      def persist_user_message(input, paste_expansions: [])
         # Lazily insert the session row on the first real message (#144). A
         # session built by the CLI stays in-memory until now, so opening `chat`
         # and exiting without sending anything never persists an empty row. The
@@ -99,11 +99,13 @@ module Rubino
         # Persist the user's message verbatim. Image attachments are owned by
         # the image_paths pipeline (Executor -> Runner -> Loop), routed natively
         # to the model; we must not strip paths out of the stored/sent text.
-        @message_store.create(
-          session_id: @session[:id],
-          role: "user",
-          content: input
-        )
+        # +input+ keeps any compact "[Pasted text #N …]" placeholder so the
+        # transcript echo stays clean on resume (#213); the matching expansion
+        # bodies ride as metadata and are folded into the model-facing content
+        # by Message#to_context, so the model still sees the full paste.
+        attrs = { session_id: @session[:id], role: "user", content: input }
+        attrs[:metadata] = { paste_expansions: paste_expansions } unless paste_expansions.empty?
+        @message_store.create(**attrs)
         @session_repo.increment_message_count!(@session[:id])
         maybe_set_title(input)
       end

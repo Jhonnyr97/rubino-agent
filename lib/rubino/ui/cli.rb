@@ -25,6 +25,11 @@ module Rubino
     #   ◆  approval required
     #   ┄  low-priority metadata
     class CLI < PrinterBase
+      # Page size tty-prompt paginates a select menu at (its Paginator's
+      # DEFAULT_PAGE_SIZE) — the count of menu rows visible at once, used to wipe
+      # a cancelled picker's frame (#219).
+      PICKER_PAGE_SIZE = 6
+
       # @param session_id [String] key for the session approval cache. One
       #   CLI process serves exactly one chat session, so a per-process id is
       #   the right granularity for "remember for this session" — the cache is
@@ -190,11 +195,28 @@ module Rubino
           end
         end
       rescue TTY::Reader::InputInterrupt
-        # Esc aborts tty-prompt mid-render, leaving the cursor parked at the END
-        # of the last menu row — the next committed line (the caller's cancel
-        # hint) would glue straight onto it (#138). Restore line discipline.
-        $stdout.puts
+        # Esc aborts tty-prompt mid-render — the exception unwinds straight out of
+        # its draw loop, so the per-frame refresh that would have CLEARED the just
+        # drawn header + menu never runs. The frame is left committed to the
+        # scrollback (a dead "Resume which session? …" / "Rewind to which
+        # message? …" header + its first row), and repeated cancels stack corpses
+        # (#219). Erase the picker's frame so cancel restores the prompt cleanly —
+        # "nothing changed", as documented. The cursor is parked at the end of the
+        # last menu row, so we walk up over every drawn line and wipe to the end
+        # of the screen.
+        erase_picker_frame(choices.length)
         nil
+      end
+
+      # Clears a cancelled picker's drawn frame: 1 header row + the visible menu
+      # rows (tty-prompt paginates at PICKER_PAGE_SIZE). Walks the cursor up to
+      # the header column-0 and erases everything below it, leaving the terminal
+      # exactly as it was before the picker opened.
+      def erase_picker_frame(choice_count)
+        rows = 1 + [choice_count, PICKER_PAGE_SIZE].min
+        $stdout.print(TTY::Cursor.column(1))
+        $stdout.print(TTY::Cursor.up(rows))
+        $stdout.print(TTY::Cursor.clear_screen_down)
       end
 
       # A DEDICATED TTY::Prompt for cancellable pickers, with Esc bound to the
@@ -254,7 +276,7 @@ module Rubino
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
         $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
 
-        choice   = approval_choice(rule)
+        choice   = approval_choice(rule, tool: tool)
         approved = apply_choice(choice, scope: scope, command: command, rule: rule)
         # First plain "Approve once" of the session: point at the session-scope
         # menu options so a multi-edit refactor doesn't keep interrupting
@@ -892,6 +914,21 @@ module Rubino
         status_stop unless @turn_active
       end
 
+      # Holds text the user typed during a synchronous /probe wait (#221), so the
+      # next idle prompt seeds it back into `❯` — the wait owns a transient
+      # composer to echo input, but it's torn down before the REPL reopens its
+      # idle composer, so the buffer is parked here in between.
+      def stash_probe_draft(text)
+        @probe_draft = text
+      end
+
+      # Consumes the parked /probe draft (see #stash_probe_draft), or nil.
+      def take_probe_draft
+        draft = @probe_draft
+        @probe_draft = nil
+        draft
+      end
+
       def monotonic_now
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
@@ -1358,8 +1395,13 @@ module Rubino
       # only the narrow "always, this command" persists. Returns one of
       # :once, :always_prefix, :always_command, :always_tool, :no (deny this
       # call only), :deny_always (persist a permissions:deny rule).
-      def approval_choice(rule = nil)
+      def approval_choice(rule = nil, tool: nil)
         prefix = rule&.kind == :prefix ? rule.value : nil
+        # The narrow "always" scope reads in the TOOL's own terms: "this command"
+        # is shell-flavored and is confusing on an `edit`/`write` card (which
+        # shows file_path/old_string, not a command), so non-shell tools get
+        # "this exact call" instead (#222). Shell keeps "command".
+        narrow = scope_noun(tool)
         # Pause the bottom composer for the duration of the select so the menu
         # reads the real $stdin (no reader-thread race) and tty-screen sizes the
         # real $stdout (no NoMethodError on the StdoutProxy). No-op off-turn.
@@ -1371,12 +1413,19 @@ module Rubino
           approval_prompt.select("approve?", cycle: false) do |menu|
             menu.choice "Approve once", :once
             menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
-            menu.choice "Approve — this command (always)",       :always_command
-            menu.choice "Approve — this tool (this session)",    :always_tool
-            menu.choice "Deny once",                             :no
-            menu.choice "Deny — this command (always)",          :deny_always
+            menu.choice "Approve — #{narrow} (always)",         :always_command
+            menu.choice "Approve — this tool (this session)",   :always_tool
+            menu.choice "Deny once",                            :no
+            menu.choice "Deny — #{narrow} (always)",            :deny_always
           end
         end
+      end
+
+      # The narrow-scope noun for the "always" approval rows, by tool kind: a
+      # shell command is literally a "command"; every other tool (edit, write, …)
+      # has no command, so the call itself is the scope (#222).
+      def scope_noun(tool)
+        tool.to_s == "shell" ? "this command" : "this exact call"
       end
 
       # Head lines of tool output the transcript shows (P2). Resolved from

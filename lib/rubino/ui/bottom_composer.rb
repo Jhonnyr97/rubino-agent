@@ -1482,9 +1482,9 @@ module Rubino
               break if result == :quit
             end
           end
-        rescue IOError, Errno::EIO
-          # stdin went away (closed/redirected mid-turn) — stop reading; the turn
-          # keeps running. Nothing to surface.
+        rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
+          # stdin went away (closed/redirected mid-turn) or isn't a raw-capable
+          # device — stop reading; the turn keeps running. Nothing to surface.
         ensure
           stop_r.close unless stop_r.closed?
           @input.cooked! if tty?

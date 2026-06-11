@@ -80,6 +80,34 @@ RSpec.describe Rubino::UI::PasteStore do
     end
   end
 
+  # #213: instead of expanding INTO the prompt at submit (which baked the body
+  # into the persisted message and dumped it on resume), the chat loop collects
+  # the [token, body] pairs and persists them as metadata, keeping the compact
+  # placeholder in the message. #expansions_in is that collection seam.
+  describe "#expansions_in" do
+    it "returns the [token, body] pairs for the placeholders present, consuming them" do
+      body  = lines(10)
+      token = store.register(body)
+      expect(store.expansions_in("please review #{token} carefully"))
+        .to eq([[token, body]])
+      # Consumed, like #expand — re-submitting from history later finds nothing.
+      expect(store.expansions_in(token)).to eq([])
+    end
+
+    it "collects multiple distinct placeholders in one message" do
+      a = store.register("a\n" * 6)
+      b = store.register("b\n" * 7)
+      pairs = store.expansions_in("first #{a} then #{b}")
+      expect(pairs.map(&:first)).to contain_exactly(a, b)
+    end
+
+    it "ignores unregistered placeholder-shaped literals and non-strings" do
+      expect(store.expansions_in("[Pasted text #9 +99 lines]")).to eq([])
+      expect(store.expansions_in(nil)).to eq([])
+      expect(store.expansions_in("plain")).to eq([])
+    end
+  end
+
   describe "tier 2 — file overflow" do
     let(:store) do
       described_class.new(

@@ -98,6 +98,20 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(note[:message]).to eq("rewound to message 2 — editing")
     end
 
+    # #220: the rewind has its OWN "┄ rewound to message N — editing ┄" marker,
+    # so the generic "Resuming session: <id>…" plumbing line the runner emits on
+    # a normal session load must NOT leak into the rewind transcript.
+    it "does NOT print the generic 'Resuming session' line on the fork switch (#220)" do
+      rewind(3)
+      resuming = ui.messages.find do |m|
+        m[:level] == :status && m[:message].to_s.start_with?("Resuming session")
+      end
+      expect(resuming).to be_nil
+      # The purpose-built rewind marker IS present (the only transition note).
+      note = ui.messages.find { |m| m[:level] == :note }
+      expect(note[:message]).to eq("rewound to message 2 — editing")
+    end
+
     it "Esc-cancel changes nothing: no fork, no prefill, nil return" do
       session # materialize the lazy session row first
       before_sessions = repo.list.length
