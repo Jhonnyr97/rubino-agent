@@ -144,7 +144,7 @@ setup_ruby_rv() {
     return 1
   }
 
-  local rv_bin
+  # NOTE: rv_bin is intentionally NOT local: rubyx() reads it after we return.
   if rv_bin="$(locate_rv)"; then
     ok "rv already installed: ${rv_bin}"
   else
@@ -198,10 +198,11 @@ case "$METHOD" in
   *)    die "internal: unknown method '${METHOD}'." ;;
 esac
 
-# Where gem-installed executables land for the chosen Ruby. `gem environment
-# gembindir` is correct for both rv and Homebrew; fall back to the ruby bin dir.
-GEM_BIN_DIR="$(rubyx gem environment gembindir 2>/dev/null | tail -n1)" || GEM_BIN_DIR=""
-[ -n "${GEM_BIN_DIR:-}" ] && [ -d "$GEM_BIN_DIR" ] || GEM_BIN_DIR="$RUBY_BIN_DIR"
+# Where gem-installed executables land for the chosen Ruby. Ask RubyGems
+# directly (Gem.bindir); fall back to the ruby bin dir. The dir may not exist
+# yet on a fresh machine — `gem install` creates it — so don't require it.
+GEM_BIN_DIR="$(rubyx ruby -e 'print Gem.bindir' 2>/dev/null)" || GEM_BIN_DIR=""
+[ -n "${GEM_BIN_DIR:-}" ] || GEM_BIN_DIR="$RUBY_BIN_DIR"
 
 # --- install the rubino gem -------------------------------------------------
 
