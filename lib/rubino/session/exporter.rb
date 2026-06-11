@@ -54,26 +54,37 @@ module Rubino
         case msg.role.to_s
         when "user" then ["## User", "", msg.content.to_s, ""]
         when "assistant" then render_assistant(msg)
-        when "tool" then ["- tool result: `#{msg.tool_name || "tool"}` (#{msg.content.to_s.length} chars)", ""]
+        when "tool" then render_tool(msg)
         else []
         end
       end
 
-      # The assistant turn's text, then each tool call it made as a one-liner.
-      # A pure tool-call turn (no visible text) keeps just the call lines.
+      # The assistant turn's visible text. The tool-call one-liner is emitted by
+      # #render_tool from the `tool`-role result row (which carries `tool_name` +
+      # `arguments` on BOTH the streaming and non-streaming paths), NOT here from
+      # the assistant row's `tool_calls` metadata — that metadata is absent on the
+      # streaming path (the default; the call is emitted mid-stream), so reading
+      # it left the call one-liner dead in every real export (#216). A pure
+      # tool-call turn has no visible text, so this renders just the heading.
       def render_assistant(msg)
         lines = ["## Assistant", ""]
         text = msg.content.to_s
         lines.push(text, "") unless text.empty?
-        tool_calls(msg).each do |tc|
-          lines.push("- tool call: `#{tc[:name]}` #{args_preview(tc[:arguments])}".rstrip, "")
-        end
         lines
       end
 
-      def tool_calls(msg)
-        calls = msg.metadata.is_a?(Hash) ? msg.metadata[:tool_calls] : nil
-        Array(calls).grep(Hash)
+      # A `tool`-role row renders its call one-liner (reconstructed from the
+      # row's own `tool_name` + `arguments` metadata) followed by its result
+      # one-liner. The call line is the only place the command/args survive on
+      # the streaming path, where the assistant turn persists without
+      # `tool_calls` (#216).
+      def render_tool(msg)
+        name = msg.tool_name || "tool"
+        args = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
+        [
+          "- tool call: `#{name}` #{args_preview(args)}".rstrip, "",
+          "- tool result: `#{name}` (#{msg.content.to_s.length} chars)", ""
+        ]
       end
 
       def args_preview(arguments)
