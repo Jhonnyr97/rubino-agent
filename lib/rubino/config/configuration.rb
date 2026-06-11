@@ -86,6 +86,23 @@ module Rubino
         value.positive? ? value : UI::BottomComposer::MAX_INPUT_ROWS
       end
 
+      # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
+      # A paste with MORE than this many lines collapses to a
+      # "[Pasted text #N +M lines]" placeholder in the composer (expanded to
+      # the full body at send). Falls back for nil/zero/garbage.
+      def paste_collapse_lines
+        value = dig("paste", "collapse_lines").to_i
+        value.positive? ? value : UI::PasteStore::DEFAULT_COLLAPSE_LINES
+      end
+
+      # A paste estimated above this many tokens (chars/4, the same rule
+      # compaction uses) overflows to <home>/sessions/<id>/paste_N.txt and the
+      # message carries a read-tool pointer instead of the content.
+      def paste_file_threshold_tokens
+        value = dig("paste", "file_threshold_tokens").to_i
+        value.positive? ? value : UI::PasteStore::DEFAULT_THRESHOLD_TOKENS
+      end
+
       # -- Notifications section (UI::Notifier: attention bell + hook) --
       # enabled/bell are on unless explicitly false; command is nil unless a
       # non-empty string is set; min_turn_seconds falls back to the default.

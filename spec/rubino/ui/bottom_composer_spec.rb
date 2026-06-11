@@ -1278,6 +1278,125 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # The file-backed paste pipeline (UI::PasteStore): with a store wired, a
+  # paste longer than paste.collapse_lines inserts ONE compact
+  # "[Pasted text #N +M lines]" placeholder instead of the body. The token is
+  # a single editable unit — backspace deletes it whole, typing around it
+  # leaves it intact — and the SUBMITTED line still carries the placeholder:
+  # expansion to the full body happens at the chat loop's message-build seam
+  # (ChatCommand#run_turn → PasteStore#expand), so echo/history/queueing all
+  # stay compact while the model sees everything.
+  describe "paste pipeline (placeholder collapse)" do
+    let(:store) do
+      Rubino::UI::PasteStore.new(
+        config: instance_double(Rubino::Config::Configuration,
+                                paste_collapse_lines: 5,
+                                paste_file_threshold_tokens: 8000),
+        session_source: "composer-spec"
+      )
+    end
+    let(:big) { Array.new(50) { |i| "line #{i + 1}" }.join("\n") }
+
+    def build(echo: :queued)
+      described_class.new(input_queue: queue, input: input, output: output,
+                          paste_store: store, echo: echo,
+                          history: Rubino::UI::InputHistory.new(store: []))
+    end
+
+    def paste_into(composer, body)
+      composer.instance_variable_set(:@input, StringIO.new("[200~#{body}\e[201~"))
+      composer.handle_key("\e")
+      composer
+    end
+
+    it "collapses a paste OVER the threshold to a single placeholder token" do
+      c = paste_into(build, big)
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines]")
+    end
+
+    it "keeps a paste AT the threshold inline (boundary: 5 lines, default 5)" do
+      c = paste_into(build, "a\nb\nc\nd\ne")
+      expect(c.buffer).to eq("a\nb\nc\nd\ne")
+    end
+
+    it "numbers a second paste #2 in the same draft" do
+      c = paste_into(build, big)
+      c.handle_key(" ")
+      paste_into(c, Array.new(6) { "x" }.join("\n"))
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines] [Pasted text #2 +6 lines]")
+    end
+
+    it "backspace deletes the placeholder WHOLE (never a half-eaten token)" do
+      c = paste_into(build, big)
+      c.handle_key("\x7F")
+      expect(c.buffer).to eq("")
+    end
+
+    it "deletes char-by-char around the token, whole-token only ON it" do
+      c = paste_into(build, big)
+      "xy".each_char { |ch| c.handle_key(ch) }
+      c.handle_key("\x7F") # eats "y"
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines]x")
+      c.handle_key("\x7F") # eats "x"
+      c.handle_key("\x7F") # eats the whole token
+      expect(c.buffer).to eq("")
+    end
+
+    it "edits AROUND the token and submits with the placeholder in the payload" do
+      c = paste_into(build, big)
+      c.handle_key("\x01") # Ctrl+A → home
+      "see ".each_char { |ch| c.handle_key(ch) }
+      c.handle_key("\x05") # Ctrl+E → end
+      " ok".each_char { |ch| c.handle_key(ch) }
+      c.handle_key("\r")
+      expect(queue.drain).to eq(["see [Pasted text #1 +50 lines] ok"])
+    end
+
+    it "expands the submitted line to the FULL body at the message-build seam" do
+      c = paste_into(build, big)
+      c.handle_key("\r")
+      line = queue.drain.first
+      expect(line).to eq("[Pasted text #1 +50 lines]")
+      expect(store.expand(line)).to eq(big) # what run_turn hands the model
+    end
+
+    it "echoes an idle submit with the placeholder — scrollback stays clean" do
+      c = build(echo: :prompt)
+      paste_into(c, big)
+      output.truncate(0)
+      output.rewind
+      c.handle_key("\r")
+      expect(output.string).to include("#{PROMPT}[Pasted text #1 +50 lines]")
+      expect(output.string).not_to include("line 42")
+    end
+
+    it "survives ↑ history recall: the recalled draft still expands" do
+      c = paste_into(build, big)
+      c.handle_key("\r")
+      queue.drain
+      c.send(:history_up)
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines]")
+      expect(store.expand(c.buffer)).to eq(big)
+    end
+
+    it "queues with Alt+Enter mid-turn, placeholder intact and expandable" do
+      c = paste_into(build, big)
+      c.begin_turn
+      c.instance_variable_set(:@input, StringIO.new("\r"))
+      c.handle_key("\e") # ESC + CR = Alt+Enter → queue without interrupting
+      line = queue.drain.first
+      expect(line).to eq("[Pasted text #1 +50 lines]")
+      expect(store.expand(line)).to eq(big)
+    end
+
+    it "inlines every paste when NO store is wired (standalone, legacy)" do
+      c = described_class.new(input_queue: queue, input: input, output: output)
+      c.instance_variable_set(:@input, StringIO.new("[200~#{big}\e[201~"))
+      c.handle_key("\e")
+      expect(c.buffer).to eq(big)
+    end
+  end
+
   describe "#print_above" do
     it "erases the input line, writes the output, then redraws the input" do
       composer.handle_key("h")

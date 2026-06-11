@@ -73,6 +73,10 @@ is set.
 - In interactive chat, a line containing **only** an image stages the attachment — it is sent with your next message; `/clear-images` drops **everything** staged, however it was added (`/paste`, `@image` token, `--image`, or a dropped path). A line with text *and* an image sends both immediately.
 - `/paste` reads the clipboard via an external tool: `pngpaste` on macOS, `wl-paste` or `xclip` on Linux. When none is installed it warns instead of failing silently.
 
+### Pasting text
+
+Pasting **text** into the chat input goes through the file-backed paste pipeline (Hermes-style). A small paste (up to `paste.collapse_lines` lines, default 5) inlines as real editable rows. A larger one collapses to a single cyan `[Pasted text #N +M lines]` placeholder — one token you can type around, recall with ↑, queue with Alt+Enter, or delete whole with backspace — that expands to the full pasted body when the message is sent, so the model sees everything while your terminal scrollback keeps the compact placeholder. A huge paste (above `paste.file_threshold_tokens`, default ~8k tokens) is written to `<RUBINO_HOME>/sessions/<id>/paste_N.txt` instead and the message tells the model to read the file with the read tool. See [configuration.md](configuration.md) for the `paste.*` keys.
+
 ### Auto-resume and continuity
 
 - A **bare** interactive `rubino chat` auto-resumes your most recent resumable session and replays its history.
