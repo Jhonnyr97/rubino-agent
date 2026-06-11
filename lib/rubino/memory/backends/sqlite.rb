@@ -312,6 +312,16 @@ module Rubino
 
           Array(result["supersede"]).each do |s|
             old = resolve_supersede_target(s)
+            # A self-supersede is a no-op (#223): when the replacement text is
+            # IDENTICAL to the very row it would retire — e.g. the memory tool
+            # already wrote this fact in-turn and the extractor "updates" it to
+            # itself — retire-and-reinsert would just mint a byte-identical twin
+            # and a useless 1-link chain. The #157 exclude guard hides this row
+            # from the duplicate_of check below, so it has to be caught here
+            # first. Identity only, not near-dup: a genuine rephrase of the
+            # retired row must still land (the #157 exclude-guard case).
+            next if old && old[:text].to_s.strip == s["by_text"].to_s.strip
+
             # The replacement passes the SAME near-dup check a plain add runs
             # (#157): when the new fact already exists live (e.g. the memory
             # tool stored it in-turn), retire the old row pointing at it
