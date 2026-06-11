@@ -279,6 +279,31 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(line).to include("(1%)")
     end
 
+    # Rail rubino: the mode chip moved off the prompt into the status bar —
+    # the MODE token leads the line, with the branch / active-skill tokens
+    # after it when set.
+    it "leads with the mode token (the chip moved off the prompt)" do
+      stub_store_with([{ content: "hi" }])
+      line = cmd.send(:build_status_line, status_runner).gsub(/\e\[[0-9;]*m/, "")
+      expect(line).to start_with(" default · ")
+    end
+
+    it "shows the active skill as a `skill <name>` token after the mode" do
+      Rubino::ActiveSkill.set("ruby-expert")
+      stub_store_with([{ content: "hi" }])
+      line = cmd.send(:build_status_line, status_runner).gsub(/\e\[[0-9;]*m/, "")
+      expect(line).to start_with(" default · skill ruby-expert · minimax-m3")
+    ensure
+      Rubino::ActiveSkill.reset!
+    end
+
+    it "shows the branch token after a /branch fork" do
+      cmd.instance_variable_set(:@branch_short_id, "ab12cd")
+      stub_store_with([{ content: "hi" }])
+      line = cmd.send(:build_status_line, status_runner).gsub(/\e\[[0-9;]*m/, "")
+      expect(line).to start_with(" default · branch:ab12cd · ")
+    end
+
     it "prefers the last response's REAL recorded usage over the estimate" do
       # The newest assistant message carries the provider-reported context
       # (input_tokens, persisted by the agent loop) — that wins over chars/4.
@@ -774,12 +799,12 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "commit_queued_prompt echoes <prompt><line> and clears the matching indicator" do
       cmd.instance_variable_set(:@input_from_queue, ["do later"])
       composer = instance_spy(Rubino::UI::BottomComposer)
-      allow(cmd).to receive(:build_prompt).and_return("default ❯ ")
 
       cmd.send(:commit_queued_prompt, composer)
 
       expect(composer).to have_received(:commit_queued).with("do later")
-      expect(composer).to have_received(:print_above).with("default ❯ do later")
+      # The committed echo uses the clean rail-free "❯ " form (Rail rubino).
+      expect(composer).to have_received(:print_above).with("❯ do later")
       expect(cmd.instance_variable_get(:@input_from_queue)).to be_nil
     end
 
@@ -802,9 +827,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "commit_queued_dispatch drops the pending row and echoes the line" do
       cmd.send(:pending_queued) << "/status"
       cmd.instance_variable_set(:@input_from_queue, ["/status"])
-      allow(cmd).to receive(:build_prompt).and_return("default ❯ ")
 
-      expect { cmd.send(:commit_queued_dispatch) }.to output("default ❯ /status\n").to_stdout
+      expect { cmd.send(:commit_queued_dispatch) }.to output("❯ /status\n").to_stdout
 
       expect(cmd.send(:pending_queued)).to eq([])
       expect(cmd.instance_variable_get(:@input_from_queue)).to be_nil
@@ -1630,11 +1654,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
-  # Live readline prompt is agent-composer style — `default ❯ ` — not shell.
-  # Mode is the only live context shown; workspace, git, model, and session
-  # are printed once at startup in run_interactive. The chip uses the canonical
-  # mode name "default" (matching /mode and the transition banner), not the old
-  # second label "general" (F9).
+  # Rail rubino: the prompt is a CONSTANT clean `❯ ` — no mode chip, no
+  # git/workspace context. The mode/branch/skill chips live in the STATUS BAR
+  # (see #build_status_line / UI::StatusBar); the red rail is prepended by the
+  # composer itself, so echoes built from build_prompt stay rail-free.
   describe "#build_prompt" do
     subject(:cmd) { described_class.new({}) }
 
@@ -1646,28 +1669,27 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     def strip_ansi(s) = s.gsub(/\e\[[0-9;]*m/, "")
 
-    it "returns mode + ❯ (no git/workspace context in prompt)" do
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+    it "returns the bare ❯ (no mode chip, no git/workspace context)" do
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     end
 
-    it "in a git checkout: still returns mode + ❯ only" do
+    it "in a git checkout: still the bare ❯ only" do
       system("git init -q -b main && git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init")
       # build_prompt no longer includes git info — that's in the startup banner
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     end
 
-    it "in plan mode: returns plan ❯" do
+    it "stays the bare ❯ in plan/yolo mode (mode rides the status bar)" do
       Rubino::Modes.set(:plan)
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("plan ❯ ")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
+      Rubino::Modes.set(:yolo)
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     ensure
       Rubino::Modes.set(:default)
     end
 
-    it "in yolo mode: returns yolo ❯" do
-      Rubino::Modes.set(:yolo)
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
-    ensure
-      Rubino::Modes.set(:default)
+    it "the composer rail is the red ▍ brand accent" do
+      expect(strip_ansi(cmd.send(:composer_rail))).to eq("▍")
     end
   end
 

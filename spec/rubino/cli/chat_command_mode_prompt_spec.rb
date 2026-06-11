@@ -1,13 +1,15 @@
 # frozen_string_literal: true
 
-# The interactive prompt is agent-composer style — `default ❯ ` — not shell.
-# Mode is the only live context shown; workspace, git, model, and session
-# are printed once at startup in run_interactive. The chip name matches the
-# canonical mode label used by /mode and the transition banner (F9).
+# Rail rubino: the interactive prompt is a CONSTANT clean `❯ ` behind the red
+# rail — the mode is NOT a prompt chip anymore. The mode token (with the
+# branch / active-skill tokens) leads the STATUS BAR under the input (see
+# UI::StatusBar), and Shift+Tab updates that bar LIVE by returning the
+# freshly-built status line to the composer. The token names match the
+# canonical mode labels used by /mode and the transition banner (F9).
 RSpec.describe Rubino::CLI::ChatCommand do
   subject(:cmd) { described_class.new({}) }
 
-  describe "#build_prompt" do
+  describe "#build_prompt (constant clean prompt)" do
     around do |ex|
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) { ex.run }
@@ -16,69 +18,47 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     def strip_ansi(s) = s.gsub(/\e\[[0-9;]*m/, "")
 
-    it "[default] prompt in default mode" do
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
+    it "is the bare ❯ in default mode" do
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     end
 
-    it "[plan] prompt in :plan" do
+    it "stays the bare ❯ in :plan and :yolo (mode rides the status bar)" do
       Rubino::Modes.set(:plan)
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("plan ❯ ")
-    ensure
-      Rubino::Modes.set(:default)
-    end
-
-    it "[yolo] prompt in :yolo" do
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
       Rubino::Modes.set(:yolo)
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     ensure
       Rubino::Modes.set(:default)
     end
 
     it "no git context in prompt (it's in the startup banner)" do
-      Rubino::Modes.set(:yolo)
       system("git init -q -b main && git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init")
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo ❯ ")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     end
 
-    it "appends a dim (skill: <name>) segment when a skill is active" do
+    it "stays the bare ❯ with a skill active (the skill token rides the status bar)" do
       Rubino::ActiveSkill.set("ruby-expert")
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default (skill: ruby-expert) ❯ ")
+      expect(strip_ansi(cmd.send(:build_prompt))).to eq("❯ ")
     ensure
       Rubino::ActiveSkill.reset!
     end
 
-    it "drops the skill segment when no skill is active" do
-      Rubino::ActiveSkill.reset!
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("default ❯ ")
-    end
-
-    it "composes the skill segment alongside a non-default mode" do
-      Rubino::Modes.set(:yolo)
-      Rubino::ActiveSkill.set("react-pro")
-      expect(strip_ansi(cmd.send(:build_prompt))).to eq("yolo (skill: react-pro) ❯ ")
-    ensure
-      Rubino::Modes.set(:default)
-      Rubino::ActiveSkill.reset!
-    end
-
-    it "colours :default dim, :plan cyan, :yolo bold yellow" do
+    it "the composer rail is the red ▍ (the ◆ brand accent), one column wide" do
       pastel = Pastel.new(enabled: true)
       cmd.instance_variable_set(:@pastel, pastel)
+      expect(cmd.send(:composer_rail)).to eq(pastel.red("▍"))
+    end
+  end
 
-      # Check that mode_label produces the right colors
-      Rubino::Modes.set(:default)
-      default_label = cmd.send(:mode_label)
-      expect(default_label).to eq(pastel.dim("default"))
+  # The mode token in the status bar: dim default, plan yellow, yolo red —
+  # the subtle accent that replaced the prompt chip's coloring.
+  describe "status-bar mode token (UI::StatusBar.mode_segment)" do
+    let(:pastel) { Pastel.new(enabled: true) }
 
-      Rubino::Modes.set(:plan)
-      plan_label = cmd.send(:mode_label)
-      expect(plan_label).to eq(pastel.cyan("plan"))
-
-      Rubino::Modes.set(:yolo)
-      yolo_label = cmd.send(:mode_label)
-      expect(yolo_label).to eq(pastel.yellow.bold("yolo"))
-    ensure
-      Rubino::Modes.set(:default)
+    it "colours :default dim, :plan yellow, :yolo red" do
+      expect(Rubino::UI::StatusBar.mode_segment(:default, pastel)).to eq(pastel.dim("default"))
+      expect(Rubino::UI::StatusBar.mode_segment(:plan, pastel)).to eq(pastel.yellow("plan"))
+      expect(Rubino::UI::StatusBar.mode_segment(:yolo, pastel)).to eq(pastel.red("yolo"))
     end
   end
 
@@ -107,13 +87,25 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::Modes.set(:default)
     end
 
-    it "returns the freshly-built prompt chip and prints the transition footer" do
+    it "returns the freshly-built STATUS LINE (live statusbar update) and prints the transition footer" do
       Rubino::Modes.set(:default)
-      out = capture_stdout { @new_prompt = cmd.send(:cycle_mode) }
-      expect(strip_ansi(@new_prompt)).to eq("plan ❯ ")
+      runner = instance_double(Rubino::Agent::Runner)
+      allow(cmd).to receive(:build_status_line).with(runner).and_return(" plan · m3 · ctx ~1k/64k")
+      out = capture_stdout { @status = cmd.send(:cycle_mode, runner) }
+      expect(@status).to eq(" plan · m3 · ctx ~1k/64k")
       # Same `<old> → <new>` arrow grammar as the /mode footer (#78).
       expect(strip_ansi(out))
         .to include("┄ mode default → plan — #{Rubino::Modes.description(:plan)}, shift+tab to cycle ┄")
+    ensure
+      Rubino::Modes.set(:default)
+    end
+
+    it "returns nil (no statusbar update) without a runner, but still cycles" do
+      Rubino::Modes.set(:default)
+      out = capture_stdout { @status = cmd.send(:cycle_mode) }
+      expect(@status).to be_nil
+      expect(Rubino::Modes.current).to eq(:plan)
+      expect(strip_ansi(out)).to include("mode default → plan")
     ensure
       Rubino::Modes.set(:default)
     end
@@ -127,9 +119,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       after { Rubino::Modes.set(:default) }
 
       it "the press that reaches yolo arms + announces instead of switching" do
-        out = capture_stdout { @prompt = cmd.send(:cycle_mode) }
+        out = capture_stdout { @status = cmd.send(:cycle_mode) }
         expect(Rubino::Modes.current).to eq(:plan) # unchanged
-        expect(strip_ansi(@prompt)).to eq("plan ❯ ") # chip unchanged too
+        expect(@status).to be_nil # mode unchanged ⇒ no statusbar repaint
         expect(strip_ansi(out)).to include("yolo skips ALL approvals")
         expect(strip_ansi(out)).to include("press shift+tab again to confirm")
       end
@@ -172,7 +164,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # D2/D3: with a live composer the confirmation is a TRANSIENT toast routed
     # through composer#announce (live region, never committed), NOT print_above.
     # So cycling N times never stacks scrollback banners — each press just
-    # REPLACES the transient line; only the prompt chip reflects the mode.
+    # REPLACES the transient line; only the statusbar's mode token persists.
     it "shows the confirmation via the composer's transient #announce (no committed scrollback)" do
       Rubino::Modes.set(:default)
       composer = instance_double(Rubino::UI::BottomComposer)
