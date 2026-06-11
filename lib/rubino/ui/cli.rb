@@ -423,13 +423,31 @@ module Rubino
 
       # A background subagent reached a terminal state. Mid-turn the one-line
       # summary is STASHED and folded into the turn footer (P4) so two `┄ ┄`
-      # rails never stack at turn end; between turns it renders immediately.
-      def subagent_finished(line, id: nil, status: "done")
+      # rails never stack at turn end (the report still reaches the model via
+      # the InputQueue notice, rendered by #input_injected); between turns the
+      # full lifecycle block renders immediately.
+      def subagent_finished(line, id: nil, status: "done", report: nil)
         if @turn_active && id
-          (@pending_subagent_footers ||= []) << { fold: "#{id} #{status}", line: line }
+          (@pending_subagent_footers ||= []) << { fold: "#{id} #{status}",
+                                                  line: line, status: status, report: report }
         else
-          note(line)
+          subagent_lifecycle(line, status: status, report: report)
         end
+      end
+
+      # ONE lifecycle grammar (P6): the live-card-shaped row
+      # (`▸ sa_e488 · explore · completed · 1 tool · 12s`) — dim; red only on
+      # failure — and the child's FULL report markdown-rendered under its own
+      # `↳ report:` lead (the #139 fold-in treatment), never amputated to a
+      # one-line head.
+      def subagent_lifecycle(line, status: "done", report: nil)
+        $stdout.puts unless @last_block == :gap
+        $stdout.puts(status == "failed" ? @pastel.red(line) : @pastel.dim(line))
+        if report && !report.to_s.strip.empty?
+          $stdout.puts @pastel.dim("  ↳ report:")
+          commit_markdown_block(report)
+        end
+        @last_block = :other
       end
 
       # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
@@ -625,6 +643,11 @@ module Rubino
       # How many trailing lines of the in-flight block stay visible live (#127).
       LIVE_TAIL_ROWS = 3
 
+      # A spawn handle: the verbose model-facing acknowledgement the task tool
+      # returns for a BACKGROUND child. The model needs the whole instruction;
+      # the human only needs "it started".
+      SPAWN_HANDLE_RE = /\AStarted background subagent '([^']+)' as task (\S+?)\.(?:\s|\z)/
+
       # Column budget for markdown rendering: terminal width minus the MD_MARGIN
       # indent applied to every committed line. Headless-safe (falls back to 80).
       #
@@ -754,10 +777,10 @@ module Rubino
         @thinking_indicator = false
         status_stop
         # A completion stashed after the footer printed (or on an interrupted
-        # turn that never got one) must not vanish — flush it as a plain note.
+        # turn that never got one) must not vanish — flush the full block.
         pending = Array(@pending_subagent_footers)
         @pending_subagent_footers = nil
-        pending.each { |p| note(p[:line]) }
+        pending.each { |p| subagent_lifecycle(p[:line], status: p[:status] || "done", report: p[:report]) }
       end
 
       # Shows the status row during the model wait. Mid-turn this only swaps
@@ -1405,19 +1428,40 @@ module Rubino
         paint_live(margined_tail(tail))
       end
 
-      # Prefixes every tail row with MD_MARGIN, pre-clamping each row to the
-      # terminal budget MINUS the margin (and the live region's one spare
-      # column) so the downstream one-row clamp (LiveRegion.clamp to cols - 1)
-      # never has to left-truncate the margin away — an over-long row keeps
-      # its margin and loses its HEAD ("  …tail"), same truncation rule as
-      # every other live row. A blank tail passes through untouched (it just
-      # clears the transient row).
+      # WRAPS the in-flight tail to the terminal width and keeps the last
+      # LIVE_TAIL_ROWS wrapped rows (P12): a long streamed paragraph used to
+      # collapse into ONE head-truncated row ("…the very end of it") because
+      # the raw tail was clamped per LINE, not wrapped. Each visible row
+      # carries the SAME MD_MARGIN the committed lines above it get
+      # (#commit_markdown_block), so the raw in-flight rows sit in the same
+      # column as the rendered block they snap into. A blank tail passes
+      # through untouched (it just clears the transient row).
       def margined_tail(tail)
         text = tail.to_s
         return text if text.empty?
 
         budget = terminal_cols - MD_MARGIN.length - 1
-        text.split("\n", -1).map { |line| "#{MD_MARGIN}#{LiveRegion.clamp(line, budget)}" }.join("\n")
+        rows = text.split("\n", -1).flat_map { |line| wrap_tail_row(line, budget) }
+        rows.last(LIVE_TAIL_ROWS).map { |row| "#{MD_MARGIN}#{row}" }.join("\n")
+      end
+
+      # Splits one raw line into display-width-budgeted rows (wide glyphs are
+      # never split across rows — same measurement the composer/live region
+      # use). An empty line stays one empty row.
+      def wrap_tail_row(line, budget)
+        budget = 1 if budget < 1
+        rows = [+""]
+        width = 0
+        line.each_char do |ch|
+          w = LiveRegion.display_width(ch)
+          if width + w > budget && !rows.last.empty?
+            rows << +""
+            width = 0
+          end
+          rows.last << ch
+          width += w
+        end
+        rows
       end
 
       # Commits any in-progress streaming so the next committed output (the
@@ -1674,14 +1718,21 @@ module Rubino
       # delegation renders the red ✗ variant — consistent with regular tools.
       def delegation_finished(result)
         @activity_open = false
-        sub     = @delegation_subagent || "subagent"
-        summary = truncate_inline(result&.output.to_s.strip, 80)
-        icon, color =
-          if delegation_failed?(result)        then ["✗", :red]
-          elsif delegation_noop?(result)       then ["⊘", :dim]
-          else                                      ["✓", :green]
-          end
-        $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
+        sub    = @delegation_subagent || "subagent"
+        output = (result.respond_to?(:output) ? result.output : result).to_s
+        if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
+          # Background spawn: ONE lifecycle grammar (P6) — the live-card row
+          # shape, dim, no green ✓ (nothing finished yet; it only started).
+          $stdout.puts @pastel.dim("  └ ▸ #{m[2]} · #{m[1]} · started")
+        else
+          summary = truncate_inline(output.strip, 80)
+          icon, color =
+            if delegation_failed?(result)        then ["✗", :red]
+            elsif delegation_noop?(result)       then ["⊘", :dim]
+            else                                      ["✓", :dim] # quiet close — color only on failure (P1)
+            end
+          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
+        end
         @delegation_subagent = nil
         @last_block = :tool
         status_back_to_thinking

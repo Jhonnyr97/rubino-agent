@@ -595,6 +595,12 @@ module Rubino
       # that would overflow the per-row budget wraps whole (wide glyphs are
       # never split across rows). The caret is placed where the NEXT typed char
       # will land.
+      #
+      # Continuation rows (wrap or "\n") carry a HANGING INDENT of the prompt
+      # width (P12): every row's text starts in the same column as the first
+      # row's, instead of dropping flush-left to column 0 under an indented
+      # prompt. The indent is pure layout (spaces on render, width here) —
+      # never buffer content.
       def layout_input
         budget = row_budget
         rows   = [{ chars: [], start: 0, prompt: true }]
@@ -603,13 +609,13 @@ module Rubino
         @buffer.each_char.with_index do |ch, i|
           if ch == "\n"
             rows << { chars: [], start: i + 1, prompt: false }
-            width = 0
+            width = @prompt_width
             next
           end
           w = display_width(ch)
           if width + w > budget
             rows << { chars: [], start: i, prompt: false }
-            width = 0
+            width = @prompt_width
           end
           rows.last[:chars] << ch
           width += w
@@ -625,7 +631,9 @@ module Rubino
       def caret_position(rows)
         idx = rows.rindex { |r| @cursor >= r[:start] } || 0
         row = rows[idx]
-        col = row[:prompt] ? @prompt_width : 0
+        # Every row's text hangs at the prompt width (P12), so the caret
+        # column starts there on continuation rows too.
+        col = @prompt_width
         row[:chars].each_with_index do |ch, j|
           break if row[:start] + j >= @cursor
 
@@ -663,12 +671,14 @@ module Rubino
         end
 
         single = rows.length == 1 && rows.first[:prompt]
+        indent = " " * @prompt_width
         texts = rows.map do |row|
           body = row[:chars].join
           if row[:prompt]
             "#{@prompt}#{single ? highlight_line(body) : body}"
           else
-            body
+            # Hanging indent (P12): continuations align under the text start.
+            "#{indent}#{body}"
           end
         end
         [texts, caret_row, caret_col]
@@ -1125,7 +1135,8 @@ module Rubino
       # split: a column inside it resolves to its start). Clamps to the row's
       # end, and to its start when the column falls inside the prompt prefix.
       def char_index_at(row, col)
-        width = row[:prompt] ? @prompt_width : 0
+        # Continuation rows hang at the prompt width too (P12).
+        width = @prompt_width
         index = row[:start]
         row[:chars].each do |ch|
           w = display_width(ch)

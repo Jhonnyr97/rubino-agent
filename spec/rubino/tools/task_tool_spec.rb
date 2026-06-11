@@ -693,27 +693,37 @@ RSpec.describe Rubino::Tools::TaskTool do
       )
     end
 
+    # P6: the completion line reuses the LIVE-CARD row shape
+    # (`▸ sa_… · explore · completed · 1 tool · 12s`); the report travels
+    # separately and is never amputated into the row.
     describe "background completion line (#completion_summary)" do
-      it "renders ✓ for a genuine completion with output" do
+      it "renders the ▸ lifecycle row for a genuine completion" do
         line = tool.send(:completion_summary, entry, "FOUND: lib/x.rb:42")
-        expect(line).to start_with("✓")
-        expect(line).to include("· done ·")
-        expect(line).not_to include("⊘")
+        expect(line).to start_with("▸ sa_abc123")
+        expect(line).to include("· completed ·")
+        expect(line).not_to include("FOUND") # the report is not amputated into the row
       end
 
-      it "renders a neutral ⊘ no-op (not ✓) when the subagent did nothing / was denied" do
+      it "says no-op (not completed) when the subagent did nothing / was denied" do
         noop = "(subagent 'explore' returned no output)"
         line = tool.send(:completion_summary, entry, noop)
-        expect(line).to start_with("⊘")
         expect(line).to include("· no-op ·")
-        expect(line).not_to start_with("✓")
+        expect(line).not_to include("· completed ·")
       end
 
       it "pluralizes the tool count (1 tool, 3 tools) (#141)" do
         one = tool.send(:completion_summary, entry(tool_count: 1), "ok")
-        expect(one).to include("· 1 tool —")
+        expect(one).to include("· 1 tool")
         many = tool.send(:completion_summary, entry(tool_count: 3), "ok")
-        expect(many).to include("· 3 tools —")
+        expect(many).to include("· 3 tools")
+      end
+
+      it "appends the elapsed time when the entry carries timing" do
+        timed = entry
+        timed.started_at  = Time.now - 12
+        timed.finished_at = Time.now
+        line = tool.send(:completion_summary, timed, "ok")
+        expect(line).to match(/· 12s\z/)
       end
     end
 

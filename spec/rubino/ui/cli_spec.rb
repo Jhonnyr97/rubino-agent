@@ -673,9 +673,23 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("delegato")
     end
 
-    it "renders ✓ when the delegation succeeded" do
+    # P6: a background spawn only STARTED — the close row reuses the live-card
+    # shape, dim, with no green ✓ and none of the verbose spawn-handle sentence.
+    it "renders a quiet '▸ <id> · <name> · started' row for a background spawn (P6)" do
       result = Rubino::Tools::Result.success(
-        name: "task", call_id: "t1", output: "Started background subagent 'explore' as task sa_1."
+        name: "task", call_id: "t1",
+        output: "Started background subagent 'explore' as task sa_1. " \
+                "It is running now — keep working on other things."
+      )
+      out = render_delegation(result)
+      expect(out).to include("└ ▸ sa_1 · explore · started")
+      expect(out).not_to include("✓")
+      expect(out).not_to include("It is running now")
+    end
+
+    it "renders ✓ when a synchronous delegation succeeded" do
+      result = Rubino::Tools::Result.success(
+        name: "task", call_id: "t1", output: "FOUND: lib/x.rb:42"
       )
       out = render_delegation(result)
       expect(out).to include("✓ explore")
@@ -958,6 +972,66 @@ RSpec.describe Rubino::UI::CLI do
         ui.tool_finished("shell", result: nil)
       end
       expect(out).not_to match(/\e\[31m.*- something/)
+    end
+  end
+
+  # P6: one lifecycle grammar — terminal-state events reuse the live-card row
+  # shape, and the child's report renders WHOLE (markdown) under `↳ report:`.
+  describe "#subagent_finished lifecycle rendering (P6)" do
+    it "renders the dim ▸ row plus the FULL report, markdown-rendered" do
+      report = "## Findings\n\n- first\n- second\n\nA much longer closing paragraph of the report."
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
+                             id: "sa_e488", status: "done", report: report)
+      end
+      expect(out).to include("▸ sa_e488 · explore · completed · 1 tool · 12s")
+      expect(out).to include("↳ report:")
+      expect(out).to include("Findings")
+      expect(out).to include("closing paragraph of the report.") # not amputated
+      expect(out).not_to include("##") # markdown-rendered, not raw
+    end
+
+    it "renders a failed lifecycle row in red" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_e488 · explore · failed: boom", id: "sa_e488", status: "failed")
+      end
+      expect(out).to include("\e[31m")
+    end
+
+    it "skips the report block when there is none" do
+      out = capture_stdout do
+        ui.subagent_finished("▸ sa_1 · explore · no-op · 0 tools", id: "sa_1", status: "no-op")
+      end
+      expect(out).not_to include("↳ report:")
+    end
+  end
+
+  # P12: the live tail WRAPS the in-flight block to the terminal width and
+  # shows the last LIVE_TAIL_ROWS wrapped rows — a long streamed paragraph
+  # must not collapse into one head-truncated row.
+  describe "#margined_tail wrapping (P12)" do
+    it "wraps one long raw line into width-budgeted rows and keeps the last 3" do
+      allow(ui).to receive(:terminal_cols).and_return(23) # budget = 23 - 2 - 1 = 20
+      tail = ("abcdefghij" * 7) # 70 chars -> 4 wrapped rows of 20/20/20/10
+      rows = ui.send(:margined_tail, tail).split("\n")
+      expect(rows.length).to eq(3)
+      expect(rows).to all(start_with("  "))
+      expect(rows.last).to end_with("abcdefghij")
+      expect(rows.map { |r| r.delete_prefix("  ") }.join).to eq(tail[-50..]) # the wrapped TAIL, no head-truncation ellipsis
+      expect(rows.join).not_to include("…")
+    end
+
+    it "keeps short multi-line tails as-is, one margined row per line" do
+      allow(ui).to receive(:terminal_cols).and_return(80)
+      out = ui.send(:margined_tail, "one\ntwo\nthree")
+      expect(out).to eq("  one\n  two\n  three")
+    end
+
+    it "wraps wide glyphs by display width, never splitting one across rows" do
+      allow(ui).to receive(:terminal_cols).and_return(9) # budget = 6
+      rows = ui.send(:margined_tail, "中中中中").split("\n") # width 8 -> 6 + 2
+      expect(rows.map { |r| r.delete_prefix("  ") }).to eq(%w[中中中 中])
     end
   end
 
