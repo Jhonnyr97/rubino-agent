@@ -29,18 +29,22 @@ RSpec.describe Rubino::Session::Exporter do
     expect(markdown).to match(/## User\n\nfirst question\n.*## Assistant\n\nfirst answer/m)
   end
 
+  # The shape the LIVE streaming path persists (#216): the assistant tool-use
+  # turn carries NO tool_calls metadata; the call arguments ride the separate
+  # `tool`-role result row, which is where the exporter reconstructs the call
+  # one-liner from.
   it "renders tool calls and results as one-liners" do
-    store.create(session_id: session[:id], role: "assistant", content: "",
-                 metadata: { tool_calls: [{ id: "c1", name: "shell", arguments: { command: "ls" } }] })
-    store.create(session_id: session[:id], role: "tool", content: "a.txt", tool_name: "shell")
+    store.create(session_id: session[:id], role: "assistant", content: "")
+    store.create(session_id: session[:id], role: "tool", content: "a.txt", tool_name: "shell",
+                 metadata: { arguments: { command: "ls" } })
 
     expect(markdown).to include('- tool call: `shell` `{"command":"ls"}`')
     expect(markdown).to include("- tool result: `shell` (5 chars)")
   end
 
   it "truncates long tool-call arguments" do
-    store.create(session_id: session[:id], role: "assistant", content: "",
-                 metadata: { tool_calls: [{ id: "c1", name: "write", arguments: { content: "y" * 500 } }] })
+    store.create(session_id: session[:id], role: "tool", content: "ok", tool_name: "write",
+                 metadata: { arguments: { content: "y" * 500 } })
 
     line = markdown.lines.find { |l| l.include?("tool call") }
     expect(line).to include("…")

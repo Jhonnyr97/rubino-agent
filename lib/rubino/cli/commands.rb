@@ -51,6 +51,54 @@ module Rubino
         super
       end
 
+      # Wrap subcommand help so `chat --help` / `prompt --help` stay within 80
+      # columns (#217). Thor's stock #print_options lays the flags and their
+      # descriptions out in a 2-column table padded to the WIDEST flag — and the
+      # boolean variants (`[--no-x], [--skip-x]`) push that column past 60, so
+      # every description row overflowed 80 (the longest hit 137) with no
+      # wrapping. Render each option as its flag line followed by the
+      # description wrapped + indented on its own line(s) instead: bounded by
+      # construction, and it reads cleaner than the ragged padded table.
+      HELP_WRAP_COLUMNS = 80
+      HELP_DESC_INDENT  = 6
+
+      def self.print_options(shell, options, group_name = nil)
+        return if options.empty?
+
+        shell.say(group_name ? "#{group_name} options:" : "Options:")
+        options.reject(&:hide).each do |option|
+          shell.say("  #{option.usage(0)}")
+          next unless option.description
+
+          wrap_help_description(option.description).each { |line| shell.say(line) }
+        end
+        shell.say ""
+      end
+
+      # Greedy word-wrap of a flag description to HELP_WRAP_COLUMNS, each line
+      # indented HELP_DESC_INDENT. Wrapped here (not via Thor's print_wrapped)
+      # so the bound is the fixed 80 the spec checks, not the live terminal
+      # width. A single word longer than the budget is emitted on its own line
+      # rather than dropped.
+      def self.wrap_help_description(description)
+        indent = " " * HELP_DESC_INDENT
+        budget = HELP_WRAP_COLUMNS - HELP_DESC_INDENT
+        lines  = []
+        line   = +""
+        description.to_s.split(/\s+/).each do |word|
+          if line.empty?
+            line << word
+          elsif line.length + 1 + word.length <= budget
+            line << " " << word
+          else
+            lines << (indent + line)
+            line = +word
+          end
+        end
+        lines << (indent + line) unless line.empty?
+        lines
+      end
+
       desc "setup", "Initialize rubino configuration and database"
       def setup
         SetupCommand.new.execute

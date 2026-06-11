@@ -25,6 +25,37 @@ RSpec.describe Rubino::CLI::Commands do
     end
   end
 
+  # #217: the SUBCOMMAND help screens (`chat --help` / `prompt --help`) overflowed
+  # 80 columns — Thor pads the flag column to the widest flag (the boolean
+  # `[--no-x], [--skip-x]` variants run past 60) and appends the description with
+  # no wrapping, so even short descriptions ran past 80 (the longest hit 137).
+  # #print_options is overridden to put each description on its own wrapped,
+  # indented line, bounded to 80.
+  describe "subcommand help width (#217)" do
+    %w[chat prompt].each do |cmd|
+      it "keeps every `#{cmd} --help` line within 80 columns" do
+        out = capture_help(cmd)
+        long = out.lines.map(&:chomp).select { |l| l.length > 80 }
+        expect(long).to be_empty,
+                        "#{cmd} --help overflows 80 cols: #{long.map { |l| "#{l.length}: #{l.inspect}" }.join("\n")}"
+      end
+    end
+
+    def capture_help(cmd)
+      original = $stdout
+      buffer   = StringIO.new
+      $stdout  = buffer
+      begin
+        Rubino::CLI::Commands.start([cmd, "--help"])
+      rescue SystemExit
+        nil
+      ensure
+        $stdout = original
+      end
+      buffer.string
+    end
+  end
+
   # #134: `rubino chat --help` / `rubino prompt --help` used to treat the flag
   # as the positional prompt and start a REAL agent run — provider tokens
   # spent, memory facts persisted, no help text. The dispatch boundary must
