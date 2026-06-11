@@ -73,6 +73,13 @@ module Rubino
         @approval_cache     = approval_cache || Rubino::Run::SessionApprovalCache.instance
       end
 
+      # The attention notifier (terminal bell + optional command hook).
+      # Public so the background-task plumbing can ring it when a child
+      # parks on an approval (TaskTool#approval_handler_for).
+      def notifier
+        @notifier ||= Notifier.new
+      end
+
       # Renders a table, degrading to a readable vertical card layout when the
       # full grid would overflow a narrow terminal (#84). The card layout uses
       # FULL field labels (no `Cre…`/`Sta…` truncation — each label sits alone
@@ -225,6 +232,10 @@ module Rubino
         # when approval is requested. #finalize_stream commits the tail and
         # clears the indicator, mirroring a normal stream_end.
         finalize_stream
+
+        # Attention: the run is now parked on a human decision — ring the
+        # bell/hook so an approval can't sit unseen behind a quiet terminal.
+        notifier.needs_approval(question.to_s)
 
         # ⚠ is the attention glyph (P7): ◆ belongs to the animated status row.
         rule = derive_rule(tool, command, pattern_key)
@@ -473,6 +484,9 @@ module Rubino
         $stdout.puts @pastel.dim("   everything it needs is paused until you answer — #{ask_timeout_hint}")
         $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
         $stdout.flush
+        # The ⛔ state is the loudest one — the whole subtree is parked on the
+        # human — so it also rings the attention bell/hook.
+        notifier.blocked("#{id} (#{subagent}) is waiting on your answer")
       end
 
       # The honest bound for the ⛔ banner: a blocking ask_parent waits at most
@@ -818,6 +832,7 @@ module Rubino
       # Marks the end of a TURN (normal completion, error, or interrupt): the
       # one place the turn-scoped ticker thread is allowed to die.
       def turn_finished
+        elapsed = @turn_active && @turn_started_at ? monotonic_now - @turn_started_at : nil
         @turn_active = false
         @thinking_indicator = false
         status_stop
@@ -828,6 +843,10 @@ module Rubino
         pending.each do |p|
           subagent_lifecycle(p[:line], status: p[:status] || "done", report: p[:report], id: p[:id])
         end
+        # Attention signal LAST, with the footer already committed: a LONG
+        # turn rings the bell/hook so a human who looked away comes back;
+        # quick turns stay silent (the notifier's min_turn_seconds gate).
+        notifier.turn_finished(elapsed) if elapsed
       end
 
       # Shows the status row during the model wait. Mid-turn this only swaps

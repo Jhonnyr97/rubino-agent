@@ -86,6 +86,27 @@ module Rubino
         value.positive? ? value : UI::BottomComposer::MAX_INPUT_ROWS
       end
 
+      # -- Notifications section (UI::Notifier: attention bell + hook) --
+      # enabled/bell are on unless explicitly false; command is nil unless a
+      # non-empty string is set; min_turn_seconds falls back to the default.
+      def notifications_enabled?
+        dig("notifications", "enabled") != false
+      end
+
+      def notifications_bell?
+        dig("notifications", "bell") != false
+      end
+
+      def notifications_command
+        value = dig("notifications", "command").to_s
+        value.empty? ? nil : value
+      end
+
+      def notifications_min_turn_seconds
+        value = dig("notifications", "min_turn_seconds")
+        (value.nil? ? Defaults.dig("notifications", "min_turn_seconds") : value).to_f
+      end
+
       # -- Streaming section --
       def streaming_enabled?
         dig("streaming", "enabled") == true

@@ -877,6 +877,54 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # Attention notifications: the UI seams ring the Notifier (bell/command
+  # hook) exactly when the human is needed — turn end (long turns only, the
+  # notifier's own min_turn_seconds gate), an approval prompt parking the run,
+  # a ⛔ blocked subagent.
+  describe "attention notification seams" do
+    let(:notifier) { instance_spy(Rubino::UI::Notifier) }
+
+    before { ui.instance_variable_set(:@notifier, notifier) }
+
+    it "reports the turn's elapsed seconds to the notifier on turn end" do
+      capture_stdout do
+        ui.turn_started
+        ui.instance_variable_set(
+          :@turn_started_at,
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) - 42
+        )
+        ui.turn_finished
+      end
+      expect(notifier).to have_received(:turn_finished) do |elapsed|
+        expect(elapsed).to be_within(2).of(42)
+      end
+    end
+
+    it "does not notify a turn_finished without a turn bracket" do
+      capture_stdout { ui.turn_finished }
+      expect(notifier).not_to have_received(:turn_finished)
+    end
+
+    it "rings needs_approval when the approval card parks the run on the human" do
+      allow(ui).to receive(:approval_choice).and_return(:no)
+      capture_stdout do
+        ui.confirm("shell wants to run: rm -rf build", scope: "shell:rm -rf build", tool: "shell")
+      end
+      expect(notifier).to have_received(:needs_approval).with("shell wants to run: rm -rf build")
+    end
+
+    it "does NOT ring for an approval short-circuited by the session cache" do
+      allow(ui).to receive(:approval_cached?).and_return(true)
+      capture_stdout { ui.confirm("shell wants to run: ls", scope: "shell:ls", tool: "shell") }
+      expect(notifier).not_to have_received(:needs_approval)
+    end
+
+    it "rings blocked when the ⛔ ask_parent banner surfaces" do
+      capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
+      expect(notifier).to have_received(:blocked).with("sa_1 (general) is waiting on your answer")
+    end
+  end
+
   # #84: a table that overflows a narrow terminal degrades to a readable
   # vertical card layout — full field labels, identifying field first, and a
   # rule between records — instead of an overflowing grid.
