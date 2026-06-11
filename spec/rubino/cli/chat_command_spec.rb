@@ -1076,6 +1076,45 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # The paste pipeline's message-build seam: run_turn expands each
+  # "[Pasted text #N +M lines]" placeholder the composer inserted into the
+  # MODEL-FACING prompt (full body for tier 1, the paste_N.txt read-tool
+  # pointer for tier 2) right before runner.run — after the echoes, so the
+  # transcript keeps the compact placeholder.
+  describe "#run_turn — paste placeholder expansion" do
+    let(:runner) { instance_double(Rubino::Agent::Runner) }
+    let(:ui)     { Rubino::UI::Null.new }
+    let(:cmd)    { described_class.new({}) }
+
+    it "hands the model the FULL pasted body for a tier-1 placeholder" do
+      body  = Array.new(50) { |i| "line #{i + 1}" }.join("\n")
+      token = cmd.send(:paste_store).register(body)
+      allow(runner).to receive(:run).and_return("ok")
+
+      cmd.send(:run_turn, runner, "quote #{token} please", ui)
+
+      expect(runner).to have_received(:run)
+        .with("quote #{body} please", image_paths: [], input_queue: nil)
+    end
+
+    it "hands the model the read-tool pointer for a tier-2 overflowed paste" do
+      body  = Array.new(10_000) { |i| "overflow line #{i + 1}" }.join("\n") # ≫ 8k tokens
+      token = cmd.send(:paste_store).register(body)
+      allow(runner).to receive(:run).and_return("ok")
+
+      cmd.send(:run_turn, runner, token, ui)
+
+      expect(runner).to have_received(:run) do |prompt, **_kw|
+        expect(prompt).to include("saved to")
+        expect(prompt).to include("paste_1.txt")
+        expect(prompt).to include("read it with the read tool")
+        expect(prompt).not_to include("overflow line 42")
+        path = prompt[/saved to (\S+)/, 1]
+        expect(File.read(path)).to eq(body)
+      end
+    end
+  end
+
   # Steering — "talk to the agent while it works". A background reader keeps
   # accepting keystrokes while a turn runs; completed lines are parked in an
   # InputQueue and become the NEXT prompt at the turn boundary (never injected

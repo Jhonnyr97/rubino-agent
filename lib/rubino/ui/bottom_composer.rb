@@ -143,11 +143,18 @@ module Rubino
       #   at turn boundaries via {#set_status} — never per-delta.
       # @param max_input_rows [Integer, nil] cap on the input block's visual
       #   rows (config display.input_max_rows); nil ⇒ MAX_INPUT_ROWS.
+      # @param paste_store [UI::PasteStore, nil] the per-session paste store
+      #   behind the file-backed paste pipeline: a large paste collapses to a
+      #   "[Pasted text #N +M lines]" placeholder registered here (expanded to
+      #   the full body at the chat loop's message-build seam), and backspace
+      #   on a placeholder deletes it WHOLE. Shared across the per-turn
+      #   composers by the chat command, like +pending_queued+. nil ⇒ every
+      #   paste inlines into the buffer (standalone / tests), as before.
       def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
                      rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
-                     status_line: nil, max_input_rows: nil)
+                     status_line: nil, max_input_rows: nil, paste_store: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -155,6 +162,9 @@ module Rubino
         @on_mode_cycle = on_mode_cycle
         @echo          = echo
         @on_interrupt  = on_interrupt
+        # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
+        # pastes, the exact legacy behavior.
+        @paste_store   = paste_store
         # Shared (or private) stack of EXPLICITLY-queued messages, rendered as
         # "⏳ queued: <msg>" rows above the input while pending.
         @queued = QueuedIndicators.new(pending_queued || [])
@@ -1006,14 +1016,23 @@ module Rubino
         end
       end
 
-      # Backspace: remove the char before the cursor.
+      # Backspace: remove the char before the cursor — or, when that char is
+      # inside a registered "[Pasted text #N …]" placeholder, remove the WHOLE
+      # token (a half-eaten placeholder would neither read nor expand). Only
+      # store-registered spans get the whole-token treatment; lookalike text
+      # the user typed deletes char-by-char as usual.
       def delete_back
         @render.synchronize do
           if @cursor.positive?
             chars = @buffer.chars
-            chars.delete_at(@cursor - 1)
+            if (span = @paste_store&.placeholder_span(@buffer, @cursor))
+              chars.slice!(span[0], span[1])
+              @cursor = span[0]
+            else
+              chars.delete_at(@cursor - 1)
+              @cursor -= 1
+            end
             @buffer.replace(chars.join)
-            @cursor -= 1
           end
           @history.reset!
           auto_update_menu
@@ -1254,13 +1273,26 @@ module Rubino
       # line structure intact, #57); each newline renders as a real row break
       # in the multi-row input block (which supersedes the old single-row
       # ⏎-mark view), so pasted code reads back as the rows it is.
+      #
+      # A LARGE paste (more lines than paste.collapse_lines, default 5) does
+      # not flood the buffer: it is registered in the per-session PasteStore
+      # and a single "[Pasted text #N +M lines]" placeholder is inserted
+      # instead — one editable token, deleted whole by backspace (see
+      # #delete_back) and expanded to the full body at the chat loop's
+      # message-build seam, so the model sees everything while the input and
+      # the transcript echo stay one line. With no store wired (standalone /
+      # tests) every paste inlines exactly as before.
       def submit_paste(text)
         return if text.nil? || text.empty?
 
         body = normalize_paste_newlines(text)
         return if body.empty?
 
-        insert(body) # at the cursor, like fast typing
+        if @paste_store&.collapse?(body)
+          insert(@paste_store.register(body))
+        else
+          insert(body) # at the cursor, like fast typing
+        end
       end
 
       # Normalize a pasted body's line endings to "\n" (terminals deliver CR

@@ -179,10 +179,14 @@ module Rubino
 
       # Subtly colorize a leading /command or @mention token (cyan). Plain text
       # and non-strings are returned unchanged. Matches LineInput#highlight_line.
+      # A "[Pasted text #N +M lines]" paste placeholder (UI::PasteStore) glows
+      # the same way wherever it sits in the line, so the user can SEE it is a
+      # token that expands at send, not literal text.
       def highlight_line(line)
         return line unless line.is_a?(String)
 
         line.sub(TRIGGER_TOKEN) { @pastel.cyan(Regexp.last_match(1)) }
+            .gsub(PasteStore::TOKEN_RE) { |token| @pastel.cyan(token) }
       end
 
       private

@@ -294,5 +294,10 @@ RSpec.describe Rubino::UI::CompletionSource do
     it "returns non-string input untouched" do
       expect(source.highlight_line(nil)).to be_nil
     end
+
+    it "colorizes a paste placeholder wherever it sits in the line" do
+      expect(source.highlight_line("see [Pasted text #1 +50 lines] ok"))
+        .to eq("see \e[36m[Pasted text #1 +50 lines]\e[0m ok")
+    end
   end
 end
