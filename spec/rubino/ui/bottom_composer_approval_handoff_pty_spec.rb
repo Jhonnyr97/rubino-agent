@@ -3,28 +3,29 @@
 require "pty"
 require "io/console"
 
-# Regression spec for #80: the interactive approval menu must receive the user's
-# VERY FIRST arrow keystroke when the bottom composer hands $stdin over to it.
-#
-# The bug: BottomComposer's raw reader thread was blocked in a bare +getc+ and
-# torn down with +Thread#kill+. A key byte that arrived during the handoff could
-# be returned by that dying +getc+ (and swallowed into the composer draft) before
-# the kill landed and before TTY::Prompt took over $stdin — so the menu never saw
-# the first keystroke. Navigation then landed one item short, which on the
-# destructive-command gate could turn an intended DENY into an APPROVE.
-#
-# This drives the REAL seam end to end inside a PTY: a started composer, then
+# HAPPY-PATH end-to-end spec for the composer -> TTY::Prompt approval handoff
+# inside a real PTY: a started composer with a typed draft, then
 # +BottomComposer.run_in_terminal { TTY::Prompt#select }+ — exactly the wrapper
-# CLI#approval_choice uses. We pre-load the arrow-down bytes into the PTY so they
-# are buffered at the OS level at the instant of handoff (the precise condition
-# that triggered the race), send N downs + Enter, and assert the menu selected
-# the Nth item below the default — i.e. NOT one short. On the pre-fix code the
-# first ESC byte was eaten by the dying reader and the selection landed on item
-# N-1; with the self-pipe stop the reader exits without a +getc+, leaving every
-# byte for the menu.
+# CLI#approval_choice uses. It asserts the steady-state contract: once the menu
+# owns $stdin, every keystroke reaches the menu (selection lands on the Nth
+# item, never one short) and the composer draft survives suspend/resume.
+#
+# This spec is NOT the regression guard for the #80 reader-teardown race (a
+# byte in flight while the raw reader is torn down being swallowed by the dying
+# +getc+). That window is a few MICROSECONDS inside #stop_reader and cannot be
+# hit by externally-timed PTY input — measured while closing issue #10:
+#   - a byte written the instant the harness reaches the handoff (marker
+#     printed right before run_in_terminal) lands AFTER the reader is already
+#     gone, even on pre-fix kill-based code (20/20 survivals on a revert);
+#   - a byte written atomically WITH the triggering Enter is consumed by the
+#     still-running reader before suspend on FIXED code too (19/20 eaten) —
+#     that is the separate pre-prompt type-ahead window of #10 pt 2, not #80.
+# The deterministic #80 guard is the unit spec in bottom_composer_spec.rb
+# ("reader teardown handoff (#80)"), which forces the both-ready select wake
+# and a scheduled reader at the seam.
 #
 # Skips gracefully when no PTY/TTY is available, per the no-manual-E2E rule.
-RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
+RSpec.describe "BottomComposer approval-menu handoff PTY (happy path — NOT the #80 race guard)" do
   DOWN = "\e[B" # CSI cursor-down — one arrow-down keystroke
 
   def pty_available?
@@ -39,9 +40,8 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
 
   # Run a started composer, then open a TTY::Prompt select through
   # run_in_terminal (the real approval wrapper) and print the chosen value as a
-  # SELECTED= marker. +downs+ arrow-down keystrokes are buffered into the PTY
-  # BEFORE the select starts so they are pending at the handoff — the race
-  # condition that dropped the first key.
+  # SELECTED= marker. The +downs+ arrow-down keystrokes are sent once the menu
+  # banner is on screen — the steady state a real user reacts to.
   def select_after_downs(downs)
     require "tmpdir"
     harness = <<~RUBY
@@ -58,11 +58,10 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
       prompt = TTY::Prompt.new
       choice = Rubino::UI::BottomComposer.run_in_terminal do
         # The composer is now suspended (its raw reader stopped + joined) and the
-        # menu owns stdin — exactly the on-screen state a real user reacts to. The
-        # menu's own "arrow to move" banner is the driver's cue to start typing,
-        # so the first arrow lands AFTER the handoff. The only thing that could
-        # still drop it is the reader-teardown race (#80): a byte in flight when
-        # the reader was torn down. The self-pipe stop closes that window.
+        # menu owns stdin — exactly the on-screen state a real user reacts to.
+        # The menu's own "arrow to move" banner is the driver's cue to start
+        # typing, so every key lands AFTER the handoff completed (see the file
+        # header: this deliberately does NOT race the reader teardown).
         prompt.select("approve?", cycle: false) do |menu|
           menu.choice "yes, once",            :once
           menu.choice "always, this command", :always_command
@@ -95,10 +94,10 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
 
         # Wait until the MENU itself is on screen (its "arrow to move" banner) —
         # i.e. the composer is already suspended and the menu owns stdin, the
-        # exact moment a real user starts pressing keys. Then push the arrows; the
-        # first one must not be dropped by the reader-teardown race (#80). Each
-        # arrow is sent with a small gap so the menu redraws between keys, matching
-        # the issue's repro (which dropped only the FIRST key, at any gap).
+        # exact moment a real user starts pressing keys. Each arrow is sent with
+        # a small gap so the menu redraws between keys. NOTE: because we wait
+        # for the banner, the reader teardown is long finished — this exercises
+        # the happy path only, never the #80 window (see the file header).
         read_until(master, "arrow to move")
         downs.times do
           master.write(DOWN)
@@ -151,15 +150,15 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
 
   before { skip "no PTY/TTY available in this environment" unless pty_available? }
 
-  it "lands on the Nth item (first arrow not dropped) — three downs reach the deny option" do
+  it "delivers every post-handoff key to the menu — three downs reach the deny option" do
     out = select_after_downs(3)
     # From the default :once, three downs must reach the 4th item: :no (deny).
-    # The pre-fix off-by-one landed on :always_tool (an APPROVE) — the safety bug.
+    # Landing one short (:always_tool, an APPROVE) would be the safety failure.
     expect(out).to include("SELECTED=no")
     expect(out).not_to include("SELECTED=always_tool")
   end
 
-  it "lands on the Nth item for a single down (first arrow moves the highlight)" do
+  it "delivers a single post-handoff down to the menu (highlight moves off the default)" do
     out = select_after_downs(1)
     # One down from :once must reach :always_command, not stay on :once.
     expect(out).to include("SELECTED=always_command")
