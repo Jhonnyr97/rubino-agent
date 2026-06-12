@@ -38,8 +38,11 @@ module Rubino
       # #record_tool_started / #record_tool_finished) under the registry mutex
       # and read by the parent renderer (UI::SubagentCards) and
       # the /agents drill-in. activity_log is a bounded ring of the last few
-      # `✓ verb · hint` lines for the live drill-in; nothing is persisted (it
-      # dies with the process, like the rest of the registry).
+      # `✓ verb · hint` lines for the live drill-in; output_tail is the bounded
+      # line buffer of the CURRENTLY RUNNING tool's streamed output (fed by
+      # #record_tool_output, wiped at #record_tool_finished) that the drill-in's
+      # output: block tails (#5). Nothing is persisted (it dies with the
+      # process, like the rest of the registry).
       #
       # approval_gate / approval_question / approval_command are the
       # Option-2 approval-surfacing state: when a background child's tool needs
@@ -49,7 +52,7 @@ module Rubino
       Entry = Struct.new(
         :id, :subagent, :prompt, :status, :result, :error,
         :thread, :runner, :started_at, :finished_at,
-        :last_activity, :tool_count, :activity_log,
+        :last_activity, :tool_count, :activity_log, :output_tail,
         :approval_gate, :approval_id, :approval_question, :approval_command,
         # Parent->child steer (the `/agents <id> steer "..."` note). Wired into
         # the child Loop as its Interaction::InputQueue (the SAME turn-boundary
@@ -93,6 +96,13 @@ module Rubino
 
       # How many recent activity lines the drill-in shows (the live `recent:` ring).
       ACTIVITY_LOG_MAX = 6
+
+      # Bounds for the live output tail (#5): how many COMPLETE lines the
+      # drill-in's output: block shows (the buffer keeps one extra slot for the
+      # in-flight partial line), and the byte cap per buffered line so a
+      # newline-free stream can't grow a line unbounded.
+      OUTPUT_TAIL_MAX      = 6
+      OUTPUT_TAIL_LINE_MAX = 200
 
       class << self
         def instance
@@ -219,7 +229,8 @@ module Rubino
       # Records a child tool FINISHING: appends a terse line to the bounded
       # activity ring the live drill-in (#71) tails. Keeps the last
       # ACTIVITY_LOG_MAX entries so the ring never grows unbounded for a
-      # read-heavy child.
+      # read-heavy child. Also wipes the live output tail — it belongs to the
+      # tool that just finished, so the drill-in's output: block clears (#5).
       def record_tool_finished(id, line)
         @mutex.synchronize do
           entry = @entries[id]
@@ -228,6 +239,26 @@ module Rubino
           log = (entry.activity_log ||= [])
           log << line.to_s
           log.shift while log.size > ACTIVITY_LOG_MAX
+          entry.output_tail = nil
+        end
+      end
+
+      # Records a streamed chunk of the CURRENTLY RUNNING tool's output (#5):
+      # splits on newlines into a bounded line buffer whose LAST slot carries
+      # the in-flight partial line, so the /agents drill-in can tail it live.
+      # Called from UI::SubagentView#tool_chunk on the CHILD thread, so it MUST
+      # take the mutex like the other record_* writers. No-op for an unknown id.
+      def record_tool_output(id, chunk)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return unless entry
+
+          tail = (entry.output_tail ||= [""])
+          chunk.to_s.each_line do |line|
+            tail[-1] = "#{tail[-1]}#{line.chomp}"[0, OUTPUT_TAIL_LINE_MAX]
+            tail << "" if line.end_with?("\n")
+          end
+          tail.shift while tail.size > OUTPUT_TAIL_MAX + 1
         end
       end
 

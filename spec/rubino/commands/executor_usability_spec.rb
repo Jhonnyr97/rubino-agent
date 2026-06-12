@@ -527,6 +527,37 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(text).to include("grep current_user") # the live last_activity ● line
     end
 
+    # #5: while the running tool streams, the drill-in frame grows an output:
+    # block tailing the registry's output_tail (fed by the child's tool_chunk),
+    # each line behind a │ gutter; with no mid-run output the block is absent.
+    it "drills in with a live output: tail of the currently running tool (#5)" do
+      e = reg.reserve(subagent: "explore", prompt: "run the long script")
+      reg.record_tool_started(e.id, "shell for i in $(seq 1 20)…")
+      reg.record_tool_output(e.id, "line 1\nline 2\npart")
+      exec.try_execute("/agents #{e.id}")
+      text = info_lines.join("\n")
+      expect(text).to include("output:")
+      expect(text).to include("│ line 1")
+      expect(text).to include("│ line 2")
+      expect(text).to include("│ part") # the in-flight partial line shows too
+    end
+
+    it "omits the output: block when the running tool has produced none (#5)" do
+      e = reg.reserve(subagent: "explore", prompt: "do a thing")
+      reg.record_tool_started(e.id, "read lib/foo.rb")
+      exec.try_execute("/agents #{e.id}")
+      expect(info_lines.join("\n")).not_to include("output:")
+    end
+
+    it "clears the output: block once the tool finishes (#5)" do
+      e = reg.reserve(subagent: "explore", prompt: "do a thing")
+      reg.record_tool_started(e.id, "shell seq 3")
+      reg.record_tool_output(e.id, "1\n2\n3\n")
+      reg.record_tool_finished(e.id, "✓ shell · 3 lines")
+      exec.try_execute("/agents #{e.id}")
+      expect(info_lines.join("\n")).not_to include("output:")
+    end
+
     # #14: for finished tasks the label slice must keep the TAIL — concurrent
     # similarly-phrased delegations differ in their trailing path/arg, and a
     # head-only cut rendered them as identical rows.

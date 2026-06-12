@@ -70,6 +70,11 @@ RSpec.describe Rubino::UI::SubagentView do
       ui.body("raw body")
       expect(io.string).to eq("")
     end
+
+    it "keeps tool_chunk quiet in legacy mode (no entry to feed, no row)" do
+      ui.tool_chunk("shell", "line 1\n")
+      expect(io.string).to eq("")
+    end
   end
 
   describe "low-noise annotations" do
@@ -139,6 +144,21 @@ RSpec.describe Rubino::UI::SubagentView do
       card_view.tool_finished("grep", result: result)
       expect(registry.find(entry.id).activity_log.last).to include("✓ grep · 3 matches")
       expect(io.string).to eq("")
+    end
+
+    it "feeds tool_chunk into the entry's output tail without repainting the cards (#5)" do
+      card_view.tool_chunk("shell", "line 1\nline 2\n")
+      expect(registry.find(entry.id).output_tail).to eq(["line 1", "line 2", ""])
+      # Registry-only: no terminal row, and NO per-chunk card repaint (a chatty
+      # shell would flood) — only the /agents watch drill-in reads the tail.
+      expect(io.string).to eq("")
+      expect(repaints).to be_empty
+    end
+
+    it "tool_finished clears the output tail (the watch output: block empties)" do
+      card_view.tool_chunk("shell", "line 1\n")
+      card_view.tool_finished("shell", result: nil)
+      expect(registry.find(entry.id).output_tail).to be_nil
     end
 
     it "folds note/status/info away in card mode (no nested rows)" do
