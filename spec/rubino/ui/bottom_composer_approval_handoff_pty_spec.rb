@@ -132,11 +132,16 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (#80)" do
 
   def read_to_eof(master)
     buf = (+"").force_encoding(Encoding::UTF_8)
+    # Same discipline as the scroll spec (issue #236): wait for the child's
+    # actual EOF/EIO rather than breaking on a 0.5s quiet window, which races
+    # the child's post-selection output under load. Deadline = hung-child net.
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
     loop do
       chunk = master.read_nonblock(4096)
       buf << chunk.force_encoding(Encoding::UTF_8)
     rescue IO::WaitReadable
-      IO.select([master], nil, nil, 0.5) or break
+      break if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      IO.select([master], nil, nil, 0.5)
       next
     rescue Errno::EIO, EOFError
       break
