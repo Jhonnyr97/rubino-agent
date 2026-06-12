@@ -1616,6 +1616,16 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
 
       composer.start
+      # Let the reader actually RUN before tearing it down. On the fixed reader
+      # the stubbed both-ready select returns at once and the thread exits (not
+      # alive); on a kill-based bare-getc reader (the #80 bug) the thread
+      # reaches its read, consumes the pending byte right here, and then blocks
+      # ("sleep"). Without this wait a bare-getc+kill revert sneaks past: the
+      # kill in #stop lands before the spawned thread is ever scheduled, so the
+      # byte survives by scheduling accident, not by contract.
+      reader = composer.instance_variable_get(:@reader)
+      deadline = Time.now + 5
+      Thread.pass while reader.alive? && reader.status != "sleep" && Time.now < deadline
       composer.stop
 
       # The reader never read $stdin during teardown...
