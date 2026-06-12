@@ -28,7 +28,8 @@ module Rubino
     # single in-place line per subagent (`▸ sa_… · explore · running · N tools ·
     # Ns · <last_activity>`) that updates without scrolling — see UI::CLI
     # #set_subagent_cards / UI::SubagentCards. The /agents <id> drill-in tails the
-    # same registry ring for the live recent: list (#71).
+    # same registry ring for the live recent: list (#71) and the entry's
+    # output_tail — fed by #tool_chunk — for the live output: block (#5).
     #
     # The view is wired with the entry id at construction (TaskTool builds it per
     # background run). With no id (legacy/foreground synchronous path, tests) it
@@ -124,10 +125,20 @@ module Rubino
         end
       end
 
-      # tool_body / tool_chunk: the child's tool previews/streamed chunks. Kept
-      # quiet to stay low-noise — the start/finish rows already say what ran.
+      # Card mode: append the streamed chunk to the entry's bounded output tail —
+      # the live output: block the /agents <id> watch tails while THIS tool runs
+      # (#5). Registry-only, NO card repaint: a chatty shell streams a chunk per
+      # line and repainting the cards per chunk would flood the parent terminal
+      # (the watch drill-in re-reads the tail on its own tick). Legacy mode
+      # stays quiet (the start/finish rows already say what ran).
+      def tool_chunk(_name, chunk)
+        Tools::BackgroundTasks.instance.record_tool_output(@entry_id, chunk) if card_mode?
+      end
+
+      # tool_body: the END-OF-CALL preview of a NON-streaming tool (the executor
+      # skips it when the tool streamed via #tool_chunk). Useless for the live
+      # tail — tool_finished wipes the buffer right after — so it stays quiet.
       def tool_body(_text, kind: :plain); end
-      def tool_chunk(_name, _chunk); end
 
       # --- Suppressed: the child's prose / token stream ---------------------
 

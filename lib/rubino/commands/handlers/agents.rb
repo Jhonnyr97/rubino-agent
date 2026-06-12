@@ -299,9 +299,10 @@ module Rubino
           watch_loop(entry.id)
         end
 
-        # Renders ONE watch frame: header + task + the recent: ring. Public-ish
-        # snapshot shape reused per refresh tick. The recent ring is the registry's
-        # bounded activity_log, plus the live last_activity as the trailing ● line.
+        # Renders ONE watch frame: header + task + the recent: ring + the live
+        # output: tail. Public-ish snapshot shape reused per refresh tick. The
+        # recent ring is the registry's bounded activity_log, plus the live
+        # last_activity as the trailing ● line.
         def render_agent_watch(entry)
           @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}  ·  #{agent_elapsed(entry)}")
           @ui.info("task: #{truncate(entry.prompt, 120)}")
@@ -309,6 +310,25 @@ module Rubino
           Array(entry.activity_log).last(5).each { |line| @ui.info("  #{line}") }
           last = entry.last_activity.to_s
           @ui.info("  #{pastel.yellow("●")} #{last}") unless last.empty?
+          render_agent_output_tail(entry)
+        end
+
+        # #5 — the live output: block under the ring: the tail of the CURRENTLY
+        # RUNNING tool's streamed output (the registry's bounded output_tail,
+        # fed by the child's UI::SubagentView#tool_chunk and wiped at
+        # tool_finished), so a long shell call shows its lines as they print
+        # instead of a frozen frame. Renders nothing when no tool is mid-run or
+        # it hasn't produced output yet; the buffer's empty last slot just means
+        # the latest line is complete, so it is dropped, not rendered.
+        def render_agent_output_tail(entry)
+          lines = Array(entry.output_tail)
+          lines = lines[0..-2] if lines.last.to_s.empty?
+          return if lines.empty?
+
+          @ui.info("output:")
+          lines.last(Tools::BackgroundTasks::OUTPUT_TAIL_MAX).each do |line|
+            @ui.info("  #{pastel.dim("│")} #{truncate(line, 120)}")
+          end
         end
 
         # The live refresh loop for #watch_agent. Polls the registry and re-renders

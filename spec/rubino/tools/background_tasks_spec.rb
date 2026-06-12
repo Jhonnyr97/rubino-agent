@@ -43,6 +43,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     it "ignores activity for an unknown id (a late event after remove)" do
       expect { registry.record_tool_started("sa_gone", "x") }.not_to raise_error
       expect { registry.record_tool_finished("sa_gone", "y") }.not_to raise_error
+      expect { registry.record_tool_output("sa_gone", "z\n") }.not_to raise_error
     end
 
     it "is safe under concurrent writes from multiple threads" do
@@ -52,6 +53,54 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       end
       threads.each(&:join)
       expect(registry.find(entry.id).tool_count).to eq(8 * 25)
+    end
+  end
+
+  # #5 — the live output tail of the CURRENTLY RUNNING tool, fed by
+  # UI::SubagentView#tool_chunk and tailed by the /agents drill-in's output:
+  # block. Bounded (lines + bytes per line), carries the in-flight partial line
+  # in its last slot, and is wiped when the tool finishes.
+  describe "live output tail (#5)" do
+    it "splits chunks on newlines, keeping the partial line in the last slot" do
+      entry = reserve
+      registry.record_tool_output(entry.id, "line 1\nline 2\npart")
+
+      expect(registry.find(entry.id).output_tail).to eq(["line 1", "line 2", "part"])
+    end
+
+    it "stitches a partial line across chunks (a shell write has no line contract)" do
+      entry = reserve
+      registry.record_tool_output(entry.id, "hel")
+      registry.record_tool_output(entry.id, "lo\n")
+
+      expect(registry.find(entry.id).output_tail).to eq(["hello", ""])
+    end
+
+    it "keeps only the last OUTPUT_TAIL_MAX complete lines (+ the partial slot)" do
+      entry = reserve
+      (described_class::OUTPUT_TAIL_MAX + 4).times { |i| registry.record_tool_output(entry.id, "line #{i}\n") }
+
+      tail = registry.find(entry.id).output_tail
+      expect(tail.size).to eq(described_class::OUTPUT_TAIL_MAX + 1)
+      expect(tail.last).to eq("")
+      expect(tail.first).to eq("line 4") # the oldest were dropped
+    end
+
+    it "caps a newline-free stream at OUTPUT_TAIL_LINE_MAX bytes" do
+      entry = reserve
+      3.times { registry.record_tool_output(entry.id, "x" * described_class::OUTPUT_TAIL_LINE_MAX) }
+
+      tail = registry.find(entry.id).output_tail
+      expect(tail.size).to eq(1)
+      expect(tail.first.length).to eq(described_class::OUTPUT_TAIL_LINE_MAX)
+    end
+
+    it "wipes the tail when the tool finishes (the output: block clears)" do
+      entry = reserve
+      registry.record_tool_output(entry.id, "line 1\n")
+      registry.record_tool_finished(entry.id, "✓ shell · 1 line")
+
+      expect(registry.find(entry.id).output_tail).to be_nil
     end
   end
 
