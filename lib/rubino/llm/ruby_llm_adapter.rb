@@ -440,15 +440,11 @@ module Rubino
 
         apply_generation_params(chat)
 
-        # Register tools — ToolBridge wraps each Rubino tool so ruby_llm can
-        # call it. When a ToolExecutor is available, execution goes through the
-        # full pipeline (approval, truncation, audit recording). Otherwise the
-        # bridge calls tool.call() directly (used in tests/one-shot mode).
-        Array(tools).each do |tool|
-          chat.with_tool(ToolBridge.for(tool, ui: @ui, event_bus: @event_bus,
-                                              tool_executor: @tool_executor))
-        end
-
+        # Register tools and wire the streaming call-id capture (ToolBridge owns
+        # both so the spill / tool_call_id linkage works on the streaming path —
+        # STRM-2). Falls back to direct tool.call when @tool_executor is nil.
+        ToolBridge.install(chat, tools, ui: @ui, event_bus: @event_bus,
+                                        tool_executor: @tool_executor)
         chat
       end
 
@@ -471,12 +467,6 @@ module Rubino
       # only safe on the anthropic-family path; for openai/ollama/etc. we leave
       # token limits to the provider (apply_max_tokens: false) and only apply
       # temperature.
-      #
-      # ruby_llm wiring confirmed on 1.15:
-      #   * with_temperature(t)        -> payload[:temperature]               (anthropic/chat.rb add_optional_fields)
-      #   * with_params(max_tokens: n) -> deep-merged over payload[:max_tokens] (provider.rb#complete)
-      #   * with_thinking(budget: n)   -> payload[:thinking] = {type:"enabled",
-      #                                     budget_tokens:n}                   (anthropic/chat.rb build_thinking_payload)
       def apply_generation_params(chat)
         anthropic_family = anthropic_generation_path?
 

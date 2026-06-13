@@ -18,22 +18,25 @@ RSpec.describe Rubino::LLM::InlineThinkFilter do
     expect(collect(["hello ", "world"])).to eq(content: "hello world", thinking: "")
   end
 
-  it "extracts an inline <think>…</think> block" do
-    expect(collect(["before<think>reasoning</think>after"]))
-      .to eq(content: "beforeafter", thinking: "reasoning")
+  # A reasoning model emits its <think> block as the FIRST thing in the turn —
+  # the reasoning leads, then the answer follows. That is the only shape we
+  # route to the thinking channel.
+  it "extracts a LEADING <think>…</think> block as thinking" do
+    expect(collect(["<think>reasoning</think>after"]))
+      .to eq(content: "after", thinking: "reasoning")
   end
 
-  it "recovers tags split across chunk boundaries" do
+  it "treats a leading <think> preceded only by whitespace as thinking" do
+    expect(collect(["\n  <think>reasoning</think>answer"]))
+      .to eq(content: "\n  answer", thinking: "reasoning")
+  end
+
+  it "recovers a leading tag split across chunk boundaries" do
     expect(collect(["<thi", "nk>foo</thi", "nk>bar"]))
       .to eq(content: "bar", thinking: "foo")
   end
 
-  it "handles multiple think blocks in one stream" do
-    expect(collect(["a<think>x</think>b<think>y</think>c"]))
-      .to eq(content: "abc", thinking: "xy")
-  end
-
-  it "flushes an unterminated <think> as thinking at end of stream" do
+  it "flushes an unterminated leading <think> as thinking at end of stream" do
     expect(collect(["<think>still going"]))
       .to eq(content: "", thinking: "still going")
   end
@@ -43,36 +46,54 @@ RSpec.describe Rubino::LLM::InlineThinkFilter do
       .to eq(content: "ok", thinking: "")
   end
 
-  it "preserves order even when the open tag is the very last char of a chunk" do
-    expect(collect(["foo<", "think>bar</think>baz"]))
-      .to eq(content: "foobaz", thinking: "bar")
+  it "matches a leading tag variant case-insensitively" do
+    expect(collect(["<Think>x</THINK>answer"]))
+      .to eq(content: "answer", thinking: "x")
   end
 
-  it "matches tag variants case-insensitively" do
-    expect(collect(["a<Think>x</THINK>b<think>y</Think>c"]))
-      .to eq(content: "abc", thinking: "xy")
+  it "keeps routing to thinking after a leading open tag split across three chunks" do
+    expect(collect(["<th", "in", "k>reasoning unfinished"]))
+      .to eq(content: "", thinking: "reasoning unfinished")
   end
 
-  # #2 investigation: exhaustive chunk-boundary coverage. The filter holds
-  # back TAG_MAX_LEN-1 chars across feeds, so a tag split at ANY byte boundary
-  # — even one character per delta — must never leak thinking into the
-  # content channel.
-  it "never leaks thinking when the stream arrives one character at a time (#2)" do
-    text = "Hello <think>private plan</think> world<think>more</think>!"
-    expect(collect(text.chars))
-      .to eq(content: "Hello  world!", thinking: "private planmore")
-  end
-
-  it "handles every possible two-chunk split point of a tagged stream (#2)" do
-    full = "ab<think>xy</think>cd"
-    (1...full.length).each do |i|
-      expect(collect([full[0...i], full[i..]]))
-        .to eq({ content: "abcd", thinking: "xy" }), "leak at split index #{i}"
+  # ── STRM-1 (data loss) regression ──────────────────────────────────────────
+  # Literal <think>…</think> that appears AFTER visible content is NOT a control
+  # marker — a coding agent emits it routinely (echoing user input, writing
+  # docs/HTML, discussing the syntax). It must survive verbatim in the content
+  # channel; nothing may be silently dropped.
+  context "with literal <think> mid-answer (STRM-1)" do
+    it "keeps verbatim text wrapped in <think> when content precedes it" do
+      expect(collect(["X<think>Y</think>Z"]))
+        .to eq(content: "X<think>Y</think>Z", thinking: "")
     end
-  end
 
-  it "keeps routing to thinking after an open tag split across three chunks (#2)" do
-    expect(collect(["pre<th", "in", "k>reasoning unfinished"]))
-      .to eq(content: "pre", thinking: "reasoning unfinished")
+    it "keeps the ALPHA/BETA/GAMMA repro intact" do
+      expect(collect(["ALPHA<think>BETA</think>GAMMA"]))
+        .to eq(content: "ALPHA<think>BETA</think>GAMMA", thinking: "")
+    end
+
+    it "does not split on later <think> blocks once content has appeared" do
+      expect(collect(["a<think>x</think>b<think>y</think>c"]))
+        .to eq(content: "a<think>x</think>b<think>y</think>c", thinking: "")
+    end
+
+    it "survives every two-chunk split point with content-leading text" do
+      full = "ab<think>xy</think>cd"
+      (1...full.length).each do |i|
+        expect(collect([full[0...i], full[i..]]))
+          .to eq({ content: full, thinking: "" }), "dropped content at split index #{i}"
+      end
+    end
+
+    it "survives a one-character-at-a-time stream with content-leading text" do
+      text = "Hello <think>private plan</think> world<think>more</think>!"
+      expect(collect(text.chars)).to eq(content: text, thinking: "")
+    end
+
+    it "treats <think> inside a fenced code block as literal even after a leading think" do
+      stream = "<think>plan</think>here:\n```html\n<think>hi</think>\n```\n"
+      expect(collect([stream]))
+        .to eq(content: "here:\n```html\n<think>hi</think>\n```\n", thinking: "plan")
+    end
   end
 end
