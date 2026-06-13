@@ -110,10 +110,13 @@ module Rubino
         return override if override
 
         path = File.join(PROMPTS_DIR, "#{name}.txt")
-        File.exist?(path) ? File.read(path).strip : ""
+        # Read as UTF-8 explicitly: the built-in prompts carry non-ASCII glyphs
+        # (em-dashes), so relying on the locale default_external crashes under a
+        # bare C/POSIX locale (#273; consistent with #250/#251).
+        File.exist?(path) ? File.read(path, encoding: "UTF-8").strip : ""
       rescue StandardError
         path = File.join(PROMPTS_DIR, "#{name}.txt")
-        File.exist?(path) ? File.read(path).strip : ""
+        File.exist?(path) ? File.read(path, encoding: "UTF-8").strip : ""
       end
     end
   end
