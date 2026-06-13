@@ -73,6 +73,75 @@ RSpec.describe Rubino::Skills::Installer do
     end
   end
 
+  # SKILL-1: the frontmatter `name` is attacker-controlled (it comes verbatim
+  # from a cloned repo's SKILL.md). A name like `../../EVIL` must NEVER let an
+  # install write or delete anything outside the skills dir.
+  describe "#install path-traversal hardening (SKILL-1)" do
+    # A hostile checkout whose skill dir holds a SKILL.md with a traversal name.
+    def hostile_checkout(name)
+      checkout = File.join(tmp, "hostile")
+      dir = File.join(checkout, "inner")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: d\n---\nbody")
+      checkout
+    end
+
+    it "refuses a `../` traversal name: nothing written/recorded outside the skills dir" do
+      checkout = hostile_checkout("../PWNED_OUTSIDE_SKILLS")
+      escaped = File.expand_path(File.join(skills_dir, "..", "PWNED_OUTSIDE_SKILLS"))
+
+      installer.install(installer.discover(checkout), checkout: checkout, source: "h/r", commit: "c")
+
+      expect(File.exist?(escaped)).to be(false)
+      expect(installer.sources).to eq({})
+    end
+
+    it "does not rm_rf a victim file outside the skills dir via a traversal name" do
+      victim_dir = File.join(tmp, "precious")
+      FileUtils.mkdir_p(victim_dir)
+      victim = File.join(victim_dir, "important.txt")
+      File.write(victim, "PRECIOUS")
+      checkout = hostile_checkout("../precious")
+
+      installer.install(installer.discover(checkout), checkout: checkout, source: "h/r", commit: "c")
+
+      expect(File.exist?(victim)).to be(true)
+      expect(File.read(victim)).to eq("PRECIOUS")
+    end
+
+    it "rejects absolute, nested-separator, and dot names; keeps a clean sibling" do
+      checkout = File.join(tmp, "mixed")
+      {
+        "/etc/evil" => "abs", "a/b" => "nested", ".." => "dotdot",
+        "good" => "ok"
+      }.each do |name, subdir|
+        dir = File.join(checkout, subdir, "s")
+        FileUtils.mkdir_p(dir)
+        File.write(File.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: d\n---\nbody")
+      end
+
+      installer.install(installer.discover(checkout), checkout: checkout, source: "h/r", commit: "c")
+
+      expect(installer.sources.keys).to contain_exactly("good")
+      expect(File).to exist(File.join(skills_dir, "good", "SKILL.md"))
+      # No stray dirs escaped the skills root.
+      expect(Dir.children(skills_dir)).to contain_exactly("good", described_class::SOURCES_FILE)
+    end
+
+    it "confines #remove to the skills dir even if a pre-fix ledger recorded a traversal key" do
+      victim_dir = File.join(tmp, "precious2")
+      FileUtils.mkdir_p(victim_dir)
+      File.write(File.join(victim_dir, "keep.txt"), "KEEP")
+      # Simulate a ledger written by the vulnerable version.
+      FileUtils.mkdir_p(skills_dir)
+      File.write(File.join(skills_dir, described_class::SOURCES_FILE),
+                 JSON.generate("../precious2" => { "source" => "h/r", "path" => "x", "commit" => "c" }))
+
+      expect(installer.remove("../precious2")).to be(true)
+      expect(File.exist?(File.join(victim_dir, "keep.txt"))).to be(true)
+    end
+  end
+
   describe "#update" do
     it "reports up-to-date when the source HEAD matches the recorded commit, cloning once per source" do
       checkout = make_checkout

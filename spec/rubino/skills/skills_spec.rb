@@ -186,6 +186,50 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # SKILL-2: a single SKILL.md with INVALID UTF-8 bytes used to raise
+    # ArgumentError("invalid byte sequence") inside `raw.split("---")` and,
+    # with no per-skill rescue, brick discovery of EVERY skill — the CLI
+    # stack-traced and the agent silently lost all skills. The loader now
+    # scrubs undecodable bytes, and discovery skips any skill that still fails.
+    context "non-UTF-8 SKILL.md (SKILL-2)" do
+      it "lists the good skills and scrubs the bad one instead of crashing" do
+        Dir.mktmpdir do |dir|
+          FileUtils.mkdir_p(File.join(dir, "binskill"))
+          File.binwrite(File.join(dir, "binskill", "SKILL.md"),
+                        "---\nname: binskill\ndescription: d\n---\n\xff\xfe\x00garbage".b)
+          FileUtils.mkdir_p(File.join(dir, "goodskill"))
+          File.write(File.join(dir, "goodskill", "SKILL.md"),
+                     "---\nname: goodskill\ndescription: fine\n---\nbody")
+          reg = described_class.new(
+            config: test_configuration("skills" => { "paths" => [dir] }), include_builtin: false
+          )
+
+          expect { reg.names }.not_to raise_error
+          expect(reg.names).to include("goodskill", "binskill")
+          # The scrubbed body is still loadable (no crash on content read).
+          expect { reg.find("binskill").content }.not_to raise_error
+        end
+      end
+
+      it "skips (warns, does not crash) a skill whose Skill build raises, keeping the rest" do
+        Dir.mktmpdir do |dir|
+          File.write(File.join(dir, "good.md"), "---\nname: good\ndescription: fine\n---\nbody")
+          File.write(File.join(dir, "boom.md"), "---\nname: boom\ndescription: d\n---\nbody")
+          reg = described_class.new(
+            config: test_configuration("skills" => { "paths" => [dir] }), include_builtin: false
+          )
+          # Force one skill build to blow up in an unanticipated way.
+          allow(Rubino::Skills::Skill).to receive(:new).and_call_original
+          allow(Rubino::Skills::Skill).to receive(:new)
+            .with(path: a_string_ending_with("boom.md")).and_raise(RuntimeError, "kaboom")
+
+          expect { reg.names }.to output(/skipping skill.*boom\.md.*kaboom/m).to_stderr
+          expect(reg.names).to include("good")
+          expect(reg.names).not_to include("boom")
+        end
+      end
+    end
+
     # A minimal Linux/Docker image ships the C locale, so Ruby's
     # Encoding.default_external is US-ASCII. A SKILL.md with a UTF-8 byte (the
     # built-in ruby-expert description carries an em-dash) then made `skills

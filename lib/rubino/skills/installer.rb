@@ -23,6 +23,16 @@ module Rubino
       # GitHub shorthand: bare `owner/repo` (one slash, no scheme/host).
       GITHUB_SHORTHAND = %r{\A[\w.-]+/[\w.-]+\z}
 
+      # The only shape a skill `name:` may take before it becomes a directory
+      # under the skills root: lowercase alphanumerics in hyphen-separated
+      # segments (Claude Code's skill-name grammar). This is the CWE-22
+      # allowlist defense — same class as the Zed CVE-2026-27800 / Anthropic
+      # EscapeRoute CVE-2025-53110 traversal bugs: it admits no path separator,
+      # no `..`, no dot, no NUL, no leading/trailing hyphen, no absolute path,
+      # nothing but `[a-z0-9-]`.
+      NAME_ALLOWLIST = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+      NAME_MAX_LEN = 64
+
       attr_reader :skills_dir
 
       def initialize(skills_dir: nil)
@@ -65,15 +75,21 @@ module Rubino
       end
 
       # Copies the discover-entries into the skills dir (replacing any prior
-      # copy of the same name) and records their provenance.
+      # copy of the same name) and records their provenance. Entries whose
+      # name isn't a safe single path segment (a hostile repo can put
+      # `name: ../../EVIL` in its frontmatter) are skipped — never written,
+      # never recorded — so an install can't write or delete anything outside
+      # the skills dir (SKILL-1).
       def install(entries, checkout:, source:, commit:)
         FileUtils.mkdir_p(@skills_dir)
         data = sources
         entries.each do |entry|
-          dest = File.join(@skills_dir, entry[:name])
+          name = entry[:name]
+          dest = safe_dest(name) or next
+
           FileUtils.rm_rf(dest)
           FileUtils.cp_r(File.join(checkout, entry[:path]), dest)
-          data[entry[:name]] = { "source" => source, "path" => entry[:path], "commit" => commit }
+          data[name] = { "source" => source, "path" => entry[:path], "commit" => commit }
         end
         write_sources(data)
       end
@@ -106,7 +122,10 @@ module Rubino
         data = sources
         return false unless data.key?(name)
 
-        FileUtils.rm_rf(File.join(@skills_dir, name))
+        # Confine the delete to the skills dir even if a pre-fix ledger recorded
+        # a traversal key (defense in depth — install now refuses such names).
+        dest = safe_dest(name)
+        FileUtils.rm_rf(dest) if dest
         data.delete(name)
         write_sources(data)
         true
@@ -130,11 +149,45 @@ module Rubino
         src = File.join(checkout, entry["path"])
         return :failed unless File.file?(File.join(src, "SKILL.md"))
 
-        dest = File.join(@skills_dir, name)
+        dest = safe_dest(name)
+        return :failed unless dest
+
         FileUtils.rm_rf(dest)
         FileUtils.cp_r(src, dest)
         entry["commit"] = sha
         :updated
+      end
+
+      # Resolves +name+ to its destination dir inside the skills dir, or nil
+      # when the name isn't a safe single path segment. The frontmatter `name`
+      # is attacker-controlled (it comes straight from a cloned repo's
+      # SKILL.md), so it gets the two independent CWE-22 defenses:
+      #   1. a strict allowlist — only `[a-z0-9]` hyphen-segments, length-capped
+      #      — which already excludes `/`, `\`, `..`, `~`, NUL, and absolutes; and
+      #   2. path confinement — canonicalize the parent against the skills root
+      #      and assert the resolved dest sits directly under it (the trailing
+      #      separator guards against a sibling whose name shares the root's
+      #      prefix), so even if the allowlist were ever loosened the write can't
+      #      escape. realpath failure is treated as deny, never as a fallback.
+      def safe_dest(name)
+        name = name.to_s
+        return nil unless name.length <= NAME_MAX_LEN && NAME_ALLOWLIST.match?(name)
+
+        root = real_skills_root or return nil
+        dest = File.expand_path(name, root)
+        return nil unless dest == File.join(root, name) &&
+                          dest.start_with?(root + File::SEPARATOR)
+
+        dest
+      end
+
+      # The canonical (symlink-resolved) skills root, creating it if needed so
+      # realpath can resolve it. nil — i.e. deny — if it can't be resolved.
+      def real_skills_root
+        FileUtils.mkdir_p(@skills_dir)
+        File.realpath(@skills_dir)
+      rescue SystemCallError
+        nil
       end
 
       def write_sources(data)
