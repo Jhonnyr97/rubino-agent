@@ -84,6 +84,120 @@ ok()    { printf '%s==>%s %s\n' "$GREEN" "$RESET" "$*"; }
 warn()  { printf '%s==>%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
 die()   { printf '%serror:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 
+# --- shell-rc activation (persist PATH / mise activation) -------------------
+
+# Marker comment we drop next to the line(s) we append, so re-runs are
+# idempotent and users can find/remove what we added.
+RC_MARKER="# added by rubino installer (https://github.com/${REPO_OWNER}/${REPO_NAME})"
+
+# Opt out of any shell-rc modification with RUBINO_NO_MODIFY_RC=1.
+RUBINO_NO_MODIFY_RC="${RUBINO_NO_MODIFY_RC:-0}"
+
+# Set by persist_to_rc() to the rc file(s) it touched. Init for `set -u` safety.
+PERSISTED_RC=""
+
+# The rc file the user is most likely to open/read (shown in hints). Honor
+# $SHELL; default to bash so a `curl | bash` run (where $SHELL may be empty
+# under -u) still persists.
+detect_shell_rc() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    zsh)  printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *)    printf '%s\n' "$HOME/.profile" ;;
+  esac
+}
+
+# The set of startup files to persist into. We cover BOTH the interactive rc
+# (sourced when you open a terminal) AND the login-shell profile (sourced by
+# `bash -l` / SSH logins) — on some distros the interactive rc early-returns for
+# non-interactive shells, so the profile is what makes a login shell pick it up.
+rc_targets() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    zsh)
+      printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc"
+      printf '%s\n' "${ZDOTDIR:-$HOME}/.zprofile"
+      ;;
+    bash)
+      printf '%s\n' "$HOME/.bashrc"
+      # bash login shells read the first of .bash_profile/.bash_login/.profile;
+      # prefer an existing one, else .profile (Debian/Ubuntu default sources .bashrc).
+      if   [ -e "$HOME/.bash_profile" ]; then printf '%s\n' "$HOME/.bash_profile"
+      elif [ -e "$HOME/.bash_login" ];   then printf '%s\n' "$HOME/.bash_login"
+      else printf '%s\n' "$HOME/.profile"
+      fi
+      ;;
+    *)
+      printf '%s\n' "$HOME/.profile"
+      ;;
+  esac
+}
+
+# Append a single line, once, to each startup file from rc_targets(). Guarded by
+# RC_MARKER + a grep for the exact line so re-runs don't duplicate. Sets
+# PERSISTED_RC to the space-separated files it touched. Returns 0 if the line is
+# present in at least one target afterward.
+persist_to_rc() {
+  local line="$1" rc any=1 touched=""
+  [ "$RUBINO_NO_MODIFY_RC" = "1" ] && return 1
+  while IFS= read -r rc; do
+    [ -n "$rc" ] || continue
+    # Create the file if missing (login shells will source it).
+    [ -e "$rc" ] || : >"$rc" 2>/dev/null || continue
+    if grep -qF "$line" "$rc" 2>/dev/null; then
+      touched="${touched:+$touched }$rc"; any=0
+      continue
+    fi
+    if {
+        printf '\n%s\n' "$RC_MARKER"
+        printf '%s\n' "$line"
+      } >>"$rc" 2>/dev/null; then
+      touched="${touched:+$touched }$rc"; any=0
+    fi
+  done <<EOF
+$(rc_targets)
+EOF
+  PERSISTED_RC="$touched"
+  return "$any"
+}
+
+# Post-install gate: confirm `$BIN_NAME` is reachable from a FRESH interactive/
+# login shell (not just this process). If it isn't, fail loudly with the exact
+# line to paste — never print a success banner over a broken install.
+# Args: $1 = the activation/PATH line we tried to persist (for the error hint).
+verify_fresh_shell() {
+  local fix_line="$1" shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+
+  # Probe a fresh login+interactive shell — interactive so the rc body (which on
+  # some distros is guarded by a non-interactive early-return) actually runs,
+  # login so profile files are sourced too. This mirrors opening a new terminal.
+  local found=1
+  case "$shell_name" in
+    zsh)  zsh  -i -c "command -v ${BIN_NAME} >/dev/null 2>&1" >/dev/null 2>&1 || found=0 ;;
+    *)    bash -lic "command -v ${BIN_NAME} >/dev/null 2>&1" >/dev/null 2>&1 || found=0 ;;
+  esac
+
+  if [ "$found" -eq 1 ]; then
+    ok "Verified: a fresh login shell finds '${BIN_NAME}'."
+    return 0
+  fi
+
+  # Broken: tell the user exactly what to do, then exit non-zero.
+  printf '\n'
+  warn "${BIN_NAME} was installed but a fresh login shell can't find it yet."
+  if [ "$RUBINO_NO_MODIFY_RC" = "1" ]; then
+    warn "RUBINO_NO_MODIFY_RC=1 is set, so no shell rc was modified."
+  fi
+  printf '%sAdd this line to your shell profile%s (%s), then open a new shell:\n' \
+    "$BOLD" "$RESET" "$(detect_shell_rc)" >&2
+  printf '\n  %s\n\n' "$fix_line" >&2
+  die "post-install check failed: '${BIN_NAME}' not on PATH in a fresh shell (see the line above)."
+}
+
 # --- preflight: OS / arch ---------------------------------------------------
 
 OS="$(uname -s)"
@@ -368,14 +482,32 @@ setup_mise() {
 
   info "Detected ${OS} ${ARCH}. Installing rubino via mise (${scope} scope)."
 
+  # Resolve the latest PUBLISHED gem version and pin it explicitly. By default
+  # mise applies `minimum_release_age`, which hides a freshly published release
+  # (you'd see "... hidden by minimum_release_age" and get a stale version). We
+  # both pin the exact version AND disable the release-age gate for this install
+  # so the just-published gem is taken. (#258)
+  local gem_tool="${GEM_TOOL}" want_ver
+  want_ver="$(curl -fsSL "https://rubygems.org/api/v1/gems/${GEM_NAME}.json" 2>/dev/null \
+    | grep -oE '"version":"[0-9]+\.[0-9]+\.[0-9]+[^"]*"' | head -n1 \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^"]*')"
+  if [ -n "$want_ver" ]; then
+    gem_tool="${GEM_TOOL}@${want_ver}"
+    info "Latest published ${GEM_NAME} is ${want_ver}; pinning ${gem_tool}."
+  else
+    warn "Could not resolve the latest ${GEM_NAME} version from RubyGems; letting mise pick."
+  fi
+  # MISE_MINIMUM_RELEASE_AGE=0 ensures a just-published version isn't filtered.
+  export MISE_MINIMUM_RELEASE_AGE=0
+
   case "$scope" in
     global)
-      info "Installing ${GEM_TOOL} globally (mise use -g)..."
-      mise use -g "${GEM_TOOL}" || die "mise use -g ${GEM_TOOL} failed (native build needs a C toolchain — see prerequisites above)."
+      info "Installing ${gem_tool} globally (mise use -g)..."
+      mise use -g "${gem_tool}" || die "mise use -g ${gem_tool} failed (native build needs a C toolchain — see prerequisites above)."
       ;;
     local)
-      info "Installing ${GEM_TOOL} for this directory (mise use)..."
-      mise use "${GEM_TOOL}" || die "mise use ${GEM_TOOL} failed (native build needs a C toolchain — see prerequisites above)."
+      info "Installing ${gem_tool} for this directory (mise use)..."
+      mise use "${gem_tool}" || die "mise use ${gem_tool} failed (native build needs a C toolchain — see prerequisites above)."
       ;;
   esac
 
@@ -392,26 +524,37 @@ setup_mise() {
   ok "executable: ${rubino_path}"
   printf '\n'
 
-  # Activation guidance: rubino resolves through mise's shims/activation. If mise
-  # isn't activated in the user's shell, `rubino` won't be found in a plain shell
-  # even though it's installed. Tell them how to activate.
-  local shell_name act_rc act_sh
-  shell_name="$(basename "${SHELL:-}")"
+  # Activation: rubino resolves through mise's shims/activation. If mise isn't
+  # activated in the user's shell, `rubino` won't be found in a plain shell even
+  # though it's installed. Persist the activation line to the user's rc so a
+  # fresh login shell works — printing a hint alone left fresh shells broken (#257).
+  local shell_name act_sh act_line
+  shell_name="$(basename "${SHELL:-bash}")"
   case "$shell_name" in
-    zsh)  act_rc="~/.zshrc";   act_sh="zsh"  ;;
-    bash) act_rc="~/.bashrc";  act_sh="bash" ;;
-    *)    act_rc="your shell rc"; act_sh="$shell_name" ;;
+    zsh)  act_sh="zsh"  ;;
+    bash) act_sh="bash" ;;
+    *)    act_sh="$shell_name" ;;
   esac
+  # Use a bare `mise` in the persisted line so it stays valid if the binary moves.
+  act_line="eval \"\$($mise_bin activate ${act_sh:-bash})\""
 
   if command -v "${BIN_NAME}" >/dev/null 2>&1; then
     ok "${BIN_NAME} is already on your PATH (mise is activated)."
+  elif persist_to_rc "$act_line"; then
+    ok "Added mise activation to ${PERSISTED_RC} (open a new shell to pick it up)."
+    printf 'Until then you can run it with:\n'
+    printf '\n  %smise exec -- %s%s\n\n' "$DIM" "${BIN_NAME}" "$RESET"
   else
+    # Opt-out or couldn't write: keep the manual hint.
     printf '%sActivate mise in your shell%s so %s%s%s is on your PATH. Add to %s:\n' \
-      "$BOLD" "$RESET" "$BOLD" "${BIN_NAME}" "$RESET" "$act_rc"
-    printf '\n  %seval "$(%s activate %s)"%s\n\n' "$DIM" "$mise_bin" "${act_sh:-zsh}" "$RESET"
+      "$BOLD" "$RESET" "$BOLD" "${BIN_NAME}" "$RESET" "$(detect_shell_rc)"
+    printf '\n  %s%s%s\n\n' "$DIM" "$act_line" "$RESET"
     printf 'Then open a new shell. Until then you can run it with:\n'
     printf '\n  %smise exec -- %s%s\n\n' "$DIM" "${BIN_NAME}" "$RESET"
   fi
+
+  # Post-install gate: fail loudly if a fresh shell still can't find rubino.
+  verify_fresh_shell "$act_line"
 
   printf '%sNext step:%s\n\n' "$BOLD" "$RESET"
   printf '  %s%s setup%s   %s# guided first-run: pick a provider, paste a key%s\n\n' "$GREEN" "${BIN_NAME}" "$RESET" "$DIM" "$RESET"
@@ -495,11 +638,22 @@ else
   PATH_OK=0
 fi
 
+PATH_LINE="export PATH=\"${GEM_BIN_DIR}:\$PATH\""
+
 if [ "$PATH_OK" -ne 1 ]; then
-  printf '%sAdd this line to your shell profile%s (~/.bashrc, ~/.zshrc, ~/.profile):\n' "$BOLD" "$RESET"
-  printf '\n  %sexport PATH="%s:$PATH"%s\n\n' "$DIM" "${GEM_BIN_DIR}" "$RESET"
-  printf 'Then open a new shell (or run the export above) so %s%s%s is on your PATH.\n\n' "$BOLD" "${BIN_NAME}" "$RESET"
+  # Persist the PATH line to the user's rc so a fresh login shell finds rubino —
+  # printing the hint alone left fresh shells broken (#257).
+  if persist_to_rc "$PATH_LINE"; then
+    ok "Added ${BIN_NAME} to your PATH in ${PERSISTED_RC} (open a new shell to pick it up)."
+  else
+    printf '%sAdd this line to your shell profile%s (%s):\n' "$BOLD" "$RESET" "$(detect_shell_rc)"
+    printf '\n  %s%s%s\n\n' "$DIM" "$PATH_LINE" "$RESET"
+    printf 'Then open a new shell (or run the export above) so %s%s%s is on your PATH.\n\n' "$BOLD" "${BIN_NAME}" "$RESET"
+  fi
 fi
+
+# Post-install gate: confirm a fresh login shell finds rubino, or fail loudly.
+verify_fresh_shell "$PATH_LINE"
 
 printf '%sNext step:%s\n\n' "$BOLD" "$RESET"
 printf '  %s%s setup%s   %s# guided first-run: pick a provider, paste a key%s\n\n' "$GREEN" "${BIN_NAME}" "$RESET" "$DIM" "$RESET"
