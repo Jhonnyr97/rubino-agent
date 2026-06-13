@@ -80,4 +80,36 @@ RSpec.describe Rubino::Config::Writer do
       expect(writer.get("new.section.key")).to eq("v")
     end
   end
+
+  # CFG-R2-5 (HIGH): `config set` read-modify-writes config.yml. Before the
+  # atomic-write fix, two concurrent `config set` of DIFFERENT keys both read the
+  # same base and the second clobbered the first (lost update), and an
+  # interleaved non-atomic File.write could leave half-written, unparseable YAML
+  # that bricked every later command. The fix serializes the RMW under flock and
+  # writes via temp-file + atomic rename.
+  describe "concurrent set (CFG-R2-5)" do
+    it "keeps config.yml valid YAML with ALL keys present under 6 concurrent writers" do
+      config_path # force the lazy let to resolve in the PARENT so every forked
+      # child writes to the SAME config file (not its own fresh path).
+      keys = (1..6).map { |i| "section.key#{i}" }
+
+      pids = keys.map do |key|
+        fork do
+          # Fresh writer per process == separate `rubino config set` invocations.
+          described_class.new(config_path: config_path).set(key, "v-#{key}")
+          exit!(0) # skip RSpec/SimpleCov at_exit in the forked child
+        end
+      end
+      pids.each { |pid| Process.wait(pid) }
+
+      # Never torn: always parseable YAML.
+      raw = nil
+      expect { raw = YAML.safe_load_file(config_path, permitted_classes: [Symbol]) }.not_to raise_error
+
+      # No lost update: every concurrently-set key survived.
+      reader = described_class.new(config_path: config_path)
+      keys.each { |key| expect(reader.get(key)).to eq("v-#{key}") }
+      expect(raw["section"].keys).to match_array((1..6).map { |i| "key#{i}" })
+    end
+  end
 end

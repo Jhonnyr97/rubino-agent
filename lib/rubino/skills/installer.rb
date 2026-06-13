@@ -82,16 +82,22 @@ module Rubino
       # the skills dir (SKILL-1).
       def install(entries, checkout:, source:, commit:)
         FileUtils.mkdir_p(@skills_dir)
-        data = sources
-        entries.each do |entry|
-          name = entry[:name]
-          dest = safe_dest(name) or next
+        # Read-modify-write the ledger under an exclusive lock so N parallel
+        # installs don't lose updates (each reading the same base and the last
+        # writer clobbering the rest → orphaned, unremovable skills). The file
+        # copies stay inside the locked region: each install owns a distinct
+        # name (its own dest dir), so they don't collide, and keeping them under
+        # the lock means the ledger and the on-disk dirs can't diverge.
+        update_sources do |data|
+          entries.each do |entry|
+            name = entry[:name]
+            dest = safe_dest(name) or next
 
-          FileUtils.rm_rf(dest)
-          FileUtils.cp_r(File.join(checkout, entry[:path]), dest)
-          data[name] = { "source" => source, "path" => entry[:path], "commit" => commit }
+            FileUtils.rm_rf(dest)
+            FileUtils.cp_r(File.join(checkout, entry[:path]), dest)
+            data[name] = { "source" => source, "path" => entry[:path], "commit" => commit }
+          end
         end
-        write_sources(data)
       end
 
       # Re-fetches +names+ (default: every recorded skill) from their recorded
@@ -99,18 +105,22 @@ module Rubino
       # :up_to_date / :failed (clone failed, or the skill's recorded path no
       # longer holds a SKILL.md) / :unknown (no provenance entry).
       def update(names = [])
-        data = sources
-        names = data.keys if names.empty?
         results = {}
-        names.group_by { |name| data.dig(name, "source") }.each do |source, group|
-          next group.each { |name| results[name] = :unknown } if source.nil?
+        # One locked read-modify-write for the whole update so it can't race a
+        # concurrent install/remove/update (lost-update → orphaned entries). The
+        # network clones run inside the lock; updates are infrequent and this
+        # keeps the ledger consistent with what was re-fetched.
+        update_sources do |data|
+          names = data.keys if names.empty?
+          names.group_by { |name| data.dig(name, "source") }.each do |source, group|
+            next group.each { |name| results[name] = :unknown } if source.nil?
 
-          fetched = fetch(source) do |checkout, sha|
-            group.each { |name| results[name] = update_one(name, data[name], checkout, sha) }
-            write_sources(data)
-            true
+            fetched = fetch(source) do |checkout, sha|
+              group.each { |name| results[name] = update_one(name, data[name], checkout, sha) }
+              true
+            end
+            group.each { |name| results[name] = :failed } unless fetched
           end
-          group.each { |name| results[name] = :failed } unless fetched
         end
         results
       end
@@ -118,23 +128,26 @@ module Rubino
       # Deletes the skill dir + provenance entry. Returns false (nothing
       # touched) for a skill without a provenance entry — this mechanism only
       # removes what it installed.
-      def remove(name) # rubocop:disable Naming/PredicateMethod -- "did I remove anything", a mutator reporting what it did
-        data = sources
-        return false unless data.key?(name)
+      def remove(name)
+        removed = false
+        update_sources do |data|
+          next unless data.key?(name)
 
-        # Confine the delete to the skills dir even if a pre-fix ledger recorded
-        # a traversal key (defense in depth — install now refuses such names).
-        dest = safe_dest(name)
-        FileUtils.rm_rf(dest) if dest
-        data.delete(name)
-        write_sources(data)
-        true
+          # Confine the delete to the skills dir even if a pre-fix ledger recorded
+          # a traversal key (defense in depth — install now refuses such names).
+          dest = safe_dest(name)
+          FileUtils.rm_rf(dest) if dest
+          data.delete(name)
+          removed = true
+        end
+        removed
       end
 
-      # The provenance ledger (empty hash when absent or unparseable).
+      # The provenance ledger (empty hash when absent or unparseable). Reads
+      # under a shared lock so it can't observe a writer's intermediate state.
       def sources
-        path = File.join(@skills_dir, SOURCES_FILE)
-        File.file?(path) ? JSON.parse(File.read(path)) : {}
+        raw = Util::AtomicFile.read_shared(sources_path)
+        raw ? JSON.parse(raw) : {}
       rescue JSON::ParserError
         {}
       end
@@ -190,9 +203,27 @@ module Rubino
         nil
       end
 
-      def write_sources(data)
+      def sources_path
+        File.join(@skills_dir, SOURCES_FILE)
+      end
+
+      # Exclusive, atomic read-modify-write of the ledger. Yields the parsed
+      # hash (mutated in place by the block); the post-block state is written
+      # back via temp-file + rename so it's never torn or lost under concurrent
+      # installs/updates/removes.
+      def update_sources
         FileUtils.mkdir_p(@skills_dir)
-        File.write(File.join(@skills_dir, SOURCES_FILE), JSON.pretty_generate(data))
+        Util::AtomicFile.update(sources_path) do |raw|
+          data = parse_ledger(raw)
+          yield(data)
+          JSON.pretty_generate(data)
+        end
+      end
+
+      def parse_ledger(raw)
+        raw && !raw.empty? ? JSON.parse(raw) : {}
+      rescue JSON::ParserError
+        {}
       end
     end
   end
