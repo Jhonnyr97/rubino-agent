@@ -46,14 +46,22 @@ module Rubino
       #
       #   1. hardline(:deny)            non-bypassable floor BELOW yolo
       #   2. permissions:deny           an explicit deny rule also beats yolo
-      #   3. yolo / skip-approvals      allow-exit (doom still guards it)
+      #   3. runtime yolo (Modes)      allow-exit (doom still guards it).
+      #                                 config approvals.mode: "skip" does NOT
+      #                                 take this exit — it is not a headless
+      #                                 yolo (see steps 7-9 / #260).
       #   4. doom loop                  break a stuck autopilot
       #   5. permissions:allow / :ask   remaining explicit rules
-      #   6. command_allowlist (prefix) pre-approved commands -> :allow
+      #   6. command_allowlist          pre-approved EXACT commands -> :allow
+      #                                 (chain-aware, token-boundary; never a
+      #                                 prefix of a compound line)
       #   6b. readonly auto-allow       parse-validated read-only shell -> :allow
       #   7-8. confirm_policy shell gate  confirm_all -> :ask; dangerous_only
-      #                                 -> :ask only if dangerous?, else :allow
-      #   9. mode fallback
+      #                                 -> :ask only if dangerous?, else :allow.
+      #                                 Runs for mode "skip" too, so a write/
+      #                                 shell under config "skip" still reaches
+      #                                 the headless fail-closed floor (#260).
+      #   9. mode fallback             ("skip" -> :ask for risky tools, not :allow)
       #
       # The invariant that makes this slice worth doing: HARDLINE and an
       # explicit permissions:deny BOTH run before any allow path (yolo,
@@ -115,9 +123,19 @@ module Rubino
         return :allow if readonly_auto_allowed?(tool, command_str)
 
         # 7-8. confirm_policy gate for a shell command not otherwise resolved.
-        #    NOT under config "skip" (nor runtime yolo, handled at step 3) —
-        #    those are the explicit operator overrides that mean "stop
-        #    prompting me".
+        #    NOT under runtime yolo (handled at step 3) — that is the explicit
+        #    CLI operator override that means "stop prompting me".
+        #
+        #    config approvals.mode: "skip" is NOT given the same allow-exit as
+        #    runtime yolo here. #260 deliberately made the headless skip a
+        #    CLI-only opt-in (--yolo): a config-file "skip" must NOT silently
+        #    auto-run write/shell in a headless session. So a not-otherwise-
+        #    resolved shell command still routes through this gate to :ask, and
+        #    the ToolExecutor's headless fail-closed floor (#260) turns that
+        #    :ask into a block when there is no interactive session. Interactive
+        #    sessions still get a prompt — same as auto/manual. (Reads are
+        #    already auto-allowed by step 6b / mode_based_decision, so this
+        #    only constrains the write/shell side.)
         #
         #    confirm_all (DEFAULT, == legacy require_confirmation_for_shell:true)
         #      every such shell command -> :ask. shell is :high risk so manual
@@ -130,7 +148,7 @@ module Rubino
         #      where detect_dangerous_command is the sole prompt trigger.
         #      The hardline floor (step 1) and permissions:deny (step 2) already
         #      ran, so dangerous_only NEVER weakens the non-bypassable floor.
-        if tool.name == "shell" && @mode != "skip"
+        if tool.name == "shell"
           case @confirm_policy
           when :dangerous_only
             return :ask if dangerous?(command_str)
@@ -202,8 +220,13 @@ module Rubino
 
       def mode_based_decision(tool)
         case @mode
+        # config approvals.mode: "skip" is NOT a headless yolo (#260). It stays
+        # permissive for non-risky tools (reads), but a risky tool (write/edit/
+        # shell) routes to :ask so the headless fail-closed floor can block it
+        # when there is no interactive session — only runtime --yolo (step 3)
+        # may auto-run those headless. Interactive sessions still get a prompt.
         when "skip"
-          :allow
+          tool.risky? ? :ask : :allow
         when "auto"
           tool.risk_level == :high ? :ask : :allow
         when "manual"

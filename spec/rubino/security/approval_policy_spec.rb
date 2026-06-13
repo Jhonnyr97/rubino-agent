@@ -51,9 +51,24 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       let(:config) { test_configuration("approvals" => { "mode" => "skip" }) }
       let(:policy) { described_class.new(config: config) }
 
-      it "allows regardless of risk level" do
-        tool = make_tool(risk_level: :high, risky: true)
+      # SEC-02: config approvals.mode: "skip" is NOT a headless yolo. It stays
+      # permissive for non-risky tools (reads), but a risky tool (write/edit)
+      # must route to :ask so the ToolExecutor's headless fail-closed floor
+      # (#260) can block it when there is no interactive session — only runtime
+      # --yolo may auto-run a write/shell headless.
+      it "allows non-risky (read) tools" do
+        tool = make_tool(risk_level: :low, risky: false)
         expect(policy.decide(tool)).to eq(:allow)
+      end
+
+      it "ASKS for a risky write/edit tool (so the headless floor catches it)" do
+        tool = make_tool(name: "write", risk_level: :medium, risky: true)
+        expect(policy.decide(tool, arguments: { "file_path" => "note.txt" })).to eq(:ask)
+      end
+
+      it "ASKS for a shell command (not allowlisted / not read-only)" do
+        tool = make_tool(name: "shell", risk_level: :high, risky: true)
+        expect(policy.decide(tool, arguments: { "command" => "echo hi > /tmp/x" })).to eq(:ask)
       end
     end
   end
@@ -399,14 +414,21 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "git push --force origin main" })).to eq(:ask)
     end
 
-    it "a dangerous command on the allowlist is still :allow (S2 keeps allowlist precedence)" do
+    # SEC-01: the allowlist is now chain-aware and runs DangerousPatterns
+    # FIRST, so an allowlisted head can no longer launder a dangerous command.
+    # `git push` allowlisted pre-approves a plain `git push`, but NOT the
+    # history-rewriting `git push --force` — that falls back to the shell gate
+    # (:ask), where the headless floor can block it.
+    it "does NOT auto-allow a dangerous command even if its head is allowlisted (SEC-01)" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
         "security" => { "command_allowlist" => ["git push"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.dangerous?("git push --force origin main")).to be(true)
-      expect(pol.decide(shell, arguments: { "command" => "git push --force origin main" })).to eq(:allow)
+      expect(pol.decide(shell, arguments: { "command" => "git push --force origin main" })).to eq(:ask)
+      # the safe, exact form the operator actually allowlisted still passes
+      expect(pol.decide(shell, arguments: { "command" => "git push origin main" })).to eq(:allow)
     end
   end
 
