@@ -177,6 +177,15 @@ module Rubino
         false
       end
 
+      # The UI-contract capability ToolExecutor reads to decide whether a tool
+      # that needs approval can actually be put in front of a human (#260). On
+      # the CLI this is exactly "are we on a real TTY" — a piped / redirected
+      # `rubino chat` run has no one to answer, so the executor fails closed
+      # instead of hanging or auto-running.
+      def interactive?
+        interactive_terminal?
+      end
+
       # Arrow-key single-select menu — the SAME TTY::Prompt component the tool
       # approval menu uses (see #approval_choice), so /sessions resume reuses the
       # existing picker rather than introducing a second menu system (#145).

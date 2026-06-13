@@ -91,7 +91,7 @@ module Rubino
       # --- One-shot mode ---
 
       def run_oneshot(query)
-        apply_yolo! if opt(:yolo)
+        resolve_yolo!
 
         # Structured JSON log lines (llm.retry & friends) must never contaminate
         # the one-shot stdout (#99): `answer=$(rubino prompt ...)` pipes stdout,
@@ -119,7 +119,8 @@ module Rubino
         # (attachment was REPL-only); automation, jobs and tests can now drive it.
         text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
 
-        runner = build_runner(session_id: session_resolver.resolve_session_id, ui: UI::Null.new)
+        headless_ui = UI::Null.new
+        runner = build_runner(session_id: session_resolver.resolve_session_id, ui: headless_ui)
 
         # Use run! (not run) so a model/credential failure PROPAGATES instead of
         # being swallowed into a nil and printed as an empty line with exit 0.
@@ -143,6 +144,18 @@ module Rubino
         # actually does anything headless, which is the intent. Best-effort: a
         # notification must never fail the run or contaminate the piped answer.
         notify_oneshot_finished(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at)
+
+        # Fail-closed exit (#260): if any tool was BLOCKED because it needed
+        # approval in this headless run (a write/edit/non-allowlisted shell with
+        # no --yolo), echo the single-line block notice(s) to stderr (the Null
+        # UI otherwise swallows them) and exit NON-ZERO so CI/automation/scripts
+        # detect that the action was refused — never silently treat a skipped
+        # command as success. The answer on stdout stays clean. --yolo opts back
+        # into auto-exec and never reaches this branch.
+        if headless_ui.approval_blocked?
+          headless_ui.blocked_messages.each { |m| warn m }
+          exit(2)
+        end
       # rubocop:disable Lint/ShadowedException -- Interrupt is listed explicitly (doc value), though SignalException covers it
       rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
         raise
@@ -210,7 +223,7 @@ module Rubino
       # history all keep working because we never leave the main screen.
 
       def run_interactive
-        apply_yolo! if opt(:yolo)
+        resolve_yolo!
 
         ui = Rubino.ui
 
@@ -1554,11 +1567,31 @@ module Rubino
         build_runner(session_id: nil, ui: ui)
       end
 
-      # `--yolo` is the CLI flag form of `/mode yolo`. We route both through
-      # Rubino::Modes so the status bar's mode token, the API event, and the
-      # ApprovalPolicy short-circuit all see a single source of truth.
-      def apply_yolo!
-        Rubino::Modes.set(:yolo)
+      # Resolves the yolo (skip-all-approvals) mode for this invocation (#260).
+      #
+      # yolo is the explicit, full-auto opt-in, so — like Gemini CLI — it may be
+      # granted ONLY by the `--yolo` CLI flag, never by a persisted/untrusted
+      # config file. The flag value reaches us through Thor's parsed options
+      # (opt(:yolo)), which only carries the command-line flag — a project-local
+      # config.yml cannot set it, so a malicious repo can't auto-grant itself
+      # auto-exec just by sitting in the working directory.
+      #
+      #   --yolo     → true  → enable yolo (auto-approve everything this run)
+      #   --no-yolo  → false → FORCE fail-closed, overriding any yolo default
+      #                        (e.g. a RUBINO_BOOT_MODE=yolo the boot picked up)
+      #   (absent)   → nil   → leave the boot mode untouched (default/plan)
+      #
+      # `--yolo` is the CLI flag form of `/mode yolo`; both route through
+      # Rubino::Modes so the status bar token, the API event and the
+      # ApprovalPolicy short-circuit share one source of truth.
+      def resolve_yolo!
+        flag = opt(:yolo)
+        if flag == true
+          Rubino::Modes.set(:yolo)
+        elsif flag == false && Rubino::Modes.current == :yolo
+          # Explicit --no-yolo wins over a yolo default so fail-closed is real.
+          Rubino::Modes.set(:default)
+        end
       end
 
       def ensure_setup!

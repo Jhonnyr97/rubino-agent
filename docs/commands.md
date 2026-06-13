@@ -93,6 +93,18 @@ Pasting **text** into the chat input goes through the file-backed paste pipeline
   policy along the way (a write outside the workspace boundary, a denied
   approval, a hardline-blocked command). A refusal the agent handled and
   explained is expected behavior, not an error.
+- **Headless approvals fail closed (security).** A one-shot / scripted run has
+  no interactive session, so a tool that would otherwise prompt for approval —
+  a write/edit, or a shell command **not** covered by your `permissions` /
+  command allowlist / read-only auto-allow — is **blocked, not run**. A
+  single-line `blocked: <tool> needs approval but no interactive session (use
+  --yolo to allow, or allowlist it)` goes to stderr and the run exits
+  **non-zero (2)**, so automation/CI fails loudly instead of silently skipping
+  (or, worse, auto-executing) the action. Anything you already allowlisted, and
+  every read-only command, still runs unprompted. Pass `--yolo` to opt back
+  into full auto-execute; `--no-yolo` forces fail-closed even if a yolo default
+  was set. `--yolo` is honored **only** as a CLI flag — a project-local config
+  can never grant it.
 - It exits **non-zero** when the run itself fails: no usable credentials, the
   `--resume`/`--session` target doesn't exist or is ambiguous, or the provider
   call errors out. The reason is printed to stderr; the answer (when any) stays

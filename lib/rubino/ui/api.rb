@@ -52,6 +52,15 @@ module Rubino
         !@gate.nil? && !@recorder.nil?
       end
 
+      # ToolExecutor reads this to decide whether a tool needing approval can be
+      # put in front of a human (#260). The API adapter CAN — via the HTTP
+      # ApprovalGate — but only when a gate + recorder are wired; a gate-less
+      # embed/test run has no one to answer, so it fails closed too instead of
+      # silently auto-approving a write/shell command.
+      def interactive?
+        blocking_human_input?
+      end
+
       def info(message) = emit_event(:info, message: message)
 
       def success(message) = emit_event(:success, message: message)
