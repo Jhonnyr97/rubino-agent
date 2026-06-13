@@ -105,5 +105,86 @@ RSpec.describe Rubino::Security::CommandAllowlist do
         expect(allowlist(["git status", "grep"]).allowed?("git status | grep foo")).to be(true)
       end
     end
+
+    # ------------------------------------------------------------------
+    # SEC-1 — an allowlisted READ head must not smuggle a WRITE/EXEC flag
+    # past the prefix match. `git diff --output FILE` writes the diff to an
+    # arbitrary path: a headless unapproved-write primitive on the SHIPPED
+    # default allowlist (`git diff` is default-allowlisted). The matcher is
+    # now flag-aware via ReadonlyCommands, so the head pre-approves the
+    # COMMAND, never an output/exec flag. These all returned TRUE before.
+    # ------------------------------------------------------------------
+    context "with a write/exec flag on an allowlisted read head (SEC-1)" do
+      it "rejects `git diff --output FILE` (arbitrary write)" do
+        expect(allowlist(["git diff"]).allowed?("git diff --output /tmp/PWN")).to be(false)
+      end
+
+      it "rejects `git diff --output=FILE`" do
+        expect(allowlist(["git diff"]).allowed?("git diff --output=/tmp/PWN")).to be(false)
+      end
+
+      it "rejects the short `git diff -O FILE` form" do
+        expect(allowlist(["git diff"]).allowed?("git diff -O /tmp/PWN")).to be(false)
+      end
+
+      it "rejects the glued `git diff -O/tmp/PWN` form" do
+        expect(allowlist(["git diff"]).allowed?("git diff -O/tmp/PWN")).to be(false)
+      end
+
+      it "rejects `git log --output` (writes a patch)" do
+        expect(allowlist(["git log"]).allowed?("git log --output /tmp/PWN")).to be(false)
+      end
+
+      it "rejects `find -exec` (arbitrary exec) on an allowlisted find" do
+        expect(allowlist(["find"]).allowed?("find . -exec rm {} ;")).to be(false)
+      end
+
+      it "rejects `find -delete`" do
+        expect(allowlist(["find"]).allowed?("find /tmp -delete")).to be(false)
+      end
+
+      it "rejects `find -fprintf FILE` (arbitrary write)" do
+        expect(allowlist(["find"]).allowed?("find . -fprintf /tmp/PWN %p")).to be(false)
+      end
+
+      it "rejects `date -s` (sets the clock)" do
+        expect(allowlist(["date"]).allowed?("date -s '2000-01-01'")).to be(false)
+      end
+
+      it "rejects `tree -o FILE` (writes the listing)" do
+        expect(allowlist(["tree"]).allowed?("tree -o /tmp/PWN")).to be(false)
+      end
+
+      it "rejects the write flag even on a chained, otherwise-allowlisted line" do
+        list = allowlist(["git status", "git diff"])
+        expect(list.allowed?("git status && git diff --output /tmp/PWN")).to be(false)
+      end
+    end
+
+    # The flag-vetting must NOT regress plain allowlisted commands.
+    context "when a plain allowlisted command has no write/exec flag (no false positives)" do
+      it "allows plain `git diff`" do
+        expect(allowlist(["git diff"]).allowed?("git diff")).to be(true)
+      end
+
+      it "allows `git diff` with read-only flags (`--stat`)" do
+        expect(allowlist(["git diff"]).allowed?("git diff --stat HEAD~1")).to be(true)
+      end
+
+      it "allows plain `git status`" do
+        expect(allowlist(["git status"]).allowed?("git status")).to be(true)
+      end
+
+      it "allows the SHIPPED default trio (status / diff / rspec)" do
+        list = allowlist(["git status", "git diff", "bundle exec rspec"])
+        expect(list.allowed?("git status")).to be(true)
+        expect(list.allowed?("git diff")).to be(true)
+        expect(list.allowed?("bundle exec rspec")).to be(true)
+      end
+
+      it "allows a plain allowlisted `find` without mutating flags" do
+        expect(allowlist(["find"]).allowed?("find . -name '*.rb'")).to be(true)
+      end
+    end
   end
 end

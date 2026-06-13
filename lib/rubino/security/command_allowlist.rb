@@ -26,7 +26,12 @@ module Rubino
     #   - EVERY segment must match an allowlist entry, and a match is on a TOKEN
     #     boundary (a prefix of token tokens), never a bare substring: `git`
     #     allowlisted does NOT pre-approve `git-secret-leak`, and `git status`
-    #     does NOT pre-approve `git statusxyz`.
+    #     does NOT pre-approve `git statusxyz`;
+    #   - a matched head is FLAG-VETTED via ReadonlyCommands: an allowlisted
+    #     read-capable head can not smuggle a write/exec flag past the prefix
+    #     match. With `git diff` allowlisted, `git diff --output /tmp/PWN`
+    #     (an arbitrary write) is REJECTED — same for `git diff -O...`,
+    #     `find -exec/-delete/-fprintf`, `date -s`, `tree -o` (SEC-1).
     class CommandAllowlist
       def initialize(config: nil)
         @config = config || Rubino.configuration
@@ -67,14 +72,25 @@ module Rubino
       end
 
       # A single chain segment is allowed when its leading tokens exactly match
-      # some allowlist entry's tokens. Matching on the token list (not the raw
-      # string) makes it boundary-safe: `git status` matches `git status -s`
-      # but never `git statusxyz`.
+      # some allowlist entry's tokens AND it carries no write/exec flag that
+      # would turn a matched read-capable head into an arbitrary write or
+      # execution. Matching on the token list (not the raw string) makes it
+      # boundary-safe: `git status` matches `git status -s` but never
+      # `git statusxyz`.
+      #
+      # Flag vetting reuses ReadonlyCommands' dangerous-flag logic so the
+      # allowlist and the read-only auto-allow agree on what `git --output`,
+      # `find -exec/-delete/-fprintf`, `date -s`, `tree -o` mean: a head being
+      # on the allowlist pre-approves the COMMAND, never a smuggled output/exec
+      # flag (SEC-1 — `git diff --output FILE` arbitrary write).
       def segment_allowed?(segment, entries)
         tokens = Shellwords.split(segment)
         return false if tokens.empty?
 
-        entries.any? { |entry_tokens| tokens.first(entry_tokens.length) == entry_tokens }
+        matched = entries.any? { |entry_tokens| tokens.first(entry_tokens.length) == entry_tokens }
+        return false unless matched
+
+        !ReadonlyCommands.dangerous_flags?(tokens)
       rescue ArgumentError
         false # unbalanced quotes etc. — fall through to the prompt
       end

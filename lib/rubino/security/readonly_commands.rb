@@ -179,15 +179,57 @@ module Rubino
         end
       end
 
+      # Heads that are otherwise allowlistable but can still WRITE or EXEC
+      # through trailing flags (git --output, find -exec/-delete/-fprintf,
+      # date -s, tree -o). The user command allowlist reuses this to vet the
+      # flags of a matched entry, so an allowlisted head (e.g. `git diff`) can
+      # never smuggle an arbitrary write via `--output`.
+      FLAG_VETTED_HEADS = (["git"] + FORBIDDEN_FLAGS.keys).freeze
+
+      # True when `tokens` (a single already-split, non-chained segment whose
+      # head matched a user allowlist entry) carries a write/exec flag that
+      # disqualifies an otherwise-safe head. For non-vetted heads this is
+      # always false — only the known mutator-capable heads are screened.
+      # Pure flag inspection; it does NOT require the command to be read-only
+      # overall (an allowlist entry is user-chosen), it only rejects the
+      # specific output/exec flags that turn a read into a write/exec.
+      def dangerous_flags?(tokens)
+        head = tokens.first
+        return false unless FLAG_VETTED_HEADS.include?(head)
+
+        if head == "git"
+          # An allowlisted git command (e.g. `git diff`) must never smuggle an
+          # arbitrary write via --output/-o. Reject the write flags wherever
+          # they appear after the subcommand; the user's subcommand choice
+          # itself stays authoritative (we don't re-impose read-only-ness).
+          git_write_flag?(tokens.drop(2))
+        else
+          !safe_flags?(head, tokens)
+        end
+      end
+
+      # Git flags that write the output to an arbitrary file:
+      #   --output <file> / --output=<file>  (git diff/log/show/format-patch)
+      #   -o <file> / -o<file>               (short form, git log/format-patch)
+      # `-O<orderfile>` reads an orderfile (no write) but is rejected too, so a
+      # short-flag write form can never slip through ambiguity. Matched on the
+      # whole rest of the segment (token or `flag=value` / glued `-oFILE`).
+      def git_write_flag?(rest)
+        rest.any? do |t|
+          t == "--output" || t.start_with?("--output=", "-o", "-O")
+        end
+      end
+
       # Read-only git: a safe subcommand (no global flags before it — `git -C`
-      # falls to the prompt), never --output (git log/diff/show can write a
-      # file with it), branch/remote in their pure listing forms only.
+      # falls to the prompt), never an output-writing flag (git log/diff/show
+      # can write a file with --output/-o), branch/remote in their pure
+      # listing forms only.
       def safe_git?(tokens)
         sub = tokens[1]
         return false if sub.nil? || sub.start_with?("-")
 
         rest = tokens.drop(2)
-        return false if rest.any? { |t| t == "--output" || t.start_with?("--output=") }
+        return false if git_write_flag?(rest)
 
         case sub
         when *GIT_READONLY_SUBCOMMANDS then true
