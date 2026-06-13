@@ -34,6 +34,14 @@ module Rubino
     #                                 can emit it as plain text — never lost)
     class StreamingMarkdown
       FENCE_RE = /\A\s*```/
+      # An OPENING fence captures its run of backticks (≥3) and any info string
+      # (the language tag) that follows. The CommonMark rule we lean on: a fenced
+      # block is closed only by a bare fence — no info string — of AT LEAST as
+      # many backticks. That keeps a nested ```ruby inside an outer ```markdown
+      # from being mistaken for the close (it carries an info string), so the
+      # whole wrapped block stays one unit instead of mis-toggling (#264).
+      FENCE_OPEN_RE  = /\A\s*(`{3,})\s*(\S.*)?\z/
+      FENCE_CLOSE_RE = /\A\s*(`{3,})\s*\z/
       # An ordered ("1. ", "2) ") or unordered ("- ", "* ", "+ ") list item.
       # Used so a loose list (blank lines BETWEEN items) is kept as ONE block
       # instead of being split per-item: each split item was re-rendered on its
@@ -45,6 +53,7 @@ module Rubino
         @pending = +""   # un-newlined remainder (the live tail-in-progress line)
         @block   = []    # completed lines accumulated for the current block
         @in_fence = false
+        @fence_len = 0    # backtick count of the OPEN fence (close needs ≥ this many)
         @in_list  = false # current block is a markdown list (keep loose items together)
         @blanks   = 0     # blank lines buffered inside a list, re-emitted iff it continues
       end
@@ -109,6 +118,7 @@ module Rubino
         text = @block.join("\n")
         @block = []
         @in_fence = false
+        @fence_len = 0
         @in_list = false
         @blanks = 0
         text
@@ -121,15 +131,18 @@ module Rubino
       def consume_line(line)
         if @in_fence
           @block << line
-          if line.match?(FENCE_RE) # closing fence ends the code block
+          # Close ONLY on a bare fence (no info string) of ≥ the opening run, so
+          # a nested ```ruby inside a ```markdown wrapper doesn't end the block.
+          if (m = line.match(FENCE_CLOSE_RE)) && m[1].length >= @fence_len
             @in_fence = false
             return take_block
           end
           return nil
         end
 
-        if line.match?(FENCE_RE) # opening fence starts a code block
+        if (m = line.match(FENCE_OPEN_RE)) # opening fence starts a code block
           @in_fence = true
+          @fence_len = m[1].length
           flush_blanks
           @block << line
           return nil
