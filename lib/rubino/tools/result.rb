@@ -4,8 +4,12 @@ module Rubino
   module Tools
     # Encapsulates the result of a tool execution.
     class Result
-      attr_reader :name, :call_id, :output, :status, :error, :session_id,
+      attr_reader :name, :call_id, :output, :status, :error,
                   :metrics, :error_code, :artifact
+      # Stamped by the ToolExecutor just before the audit write (the Result is
+      # built deep in the tool pipeline, which has no session context). nil for
+      # results created outside a session (one-shot / test path).
+      attr_accessor :session_id
 
       # `error_code` is an optional Symbol surface for callers (UI badges,
       # automation, future contract tests) that want to branch on the

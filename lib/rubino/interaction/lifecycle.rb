@@ -210,7 +210,10 @@ module Rubino
           # force a redundant re-read + a second approval round-trip. The
           # gate itself still re-prompts on any on-disk change.
           read_tracker: Tools::ReadTracker.for_session(@session[:id]),
-          event_bus: @event_bus
+          event_bus: @event_bus,
+          # Attributes audit rows to this session so the tool_calls FK is
+          # satisfied and the table actually fills (#262).
+          session_id: @session[:id]
         )
 
         # Dispatch through AdapterFactory so a "fake/..." model id (or an
