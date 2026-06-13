@@ -273,6 +273,50 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     end
   end
 
+  # #259: a structurally corrupt config (a scalar written over the `model`
+  # section by an old `config set model foo`) must surface as a graceful
+  # "config corrupt" diagnostic and a non-zero exit — never a raw
+  # `String does not have #dig` TypeError backtrace.
+  describe "corrupt config (#259)" do
+    around do |example|
+      Dir.mktmpdir("rubino_doctor_corrupt") do |dir|
+        orig = ENV.fetch("RUBINO_HOME", nil)
+        ENV["RUBINO_HOME"] = dir
+        # The exact shape the old bug produced: a scalar over the model section.
+        File.write(File.join(dir, "config.yml"), { "model" => "foo" }.to_yaml)
+        Rubino.reset!
+        example.run
+      ensure
+        orig.nil? ? ENV.delete("RUBINO_HOME") : ENV["RUBINO_HOME"] = orig
+        Rubino.reset!
+      end
+    end
+
+    it "reports a corrupt-config diagnostic from check_config (no raise)" do
+      result = nil
+      expect { result = doctor.send(:check_config) }.not_to raise_error
+
+      expect(result).to eq(name: "config", status: :fail)
+      expect(ui.messages.last[:level]).to eq(:error)
+      expect(ui.messages.last[:message]).to include("config corrupt")
+    end
+
+    it "fails the provider/model checks gracefully instead of a TypeError" do
+      expect { doctor.send(:check_provider_keys) }.not_to raise_error
+      expect(doctor.send(:check_provider_keys)[:status]).to eq(:fail)
+
+      expect { doctor.send(:check_model_configured) }.not_to raise_error
+      expect(doctor.send(:check_model_configured)[:status]).to eq(:fail)
+    end
+
+    it "execute exits non-zero without a TypeError backtrace" do
+      expect { doctor.execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+
+      errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
+      expect(errors.join("\n")).to include("config corrupt")
+    end
+  end
+
   describe "#check_document_converters (#6, non-scoring)" do
     it "reports the always-available pure-ruby formats as success" do
       doctor.send(:check_document_converters)

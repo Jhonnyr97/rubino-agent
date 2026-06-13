@@ -38,6 +38,37 @@ RSpec.describe Rubino::Config::Writer do
     end
   end
 
+  # #259: `config set model foo` used to overwrite the whole `model:` section
+  # with the scalar "foo", corrupting the config so badly that even
+  # `rubino doctor` then crashed with a raw `String does not have #dig`
+  # TypeError. Setting a scalar over a known SECTION is now refused, naming a
+  # descendable key, and the file is left intact.
+  describe "scalar over a config section (#259)" do
+    it "refuses to overwrite the model section with a scalar" do
+      expect { writer.set("model", "foo") }
+        .to raise_error(Rubino::ConfigurationError,
+                        /cannot set 'model'.*config section.*model\.default/)
+    end
+
+    it "does not corrupt the file when it refuses" do
+      writer.set("model", "foo")
+    rescue Rubino::ConfigurationError
+      raw = YAML.safe_load_file(config_path)
+      expect(raw.fetch("model")).to eq("default" => "openai/gpt-4.1")
+    end
+
+    it "still refuses a section that only exists in the defaults (not the file)" do
+      # `providers` isn't in this minimal file, but it IS a section in Defaults.
+      expect { writer.set("providers", "x") }
+        .to raise_error(Rubino::ConfigurationError, /config section/)
+    end
+
+    it "still allows descending INTO the section" do
+      writer.set("model.provider", "auto")
+      expect(writer.get("model.provider")).to eq("auto")
+    end
+  end
+
   describe "normal operation still works" do
     it "sets and reads back a nested value" do
       writer.set("model.provider", "auto")

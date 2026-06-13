@@ -71,13 +71,41 @@ module Rubino
         ui = Rubino.ui
         loader = Config::Loader.new
 
-        if loader.config_exists?
-          ui.success("Config file exists: #{loader.config_path}")
-          { name: "config", status: :ok }
-        else
+        unless loader.config_exists?
           ui.error("config file missing. Run 'rubino setup'")
-          { name: "config", status: :fail }
+          return { name: "config", status: :fail }
         end
+
+        # A structurally corrupt config (e.g. a scalar written over the `model`
+        # section by an old `config set model foo`) must surface as a graceful
+        # "corrupt config" diagnostic here, not as a raw TypeError backtrace from
+        # a downstream check digging into the scalar (#259).
+        error = config_corruption(loader)
+        if error
+          ui.error("config corrupt: #{error}. Fix #{loader.config_path} (or restore from a backup / re-run 'rubino setup')")
+          return { name: "config", status: :fail }
+        end
+
+        ui.success("Config file exists: #{loader.config_path}")
+        { name: "config", status: :ok }
+      end
+
+      # Returns a human-readable reason the config is unusable, or nil when it
+      # loads cleanly. A corrupt config makes Configuration#dig raise TypeError
+      # (digging into a scalar where a section is expected) — catch it once here
+      # so doctor can report it instead of crashing.
+      def config_corruption(loader)
+        loader.load
+        config = Config::Configuration.new
+        config.model_default
+        config.model_provider
+        nil
+      rescue Config::ConfigError => e
+        e.message
+      rescue TypeError => e
+        "a section was overwritten with a scalar value (#{e.message})"
+      rescue StandardError => e
+        "#{e.class}: #{e.message}"
       end
 
       def check_database
@@ -160,6 +188,12 @@ module Rubino
           ui.warning("No credentials found for provider '#{provider}'")
           { name: "provider_keys", status: :warn }
         end
+      rescue TypeError => e
+        # A corrupt config (a scalar over the `model`/`providers` section) makes
+        # Configuration#dig raise here. check_config already reported the
+        # corruption; this check just degrades to :fail without a backtrace (#259).
+        ui.error("provider check skipped — config corrupt: #{e.message}")
+        { name: "provider_keys", status: :fail }
       end
 
       def check_model_configured
@@ -173,6 +207,11 @@ module Rubino
           ui.error("no model configured")
           { name: "model", status: :fail }
         end
+      rescue TypeError => e
+        # `model.default` can't be read when the `model` section was clobbered
+        # with a scalar — fail gracefully (check_config already explained why).
+        ui.error("model check skipped — config corrupt: #{e.message}")
+        { name: "model", status: :fail }
       end
 
       # Verifies the OAuth-token encryption key is present and well-formed
