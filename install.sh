@@ -136,25 +136,70 @@ rc_targets() {
   esac
 }
 
+# Acquire an exclusive per-rc lock, run a command, release. The lock makes the
+# check-then-append in _append_line_to_rc atomic: without it two concurrent
+# installs both pass the `grep -qF` (the line is in neither yet) and both append,
+# producing DUPLICATE activation blocks (TOCTOU).
+#
+# We use `mkdir` as the mutex primitive, not `flock`: mkdir is atomic on every
+# POSIX filesystem and present on macOS/busybox alike (flock ships with
+# util-linux and is absent on stock macOS). Spin with a short sleep until the
+# lock dir is ours, with a stale-lock timeout so a crashed installer can't wedge
+# the next one forever. Falls back to running unlocked only if even mkdir is
+# somehow unavailable. Args: $1 = lock dir, $2... = command to run while held.
+with_rc_lock() {
+  local lockdir="$1"; shift
+  local waited=0
+  # Try for up to ~5s (50 * 0.1s), then assume the holder died and proceed.
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if [ "$waited" -ge 50 ]; then
+      rm -rf "$lockdir" 2>/dev/null || true
+      mkdir "$lockdir" 2>/dev/null || break
+      break
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  # Ensure we drop the lock even if the command fails.
+  "$@"
+  local rc=$?
+  rmdir "$lockdir" 2>/dev/null || true
+  return "$rc"
+}
+
+# Append a single line, once, to one rc file. Idempotent via RC_MARKER + a grep
+# for the exact line. MUST run under with_rc_lock so the grep-then-append can't
+# race a concurrent install. Echoes "touched" if the line is present afterward.
+_append_line_to_rc() {
+  local line="$1" rc="$2"
+  # Create the file if missing (login shells will source it).
+  [ -e "$rc" ] || : >"$rc" 2>/dev/null || return 0
+  if grep -qF "$line" "$rc" 2>/dev/null; then
+    printf 'touched'
+    return 0
+  fi
+  if {
+      printf '\n%s\n' "$RC_MARKER"
+      printf '%s\n' "$line"
+    } >>"$rc" 2>/dev/null; then
+    printf 'touched'
+  fi
+}
+
 # Append a single line, once, to each startup file from rc_targets(). Guarded by
-# RC_MARKER + a grep for the exact line so re-runs don't duplicate. Sets
-# PERSISTED_RC to the space-separated files it touched. Returns 0 if the line is
-# present in at least one target afterward.
+# RC_MARKER + a grep for the exact line so re-runs don't duplicate, and by an
+# exclusive per-rc lock so CONCURRENT installs don't duplicate either (TOCTOU).
+# Sets PERSISTED_RC to the space-separated files it touched. Returns 0 if the
+# line is present in at least one target afterward.
 persist_to_rc() {
-  local line="$1" rc any=1 touched=""
+  local line="$1" rc any=1 touched="" res
   [ "$RUBINO_NO_MODIFY_RC" = "1" ] && return 1
   while IFS= read -r rc; do
     [ -n "$rc" ] || continue
-    # Create the file if missing (login shells will source it).
-    [ -e "$rc" ] || : >"$rc" 2>/dev/null || continue
-    if grep -qF "$line" "$rc" 2>/dev/null; then
-      touched="${touched:+$touched }$rc"; any=0
-      continue
-    fi
-    if {
-        printf '\n%s\n' "$RC_MARKER"
-        printf '%s\n' "$line"
-      } >>"$rc" 2>/dev/null; then
+    # The subshell scopes the "touched" capture; the lock serializes the
+    # check-then-append against any other installer touching this same rc.
+    res="$(with_rc_lock "${rc}.rubino.lock.d" _append_line_to_rc "$line" "$rc")"
+    if [ "$res" = "touched" ]; then
       touched="${touched:+$touched }$rc"; any=0
     fi
   done <<EOF
