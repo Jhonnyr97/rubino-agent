@@ -9,6 +9,14 @@ module Rubino
       # Loop#handle_tool_result.
       attr_writer :on_result
 
+      # True once any tool was BLOCKED for approval in a non-interactive session
+      # (#260): a write/edit/shell that needed a prompt no one could answer. The
+      # one-shot CLI reads this after the run to exit NON-ZERO so CI/automation
+      # fails loudly instead of treating a silently-skipped action as success.
+      def blocked_for_approval?
+        @blocked_for_approval == true
+      end
+
       def initialize(registry:, approval_policy:, ui:, config:,
                      tool_call_repository: Tools::ToolCallRepository.new,
                      cancel_token: nil, read_tracker: nil, event_bus: nil,
@@ -58,6 +66,29 @@ module Rubino
                         result: denied, reason: "policy-denied")
           return finish(name, arguments, call_id, denied)
         when :ask
+          # Headless FAIL-CLOSED floor (#260). A tool the policy wants to ASK
+          # about — a write/edit, or a shell command not covered by the
+          # permissions allowlist / read-only auto-allow — cannot be approved
+          # when there is no interactive session (one-shot `rubino prompt`/`-q`,
+          # a pipe, a gate-less embed). Auto-running it (the old UI::Null#confirm
+          # → true bug) is the prompt-injection→RCE foot-gun; hanging on a prompt
+          # no one can answer is the opencode bug. So DENY with a clear,
+          # single-line block message and record the block so the run can exit
+          # non-zero. Anything the user already allowlisted resolved to :allow
+          # before reaching here, so this never regresses a configured command.
+          unless @ui.interactive?
+            @blocked_for_approval = true
+            message = approval_block_message(tool, arguments)
+            @ui.warning(message) if @ui.respond_to?(:warning)
+            # Let the headless adapter latch the block so the one-shot CLI can
+            # exit non-zero (#260) without threading a flag up through the loop.
+            @ui.tool_blocked(message) if @ui.respond_to?(:tool_blocked)
+            blocked = Tools::Result.denied(name: name, call_id: call_id, reason: :noninteractive)
+            record_denied(name: name, call_id: call_id, arguments: arguments,
+                          result: blocked, reason: "noninteractive-blocked")
+            return finish(name, arguments, call_id, blocked)
+          end
+
           unless request_approval(tool, arguments)
             denied = Tools::Result.denied(name: name, call_id: call_id, reason: :user)
             record_denied(name: name, call_id: call_id, arguments: arguments,
@@ -283,6 +314,19 @@ module Rubino
         return :policy unless @approval_policy.respond_to?(:last_deny_reason)
 
         @approval_policy.last_deny_reason || :policy
+      end
+
+      # The single-line "blocked" notice surfaced to stderr (via @ui.warning)
+      # when a tool needs approval but there is no interactive session (#260).
+      # Names the tool and the actionable escape hatches so a scripted run shows
+      # WHY nothing happened instead of failing silently.
+      def approval_block_message(tool, arguments)
+        cmd = Security::ApprovalPolicy.command_string(tool, arguments).to_s
+        cmd = cmd.lines.first.to_s.rstrip
+        cmd = "#{cmd[0, 57]}…" if cmd.length > 60
+        suffix = cmd.empty? ? "" : " (#{cmd})"
+        "blocked: #{tool.name}#{suffix} needs approval but no interactive session " \
+          "(use --yolo to allow, or allowlist it)"
       end
 
       def request_approval(tool, arguments)

@@ -20,8 +20,22 @@ RSpec.describe Rubino::UI::Null do
       expect(ui.messages.size).to eq(2)
     end
 
-    it "returns true for confirm" do
-      expect(ui.confirm("proceed?")).to be true
+    # Headless FAIL-CLOSED (#260): the Null adapter drives the one-shot /
+    # scripted path, where there is no human to ask — so it declines every
+    # approval rather than auto-running a write/shell command.
+    it "fails closed (returns false) for confirm" do
+      expect(ui.confirm("proceed?")).to be false
+    end
+
+    it "reports it is not interactive" do
+      expect(ui.interactive?).to be false
+    end
+
+    it "latches a blocked approval so the one-shot CLI can exit non-zero" do
+      expect(ui.approval_blocked?).to be false
+      ui.tool_blocked("blocked: shell needs approval but no interactive session")
+      expect(ui.approval_blocked?).to be true
+      expect(ui.messages).to include(hash_including(level: :tool_blocked))
     end
 
     it "returns nil for ask" do

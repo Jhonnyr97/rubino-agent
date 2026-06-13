@@ -22,7 +22,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
   let(:registry) { double("Registry", find: tool) }
   let(:policy)   { double("ApprovalPolicy") }
-  let(:ui)       { double("UI", confirm: true) }
+  let(:ui)       { double("UI", confirm: true, interactive?: true) }
   let(:repo)     { double("Repo", record: true) }
   let(:config)   { Rubino.configuration }
 
@@ -85,6 +85,53 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       allow(policy).to receive(:decide).and_return(:allow)
       expect(policy).to receive(:decide).with(tool, arguments: { "x" => 1 })
       executor.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c4")
+    end
+
+    # #260: headless FAIL-CLOSED. A tool the policy wants to ASK about, run in a
+    # non-interactive session (no human to answer), must be DENIED — never
+    # auto-run (the old UI::Null#confirm → true RCE foot-gun) and never blocked
+    # on a prompt no one can answer (the hang).
+    describe "headless fail-closed on :ask (#260)" do
+      let(:ui) { double("UI", confirm: true, interactive?: false, warning: nil) }
+
+      it "blocks the tool without ever calling #confirm" do
+        allow(policy).to receive(:decide).and_return(:ask)
+        expect(ui).not_to receive(:confirm)
+        result = executor.execute(name: "fake_tool", arguments: { "command" => "touch x" }, call_id: "n1")
+        expect(result.denied?).to be true
+      end
+
+      it "does NOT run the tool" do
+        allow(policy).to receive(:decide).and_return(:ask)
+        expect(tool).not_to receive(:call)
+        executor.execute(name: "fake_tool", arguments: {}, call_id: "n2")
+      end
+
+      it "surfaces a single-line block message to the UI" do
+        allow(policy).to receive(:decide).and_return(:ask)
+        expect(ui).to receive(:warning).with(/\Ablocked: fake_tool.*needs approval but no interactive session/)
+        executor.execute(name: "fake_tool", arguments: { "command" => "touch x" }, call_id: "n3")
+      end
+
+      it "records the denial as noninteractive-blocked and sets blocked_for_approval?" do
+        allow(policy).to receive(:decide).and_return(:ask)
+        expect(repo).to receive(:record).with(hash_including(status: "denied", error: "noninteractive-blocked"))
+        executor.execute(name: "fake_tool", arguments: {}, call_id: "n4")
+        expect(executor.blocked_for_approval?).to be true
+      end
+
+      it "gives the model a reason that names the missing session, not the user" do
+        allow(policy).to receive(:decide).and_return(:ask)
+        result = executor.execute(name: "fake_tool", arguments: {}, call_id: "n5")
+        expect(result.output).to include("no interactive session")
+        expect(result.output).not_to include("denied by user")
+      end
+
+      it "does NOT flag a block when the policy allows the tool (no regression for allowlisted)" do
+        allow(policy).to receive(:decide).and_return(:allow)
+        executor.execute(name: "fake_tool", arguments: {}, call_id: "n6")
+        expect(executor.blocked_for_approval?).to be false
+      end
     end
   end
 

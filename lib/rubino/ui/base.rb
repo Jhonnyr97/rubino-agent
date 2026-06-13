@@ -139,6 +139,17 @@ module Rubino
         raise NotImplementedError, "#{self.class}#confirm not implemented"
       end
 
+      # True when this adapter can actually put an approval prompt in front of a
+      # human and block for an answer — a real interactive terminal (UI::CLI) or
+      # the HTTP approval gate (UI::API). The headless one-shot adapter
+      # (UI::Null) returns false, which is the signal ToolExecutor uses to FAIL
+      # CLOSED: a tool that needs approval is DENIED rather than auto-run, since
+      # there is no one to ask (the security floor behind #260). Default true so
+      # any custom adapter that hosts a human keeps the prompt path.
+      def interactive?
+        true
+      end
+
       # A destructive yes/No confirm, default No — distinct from the tool-approval
       # #confirm above (#218). Used for the in-chat/CLI destructive verbs (session
       # delete, memory forget), so only the CLI and Null adapters implement it;
