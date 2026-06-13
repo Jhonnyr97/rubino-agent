@@ -80,6 +80,38 @@ module Rubino
           .map { |row| hydrate(row) }
       end
 
+      # Returns messages strictly NEWER than +after_id+, in chronological order.
+      # Used by the memory extractor's per-session cursor (#249): feeding only the
+      # messages a turn actually added, instead of an overlapping recency window.
+      #
+      # Ordering mirrors #delete_from_inclusive: the cursor row's (created_at,
+      # rowid) tuple is the lower bound, and rows strictly greater are returned —
+      # so same-second inserts are split at exactly the right point. A nil/unknown
+      # +after_id+ (never-extracted session) returns the whole session in order.
+      def since(session_id, after_id:)
+        cursor = after_id && @db[:messages]
+                 .where(id: after_id, session_id: session_id)
+                 .select(:created_at, Sequel.lit("rowid AS row_id"))
+                 .first
+        ds = @db[:messages]
+             .where(session_id: session_id)
+             .order(:created_at, Sequel.lit("rowid"))
+        if cursor
+          ds = ds.where(Sequel.lit("(created_at > ?) OR (created_at = ? AND rowid > ?)",
+                                   cursor[:created_at], cursor[:created_at], cursor[:row_id]))
+        end
+        ds.all.map { |row| hydrate(row) }
+      end
+
+      # The id of the newest message in a session (by (created_at, rowid)), or
+      # nil for an empty session. Used to advance the memory-extraction cursor.
+      def last_id(session_id)
+        @db[:messages]
+          .where(session_id: session_id)
+          .order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
+          .get(:id)
+      end
+
       # Returns total message count for a session
       def count(session_id)
         @db[:messages].where(session_id: session_id).count
