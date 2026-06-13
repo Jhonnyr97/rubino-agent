@@ -34,19 +34,18 @@ module Rubino
         @env_path = File.join(@home_path, ENV_FILENAME)
       end
 
-      # Loads configuration from file, merging with defaults
+      # Loads configuration from file, merging with defaults.
+      #
+      # Every way a config.yml can be unusable is normalized into a single
+      # {ConfigError} with a clean, actionable message here — at the source —
+      # so no raw Ruby/Psych backtrace can escape to the boot path (CFG-1 /
+      # CFG-R2). Covers: a YAML syntax error, an alias/anchor reference
+      # (safe_load rejects aliases by design), a config path that is a
+      # directory or a symlink to one (Errno::EISDIR), a non-Hash top-level
+      # (a bare scalar like `foo`, or a sequence), and any other read/parse
+      # failure.
       def load
-        raw =
-          if File.exist?(@config_path)
-            begin
-              YAML.safe_load_file(@config_path, permitted_classes: [Symbol]) || {}
-            rescue Psych::SyntaxError => e
-              raise ConfigError,
-                    "Invalid YAML in #{@config_path} at line #{e.line}, column #{e.column}: #{e.problem}"
-            end
-          else
-            {}
-          end
+        raw = load_raw_config
 
         load_env_file if File.exist?(@env_path)
 
@@ -66,6 +65,47 @@ module Rubino
       end
 
       private
+
+      # Reads and parses the config file into a Hash, raising {ConfigError}
+      # (never a raw Psych/Ruby exception) for any malformed shape. Returns an
+      # empty Hash when no config file exists — a fresh install runs on the
+      # defaults alone.
+      def load_raw_config
+        return {} unless File.exist?(@config_path)
+
+        raw =
+          begin
+            YAML.safe_load_file(@config_path, permitted_classes: [Symbol])
+          rescue Psych::SyntaxError => e
+            raise ConfigError,
+                  "Invalid YAML in #{@config_path} at line #{e.line}, column #{e.column}: #{e.problem}"
+          rescue Psych::BadAlias
+            raise ConfigError,
+                  "Unsupported YAML alias/anchor in #{@config_path}. " \
+                  "Remove the alias (`*name`) / anchor (`&name`) — config.yml must be plain data."
+          rescue SystemCallError, IOError => e
+            # A config path that is a directory (or a symlink to one) reads as
+            # Errno::EISDIR; any other read failure (permissions, etc.) lands
+            # here too. Both become a clean ConfigError.
+            raise ConfigError, "#{@config_path} is a directory (or a symlink to one), not a config file." \
+              if e.is_a?(Errno::EISDIR)
+
+            raise ConfigError, "Cannot read #{@config_path}: #{e.message}"
+          end
+
+        # A well-formed YAML document whose top level is a scalar (`foo`) or a
+        # sequence (`- a`) parses fine but is not a config mapping — merging it
+        # into the defaults would blow up downstream. Reject it here with a
+        # clear message instead.
+        return {} if raw.nil?
+        unless raw.is_a?(Hash)
+          raise ConfigError,
+                "#{@config_path} must be a YAML mapping of settings, " \
+                "got a top-level #{raw.class.name.downcase} (#{raw.inspect[0, 40]})."
+        end
+
+        raw
+      end
 
       def load_env_file
         File.readlines(@env_path).each do |line|
