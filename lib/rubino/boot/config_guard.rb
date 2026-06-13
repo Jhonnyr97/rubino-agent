@@ -20,10 +20,15 @@ module Rubino
     # re-loads via the Loader and reports corruption itself, so a clean boot
     # here does not mask it.
     module ConfigGuard
+      # The Loader normalizes every malformed config shape into a
+      # {Config::ConfigError} at the source. The remaining classes here are a
+      # defensive backstop: should any raw Psych/IO failure ever slip past the
+      # loader (a new shape, a refactor), it still becomes a clean boot abort
+      # rather than a double backtrace on every command (CFG-R2).
       def self.load!(loader: Config::Loader.new, stderr: $stderr)
         loader.load
         nil
-      rescue Config::ConfigError, Psych::SyntaxError => e
+      rescue Config::ConfigError, Psych::Exception, SystemCallError, IOError => e
         stderr.puts "rubino: config error — #{e.message}"
         stderr.puts "rubino: fix #{loader.config_path}, restore a backup, or re-run 'rubino setup'."
         exit 1
