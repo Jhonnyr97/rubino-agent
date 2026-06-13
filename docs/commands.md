@@ -60,7 +60,9 @@ is set.
 | `--new` | | Start a fresh session (bare `chat` resumes the last one by default) |
 | `--model` | `-m` | Override the model (e.g. `claude-sonnet-4-5`) |
 | `--provider` | | Override the provider (e.g. `anthropic`, `bedrock`) |
-| `--yolo` | | Skip approval prompts (equivalent to `/mode yolo`) |
+| `--yolo` | | Skip approval prompts (equivalent to `/mode yolo`). Honored **only** as a CLI flag — cannot be set from config |
+| `--no-yolo` | | Force fail-closed approvals even over a yolo default (the security half of [#260](#exit-codes-scripting-around-prompt--one-shot)) |
+| `--add-dir` | | Add an extra allowed workspace directory write/edit can reach (repeatable) |
 | `--max-turns` | | Max tool iterations per turn |
 | `--ignore-rules` | | Skip `AGENTS.md` and context files |
 

@@ -4,7 +4,7 @@ From nothing to a working first answer in about five minutes. This is the happy 
 
 ## 1. Install
 
-The fastest path on Linux (x86_64 / arm64) is the one-line installer. It installs a compatible Ruby via [`rv`](https://github.com/spinel-coop/rv), then the gem — all in user space, no sudo:
+The fastest path on Linux and macOS (x86_64 / arm64) is the one-line installer. It installs a compatible Ruby and then the gem — all in user space, no sudo:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Jhonnyr97/rubino-agent/main/install.sh | bash
@@ -17,7 +17,9 @@ curl -fsSL https://raw.githubusercontent.com/Jhonnyr97/rubino-agent/main/install
 less install.sh && bash install.sh
 ```
 
-The installer is idempotent (safe to re-run) and prints the exact `PATH` line for the `rubino` executable when it finishes.
+On Linux it offers a choice of Ruby provider — [`rv`](https://github.com/spinel-coop/rv) or [`mise`](https://mise.jdx.dev) (and Homebrew if `brew` is already present on macOS); pick non-interactively with `RUBINO_INSTALL_METHOD=rv|mise|brew`. On a **Debian 12 / old-glibc** box, prefer **mise**: `rv`'s musl build there yields a Ruby this glibc system can't run, so the installer steers `rv → mise` automatically. (For the mise method, `RUBINO_INSTALL_SCOPE=global|local` chooses user-wide vs this-directory-only. See the [README install matrix](../README.md#install).)
+
+The installer is idempotent (safe to re-run). When it finishes it **persists the activation / `PATH` line to your shell rc** (`.zshrc` / `.bashrc` / `.profile`) and then **verifies in a fresh shell** that `rubino` is on `PATH`, failing loudly if it isn't — so a new terminal just works. Opt out of rc edits with `RUBINO_NO_MODIFY_RC=1` (it then prints the line for you to add).
 
 **Already manage Ruby yourself?** Requirements are Ruby >= 3.1 and SQLite3; then:
 
@@ -85,7 +87,7 @@ The first thing you see is a banner with the workspace, git branch, and model. T
 
 ```
 ▍❯ what does this project do?
- default · MiniMax-M3 · ctx ~0/128k
+ default · openai/gpt-4.1 · ctx ~0/128k
 ```
 
 > If you skipped the wizard during `setup`, a bare `rubino chat` re-runs it before the first turn (when on a TTY). If you're piping input or using `-q`, there's no prompt to run — instead you get a clear, actionable error telling you how to set a key (see below).

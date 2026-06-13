@@ -99,6 +99,12 @@ approvals:
     - "docker ps"             # multi-word entry matches those leading tokens
 ```
 
+## Headless / non-interactive approvals fail closed
+
+A one-shot or scripted run (`rubino prompt`, `chat -q`, or any run with no TTY) has **no interactive session to approve from**, so it **fails closed**: a tool that would otherwise prompt — a write/edit, or a shell command **not** covered by your `permissions` / command allowlist / read-only auto-allow — is **blocked, not run**. A single-line `blocked: <tool> needs approval but no interactive session (use --yolo to allow, or allowlist it)` goes to stderr and the run exits **2**, so automation/CI fails loudly instead of silently skipping (or, worse, auto-executing) the action. Anything you already allowlisted, and every read-only command, still runs unprompted.
+
+To opt back into full auto-execute, pass **`--yolo`**; **`--no-yolo`** forces fail-closed even if a yolo default was set. `--yolo` is honored **only** as a CLI flag — a project-local or persisted config can never grant it, so an untrusted checkout can't silently switch a scripted run into auto-execute. The hardline floor and explicit `permissions: deny` rules still apply under `--yolo`. (See [commands.md §Exit codes](commands.md#exit-codes-scripting-around-prompt--one-shot).)
+
 ## Deny/approve scope: once vs session
 
 At the approval prompt you can decide for just this call or for the rest of the session. Session approvals are remembered by a **prefix/pattern class**, not the raw command:
