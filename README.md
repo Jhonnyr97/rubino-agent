@@ -19,7 +19,15 @@ One line, Linux and macOS (x86_64 / arm64). Installs a compatible Ruby, then the
 curl -fsSL https://raw.githubusercontent.com/Jhonnyr97/rubino-agent/main/install.sh | bash
 ```
 
-On **Linux** the installer fetches a precompiled Ruby via [`rv`](https://github.com/spinel-coop/rv). On **macOS**, if [Homebrew](https://brew.sh) is present it asks whether to use Homebrew (`brew install ruby`) or `rv`; without Homebrew it uses `rv` directly. Skip the prompt with `RUBINO_INSTALL_METHOD=brew` or `=rv`.
+The installer supports **three** methods for getting a compatible Ruby + the gem:
+
+- **`rv`** ([`rv`](https://github.com/spinel-coop/rv)) — fetches a precompiled Ruby into user space.
+- **Homebrew** (`brew install ruby`) — offered on **macOS** when [Homebrew](https://brew.sh) is present.
+- **`mise`** ([mise](https://mise.jdx.dev)) — a polyglot tool manager; installs `rubino` via its `gem:` backend and pins the latest published gem version.
+
+On **macOS** (interactive) you're asked to pick Homebrew / `rv` / `mise`; on **Linux** (interactive) you pick `rv` / `mise` (Homebrew is offered only if `brew` is already on PATH). Skip the prompt with `RUBINO_INSTALL_METHOD=brew`, `=rv`, or `=mise`. For the **mise** method, `RUBINO_INSTALL_SCOPE=global` (default, user-wide `~/.config/mise/config.toml`) or `=local` (this directory only, `./mise.toml`) chooses the scope.
+
+On **Debian 12 / old-glibc** systems `rv` would install a musl Ruby this glibc box can't execute; the installer detects that and **steers you from `rv` to `mise`** (precompiled, glibc-correct) so you don't land on a broken `rubino`.
 
 > **Review before you pipe.** Piping a script into your shell runs whatever it contains. Read it first:
 > ```bash
@@ -27,7 +35,7 @@ On **Linux** the installer fetches a precompiled Ruby via [`rv`](https://github.
 > less install.sh && bash install.sh
 > ```
 
-The installer is idempotent — safe to re-run — and prints the exact `PATH` line for the `rubino` executable plus the next step.
+The installer is idempotent — safe to re-run. It **persists the activation / `PATH` line to your shell rc** (`.zshrc` / `.bashrc` / `.profile`) and then runs a **fresh-shell verification gate** — it opens a clean login shell and fails loudly if `rubino` isn't on `PATH` there, instead of merely printing a hint you might miss. Opt out of any rc modification with `RUBINO_NO_MODIFY_RC=1` (the installer then prints the line for you to add yourself).
 
 **Manual install** (if you'd rather not pipe, or already manage Ruby yourself):
 
@@ -142,7 +150,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 
 ## Built-in tools
 
-The agent ships **33 built-in tools**: `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`. Each is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
+The agent ships **27 built-in tools** (the set `rubino tools` lists): `read`, `read_attachment`, `summarize_file`, `write`, `edit`, `multi_edit`, `apply_patch`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `web`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`. A single `web` tool gates both fetching a URL and searching (config key `tools.web`, off by default). Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
 
 ## Skills
 
