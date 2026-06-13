@@ -174,6 +174,13 @@ module Rubino
         paths.each do |path|
           skill = Skill.new(path: path)
           @skills[skill.name] = skill
+        rescue StandardError => e
+          # One malformed skill (unreadable file, undecodable bytes, a parse
+          # path we didn't anticipate) must never brick discovery of the
+          # rest — skip it with a warning and keep going (SKILL-2). Without
+          # this, a single bad SKILL.md stack-traced the CLI and silently
+          # stripped EVERY skill from the agent's prompt.
+          warn "rubino: skipping skill at #{path} (#{e.class}: #{e.message})"
         end
       end
 

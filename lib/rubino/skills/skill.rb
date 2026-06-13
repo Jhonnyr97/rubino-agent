@@ -127,8 +127,19 @@ module Rubino
         nil
       end
 
+      # Reads the markdown body as UTF-8, replacing any invalid/undefined byte
+      # sequences instead of raising. A single skill carrying a non-UTF-8
+      # SKILL.md (a corrupt or hostile file) must never crash discovery — it
+      # used to raise ArgumentError("invalid byte sequence") deep inside
+      # `raw.split("---")` and brick the whole registry (SKILL-2). Scrubbing
+      # keeps the readable text and turns the bad bytes into U+FFFD.
+      def read_source
+        File.read(@path, encoding: "UTF-8")
+            .scrub("�")
+      end
+
       def parse_frontmatter!
-        raw = File.read(@path, encoding: "UTF-8")
+        raw = read_source
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
@@ -160,7 +171,7 @@ module Rubino
       end
 
       def load_content
-        raw = File.read(@path, encoding: "UTF-8")
+        raw = read_source
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
