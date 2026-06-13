@@ -12,7 +12,10 @@ Encoding.default_internal = Encoding::UTF_8 unless Encoding.default_internal == 
 
 require "rubino"
 
-# Load .env before anything else so ENV vars are available immediately
-Rubino::Config::Loader.new.load
+# Load .env before anything else so ENV vars are available immediately.
+# A malformed config.yml must NOT crash the process with a raw Ruby+Psych
+# backtrace (CFG-1) — ConfigGuard turns it into a clean boot abort so every
+# command (including `rubino doctor`) reports it gracefully.
+Rubino::Boot::ConfigGuard.load!
 
 Rubino::CLI::Commands.start(ARGV)
