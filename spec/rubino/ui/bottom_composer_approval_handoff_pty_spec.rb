@@ -140,6 +140,7 @@ RSpec.describe "BottomComposer approval-menu handoff PTY (happy path — NOT the
       buf << chunk.force_encoding(Encoding::UTF_8)
     rescue IO::WaitReadable
       break if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
       IO.select([master], nil, nil, 0.5)
       next
     rescue Errno::EIO, EOFError
