@@ -16,12 +16,39 @@ module Rubino
     # now a single tool-execution path in the entire application.
     module ToolBridge
       # Returns a RubyLLM::Tool instance wrapping agent_tool.
-      def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil)
+      #
+      # call_id_provider: a 0-arity callable returning the id of the tool_call
+      # ruby_llm is about to dispatch (captured by the adapter's
+      # before_tool_call callback). Threaded through so the STREAMING path
+      # populates the same call_id the non-streaming Loop#execute_tool_calls
+      # already passes — which is what makes spill_full_output fire and the
+      # messages.tool_call_id / tool_calls metadata persist (STRM-2). nil in
+      # the test/one-shot fallback path, where the bridge calls tool.call
+      # directly and no real id exists.
+      def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
                   ui: ui || Rubino.ui,
                   event_bus: event_bus || Rubino.event_bus,
-                  tool_executor: tool_executor)
+                  tool_executor: tool_executor,
+                  call_id_provider: call_id_provider)
+      end
+
+      # Registers every Rubino tool (wrapped as a bridge) on a ruby_llm chat AND
+      # wires the call-id capture the streaming path needs. ruby_llm hands the
+      # bridge only the parsed arguments (Tool#call(args)), not the tool_call
+      # object — so we latch the id from the before_tool_call callback (fired
+      # right before each sequential, tool_concurrency=false dispatch) into a
+      # holder the bridge reads back as call_id. Without this the streaming path
+      # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
+      def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil)
+        current_call_id = nil
+        chat.before_tool_call { |tc| current_call_id = tc&.id } if chat.respond_to?(:before_tool_call)
+        Array(tools).each do |tool|
+          chat.with_tool(self.for(tool, ui: ui, event_bus: event_bus,
+                                        tool_executor: tool_executor,
+                                        call_id_provider: -> { current_call_id }))
+        end
       end
 
       def self.bridge_class_for(tool_name)
@@ -33,11 +60,12 @@ module Rubino
         klass = Class.new(::RubyLLM::Tool) do
           define_method(:name) { tool_name }
 
-          define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:|
-            @agent_tool    = agent_tool
-            @ui            = ui
-            @event_bus     = event_bus
-            @tool_executor = tool_executor
+          define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:, call_id_provider: nil|
+            @agent_tool       = agent_tool
+            @ui               = ui
+            @event_bus        = event_bus
+            @tool_executor    = tool_executor
+            @call_id_provider = call_id_provider
           end
 
           define_method(:description) { @agent_tool.description }
@@ -48,11 +76,16 @@ module Rubino
             args = kwargs.transform_keys(&:to_s)
 
             if @tool_executor
-              # Full pipeline: approval check → tool.call → truncation → audit record
+              # Full pipeline: approval check → tool.call → truncation → audit record.
+              # Thread the real tool_call id (captured by the adapter's
+              # before_tool_call callback) so the streaming path populates the
+              # spill file + tool_call_id/tool_calls linkage exactly like the
+              # non-streaming Loop#execute_tool_calls (STRM-2).
+              call_id = @call_id_provider&.call
               result = @tool_executor.execute(
                 name: name,
                 arguments: args,
-                call_id: nil
+                call_id: call_id
               )
               result.output
             else
