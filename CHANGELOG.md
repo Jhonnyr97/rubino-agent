@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added — skills from git (#4)
+
+- **`rubino skills install <owner/repo | git-URL>`** — install skills from any
+  git repo shipping the `<name>/SKILL.md` layout (`--skill NAME` / `--all` /
+  `--list`; `--documents` is shorthand for the four `anthropics/skills`
+  document skills). Provenance lands in `~/.rubino/skills/.sources.json`, so
+  **`rubino skills update`** re-fetches from the recorded source (up-to-date vs
+  updated by commit) and **`rubino skills remove NAME`** only deletes what this
+  mechanism installed. `rubino skills list` gains a Source column.
+- The skill registry now also discovers the agent-neutral `.agents/skills/`
+  and `~/.agents/skills/` dirs (the `npx skills` / Gemini CLI convention) —
+  additive, lowest precedence, trust-gated like `.rubino/skills`.
+
 ### Added — CLI redesign & in-chat surfaces
 
 A scroll-native `rubino chat` refresh plus several new slash commands and input affordances. All are documented under [docs/commands.md](docs/commands.md) and [docs/configuration.md](docs/configuration.md).

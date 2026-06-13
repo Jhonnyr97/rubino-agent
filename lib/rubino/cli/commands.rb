@@ -183,7 +183,7 @@ module Rubino
       desc "jobs SUBCOMMAND", "Manage background jobs"
       subcommand "jobs", JobsCommand
 
-      desc "skills SUBCOMMAND", "Manage skills (list, show, enable, disable)"
+      desc "skills SUBCOMMAND", "Manage skills (list, enable, install, update)"
       subcommand "skills", SkillsCommand
 
       desc "tools", "List available tools"

@@ -11,6 +11,12 @@ module Rubino
       # Directory skills: <dir>/<name>/SKILL.md (Claude skill layout).
       DIR_GLOB = File.join("*", "SKILL.md")
 
+      # Agent-neutral skill dirs (the emerging `npx skills` / Gemini CLI /
+      # goose convention): discovered in ADDITION to the configured rubino
+      # paths, scanned before them so a rubino-path skill of the same name
+      # wins (lowest precedence). No behavior change when the dirs are absent.
+      AGENT_NEUTRAL_PATHS = [".agents/skills", "~/.agents/skills"].freeze
+
       # Skills shipped *inside the gem* (skills/<name>/SKILL.md at the gem
       # root, packaged via the gemspec's git-ls-files list). These are
       # ALWAYS discovered — they don't depend on the user's skills.paths
@@ -176,6 +182,10 @@ module Rubino
           ".rubino/skills",
           "~/.rubino/skills"
         ]
+        # Prepended (not appended) so the rubino paths override them on a name
+        # collision, and BEFORE the trust filter so the project-local
+        # `.agents/skills` is gated exactly like `.rubino/skills`.
+        paths = AGENT_NEUTRAL_PATHS + paths
         unless @include_project_local
           # Untrusted primary root: drop the project-local (cwd-relative) skill
           # dirs, keeping only absolute / home (~) paths the user controls.

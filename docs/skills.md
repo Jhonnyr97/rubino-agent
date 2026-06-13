@@ -31,6 +31,12 @@ skills:
 Override the search paths via the `skills.paths` config key. On a name collision
 the **directory** layout wins over the flat-file layout (it is the richer unit).
 
+The registry additionally scans the **agent-neutral** skill dirs — project
+`.agents/skills/` and `~/.agents/skills/` (the emerging cross-agent convention
+used by `npx skills`, Gemini CLI, goose) — at the lowest precedence: a
+rubino-path skill of the same name wins, and nothing changes when those dirs
+are absent. The project-local one is trust-gated exactly like `.rubino/skills`.
+
 ### Two layouts
 
 | Layout | Path | Skill name | Bundled files |
@@ -58,6 +64,31 @@ skills, set:
 skills:
   include_builtin: false   # default true
 ```
+
+### Installing skills from git (`rubino skills install`)
+
+Any git repo shipping the `<name>/SKILL.md` layout is a skill source — there is
+no marketplace and nothing else is vendored in the gem. Skills are
+shallow-cloned and copied into `~/.rubino/skills`, where the registry discovers
+them like any hand-written skill:
+
+```bash
+rubino skills install anthropics/skills --list        # see what a source ships
+rubino skills install anthropics/skills --skill pdf   # pick by name (repeatable)
+rubino skills install owner/repo --all                # take everything
+rubino skills install https://gitlab.com/o/r.git      # any git URL works
+rubino skills install --documents                     # anthropics/skills: pdf docx pptx xlsx
+rubino skills update                                  # re-fetch installed skills
+rubino skills remove NAME                             # delete dir + provenance
+```
+
+With no `--skill`/`--all` and multiple skills in the source, the CLI prints the
+catalogue and asks you to pick (off a TTY it just prints the hint). Provenance
+is recorded per installed skill in `~/.rubino/skills/.sources.json`
+(`name → {source, path, commit}`): `rubino skills list` shows it in the Source
+column, and `update` re-fetches from the recorded source, reporting
+*up to date* vs *updated* by comparing commits. `remove` only deletes skills
+this mechanism installed — hand-written skills are never touched.
 
 ### Authoring a `SKILL.md`
 

@@ -75,6 +75,65 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # #4: the agent-neutral skill dirs (`~/.agents/skills` + project
+    # `.agents/skills`, the `npx skills` / Gemini CLI convention) are
+    # discovered ADDITIVELY at the lowest precedence — any rubino-path skill
+    # of the same name wins, and the project-local one is trust-gated exactly
+    # like `.rubino/skills`.
+    describe "agent-neutral skill dirs (#4)" do
+      def write_skill(dir, name, description)
+        FileUtils.mkdir_p(File.join(dir, name))
+        File.write(File.join(dir, name, "SKILL.md"),
+                   "---\nname: #{name}\ndescription: #{description}\n---\nbody")
+      end
+
+      it "discovers ~/.agents/skills, with a rubino-path skill winning on collision" do
+        Dir.mktmpdir do |home|
+          write_skill(File.join(home, ".agents", "skills"), "haiku-writer", "neutral")
+          Dir.mktmpdir do |rubino_dir|
+            write_skill(rubino_dir, "haiku-writer", "rubino wins")
+            original_home = Dir.home
+            ENV["HOME"] = home
+            begin
+              neutral_only = described_class.new(
+                config: test_configuration("skills" => { "paths" => [] }), include_builtin: false
+              )
+              expect(neutral_only.find("haiku-writer").description).to eq("neutral")
+
+              both = described_class.new(
+                config: test_configuration("skills" => { "paths" => [rubino_dir] }), include_builtin: false
+              )
+              expect(both.find("haiku-writer").description).to eq("rubino wins")
+            ensure
+              ENV["HOME"] = original_home
+            end
+          end
+        end
+      end
+
+      it "trust-gates the project-local .agents/skills like .rubino/skills" do
+        Dir.mktmpdir do |tmp|
+          # realpath: Dir.pwd inside the chdir resolves /var → /private/var on
+          # macOS, and the project-local check compares expanded path prefixes.
+          project = File.realpath(tmp)
+          write_skill(File.join(project, ".agents", "skills"), "repo-skill", "from the repo")
+          allow(Rubino::Workspace).to receive(:primary_root).and_return(project)
+          Dir.chdir(project) do
+            trusted = described_class.new(
+              config: test_configuration("skills" => { "paths" => [] }), include_builtin: false
+            )
+            expect(trusted.names).to include("repo-skill")
+
+            untrusted = described_class.new(
+              config: test_configuration("skills" => { "paths" => [] }),
+              include_builtin: false, include_project_local: false
+            )
+            expect(untrusted.names).not_to include("repo-skill")
+          end
+        end
+      end
+    end
+
     it "names a directory skill after its directory" do
       expect(registry.find("data-helper")).not_to be_nil
       expect(registry.find("data-helper").path).to end_with("data-helper/SKILL.md")

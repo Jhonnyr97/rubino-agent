@@ -13,7 +13,7 @@ Two surfaces: **CLI subcommands** (run from your shell) and **slash commands** (
 | `rubino memory SUBCOMMAND` | Manage persistent memories (`list` / `show` / `delete` / `backend`) |
 | `rubino sessions SUBCOMMAND` | Manage chat sessions |
 | `rubino jobs SUBCOMMAND` | Manage background jobs |
-| `rubino skills SUBCOMMAND` | Manage skills (`list` / `show` / `enable` / `disable`) |
+| `rubino skills SUBCOMMAND` | Manage skills (`list` / `show` / `enable` / `disable` / `install` / `update` / `remove`) |
 | `rubino tools` | List available tools and their enabled/disabled state |
 | `rubino server` | Start the JSON API + SSE server |
 | `rubino tls-cert` | Print the agent's self-signed TLS certificate PEM (generating it if absent) |
@@ -129,10 +129,15 @@ rubino jobs list
 rubino jobs process          # run pending jobs now (manual mode)
 rubino jobs worker           # start a background worker
 
-rubino skills list           # list skills with enabled/disabled markers
+rubino skills list           # list skills with enabled/disabled markers + provenance
 rubino skills show NAME      # print a skill's SKILL.md body (review before enabling)
 rubino skills enable NAME    # put a skill back in the index (every session)
 rubino skills disable NAME   # drop a skill from the index (every session)
+
+rubino skills install owner/repo --skill NAME   # install skills from a git repo (#4)
+rubino skills install --documents               # anthropics/skills: pdf docx pptx xlsx
+rubino skills update [NAME ...]                 # re-fetch from the recorded sources
+rubino skills remove NAME                       # delete an installed skill + provenance
 ```
 
 `config get`/`config show` mask secret-named keys (`api_key`, tokens, …) on display — the file keeps the real value. See [memory.md](memory.md) for the memory backends, [jobs.md](jobs.md) for the queue/cron system and [skills.md](skills.md) for the skill model.
