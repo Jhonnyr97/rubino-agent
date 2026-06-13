@@ -112,6 +112,22 @@ RSpec.describe Rubino::Session::Store do
       # Cursor at the middle row -> only the row after it (rowid tie-break).
       expect(store.since(session[:id], after_id: ids[1]).map(&:content)).to eq(%w[z])
     end
+
+    # MEM-3: a message that arrives with an EARLIER created_at than the cursor
+    # (backward clock step / NTP / VM suspend) must still be returned as "new" —
+    # it was inserted after the cursor (higher rowid) even though its wall-clock
+    # timestamp regressed. The old (created_at, rowid) tuple filter silently
+    # dropped it forever; ordering on the monotonic rowid sees it.
+    it "returns an out-of-order (backdated created_at) message newer than the cursor" do
+      cursor = store.create(session_id: session[:id], role: "user", content: "ontime",
+                            created_at: "2026-06-13T10:00:00+00:00")
+      # Inserted AFTER the cursor but timestamped BEFORE it (clock went backwards).
+      backdated = store.create(session_id: session[:id], role: "user", content: "skewed",
+                               created_at: "2026-06-13T09:59:00+00:00")
+      result = store.since(session[:id], after_id: cursor.id)
+      expect(result.map(&:content)).to include("skewed")
+      expect(result.map(&:id)).to eq([backdated.id])
+    end
   end
 
   describe "#last_id" do
@@ -123,6 +139,67 @@ RSpec.describe Rubino::Session::Store do
 
     it "is nil for an empty session" do
       expect(store.last_id(session[:id])).to be_nil
+    end
+  end
+
+  describe "#seed_extraction_cursor (MEM-2)" do
+    it "pins the watermark to the session's current last message" do
+      store.create(session_id: session[:id], role: "user", content: "a")
+      last = store.create(session_id: session[:id], role: "assistant", content: "b")
+      seeded = store.seed_extraction_cursor(session[:id])
+      expect(seeded).to eq(last.id)
+      expect(db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id))
+        .to eq(last.id)
+    end
+
+    it "sets the cursor to nil for an empty session" do
+      db_connection.db[:sessions].where(id: session[:id]).update(memory_extracted_msg_id: "stale")
+      expect(store.seed_extraction_cursor(session[:id])).to be_nil
+      expect(db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id))
+        .to be_nil
+    end
+
+    it "is a no-op when the session row is absent" do
+      expect(store.seed_extraction_cursor("nonexistent")).to be_nil
+    end
+  end
+
+  describe "#delete_from_inclusive (undo/retry rewind)" do
+    it "deletes the message and everything after it" do
+      store.create(session_id: session[:id], role: "user", content: "a")
+      cut = store.create(session_id: session[:id], role: "user", content: "b")
+      store.create(session_id: session[:id], role: "assistant", content: "c")
+      removed = store.delete_from_inclusive(session[:id], from_id: cut.id)
+      expect(removed).to eq(2)
+      expect(store.for_session(session[:id]).map(&:content)).to eq(%w[a])
+    end
+
+    # MEM-1: undo/retry delete the cursor message; a dangling watermark made the
+    # next extraction re-mine the whole remaining session (and could resurrect a
+    # just-forgotten fact). The delete must re-seed the cursor to the new tail so
+    # the next turn resumes from there, not from scratch.
+    it "re-seeds the extraction cursor to the new tail after a delete" do
+      store.create(session_id: session[:id], role: "user", content: "keep")
+      cursor_msg = store.create(session_id: session[:id], role: "assistant", content: "old-cursor")
+      db_connection.db[:sessions].where(id: session[:id])
+                   .update(memory_extracted_msg_id: cursor_msg.id)
+      # Delete the cursor message itself (what undo/retry do).
+      store.delete_from_inclusive(session[:id], from_id: cursor_msg.id)
+      new_cursor = db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id)
+      expect(new_cursor).to eq(store.last_id(session[:id]))
+      expect(new_cursor).not_to eq(cursor_msg.id)
+      # The remaining transcript is now entirely behind the cursor -> nothing
+      # re-fed (no re-mine of the whole session).
+      expect(store.since(session[:id], after_id: new_cursor)).to eq([])
+    end
+
+    it "clears the cursor when the delete empties the session" do
+      first = store.create(session_id: session[:id], role: "user", content: "only")
+      db_connection.db[:sessions].where(id: session[:id])
+                   .update(memory_extracted_msg_id: first.id)
+      store.delete_from_inclusive(session[:id], from_id: first.id)
+      expect(db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id))
+        .to be_nil
     end
   end
 
