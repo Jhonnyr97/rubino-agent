@@ -236,6 +236,92 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
     end
   end
 
+  describe "#extract — per-session cursor (#249)" do
+    let(:store) { Rubino::Session::Store.new(db: db) }
+
+    before do
+      now = Time.now.utc.iso8601
+      db[:sessions].insert(id: "s1", source: "test", status: "active",
+                           message_count: 0, token_count: 0, created_at: now, updated_at: now)
+    end
+
+    def turn(idx)
+      store.create(session_id: "s1", role: "user", content: "user line #{idx}")
+      store.create(session_id: "s1", role: "assistant", content: "assistant line #{idx}")
+    end
+
+    it "feeds only the turn's NEW messages, not an overlapping window" do
+      fed = []
+      allow(aux_client).to receive(:call) do |**kwargs|
+        body = kwargs[:messages].last[:content]
+        fed << body.scan(/^(?:USER|ASSISTANT):/).size
+        OpenStruct.new(content: '{"add":[],"supersede":[]}')
+      end
+
+      4.times do |i|
+        turn(i)
+        backend.extract("s1")
+      end
+
+      # Without a cursor this grows (2,4,6,6...); bounded it stays flat at 2.
+      expect(fed).to eq([2, 2, 2, 2])
+    end
+
+    it "advances the cursor to the newest extracted message each turn" do
+      stub_llm('{"add":[],"supersede":[]}')
+
+      turn(0)
+      backend.extract("s1")
+      first_cursor = db[:sessions].where(id: "s1").get(:memory_extracted_msg_id)
+      expect(first_cursor).to eq(store.last_id("s1"))
+
+      turn(1)
+      backend.extract("s1")
+      second_cursor = db[:sessions].where(id: "s1").get(:memory_extracted_msg_id)
+      expect(second_cursor).to eq(store.last_id("s1"))
+      expect(second_cursor).not_to eq(first_cursor)
+    end
+
+    it "skips the aux-LLM call entirely when no new messages exist (no duplicate pass)" do
+      stub_llm('{"add":[],"supersede":[]}')
+      turn(0)
+      backend.extract("s1")
+
+      # A second extract with nothing new must NOT spend another aux call.
+      expect(aux_client).not_to receive(:call)
+      expect(backend.extract("s1")).to eq([])
+    end
+
+    it "still extracts a fact that spans the turn's new messages" do
+      turn(0)
+      stub_llm('{"add":[{"text":"User prefers tabs.","kind":"preference"}],"supersede":[]}')
+      stored = backend.extract("s1")
+      expect(stored.map { |s| s[:content] }).to eq(["User prefers tabs."])
+    end
+
+    it "does not advance the cursor when the aux call fails (messages retried next turn)" do
+      turn(0)
+      stub_llm("not json at all") # parse failure -> nil result
+      backend.extract("s1")
+      expect(db[:sessions].where(id: "s1").get(:memory_extracted_msg_id)).to be_nil
+
+      # Next turn's extraction therefore still sees turn 0's messages.
+      stub_llm('{"add":[{"text":"User prefers tabs.","kind":"preference"}],"supersede":[]}')
+      expect(backend.extract("s1").map { |s| s[:content] }).to eq(["User prefers tabs."])
+    end
+
+    it "keeps cross-session recall working — a fact planted in s1 recalls in s2" do
+      turn(0)
+      stub_llm('{"add":[{"text":"User lives in Lisbon.","kind":"user_profile"}],"supersede":[]}')
+      backend.extract("s1")
+
+      # Brand-new session: recall must still surface the s1 fact (facts are not
+      # session-scoped; the cursor only bounds what each turn FEEDS).
+      out = backend.retrieve(session_id: "s2", query: "Where does the user live?")
+      expect(out.map { |r| r[:content] }).to include("User lives in Lisbon.")
+    end
+  end
+
   describe "#extract — temporal supersession" do
     before { seed_session }
 

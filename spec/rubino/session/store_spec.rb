@@ -82,6 +82,50 @@ RSpec.describe Rubino::Session::Store do
     end
   end
 
+  describe "#since (memory-extraction cursor, #249)" do
+    it "returns all messages in order when the cursor is nil" do
+      %w[a b c].each { |c| store.create(session_id: session[:id], role: "user", content: c) }
+      expect(store.since(session[:id], after_id: nil).map(&:content)).to eq(%w[a b c])
+    end
+
+    it "returns only messages strictly newer than the cursor id" do
+      a = store.create(session_id: session[:id], role: "user", content: "a")
+      store.create(session_id: session[:id], role: "user", content: "b")
+      store.create(session_id: session[:id], role: "user", content: "c")
+      expect(store.since(session[:id], after_id: a.id).map(&:content)).to eq(%w[b c])
+    end
+
+    it "returns nothing when the cursor is already the newest message" do
+      store.create(session_id: session[:id], role: "user", content: "a")
+      last = store.create(session_id: session[:id], role: "user", content: "b")
+      expect(store.since(session[:id], after_id: last.id)).to eq([])
+    end
+
+    it "splits same-second inserts on rowid (no overlap, no skip)" do
+      same_ts = "2026-01-01T00:00:00Z"
+      ids = %w[x y z].map do |c|
+        id = SecureRandom.uuid
+        db_connection.db[:messages].insert(id: id, session_id: session[:id],
+                                           role: "user", content: c, created_at: same_ts)
+        id
+      end
+      # Cursor at the middle row -> only the row after it (rowid tie-break).
+      expect(store.since(session[:id], after_id: ids[1]).map(&:content)).to eq(%w[z])
+    end
+  end
+
+  describe "#last_id" do
+    it "returns the newest message id (rowid tie-break)" do
+      store.create(session_id: session[:id], role: "user", content: "a")
+      last = store.create(session_id: session[:id], role: "assistant", content: "b")
+      expect(store.last_id(session[:id])).to eq(last.id)
+    end
+
+    it "is nil for an empty session" do
+      expect(store.last_id(session[:id])).to be_nil
+    end
+  end
+
   describe "#token_sum" do
     it "returns sum of token_count" do
       store.create(session_id: session[:id], role: "user", content: "hi", token_count: 5)
