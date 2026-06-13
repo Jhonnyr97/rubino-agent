@@ -15,6 +15,7 @@ module Rubino
       def set(key_path, value)
         raw = load_raw
         keys = key_path.split(".")
+        reject_scalar_over_section!(key_path, keys, raw, value)
         hash = raw
 
         keys[0..-2].each_with_index do |k, i|
@@ -43,6 +44,33 @@ module Rubino
       end
 
       private
+
+      # Refuses to clobber a structured SECTION (a Hash, in the defaults or in
+      # the file already) with a SCALAR value (#259). `config set model foo`
+      # used to overwrite the whole `model:` hash with the String "foo",
+      # corrupting the config so badly that even `rubino doctor` then crashed
+      # with a raw `String does not have #dig` TypeError. The default config is
+      # the authoritative schema: if the value at this exact path is a Hash, the
+      # path names a section the user must descend INTO (e.g. `model.default`),
+      # not assign over. Replacing a section with another Hash (e.g. internal
+      # callers writing the whole `permissions` map) is legitimate and allowed.
+      def reject_scalar_over_section!(key_path, keys, raw, value)
+        return if value.is_a?(Hash)
+
+        existing = raw.dig(*keys)
+        default = Defaults.dig(*keys)
+        section = existing.is_a?(Hash) ? existing : default
+        return unless section.is_a?(Hash)
+
+        sample = section.keys.first
+        hint = sample ? " (try '#{key_path}.#{sample}')" : ""
+        raise ConfigurationError,
+              "cannot set '#{key_path}': it is a config section, not a single value#{hint}"
+      rescue TypeError
+        # A scalar intermediate node has no #dig; the descent loop below raises
+        # the precise "is a scalar value, not a section" error for that case.
+        nil
+      end
 
       def load_raw
         if File.exist?(@config_path)
