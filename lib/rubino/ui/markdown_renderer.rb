@@ -98,10 +98,16 @@ module Rubino
         when :header
           header_lines(el)
         when :p
-          # A lone fence marker (a stray ``` a model leaves after an outer
-          # ```markdown wrapper) parses as a paragraph of literal backticks;
-          # drop it rather than leak the ``` as text (#264).
-          fence_only_paragraph?(el) ? [:drop] : wrap_lines(paragraph_lines(el))
+          # A stray fence marker (``` a model leaves after an outer ```markdown
+          # wrapper) parses as literal backticks. It can stand alone as a whole
+          # paragraph OR ride at the END of a prose paragraph glued to the
+          # wrapper's body (kramdown closes the outer fence on the FIRST nested
+          # ``` it sees, so the wrapper's real closing ``` lands as a trailing
+          # text line on the paragraph that follows). Strip those orphan fence
+          # lines so the ``` never leaks; drop the paragraph entirely if nothing
+          # but fence lines remain (#264, R1-V1).
+          lines = strip_orphan_fence_lines(paragraph_lines(el))
+          lines.empty? ? [:drop] : wrap_lines(lines)
         when :ul
           list_lines(el, ordered: false)
         when :ol
@@ -137,10 +143,21 @@ module Rubino
         "#{text}\n```"
       end
 
-      # True when a paragraph's whole visible text is just a fence marker
-      # (```), i.e. an orphaned fence line with no code body around it.
-      def fence_only_paragraph?(el)
-        inline_tokens(el.children, {}).map { |t, _| t == :br ? "" : t.to_s }.join.strip.match?(/\A`{3,}\z/)
+      # A line whose entire visible text is a bare fence marker (``` of ≥3
+      # backticks), i.e. an orphaned fence delimiter with no code body.
+      ORPHAN_FENCE_RE = /\A\s*`{3,}\s*\z/
+
+      # Drop any LineTokens whose whole text is a lone fence marker. These are
+      # leaked fence delimiters (the outer ```markdown wrapper's close, or a
+      # dangling closer with no opener) that kramdown surfaces as literal prose;
+      # emitting them leaks a raw ``` into the rendered turn (R1-V1).
+      def strip_orphan_fence_lines(lines)
+        lines.reject { |line| line_text(line).match?(ORPHAN_FENCE_RE) }
+      end
+
+      # The plain visible text of a LineTokens (ignoring :br sentinels/styles).
+      def line_text(line)
+        line.filter_map { |text, _| text.to_s unless text == :br }.join
       end
 
       def header_lines(el)
@@ -301,6 +318,13 @@ module Rubino
         cells
       end
 
+      # The minimum width a column is allowed to shrink to when the table must be
+      # squeezed to fit the budget. Below this a column degrades into a 1-char-
+      # per-line vertical stack (`I`/`D`, `N`/`a`/`m`/`e`) — unreadable. We keep
+      # every column at least this wide so a single very long cell can't starve
+      # its siblings; the long cell wraps across more lines instead (R1-V2).
+      MIN_COL_WIDTH = 6
+
       # Returns Array<LineTokens> on success, or nil if TTY::Table can't render
       # (so the caller can fall back).
       def render_tty_table(header, rows)
@@ -317,13 +341,66 @@ module Rubino
         # unused — no stretch, no gap. No horizontal padding either: the resize
         # budget ignores it (~2 cols/row overflow); cells still get the gutters.
         opts = { multiline: true, width: fit }
-        opts[:resize] = true if table.width > fit
+        if table.width > fit
+          # Overflow: do NOT hand TTY::Table its own greedy resize (it gives a
+          # single long cell almost the whole width and collapses the siblings to
+          # 1 char — R1-V2). Instead allocate balanced column widths with a floor,
+          # wrapping the long cell across lines so every column stays readable.
+          widths = balanced_column_widths(header, rows, fit)
+          if widths
+            opts[:column_widths] = widths
+          else
+            opts[:resize] = true
+          end
+        end
         str = table.render(:unicode, **opts)
         return nil if str.nil?
 
         str.split("\n").map { |line| [[line, { fg: :gray }]] }
       rescue StandardError
         nil
+      end
+
+      # Allocate per-column widths summing to the content budget (the budget
+      # minus the unicode frame's ncols+1 border chars), guaranteeing each column
+      # at least MIN_COL_WIDTH (or its natural width if smaller) so no column is
+      # starved. Spare width above the floors is shared among the columns that
+      # want more, feeding the narrowest first so short columns fill before a
+      # greedy long cell hoards the rest; no column exceeds its natural width.
+      # Returns nil when even the floors don't fit the budget (let TTY::Table's
+      # own resize handle that degenerate, very-narrow case).
+      def balanced_column_widths(header, rows, fit)
+        all = (header ? [header] : []) + rows
+        ncols = all.map(&:size).max.to_i
+        return nil if ncols.zero?
+
+        # Natural width per column = widest cell (by display columns, CJK-aware).
+        natural = Array.new(ncols, 1)
+        all.each do |r|
+          r.each_with_index { |c, i| natural[i] = [natural[i], display_width(c.to_s)].max }
+        end
+
+        budget = fit - (ncols + 1) # ncols+1 vertical border chars in :unicode
+        floors = natural.map { |w| [w, MIN_COL_WIDTH].min }
+        return nil if floors.sum > budget # too narrow even at floors — bail out
+
+        widths = floors.dup
+        spare  = budget - floors.sum
+        # Distribute spare 1 col at a time, always feeding the column that is
+        # currently NARROWEST among those still under their natural width. This
+        # satisfies short columns fully (e.g. a 7-char "Pending" header) before a
+        # genuinely greedy long cell hoards the rest, and splits the remainder
+        # evenly when several columns are long — so the long cells wrap while the
+        # siblings stay readable, never starved (R1-V2). Never overshoots.
+        loop do
+          wants = (0...ncols).select { |i| widths[i] < natural[i] }
+          break if spare <= 0 || wants.empty?
+
+          i = wants.min_by { |j| widths[j] }
+          widths[i] += 1
+          spare -= 1
+        end
+        widths
       end
 
       # Last-resort plain rendering used only if TTY::Table fails. Joins cells
