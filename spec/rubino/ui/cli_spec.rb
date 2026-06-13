@@ -75,6 +75,71 @@ RSpec.describe Rubino::UI::CLI do
       expect(clear_idx).to be < commit_idx
     end
 
+    # #265 (interrupt path): when a real composer owns the screen, the final
+    # block must commit in ONE live-region frame that also clears the raw live
+    # tail — NOT the old two-step (clear the partial, then commit the block
+    # line-by-line), whose window let a just-painted raw tail row scroll past
+    # the next frame's relative clear and survive ABOVE the rendered block. We
+    # assert the whole rendered block is handed to the composer as a SINGLE
+    # #print_above (atomic clear+commit), not dribbled per line.
+    it "commits the finalized block in one atomic composer frame (#265 interrupt)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      commits  = []
+      allow(composer).to receive(:print_above) { |s| commits << s }
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      live_io = Object.new
+      live_io.define_singleton_method(:live) { |_s| self }
+      live_io.define_singleton_method(:puts) { |*| nil }
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "The Ruby language was born in 1993 and ")
+        ui.stream(type: :content, text: "grew into a beloved tool for developers.")
+        ui.stream_end
+      ensure
+        $stdout = old
+      end
+
+      # The WHOLE block lands in a SINGLE print_above (one atomic clear+commit
+      # frame) — not dribbled across several committed-line frames, which is what
+      # let a raw tail row survive between them. So exactly one print_above
+      # carries the answer, and it holds the whole sentence (wrapping aside).
+      answer_commits = commits.select { |s| s.to_s.include?("beloved tool") }
+      expect(answer_commits.size).to eq(1)
+      flat = answer_commits.first.gsub(/\s+/, " ")
+      expect(flat).to include("The Ruby language was born in 1993")
+      expect(flat).to include("beloved tool for developers")
+    end
+
+    # #265 ghost root cause: a content delta arriving WHILE the turn is being
+    # interrupted (the adapter flushes its think-filter tail on the way out of a
+    # cancelled stream) must NOT re-open a stream and paint a fresh raw live tail
+    # under the already-committed partial. #turn_interrupted latches this; the
+    # late delta is dropped.
+    it "drops a late content delta while interrupting so it can't re-arm a live tail (#265)" do
+      tailed = []
+      allow(ui).to receive(:show_live_tail) { |t| tailed << t }
+      allow(ui).to receive(:status_stop)
+      allow(ui).to receive(:clear_line)
+      allow(ui).to receive(:collapse_reasoning)
+      out = capture_stdout do
+        ui.instance_variable_set(:@turn_interrupting, true)
+        ui.stream(type: :content, text: "stray tail flushed during the interrupt")
+      end
+      # No fresh raw tail was painted for the stray delta, and it wasn't echoed.
+      expect(tailed).to be_empty
+      expect(out).not_to include("stray tail flushed")
+    end
+
     it "buffers thinking text instead of raw-printing it (bug #2)" do
       out = capture_stdout do
         ui.stream(type: :thinking, text: "musing")

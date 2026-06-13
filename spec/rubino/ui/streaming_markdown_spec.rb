@@ -102,6 +102,55 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
     end
   end
 
+  # A model routinely wraps a whole answer in an OUTER ```markdown fence whose
+  # body itself contains a NESTED ```ruby fence. The inner ruby's bare closing
+  # ``` must NOT be mistaken for the outer wrapper's close, or the outer block is
+  # reported one fence early and the real trailing ``` is orphaned — then emitted
+  # raw below the rendered code frame (T1, a new break of #264). The splitter
+  # must track fence nesting DEPTH inside a markdown wrapper so the whole wrapped
+  # answer stays ONE block, closed only by the outer fence.
+  describe "nested fences inside a ```markdown wrapper (T1)" do
+    let(:nested) do
+      "```markdown\n" \
+        "# Heading\n" \
+        "**bold**\n" \
+        "```ruby\n" \
+        "puts 1\n" \
+        "```\n" \
+        "```\n"
+    end
+
+    it "reports the WHOLE nested-fence answer as ONE block, no orphan fence" do
+      done = feed_all(nested)
+      expect(done).to eq(["```markdown\n# Heading\n**bold**\n```ruby\nputs 1\n```\n```"])
+    end
+
+    it "does not report the block until the OUTER closing fence arrives" do
+      expect(buf.feed("```markdown\n# Heading\n```ruby\nputs 1\n")).to eq([])
+      # the inner ruby close must NOT complete the block
+      expect(buf.feed("```\n")).to eq([])
+      # only the outer close completes it
+      expect(buf.feed("```\n")).to eq(["```markdown\n# Heading\n```ruby\nputs 1\n```\n```"])
+    end
+
+    it "leaves NO orphan fence buffered after the answer completes (nothing to flush)" do
+      feed_all(nested)
+      expect(buf.flush).to be_nil
+      expect(buf.tail).to eq("")
+    end
+
+    it "treats ```md the same wrapper way as ```markdown" do
+      done = feed_all("```md\ntext\n```ruby\nx\n```\n```\n")
+      expect(done).to eq(["```md\ntext\n```ruby\nx\n```\n```"])
+    end
+
+    it "still closes a plain (non-wrapper) fence on its first bare close" do
+      # A normal ```ruby block must NOT wait for a second fence — depth tracking
+      # is only armed for the markdown/md wrapper.
+      expect(buf.feed("```ruby\nputs 1\n```\n")).to eq(["```ruby\nputs 1\n```"])
+    end
+  end
+
   describe "#tail" do
     it "includes buffered complete lines plus the un-newlined remainder" do
       buf.feed("line1\nline2\npart")
