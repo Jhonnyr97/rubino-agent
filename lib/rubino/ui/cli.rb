@@ -1525,8 +1525,16 @@ module Rubino
       end
 
       # Renders body text with the current activity open.
+      # The single chokepoint that prints UNTRUSTED tool output (shell/file/MCP
+      # body + the live shell tail) to the real terminal. Sanitize here
+      # (R2-V1 / CWE-150): raw `\e[2J`/`\e[41m…`/`\e]0;…\a` in that output
+      # would otherwise reach the emulator and clear the screen, recolor, or
+      # set the window title. Util::Output.sanitize_terminal strips the
+      # control/escape bytes (and normalizes bare CR) BEFORE the style wrapper
+      # runs, so rubino's own @pastel ANSI — applied per-line below — stays the
+      # only trusted styling that reaches the terminal.
       def write_body_lines(text, &style)
-        text.each_line do |line|
+        Util::Output.sanitize_terminal(text).each_line do |line|
           chomped = line.chomp
           rendered = style ? style.call(chomped) : chomped
           $stdout.puts "  #{rendered}"
