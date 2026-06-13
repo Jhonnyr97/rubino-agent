@@ -201,6 +201,51 @@ RSpec.describe Rubino::Session::Store do
       expect(db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id))
         .to be_nil
     end
+
+    # R1-M2 — a delete must CLAMP the cursor, never SEAL a surviving message that
+    # sits between the old cursor and the cut. The old "re-seed to new tail" would
+    # jump the watermark past `survivor` and silently drop its un-mined fact.
+    it "does not seal an un-mined survivor between the old cursor and the cut" do
+      mined  = store.create(session_id: session[:id], role: "assistant", content: "mined")
+      store.create(session_id: session[:id], role: "user", content: "un-mined survivor")
+      doomed = store.create(session_id: session[:id], role: "user", content: "to be cut")
+      # Cursor sits at `mined`: everything <= it is extracted, `survivor` is NOT.
+      db_connection.db[:sessions].where(id: session[:id])
+                   .update(memory_extracted_msg_id: mined.id)
+
+      store.delete_from_inclusive(session[:id], from_id: doomed.id)
+
+      new_cursor = db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id)
+      # Cursor stays at `mined` (clamp = never move forward), so the survivor is
+      # still fed to the next extraction instead of being sealed/lost.
+      expect(new_cursor).to eq(mined.id)
+      expect(store.since(session[:id], after_id: new_cursor).map(&:content))
+        .to eq(["un-mined survivor"])
+    end
+  end
+
+  describe "#reseed_extraction_cursor_clamped (MEM-1 clamp)" do
+    it "leaves the cursor put when it still resolves (later survivors stay un-mined)" do
+      cur = store.create(session_id: session[:id], role: "assistant", content: "cursor")
+      store.create(session_id: session[:id], role: "user", content: "after")
+      db_connection.db[:sessions].where(id: session[:id]).update(memory_extracted_msg_id: cur.id)
+      expect(store.reseed_extraction_cursor_clamped(session[:id])).to eq(cur.id)
+    end
+
+    it "falls back to the surviving tail when the old cursor was deleted" do
+      kept = store.create(session_id: session[:id], role: "user", content: "kept")
+      db_connection.db[:sessions].where(id: session[:id]).update(memory_extracted_msg_id: "gone")
+      expect(store.reseed_extraction_cursor_clamped(session[:id])).to eq(kept.id)
+    end
+
+    it "keeps a nil cursor nil (never-extracted session stays fully un-mined)" do
+      store.create(session_id: session[:id], role: "user", content: "x")
+      expect(store.reseed_extraction_cursor_clamped(session[:id])).to be_nil
+    end
+
+    it "is a no-op when the session row is absent" do
+      expect(store.reseed_extraction_cursor_clamped("nonexistent")).to be_nil
+    end
   end
 
   describe "#token_sum" do

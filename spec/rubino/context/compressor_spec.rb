@@ -93,6 +93,22 @@ RSpec.describe Rubino::Context::Compressor do
       expect(store.since(child[:id], after_id: cursor)).to eq([])
     end
 
+    # R1-M1: copy_into/create write message rows but never touch the session's
+    # denormalized message_count, so the compaction child showed "Messages 0" in
+    # `sessions list` despite a populated transcript. The compactor must sync it.
+    it "syncs the child's message_count to its real transcript size" do
+      4.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }
+      head = store.for_session(parent[:id]).first(2)
+      tail = store.for_session(parent[:id]).last(2)
+
+      compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+      child = compressor.send(:create_child_session, parent, head, "SUMMARY", tail)
+
+      real_count = store.count(child[:id]) # head + summary + tail = 5
+      expect(real_count).to eq(5)
+      expect(db[:sessions].where(id: child[:id]).get(:message_count)).to eq(real_count)
+    end
+
     # Regression for the lineage-drift bug: summaries persisted by compaction
     # must chain parent_summary_id to the prior summary, and the compaction
     # row's previous_summary_id must point at that prior summary (NOT at the

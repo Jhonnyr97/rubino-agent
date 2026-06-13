@@ -1190,6 +1190,13 @@ module Rubino
         # parent_session_id points at a real row.
         Session::Repository.new.persist!(parent) if parent[:persisted] == false
 
+        # Mine the parent's un-mined tail BEFORE copying it into the child
+        # (R2-M2). Compaction flushes before its copy; /branch did not, so a fact
+        # in the parent's not-yet-extracted tail was copied across and then sealed
+        # under the child's freshly-seeded cursor below — lost forever. Flushing
+        # first pins the parent's cursor to its tail so the seed seals nothing.
+        flush_parent_memory!(parent[:id])
+
         child = Session::Repository.new.create(
           source: "cli",
           model: parent[:model],
@@ -1220,6 +1227,21 @@ module Rubino
         @branch_short_id = child[:id][0..3]
         @last_probe = nil
         resume_runner(ui, child[:id])
+      end
+
+      # Mine the parent session's un-mined tail before a branch/rewind copies it
+      # into a child (R2-M2). Mirrors what Compressor#flush_memory! does before a
+      # compaction copy: routes through the configured backend so the parent's
+      # extraction cursor lands on its tail and the child's subsequent seed seals
+      # no un-mined fact. Gated on auto-extract (same predicate as the post-turn
+      # job) and best-effort — a flush failure must never break the branch.
+      def flush_parent_memory!(parent_id)
+        return unless Rubino.configuration.memory_auto_extract?
+
+        Memory::Flusher.new.flush_before_compaction!(parent_id)
+      rescue StandardError => e
+        Rubino.logger.warn(event: "branch.parent_flush_failed", error: e.message)
+        nil
       end
 
       # Appends the immediately-preceding probe's Q&A to the branch seed when one
@@ -1326,6 +1348,10 @@ module Rubino
           parent_session_id: parent[:id]
         )
         store = ::Rubino::Session::Store.new
+        # Mine the parent's un-mined tail before the (truncated) copy, same as
+        # /branch (R2-M2): otherwise a fact in a copied-but-not-yet-extracted
+        # message is sealed under the child's seeded cursor below and lost.
+        flush_parent_memory!(parent[:id])
         store.copy_into(child[:id], seed_messages)
         # Seed the memory-extraction watermark past the copied transcript (MEM-2)
         # so the rewind fork's first turn extracts only the edited/new message,

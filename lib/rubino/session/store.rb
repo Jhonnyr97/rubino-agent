@@ -118,14 +118,12 @@ module Rubino
       # last message (by rowid) so the extractor's next turn feeds only what is
       # added AFTER this point — not the whole transcript.
       #
-      # Used after operations that mutate the message set out from under the
-      # cursor:
-      #   * fork/branch/compaction copy a transcript into a fresh child whose
-      #     cursor starts NULL → without seeding, the child re-mines the ENTIRE
-      #     copied transcript on its first turn (MEM-2);
-      #   * undo/retry DELETE the cursor message → a dangling cursor used to mean
-      #     "re-mine everything" and could resurrect a just-`forget`-ed fact
-      #     (MEM-1). Re-seeding to the new tail makes it mean "resume from here".
+      # Used by fork/branch/compaction, which copy a FULLY-MINED transcript into a
+      # fresh child whose cursor starts NULL — without seeding, the child would
+      # re-mine the ENTIRE copied transcript on its first turn (MEM-2). The caller
+      # MUST have flushed/extracted the source up to its tail first (compaction
+      # flushes before copy; #branch_runner now does too), so every copied message
+      # is already mined and sealing the cursor at the tail loses nothing.
       #
       # Sets the cursor to nil for an empty session (the never-extracted state).
       # No-op when the session row is absent. Returns the new cursor id (or nil).
@@ -135,6 +133,33 @@ module Rubino
         new_cursor = last_id(session_id)
         @db[:sessions].where(id: session_id).update(memory_extracted_msg_id: new_cursor)
         new_cursor
+      end
+
+      # Repair the memory-extraction watermark after a DELETE (undo/retry rewind)
+      # without ever sealing an un-mined survivor — the cursor only ever moves
+      # BACKWARD here, never forward (MEM-1, R1-M2).
+      #
+      # The cursor means "every message up to and including this rowid has been
+      # mined". A delete can leave it dangling (the cursor message itself was
+      # cut). Naively re-seeding to the new tail would jump the watermark PAST any
+      # surviving message that sat between the old cursor and the cut point — those
+      # were never extracted, and sealing them silently drops their facts.
+      #
+      # So we clamp: the new cursor is the newest SURVIVING message whose rowid is
+      # <= the old cursor's rowid (the last position we KNOW was mined).
+      #   * old cursor still survives  -> unchanged (later survivors stay un-mined
+      #     and get extracted next turn);
+      #   * old cursor was deleted     -> falls back to the newest survivor at-or-
+      #     before it (every survivor predates the cut, so this is the new tail);
+      #   * old cursor was nil         -> stays nil (never-extracted: re-mine all).
+      # No-op when the session row is absent. Returns the (possibly unchanged) id.
+      def reseed_extraction_cursor_clamped(session_id)
+        return nil unless @db[:sessions].where(id: session_id).any?
+
+        old_cursor = @db[:sessions].where(id: session_id).get(:memory_extracted_msg_id)
+        clamped = newest_surviving_at_or_before(session_id, old_cursor)
+        @db[:sessions].where(id: session_id).update(memory_extracted_msg_id: clamped)
+        clamped
       end
 
       # Returns total message count for a session
@@ -156,12 +181,13 @@ module Rubino
       # #since now uses, so the rewind point is unambiguous even if later
       # messages carry an earlier `created_at` than +from_id+ (clock skew).
       #
-      # After the cut, the memory-extraction watermark is RE-SEEDED to the new
-      # tail (MEM-1): the cursor message may itself have just been deleted, and a
-      # dangling watermark made the next extraction re-mine the whole remaining
-      # session — which could resurrect a fact the user just `forget`-ed. Pinning
-      # it to the new last id makes the next turn resume from the tail, never
-      # re-mine from scratch.
+      # After the cut, the memory-extraction watermark is CLAMPED (MEM-1, R1-M2):
+      # the cursor message may itself have just been deleted, leaving a dangling
+      # watermark that made the next extraction re-mine the whole remaining
+      # session — which could resurrect a fact the user just `forget`-ed. We
+      # repair it WITHOUT moving it forward, so a surviving but not-yet-mined
+      # message between the old cursor and the cut is never sealed/lost (see
+      # #reseed_extraction_cursor_clamped).
       #
       # @param session_id [String]
       # @param from_id [String] id of the first message to delete
@@ -176,7 +202,7 @@ module Rubino
                   .where(session_id: session_id)
                   .where(Sequel.lit("rowid >= ?", from_rowid))
                   .delete
-        seed_extraction_cursor(session_id)
+        reseed_extraction_cursor_clamped(session_id)
         removed
       end
 
@@ -233,6 +259,29 @@ module Rubino
       end
 
       private
+
+      # The id of the newest surviving message whose rowid is <= the message
+      # +cursor_id+ points at — i.e. the highest watermark we can clamp to without
+      # advancing past anything (see #reseed_extraction_cursor_clamped).
+      #
+      # nil +cursor_id+ (never-extracted) clamps to nil. If +cursor_id+ no longer
+      # resolves (it was deleted), we fall back to the session's current tail —
+      # every survivor predates the cut, so the tail is the newest position that
+      # is BOTH surviving and at-or-before the old cursor.
+      def newest_surviving_at_or_before(session_id, cursor_id)
+        return nil unless cursor_id
+
+        cursor_rowid = @db[:messages]
+                       .where(id: cursor_id, session_id: session_id)
+                       .get(Sequel.lit("rowid"))
+        return last_id(session_id) unless cursor_rowid
+
+        @db[:messages]
+          .where(session_id: session_id)
+          .where(Sequel.lit("rowid <= ?", cursor_rowid))
+          .order(Sequel.desc(Sequel.lit("rowid")))
+          .get(:id)
+      end
 
       # FTS5 MATCH treats unquoted strings as expression syntax — a stray
       # double quote or a token starting with `-`/`*` raises a syntax error

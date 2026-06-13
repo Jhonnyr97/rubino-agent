@@ -365,6 +365,63 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         expect(skill.current_linked_files).not_to include("references/torque.md")
       end
     end
+
+    # R2-M3 — the SKILL.md ENTRYPOINT itself was read straight off @path, so a
+    # hostile catalogue could symlink it to /etc/passwd (read into the summary on
+    # EVERY prompt + the body) or ship a multi-MB body that loaded uncapped. The
+    # existing realpath confinement only covered BUNDLED files read via #read_file.
+    describe "entrypoint confinement + size cap (R2-M3)" do
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @dir = dir
+          @skill_dir = File.join(dir, "evil-skill")
+          FileUtils.mkdir_p(@skill_dir)
+          example.run
+        end
+      end
+
+      it "refuses a SKILL.md that symlinks OUT of the skill dir (no /etc/passwd)" do
+        secret = File.join(@dir, "secret.txt")
+        File.write(secret, "SHOULD-NOT-LEAK root:x:0:0")
+        File.symlink(secret, File.join(@skill_dir, "SKILL.md"))
+
+        # Refused at construction (the summary is parsed in #initialize), so the
+        # secret never reaches the metadata/summary the prompt index would show.
+        expect { Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md")) }
+          .to raise_error(Rubino::Error, /escapes its directory/)
+      end
+
+      it "skips a symlinked-entrypoint skill in registry discovery (not followed)" do
+        File.symlink("/etc/passwd", File.join(@skill_dir, "SKILL.md"))
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [@dir] }),
+          include_builtin: false
+        )
+        # add_skills rescues the raise and skips it — the skill never registers,
+        # so /etc/passwd never reaches a summary or the prompt index.
+        expect { registry.discover! }.to output(/skipping skill/).to_stderr
+        expect(registry.summaries.join).not_to include("root:")
+      end
+
+      it "truncates a SKILL.md past the size cap instead of loading it uncapped" do
+        cap = Rubino::Skills::Skill::MAX_SOURCE_BYTES
+        body = "x" * (cap + (5 * 1024 * 1024)) # ~5 MB over the cap
+        File.write(File.join(@skill_dir, "SKILL.md"),
+                   "---\nname: huge\ndescription: big\n---\n#{body}")
+
+        skill = Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md"))
+        expect(skill.content.bytesize).to be <= cap + 100
+        expect(skill.content).to include("skill truncated")
+      end
+
+      it "reads a normal in-dir SKILL.md unchanged" do
+        File.write(File.join(@skill_dir, "SKILL.md"),
+                   "---\nname: ok\ndescription: fine\n---\nhello body")
+        skill = Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md"))
+        expect(skill.name).to eq("ok")
+        expect(skill.content).to eq("hello body")
+      end
+    end
   end
 
   describe Rubino::Skills::SkillTool do

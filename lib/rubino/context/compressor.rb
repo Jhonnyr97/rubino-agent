@@ -119,6 +119,12 @@ module Rubino
         # only genuinely new turns are fed.
         @message_store.seed_extraction_cursor(child[:id])
 
+        # Sync the child's cached message_count (R1-M1): copy_into/create write
+        # message rows but never touch the session's denormalized counter, so
+        # without this the compaction child shows "Messages 0" in `sessions list`
+        # despite a fully populated transcript. Same sync /branch does after copy.
+        @session_repo.update(child[:id], message_count: @message_store.count(child[:id]))
+
         # End the parent session
         @session_repo.update(parent_session[:id], status: "compacted")
 
