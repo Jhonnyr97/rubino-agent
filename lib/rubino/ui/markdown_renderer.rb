@@ -50,7 +50,8 @@ module Rubino
       def render(text)
         return [] if text.nil? || text.to_s.strip.empty?
 
-        doc = Kramdown::Document.new(normalize(text.to_s), input: "GFM", auto_ids: false, hard_wrap: false)
+        src = unwrap_markdown_wrapper(text.to_s)
+        doc = Kramdown::Document.new(normalize(src), input: "GFM", auto_ids: false, hard_wrap: false)
         block_lines(doc.root).reject { |line| line == :drop }
       rescue StandardError
         # Parser failure -> degrade to plain text rather than break the UI.
@@ -58,6 +59,55 @@ module Rubino
       end
 
       private
+
+      # Models routinely box a whole answer in an outer ```markdown / ```md
+      # fence whose body is itself markdown (headings, tables, nested ```ruby
+      # fences). Rendered verbatim that draws a literal code frame around live
+      # markdown; worse, kramdown closes the outer fence on the FIRST bare ```
+      # it meets (a nested block's closer), so the wrapper's real closing ```
+      # orphans as a stray literal line of prose (#264).
+      #
+      # The structural fix per CommonMark §4.5: peel the wrapper at the SOURCE
+      # level before parsing. We detect an opening fence (≥3 backticks/tildes,
+      # ≤3 leading spaces) whose info string is markdown/md, then remove that
+      # opener line and the wrapper's matching CLOSING fence — a line of ≥ the
+      # opener's run of the SAME fence char and nothing but spaces (§4.5). Since
+      # the model boxes its ENTIRE answer, the wrapper's close is the LAST such
+      # line; everything between is the literal body, re-parsed as markdown so
+      # the nested fences resolve correctly and no orphan ``` is ever produced.
+      #
+      # When there is no markdown wrapper (e.g. a plain ```ruby block, or a
+      # genuine lone ``` the model emits while EXPLAINING fence syntax) the
+      # text is returned untouched — that standalone ``` then renders literally
+      # instead of being deleted by a post-hoc heuristic (R2-V2).
+      def unwrap_markdown_wrapper(text)
+        lines = text.split("\n", -1)
+        open_idx = lines.index { |l| !l.strip.empty? }
+        return text if open_idx.nil?
+
+        m = lines[open_idx].match(FENCE_OPEN_RE)
+        return text unless m && MARKDOWN_FENCE_LANGS.include?(m[2].strip.downcase)
+
+        fence_char = m[1][0]
+        fence_len  = m[1].length
+        close_re   = /\A\s{0,3}#{Regexp.escape(fence_char)}{#{fence_len},}\s*\z/
+        close_idx  = nil
+        ((open_idx + 1)...lines.length).each { |j| close_idx = j if lines[j].match?(close_re) }
+
+        body = close_idx ? lines[(open_idx + 1)...close_idx] : lines[(open_idx + 1)..]
+        body.join("\n")
+      end
+
+      # An opening code fence per CommonMark §4.5: up to 3 leading spaces, a run
+      # of ≥3 backticks OR tildes, then an optional info string (which, for
+      # backtick fences, may not itself contain a backtick).
+      FENCE_OPEN_RE = /\A\s{0,3}(`{3,}|~{3,})\s*([^`\n]*)\z/
+
+      # Info strings that mean "this fence WRAPS markdown": models box a whole
+      # answer (which itself contains nested ```lang fences, tables, **bold**)
+      # in an outer ```markdown / ```md. We peel that wrapper and render the
+      # body AS markdown instead of framing it as literal code (#264).
+      MARKDOWN_FENCE_LANGS = %w[markdown md].freeze
 
       # A GFM pipe-table separator row, e.g. "|---|:--:|---|" or "---|---".
       TABLE_SEP_RE = /\A\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*\z/
@@ -98,16 +148,13 @@ module Rubino
         when :header
           header_lines(el)
         when :p
-          # A stray fence marker (``` a model leaves after an outer ```markdown
-          # wrapper) parses as literal backticks. It can stand alone as a whole
-          # paragraph OR ride at the END of a prose paragraph glued to the
-          # wrapper's body (kramdown closes the outer fence on the FIRST nested
-          # ``` it sees, so the wrapper's real closing ``` lands as a trailing
-          # text line on the paragraph that follows). Strip those orphan fence
-          # lines so the ``` never leaks; drop the paragraph entirely if nothing
-          # but fence lines remain (#264, R1-V1).
-          lines = strip_orphan_fence_lines(paragraph_lines(el))
-          lines.empty? ? [:drop] : wrap_lines(lines)
+          # The outer ```markdown wrapper is now peeled at the SOURCE level
+          # (unwrap_markdown_wrapper) BEFORE parsing, so its closing ``` never
+          # orphans into a paragraph here. A bare ``` that DOES survive to this
+          # point is a genuine standalone fence the model emitted as prose (e.g.
+          # while explaining fence syntax) — render it literally, do not strip it
+          # (R2-V2).
+          wrap_lines(paragraph_lines(el))
         when :ul
           list_lines(el, ordered: false)
         when :ol
@@ -130,34 +177,6 @@ module Rubino
           tokens = inline_tokens(el.children, {})
           tokens_to_lines(tokens)
         end
-      end
-
-      # When we unwrap a ```markdown body, a nested ```ruby fence inside it has
-      # often lost its closing ``` (the outer wrapper's close consumed it). An
-      # odd count of fence lines means a fence is left open, which would render
-      # the rest as a half-finished code frame; append a closing fence so the
-      # inner code block renders complete (#264).
-      def close_dangling_fence(text)
-        return text unless text.to_s.lines.count { |l| l.match?(/\A\s*`{3,}/) }.odd?
-
-        "#{text}\n```"
-      end
-
-      # A line whose entire visible text is a bare fence marker (``` of ≥3
-      # backticks), i.e. an orphaned fence delimiter with no code body.
-      ORPHAN_FENCE_RE = /\A\s*`{3,}\s*\z/
-
-      # Drop any LineTokens whose whole text is a lone fence marker. These are
-      # leaked fence delimiters (the outer ```markdown wrapper's close, or a
-      # dangling closer with no opener) that kramdown surfaces as literal prose;
-      # emitting them leaks a raw ``` into the rendered turn (R1-V1).
-      def strip_orphan_fence_lines(lines)
-        lines.reject { |line| line_text(line).match?(ORPHAN_FENCE_RE) }
-      end
-
-      # The plain visible text of a LineTokens (ignoring :br sentinels/styles).
-      def line_text(line)
-        line.filter_map { |text, _| text.to_s unless text == :br }.join
       end
 
       def header_lines(el)
@@ -222,21 +241,18 @@ module Rubino
         end
       end
 
-      # Language tags that mean "this fence WRAPS markdown" (models routinely
-      # box a whole answer in ```markdown / ```md). We render the body AS
-      # markdown instead of drawing a literal code frame around raw `**bold**`,
-      # table pipes and a nested ```ruby fence (#264).
-      MARKDOWN_FENCE_LANGS = %w[markdown md].freeze
-
       def codeblock_lines(el)
         text = el.value.to_s
-        # A stray closing ``` left over when a model wraps its answer in an outer
-        # ```markdown fence parses as an EMPTY code block; drawing a frame around
-        # nothing leaves a broken half-finished box (#264). Emit nothing.
+        # An empty code block (e.g. a model literally sending ```\n```) would draw
+        # a frame around nothing — a broken half-finished box. Emit nothing.
         return [:drop] if text.strip.empty?
 
         lang = el.options[:lang].to_s
-        return render(close_dangling_fence(text)) if MARKDOWN_FENCE_LANGS.include?(lang.downcase)
+        # A markdown-language fence still surviving to a codeblock node (a NESTED
+        # ```markdown inside an already-unwrapped body — the OUTER wrapper is
+        # peeled at the source level in unwrap_markdown_wrapper) is re-rendered AS
+        # markdown rather than framed as literal code (#264).
+        return render(text) if MARKDOWN_FENCE_LANGS.include?(lang.downcase)
 
         lines = text.split("\n", -1)
         # kramdown's fenced codeblock value ends with a trailing newline -> empty last line. Drop it.
