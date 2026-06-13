@@ -114,7 +114,7 @@ module Rubino
       def linux_distro
         return nil unless File.readable?("/etc/os-release")
 
-        pretty = File.read("/etc/os-release").lines.find { |l| l.start_with?("PRETTY_NAME=") }
+        pretty = File.read("/etc/os-release", encoding: "UTF-8").lines.find { |l| l.start_with?("PRETTY_NAME=") }
         pretty&.split("=", 2)&.last&.strip&.delete('"')
       rescue StandardError
         nil
