@@ -142,6 +142,46 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
     end
   end
 
+  describe "single system message (#253)" do
+    # The session summary used to be emitted as a SECOND role:"system" message,
+    # which made RubyLLM's Anthropic provider log "multiple system messages" on
+    # every compacted-session turn. It is now folded into the one system block.
+    def build_messages(config:, memory: empty_memory)
+      described_class.new(
+        session: session,
+        memory_context: memory,
+        config: config
+      ).build
+    end
+
+    it "emits exactly one role:\"system\" message when there is no summary" do
+      allow_any_instance_of(Rubino::Session::SummaryStore)
+        .to receive(:latest_content).and_return(nil)
+      messages = build_messages(config: test_configuration)
+      expect(messages.count { |m| m[:role] == "system" }).to eq(1)
+    end
+
+    it "still emits exactly one role:\"system\" message when a summary exists, " \
+       "carrying both the base prompt and the [Session Summary] text" do
+      allow_any_instance_of(Rubino::Session::SummaryStore)
+        .to receive(:latest_content).and_return("user wanted X, we did Y")
+      messages = build_messages(config: test_configuration)
+
+      systems = messages.select { |m| m[:role] == "system" }
+      expect(systems.size).to eq(1)
+      content = systems.first[:content]
+      expect(content).to include("[Identity]")
+      expect(content).to include("[Session Summary]\nuser wanted X, we did Y")
+    end
+
+    it "orders the [Session Summary] section after the base prompt" do
+      allow_any_instance_of(Rubino::Session::SummaryStore)
+        .to receive(:latest_content).and_return("the summary")
+      content = build_messages(config: test_configuration).first[:content]
+      expect(content.index("[Identity]")).to be < content.index("[Session Summary]")
+    end
+  end
+
   describe "block ordering" do
     it "places Identity before Product before Environment" do
       config = test_configuration("prompts" => {
