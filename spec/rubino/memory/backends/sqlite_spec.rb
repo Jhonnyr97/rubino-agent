@@ -403,6 +403,61 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(fact_texts).to include("fNew")
     end
 
+    # R1-M2 — an undo that cuts a LATER message must not seal a surviving but
+    # un-mined message between the old cursor and the cut: its fact must still be
+    # extractable. Pre-fix (re-seed to new tail) the survivor's fact was lost.
+    it "still extracts a surviving un-mined message after an undo cuts a later turn" do
+      store.create(session_id: "s1", role: "user", content: "u0 FACT=mined")
+      store.create(session_id: "s1", role: "assistant", content: "a0")
+      backend.extract("s1") # cursor now at a0; "mined" is stored
+      expect(fact_texts).to eq(["mined"])
+
+      # A survivor that has NOT been mined yet, then a turn we will undo.
+      survivor = store.create(session_id: "s1", role: "user", content: "uS FACT=survivor")
+      store.create(session_id: "s1", role: "assistant", content: "aS")
+      doomed = store.create(session_id: "s1", role: "user", content: "uD FACT=doomed")
+      store.create(session_id: "s1", role: "assistant", content: "aD")
+
+      store.delete_from_inclusive("s1", from_id: doomed.id) # undo the last turn
+      expect(store.for_session("s1")).to include(have_attributes(id: survivor.id))
+
+      fed.clear
+      backend.extract("s1")
+      # The survivor's fact is mined, NOT sealed away by a forward cursor jump.
+      expect(fact_texts).to contain_exactly("mined", "survivor")
+    end
+
+    # R2-M2 — /branch (and rewind) must FLUSH the parent before copying it into a
+    # child, exactly as compaction does. Without the flush, a fact in the parent's
+    # un-mined tail is copied across and then sealed under the child's seeded
+    # cursor — lost. This mirrors the branch_runner sequence: flush -> copy -> seed.
+    it "does not lose a parent's un-mined tail fact across a branch (flush before copy)" do
+      now = Time.now.utc.iso8601
+      store.create(session_id: "s1", role: "user", content: "u0 FACT=earlyTail")
+      store.create(session_id: "s1", role: "assistant", content: "a0")
+      # NOTE: parent's tail is deliberately NOT extracted yet (no backend.extract).
+      expect(fact_texts).to eq([])
+
+      # branch_runner does: flush parent -> copy -> seed child cursor past copy.
+      Rubino::Memory::Flusher.new(backend: backend).flush_before_compaction!("s1")
+      expect(fact_texts).to eq(["earlyTail"]) # flush mined the parent's tail
+
+      db[:sessions].insert(id: "child", source: "cli", status: "active",
+                           message_count: 0, token_count: 0, created_at: now, updated_at: now)
+      store.copy_into("child", store.for_session("s1"))
+      store.seed_extraction_cursor("child")
+
+      store.create(session_id: "child", role: "user", content: "uNew FACT=childFact")
+      store.create(session_id: "child", role: "assistant", content: "ok")
+      fed.clear
+      backend.extract("child")
+
+      # Parent's tail fact survived (mined pre-copy), and only the NEW child turn
+      # was re-fed — the whole copy was not re-mined.
+      expect(fact_texts).to contain_exactly("earlyTail", "childFact")
+      expect(fed.last).to eq(2)
+    end
+
     # MEM-3 — a message backdated before the cursor (clock skew) must still be
     # extracted, not silently dropped by a created_at filter.
     it "extracts an out-of-order (backdated) message instead of dropping it" do
