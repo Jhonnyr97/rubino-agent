@@ -210,6 +210,14 @@ module Rubino
         output_thr = Thread.new do
           begin
             rd.each_line do |line|
+              # Scrub to valid UTF-8 AT THE CAPTURE SEAM (STRM-R2-1): a binary
+              # / latin-1 process (`head -c 1500 /dev/urandom`, `cat *.png`)
+              # writes bytes tagged UTF-8 but invalid. Left raw they later blow
+              # up JSON.generate (the LLM request) + the SQLite driver and the
+              # tool row never persists — the model loses the record on
+              # --resume. Cleaning HERE means the accumulated output AND the
+              # streamed chunk are both clean before anything copies them.
+              line = Util::Output.scrub_utf8(line)
               output_buf << line
               emit_chunk(line)
             end
