@@ -92,26 +92,45 @@ module Rubino
       end
 
       # Leading safe-token run of a plain command:
-      #   "git status"            -> "git"
+      #   "git status"            -> "git status"
       #   "bundle exec rspec"     -> "bundle exec"
       #   "npm run test --watch"  -> "npm run"
-      # A plain command keeps only its head; a wrapper command (bundle/npm/...)
-      # additionally keeps its declared verb (exec/run) so distinct wrapped
-      # tools don't collapse into one rule. The run stops at the first flag or
-      # argument-shaped token, mirroring CommandAllowlist's start_with? match.
+      # A wrapper command (bundle/npm/...) keeps its declared verb (exec/run) so
+      # distinct wrapped tools don't collapse into one rule. `git` keeps its
+      # READ-ONLY subcommand (`git status` not bare `git`) and refuses to derive
+      # a prefix at all for any non-read-only git verb: a bare `git` prefix
+      # persisted to the allowlist would pre-approve `git apply`,
+      # `git -c alias.x=!cmd x`, ... = RCE/arbitrary-write (SEC-R2-1). For a
+      # plain command the head alone is the prefix. The run stops at the first
+      # flag or argument-shaped token, mirroring CommandAllowlist's match.
       def command_prefix(command)
         tokens = command.to_s.strip.split(/\s+/)
         return "" if tokens.empty?
 
         head = tokens.first
-        prefix = [head]
+        return git_prefix(tokens) if head == "git"
 
+        prefix = [head]
         if WRAPPERS.key?(head)
           verb = tokens[1]
           prefix << verb if verb && plain_word?(verb) && WRAPPERS[head].include?(verb)
         end
 
         prefix.join(" ")
+      end
+
+      # The persistable prefix for a git command: `git <subcommand>` ONLY when
+      # the subcommand is provably read-only (no global flags before it, a
+      # read-only verb). Anything else — a bare `git`, a global flag like `-c`,
+      # a mutating/code-loading verb (apply/am/push/...) — returns "" so the
+      # caller offers no "always_prefix" choice and the broad rule is never
+      # persisted. The narrow exact-command path still remains available.
+      def git_prefix(tokens)
+        sub = tokens[1]
+        return "" if sub.nil? || sub.start_with?("-")
+        return "" unless Security::ReadonlyCommands::GIT_READONLY_SUBCOMMANDS.include?(sub)
+
+        "git #{sub}"
       end
 
       # A "plain word" is a bare token: not a flag, no path/assignment/glob

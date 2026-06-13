@@ -161,6 +161,101 @@ RSpec.describe Rubino::Security::CommandAllowlist do
       end
     end
 
+    # ------------------------------------------------------------------
+    # SEC-R2-1 — bare `git` (or any allowlisted git head) must not smuggle a
+    # GLOBAL flag before the subcommand or a code-loading/mutating subcommand.
+    # `git -c alias.x='!cmd' x`, `git -c core.sshCommand=cmd`, `git apply`,
+    # `git -C /etc commit` all execute arbitrary code or write the tree. The
+    # old vetting only inspected tokens.drop(2) (after the subcommand), so
+    # every one of these returned TRUE. These are the "Approve git always"
+    # (bare-`git` persisted) RCEs.
+    # ------------------------------------------------------------------
+    context "with a git global flag / dangerous subcommand (SEC-R2-1)" do
+      it "rejects `git -c alias.x='!cmd' x` (alias = RCE)" do
+        expect(allowlist(["git"]).allowed?("git -c alias.x='!touch /tmp/PWN' x")).to be(false)
+      end
+
+      it "rejects `git -c core.sshCommand=cmd ...`" do
+        expect(allowlist(["git"]).allowed?("git -c core.sshCommand=touch\\ /tmp/PWN fetch")).to be(false)
+      end
+
+      it "rejects the glued `git -ccore.pager=cmd log` form" do
+        expect(allowlist(["git"]).allowed?("git -ccore.pager=touch\\ /tmp/PWN log")).to be(false)
+      end
+
+      it "rejects `git apply patch` (writes the working tree)" do
+        expect(allowlist(["git"]).allowed?("git apply patch")).to be(false)
+      end
+
+      it "rejects `git am` (applies a mailbox)" do
+        expect(allowlist(["git"]).allowed?("git am < patch")).to be(false)
+      end
+
+      it "rejects `git -C /etc commit -m x`" do
+        expect(allowlist(["git"]).allowed?("git -C /etc commit -m x")).to be(false)
+      end
+
+      it "rejects `git --exec-path=/tmp/evil status`" do
+        expect(allowlist(["git"]).allowed?("git --exec-path=/tmp/evil status")).to be(false)
+      end
+
+      it "rejects `git config core.hooksPath /tmp/evil`" do
+        expect(allowlist(["git"]).allowed?("git config core.hooksPath /tmp/evil")).to be(false)
+      end
+
+      it "still allows a plain read-only verb under an allowlisted bare `git`" do
+        list = allowlist(["git"])
+        expect(list.allowed?("git status")).to be(true)
+        expect(list.allowed?("git diff HEAD~1")).to be(true)
+        expect(list.allowed?("git log --oneline")).to be(true)
+      end
+    end
+
+    # ------------------------------------------------------------------
+    # SEC-R2-2 — a non-built-in allowlisted head got ZERO flag/exec vetting,
+    # so `sort -o`, `sed -i`/`-e`, `tar --to-command=sh`/`-T`, `awk
+    # 'BEGIN{system()}'`, `tee FILE` auto-allowed a write or RCE. Heads whose
+    # argument is itself a program (awk/sed/perl/tar/tee/xargs/...) are now
+    # default-denied; the rest are flag-vetted. All returned TRUE before.
+    # ------------------------------------------------------------------
+    context "with a write/exec primitive on a non-built-in allowlisted head (SEC-R2-2)" do
+      it "rejects `sort -o FILE` (arbitrary write)" do
+        expect(allowlist(["sort"]).allowed?("sort -o /tmp/PWN data")).to be(false)
+        expect(allowlist(["sort"]).allowed?("sort --output=/tmp/PWN data")).to be(false)
+      end
+
+      it "rejects `sed -i` (in-place write)" do
+        expect(allowlist(["sed"]).allowed?("sed -i 's/a/b/' file")).to be(false)
+      end
+
+      it "rejects `sed -e '...'` / `sed -n '...e cmd'` (program injection)" do
+        expect(allowlist(["sed"]).allowed?("sed -e 's/x/y/' file")).to be(false)
+        expect(allowlist(["sed"]).allowed?("sed -n '1e touch /tmp/PWN' file")).to be(false)
+      end
+
+      it "rejects `tar --to-command=sh` (pipes each member to a shell)" do
+        expect(allowlist(["tar"]).allowed?("tar --to-command=sh -xf a.tar")).to be(false)
+      end
+
+      it "rejects `tar -T filelist` (reads an attacker filelist)" do
+        expect(allowlist(["tar"]).allowed?("tar -T /tmp/list -cf out.tar")).to be(false)
+      end
+
+      it "rejects `awk 'BEGIN{system(...)}'` (arbitrary exec)" do
+        expect(allowlist(["awk"]).allowed?("awk 'BEGIN{system(\"touch /tmp/PWN\")}'")).to be(false)
+      end
+
+      it "rejects an allowlisted `tee FILE` (always writes)" do
+        expect(allowlist(["tee"]).allowed?("tee /tmp/PWN")).to be(false)
+      end
+
+      it "rejects allowlisted interpreters (perl/python/ruby -e/node)" do
+        expect(allowlist(["perl"]).allowed?("perl -e 'system(\"id\")'")).to be(false)
+        expect(allowlist(["python3"]).allowed?("python3 -c 'import os;os.system(\"id\")'")).to be(false)
+        expect(allowlist(["xargs"]).allowed?("xargs -I{} sh -c {}")).to be(false)
+      end
+    end
+
     # The flag-vetting must NOT regress plain allowlisted commands.
     context "when a plain allowlisted command has no write/exec flag (no false positives)" do
       it "allows plain `git diff`" do
@@ -175,11 +270,22 @@ RSpec.describe Rubino::Security::CommandAllowlist do
         expect(allowlist(["git status"]).allowed?("git status")).to be(true)
       end
 
-      it "allows the SHIPPED default trio (status / diff / rspec)" do
-        list = allowlist(["git status", "git diff", "bundle exec rspec"])
+      it "allows the SHIPPED default pair (status / diff)" do
+        list = allowlist(["git status", "git diff"])
         expect(list.allowed?("git status")).to be(true)
         expect(list.allowed?("git diff")).to be(true)
-        expect(list.allowed?("bundle exec rspec")).to be(true)
+      end
+
+      # A user MAY still opt into a code-loading runner explicitly; the mechanism
+      # honours it. SEC-R2-3 only removed it from the SHIPPED DEFAULTS.
+      it "honours an explicitly user-added `bundle exec rspec` entry" do
+        expect(allowlist(["bundle exec rspec"]).allowed?("bundle exec rspec")).to be(true)
+      end
+
+      it "SHIPPED DEFAULTS do NOT include a code-loading runner (SEC-R2-3)" do
+        defaults = Rubino::Config::Defaults::MODULE_DEFAULTS.dig("security", "command_allowlist")
+        expect(defaults).to eq(["git status", "git diff"])
+        expect(defaults).not_to include("bundle exec rspec")
       end
 
       it "allows a plain allowlisted `find` without mutating flags" do

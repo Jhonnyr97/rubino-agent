@@ -431,10 +431,16 @@ module Rubino
           # existing readers. When true, every `shell` command goes through the
           # approval prompt regardless of the tool's own risk level. Default ON.
           "require_confirmation_for_shell" => true,
+          # Ships ONLY provably read-only git verbs. Test/build runners
+          # (`bundle exec rspec`, `rake`, `npm test`, ...) are deliberately NOT
+          # shipped auto-approved: they load and execute arbitrary project code
+          # by design (`rspec -r FILE`/`--require`, a Rakefile, a test helper),
+          # so an allowlist entry for one is a default-config RCE past the
+          # headless gate (SEC-R2-3). A code-loading runner is not safely
+          # allowlistable; users who want one opt in explicitly.
           "command_allowlist" => [
             "git status",
-            "git diff",
-            "bundle exec rspec"
+            "git diff"
           ],
 
           "website_blocklist" => {

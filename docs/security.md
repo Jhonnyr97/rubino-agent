@@ -65,10 +65,13 @@ security:
   command_allowlist:
     - "git status"
     - "git diff"
-    - "bundle exec rspec"
 ```
 
 An **empty** allowlist pre-approves nothing — pre-approval is opt-in.
+
+A matched entry pre-approves only its **read-only intent**, never a smuggled write/exec form: an allowlisted head can't carry an output/exec flag (`git diff --output FILE`, `sort -o FILE`, `find -exec/-delete`), a git **global** flag (`git -c alias.x='!cmd' x`, `git -c core.sshCommand=…`, `git -C dir`, `--exec-path`), or a mutating/code-loading git subcommand (`git apply`, `git am`, `git push`, hooks). Heads whose argument is itself a program (`awk`, `sed`, `perl`, `python`, `ruby`, `node`, `tar`, `tee`, `xargs`, shells) are **never** auto-approved even if allowlisted — they still prompt. The **shipped default** is read-only git only; test/build runners (`bundle exec rspec`, `rake`, `npm test`) are deliberately not shipped auto-approved because they load and execute arbitrary project code by design — add one explicitly only if you accept that.
+
+> An allowlist is a **convenience** layer, not a security boundary. Per industry practice (Claude Code/Codex, GTFOBins) a deny/allow list of command strings cannot be exhaustive; the OS sandbox is the real floor. This layer is narrowed to close the default-config and bare-`git` RCEs, not to be relied on as the only barrier.
 
 ## Auto-allowed read-only commands
 

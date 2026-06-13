@@ -160,7 +160,10 @@ RSpec.describe Rubino::UI::API do
       expect(payload[:command]).to eq("git status")
       expect(payload[:tool]).to eq("shell")
       expect(payload[:hardline]).to be(false)
-      expect(payload[:suggested_prefix]).to eq("git")
+      # SEC-R2-1: the suggested prefix for a git command is NARROWED to
+      # `git <read-only verb>`, never bare `git` (which would pre-approve
+      # `git apply`, `git -c alias.x=!cmd x`, ... = RCE).
+      expect(payload[:suggested_prefix]).to eq("git status")
       expect(payload[:pattern_key]).to be_nil
       expect(payload[:choices]).to eq(%w[once session always_prefix always_command deny deny_always])
     end
@@ -198,7 +201,8 @@ RSpec.describe Rubino::UI::API do
     end
 
     it "always_prefix persists the derived prefix to command_allowlist" do
-      expect(Rubino::Security::AllowlistPersister).to receive(:persist).with("git")
+      # SEC-R2-1: persists `git status`, NOT bare `git`.
+      expect(Rubino::Security::AllowlistPersister).to receive(:persist).with("git status")
       expect(confirm_with("always_prefix")).to be(true)
     end
 
@@ -235,7 +239,8 @@ RSpec.describe Rubino::UI::API do
     end
 
     it "deny_always persists a permissions:deny rule (prefix-scoped) and still returns false" do
-      expect(Rubino::Security::DenyPersister).to receive(:persist).with("shell git*")
+      # SEC-R2-1: the deny glob is scoped to the narrowed `git status` prefix.
+      expect(Rubino::Security::DenyPersister).to receive(:persist).with("shell git status*")
       expect(confirm_with("deny_always")).to be(false)
     end
   end
