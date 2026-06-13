@@ -242,16 +242,61 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       expect(texts.none? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
     end
 
-    it "drops a dangling closing ```` ``` ```` that has no opener (R1-V1)" do
-      texts = renderer.render("Some prose here.\n\n```").map { |l| text_of(l) }
-      expect(texts.any? { |t| t.include?("Some prose here.") }).to be(true)
+    # R2-V2: the structural fix peels the outer ```markdown wrapper at the SOURCE
+    # level (per CommonMark §4.5) BEFORE parsing, so the orphan ``` is never
+    # produced for the wrapper case. A bare ``` that is NOT part of a wrapper is a
+    # GENUINE standalone fence the model emitted as prose (e.g. while explaining
+    # fence syntax). It must render LITERALLY, not be deleted by a post-hoc
+    # heuristic — these specs FAIL on the old strip-orphan-fence-lines band-aid.
+    it "preserves a genuine standalone ``` the model emits while explaining syntax (R2-V2)" do
+      md = "To show a code fence, put three backticks on their own line:\n\n```\n\nNothing else on that line."
+      texts = renderer.render(md).map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("three backticks") }).to be(true)
+      expect(texts.any? { |t| t.include?("Nothing else") }).to be(true)
+      # The lone ``` IS shown, not stripped.
+      expect(texts.any? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    end
+
+    it "preserves a standalone ``` at end of message (R2-V2)" do
+      texts = renderer.render("Sure! Here it is:\n\n```").map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("Here it is") }).to be(true)
+      expect(texts.any? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    end
+
+    it "preserves a standalone ``` glued to the end of a prose line (R2-V2)" do
+      texts = renderer.render("Final words.\n```").map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("Final words.") }).to be(true)
+      expect(texts.any? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    end
+
+    # The structural peel must also leave the wrapped body's OWN markdown intact:
+    # a ```markdown wrapper around a table + nested fence renders the table and a
+    # framed ruby block, with NO orphan ``` anywhere (R2-V2).
+    it "peels a ```markdown wrapper and renders the nested table + ruby block clean (R2-V2)" do
+      md = <<~MD
+        ```markdown
+        | Name | Age |
+        |------|-----|
+        | Ann  | 30  |
+
+        ```ruby
+        puts 1
+        ```
+        ```
+      MD
+      texts = renderer.render(md).map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("Name") && t.include?("Age") }).to be(true)
+      expect(texts.any? { |t| t.include?("Ann") }).to be(true)
+      expect(texts).to include(match(/┌─.*ruby/))
       expect(texts.none? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
     end
 
-    it "strips a closing fence glued to the end of a prose paragraph (R1-V1)" do
-      texts = renderer.render("Final words.\n```").map { |l| text_of(l) }
-      expect(texts.any? { |t| t.include?("Final words.") }).to be(true)
-      expect(texts.none? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    it "peels a tilde-fenced ~~~markdown wrapper the same way (R2-V2, §4.5)" do
+      md = "~~~markdown\n# Hi\n\n```ruby\nputs 1\n```\n~~~"
+      texts = renderer.render(md).map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("Hi") }).to be(true)
+      expect(texts).to include(match(/┌─.*ruby/))
+      expect(texts.none? { |t| t.strip.match?(/[`~]{3,}\z/) }).to be(true)
     end
 
     it "renders an unordered list with bullet markers" do
