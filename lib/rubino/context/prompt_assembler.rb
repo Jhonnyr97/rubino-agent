@@ -58,12 +58,11 @@ module Rubino
       def build
         messages = []
 
-        # System prompt (always first)
+        # Single system message: base prompt followed by the session summary
+        # section (when compacted). Folded into one role:"system" entry so
+        # RubyLLM's Anthropic provider isn't handed multiple system messages
+        # (#253) — one block, same content, intact prompt-cache breakpoints.
         messages << { role: "system", content: build_system_prompt }
-
-        # Session summary (if compacted)
-        summary = load_summary
-        messages << { role: "system", content: "[Session Summary]\n#{summary}" } if summary
 
         # Conversation history. Repair tool pairing across the FULL list before
         # mapping to wire format — this is the defensive "net" that recovers
@@ -201,6 +200,13 @@ module Rubino
 
         project_ctx = load_project_context
         parts << "[Project Context]\n#{project_ctx}" if project_ctx
+
+        # Session summary (when this session has been compacted). Kept as the
+        # last section so the base prompt comes first; folded in here rather
+        # than emitted as a second role:"system" message to avoid RubyLLM's
+        # "multiple system messages" warning (#253).
+        summary = load_summary
+        parts << "[Session Summary]\n#{summary}" if summary
 
         parts.join("\n\n")
       end
