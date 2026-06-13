@@ -339,7 +339,7 @@ module Rubino
 
       def load_builtin_prompt(name)
         path = File.expand_path("../agent/prompts/#{name}.txt", __dir__)
-        File.exist?(path) ? File.read(path).strip : nil
+        File.exist?(path) ? File.read(path, encoding: "UTF-8").strip : nil
       rescue StandardError
         nil
       end

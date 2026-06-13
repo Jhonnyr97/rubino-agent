@@ -22,7 +22,7 @@ module Rubino
         files = discover_files
         return nil if files.empty?
 
-        files.map { |f| File.read(f) }.join("\n\n---\n\n")
+        files.map { |f| File.read(f, encoding: "UTF-8") }.join("\n\n---\n\n")
       end
 
       # Returns list of discovered context file paths
@@ -37,7 +37,7 @@ module Rubino
       def local_context(subdir)
         CONTEXT_FILES.filter_map do |filename|
           path = File.join(@base_path, subdir, filename)
-          File.read(path) if File.exist?(path)
+          File.read(path, encoding: "UTF-8") if File.exist?(path)
         end.join("\n")
       end
     end
