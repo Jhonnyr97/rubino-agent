@@ -1054,6 +1054,22 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       # One boundary per block, in order.
       expect(completed).to eq([1, 2])
     end
+
+    # #261: ruby_llm runs tools mid-stream and returns a response whose #content
+    # is only the LAST assistant block. The pre-tool narration (block 1) must
+    # still survive into the AdapterResponse content (and thus the headless
+    # output + persisted transcript) — built from the full streamed buffer, not
+    # response.content alone.
+    context "when the provider returns only the final block as #content (post-tool turn)" do
+      let(:response) do
+        double("Response", content: "allelo. Pronto.", input_tokens: 1, output_tokens: 1, tool_calls: nil)
+      end
+
+      it "returns the full turn text (pre-tool narration included), not just the last block" do
+        result = adapter.stream(messages: [{ role: "user", content: "hi" }]) { |_| }
+        expect(result.content).to eq("Cerco le notizie in parallelo. Pronto.")
+      end
+    end
   end
 
   # NOTE: (Slice 4): the adapter's retry helpers (with_retries, backoff_cap,
