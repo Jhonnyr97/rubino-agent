@@ -4,13 +4,24 @@ require "json"
 require "tmpdir"
 
 RSpec.describe Rubino::UpdateCheck do
+  # Hard isolation: every example resolves its cache under a throwaway tmpdir,
+  # NEVER the developer's real ~/.rubino. The around block pins RUBINO_HOME to
+  # the tmpdir and restores the prior value in an ensure (so a raising example
+  # can't leave the env pointing at the tmpdir after it is deleted). Detached
+  # refresh threads are joined before the around block tears the env down, so
+  # no thread can survive long enough to write_cache into the real home — the
+  # exact leak that once poisoned ~/.rubino/update_check.json with v99.0.0.
   around do |example|
     Dir.mktmpdir("rubino_update_check") do |dir|
       orig = ENV.fetch("RUBINO_HOME", nil)
       ENV["RUBINO_HOME"] = dir
       @home = dir
-      example.run
-      ENV["RUBINO_HOME"] = orig
+      begin
+        example.run
+      ensure
+        (Thread.list - [Thread.current]).each { |t| t.join(2) if t[:rubino_update_refresh] }
+        ENV["RUBINO_HOME"] = orig
+      end
     end
   end
 
@@ -61,6 +72,20 @@ RSpec.describe Rubino::UpdateCheck do
 
     it "no-ops on a corrupt cache file" do
       File.write(File.join(@home, "update_check.json"), "{not json")
+      expect(described_class.notice_from_cache).to be_nil
+    end
+
+    # #phantom-version: a future-dated checked_at made the old stale? return a
+    # negative age (never >= 24h), latching the poisoned cache so it re-rendered
+    # forever. The notifier must self-heal: no phantom notice off a forward-dated
+    # entry, even when its `latest` is a higher (but bogus) version.
+    it "does not render the phantom notice when checked_at is in the future" do
+      write_cache(latest: "99.0.0", checked_at: "2099-01-01T00:00:00Z")
+      expect(described_class.notice_from_cache).to be_nil
+    end
+
+    it "does not render the phantom notice on a slightly-future checked_at (clock skew)" do
+      write_cache(latest: "0.4.1", checked_at: (Time.now.utc + 3600).iso8601)
       expect(described_class.notice_from_cache).to be_nil
     end
 
@@ -171,6 +196,16 @@ RSpec.describe Rubino::UpdateCheck do
       expect(described_class.cached_latest).to eq("0.6.0")
     end
 
+    # Self-heal: a future-dated cache (negative age) must be treated as STALE so
+    # the poisoned entry is overwritten by a real check instead of latched.
+    it "re-checks (treats as stale) when checked_at is in the future and overwrites the poison" do
+      write_cache(latest: "99.0.0", checked_at: "2099-01-01T00:00:00Z")
+      expect(described_class).to be_stale
+      allow(described_class).to receive(:fetch_latest).and_return("0.4.0")
+      described_class.refresh_async_if_stale.join
+      expect(described_class.cached_latest).to eq("0.4.0")
+    end
+
     it "leaves the cache untouched and stays silent on a failed fetch" do
       write_cache(latest: "0.3.0", checked_at: (Time.now.utc - (25 * 3600)).iso8601)
       allow(described_class).to receive(:fetch_latest).and_return(nil)
@@ -201,6 +236,23 @@ RSpec.describe Rubino::UpdateCheck do
       write_cache(latest: "0.4.1")
       described_class.clear_cache!
       expect(File.exist?(File.join(@home, "update_check.json"))).to be(false)
+    end
+  end
+
+  # Guardrail against the test-isolation leak that poisoned the developer's real
+  # ~/.rubino: every write must land under the throwaway @home, never $HOME.
+  describe "test isolation" do
+    it "resolves the cache under the isolated tmp home, not the real ~/.rubino" do
+      expect(described_class.cache_path).to start_with(@home)
+      expect(described_class.cache_path)
+        .not_to eq(File.expand_path("~/.rubino/update_check.json"))
+    end
+
+    it "writes the refreshed cache into the tmp home only" do
+      allow($stdout).to receive(:tty?).and_return(true)
+      allow(described_class).to receive(:fetch_latest).and_return("0.4.0")
+      described_class.refresh_async_if_stale.join
+      expect(File.exist?(File.join(@home, "update_check.json"))).to be(true)
     end
   end
 end
