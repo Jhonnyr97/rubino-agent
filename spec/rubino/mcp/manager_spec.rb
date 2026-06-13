@@ -150,7 +150,11 @@ RSpec.describe Rubino::MCP::Manager do
 
       dev = RubyLLM::MCP.config.logger.instance_variable_get(:@logdev).dev
       expect(dev).not_to eq($stdout)
-      expect(dev.path).to eq(File.join(TEST_HOME, "logs", "mcp.log"))
+      # Resolve against the actual rubino home (default_home_path honours
+      # RUBINO_HOME) rather than hardcoding TEST_HOME, so the spec passes under
+      # any isolated home the suite is pointed at instead of assuming one.
+      expect(dev.path)
+        .to eq(File.join(Rubino::Config::Loader.default_home_path, "logs", "mcp.log"))
     end
   end
 

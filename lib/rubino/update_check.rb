@@ -42,6 +42,12 @@ module Rubino
     # notice must not leak through either (#66).
     def notice_from_cache
       return nil if opted_out?
+      # Never render off a poisoned cache: a future-dated checked_at (the
+      # "v99.0.0" phantom came from {"checked_at":"2099-…","latest":"99.0.0"})
+      # is suppressed here, and stale? treats it as stale so a refresh
+      # repopulates it for next boot. A legitimately >24h-old cache is still
+      # trusted for the notice — only forward-dated / corrupt entries are poison.
+      return nil if poisoned_cache?
 
       latest = cached_latest
       return nil unless newer?(latest)
@@ -59,6 +65,7 @@ module Rubino
       return nil unless stale?
 
       Thread.new do
+        Thread.current[:rubino_update_refresh] = true
         latest = fetch_latest
         write_cache(latest) if latest
       rescue StandardError
@@ -138,14 +145,42 @@ module Rubino
         ENV["CI"].to_s.strip.empty?
     end
 
-    # True when the cache is missing or its checked_at is older than 24h.
+    # True when the cache is missing, unreadable, its checked_at is older than
+    # 24h — AND, crucially, also true when checked_at is in the FUTURE.
+    #
+    # A future checked_at (clock skew, a hand-edited or corrupt cache, a bogus
+    # fixture) yields a NEGATIVE age, which `>= 24h` is never true for — so the
+    # old code latched the poisoned cache forever and re-rendered its bogus
+    # `latest` on every boot (the live "rubino v99.0.0 available" phantom, from
+    # a cache pinned at {"checked_at":"2099-…","latest":"99.0.0"}). Treating a
+    # negative age as stale forces a re-check, letting the notifier self-heal.
     def stale?
-      return true unless File.exist?(cache_path)
+      age = cache_age
+      return true if age.nil?
+
+      age.negative? || age >= CHECK_INTERVAL
+    end
+
+    # A cache whose checked_at is in the future is poison: it cannot reflect a
+    # real check and must never drive the boot notice. Missing/unreadable caches
+    # are NOT "poisoned" (they simply yield no notice); only a forward-dated or
+    # unparseable timestamp is.
+    def poisoned_cache?
+      return false unless File.exist?(cache_path)
+
+      age = cache_age
+      age.nil? || age.negative?
+    end
+
+    # Seconds since the cached checked_at (negative if it is in the future), or
+    # nil when the cache is missing, unreadable, or has an unparseable timestamp.
+    def cache_age
+      return nil unless File.exist?(cache_path)
 
       checked_at = JSON.parse(File.read(cache_path))["checked_at"]
-      Time.now.utc - Time.parse(checked_at) >= CHECK_INTERVAL
+      Time.now.utc - Time.parse(checked_at)
     rescue StandardError
-      true
+      nil
     end
 
     # ---- update mechanics -------------------------------------------------
