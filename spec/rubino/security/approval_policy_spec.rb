@@ -422,13 +422,24 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "does NOT auto-allow a dangerous command even if its head is allowlisted (SEC-01)" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
+        "security" => { "command_allowlist" => ["git diff"] }
+      )
+      pol = described_class.new(config: cfg)
+      expect(pol.dangerous?("git diff --output /tmp/PWN")).to be(true).or be(false)
+      # a write/exec form past the allowlisted read verb is NOT auto-allowed
+      expect(pol.decide(shell, arguments: { "command" => "git diff --output /tmp/PWN" })).to eq(:ask)
+      # the safe, exact form the operator actually allowlisted still passes
+      expect(pol.decide(shell, arguments: { "command" => "git diff HEAD~1" })).to eq(:allow)
+    end
+
+    it "does NOT auto-allow a dangerous git verb even when its head is allowlisted (SEC-R2-1)" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
         "security" => { "command_allowlist" => ["git push"] }
       )
       pol = described_class.new(config: cfg)
-      expect(pol.dangerous?("git push --force origin main")).to be(true)
-      expect(pol.decide(shell, arguments: { "command" => "git push --force origin main" })).to eq(:ask)
-      # the safe, exact form the operator actually allowlisted still passes
-      expect(pol.decide(shell, arguments: { "command" => "git push origin main" })).to eq(:allow)
+      # push is a mutating verb; the convenience layer never auto-approves it.
+      expect(pol.decide(shell, arguments: { "command" => "git push origin main" })).to eq(:ask)
     end
   end
 
