@@ -36,6 +36,45 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("┌─")
     end
 
+    # #265: an interrupt mid-block must tear down the live tail (the rolling
+    # window of RAW in-flight rows) BEFORE the final rendered block commits, so
+    # the last painted raw row doesn't survive as an out-of-order ghost above
+    # the re-rendered block. Drive a live-capable stdout that records the order
+    # of #live("") clears and committed lines.
+    it "clears the live tail before committing the final block on interrupt (#265)" do
+      events = []
+      live_io = Object.new
+      live_io.define_singleton_method(:live) do |s|
+        events << [:live, s.to_s]
+        self
+      end
+      live_io.define_singleton_method(:puts) do |*a|
+        events << [:puts, a.join]
+        nil
+      end
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "The Ruby language was born in 1993 and ")
+        ui.stream(type: :content, text: "grew into a beloved tool for developers.")
+        ui.stream_end # interrupt path finalizes the open block (flush_content_stream)
+      ensure
+        $stdout = old
+      end
+
+      clear_idx  = events.index { |kind, str| kind == :live && str.empty? }
+      commit_idx = events.index { |kind, str| kind == :puts && str.include?("beloved tool") }
+      expect(clear_idx).not_to be_nil
+      expect(commit_idx).not_to be_nil
+      expect(clear_idx).to be < commit_idx
+    end
+
     it "buffers thinking text instead of raw-printing it (bug #2)" do
       out = capture_stdout do
         ui.stream(type: :thinking, text: "musing")

@@ -1544,17 +1544,24 @@ module Rubino
       # open (the model never sent the closing ```), the buffered text is emitted
       # as PLAIN lines so nothing is lost (markdown of a half-open fence would be
       # garbage). Always clears the live region.
+      #
+      # The live tail (the rolling window of RAW in-flight wrapped rows) is torn
+      # down FIRST, before the rendered block commits. On an interrupt mid-block
+      # the last painted tail rows would otherwise survive ABOVE the freshly
+      # rendered block — a duplicated, out-of-order ghost fragment under the
+      # heading (#265). Clearing the partial region first lands the final block
+      # on a clean region.
       def flush_content_stream
         remaining = @stream_md.flush
-        clear_plain_tail if remaining
-        if remaining
-          if open_fence?(remaining)
-            remaining.split("\n", -1).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
-          else
-            commit_markdown_block(remaining)
-          end
-        end
         show_live_tail("")
+        return unless remaining
+
+        clear_plain_tail
+        if open_fence?(remaining)
+          remaining.split("\n", -1).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
+        else
+          commit_markdown_block(remaining)
+        end
       end
 
       # An odd number of fence lines means a ``` was opened but never closed.

@@ -98,7 +98,10 @@ module Rubino
         when :header
           header_lines(el)
         when :p
-          wrap_lines(paragraph_lines(el))
+          # A lone fence marker (a stray ``` a model leaves after an outer
+          # ```markdown wrapper) parses as a paragraph of literal backticks;
+          # drop it rather than leak the ``` as text (#264).
+          fence_only_paragraph?(el) ? [:drop] : wrap_lines(paragraph_lines(el))
         when :ul
           list_lines(el, ordered: false)
         when :ol
@@ -121,6 +124,23 @@ module Rubino
           tokens = inline_tokens(el.children, {})
           tokens_to_lines(tokens)
         end
+      end
+
+      # When we unwrap a ```markdown body, a nested ```ruby fence inside it has
+      # often lost its closing ``` (the outer wrapper's close consumed it). An
+      # odd count of fence lines means a fence is left open, which would render
+      # the rest as a half-finished code frame; append a closing fence so the
+      # inner code block renders complete (#264).
+      def close_dangling_fence(text)
+        return text unless text.to_s.lines.count { |l| l.match?(/\A\s*`{3,}/) }.odd?
+
+        "#{text}\n```"
+      end
+
+      # True when a paragraph's whole visible text is just a fence marker
+      # (```), i.e. an orphaned fence line with no code body around it.
+      def fence_only_paragraph?(el)
+        inline_tokens(el.children, {}).map { |t, _| t == :br ? "" : t.to_s }.join.strip.match?(/\A`{3,}\z/)
       end
 
       def header_lines(el)
@@ -185,13 +205,26 @@ module Rubino
         end
       end
 
+      # Language tags that mean "this fence WRAPS markdown" (models routinely
+      # box a whole answer in ```markdown / ```md). We render the body AS
+      # markdown instead of drawing a literal code frame around raw `**bold**`,
+      # table pipes and a nested ```ruby fence (#264).
+      MARKDOWN_FENCE_LANGS = %w[markdown md].freeze
+
       def codeblock_lines(el)
-        text  = el.value.to_s
+        text = el.value.to_s
+        # A stray closing ``` left over when a model wraps its answer in an outer
+        # ```markdown fence parses as an EMPTY code block; drawing a frame around
+        # nothing leaves a broken half-finished box (#264). Emit nothing.
+        return [:drop] if text.strip.empty?
+
+        lang = el.options[:lang].to_s
+        return render(close_dangling_fence(text)) if MARKDOWN_FENCE_LANGS.include?(lang.downcase)
+
         lines = text.split("\n", -1)
         # kramdown's fenced codeblock value ends with a trailing newline -> empty last line. Drop it.
         lines.pop if lines.last == ""
 
-        lang = el.options[:lang].to_s
         out = []
         out << if lang.empty?
                  [["┌─ code ", { fg: :gray }], ["─" * 40, { fg: :gray }]]
@@ -273,10 +306,19 @@ module Rubino
       def render_tty_table(header, rows)
         fit = [@width.to_i, MIN_TABLE_WIDTH].max
         table = TTY::Table.new(header: header, rows: rows.empty? ? [Array.new(header&.size || 1, "")] : rows)
-        # No horizontal padding: TTY::Table's resize budget ignores padding
-        # (it would overflow @width by ~2 cols per row), so we omit it to keep
-        # the fit-to-width guarantee. Cells still get the border gutters.
-        str = table.render(:unicode, resize: true, width: fit, multiline: true)
+        # Size columns to their CONTENT, only resizing (wrap/shrink) when the
+        # natural table is WIDER than the budget (#263). Passing resize: true
+        # unconditionally made TTY::Table stretch every column to fill @width, so
+        # short cells left a huge gap before the next border. width: is ALWAYS
+        # passed (so tty-table never probes the screen — a headless/under-
+        # reporting winsize would otherwise make :unicode collapse the table);
+        # resize: is added ONLY when the natural table is wider than the budget.
+        # Without resize, columns size to content and the spare width is left
+        # unused — no stretch, no gap. No horizontal padding either: the resize
+        # budget ignores it (~2 cols/row overflow); cells still get the gutters.
+        opts = { multiline: true, width: fit }
+        opts[:resize] = true if table.width > fit
+        str = table.render(:unicode, **opts)
         return nil if str.nil?
 
         str.split("\n").map { |line| [[line, { fg: :gray }]] }
