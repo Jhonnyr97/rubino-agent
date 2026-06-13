@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-13
+
 ### Added — skills from git (#4)
 
 - **`rubino skills install <owner/repo | git-URL>`** — install skills from any
@@ -14,6 +16,26 @@
 - The skill registry now also discovers the agent-neutral `.agents/skills/`
   and `~/.agents/skills/` dirs (the `npx skills` / Gemini CLI convention) —
   additive, lowest precedence, trust-gated like `.rubino/skills`.
+
+### Added
+
+- **`/agents <id>` watch — live tool-output tail (#5).** The drill-in watch grows an `output:` block showing the tail of the running subagent's current tool output, clearing when the tool finishes.
+- **`soffice` and `qpdf` in the `[Environment]` probe (#4/#6)** so the agent honestly reports whether LibreOffice/qpdf are available for the document skills.
+
+### Fixed
+
+- **`read_attachment` extension-spoof gate now covers document MIMEs (#239).** A text file named `report.docx` reads inline as text instead of bouncing off the document converter; a real `.docx` (ZIP magic) still classifies as a document.
+- **No more CLI crash under a C/POSIX locale (#250).** Skill and context files are read as UTF-8 rather than the ambient (US-ASCII) encoding, so `rubino skills list` and prompt assembly no longer raise `invalid byte sequence` on minimal Linux/Docker images.
+- **Installer no longer always exits 1 on a fresh Linux box (#240).** Fixed an unbound `rv_bin` under `set -u` and an invalid `gem environment gembindir` call; `curl … | bash` now installs cleanly and is idempotent.
+
+### Internal
+
+- **Test stability (#236):** PTY capture specs read to the child's EOF instead of treating a 0.5s quiet window as end-of-output, removing a rare 2-failure flake under concurrent suite load.
+- **Approval-handoff guard (#10):** the #80 unit guard now genuinely fails on a full revert; the PTY handoff spec is relabeled as a happy-path check.
+
+## [0.3.0] - 2026-06-06
+
+Major capability release: the core conversation loop was ported 1:1 from the reference implementation (formalized LLM boundary, retry/backoff/fallback, degenerate-response recovery), background subagents became the default delegation path, the memory subsystem grew a pluggable backend contract with a tiny-Zep SQLite backend that is now the default, CLI gained image/file input and a scroll-native redesign, and a reference-aligned approval model (hardline floor, dangerous-pattern deny, prefix-derived rules) landed. Consolidated from `feature/subagent-view` (#48) plus #49-#58.
 
 ### Added — CLI redesign & in-chat surfaces
 
@@ -119,10 +141,6 @@ The GitHub repository is `github.com/Jhonnyr97/rubino-agent`. Publishing the ren
 ### Documentation
 
 - `docs/api/v1.md` aligned to the real API surface (#165, #166, #167): SSE catalogue documents the non-streaming contract (no `message.delta`/`reasoning.delta`), the approval decision enum lists all seven accepted values with semantics, and `GET /v1/sessions`, `/v1/memory*`, `/v1/tasks*` are documented. A doc-drift spec locks the documented route list to the registered routes.
-
-## [0.3.0] - 2026-06-06
-
-Major capability release: the core conversation loop was ported 1:1 from the reference implementation (formalized LLM boundary, retry/backoff/fallback, degenerate-response recovery), background subagents became the default delegation path, the memory subsystem grew a pluggable backend contract with a tiny-Zep SQLite backend that is now the default, CLI gained image/file input and a scroll-native redesign, and a reference-aligned approval model (hardline floor, dangerous-pattern deny, prefix-derived rules) landed. Consolidated from `feature/subagent-view` (#48) plus #49-#58.
 
 ### Breaking / upgrade notes
 
