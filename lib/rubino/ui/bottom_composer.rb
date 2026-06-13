@@ -868,7 +868,32 @@ module Rubino
       # The +@buffer+ is redrawn on every frame, so it can never be lost across
       # a scroll. Must be called while holding @render.
       def render_frame(committed:)
+        # Refresh the width from the live terminal every frame. @cols was only
+        # recomputed at init and on SIGWINCH, so a width that was wrong at init
+        # (ttyd/xterm sizes the pty AFTER the process starts, so the first
+        # winsize can report a stale/larger column count) stuck until a resize.
+        # A too-large @cols let a live tail row clamp WIDER than the real
+        # terminal, overflow-wrap to a second physical line, and leave the
+        # single-row \e[1A clear short by a row — the stranded raw tail above the
+        # interrupted block (#265). Only adopt a freshly-read POSITIVE width so a
+        # transient zero/blank winsize (the #95 mid-stream under-report) keeps the
+        # last good @cols instead of collapsing the budget.
+        fresh = live_winsize_cols
+        @cols = fresh if fresh
         @region.frame(committed: committed, rows: live_rows, cols: @cols) { draw_input }
+      end
+
+      # A freshly-read terminal column count, or nil when winsize can't report a
+      # positive width right now (so the caller keeps the last good @cols rather
+      # than falling back to a narrow default mid-stream, #95).
+      def live_winsize_cols
+        positive_int(@output.winsize.last)
+      rescue StandardError
+        begin
+          positive_int(IO.console&.winsize&.last)
+        rescue StandardError
+          nil
+        end
       end
 
       # The live rows for this frame, top → bottom: the subagent cards; the

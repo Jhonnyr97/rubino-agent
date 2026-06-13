@@ -42,6 +42,10 @@ module Rubino
         @stream_type        = nil
         @stream_md          = nil # StreamingMarkdown buffer, lazily built per content stream
         @thinking_indicator = false
+        # Latched true for the duration of #turn_interrupted so a late content
+        # delta (the adapter's final think-filter flush) can't re-arm a fresh
+        # raw live tail under the committed partial block (#265 interrupt ghost).
+        @turn_interrupting  = false
         # Turn-scoped status row ("Ruby facet"): ONE ticker thread per turn —
         # started when the turn (or a stand-alone wait like /probe) starts and
         # stopped only at turn end / error / interrupt. Events swap its LABEL
@@ -462,18 +466,45 @@ module Rubino
       # interrupt raised outside the streaming bracket must settle too.
       # Swallowed once after a QUIET slash-command interrupt (#111, above).
       def turn_interrupted
+        # Latch the interrupt FIRST: a late content delta (the adapter flushes
+        # its think-filter tail on the way out of an interrupted stream) must
+        # NOT re-open a fresh stream and paint a new raw live tail UNDER the
+        # block #finalize_stream just committed — that stray rolling-tail row is
+        # the #265 ghost on the interrupt path. While latched, #stream drops
+        # content deltas (they can no longer reach the user anyway) so nothing
+        # re-arms the live region after it has been torn down.
+        @turn_interrupting = true
         finalize_stream
+        # Tear down the WHOLE painted live tail, not just the bounded
+        # LIVE_TAIL_ROWS window: any raw rolling-tail rows still on screen (a
+        # tail painted by a delta that landed in the cancel race, before the
+        # latch) are cleared through the live region's row-accurate erase so no
+        # raw/duplicated fragment survives above `⎿ interrupted` (#265).
+        clear_stream_region
         # Interrupt = turn end for the status row: kill the engine thread.
         status_stop
         @thinking_indicator = false
         if @suppress_interrupt_marker
           @suppress_interrupt_marker = false
+          @turn_interrupting = false
           return
         end
 
         clear_line
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
+        @turn_interrupting = false
+      end
+
+      # Fully erase the streaming live tail through the live region's
+      # row-accurate clear (it walks up exactly the rows it painted), so an
+      # interrupt can never strand a bounded rolling-tail fragment on screen.
+      # Drops the block buffer too, so a stray post-finalize delta has nothing
+      # to extend. A no-op once the stream is already closed and the tail blank.
+      def clear_stream_region
+        @stream_md = nil
+        @stream_type = nil
+        show_live_tail("")
       end
 
       # Free-line annotation rendered as `┄ message ┄`, dim.
@@ -818,6 +849,13 @@ module Rubino
         # transient row until the block ends.
         collapse_reasoning if @thinking_indicator || !@reasoning_buffer.empty?
         clear_thinking_indicator
+
+        # A content delta arriving while the turn is being interrupted (the
+        # adapter's final think-filter flush on its way out of a cancelled
+        # stream) is dropped: re-opening a stream here would paint a fresh raw
+        # live tail under the already-committed partial block — the #265 ghost.
+        # The partial the user already saw was committed by #finalize_stream.
+        return if @turn_interrupting
 
         if type != @stream_type
           stream_end if @stream_type
@@ -1532,7 +1570,10 @@ module Rubino
         # doesn't glue onto the leftover tail. (The #live seam replaces its own
         # transient row, so this is a no-op there.)
         clear_plain_tail if completed.any?
-        completed.each { |block| commit_markdown_block(block) }
+        # Commit each finished block atomically with the live-tail clear so a raw
+        # tail row can't survive above the rendered block at the scroll boundary
+        # (#265) — the same single-frame discipline the final flush uses.
+        completed.each { |block| commit_block_atomic(margined_render(block)) }
         # Live region: a small ROLLING window over the in-flight block — its last
         # few raw lines, so a long list/table block keeps its recent context
         # visible while it streams instead of vanishing to a single flickering
@@ -1554,22 +1595,63 @@ module Rubino
       # as PLAIN lines so nothing is lost (markdown of a half-open fence would be
       # garbage). Always clears the live region.
       #
-      # The live tail (the rolling window of RAW in-flight wrapped rows) is torn
-      # down FIRST, before the rendered block commits. On an interrupt mid-block
-      # the last painted tail rows would otherwise survive ABOVE the freshly
-      # rendered block — a duplicated, out-of-order ghost fragment under the
-      # heading (#265). Clearing the partial region first lands the final block
-      # on a clean region.
+      # The final block commits in ONE atomic live-region frame that ALSO clears
+      # the raw rolling tail (#commit_block_atomic): the live region erases the
+      # transient tail rows it painted and scrolls the rendered block in a single
+      # mutex-held frame, so the tail can't survive ABOVE the rendered block as a
+      # duplicated/out-of-order ghost (#265). The old two-step
+      # (show_live_tail("") then a per-line commit) left a window where, at the
+      # terminal's scroll boundary, the just-painted raw tail row had already
+      # scrolled past the next frame's relative \e[1A clear — the ghost the QA
+      # gate caught on the INTERRUPT path, where the redraw cycle is cut short.
       def flush_content_stream
         remaining = @stream_md.flush
-        show_live_tail("")
-        return unless remaining
+        unless remaining
+          show_live_tail("")
+          return
+        end
 
-        clear_plain_tail
-        if open_fence?(remaining)
-          remaining.split("\n", -1).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
+        lines =
+          if open_fence?(remaining)
+            # A half-open fence renders as garbage; emit the buffered text PLAIN
+            # so nothing is lost, still margined to sit under the rest.
+            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{line}" }
+          else
+            margined_render(remaining)
+          end
+        commit_block_atomic(lines)
+      end
+
+      # Commit a rendered block AND tear the raw live tail down in a single
+      # live-region frame. When a composer owns the screen its #print_above
+      # clears the live partial and scrolls the whole (possibly multi-line)
+      # block under one render-mutex frame — the clear lands BEFORE the scroll,
+      # so a tail row can't be stranded above the block at the scroll boundary
+      # (#265). Off the composer seam (plain TTY / pipe / tests) fall back to the
+      # per-line path, clearing the in-place tail first.
+      # A markdown block rendered to MD_MARGIN-indented, ANSI-styled lines —
+      # the exact lines #commit_block_atomic commits above the prompt.
+      def margined_render(block)
+        render_markdown_block(block).map { |line| "#{MD_MARGIN}#{line}" }
+      end
+
+      def commit_block_atomic(lines)
+        return if lines.nil? || lines.empty?
+
+        composer = BottomComposer.current
+        if composer && $stdout.respond_to?(:live)
+          # Route around the StdoutProxy's per-line buffering: hand the whole
+          # block to the composer so it commits in ONE frame that also clears the
+          # live partial (no stranded raw tail). nil/empty lines stay as blank
+          # rows (the P3 rhythm) — LiveRegion#commit keeps them.
+          composer.print_above(lines.join("\n"))
         else
-          commit_markdown_block(remaining)
+          # No composer owns the screen (plain TTY / pipe / a #live-shaped test
+          # double): clear the in-place raw tail through the SAME seam a live
+          # region would (#show_live_tail), then commit per line.
+          show_live_tail("")
+          clear_plain_tail
+          lines.each { |line| $stdout.puts line }
         end
       end
 
