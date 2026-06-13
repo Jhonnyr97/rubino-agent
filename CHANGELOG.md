@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Hardened/narrowed the command-allowlist convenience layer (SEC-R2-1/2/3).**
+  Closes three default-config / bare-`git` paths that could run arbitrary code
+  or write arbitrary files past the headless gate **without `--yolo`**:
+  - removed code-loading test/build runners (`bundle exec rspec`, …) from the
+    **shipped default** `command_allowlist` — they load and execute arbitrary
+    project code by design (`rspec -r FILE`), so they are not safely
+    auto-approvable (SEC-R2-3);
+  - an allowlisted **git** head is now vetted for GLOBAL flags before the
+    subcommand (`git -c alias.x='!cmd' x`, `-c core.sshCommand=…`, `-C dir`,
+    `--exec-path`) and for code-loading/mutating subcommands (`apply`, `am`,
+    `push`, hooks, …); the "approve git always" path now persists only a
+    narrowed `git <read-only verb>`, never bare `git` (SEC-R2-1);
+  - any allowlisted head whose argument is itself a program
+    (`awk`/`sed`/`perl`/`python`/`ruby`/`node`/`tar`/`tee`/`xargs`/shells) is
+    default-denied auto-approval, and write flags on read heads (`sort -o`, …)
+    are rejected (SEC-R2-2).
+
+  An allowlist is a convenience layer, **not** a security boundary (per industry
+  practice the OS sandbox is the real floor, tracked separately); this narrows
+  it to close the above default-config and bare-`git` RCEs.
+
 ## [0.4.1] - 2026-06-13
 
 ### Security

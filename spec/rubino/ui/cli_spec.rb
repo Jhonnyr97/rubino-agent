@@ -1566,7 +1566,8 @@ RSpec.describe Rubino::UI::CLI do
 
     it "offers the prefix option and persists the PREFIX rule on 'always_prefix'" do
       prompt = stub_choice(:always_prefix)
-      expect(Rubino::Security::AllowlistPersister).to receive(:persist).with("git")
+      # SEC-R2-1: the persisted prefix is `git status`, never bare `git`.
+      expect(Rubino::Security::AllowlistPersister).to receive(:persist).with("git status")
       capture_stdout do
         ui.confirm("ok?", scope: "shell:git status", tool: "shell", command: "git status")
       end
@@ -1667,7 +1668,8 @@ RSpec.describe Rubino::UI::CLI do
 
     it "deny_always persists a PREFIX-scoped permissions:deny rule and returns false" do
       stub_choice(:deny_always)
-      expect(Rubino::Security::DenyPersister).to receive(:persist).with("shell git*")
+      # SEC-R2-1: scoped to the narrowed `git status` prefix, not bare `git*`.
+      expect(Rubino::Security::DenyPersister).to receive(:persist).with("shell git status*")
       capture_stdout do
         expect(ui.confirm("ok?", scope: "shell:git status", tool: "shell", command: "git status")).to be(false)
       end

@@ -374,10 +374,11 @@ attachments:
 security:
   # confirm_policy: "confirm_all"      # confirm_all (default) | dangerous_only; derived from the alias below when absent
   require_confirmation_for_shell: true  # legacy alias for confirm_policy; true => confirm_all
-  command_allowlist:                    # prefix-matched commands pre-approved (empty = approve nothing)
+  command_allowlist:                    # pre-approved commands (read-only intent only; empty = approve nothing)
     - "git status"
     - "git diff"
-    - "bundle exec rspec"
+    # Test/build runners (bundle exec rspec, rake, npm test) are NOT shipped here:
+    # they load and run arbitrary project code, so add one only if you accept that.
   website_blocklist:
     enabled: false
     domains: []
