@@ -28,6 +28,7 @@ module Rubino
       # tainted or over-budget content into a future system prompt.
       class Sqlite < Backend
         include SqliteGraph
+        include SqliteExtraction
 
         TABLE = :memory_facts
         FTS   = :memory_facts_fts
@@ -122,17 +123,32 @@ module Rubino
           target
         end
 
-        # ONE aux-LLM call over the recent turn(s): returns {add, supersede}.
+        # ONE aux-LLM call over the turn's NEW messages: returns {add, supersede}.
         # Apply is pure Ruby — insert adds (deduped + guarded), retire
         # superseded rows and insert their replacement.
+        #
+        # Per-session cursor (#249): only messages newer than the session's
+        # `memory_extracted_msg_id` watermark are fed, so each turn's extraction
+        # is bounded to that turn's new messages instead of an overlapping
+        # recency window. When a turn added nothing new past the cursor, we skip
+        # the aux-LLM call entirely (no redundant duplicate extraction pass), and
+        # advance the cursor only once the apply has landed.
         def extract(session_id)
-          turn = recent_turn_text(session_id)
+          new_messages = unextracted_messages(session_id)
+          turn = turn_text(new_messages)
           return [] if turn.strip.empty?
 
           result = call_llm(session_id: session_id, turn: turn)
+          # A nil result means the aux call failed/parsed to nothing — leave the
+          # cursor put so this turn's messages are retried next time rather than
+          # silently dropped. A parsed result (even an empty {add,supersede})
+          # means these messages WERE processed: advance the watermark so they're
+          # never re-fed, which is the overlapping-window re-work #249 removes.
           return [] unless result
 
-          apply(result, session_id)
+          stored = apply(result, session_id)
+          advance_extraction_cursor(session_id, new_messages)
+          stored
         end
 
         # -- READ path --
@@ -536,18 +552,6 @@ module Rubino
 
         def aux_client
           @aux_client ||= LLM::AuxiliaryClient.new(config: @config)
-        end
-
-        def recent_turn_text(session_id)
-          msgs = Session::Store.new(db: @db).recent(session_id, count: 6)
-          msgs.filter_map do |m|
-            next if m.content.nil? || m.content.to_s.empty?
-            next unless %w[user assistant].include?(m.role)
-
-            "#{m.role.upcase}: #{m.content}"
-          end.join("\n")
-        rescue StandardError
-          ""
         end
 
         # ---- embeddings (best-effort) ----
