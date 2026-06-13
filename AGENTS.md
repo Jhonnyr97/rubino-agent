@@ -77,7 +77,7 @@ lib/rubino/
 ## Surfaces this project exposes
 
 - **HTTP API** (`/v1/*`) — the canonical interface. See `docs/api/v1.md`.
-- **CLI** — `rubino {setup,chat,prompt,server,config,memory,sessions,jobs,tools,doctor,version}`.
+- **CLI** — `rubino {setup,chat,prompt,server,config,memory,sessions,jobs,skills,tools,tls_cert,doctor,version,update}`.
 - **Library** — `require "rubino"; Rubino.run(...)`.
 
 The interactive CLI ships as part of `rubino chat`. Multi-agent routing, MCP, and plugin hooks are designed in but not fully wired yet.

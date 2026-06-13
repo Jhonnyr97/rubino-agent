@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-13
+
+### Security
+
+- **Headless approvals now fail closed (#260).** A one-shot / scripted run
+  (`rubino prompt`, `chat -q`, no TTY) no longer auto-runs a tool that would
+  otherwise prompt: a write/edit, or a shell command not covered by your
+  `permissions` / command allowlist / read-only auto-allow, is **blocked, not
+  run**. A `blocked: <tool> needs approval …` line goes to stderr and the run
+  exits **2**, so CI/automation fails loudly instead of silently skipping (or
+  auto-executing). Full auto-exec now requires an explicit **`--yolo`** —
+  honored ONLY as a CLI flag, never grantable by a project-local/persisted
+  config — and **`--no-yolo`** forces fail-closed even over a yolo boot default.
+
+### Fixed — installer
+
+- **`mise` method (#256)** alongside Homebrew and `rv`, with `global`/`local`
+  scope (`RUBINO_INSTALL_SCOPE`); `RUBINO_INSTALL_METHOD` now accepts `mise`.
+- **Activation/PATH is persisted to your shell rc (#268)** (`.zshrc` /
+  `.bashrc` / `.profile`) and a **post-install fresh-shell gate** fails loudly
+  if `rubino` isn't on PATH in a new shell. `RUBINO_NO_MODIFY_RC=1` opts out.
+- **`mise` installs pin the latest published gem version (#258/#268)** instead
+  of drifting to a pre-release / age-gated build.
+- **Method-aware prereq preflight (#272)** (xz/git/toolchain) with real gem
+  error surfacing, and a **Debian-12 / glibc-too-old steer from rv → mise
+  (#241/#242/#272)** so users don't land on a broken musl Ruby.
+
+### Fixed
+
+- **Config corruption + `doctor` crash on a scalar written over a section (#259).**
+- **Streaming persistence (#266):** pre-tool narration is persisted and the
+  `tool_calls` audit is populated.
+- **TUI render (#269):** table columns sized to content, nested/markdown fences
+  consumed, interrupt "ghost" line cleared.
+- **Memory extraction bounded by a per-session cursor (#249)** — no more
+  re-scanning the whole transcript every turn.
+- **Boots under a bare C/POSIX locale (#273)** without
+  `Encoding::CompatibilityError`.
+- **Session summary folded into the single system message (#253/#254).**
+
 ## [0.4.0] - 2026-06-13
 
 ### Added — skills from git (#4)
