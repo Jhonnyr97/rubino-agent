@@ -89,6 +89,14 @@ module Rubino
       # spill.) Pure aside from that injected callback.
       def self.truncate(text, max_bytes:, max_lines:, spill: nil)
         text = text.to_s
+        # Scrub UNCONDITIONALLY at the tool→executor boundary. A stray
+        # non-UTF-8 byte (printf '\xe9', xxd/grep over a latin-1 or binary
+        # file) in SUB-cap output would otherwise pass straight through to
+        # JSON.generate and raise "source sequence is illegal/malformed
+        # utf-8" — crashing the LLM request and the memory/distill job. The
+        # truncation branches below scrub the bytes they slice, but under-cap
+        # output never hit them; scrubbing here covers both paths.
+        text = text.dup.force_encoding(Encoding::UTF_8).scrub unless text.valid_encoding?
         over_bytes = text.bytesize > max_bytes
         over_lines = text.lines.size > max_lines
         return text unless over_bytes || over_lines

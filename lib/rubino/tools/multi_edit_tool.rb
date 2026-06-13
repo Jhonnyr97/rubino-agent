@@ -65,7 +65,8 @@ module Rubino
           return gate
         end
 
-        content       = File.read(expanded)
+        # Scrubs a stray non-UTF-8 byte before include?/scan/sub (see Base).
+        content       = read_scrubbed(expanded)
         working       = content.dup
         applied_count = 0
 
@@ -103,7 +104,9 @@ module Rubino
         File.write(expanded, working)
         "Applied #{edits.size} edit(s), #{applied_count} replacement(s) in #{file_path}"
       rescue StandardError => e
-        "Error: #{e.message}"
+        # Uniform with WriteTool/EditTool: a read-only target (Errno::EACCES)
+        # or any other filesystem error returns a clean message.
+        "Error editing #{file_path}: #{e.message}"
       end
     end
   end
