@@ -75,6 +75,24 @@ RSpec.describe Rubino::Context::Compressor do
       expect(asst.map(&:token_count)).to all(eq(42))
     end
 
+    # MEM-2: the child starts with a NULL extraction cursor; without seeding it
+    # would re-mine the ENTIRE copied head+summary+tail on its first turn. The
+    # compactor must pin the watermark to the child's last copied message.
+    it "seeds the child's memory-extraction cursor past the copied transcript" do
+      4.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }
+      head = store.for_session(parent[:id]).first(2)
+      tail = store.for_session(parent[:id]).last(2)
+
+      compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+      child = compressor.send(:create_child_session, parent, head, "SUMMARY", tail)
+
+      cursor = db[:sessions].where(id: child[:id]).get(:memory_extracted_msg_id)
+      expect(cursor).to eq(store.last_id(child[:id]))
+      # Nothing in the copied child is newer than the cursor -> first turn feeds
+      # only genuinely new messages, not the whole transcript.
+      expect(store.since(child[:id], after_id: cursor)).to eq([])
+    end
+
     # Regression for the lineage-drift bug: summaries persisted by compaction
     # must chain parent_summary_id to the prior summary, and the compaction
     # row's previous_summary_id must point at that prior summary (NOT at the

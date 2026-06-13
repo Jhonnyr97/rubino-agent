@@ -111,6 +111,14 @@ module Rubino
         # Copy tail messages (same faithful copy as head)
         @message_store.copy_into(child[:id], tail)
 
+        # Seed the child's memory-extraction watermark to the copied tail (MEM-2):
+        # the child starts with a NULL cursor, and the pre-compaction flush
+        # already mined the parent — without this the child would re-extract the
+        # ENTIRE copied head+summary+tail on its first turn (unbounded, and able
+        # to resurrect a just-forgotten fact). Seeding pins it past the copy so
+        # only genuinely new turns are fed.
+        @message_store.seed_extraction_cursor(child[:id])
+
         # End the parent session
         @session_repo.update(parent_session[:id], status: "compacted")
 

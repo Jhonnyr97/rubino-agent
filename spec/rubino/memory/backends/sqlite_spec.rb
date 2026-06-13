@@ -322,6 +322,109 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
     end
   end
 
+  # Robustness of the cursor against undo/retry/branch/compaction/clock-skew.
+  # The aux is stubbed to emit one fact per `FACT=...` marker in the fed turn,
+  # so each test can assert exactly WHICH messages were re-fed and whether a
+  # forgotten fact comes back. These FAIL on the pre-fix wall-clock/deletable
+  # cursor and pass once it is rowid-based, reset on delete, seeded on copy.
+  describe "#extract — cursor robustness (MEM-1/2/3)" do
+    let(:store) { Rubino::Session::Store.new(db: db) }
+    # Records how many USER/ASSISTANT lines each extract fed the aux.
+    let(:fed) { [] }
+
+    before do
+      now = Time.now.utc.iso8601
+      db[:sessions].insert(id: "s1", source: "test", status: "active",
+                           message_count: 0, token_count: 0, created_at: now, updated_at: now)
+      # Aux echoes one add per FACT= marker found in the fed turn transcript, and
+      # records the fed line count into `fed`.
+      lines = fed
+      allow(aux_client).to receive(:call) do |**kwargs|
+        body = kwargs[:messages].last[:content]
+        lines << body.scan(/^(?:USER|ASSISTANT):/).size
+        adds = body.scan(/FACT=([^\n]+)/).flatten
+                   .map { |t| { "text" => t.strip, "kind" => "fact" } }
+        OpenStruct.new(content: JSON.generate("add" => adds, "supersede" => []))
+      end
+    end
+
+    def fact_texts
+      db[:memory_facts].where(valid_to: nil).select_map(:text).sort
+    end
+
+    # MEM-1 — undo/retry delete the cursor message. The next extraction must NOT
+    # re-mine the whole remaining session (bounded) and must NOT resurrect a fact
+    # the user just `forget`-ed.
+    it "does not resurrect a forgotten fact after an undo/retry delete" do
+      store.create(session_id: "s1", role: "user", content: "I use vim FACT=user uses vim")
+      store.create(session_id: "s1", role: "assistant", content: "noted")
+      backend.extract("s1")
+      expect(fact_texts).to eq(["user uses vim"])
+
+      backend.forget(kind: "fact", old_text: "vim")
+      expect(fact_texts).to eq([])
+
+      # Undo/retry: delete the last user message and everything after it.
+      last_user = store.last_for_role("s1", "user")
+      store.delete_from_inclusive("s1", from_id: last_user.id)
+
+      store.create(session_id: "s1", role: "user", content: "unrelated FACT=x")
+      store.create(session_id: "s1", role: "assistant", content: "ok")
+      backend.extract("s1")
+
+      expect(fact_texts).to contain_exactly("x") # forgotten vim stays gone
+      expect(fed.last).to eq(2) # only the new turn re-fed
+    end
+
+    # MEM-2 — a branched/compacted child copies the transcript into a fresh
+    # session whose cursor starts NULL. Seeding it past the copy means the first
+    # turn feeds ONLY new messages, not the entire copied transcript.
+    it "feeds only NEW messages in a branched/compacted child, not the whole copy" do
+      now = Time.now.utc.iso8601
+      5.times do |i|
+        store.create(session_id: "s1", role: "user", content: "u#{i} FACT=f#{i}")
+        store.create(session_id: "s1", role: "assistant", content: "a#{i}")
+        backend.extract("s1")
+      end
+
+      db[:sessions].insert(id: "child", source: "cli", status: "active",
+                           message_count: 0, token_count: 0, created_at: now, updated_at: now)
+      store.copy_into("child", store.for_session("s1"))
+      store.seed_extraction_cursor("child") # what branch_runner / compressor now do
+
+      expect(db[:sessions].where(id: "child").get(:memory_extracted_msg_id)).not_to be_nil
+
+      store.create(session_id: "child", role: "user", content: "new FACT=fNew")
+      store.create(session_id: "child", role: "assistant", content: "ok")
+      fed.clear
+      backend.extract("child")
+
+      expect(fed.last).to eq(2) # bounded, not the 12-msg copy
+      expect(fact_texts).to include("fNew")
+    end
+
+    # MEM-3 — a message backdated before the cursor (clock skew) must still be
+    # extracted, not silently dropped by a created_at filter.
+    it "extracts an out-of-order (backdated) message instead of dropping it" do
+      store.create(session_id: "s1", role: "user", content: "u0 FACT=ordered0",
+                   created_at: "2026-06-13T10:00:00+00:00")
+      store.create(session_id: "s1", role: "assistant", content: "a0",
+                   created_at: "2026-06-13T10:00:00+00:00")
+      backend.extract("s1")
+
+      # Arrives AFTER (higher rowid) but timestamped BEFORE the cursor.
+      store.create(session_id: "s1", role: "user", content: "uLate FACT=skewed",
+                   created_at: "2026-06-13T09:59:00+00:00")
+      store.create(session_id: "s1", role: "assistant", content: "aLate",
+                   created_at: "2026-06-13T09:59:00+00:00")
+      fed.clear
+      backend.extract("s1")
+
+      expect(fact_texts).to include("skewed")
+      expect(fed.last).to eq(2) # aux WAS called over the backdated turn
+    end
+  end
+
   describe "#extract — temporal supersession" do
     before { seed_session }
 

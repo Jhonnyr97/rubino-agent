@@ -80,36 +80,61 @@ module Rubino
           .map { |row| hydrate(row) }
       end
 
-      # Returns messages strictly NEWER than +after_id+, in chronological order.
+      # Returns messages strictly NEWER than +after_id+, in INSERTION order.
       # Used by the memory extractor's per-session cursor (#249): feeding only the
       # messages a turn actually added, instead of an overlapping recency window.
       #
-      # Ordering mirrors #delete_from_inclusive: the cursor row's (created_at,
-      # rowid) tuple is the lower bound, and rows strictly greater are returned —
-      # so same-second inserts are split at exactly the right point. A nil/unknown
-      # +after_id+ (never-extracted session) returns the whole session in order.
+      # Ordering is on the monotonic `rowid` — NOT the wall-clock `created_at` —
+      # so a message whose `created_at` regresses (backward clock step, NTP
+      # correction, VM suspend) is still seen as "new" and never silently
+      # skipped (MEM-3): its rowid is strictly greater than the cursor's even
+      # when its timestamp is smaller. rowid is SQLite's append-only insertion
+      # counter, exactly the "what arrived after the watermark" semantics the
+      # cursor wants. A nil/unknown +after_id+ (never-extracted session) returns
+      # the whole session in order.
       def since(session_id, after_id:)
-        cursor = after_id && @db[:messages]
-                 .where(id: after_id, session_id: session_id)
-                 .select(:created_at, Sequel.lit("rowid AS row_id"))
-                 .first
+        cursor_rowid = after_id && @db[:messages]
+                       .where(id: after_id, session_id: session_id)
+                       .get(Sequel.lit("rowid"))
         ds = @db[:messages]
              .where(session_id: session_id)
-             .order(:created_at, Sequel.lit("rowid"))
-        if cursor
-          ds = ds.where(Sequel.lit("(created_at > ?) OR (created_at = ? AND rowid > ?)",
-                                   cursor[:created_at], cursor[:created_at], cursor[:row_id]))
-        end
+             .order(Sequel.lit("rowid"))
+        ds = ds.where(Sequel.lit("rowid > ?", cursor_rowid)) if cursor_rowid
         ds.all.map { |row| hydrate(row) }
       end
 
-      # The id of the newest message in a session (by (created_at, rowid)), or
-      # nil for an empty session. Used to advance the memory-extraction cursor.
+      # The id of the newest message in a session (by insertion `rowid`), or nil
+      # for an empty session. Used to advance/seed the memory-extraction cursor —
+      # rowid (not created_at) so the watermark tracks insertion order and a
+      # backdated tail message still becomes the new cursor.
       def last_id(session_id)
         @db[:messages]
           .where(session_id: session_id)
-          .order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
+          .order(Sequel.desc(Sequel.lit("rowid")))
           .get(:id)
+      end
+
+      # Seed/reset this session's memory-extraction watermark to its current
+      # last message (by rowid) so the extractor's next turn feeds only what is
+      # added AFTER this point — not the whole transcript.
+      #
+      # Used after operations that mutate the message set out from under the
+      # cursor:
+      #   * fork/branch/compaction copy a transcript into a fresh child whose
+      #     cursor starts NULL → without seeding, the child re-mines the ENTIRE
+      #     copied transcript on its first turn (MEM-2);
+      #   * undo/retry DELETE the cursor message → a dangling cursor used to mean
+      #     "re-mine everything" and could resurrect a just-`forget`-ed fact
+      #     (MEM-1). Re-seeding to the new tail makes it mean "resume from here".
+      #
+      # Sets the cursor to nil for an empty session (the never-extracted state).
+      # No-op when the session row is absent. Returns the new cursor id (or nil).
+      def seed_extraction_cursor(session_id)
+        return nil unless @db[:sessions].where(id: session_id).any?
+
+        new_cursor = last_id(session_id)
+        @db[:sessions].where(id: session_id).update(memory_extracted_msg_id: new_cursor)
+        new_cursor
       end
 
       # Returns total message count for a session
@@ -125,27 +150,34 @@ module Rubino
       end
 
       # Deletes the given message and every message inserted after it.
-      # Used by undo/retry to rewind history.
+      # Used by undo/retry/rewind to rewind history.
       #
-      # Uses tuple ordering on (created_at, rowid): rows strictly later by
-      # timestamp are removed, and ties on created_at are broken by rowid so
-      # same-second inserts are still cut at the right point.
+      # Cuts on the monotonic `rowid` (insertion order), the same total order
+      # #since now uses, so the rewind point is unambiguous even if later
+      # messages carry an earlier `created_at` than +from_id+ (clock skew).
+      #
+      # After the cut, the memory-extraction watermark is RE-SEEDED to the new
+      # tail (MEM-1): the cursor message may itself have just been deleted, and a
+      # dangling watermark made the next extraction re-mine the whole remaining
+      # session — which could resurrect a fact the user just `forget`-ed. Pinning
+      # it to the new last id makes the next turn resume from the tail, never
+      # re-mine from scratch.
       #
       # @param session_id [String]
       # @param from_id [String] id of the first message to delete
       # @return [Integer] number of rows removed
       def delete_from_inclusive(session_id, from_id:)
-        msg = @db[:messages]
-              .where(id: from_id, session_id: session_id)
-              .select(:created_at, Sequel.lit("rowid AS row_id"))
-              .first
-        return 0 unless msg
+        from_rowid = @db[:messages]
+                     .where(id: from_id, session_id: session_id)
+                     .get(Sequel.lit("rowid"))
+        return 0 unless from_rowid
 
-        @db[:messages]
-          .where(session_id: session_id)
-          .where(Sequel.lit("(created_at > ?) OR (created_at = ? AND rowid >= ?)",
-                            msg[:created_at], msg[:created_at], msg[:row_id]))
-          .delete
+        removed = @db[:messages]
+                  .where(session_id: session_id)
+                  .where(Sequel.lit("rowid >= ?", from_rowid))
+                  .delete
+        seed_extraction_cursor(session_id)
+        removed
       end
 
       # Full-text search across messages backed by the `messages_fts` FTS5

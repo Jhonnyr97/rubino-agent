@@ -1200,6 +1200,11 @@ module Rubino
 
         store.copy_into(child[:id], store.for_session(parent[:id]))
         included_probe = seed_probe_into!(store, child[:id])
+        # Seed the memory-extraction watermark past the copied transcript (MEM-2)
+        # so the branch's first turn extracts only NEW messages, not the whole
+        # inherited history. Must run AFTER the probe seed so a promoted aside is
+        # under the watermark too.
+        store.seed_extraction_cursor(child[:id])
         # copy_into/seed write message rows but don't touch the session's cached
         # message_count, so sync it once here — otherwise /sessions shows the
         # inherited branch as "0 msgs" even though its transcript is populated.
@@ -1322,6 +1327,10 @@ module Rubino
         )
         store = ::Rubino::Session::Store.new
         store.copy_into(child[:id], seed_messages)
+        # Seed the memory-extraction watermark past the copied transcript (MEM-2)
+        # so the rewind fork's first turn extracts only the edited/new message,
+        # not the whole inherited history.
+        store.seed_extraction_cursor(child[:id])
         # copy_into writes message rows but not the cached message_count —
         # sync it once, same as /branch (#/sessions would show "0 msgs").
         repo.update(child[:id], message_count: store.count(child[:id]))
