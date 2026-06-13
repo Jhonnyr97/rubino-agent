@@ -191,6 +191,16 @@ module Rubino
           "Set tools.workspace_strict=false in config.yml to disable this check."
       end
 
+      # Reads a file and scrubs a stray non-UTF-8 byte (e.g. a Latin-1 `é` in a
+      # legacy/EU source) to the replacement char. Shared by EditTool and
+      # MultiEditTool so a single bad byte doesn't raise "invalid byte sequence
+      # in UTF-8" out of the include?/scan/sub that follow and leave the file
+      # uneditable. Lossy on the offending byte, graceful for everything else.
+      def read_scrubbed(path)
+        content = File.read(path)
+        content.valid_encoding? ? content : content.scrub
+      end
+
       # Read-before-edit gate shared by EditTool and MultiEditTool. Refuses the
       # write when the model never read this file in the current session, or
       # read it but the file changed on disk since. Returns nil (proceed) or an

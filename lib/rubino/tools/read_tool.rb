@@ -167,6 +167,12 @@ module Rubino
             next if total_lines < offset
             break if total_lines > last_line
 
+            # A single non-UTF-8 byte (e.g. a Latin-1 `é` in a legacy/EU
+            # source comment) would otherwise blow up `chomp`/`format` with
+            # "invalid byte sequence in UTF-8". Scrub it to the replacement
+            # char so the model can still read (and then edit) the file —
+            # lossy but graceful, instead of a blind read failure.
+            line = line.scrub unless line.valid_encoding?
             chomped = line.chomp
             chomped = chomped.byteslice(0, MAX_LINE_WIDTH) + "… [line truncated]" if chomped.bytesize > MAX_LINE_WIDTH
             out << format("%6d\t%s\n", total_lines, chomped)

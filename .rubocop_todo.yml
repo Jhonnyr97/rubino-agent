@@ -654,12 +654,13 @@ RSpec/LeakyLocalVariable:
   Exclude:
     - 'spec/rubino/no_direct_output_spec.rb'
 
-# Offense count: 7
+# Offense count: 8
 RSpec/MultipleDescribes:
   Exclude:
     - 'spec/rubino/commands/commands_spec.rb'
     - 'spec/rubino/context/prompt_assembler_layering_spec.rb'
     - 'spec/rubino/memory/backends_spec.rb'
+    - 'spec/rubino/tools/encoding_robustness_spec.rb'
     - 'spec/rubino/tools/error_code_spec.rb'
     - 'spec/rubino/tools/tool_fixes_spec.rb'
     - 'spec/rubino/trust_spec.rb'
