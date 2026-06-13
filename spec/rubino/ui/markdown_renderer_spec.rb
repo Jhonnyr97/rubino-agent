@@ -214,6 +214,46 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       expect(texts.last).to include("└")
     end
 
+    # R1-V1: a ```markdown wrapper around a nested ```ruby block. Kramdown
+    # closes the OUTER fence on the FIRST bare ``` it meets (the inner ruby's
+    # close), so the wrapper's real closing ``` lands as a trailing literal line
+    # on the prose paragraph that follows. The renderer must consume it, not leak
+    # a raw ``` into the turn.
+    it "does not leak the outer ```` ``` ```` closing fence of a ```markdown wrapper (R1-V1)" do
+      md = <<~MD
+        ```markdown
+        # Title
+
+        Some intro prose.
+
+        ```ruby
+        puts 1
+        ```
+
+        That was the inner block. This text is still inside the OUTER markdown block.
+        ```
+      MD
+      texts = renderer.render(md).map { |l| text_of(l) }
+      # The inner ruby code frame and the heading/prose all render…
+      expect(texts).to include(match(/┌─.*ruby/))
+      expect(texts.any? { |t| t.include?("Title") }).to be(true)
+      expect(texts.any? { |t| t.include?("OUTER markdown block") }).to be(true)
+      # …but NO line is a bare orphan ``` fence marker.
+      expect(texts.none? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    end
+
+    it "drops a dangling closing ```` ``` ```` that has no opener (R1-V1)" do
+      texts = renderer.render("Some prose here.\n\n```").map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("Some prose here.") }).to be(true)
+      expect(texts.none? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    end
+
+    it "strips a closing fence glued to the end of a prose paragraph (R1-V1)" do
+      texts = renderer.render("Final words.\n```").map { |l| text_of(l) }
+      expect(texts.any? { |t| t.include?("Final words.") }).to be(true)
+      expect(texts.none? { |t| t.strip.match?(/\A`{3,}\z/) }).to be(true)
+    end
+
     it "renders an unordered list with bullet markers" do
       blocks = renderer.render("- one\n- two")
       texts  = blocks.map { |l| text_of(l) }
@@ -312,6 +352,48 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
         expect do
           described_class.new(width: 3).render("| x | y |\n|---|---|\n| 1 | 2 |\n")
         end.not_to raise_error
+      end
+
+      # R1-V2: a 4-column table where ONE cell is ~200 chars must NOT starve the
+      # other columns to 1-char vertical stacks (`I`/`D`, `N`/`a`/`m`/`e`). The
+      # long cell wraps across lines instead; siblings keep a readable width.
+      it "does not starve sibling columns when one cell is very long (R1-V2)" do
+        long = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod " \
+               "tempor incididunt ut labore et dolore magna aliqua ut enim ad minim " \
+               "veniam quis nostrud exercitation ullamco laboris"
+        md = <<~MD
+          | ID | Name | Description | Status |
+          |---|---|---|---|
+          | 1 | Alpha | First item | OK |
+          | 2 | Bravo | #{long} | Pending |
+          | 3 | Charlie | Third item | OK |
+        MD
+        lines = lines_of(described_class.new(width: 80).render(md))
+
+        # Whole table fits the budget — no overflow (ASCII content, 1 col/char).
+        lines.each { |line| expect(line.length).to be <= 80 }
+        # "Charlie" (7 chars) renders on ONE line — proof the Name column was not
+        # collapsed to 1 char (which would stack it as C/h/a/r/l/i/e).
+        expect(lines.any? { |l| l.include?("Charlie") }).to be(true)
+        # "Status" header renders whole, not stacked S/t/a/t/u/s.
+        expect(lines.any? { |l| l.include?("Status") }).to be(true)
+        # "Pending" renders whole, not stacked.
+        expect(lines.any? { |l| l.include?("Pending") }).to be(true)
+        # The long cell did wrap across multiple lines.
+        expect(lines.join("\n")).to include("ullamco laboris")
+      end
+
+      it "splits the budget evenly between two equally-long columns (R1-V2)" do
+        long = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor"
+        md = "| ID | A | B |\n|---|---|---|\n| 1 | #{long} | #{long} |\n"
+        lines = lines_of(described_class.new(width: 80).render(md))
+        # Both long columns wrap; neither is starved to a 1-char stack. The two
+        # columns get comparable widths (the first content line of each row body
+        # contains several words from BOTH A and B, not one letter of one).
+        body = lines.find { |l| l.include?("Lorem") }
+        expect(body).not_to be_nil
+        # "Lorem ipsum" (the start of the wrapped cell) appears for BOTH columns.
+        expect(body.scan("Lorem ipsum").size).to eq(2)
       end
     end
 
