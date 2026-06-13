@@ -219,23 +219,130 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1 
 need curl
 need uname
 
-# The gem build (native extensions, e.g. nio4r) needs a C toolchain. Don't
-# hard-fail purely on detection (toolchains use cc/gcc/clang under different
-# names), but warn loudly if we can't find any compiler + make.
-check_toolchain() {
-  local cc_found=0 make_found=0
-  for c in cc gcc clang; do command -v "$c" >/dev/null 2>&1 && { cc_found=1; break; }; done
-  command -v make >/dev/null 2>&1 && make_found=1
-  if [ "$cc_found" -ne 1 ] || [ "$make_found" -ne 1 ]; then
-    warn "No C toolchain detected (need a C compiler + make). The gem builds"
-    warn "native extensions and will fail without one."
-    case "$PLATFORM" in
-      linux) warn "On Debian/Ubuntu: sudo apt-get install -y build-essential" ;;
-      macos) warn "On macOS: xcode-select --install" ;;
+# --- preflight: build prerequisites (#242) ----------------------------------
+#
+# The gem builds native extensions (e.g. nio4r), so a C toolchain is always
+# needed; the rv/mise methods additionally fetch + unpack precompiled tarballs
+# (xz) and may clone the repo (git). Rather than let `gem install` blow up deep
+# in a native build, check the prerequisites the CHOSEN method needs up front:
+# install them automatically when we're privileged (root + a known pkg manager),
+# otherwise fail with a single actionable command the user can copy-paste.
+
+# True when we can install OS packages non-interactively (root, or sudo present).
+can_install_pkgs() {
+  [ "$(id -u 2>/dev/null || echo 1000)" = "0" ] || command -v sudo >/dev/null 2>&1
+}
+
+# Run a privileged command (direct as root, else via sudo).
+as_root() {
+  if [ "$(id -u 2>/dev/null || echo 1000)" = "0" ]; then "$@"; else sudo "$@"; fi
+}
+
+# Detect a C compiler (any of cc/gcc/clang) — toolchains name it differently.
+have_cc() { for c in cc gcc clang; do command -v "$c" >/dev/null 2>&1 && return 0; done; return 1; }
+
+# Map an abstract prerequisite to the package providing it, install via the
+# host's package manager. Returns non-zero if we couldn't install it.
+install_pkg_for() {
+  local want="$1"  # one of: toolchain xz git curl
+  if command -v apt-get >/dev/null 2>&1; then
+    local pkg
+    case "$want" in
+      toolchain) pkg="build-essential" ;;
+      xz)        pkg="xz-utils" ;;
+      git)       pkg="git" ;;
+      curl)      pkg="curl" ;;
     esac
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1
+  elif command -v dnf >/dev/null 2>&1; then
+    case "$want" in
+      toolchain) as_root dnf install -y -q gcc make >/dev/null 2>&1 ;;
+      xz)        as_root dnf install -y -q xz >/dev/null 2>&1 ;;
+      git)       as_root dnf install -y -q git >/dev/null 2>&1 ;;
+      curl)      as_root dnf install -y -q curl >/dev/null 2>&1 ;;
+    esac
+  elif command -v apk >/dev/null 2>&1; then
+    case "$want" in
+      toolchain) as_root apk add --no-cache build-base >/dev/null 2>&1 ;;
+      xz)        as_root apk add --no-cache xz >/dev/null 2>&1 ;;
+      git)       as_root apk add --no-cache git >/dev/null 2>&1 ;;
+      curl)      as_root apk add --no-cache curl >/dev/null 2>&1 ;;
+    esac
+  else
+    return 1
   fi
 }
-check_toolchain
+
+# The copy-paste install command we suggest when we can't install ourselves.
+pkg_hint() {
+  case "$PLATFORM" in
+    macos) printf 'xcode-select --install   # C toolchain (Homebrew also provides git/curl)' ;;
+    linux)
+      if   command -v apt-get >/dev/null 2>&1; then printf 'sudo apt-get install -y build-essential xz-utils git curl'
+      elif command -v dnf     >/dev/null 2>&1; then printf 'sudo dnf install -y gcc make xz git curl'
+      elif command -v apk     >/dev/null 2>&1; then printf 'sudo apk add build-base xz git curl'
+      else printf 'install a C toolchain (gcc/clang + make), xz, git and curl with your package manager'
+      fi
+      ;;
+  esac
+}
+
+# Check (and, when privileged, install) the prerequisites the chosen method
+# needs. Args: $1 = method (brew|rv|mise). Fails loudly if a hard requirement is
+# missing and we can't provide it.
+preflight_prereqs() {
+  local method="$1"
+  # Every method ends up building native extensions → needs a C toolchain.
+  # rv/mise fetch and unpack xz tarballs → need xz. The git fallback needs git.
+  # (curl is already required at the top of the script.)
+  local needs="toolchain"
+  case "$method" in
+    rv|mise) needs="toolchain xz git" ;;
+    brew)    needs="toolchain git" ;;
+  esac
+
+  local want missing="" installed=""
+  for want in $needs; do
+    local present=0
+    case "$want" in
+      toolchain) have_cc && command -v make >/dev/null 2>&1 && present=1 ;;
+      *)         command -v "$want" >/dev/null 2>&1 && present=1 ;;
+    esac
+    [ "$present" -eq 1 ] && continue
+
+    # macOS: don't try to install the toolchain ourselves (xcode-select is
+    # interactive); just record it as missing for the actionable error.
+    if [ "$PLATFORM" = "macos" ] || ! can_install_pkgs; then
+      missing="${missing:+$missing }$want"
+      continue
+    fi
+
+    info "Missing build prerequisite '${want}'; installing it..."
+    if install_pkg_for "$want"; then
+      # Re-check so we don't claim success on a no-op package manager.
+      local ok_now=0
+      case "$want" in
+        toolchain) have_cc && command -v make >/dev/null 2>&1 && ok_now=1 ;;
+        *)         command -v "$want" >/dev/null 2>&1 && ok_now=1 ;;
+      esac
+      if [ "$ok_now" -eq 1 ]; then installed="${installed:+$installed }$want"
+      else missing="${missing:+$missing }$want"; fi
+    else
+      missing="${missing:+$missing }$want"
+    fi
+  done
+
+  [ -n "$installed" ] && ok "Installed build prerequisites: ${installed}."
+
+  if [ -n "$missing" ]; then
+    warn "Missing build prerequisite(s): ${missing}."
+    warn "rubino's gem builds native extensions and the ${method} method needs these to proceed."
+    printf '%sInstall them, then re-run this installer:%s\n' "$BOLD" "$RESET" >&2
+    printf '\n  %s\n\n' "$(pkg_hint)" >&2
+    die "missing build prerequisites: ${missing} (see the command above)."
+  fi
+}
 
 # --- choose install method (brew | rv | mise) -------------------------------
 
@@ -333,6 +440,10 @@ choose_method() {
 
 METHOD="$(choose_method)"
 
+# Now that we know the method, check (and auto-install when privileged) the
+# build prerequisites it needs, with a clear actionable error otherwise (#242).
+preflight_prereqs "$METHOD"
+
 # `rubyx <cmd...>` runs a command (gem/bundle/rake/ruby) under the Ruby we set
 # up, for the brew/rv methods. Each setup_* defines it plus RUBY_LABEL.
 rubyx() { die "internal: ruby toolchain not initialized"; }
@@ -363,15 +474,47 @@ setup_ruby_rv() {
   export PATH="$(dirname "$rv_bin"):${PATH}"
 
   info "Installing Ruby ${RUBY_VERSION} via rv (precompiled, no build step)..."
-  "$rv_bin" ruby install "${RUBY_VERSION}"          # idempotent
+  # On systems whose glibc rv considers "too old" (e.g. Debian 12 / glibc 2.36)
+  # rv installs a musl-static build and then provisions a musl Ruby that this
+  # glibc system can't execute. `rv ruby install` may even print "Installed",
+  # but `rv ruby find` then reports NoMatchingRuby — a silent, broken install
+  # (#241). We don't `die` here: rv on such a system simply can't provide a
+  # working Ruby, but the mise path (precompiled, glibc-correct) can. So we
+  # steer the user over to mise instead of leaving them with a broken rubino.
+  #
+  # Detection is post-hoc on `rv ruby find`: it's the exact failure the user
+  # hits, regardless of the underlying cause, and it doesn't regress the working
+  # ubuntu/rv path (where `find` succeeds and we proceed as before).
+  if ! "$rv_bin" ruby install "${RUBY_VERSION}" >/dev/null 2>&1; then
+    warn "rv could not install Ruby ${RUBY_VERSION} on this system."
+    fallback_to_mise_from_rv
+    return 0   # not reached: fallback_to_mise_from_rv exits the script.
+  fi
   local ruby_bin
-  ruby_bin="$("$rv_bin" ruby find "${RUBY_VERSION}")"
-  [ -x "$ruby_bin" ] || die "rv reported Ruby ${RUBY_VERSION} installed but its ruby binary wasn't found."
+  if ! ruby_bin="$("$rv_bin" ruby find "${RUBY_VERSION}" 2>/dev/null)" || [ -z "$ruby_bin" ] || [ ! -x "$ruby_bin" ]; then
+    warn "rv installed Ruby ${RUBY_VERSION} but can't locate a usable binary for it"
+    warn "(common on Debian 12 / older glibc, where rv falls back to a musl build"
+    warn "that this system can't execute)."
+    fallback_to_mise_from_rv
+    return 0   # not reached.
+  fi
   RUBY_BIN_DIR="$(dirname "$ruby_bin")"
   RUBY_LABEL="Ruby ${RUBY_VERSION} (rv)"
 
   rubyx() { "$rv_bin" run --ruby "${RUBY_VERSION}" "$@"; }
   ok "${RUBY_LABEL} ready: ${RUBY_BIN_DIR}"
+}
+
+# Hand off from a broken rv install to the mise method, which provisions a
+# precompiled glibc-correct Ruby that works where rv's musl build doesn't (#241).
+# setup_mise() runs the full install and exits, so this never returns.
+fallback_to_mise_from_rv() {
+  warn "Falling back to the mise install method (works on this system)."
+  METHOD="mise"
+  # mise needs the same build prerequisites; re-run preflight for its method now
+  # that we've switched (the earlier preflight ran for 'rv').
+  preflight_prereqs "mise"
+  setup_mise
 }
 
 # --- ruby toolchain: Homebrew ----------------------------------------------
@@ -582,17 +725,39 @@ GEM_BIN_DIR="$(rubyx ruby -e 'print Gem.bindir' 2>/dev/null)" || GEM_BIN_DIR=""
 
 gem_bin_present() { [ -x "${GEM_BIN_DIR}/${BIN_NAME}" ]; }
 
+# Set by install_published() when the gem install ran but failed for a reason
+# OTHER than "not published / no CLI" — i.e. a real error (network, native build,
+# permissions) we must surface instead of the misleading git-fallback message.
+GEM_INSTALL_LOG=""
+
 install_published() {
   info "Trying published gem: gem install ${GEM_NAME}..."
-  if rubyx gem install "${GEM_NAME}" >/dev/null 2>&1; then
+  # Capture output instead of discarding it: on a genuine failure we want to show
+  # the real cause, not hide it behind ">/dev/null" and a misleading message (#242).
+  local out rc
+  out="$(rubyx gem install "${GEM_NAME}" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
     if gem_bin_present; then
       ok "Installed ${GEM_NAME} from RubyGems."
       return 0
     fi
+    # Installed cleanly but ships no CLI → legitimately fall through to the git
+    # build (this is the real "not the CLI gem yet" case).
     warn "A '${GEM_NAME}' gem was installed but it doesn't provide the '${BIN_NAME}' CLI; building from source instead."
     rubyx gem uninstall "${GEM_NAME}" -aIx >/dev/null 2>&1 || true
+    return 1
   fi
-  return 1
+
+  # gem install actually errored. If RubyGems says the gem can't be found, the
+  # CLI simply isn't published yet → the git build is the right fallback (quietly).
+  if printf '%s' "$out" | grep -qiE "could not find a valid gem|Unable to download|find .*${GEM_NAME}.* in any"; then
+    return 1
+  fi
+
+  # Any other failure (native build, network, permissions): stash it so the
+  # caller surfaces the real error rather than "isn't on RubyGems yet".
+  GEM_INSTALL_LOG="$out"
+  return 2
 }
 
 install_from_git() {
@@ -601,19 +766,30 @@ install_from_git() {
   local work
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' RETURN
-  git clone --depth 1 "$REPO_URL" "$work/${REPO_NAME}" >/dev/null 2>&1 \
-    || die "git clone of ${REPO_URL} failed."
+  # Run a build step, capturing output; on failure surface the real error (#242)
+  # instead of a bare "X failed" with the cause swallowed by >/dev/null.
+  run_step() {
+    local label="$1"; shift
+    local out rc
+    out="$("$@" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      warn "${label} failed. The actual error was:"
+      printf '%s\n' "$out" >&2
+      die "${label} failed (real error shown above)."
+    fi
+  }
+  run_step "git clone of ${REPO_URL}" git clone --depth 1 "$REPO_URL" "$work/${REPO_NAME}"
   (
     cd "$work/${REPO_NAME}"
     info "Resolving dependencies (bundle install)..."
-    rubyx bundle install >/dev/null 2>&1 || die "bundle install failed."
+    run_step "bundle install" rubyx bundle install
     info "Building the gem (rake build)..."
-    rubyx rake build >/dev/null 2>&1 || die "rake build failed."
+    run_step "rake build" rubyx rake build
     local pkg
     pkg="$(ls -1 pkg/${GEM_NAME}-*.gem 2>/dev/null | head -n1)"
     [ -n "$pkg" ] || die "rake build produced no gem in pkg/."
     info "Installing ${pkg}..."
-    rubyx gem install "$pkg" >/dev/null 2>&1 || die "gem install of the built package failed."
+    run_step "gem install of the built package" rubyx gem install "$pkg"
   )
   gem_bin_present || die "built and installed ${GEM_NAME} but the '${BIN_NAME}' executable is missing."
   ok "Installed ${GEM_NAME} from source."
@@ -622,8 +798,20 @@ install_from_git() {
 if gem_bin_present; then
   CURRENT_VER="$("${GEM_BIN_DIR}/${BIN_NAME}" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
   ok "${BIN_NAME} ${CURRENT_VER:+v$CURRENT_VER }is already installed (re-run safe)."
-elif ! install_published; then
-  install_from_git
+else
+  # `|| gem_rc=$?` keeps the non-zero returns (1=not-published, 2=real-error)
+  # from tripping `set -e`; default 0 on success.
+  gem_rc=0
+  install_published || gem_rc=$?
+  case "$gem_rc" in
+    0) : ;;                # installed the published gem
+    1) install_from_git ;; # not published / no CLI yet → build from source
+    *)                     # real error: surface the actual gem output (#242)
+      warn "gem install ${GEM_NAME} failed. The actual error was:"
+      printf '%s\n' "${GEM_INSTALL_LOG}" >&2
+      die "gem install ${GEM_NAME} failed (real error shown above)."
+      ;;
+  esac
 fi
 
 # --- PATH guidance + success ------------------------------------------------
