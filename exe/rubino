@@ -1,6 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# On a bare POSIX/C-locale system Ruby's default_external is US-ASCII, so any
+# File.read of a UTF-8 prompt/template (em-dashes etc.) raises
+# Encoding::CompatibilityError before the agent even boots (#273; same class as
+# #250/#251). Pin the process to UTF-8 up front so NO read path can regress,
+# regardless of the user's locale. Promoting to UTF-8 is always safe; only
+# touch it when the locale left us on a non-UTF-8 default.
+Encoding.default_external = Encoding::UTF_8 unless Encoding.default_external == Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8 unless Encoding.default_internal == Encoding::UTF_8
+
 require "rubino"
 
 # Load .env before anything else so ENV vars are available immediately
