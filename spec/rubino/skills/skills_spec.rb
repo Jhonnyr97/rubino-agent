@@ -186,6 +186,37 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # A minimal Linux/Docker image ships the C locale, so Ruby's
+    # Encoding.default_external is US-ASCII. A SKILL.md with a UTF-8 byte (the
+    # built-in ruby-expert description carries an em-dash) then made `skills
+    # list` crash with "invalid byte sequence in US-ASCII" because the loader
+    # read the file in the ambient encoding instead of UTF-8.
+    context "UTF-8 skill content under a non-UTF-8 default locale" do
+      it "loads a skill whose description has a UTF-8 em-dash without crashing" do
+        Dir.mktmpdir do |dir|
+          FileUtils.mkdir_p(File.join(dir, "uni"))
+          # Write the UTF-8 file BEFORE flipping the default encoding so the
+          # bytes on disk are genuine UTF-8 (the loader's job is to read them
+          # back correctly regardless of the ambient locale).
+          File.write(File.join(dir, "uni", "SKILL.md"),
+                     "---\nname: uni\ndescription: deep Ruby — idioms\n---\nbody")
+
+          original = Encoding.default_external
+          warnings = $VERBOSE
+          $VERBOSE = nil
+          Encoding.default_external = Encoding::US_ASCII
+          begin
+            reg = described_class.new(config: test_configuration("skills" => { "paths" => [dir] }))
+            expect { reg.names }.not_to raise_error
+            expect(reg.find("uni").description).to eq("deep Ruby — idioms")
+          ensure
+            Encoding.default_external = original
+            $VERBOSE = warnings
+          end
+        end
+      end
+    end
+
     # Creation has no in-process tool; the cleanest signal is a re-scan
     # surfacing a skill we hadn't seen before (disk-diff). The FIRST scan is
     # initial enumeration and must NOT be booked as creations.

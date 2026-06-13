@@ -61,7 +61,7 @@ module Rubino
         resolved = resolve_within_dir(relative_path)
         return nil unless resolved && File.file?(resolved)
 
-        File.read(resolved)
+        File.read(resolved, encoding: "UTF-8")
       rescue Errno::ENOENT, Errno::EACCES
         nil
       end
@@ -128,7 +128,7 @@ module Rubino
       end
 
       def parse_frontmatter!
-        raw = File.read(@path)
+        raw = File.read(@path, encoding: "UTF-8")
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
@@ -160,7 +160,7 @@ module Rubino
       end
 
       def load_content
-        raw = File.read(@path)
+        raw = File.read(@path, encoding: "UTF-8")
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
