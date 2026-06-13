@@ -60,7 +60,8 @@ module Rubino
           return gate
         end
 
-        content = File.read(expanded)
+        # Scrubs a stray non-UTF-8 byte before include?/scan/sub (see Base).
+        content = read_scrubbed(expanded)
 
         unless content.include?(old_string)
           return "Error: old_string not found in file content. " \
@@ -75,15 +76,7 @@ module Rubino
                  "or set replace_all: true to replace all occurrences."
         end
 
-        # Perform replacement — use block form so new_string is treated as a
-        # literal string, not a pattern (avoids \0, \1, \& interpolation bugs).
-        new_content = if replace_all
-                        content.gsub(old_string) { new_string }
-                      else
-                        content.sub(old_string) { new_string }
-                      end
-
-        File.write(expanded, new_content)
+        File.write(expanded, replace_literal(content, old_string, new_string, replace_all))
 
         replaced_count = replace_all ? count : 1
         added   = new_string.to_s.lines.size
@@ -93,9 +86,24 @@ module Rubino
                    "+#{added * replaced_count} −#{removed * replaced_count}",
           body: build_diff_preview(old_string, new_string, replaced_count),
           body_kind: :diff }
+      rescue StandardError => e
+        # Mirror WriteTool: a read-only/permission-denied target (Errno::EACCES)
+        # or any other filesystem error returns a clean, uniform message rather
+        # than leaking a raw exception/backtrace to the model.
+        "Error editing #{file_path}: #{e.message}"
       end
 
       private
+
+      # Block form so new_string is treated as a literal replacement, not a
+      # pattern — avoids \0, \1, \& interpolation bugs in the new text.
+      def replace_literal(content, old_string, new_string, replace_all)
+        if replace_all
+          content.gsub(old_string) { new_string }
+        else
+          content.sub(old_string) { new_string }
+        end
+      end
 
       # Inline diff shown between the `tool · edit` and `done · edit` headers.
       # Not a real unified diff — just `- old` then `+ new` so the user can

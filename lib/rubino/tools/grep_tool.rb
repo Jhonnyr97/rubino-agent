@@ -126,7 +126,15 @@ module Rubino
       end
 
       def search_with_ruby(pattern, path, include_pattern, max_results, before, after)
-        regex   = Regexp.new(pattern)
+        # The Ruby fallback is the LIVE path whenever rg isn't on PATH. A bad
+        # pattern the model emits (e.g. an unclosed paren) would otherwise
+        # raise RegexpError and hand the model a raw exception; return a clean,
+        # actionable tool error instead.
+        begin
+          regex = Regexp.new(pattern)
+        rescue RegexpError => e
+          return "Error: invalid regex pattern: #{e.message}"
+        end
         results = []
 
         # ripgrep accepts a single FILE as well as a directory; mirror that
