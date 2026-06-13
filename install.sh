@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 #
-# rubino installer
+# rubino installer (mise-based)
 #
 #   curl -fsSL https://raw.githubusercontent.com/Jhonnyr97/rubino-agent/main/install.sh | bash
 #
 # What it does (all in user space, no sudo):
-#   1. Provisions a Ruby toolchain:
-#        - Linux: via `rv` (https://github.com/spinel-coop/rv), a fast Ruby
-#          version manager that fetches a precompiled Ruby (no build step).
-#        - macOS: if Homebrew is present you're asked whether to use Homebrew
-#          (`brew install ruby`) or rv; if Homebrew is absent it uses rv directly.
-#   2. Installs the `rubino-agent` gem under that Ruby. If a published gem with
-#      the CLI isn't available yet, it falls back to building from this repo.
-#   3. Prints the exact PATH line for the `rubino` executable.
+#   1. Bootstraps mise (https://mise.jdx.dev) if it isn't already installed,
+#      via `curl https://mise.run | sh`. We locate the installed binary and use
+#      it directly rather than forcing edits to your shell rc.
+#   2. Installs rubino through mise's `gem:` backend, which provisions a Ruby
+#      (mise `ruby@3.3`, precompiled) if none is managed by mise, builds the
+#      gem's native extensions (nio4r), and registers `rubino` as a mise tool so
+#      its executable resolves via mise's shims/activation.
+#   3. Installs at global scope by default (writes ~/.config/mise/config.toml),
+#      or local/project scope (writes ./mise.toml) on request.
 #
-# Non-interactive override: set RUBINO_INSTALL_METHOD=brew|rv to skip the prompt.
+# Scope override (skip the prompt):
+#   RUBINO_INSTALL_SCOPE=global   # default; user-wide
+#   RUBINO_INSTALL_SCOPE=local    # this project/directory only
+#
+# Prerequisites: a C toolchain (cc/clang + make) is required because the gem
+# builds native extensions. On Debian/Ubuntu: `apt-get install build-essential`.
 #
 # Security note: you are piping a script from the internet into a shell.
 # Review it first:  curl -fsSL <url> -o install.sh && less install.sh && bash install.sh
 #
-# Re-running is safe: every step is idempotent.
+# Re-running is safe: every step is idempotent (`mise use` just reaffirms it).
 
 set -euo pipefail
 
@@ -27,20 +33,17 @@ set -euo pipefail
 
 REPO_OWNER="Jhonnyr97"
 REPO_NAME="rubino-agent"
-REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
-REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
-
-# Ruby to install via rv. Matches the gem's .ruby-version; the gem itself
-# requires >= 3.1.0, so any 3.1+ works, but we pin a known-good precompiled one.
-# (Homebrew installs its current `ruby` formula instead; the gem supports both.)
-RUBY_VERSION="${RUBINO_RUBY_VERSION:-3.3.3}"
 
 # The gem name on RubyGems (rubino-agent) vs. the executable it ships (rubino).
 GEM_NAME="rubino-agent"
 BIN_NAME="rubino"
 
-# Optional: brew | rv. When unset on macOS with Homebrew present, we prompt.
-INSTALL_METHOD="${RUBINO_INSTALL_METHOD:-}"
+# mise tool spec for the gem backend, and the Ruby to provision when mise has none.
+GEM_TOOL="gem:${GEM_NAME}"
+RUBY_TOOL="ruby@3.3"
+
+# Optional: global | local. When unset and interactive, we prompt.
+INSTALL_SCOPE="${RUBINO_INSTALL_SCOPE:-}"
 
 # --- output helpers ---------------------------------------------------------
 
@@ -77,197 +80,161 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1 
 need curl
 need uname
 
-# --- choose install method (macOS may use Homebrew or rv) -------------------
-
-# Decide how we get Ruby. Linux always uses rv. macOS: honor an explicit
-# RUBINO_INSTALL_METHOD; else if Homebrew is present, ask (when a terminal is
-# available); else fall back to rv. The prompt reads from /dev/tty so it works
-# even under `curl ... | bash`, where stdin is the script itself.
-choose_method() {
-  if [ "$PLATFORM" = "linux" ]; then
-    printf 'rv\n'; return 0
+# The gem backend compiles native extensions (nio4r), so a C toolchain must be
+# present. Don't hard-fail purely on detection (some toolchains use cc/gcc/clang
+# under different names), but warn loudly if we can't find any compiler + make.
+check_toolchain() {
+  local cc_found=0 make_found=0
+  for c in cc gcc clang; do command -v "$c" >/dev/null 2>&1 && { cc_found=1; break; }; done
+  command -v make >/dev/null 2>&1 && make_found=1
+  if [ "$cc_found" -ne 1 ] || [ "$make_found" -ne 1 ]; then
+    warn "No C toolchain detected (need a C compiler + make). The gem builds"
+    warn "native extensions and will fail without one."
+    case "$PLATFORM" in
+      linux) warn "On Debian/Ubuntu: sudo apt-get install -y build-essential" ;;
+      macos) warn "On macOS: xcode-select --install" ;;
+    esac
   fi
+}
+check_toolchain
 
-  case "$INSTALL_METHOD" in
-    brew) printf 'brew\n'; return 0 ;;
-    rv)   printf 'rv\n';   return 0 ;;
-    "")   ;;
-    *)    die "RUBINO_INSTALL_METHOD must be 'brew' or 'rv' (got '${INSTALL_METHOD}')." ;;
+# --- bootstrap mise ---------------------------------------------------------
+
+# mise's installer drops the binary in ~/.local/bin/mise (or $MISE_INSTALL_PATH).
+# We pass through without forcing shell-rc edits and locate the binary ourselves,
+# the same way the script used to locate rv.
+locate_mise() {
+  if command -v mise >/dev/null 2>&1; then command -v mise; return 0; fi
+  for cand in "${MISE_INSTALL_PATH:-}" "$HOME/.local/bin/mise"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+# NOTE: mise_bin is intentionally NOT local: the rest of the script uses it.
+if mise_bin="$(locate_mise)"; then
+  ok "mise already installed: ${mise_bin}"
+else
+  info "Installing mise (polyglot tool/version manager)..."
+  curl -fsSL https://mise.run | sh
+  mise_bin="$(locate_mise)" || die "mise install completed but the mise binary wasn't found at ~/.local/bin/mise or \$MISE_INSTALL_PATH."
+  ok "Installed mise: ${mise_bin}"
+fi
+
+# `mise` may print activation hints to stderr; that's fine. Use the located
+# binary for everything so we don't depend on the user's shell being activated.
+mise() { "$mise_bin" "$@"; }
+
+# Put the mise bindir on PATH for the rest of this process. The gem: backend
+# installs a RubyGems plugin whose post-install hook shells out to a bare `mise`
+# (mise reshim); on a freshly bootstrapped machine that binary isn't on PATH yet,
+# so the gem install would error with "No such file or directory - mise". Adding
+# its dir here makes the hook resolve. (No persistent shell-rc edit.)
+case ":${PATH}:" in
+  *":$(dirname "$mise_bin"):"*) ;;
+  *) PATH="$(dirname "$mise_bin"):${PATH}"; export PATH ;;
+esac
+
+# --- persist experimental (the gem backend is experimental) -----------------
+
+info "Enabling mise experimental features (required for the gem: backend)..."
+mise settings experimental=true || die "failed to persist 'mise settings experimental=true'."
+
+# --- ensure a Ruby for the gem backend --------------------------------------
+
+# The gem backend needs a Ruby to install under and to build native exts with.
+# If mise can't resolve a ruby, provision a precompiled one globally.
+if mise which ruby >/dev/null 2>&1; then
+  ok "mise already manages a Ruby: $(mise which ruby 2>/dev/null || echo '?')"
+else
+  info "No mise-managed Ruby found; installing ${RUBY_TOOL} (precompiled)..."
+  mise use -g "${RUBY_TOOL}" || die "mise use -g ${RUBY_TOOL} failed."
+  ok "Ruby ready via mise (${RUBY_TOOL})."
+fi
+
+# --- choose scope (global default, or local/project) ------------------------
+
+choose_scope() {
+  case "$INSTALL_SCOPE" in
+    global|local) printf '%s\n' "$INSTALL_SCOPE"; return 0 ;;
+    "")           ;;
+    *)            die "RUBINO_INSTALL_SCOPE must be 'global' or 'local' (got '${INSTALL_SCOPE}')." ;;
   esac
 
-  if ! command -v brew >/dev/null 2>&1; then
-    # No Homebrew → rv directly, as requested.
-    printf 'rv\n'; return 0
-  fi
-
-  # Homebrew present. Ask, if we have a terminal to ask on.
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  # A /dev/tty node can exist (e.g. in a container) yet not be openable when
+  # there's no controlling terminal. Probe an actual open before prompting so we
+  # silently fall back to the default instead of erroring on the redirect.
+  if { : >/dev/tty; } 2>/dev/null && { : </dev/tty; } 2>/dev/null; then
     {
-      printf '\n%sHomebrew detected.%s How should Ruby be installed?\n' "$BOLD" "$RESET"
-      printf '  %s1)%s Homebrew   %s(brew install ruby)%s\n'            "$BOLD" "$RESET" "$DIM" "$RESET"
-      printf '  %s2)%s rv         %s(fast, self-contained, no Homebrew)%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
-      printf 'Choose %s[1/2]%s (default 1): ' "$BOLD" "$RESET"
+      printf '\n%sInstall rubino globally or for this project?%s\n' "$BOLD" "$RESET"
+      printf '  %sglobal%s  %s(user-wide → ~/.config/mise/config.toml)%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
+      printf '  %slocal%s   %s(this directory only → ./mise.toml)%s\n'      "$BOLD" "$RESET" "$DIM" "$RESET"
+      printf 'Choose %s[global/local]%s (default global): ' "$BOLD" "$RESET"
     } >/dev/tty
     local ans=""
     read -r ans </dev/tty || ans=""
     case "$ans" in
-      2|rv|RV)   printf 'rv\n' ;;
-      ""|1|brew) printf 'brew\n' ;;
-      *)         printf 'brew\n' ;;
+      local|l|2)        printf 'local\n' ;;
+      ""|global|g|1)    printf 'global\n' ;;
+      *)                printf 'global\n' ;;
     esac
     return 0
   fi
 
-  # Homebrew present but no terminal to prompt on → default to Homebrew
-  # (the native macOS expectation). Override with RUBINO_INSTALL_METHOD=rv.
-  warn "Homebrew detected but no interactive terminal; defaulting to Homebrew. Set RUBINO_INSTALL_METHOD=rv to use rv instead."
-  printf 'brew\n'
+  # Non-interactive, no override → default global.
+  printf 'global\n'
 }
 
-METHOD="$(choose_method)"
+SCOPE="$(choose_scope)"
 
-# `rubyx <cmd...>` runs a command (gem/bundle/rake/ruby) under the Ruby we set
-# up, regardless of method. Each setup_* defines it plus RUBY_LABEL.
-rubyx() { die "internal: ruby toolchain not initialized"; }
+info "Detected ${OS} ${ARCH}. Installing rubino via mise (${SCOPE} scope)."
 
-# --- ruby toolchain: rv -----------------------------------------------------
+# --- install the rubino gem via the mise gem: backend -----------------------
 
-setup_ruby_rv() {
-  # rv's installer (cargo-dist) drops the binary in $CARGO_HOME/bin or
-  # $HOME/.cargo/bin. We pass RV_NO_MODIFY_PATH=1 so it doesn't edit the user's
-  # shell rc, and locate the binary ourselves.
-  locate_rv() {
-    if command -v rv >/dev/null 2>&1; then command -v rv; return 0; fi
-    for d in "${CARGO_HOME:-}/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"; do
-      [ -n "$d" ] && [ -x "$d/rv" ] && { printf '%s\n' "$d/rv"; return 0; }
-    done
-    return 1
-  }
-
-  # NOTE: rv_bin is intentionally NOT local: rubyx() reads it after we return.
-  if rv_bin="$(locate_rv)"; then
-    ok "rv already installed: ${rv_bin}"
-  else
-    info "Installing rv (fast Ruby version manager)..."
-    RV_NO_MODIFY_PATH=1 curl -fsSL https://rv.dev/install | sh
-    rv_bin="$(locate_rv)" || die "rv install completed but the rv binary wasn't found on PATH or in ~/.cargo/bin."
-    ok "Installed rv: ${rv_bin}"
-  fi
-  export PATH="$(dirname "$rv_bin"):${PATH}"
-
-  info "Installing Ruby ${RUBY_VERSION} via rv (precompiled, no build step)..."
-  "$rv_bin" ruby install "${RUBY_VERSION}"          # idempotent
-  local ruby_bin
-  ruby_bin="$("$rv_bin" ruby find "${RUBY_VERSION}")"
-  [ -x "$ruby_bin" ] || die "rv reported Ruby ${RUBY_VERSION} installed but its ruby binary wasn't found."
-  RUBY_BIN_DIR="$(dirname "$ruby_bin")"
-  RUBY_LABEL="Ruby ${RUBY_VERSION} (rv)"
-
-  rubyx() { "$rv_bin" run --ruby "${RUBY_VERSION}" "$@"; }
-  ok "${RUBY_LABEL} ready: ${RUBY_BIN_DIR}"
-}
-
-# --- ruby toolchain: Homebrew ----------------------------------------------
-
-setup_ruby_brew() {
-  need brew
-  if brew list --formula ruby >/dev/null 2>&1; then
-    ok "Homebrew Ruby already installed."
-  else
-    info "Installing Ruby via Homebrew (brew install ruby)..."
-    brew install ruby || die "brew install ruby failed."
-  fi
-  local prefix
-  prefix="$(brew --prefix ruby 2>/dev/null)" || die "could not resolve 'brew --prefix ruby'."
-  RUBY_BIN_DIR="${prefix}/bin"
-  [ -x "${RUBY_BIN_DIR}/ruby" ] || die "Homebrew ruby not found at ${RUBY_BIN_DIR}."
-  local ver
-  ver="$("${RUBY_BIN_DIR}/ruby" -e 'print RUBY_VERSION' 2>/dev/null || echo '?')"
-  RUBY_LABEL="Ruby ${ver} (Homebrew)"
-
-  # Run gem/bundle/rake from Homebrew's keg-only ruby bin without relinking.
-  rubyx() { PATH="${RUBY_BIN_DIR}:${PATH}" "$@"; }
-  ok "${RUBY_LABEL} ready: ${RUBY_BIN_DIR}"
-}
-
-info "Detected ${OS} ${ARCH}. Installing rubino via ${METHOD}."
-
-case "$METHOD" in
-  rv)   setup_ruby_rv ;;
-  brew) setup_ruby_brew ;;
-  *)    die "internal: unknown method '${METHOD}'." ;;
+case "$SCOPE" in
+  global)
+    info "Installing ${GEM_TOOL} globally (mise use -g)..."
+    mise use -g "${GEM_TOOL}" || die "mise use -g ${GEM_TOOL} failed (native build needs a C toolchain — see prerequisites above)."
+    ;;
+  local)
+    info "Installing ${GEM_TOOL} for this directory (mise use)..."
+    mise use "${GEM_TOOL}" || die "mise use ${GEM_TOOL} failed (native build needs a C toolchain — see prerequisites above)."
+    ;;
 esac
 
-# Where gem-installed executables land for the chosen Ruby. Ask RubyGems
-# directly (Gem.bindir); fall back to the ruby bin dir. The dir may not exist
-# yet on a fresh machine — `gem install` creates it — so don't require it.
-GEM_BIN_DIR="$(rubyx ruby -e 'print Gem.bindir' 2>/dev/null)" || GEM_BIN_DIR=""
-[ -n "${GEM_BIN_DIR:-}" ] || GEM_BIN_DIR="$RUBY_BIN_DIR"
+# --- verify -----------------------------------------------------------------
 
-# --- install the rubino gem -------------------------------------------------
+RUBINO_PATH="$(mise which "${BIN_NAME}" 2>/dev/null || true)"
+[ -n "$RUBINO_PATH" ] || die "mise installed ${GEM_TOOL} but 'mise which ${BIN_NAME}' resolved nothing."
 
-gem_bin_present() { [ -x "${GEM_BIN_DIR}/${BIN_NAME}" ]; }
-
-install_published() {
-  info "Trying published gem: gem install ${GEM_NAME}..."
-  if rubyx gem install "${GEM_NAME}" >/dev/null 2>&1; then
-    if gem_bin_present; then
-      ok "Installed ${GEM_NAME} from RubyGems."
-      return 0
-    fi
-    warn "A '${GEM_NAME}' gem was installed but it doesn't provide the '${BIN_NAME}' CLI; building from source instead."
-    rubyx gem uninstall "${GEM_NAME}" -aIx >/dev/null 2>&1 || true
-  fi
-  return 1
-}
-
-install_from_git() {
-  warn "Building ${GEM_NAME} from ${REPO_URL} (the CLI gem isn't on RubyGems yet)."
-  need git
-  local work
-  work="$(mktemp -d)"
-  trap 'rm -rf "$work"' RETURN
-  git clone --depth 1 "$REPO_URL" "$work/${REPO_NAME}" >/dev/null 2>&1 \
-    || die "git clone of ${REPO_URL} failed."
-  (
-    cd "$work/${REPO_NAME}"
-    info "Resolving dependencies (bundle install)..."
-    rubyx bundle install >/dev/null 2>&1 || die "bundle install failed."
-    info "Building the gem (rake build)..."
-    rubyx rake build >/dev/null 2>&1 || die "rake build failed."
-    local pkg
-    pkg="$(ls -1 pkg/${GEM_NAME}-*.gem 2>/dev/null | head -n1)"
-    [ -n "$pkg" ] || die "rake build produced no gem in pkg/."
-    info "Installing ${pkg}..."
-    rubyx gem install "$pkg" >/dev/null 2>&1 || die "gem install of the built package failed."
-  )
-  gem_bin_present || die "built and installed ${GEM_NAME} but the '${BIN_NAME}' executable is missing."
-  ok "Installed ${GEM_NAME} from source."
-}
-
-if gem_bin_present; then
-  CURRENT_VER="$("${GEM_BIN_DIR}/${BIN_NAME}" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
-  ok "${BIN_NAME} ${CURRENT_VER:+v$CURRENT_VER }is already installed (re-run safe)."
-elif ! install_published; then
-  install_from_git
-fi
-
-# --- PATH guidance + success ------------------------------------------------
+VER="$(mise exec -- "${BIN_NAME}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+[ -n "$VER" ] || die "installed ${GEM_TOOL} but '${BIN_NAME} --version' did not report a version."
 
 printf '\n'
-ok "rubino installed (${RUBY_LABEL})."
+ok "rubino v${VER} installed via mise (${SCOPE} scope)."
+ok "executable: ${RUBINO_PATH}"
 printf '\n'
 
-if command -v "${BIN_NAME}" >/dev/null 2>&1 && [ "$(command -v "${BIN_NAME}")" = "${GEM_BIN_DIR}/${BIN_NAME}" ]; then
-  PATH_OK=1
+# --- activation guidance + next step ----------------------------------------
+
+# rubino resolves through mise's shims/activation. If mise isn't activated in the
+# user's shell, `rubino` won't be found in a plain shell even though it's
+# installed. Tell them how to activate.
+SHELL_NAME="$(basename "${SHELL:-}")"
+case "$SHELL_NAME" in
+  zsh)  ACT_RC="~/.zshrc";   ACT_SH="zsh"  ;;
+  bash) ACT_RC="~/.bashrc";  ACT_SH="bash" ;;
+  *)    ACT_RC="your shell rc"; ACT_SH="$SHELL_NAME" ;;
+esac
+
+if command -v "${BIN_NAME}" >/dev/null 2>&1; then
+  ok "${BIN_NAME} is already on your PATH (mise is activated)."
 else
-  PATH_OK=0
-fi
-
-if [ "$PATH_OK" -ne 1 ]; then
-  printf '%sAdd this line to your shell profile%s (~/.bashrc, ~/.zshrc, ~/.profile):\n' "$BOLD" "$RESET"
-  printf '\n  %sexport PATH="%s:$PATH"%s\n\n' "$DIM" "${GEM_BIN_DIR}" "$RESET"
-  printf 'Then open a new shell (or run the export above) so %s%s%s is on your PATH.\n\n' "$BOLD" "${BIN_NAME}" "$RESET"
+  printf '%sActivate mise in your shell%s so %s%s%s is on your PATH. Add to %s:\n' \
+    "$BOLD" "$RESET" "$BOLD" "${BIN_NAME}" "$RESET" "$ACT_RC"
+  printf '\n  %seval "$(%s activate %s)"%s\n\n' "$DIM" "$mise_bin" "${ACT_SH:-zsh}" "$RESET"
+  printf 'Then open a new shell. Until then you can run it with:\n'
+  printf '\n  %smise exec -- %s%s\n\n' "$DIM" "${BIN_NAME}" "$RESET"
 fi
 
 printf '%sNext step:%s\n\n' "$BOLD" "$RESET"
