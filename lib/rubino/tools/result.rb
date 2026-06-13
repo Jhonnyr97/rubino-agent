@@ -97,6 +97,10 @@ module Rubino
                   "this command is never allowed.",
         permission_rule: "Tool execution blocked by policy (a configured permissions deny rule, " \
                          "not by the user).",
+        noninteractive: "Tool execution blocked: this tool needs approval but there is no " \
+                        "interactive session to ask (headless/one-shot run). It was NOT run. " \
+                        "Re-run with --yolo to auto-approve, or add it to the permissions " \
+                        "allowlist.",
         doom_loop: "Tool execution blocked by the doom-loop guard (policy, not by the user): " \
                    "this exact call was already made repeatedly. Change strategy instead of " \
                    "retrying it — e.g. wait for the background-task completion notice instead " \

@@ -102,10 +102,42 @@ module Rubino
         nil
       end
 
-      # `scope:` is part of the shared UI contract (ToolExecutor always
-      # passes it); the Null adapter auto-approves and ignores it.
+      # Headless: there is no human to ask, so FAIL CLOSED (#260). The Null
+      # adapter drives the one-shot / scripted `rubino prompt` / `-q` path; it
+      # used to return true here, silently auto-approving every write and every
+      # non-allowlisted shell command — a prompt-injection→RCE foot-gun (the
+      # Gemini-CLI / Dec-2025 auto-approve-writes pattern). ToolExecutor now
+      # checks #interactive? BEFORE ever reaching #confirm, so this is the
+      # belt-and-suspenders floor: declining is the only safe default off a TTY.
+      # `scope:` is part of the shared UI contract (ToolExecutor always passes
+      # it); the Null adapter ignores it.
       def confirm(_question, scope: nil, **_context)
-        true
+        false
+      end
+
+      # No interactive session — no terminal, no approval gate. Tells
+      # ToolExecutor to fail closed on any tool that needs approval (#260).
+      def interactive?
+        false
+      end
+
+      # Latched by ToolExecutor when a tool is blocked for approval in this
+      # headless run (#260). The one-shot CLI reads #approval_blocked? after the
+      # run to exit NON-ZERO so CI/automation fails loudly.
+      def tool_blocked(message)
+        @approval_blocked = true
+        @messages << { level: :tool_blocked, message: message }
+      end
+
+      def approval_blocked?
+        @approval_blocked == true
+      end
+
+      # The single-line block notices captured during a headless run, in order,
+      # so the one-shot CLI can echo them to stderr before exiting non-zero
+      # (#260) — UI::Null otherwise swallows every #warning into @messages.
+      def blocked_messages
+        @messages.select { |m| m[:level] == :tool_blocked }.map { |m| m[:message] }
       end
 
       # Destructive confirm (#218): no human to ask, so fail closed (decline)
