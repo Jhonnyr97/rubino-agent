@@ -12,13 +12,18 @@ module Rubino
       def initialize(registry:, approval_policy:, ui:, config:,
                      tool_call_repository: Tools::ToolCallRepository.new,
                      cancel_token: nil, read_tracker: nil, event_bus: nil,
-                     on_result: nil)
+                     on_result: nil, session_id: nil)
         @registry             = registry
         @approval_policy      = approval_policy
         @ui                   = ui
         @config               = config
         @tool_call_repository = tool_call_repository
         @cancel_token         = cancel_token
+        # Session the audit row is attributed to. The tool_calls table requires
+        # a non-null session_id FK, so without this every audit insert violated
+        # the constraint and was swallowed by the repository's rescue — leaving
+        # the table empty on every execution, streaming or not (#262).
+        @session_id           = session_id
         # Optional sink the Loop registers so a tool that runs on the STREAMING
         # path (ruby_llm dispatches it mid-stream via ToolBridge → straight into
         # #execute, never returning through Loop#execute_tool_calls) is still
@@ -155,13 +160,13 @@ module Rubino
           error_code: error_code&.to_sym,
           artifact: artifact
         )
-        @tool_call_repository.record(name: name, call_id: call_id, arguments: arguments,
-                                     result: result, status: "completed")
+        record_audit(name: name, call_id: call_id, arguments: arguments,
+                     result: result, status: "completed")
         result
       rescue StandardError => e
         result = Tools::Result.error(name: name, call_id: call_id, error: e.message)
-        @tool_call_repository.record(name: name, call_id: call_id, arguments: arguments,
-                                     result: result, status: "failed", error: e.message)
+        record_audit(name: name, call_id: call_id, arguments: arguments,
+                     result: result, status: "failed", error: e.message)
         result
       ensure
         tool.cancel_token = nil if tool.respond_to?(:cancel_token=)
@@ -265,7 +270,7 @@ module Rubino
       end
 
       def record_denied(name:, call_id:, arguments:, result:, reason:)
-        @tool_call_repository.record(
+        record_audit(
           name: name,
           call_id: call_id,
           arguments: arguments,
@@ -275,6 +280,16 @@ module Rubino
         )
       rescue StandardError
         # Don't fail the user's request just because the audit write failed.
+      end
+
+      # Stamps the executor's session id onto the Result (built deep in the tool
+      # pipeline with no session context) before the audit write, so the
+      # NOT-NULL session_id FK on tool_calls is satisfied (#262). Single
+      # chokepoint for every record call — success, failure, and denial.
+      def record_audit(name:, call_id:, arguments:, result:, status:, error: nil)
+        result.session_id = @session_id if result.respond_to?(:session_id=)
+        @tool_call_repository.record(name: name, call_id: call_id, arguments: arguments,
+                                     result: result, status: status, error: error)
       end
 
       # The reason behind the policy's :deny, when the policy exposes one

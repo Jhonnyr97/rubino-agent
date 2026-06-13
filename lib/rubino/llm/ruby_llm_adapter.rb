@@ -272,7 +272,7 @@ module Rubino
         # Guard flush in the same way as the per-chunk emit so a final UI error
         # doesn't lose the response. (issue #21)
         flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        build_response(response)
+        build_response(response, buffered)
       end
 
       # Flushes the think-filter, swallowing UI/flush errors so a late failure
@@ -716,11 +716,18 @@ module Rubino
         end
       end
 
-      def build_response(response)
+      # +buffered+ (streaming path) is every assistant TEXT block of the turn
+      # concatenated, not just the final one. ruby_llm runs tools mid-stream and
+      # returns a response whose #content is only the LAST block, so any text the
+      # model narrated BEFORE a tool call (block 1 in text→tool_use→text) would
+      # be dropped from the headless output and the persisted transcript (#261).
+      # Prefer the buffer when present; it's already been streamed to the live
+      # UI chunk-by-chunk, so using it here re-persists, never re-renders.
+      def build_response(response, buffered = nil)
         return nil unless response
 
         AdapterResponse.new(
-          content: response.content,
+          content: buffered && !buffered.empty? ? buffered : response.content,
           tool_calls: extract_tool_calls(response),
           input_tokens: response.input_tokens,
           output_tokens: response.output_tokens,

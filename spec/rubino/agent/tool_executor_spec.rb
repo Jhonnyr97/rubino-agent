@@ -41,6 +41,20 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(result.output).to eq("ok")
     end
 
+    # #262: the tool_calls audit table has a NOT-NULL session_id FK. The Result
+    # is built deep in the pipeline with no session context, so the executor
+    # stamps its session id onto it just before the record — otherwise every
+    # insert violated the constraint and was swallowed, leaving the table empty.
+    it "stamps the executor's session_id onto the recorded Result (#262)" do
+      scoped = described_class.new(registry: registry, approval_policy: policy, ui: ui,
+                                   config: config, tool_call_repository: repo, session_id: "sess-42")
+      allow(policy).to receive(:decide).and_return(:allow)
+      expect(repo).to receive(:record) do |**kw|
+        expect(kw[:result].session_id).to eq("sess-42")
+      end
+      scoped.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+    end
+
     it "audits denied calls when policy returns :deny (issue #7, #17)" do
       allow(policy).to receive(:decide).and_return(:deny)
       expect(repo).to receive(:record).with(hash_including(status: "denied", error: "policy-denied"))
