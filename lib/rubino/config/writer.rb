@@ -40,8 +40,22 @@ module Rubino
                   "cannot set '#{key_path}': '#{traversed}' is a scalar value, not a section"
           end
 
-          hash[keys.last] = coerce_value(value)
+          hash[keys.last] = self.class.coerce_value(value)
           raw.to_yaml
+        end
+      end
+
+      # The string→typed coercion `config set` applies to a CLI-supplied value,
+      # exposed as a class method so set-time validation (Config::Validator)
+      # compares the SAME coerced type the file will actually store.
+      def self.coerce_value(value)
+        case value
+        when "true" then true
+        when "false" then false
+        when "nil", "null" then nil
+        when /\A\d+\z/ then value.to_i
+        when /\A\d+\.\d+\z/ then value.to_f
+        else value
         end
       end
 
@@ -98,23 +112,6 @@ module Rubino
         YAML.safe_load(text, permitted_classes: [Symbol]) || {}
       end
 
-      def coerce_value(value)
-        self.class.coerce_value(value)
-      end
-
-      # The string→typed coercion `config set` applies to a CLI-supplied value,
-      # exposed as a class method so set-time validation (Config::Validator)
-      # compares the SAME coerced type the file will actually store.
-      def self.coerce_value(value)
-        case value
-        when "true" then true
-        when "false" then false
-        when "nil", "null" then nil
-        when /\A\d+\z/ then value.to_i
-        when /\A\d+\.\d+\z/ then value.to_f
-        else value
-        end
-      end
     end
   end
 end

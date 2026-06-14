@@ -55,9 +55,7 @@ module Rubino
         # front with a clear stderr message + non-zero exit, BEFORE any setup,
         # model-config check, or runner is built. A nil query (bare `chat`)
         # is the interactive path and is left untouched.
-        if query && query.strip.empty?
-          fail_arg!("no prompt provided")
-        end
+        fail_arg!("no prompt provided") if query && query.strip.empty?
 
         ensure_setup!
         ensure_model_configured!

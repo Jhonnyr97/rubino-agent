@@ -48,7 +48,7 @@ module Rubino
       def validate!(key_path, keys, value)
         default = leaf_default(keys)
         reject_unknown_key!(key_path, keys) if default == :__absent__
-        check_type!(key_path, keys, value, default) unless default == :__absent__
+        check_type!(key_path, value, default) unless default == :__absent__
         check_url_format!(key_path, keys, value)
       end
 
@@ -90,7 +90,7 @@ module Rubino
         end
       end
 
-      def check_type!(key_path, keys, value, default)
+      def check_type!(key_path, value, default)
         # A nil default carries no type signal; leave it unconstrained.
         return if default.nil?
 
