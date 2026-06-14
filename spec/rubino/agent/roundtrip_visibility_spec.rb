@@ -399,7 +399,7 @@ RSpec.describe "round-trip visibility (#355 #351)" do
 
     # repair_tool_pairs over the persisted set strips NOTHING — pairs complete.
     assembler = Rubino::Context::PromptAssembler.new(
-      session: session, memory_context: {}, config: config, message_store: message_store
+      session: session, memory_context: {}, config: config
     )
     repaired = assembler.send(:repair_tool_pairs, rows)
     repaired_tool = repaired.select { |m| m.role == "tool" }
