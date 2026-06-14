@@ -431,16 +431,14 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     # ApprovalPolicy#decide gated the mid-stream tool, and the executor wrote a
     # completed audit row keyed on the real provider call_id — approval + audit
     # fire on the streaming path, not the unguarded direct-call fallback.
-    expect(approval_policy).to have_received(:decide).with(agent_tool, hash_including("v" => "a"))
+    expect(approval_policy).to have_received(:decide).with(agent_tool, arguments: hash_including("v" => "a"))
     expect(audit_repo).to have_received(:record).with(hash_including(status: "completed", call_id: "c1"))
   end
 
   it "rejects installing the production bridge with a nil tool_executor (approval/audit invariant)" do
     chat = fake_chat([])
     expect do
-      Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                            tool_executor: nil,
-                                            production: true)
+      Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, tool_executor: nil, production: true)
     end.to raise_error(Rubino::Error, /without a tool_executor/)
   end
 
