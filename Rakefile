@@ -28,6 +28,10 @@ namespace :parallel do
 
   desc "Run the RSpec suite in parallel across CPU cores (rake parallel:spec[N])"
   task :spec, [:count] do |_t, args|
+    require "fileutils"
+    # parallel_tests --runtime-log won't create the dir; without it the first
+    # run can't record timings and every run falls back to filesize grouping.
+    FileUtils.mkdir_p(File.dirname(RUNTIME_LOG))
     count = args[:count]
     cmd = ["bundle", "exec", "parallel_rspec"]
     cmd += ["-n", count.to_s] if count && !count.empty?
