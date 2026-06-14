@@ -39,10 +39,24 @@ module Rubino
       end
 
       def execute
+        query = opt(:query) || opt(:q)
+
+        # Empty/whitespace guard for the headless path (P2-H3): an empty
+        # `-q`/`prompt ""` is truthy in Ruby, so it used to be dispatched
+        # straight to the model — a wasted API turn and unpredictable
+        # autonomous behaviour. Interactive mode already guards this
+        # (`next if input.strip.empty?`); reject a blank one-shot query up
+        # front with a clear stderr message + non-zero exit, BEFORE any setup,
+        # model-config check, or runner is built. A nil query (bare `chat`)
+        # is the interactive path and is left untouched.
+        if query && query.strip.empty?
+          warn "rubino: no prompt provided"
+          exit(1)
+        end
+
         ensure_setup!
         ensure_model_configured!
 
-        query = opt(:query) || opt(:q)
         if query
           run_oneshot(query)
         else

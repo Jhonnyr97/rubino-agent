@@ -16,7 +16,13 @@ module Rubino
 
       desc "get KEY", "Get a configuration value (dot-notation; secrets masked)"
       def get(key)
-        self.class.render_get(key, ui: Rubino.ui)
+        # A missing key is a FAILURE on the automation surface (P2-H1/H2): when
+        # render_get reports not-found, raise Thor::Error so exit_on_failure?
+        # exits non-zero with the message on stderr (the shared renderer's
+        # ui.warning went to stdout and returned 0). The in-chat `/config get`
+        # surface ignores the return value, so its REPL-friendly warning stays.
+        found = self.class.render_get(key, ui: Rubino.ui)
+        raise Thor::Error, "config key not found: #{key}" unless found
       end
 
       # ONE get rendering for both surfaces (#187): this CLI verb and the
@@ -26,6 +32,15 @@ module Rubino
       # of falsely reported "not found" (issue #36). A scalar intermediate
       # node (e.g. descending into a String) has no #dig; treat such a path as
       # "not found" rather than crashing. Secret-named keys render masked.
+      #
+      # Returns true when the key resolved, false when not found, so the CLI
+      # verb can exit non-zero on a miss (P2-H1) while the REPL surface ignores
+      # the return. The not-found NOTICE is left to each caller: the CLI verb
+      # raises a Thor::Error (stderr + non-zero), the in-chat handler shows the
+      # stdout warning below — so a miss never double-prints.
+      # rubocop:disable Naming/PredicateMethod -- it RENDERS (a side effect) and
+      # returns found?; it isn't a pure predicate, and the name is the documented
+      # shared-renderer seam (#187) referenced by the in-chat handler.
       def self.render_get(key, ui:)
         value =
           begin
@@ -33,12 +48,12 @@ module Rubino
           rescue TypeError
             nil
           end
-        if value.nil?
-          ui.warning("Key '#{key}' not found")
-        else
-          ui.info("#{key} = #{redact(value, key: key.split(".").last)}")
-        end
+        return false if value.nil?
+
+        ui.info("#{key} = #{redact(value, key: key.split(".").last)}")
+        true
       end
+      # rubocop:enable Naming/PredicateMethod
 
       desc "set KEY VALUE", "Set a configuration value (dot-notation)"
       def set(key, value)

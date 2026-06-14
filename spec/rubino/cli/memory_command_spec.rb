@@ -123,6 +123,20 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       expect(backend.count).to eq(0)
       expect(backend.find(row[:id])).to be_nil
     end
+
+    # P2-H1/H2: a not-found show/delete is a FAILURE on the automation surface —
+    # it must raise Thor::Error (exit non-zero, message on stderr), matching
+    # SessionCommand, not print to stdout and return 0.
+    it "show raises Thor::Error for an unknown id (non-zero exit, stderr)" do
+      expect { described_class.new.show("does-not-exist") }
+        .to raise_error(Thor::Error, /memory not found: does-not-exist/)
+    end
+
+    it "delete raises Thor::Error for an unknown id (non-zero exit, stderr)" do
+      expect { described_class.new.delete("does-not-exist") }
+        .to raise_error(Thor::Error, /memory not found: does-not-exist/)
+      expect(backend.count).to eq(0)
+    end
   end
 
   describe "#backend" do
@@ -139,9 +153,9 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       expect(writer.get("memory.backend")).to eq("default")
     end
 
-    it "refuses an unregistered backend and writes nothing" do
-      expect(Rubino.ui).to receive(:error).with(/Unknown memory backend: bogus/)
-      command.backend("bogus")
+    it "refuses an unregistered backend and writes nothing (Thor::Error, non-zero)" do
+      expect { command.backend("bogus") }
+        .to raise_error(Thor::Error, /Unknown memory backend: bogus/)
       expect(writer.get("memory.backend")).to be_nil
     end
 

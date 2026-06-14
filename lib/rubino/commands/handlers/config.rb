@@ -47,7 +47,10 @@ module Rubino
             return
           end
 
-          CLI::ConfigCommand.render_get(key, ui: @ui)
+          # render_get returns false on a miss and no longer prints the
+          # not-found notice itself (P2-H2: the CLI verb routes its miss to
+          # stderr instead). The REPL keeps the friendly inline warning here.
+          @ui.warning("Key '#{key}' not found") unless CLI::ConfigCommand.render_get(key, ui: @ui)
         end
 
         # Write-through + live update, the same pair /reasoning and /think run

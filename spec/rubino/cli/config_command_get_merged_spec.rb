@@ -54,8 +54,11 @@ RSpec.describe "Rubino::CLI::ConfigCommand#get effective (merged) value" do
     expect(got).to include("model.default = #{shown.dig("model", "default")}")
   end
 
-  it "still reports a genuinely absent key as not found" do
-    Rubino::CLI::ConfigCommand.new.get("definitely.absent.key")
-    expect(warning_messages.join("\n")).to include("not found")
+  # P2-H1/H2: a genuinely absent key is a FAILURE on the automation surface —
+  # the CLI verb raises Thor::Error (non-zero exit, message on stderr) instead
+  # of the old stdout warning + exit 0.
+  it "raises Thor::Error for a genuinely absent key (non-zero exit)" do
+    expect { Rubino::CLI::ConfigCommand.new.get("definitely.absent.key") }
+      .to raise_error(Thor::Error, /config key not found: definitely\.absent\.key/)
   end
 end
