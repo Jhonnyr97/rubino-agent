@@ -111,13 +111,23 @@ module Rubino
         normalized.match?(SUDO_STDIN_RE)
       end
 
-      # Minimal normalization: collapse runs of spaces/tabs (newlines kept so
-      # the command-separator anchors still fire), trim, and lowercase so
-      # trivial obfuscation (extra spaces, case) doesn't slip through.
-      # Deliberately NOT a full ANSI/Unicode normalizer — over-engineering for
-      # the hardline floor.
+      # Minimal normalization: strip shell line-continuations, collapse runs of
+      # spaces/tabs (newlines kept so the command-separator anchors still fire),
+      # trim, and lowercase so trivial obfuscation (extra spaces, case) doesn't
+      # slip through. Deliberately NOT a full ANSI/Unicode normalizer —
+      # over-engineering for the hardline floor.
+      #
+      # Line-continuation strip (#348): a backslash immediately before a newline
+      # is a shell line-continuation — the two characters and any surrounding
+      # whitespace fold the next line onto the current one. Pre-fix, normalize
+      # kept the `\n` AND the trailing `\`, so `rm -rf \<newline>/` left `rm` and
+      # `/` on separate lines with a stray backslash between them, and the
+      # `\brm\s+...(?:/)` pattern (which needs rm adjacent to the target) missed
+      # it. We join continued lines into a single space-separated command BEFORE
+      # the rest of normalization so the patterns see `rm -rf /`.
       def normalize(command)
-        command.to_s.gsub(/[ \t]+/, " ").strip.downcase
+        joined = command.to_s.gsub(/\\\r?\n[ \t]*/, " ")
+        joined.gsub(/[ \t]+/, " ").strip.downcase
       end
 
       # Canonicalize the (already normalized) command so common, trivial
@@ -140,11 +150,30 @@ module Rubino
       def canonicalize(normalized)
         require "shellwords"
         require "pathname"
+        normalized = expand_word_splits(normalized)
         tokens = shell_split(normalized)
         return normalized if tokens.nil? # unbalanced quotes: fail open to raw
 
         cleaned = tokens.map { |tok| clean_token(tok) }
         "#{cleaned.join(" ")} "
+      end
+
+      # #348 follow-ups, applied BEFORE shell-splitting so the substituted text is
+      # re-tokenized into the bare `rm -rf /` form the patterns expect:
+      #   * ${IFS} word-splitting: `rm${IFS}-rf${IFS}/` joins rm to / with no
+      #     real whitespace, so Shellwords sees ONE token `rm-rf/`. Replace any
+      #     ${IFS} / $IFS occurrence with a space so the shell's own field-split
+      #     is reproduced. (lowercased input -> ${ifs}/$ifs.)
+      #   * ${HOME:-/} / ${HOME:=/} param-default: the `:-`/`:=` default is `/`,
+      #     so a missing/empty HOME expands to the root filesystem. Collapse the
+      #     whole `${home:-/}`-family braces to the default value so the root /
+      #     home pattern fires.
+      def expand_word_splits(text)
+        out = text.gsub(/\$\{ifs\}|\$ifs\b/, " ")
+        # ${home:-VALUE} / ${home:=VALUE} -> VALUE (the default the shell uses
+        # when HOME is unset/empty). Captures the default path so `${home:-/}`
+        # becomes `/` and the root-filesystem pattern matches.
+        out.gsub(/\$\{home:[-=]([^}]*)\}/, '\1')
       end
 
       # Shell-word split, or nil on unbalanced quotes (caller falls back to raw).
