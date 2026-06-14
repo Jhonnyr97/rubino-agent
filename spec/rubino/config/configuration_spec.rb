@@ -111,6 +111,26 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  # CFG-R3-1 — a YAML scalar (`command_allowlist: git status`) where a sequence
+  # was meant must not reach the matcher as a bare String (String#filter_map ->
+  # NoMethodError out of the approval path). The accessor always returns an Array.
+  describe "security_command_allowlist coercion (CFG-R3-1)" do
+    it "returns the sequence as-is when it is already an array" do
+      cfg = test_configuration("security" => { "command_allowlist" => ["git status", "git diff"] })
+      expect(cfg.security_command_allowlist).to eq(["git status", "git diff"])
+    end
+
+    it "coerces a scalar string to a single-entry array (not a bare String)" do
+      cfg = test_configuration("security" => { "command_allowlist" => "git status" })
+      expect(cfg.security_command_allowlist).to eq(["git status"])
+    end
+
+    it "returns an empty array when the key is absent / nil" do
+      expect(test_configuration("security" => {}).security_command_allowlist).to eq([])
+      expect(test_configuration("security" => { "command_allowlist" => nil }).security_command_allowlist).to eq([])
+    end
+  end
+
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
       expect(config.agent_max_tool_iterations).to eq(8)
