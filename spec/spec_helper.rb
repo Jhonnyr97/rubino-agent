@@ -1,32 +1,63 @@
 # frozen_string_literal: true
 
-require "simplecov"
-SimpleCov.start do
-  add_filter "/spec/"
-  add_group "Config", "lib/rubino/config"
-  add_group "UI", "lib/rubino/ui"
-  add_group "Database", "lib/rubino/database"
-  add_group "Session", "lib/rubino/session"
-  add_group "Memory", "lib/rubino/memory"
-  add_group "Agent", "lib/rubino/agent"
-  add_group "Context", "lib/rubino/context"
-  add_group "Jobs", "lib/rubino/jobs"
-  add_group "Tools", "lib/rubino/tools"
-  add_group "Security", "lib/rubino/security"
-  add_group "Interaction", "lib/rubino/interaction"
-  add_group "LLM", "lib/rubino/llm"
+# Under parallel_tests each worker is a separate process invoked with a distinct
+# TEST_ENV_NUMBER ("" for the first worker, "2", "3", ... for the rest). All
+# workers would otherwise write the SAME coverage/.resultset.json, racing and
+# corrupting it. We therefore SKIP SimpleCov when running in parallel (set by
+# `rake parallel:spec`); a developer/CI who wants a coverage report runs the
+# plain sequential `bundle exec rspec`. This keeps the single-process coverage
+# story intact while making N-worker runs safe.
+unless ENV["TEST_ENV_NUMBER"] || ENV["RUBINO_NO_COVERAGE"]
+  require "simplecov"
+  SimpleCov.start do
+    add_filter "/spec/"
+    add_group "Config", "lib/rubino/config"
+    add_group "UI", "lib/rubino/ui"
+    add_group "Database", "lib/rubino/database"
+    add_group "Session", "lib/rubino/session"
+    add_group "Memory", "lib/rubino/memory"
+    add_group "Agent", "lib/rubino/agent"
+    add_group "Context", "lib/rubino/context"
+    add_group "Jobs", "lib/rubino/jobs"
+    add_group "Tools", "lib/rubino/tools"
+    add_group "Security", "lib/rubino/security"
+    add_group "Interaction", "lib/rubino/interaction"
+    add_group "LLM", "lib/rubino/llm"
+  end
 end
 
 require "tmpdir"
 require "rubino"
 require "fileutils"
 require "securerandom"
+# Rubino's CLI commands subclass Thor and are loaded lazily by Zeitwerk, so the
+# Thor constant isn't defined until the first command class is referenced. CLI
+# specs assert on `Thor::Error` inside `raise_error(Thor::Error, ...)` matchers,
+# which RSpec evaluates before the example block runs (and thus before any
+# command autoloads Thor). Requiring it here makes that order-independent —
+# otherwise the example that runs first in a (randomized / parallel-sharded)
+# worker raises `NameError: uninitialized constant Thor`.
+require "thor"
 
 # Load all shared support files
 Dir[File.join(__dir__, "support", "**", "*.rb")].each { |f| require f }
 
-# Ensure test environment uses temporary paths
+# Ensure test environment uses temporary paths. Keyed on Process.pid so each
+# parallel_tests worker (a distinct process) gets its own throwaway home — this
+# is the per-worker isolation backbone the suite relies on.
 TEST_HOME = File.join(Dir.tmpdir, "rubino_test_#{Process.pid}")
+
+# Per-worker copy of the document fixtures. The binary fixtures (xlsx/docx/pdf)
+# are regenerated at suite start; the committed text ones (csv/json/...) are
+# copied in. Living under TEST_HOME (per-process) means N parallel workers never
+# race on rm_f+rewrite of the shared spec/fixtures/documents dir, and the
+# checked-out tree is never polluted with generated binaries.
+DOCUMENTS_FIXTURES_DIR = File.join(TEST_HOME, "fixtures", "documents")
+COMMITTED_DOCUMENTS_FIXTURES_DIR = File.join(__dir__, "fixtures", "documents")
+
+def documents_fixtures_dir
+  DOCUMENTS_FIXTURES_DIR
+end
 
 # Pin RUBINO_HOME to the throwaway test home BEFORE any Config::Loader runs.
 # Without this the loader falls back to ~/.rubino and reads the developer's
@@ -47,17 +78,27 @@ RSpec.configure do |config|
 
   config.shared_context_metadata_behavior = :apply_to_host_groups
   config.filter_run_when_matching :focus
-  config.example_status_persistence_file_path = "spec/examples.txt"
+  # Per-worker persistence file under parallel_tests so N workers don't race on
+  # (and corrupt) the same spec/examples.txt. Sequential runs keep the plain
+  # path so `--only-failures` / `--next-failure` still work as before.
+  config.example_status_persistence_file_path =
+    if (n = ENV.fetch("TEST_ENV_NUMBER", nil)) && !n.empty?
+      "spec/examples.#{n}.txt"
+    else
+      "spec/examples.txt"
+    end
   config.disable_monkey_patching!
   config.order = :random
   Kernel.srand config.seed
 
   config.before(:suite) do
-    FileUtils.mkdir_p(TEST_HOME)
-    # Regenerate the binary document fixtures (xlsx/docx/pdf) so the
-    # Rubino::Documents specs run against deterministically-built files rather
-    # than depending on a committed blob staying fresh.
-    DocumentFixtures.generate!(File.join(__dir__, "fixtures", "documents"))
+    FileUtils.mkdir_p(DOCUMENTS_FIXTURES_DIR)
+    # Copy the committed text fixtures (csv/json/xml/html/txt/rb) into the
+    # per-worker dir, then regenerate the binary ones (xlsx/docx/pdf) alongside
+    # them so the Rubino::Documents specs run against deterministically-built
+    # files rather than a committed blob staying fresh.
+    FileUtils.cp_r(Dir[File.join(COMMITTED_DOCUMENTS_FIXTURES_DIR, "*")], DOCUMENTS_FIXTURES_DIR)
+    DocumentFixtures.generate!(DOCUMENTS_FIXTURES_DIR)
   end
 
   config.after(:suite) do

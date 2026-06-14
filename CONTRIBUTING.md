@@ -21,10 +21,19 @@ Run the CLI from the checkout with `bundle exec rubino <command>`.
 ## Tests
 
 ```bash
-bundle exec rspec                 # full suite
+bundle exec rspec                 # full suite (sequential; generates the coverage report)
 bundle exec rspec path/to/file_spec.rb
 bundle exec rake                  # default task == spec
+bundle exec rake parallel:spec    # full suite across all CPU cores (no coverage report)
+bundle exec rake parallel:spec[4] # ...forced to 4 workers
 ```
+
+`parallel:spec` shards the suite across one process per core via the
+`parallel_tests` gem; each worker is isolated by `TEST_ENV_NUMBER`
+(per-worker `RUBINO_HOME`, document fixtures, and example-status file).
+SimpleCov is skipped under parallel runs (the workers would race the
+coverage resultset) — use the sequential `bundle exec rspec` when you need
+the coverage report.
 
 The HTTP boundary is locked by an end-to-end contract suite under `spec/rubino/api/contract/`. When the docs and the contract suite disagree, **the contract suite is canonical** — update the docs to match.
 
