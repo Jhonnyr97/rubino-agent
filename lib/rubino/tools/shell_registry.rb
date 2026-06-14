@@ -137,6 +137,17 @@ module Rubino
       # mutex protects only against concurrent reads from shell_output_tool.
       def drain_into(entry, rd)
         rd.each_line do |chunk|
+          # Scrub to valid UTF-8 AT THE CAPTURE SEAM, mirroring the FOREGROUND
+          # shell (ShellTool drains through Util::Output.scrub_utf8). A binary /
+          # latin-1 background process (`head -c … /dev/urandom &`, `cat *.png &`)
+          # writes bytes tagged UTF-8 but invalid; left raw in the ring buffer
+          # they blow up JSON.generate (the LLM request) + the SQLite driver when
+          # `shell_output` returns them, and the tool row never persists — the
+          # model loses the record on --resume. Cleaning here means the buffer is
+          # already safe for every reader (read_new / read_all). Terminal-escape
+          # neutralization for what reaches the screen is a separate render-seam
+          # concern (CLI#safe on the close-row metric / write_body_lines).
+          chunk = Util::Output.scrub_utf8(chunk)
           entry.mutex.synchronize do
             entry.buffer << chunk
             overflow = entry.buffer.bytesize - RING_BYTES
