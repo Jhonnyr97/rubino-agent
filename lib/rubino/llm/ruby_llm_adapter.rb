@@ -649,7 +649,7 @@ module Rubino
       end
 
       def check_stream_stale!(last_chunk_at, stale_after)
-        return if stale_after.to_i <= 0
+        return if stale_after.to_f <= 0
         return if (monotonic_now - last_chunk_at) <= stale_after
 
         raise StreamStaleError, "no chunk received for #{stale_after}s"
@@ -664,7 +664,7 @@ module Rubino
       # `stale_after` raises StreamStaleError INTO the streaming thread to break
       # it out of the read. nil when stale_after <= 0 (watchdog disabled).
       def start_stale_watchdog(stale_after, &last_chunk_at_reader)
-        return if stale_after.to_i <= 0
+        return if stale_after.to_f <= 0
 
         target = Thread.current
         # Tick fast enough to bound the OVERSHOOT past the deadline, but never

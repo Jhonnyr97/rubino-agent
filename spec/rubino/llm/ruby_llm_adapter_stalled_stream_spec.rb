@@ -34,9 +34,16 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     chat
   end
 
+  let(:noop_sink) { ->(_) {} }
+
   before do
     allow(adapter).to receive(:load_history)
     allow(adapter).to receive(:apply_prefill)
+  end
+
+  def run_idle_stream(&sink)
+    adapter.send(:stream_once, messages: [{ role: "user", content: "hi" }],
+                               tools: [], response_format: nil, image_paths: [], &sink)
   end
 
   it "bounds an idle stream WELL under the 600s read-timeout and raises StreamStaleError" do
@@ -44,10 +51,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     allow(adapter).to receive(:build_chat).and_return(chat)
 
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    expect do
-      adapter.send(:stream_once, messages: [{ role: "user", content: "hi" }],
-                                 tools: [], response_format: nil, image_paths: []) { |_| }
-    end.to raise_error(Rubino::LLM::StreamStaleError, /no chunk received/)
+    expect { run_idle_stream(&noop_sink) }
+      .to raise_error(Rubino::LLM::StreamStaleError, /no chunk received/)
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
     # Bounded by the 0.3s idle deadline (+ watchdog tick + teardown), nowhere
@@ -61,8 +66,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
     raised = nil
     begin
-      adapter.send(:stream_once, messages: [{ role: "user", content: "hi" }],
-                                 tools: [], response_format: nil, image_paths: []) { |_| }
+      run_idle_stream(&noop_sink)
     rescue Rubino::LLM::StreamStaleError => e
       raised = e
     end
@@ -78,12 +82,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     allow(adapter).to receive(:build_chat).and_return(chat)
 
     before_threads = Thread.list.size
-    begin
-      adapter.send(:stream_once, messages: [{ role: "user", content: "hi" }],
-                                 tools: [], response_format: nil, image_paths: []) { |_| }
-    rescue Rubino::LLM::StreamStaleError
-      # expected
-    end
+    expect { run_idle_stream(&noop_sink) }.to raise_error(Rubino::LLM::StreamStaleError)
     # Give a beat for teardown, then assert no watchdog thread lingers.
     sleep 0.2
     expect(Thread.list.size).to be <= before_threads

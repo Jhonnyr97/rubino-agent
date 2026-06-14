@@ -500,6 +500,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "installs a HUP handler that ends the session on close" do
       skip "SIGHUP not supported on this platform" unless Signal.list.key?("HUP")
       allow(runner).to receive(:end_session!)
+      # #361b: the teardown trap flips the cancel token with reason :external so
+      # an in-flight turn is labeled "interrupted by external signal", not "by
+      # user". Allow + assert that here.
+      allow(runner).to receive(:cancel!)
 
       cmd = described_class.new({})
       prev = cmd.send(:install_session_end_traps, runner)
@@ -512,6 +516,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(handler).to respond_to(:call)
       expect { handler.call }.to raise_error(SystemExit)
 
+      expect(runner).to have_received(:cancel!).with(reason: :external)
       expect(runner).to have_received(:end_session!)
     end
   end
