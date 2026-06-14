@@ -13,6 +13,10 @@ module Rubino
         true
       end
 
+      # Drop Thor's inherited `tree` so its banner doesn't render the doubled
+      # "rubino rubino sessions tree" (#327); the top-level `rubino tree` covers it.
+      remove_command :tree
+
       desc "list", "List recent sessions in this directory (--all for every dir)"
       option :limit,  type: :numeric, default: 20, desc: "Max results"
       option :status, type: :string,  desc: "Filter by status"

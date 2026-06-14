@@ -112,13 +112,16 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(result).to eq(name: "provider_keys", status: :ok)
     end
 
-    it "warns naming the configured provider when no credentials resolve" do
+    # #327(c): a missing key for the CONFIGURED provider is a hard ✗ (:fail),
+    # not a soft ⚠ — it is REQUIRED for any model call, so an install without it
+    # is broken, not merely degraded.
+    it "fails naming the configured provider when no credentials resolve" do
       with_config("model" => { "default" => "anthropic/claude-3-5-sonnet", "provider" => "auto" })
 
       result = doctor.send(:check_provider_keys)
 
-      expect(result).to eq(name: "provider_keys", status: :warn)
-      expect(ui.messages.last).to include(level: :warning)
+      expect(result).to eq(name: "provider_keys", status: :fail)
+      expect(ui.messages.last).to include(level: :error)
       expect(ui.messages.last[:message]).to include("anthropic")
     end
 
@@ -131,7 +134,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       result = doctor.send(:check_provider_keys)
 
-      expect(result[:status]).to eq(:warn)
+      expect(result[:status]).to eq(:fail)
     end
 
     it "is :ok for the fake provider without any credentials" do
@@ -155,6 +158,47 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       expect(result).to eq(name: "provider_keys", status: :ok)
       expect(ui.messages.last[:message]).to include("minimax")
+    end
+  end
+
+  # #327(c): doctor must validate the configured model EXISTS, not merely that
+  # a non-empty string is present — a typo'd model.default used to pass doctor
+  # and only fail at the first model call.
+  describe "#check_model_configured (model existence)" do
+    def with_config(raw)
+      config = Rubino::Config::Configuration.new(raw: raw, home_path: nil)
+      allow(Rubino).to receive(:configuration).and_return(config)
+    end
+
+    it "is :fail when no model is configured" do
+      with_config("model" => { "default" => "" })
+      expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :fail)
+    end
+
+    it "is :ok for a real registry model id" do
+      with_config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
+      allow(doctor).to receive(:assume_exists_provider?).and_return(false)
+      allow(doctor).to receive(:model_in_catalog?).with("gpt-4.1").and_return(true)
+      expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
+    end
+
+    it "is :warn for a typo'd model id on a registry provider" do
+      with_config("model" => { "default" => "gpt-4o-typooo", "provider" => "openai" })
+      allow(doctor).to receive(:assume_exists_provider?).and_return(false)
+      allow(doctor).to receive(:model_in_catalog?).with("gpt-4o-typooo").and_return(false)
+
+      result = doctor.send(:check_model_configured)
+
+      expect(result).to eq(name: "model", status: :warn)
+      expect(ui.messages.last).to include(level: :warning)
+    end
+
+    it "stays :ok for an assume-exists / compatible provider (no registry lookup)" do
+      with_config(
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "providers" => { "minimax" => { "anthropic_compatible" => true } }
+      )
+      expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
     end
   end
 

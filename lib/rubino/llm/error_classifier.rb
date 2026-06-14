@@ -128,6 +128,7 @@ module Rubino
                  classify_invalid_credential(error) ||
                  classify_transport(error) ||
                  classify_invalid_media(error) ||
+                 classify_invalid_params(error) ||
                  classify_typed(error) ||
                  (status && classify_by_status(status, error)) ||
                  classify_statusless(error)
@@ -223,6 +224,34 @@ module Rubino
       def classify_invalid_media(error)
         msg = error.message.to_s.downcase
         return unless INVALID_MEDIA_PATTERNS.any? { |p| msg.include?(p) }
+
+        result_for(FailoverReason::FORMAT_ERROR, http_status(error), error,
+                   retryable: false, should_fallback: true)
+      end
+
+      # A deterministic request-VALIDATION rejection (a 4xx "invalid params" /
+      # "invalid request" / unprocessable body) that some providers surface
+      # STATUSLESS, so it used to fall through to the unknown→retryable default
+      # and burn the full api_max_retries:5 backoff (~85s) on a request that
+      # fails identically every time (#327). The same body is rejected on every
+      # retry, so fail fast. Kept narrow (literal provider phrasings) and ordered
+      # AFTER the media check so an image rejection keeps its own reason. The
+      # context-overflow phrases are deliberately excluded — those are handled by
+      # the compress-not-fail path above.
+      INVALID_PARAMS_PATTERNS = [
+        "invalid params",
+        "invalid parameter",
+        "invalid request",
+        "unprocessable entity",
+        "validation error",
+        "invalid_request_error"
+      ].freeze
+
+      def classify_invalid_params(error)
+        return if context_overflow?(error)
+
+        msg = error.message.to_s.downcase
+        return unless INVALID_PARAMS_PATTERNS.any? { |p| msg.include?(p) }
 
         result_for(FailoverReason::FORMAT_ERROR, http_status(error), error,
                    retryable: false, should_fallback: true)
