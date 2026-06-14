@@ -19,6 +19,7 @@ module Rubino
       option :all, type: :boolean, default: false,
                    desc: "Include superseded (soft-retired) facts"
       def list
+        guard_corrupt_database!
         Rubino.ensure_database_ready!
         memories = backend_store.list(kind: options[:kind], limit: options[:limit],
                                       include_retired: options[:all])
@@ -145,6 +146,21 @@ module Rubino
 
       def config_path
         Config::Loader.new.config_path
+      end
+
+      # Turn a corrupt/malformed on-disk DB into a clean, actionable diagnostic
+      # instead of leaking a raw Sequel/sqlite3 backtrace (#333b) — mirrors
+      # SessionCommand#guard_corrupt_database!. `memory list` was the one user
+      # command that still dumped the ~20-line trace on a file-corrupt DB; route
+      # it through the same guarded path doctor already uses. Thor prints a
+      # Thor::Error's message to stderr and exits non-zero with no backtrace.
+      def guard_corrupt_database!
+        return unless Rubino.database.corrupt?
+
+        raise Thor::Error,
+              "database is corrupt (malformed image): #{Rubino.database.db_path}\n" \
+              "Run `rubino doctor` to diagnose, then `rubino setup` to quarantine it " \
+              "and recreate a fresh database."
       end
     end
   end

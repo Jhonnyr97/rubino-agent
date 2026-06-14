@@ -71,6 +71,22 @@ RSpec.describe Rubino::Session::Repository do
     it "returns nil for unknown ID" do
       expect(repo.find("nonexistent-id-00000000")).to be_nil
     end
+
+    # #333a: the id prefix flowed straight into Sequel.like(:id, "#{q}%"), but
+    # `%`/`_` are LIKE wildcards — so `find("%")` matched the FIRST of EVERY
+    # session and `find("a_c")` treated `_` as any-char. The metacharacters must
+    # be escaped so a bare wildcard query never resolves to an unrelated row.
+    it "treats a lone % as a literal, not a match-all wildcard (#333a)" do
+      repo.create(source: "cli")
+      repo.create(source: "cli")
+      expect(repo.find("%")).to be_nil
+    end
+
+    it "treats _ as a literal in an id prefix, not any-char (#333a)" do
+      s = repo.create(source: "cli")
+      # `_` would otherwise match the real id's first char positionally.
+      expect(repo.find("_#{s[:id][1..7]}")).to be_nil
+    end
   end
 
   describe "#find_by_id_or_title" do
@@ -132,6 +148,16 @@ RSpec.describe Rubino::Session::Repository do
       expect(repo.find_by_id_or_title("")).to be_nil
     end
 
+    # #333a: a `%` in the id-prefix branch must be a literal, not a match-all
+    # wildcard that resolves `--resume "%"` to a random session (or raises
+    # ambiguous across every row). With no title/message containing a literal
+    # "%", it resolves to nothing.
+    it "does not match every session for a lone % (#333a)" do
+      repo.create(source: "cli", title: "alpha")
+      repo.create(source: "cli", title: "beta")
+      expect(repo.find_by_id_or_title("%")).to be_nil
+    end
+
     # Regression: silently picking the first match meant --resume "feature"
     # could load either of two sessions titled "feature spike" / "feature
     # work" depending on creation order, with no warning. Same for short
@@ -185,6 +211,31 @@ RSpec.describe Rubino::Session::Repository do
 
       expect(repo.list(status: "active").size).to eq(1)
       expect(repo.list(status: "ended").size).to eq(1)
+    end
+
+    # #334: a bare `sessions list` should default to THIS dir's sessions, so a
+    # multi-folder user never sees another project's history. cwd: nil (--all)
+    # restores the global listing.
+    describe "cwd scoping (cwd:)" do
+      before do
+        repo.create(source: "cli", title: "in-a", cwd: "/home/dev/api")
+        repo.create(source: "cli", title: "in-b", cwd: "/home/dev/web")
+      end
+
+      it "lists only sessions stamped to the given cwd" do
+        titles = repo.list(cwd: "/home/dev/api").map { |s| s[:title] }
+        expect(titles).to eq(%w[in-a])
+      end
+
+      it "lists every dir when cwd is nil (the --all path)" do
+        expect(repo.list(cwd: nil).map { |s| s[:title] }).to contain_exactly("in-a", "in-b")
+      end
+
+      it "matches through a symlinked/relative cwd via canonical paths" do
+        repo.create(source: "cli", title: "here", cwd: Dir.pwd)
+        titles = repo.list(cwd: File.join(Dir.pwd, ".")).map { |s| s[:title] }
+        expect(titles).to include("here")
+      end
     end
   end
 

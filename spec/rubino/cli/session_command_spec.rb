@@ -143,7 +143,9 @@ RSpec.describe Rubino::CLI::SessionCommand do
       repo.create(source: "cli", title: "web work", cwd: "/home/dev/web")
 
       cmd = described_class.new
-      cmd.options = { limit: 20 }
+      # These sessions belong to OTHER dirs; --all opts out of the new #334
+      # current-dir default so the Dir column can be asserted across dirs.
+      cmd.options = { limit: 20, all: true }
       cmd.list
 
       table = table_rows
@@ -151,6 +153,21 @@ RSpec.describe Rubino::CLI::SessionCommand do
       dir_idx = table[:headers].index("Dir")
       dirs = table[:rows].map { |r| r[dir_idx] }
       expect(dirs).to include("/home/dev/api", "/home/dev/web")
+    end
+
+    # #334: a bare `sessions list` defaults to THIS dir's sessions; --all opts
+    # back into the global listing.
+    it "#list defaults to the current dir and hides other dirs' sessions" do
+      repo.create(source: "cli", title: "here", cwd: Rubino::Workspace.primary_root)
+      repo.create(source: "cli", title: "elsewhere", cwd: "/home/dev/elsewhere")
+
+      cmd = described_class.new
+      cmd.options = { limit: 20 } # no --all
+      cmd.list
+
+      titles = table_rows[:rows].map { |r| r[1] }
+      expect(titles).to include("here")
+      expect(titles).not_to include("elsewhere")
     end
 
     it "#show renders the session's Dir" do
