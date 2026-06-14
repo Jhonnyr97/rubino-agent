@@ -24,7 +24,16 @@ module Rubino
       def with_aux_retry
         attempts = 0
         begin
+          # Honour a detached-polishing cancel (Esc to skip): the background
+          # housekeeping thread binds Rubino.aux_cancel_token, so an Esc that
+          # cancelled it must abort BEFORE spending another aux-LLM call rather
+          # than running to completion off-screen (#319).
+          aux_check_cancelled!
           yield
+        rescue Rubino::Interrupted
+          # Cancellation is terminal — re-raise straight through so the detached
+          # polishing thread unwinds and leaves the cursor put (re-runs next turn).
+          raise
         rescue StandardError => e
           classified = LLM::ErrorClassifier.classify(e)
           raise unless classified.retryable && attempts < extract_max_retries
@@ -37,12 +46,39 @@ module Rubino
             retry_after: aux_rate_limit_retry_after(classified, e)
           )
           log_aux_retry(e, attempts, wait)
-          aux_backoff.sleep(wait)
+          # Sleep in short slices so an Esc during the (possibly long, Retry-After
+          # honouring) backoff wait aborts within ~100ms instead of holding the
+          # detached worker for the full window (#319). On the foreground/API
+          # path no token is bound, so this is one uninterrupted sleep as before.
+          aux_cancellable_sleep(wait)
           retry
         end
       end
 
       private
+
+      # Raise Interrupted when the detached-polishing cancel token (if bound for
+      # this thread) has been flipped. No-op when no token is bound.
+      def aux_check_cancelled!
+        Rubino.aux_cancel_token&.check!
+      end
+
+      # Sleep +seconds+ in small slices, polling the aux cancel token between
+      # slices so a cancel aborts the wait promptly. Falls back to a single
+      # sleep when no token is bound (no detached polishing).
+      def aux_cancellable_sleep(seconds)
+        token = Rubino.aux_cancel_token
+        return aux_backoff.sleep(seconds) unless token
+
+        remaining = seconds.to_f
+        while remaining.positive?
+          token.check!
+          slice = [remaining, 0.1].min
+          aux_backoff.sleep(slice)
+          remaining -= slice
+        end
+        token.check!
+      end
 
       def extract_max_retries
         @config.dig("memory", "extract_max_retries") ||
