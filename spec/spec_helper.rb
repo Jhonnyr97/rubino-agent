@@ -30,6 +30,14 @@ require "tmpdir"
 require "rubino"
 require "fileutils"
 require "securerandom"
+# Rubino's CLI commands subclass Thor and are loaded lazily by Zeitwerk, so the
+# Thor constant isn't defined until the first command class is referenced. CLI
+# specs assert on `Thor::Error` inside `raise_error(Thor::Error, ...)` matchers,
+# which RSpec evaluates before the example block runs (and thus before any
+# command autoloads Thor). Requiring it here makes that order-independent —
+# otherwise the example that runs first in a (randomized / parallel-sharded)
+# worker raises `NameError: uninitialized constant Thor`.
+require "thor"
 
 # Load all shared support files
 Dir[File.join(__dir__, "support", "**", "*.rb")].each { |f| require f }
