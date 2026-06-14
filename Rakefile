@@ -18,18 +18,22 @@ task default: :spec
 # SimpleCov is skipped in parallel (workers would race the resultset); run the
 # plain sequential `rake spec` / `bundle exec rspec` for a coverage report.
 #
-# We balance by RECORDED RUNTIME (--group-by runtime) rather than file count:
-# one example (agent_e2e error-retry) dominates wall-clock, so runtime grouping
-# keeps it from gating an otherwise-idle worker once a timing log exists. The
-# first run falls back to filesize grouping and writes the runtime log used by
-# subsequent runs.
+# We balance by RECORDED RUNTIME rather than file count: one example
+# (agent_e2e error-retry) dominates wall-clock, so runtime grouping keeps it
+# from gating an otherwise-idle worker. `--runtime-log` makes every run WRITE
+# the timing file, and we only ASK parallel_tests to group by it once it
+# exists (the first run grades on filesize, then logs runtimes for the next).
 namespace :parallel do
+  RUNTIME_LOG = "tmp/parallel_runtime_rspec.log"
+
   desc "Run the RSpec suite in parallel across CPU cores (rake parallel:spec[N])"
   task :spec, [:count] do |_t, args|
     count = args[:count]
     cmd = ["bundle", "exec", "parallel_rspec"]
     cmd += ["-n", count.to_s] if count && !count.empty?
-    cmd += ["--group-by", "runtime", "--", "spec"]
+    cmd += ["--runtime-log", RUNTIME_LOG]
+    cmd += ["--group-by", "runtime"] if File.exist?(RUNTIME_LOG)
+    cmd += ["--", "spec"]
     sh(*cmd)
   end
 end
