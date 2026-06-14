@@ -60,18 +60,29 @@ module Rubino
       # ONE session-details rendering for both surfaces (#183): the CLI verb
       # above and the in-chat `/sessions show <id>` (Commands::Executor).
       def self.render(session, ui:)
-        ui.info("Session: #{session[:id]}")
-        ui.info("Title: #{session[:title] || "(untitled)"}")
-        ui.info("Status: #{session[:status]}")
-        ui.info("Model: #{session[:model]}")
-        ui.info("Messages: #{session[:message_count]}")
-        ui.info("Tokens: #{session[:token_count]}")
-        ui.info("Created: #{session[:created_at]}")
-        ui.info("Updated: #{session[:updated_at]}")
+        # Title/Model are attacker-influenceable (the title is generated from
+        # the conversation), and the rest are defensively sanitized too: `info`
+        # does NOT neutralize escapes, so a raw `\e]0;…\a` / `\e[2J` here would
+        # hijack the window title or clear the screen (CWE-150, R4-N2). Render
+        # any control bytes as visible caret notation instead.
+        ui.info("Session: #{safe(session[:id])}")
+        ui.info("Title: #{safe(session[:title] || "(untitled)")}")
+        ui.info("Status: #{safe(session[:status])}")
+        ui.info("Model: #{safe(session[:model])}")
+        ui.info("Messages: #{safe(session[:message_count])}")
+        ui.info("Tokens: #{safe(session[:token_count])}")
+        ui.info("Created: #{safe(session[:created_at])}")
+        ui.info("Updated: #{safe(session[:updated_at])}")
 
         return unless session[:parent_session_id]
 
-        ui.info("Parent: #{session[:parent_session_id]}")
+        ui.info("Parent: #{safe(session[:parent_session_id])}")
+      end
+
+      # Neutralize terminal-control bytes in untrusted stored session fields to
+      # visible caret notation before the non-sanitizing `info` funnel (CWE-150).
+      def self.safe(text)
+        Util::Output.sanitize_terminal(text)
       end
 
       desc "delete ID", "Permanently delete a session and all its messages/events"

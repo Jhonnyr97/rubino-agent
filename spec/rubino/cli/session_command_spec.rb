@@ -109,4 +109,24 @@ RSpec.describe Rubino::CLI::SessionCommand do
       expect(repo.find(session[:id])).to be_nil
     end
   end
+
+  # R4-N2 — a session title is generated from the conversation, so it is
+  # attacker-influenceable. The shared renderer prints it through `info`, which
+  # does NOT sanitize, so a raw OSC/CSI in the title would hijack the window
+  # title / clear the screen. The renderer now neutralizes the field to caret
+  # notation before it reaches the printer.
+  describe "#render neutralizes terminal escapes in untrusted title (R4-N2)" do
+    it "renders a clear-screen + title-hijack title as caret text" do
+      session = { id: "deadbeefcafef00d", title: "\e[2J\e]0;HIJACKED\aevil",
+                  status: "active", model: "m", message_count: 1, token_count: 2,
+                  created_at: "2026-06-14", updated_at: "2026-06-14" }
+      described_class.render(session, ui: ui)
+
+      title_line = info_lines.find { |l| l.start_with?("Title:") }
+      expect(title_line).not_to include("\e[2J")
+      expect(title_line).not_to include("\e]0;")
+      expect(title_line).to include("HIJACKED") # payload survives as caret text
+      expect(title_line).to include("^[")
+    end
+  end
 end

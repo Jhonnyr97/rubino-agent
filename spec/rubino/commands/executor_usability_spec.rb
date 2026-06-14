@@ -397,6 +397,30 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
         expect(joined).to include("Usage: /memory show <id>")
         expect(joined).not_to include("No facts matching")
       end
+
+      # R4-N2 — fact content is EXTRACTED from conversation, so it is
+      # attacker-influenceable. `/memory show` and `/memory <query>` print it
+      # through `info` (which does NOT sanitize), so a raw `\e]0;…\a` / `\e[2J`
+      # in the content would hijack the window title / clear the screen. The
+      # handler now neutralizes the content to caret notation first.
+      it "neutralizes terminal escapes in shown fact content (CWE-150)" do
+        m = store.store(kind: "fact", content: "before\e[2J\e]0;HIJACKED\aafter")
+        exec.try_execute("/memory show #{m[:id][0..7]}")
+        joined = info_lines.join("\n")
+        expect(joined).not_to include("\e[2J")
+        expect(joined).not_to include("\e]0;")
+        expect(joined).to include("HIJACKED") # survives as caret text
+        expect(joined).to include("^[")
+      end
+
+      it "neutralizes terminal escapes in a searched fact's content (CWE-150)" do
+        store.store(kind: "fact", content: "needle\e]0;HIJACKED\amark")
+        exec.try_execute("/memory needle")
+        joined = info_lines.join("\n")
+        expect(joined).not_to include("\e]0;")
+        expect(joined).to include("HIJACKED")
+        expect(joined).to include("^[")
+      end
     end
 
     # #184: the backend is inspectable in-chat; switching stays CLI-only
