@@ -104,8 +104,16 @@ module Rubino
       # Returns skill summaries for prompt inclusion (names + descriptions only).
       # Disabled skills (per StateRepository) are excluded so a skill toggled
       # off never appears in the system-prompt index (Skills::PromptIndex).
+      #
+      # Language-scoped skills (frontmatter `languages:`) are ALSO excluded
+      # unless the project uses one of their languages. This is what keeps the
+      # bundled ruby-expert skill from auto-branding every session as Ruby/Rails
+      # in, say, a Python project: it's only auto-listed when the workspace is
+      # actually detected as Ruby. The skill is still discoverable and loadable
+      # on demand (via the /skills picker and the `skill` tool) — gating only
+      # governs the proactive system-prompt catalogue, not availability.
       def summaries
-        enabled.map(&:summary)
+        enabled.select { |skill| language_applicable?(skill) }.map(&:summary)
       end
 
       # Loads and returns the full content of a skill by name. Returns nil when
@@ -136,6 +144,32 @@ module Rubino
       end
 
       private
+
+      # True when a skill should appear in the AUTO-LOAD catalogue for the
+      # current project. A language-agnostic skill (no `languages:` frontmatter)
+      # always applies. A language-scoped one applies only when the workspace is
+      # detected to use one of its languages — and, importantly, also when the
+      # project's language can't be determined at all (empty detection), so a
+      # bare scratch dir or an unrecognised stack still sees the catalogue
+      # rather than silently hiding skills. Detection is memoised per registry
+      # instance (one cheap marker-file probe per turn's assembly).
+      def language_applicable?(skill)
+        scoped = skill.languages
+        return true if scoped.empty?
+
+        detected = project_languages
+        return true if detected.empty?
+
+        scoped.any? { |lang| detected.include?(lang) }
+      end
+
+      def project_languages
+        @project_languages ||= Context::ProjectLanguages.detect
+      rescue StandardError
+        # Never let detection break the catalogue: treat as "unknown", which
+        # #language_applicable? reads as "don't gate".
+        Set.new
+      end
 
       # Increments +skills_created_total+ once per skill name that appears in a
       # re-scan but was absent from the prior scan. NOTE: this is the only clean

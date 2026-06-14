@@ -55,6 +55,49 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # The bundled ruby-expert skill carries `languages: [ruby]` so it no longer
+    # auto-brands every session as Ruby/Rails. It stays discoverable/loadable on
+    # demand (names/find), but the system-prompt catalogue (#summaries) only
+    # lists it when the project is actually a Ruby project.
+    describe "language-scoped built-in skills" do
+      def registry_in(root)
+        allow(Rubino::Workspace).to receive(:primary_root).and_return(root)
+        described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+      end
+
+      def summary_names(reg)
+        reg.summaries.map { |s| s.split(":", 2).first }
+      end
+
+      it "lists ruby-expert in summaries when the project is Ruby" do
+        Dir.mktmpdir do |root|
+          File.write(File.join(root, "Gemfile"), "source 'x'")
+          expect(summary_names(registry_in(root))).to include("ruby-expert")
+        end
+      end
+
+      it "omits ruby-expert from summaries in a Python project" do
+        Dir.mktmpdir do |root|
+          File.write(File.join(root, "requirements.txt"), "flask")
+          File.write(File.join(root, "app.py"), "print(1)")
+          reg = registry_in(root)
+          expect(summary_names(reg)).not_to include("ruby-expert")
+          # Still discoverable and loadable on demand (opt-in via /skills picker
+          # or the `skill` tool) — gating only governs the auto-load catalogue.
+          expect(reg.names).to include("ruby-expert")
+          expect(reg.load_skill("ruby-expert")).to include("Ruby expert")
+        end
+      end
+
+      it "still lists ruby-expert when the project language is unknown" do
+        Dir.mktmpdir do |root|
+          # Bare scratch dir, no markers: don't hide skills from a project we
+          # can't classify.
+          expect(summary_names(registry_in(root))).to include("ruby-expert")
+        end
+      end
+    end
+
     # #135: RUBINO_HOME must relocate skills like config/.env/DB/commands. The
     # stock "~/.rubino/skills" entry used to File.expand_path against the REAL
     # home, so an isolated home silently lost its user skills.
