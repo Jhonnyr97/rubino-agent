@@ -91,6 +91,19 @@ class FakeLLMAdapter
     self
   end
 
+  # Enqueue a streaming turn the USER interrupts mid-stream (#338). Mirrors the
+  # real RubyLLMAdapter#stream_once behaviour: it polls the cancel token at each
+  # chunk boundary (adapter line ~229) and raises Rubino::Interrupted the moment
+  # the token is flipped. Here we yield +shown_words+ as content chunks, then on
+  # the next boundary flip +cancel_token+ (simulating the Enter-to-interrupt /
+  # Ctrl+C that runs on another thread) and raise Rubino::Interrupted — so any
+  # +late_words+ are NEVER yielded. The Loop must persist exactly the shown words
+  # (marked interrupted) and drop the late ones.
+  def enqueue_user_interrupt(cancel_token, shown:, late: [])
+    @stream_interrupt = { cancel_token: cancel_token, shown: shown, late: late }
+    self
+  end
+
   # Enqueue a degenerate "empty" response: no text AND no tool calls, NOT
   # interrupted. The model returned 200 OK but nothing usable — the Loop must
   # retry the turn and ultimately raise EmptyModelResponseError, never report it
@@ -160,6 +173,25 @@ class FakeLLMAdapter
 
   def stream(messages:, tools: nil, response_format: nil, image_paths: nil)
     record_call(messages: messages, tools: tools, image_paths: image_paths)
+
+    # User-interrupt scenario (#338): yield the shown words, then flip the
+    # cancel token and raise at the next boundary, mirroring the real adapter's
+    # per-chunk #check!. The late words are never yielded.
+    if @stream_interrupt
+      scenario = @stream_interrupt
+      @stream_interrupt = nil
+      if block_given?
+        scenario[:shown].each_with_index do |word, idx|
+          text = idx.zero? ? word : " #{word}"
+          yield({ type: :content, text: text, message_id: 0 })
+        end
+      end
+      # The interrupt arrives between chunks (another thread flipped it).
+      scenario[:cancel_token].cancel!
+      # The next per-chunk poll observes it and raises — late words never flow.
+      raise Rubino::Interrupted
+    end
+
     # Run any mid-stream tool side-effect (ToolBridge → executor) before the
     # final assistant text, mirroring the real streaming dispatch order.
     if @stream_side_effect
