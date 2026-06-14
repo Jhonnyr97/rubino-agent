@@ -171,8 +171,7 @@ module Rubino
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
-                     on_double_esc: nil, on_agent_cycle: nil,
-                     on_escape: nil)
+                     on_double_esc: nil, on_agent_cycle: nil, on_escape: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -194,8 +193,7 @@ module Rubino
         # Monotonic time of the last LONE Esc (nil when unarmed) — the
         # double-tap window the Esc-Esc rewind chord measures against.
         @last_esc_at   = nil
-        @echo          = echo
-        @on_interrupt  = on_interrupt
+        @echo, @on_interrupt = echo, on_interrupt
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
         @paste_store   = paste_store
