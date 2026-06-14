@@ -5,7 +5,16 @@ RSpec.describe Rubino::Tools::VisionTool do
 
   let(:tmp_dir) { Dir.mktmpdir("vision_tool_spec") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  # vision sends raw image bytes to the aux LLM, so it is workspace-sandboxed
+  # (r5 MF-1 / NEW-2): root the workspace at tmp_dir so the in-tmp fixtures are
+  # inside it; the out-of-workspace path gets its own example below.
+  before { Rubino.configuration.set("terminal", "cwd", tmp_dir) }
+
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    Rubino::Workspace.reset!
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   it "has name 'vision' and :low risk" do
     expect(tool.name).to eq("vision")
@@ -17,8 +26,27 @@ RSpec.describe Rubino::Tools::VisionTool do
       expect(tool.call("file_path" => "")).to include("file_path is required")
     end
 
-    it "rejects non-existent file" do
-      expect(tool.call("file_path" => "/no/such/file.png")).to include("file not found")
+    it "rejects non-existent file inside the workspace" do
+      expect(tool.call("file_path" => File.join(tmp_dir, "missing.png"))).to include("file not found")
+    end
+
+    # NEW-2 (r5c): vision routes raw image bytes through the aux LLM, so an
+    # out-of-workspace image must be DENIED (typed :outside_workspace), NOT
+    # read. Fails on the pre-fix code, which would have called the aux model.
+    it "denies an out-of-workspace image as outside the workspace (r5c NEW-2)" do
+      Dir.mktmpdir("sibling-img") do |sibling|
+        outside = File.join(sibling, "secret.png")
+        File.binwrite(outside, "\x89PNG\r\n\x1A\nfake")
+
+        # Aux must never be constructed — the denial fires before any LLM call.
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new) { raise "aux must not be called" }
+
+        result = tool.call("file_path" => outside)
+        expect(result).to be_a(Hash)
+        expect(result[:error_code]).to eq(:outside_workspace)
+        expect(result[:output]).to include("outside your workspace")
+        expect(result[:output]).not_to include("file not found")
+      end
     end
 
     it "rejects a directory" do

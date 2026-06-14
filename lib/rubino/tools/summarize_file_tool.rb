@@ -71,6 +71,12 @@ module Rubino
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = File.expand_path(file_path)
+        # An out-of-workspace path is DENIED, not summarized: this tool routes
+        # the raw bytes through the auxiliary LLM, so an ungated path would
+        # exfiltrate a sibling-repo secret / ~/.ssh file the model can't
+        # otherwise read. Checked before existence so we don't leak whether a
+        # file outside the sandbox is present, mirroring read/glob/grep (r5 MF-1).
+        return outside_workspace_message(file_path) if outside_workspace?(expanded)
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
