@@ -38,8 +38,19 @@ module Rubino
         # used to land on a nil token and silently no-op, then the next run
         # started fresh and the user's cancel was lost.
         @cancel_token = Interaction::CancelToken.new
+        # Detached post-turn polishing worker (#319): owns the background thread
+        # that drains memory-extract / skill-distill / summarize OFF the live
+        # turn so the next prompt is never gated, and is cancellable via Esc.
+        # Reused across this runner's turns so #running? / #cancel! address the
+        # CURRENT polishing run (coalescing rapid turns).
+        @polishing = Interaction::Polishing.new(config: @config)
         @session = load_or_create_session(session_id)
       end
+
+      # The detached post-turn polishing worker, so the CLI can show the
+      # non-blocking "polishing… (Esc to skip)" indicator while it runs and
+      # extend the single Esc/cancel path to it (#319).
+      attr_reader :polishing
 
       # Executes a full interaction turn, swallowing failures so CLI callers
       # can stay in the REPL after a model/tool error. The friendly UI
@@ -89,7 +100,8 @@ module Rubino
           cancel_token: @cancel_token,
           model_override: @explicit_model_override,
           provider_override: @provider_override,
-          max_tool_iterations: @max_turns
+          max_tool_iterations: @max_turns,
+          polishing: @polishing
         )
 
         response = lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
@@ -131,8 +143,22 @@ module Rubino
       # Flips the current turn's cancel token. Called from the UI thread when
       # the user hits Esc or a second Ctrl+C while the worker is mid-stream.
       # No-op when no turn is in flight.
+      #
+      # ONE Esc cancels whatever is in flight (#319): the FOREGROUND turn OR the
+      # DETACHED post-turn polishing. Flipping both tokens is safe — a token is
+      # one-shot and idle-when-untouched, so cancelling the not-running side is a
+      # harmless no-op. The polishing worker stops between jobs and its aux
+      # retry/backoff aborts mid-wait, leaving partial work in place.
       def cancel!
         @cancel_token&.cancel!
+        @polishing&.cancel!
+      end
+
+      # True while the detached post-turn polishing is still draining — drives
+      # the non-blocking "polishing… (Esc to skip)" indicator the CLI shows
+      # without owning the input.
+      def polishing?
+        @polishing&.running? || false
       end
 
       # Switches the LIVE model for this runner (the in-chat `/model <name>`).
@@ -168,6 +194,11 @@ module Rubino
         @session_repo.end_session!(@session[:id])
       rescue StandardError
         nil
+      ensure
+        # Let any in-flight detached polishing settle (bounded) so a clean
+        # teardown doesn't abandon a half-written extraction (#319). Best-effort:
+        # the cursor re-feeds anything unfinished next session anyway.
+        @polishing&.wait(3)
       end
 
       private

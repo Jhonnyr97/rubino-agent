@@ -171,7 +171,7 @@ module Rubino
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
-                     on_double_esc: nil, on_agent_cycle: nil)
+                     on_double_esc: nil, on_agent_cycle: nil, on_escape: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -183,9 +183,15 @@ module Rubino
         # a plain completion key.
         @on_agent_cycle = on_agent_cycle
         @on_double_esc = on_double_esc
-        # Monotonic time of the last LONE Esc (nil when unarmed) — the
-        # double-tap window the Esc-Esc rewind chord measures against.
-        @last_esc_at   = nil
+        # Invoked on a LONE Esc at the idle prompt with no menu open, BEFORE the
+        # Esc-Esc rewind chord arms (#319). Returns truthy to CONSUME the Esc
+        # (the idle "polishing… (Esc to skip)" cancel): a single Esc then cancels
+        # the detached post-turn polishing instead of arming rewind. Returns
+        # falsy (nothing to cancel) to fall through to the normal arm. Runs on
+        # the reader thread — the hook must only flip a flag, never block.
+        @on_escape     = on_escape
+        # @last_esc_at: monotonic time of the last LONE Esc — nil (unarmed) by
+        # default; only read behind `&&` (the double-tap rewind chord window).
         @echo          = echo
         @on_interrupt  = on_interrupt
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
@@ -1453,10 +1459,21 @@ module Rubino
             @menu.dismiss!
             redraw # repaint to CLEAR the now-closed menu rows above the prompt
           end
-        elsif double_esc_armed?(now)
-          @last_esc_at = nil
-          @on_double_esc.call
-          return
+        else
+          # A lone Esc at the idle prompt with no menu open: if the
+          # post-turn polishing is in flight, ONE Esc cancels it (#319) — the
+          # hook returns truthy and we CONSUME the press (no rewind arm). With
+          # nothing to cancel it returns falsy and we fall through to the
+          # Esc-Esc rewind arm exactly as before.
+          if !@turn_active && !@content_streaming && @on_escape&.call
+            @last_esc_at = nil
+            return
+          end
+          if double_esc_armed?(now)
+            @last_esc_at = nil
+            @on_double_esc.call
+            return
+          end
         end
 
         @last_esc_at = now

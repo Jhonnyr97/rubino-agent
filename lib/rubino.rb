@@ -203,6 +203,30 @@ module Rubino
       Thread.current[:rubino_current_subagent_id] = prev
     end
 
+    # The CancelToken governing best-effort AUX work (post-turn polishing:
+    # memory-extract / skill-distill / summarize) running on THIS thread, if
+    # any. The detached polishing thread (Interaction::Polishing) binds its
+    # token here so the aux retry/backoff loop (Memory::AuxRetry) can poll it
+    # and abort the moment the user presses Esc — without threading a token
+    # through every aux call site. Nil on the foreground turn thread and on the
+    # API/server path (no detached polishing), where aux work is uncancellable
+    # as before.
+    def aux_cancel_token
+      Thread.current[:rubino_aux_cancel_token]
+    end
+
+    # Binds +token+ as the aux cancel token for the duration of the block
+    # (set by Interaction::Polishing around its detached job drain, exactly
+    # like #with_ui binds the run's UI). Thread-local so the aux retry loop
+    # reaches it with zero signature churn.
+    def with_aux_cancel_token(token)
+      prev = Thread.current[:rubino_aux_cancel_token]
+      Thread.current[:rubino_aux_cancel_token] = token
+      yield
+    ensure
+      Thread.current[:rubino_aux_cancel_token] = prev
+    end
+
     # Returns the current structured logger.
     def logger
       @logger ||= Logger.new

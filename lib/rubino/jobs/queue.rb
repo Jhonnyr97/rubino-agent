@@ -13,8 +13,15 @@ module Rubino
         @config = config || Rubino.configuration
       end
 
-      # Enqueues a new job
-      def enqueue(type, payload, priority: 100, run_at: nil)
+      # Enqueues a new job.
+      #
+      # +drain_inline+ controls the inline-mode auto-execute: when true (the
+      # default) an inline-mode enqueue runs the job synchronously right here,
+      # as before. The post-turn polishing path (#319) passes
+      # +drain_inline: false+ so the row is only PERSISTED — the detached
+      # Interaction::Polishing thread then drains it off the live turn's
+      # critical path, so a slow/429 aux call can never block the next prompt.
+      def enqueue(type, payload, priority: 100, run_at: nil, drain_inline: true)
         now = Time.now.utc.iso8601
         id = SecureRandom.uuid
 
@@ -30,6 +37,8 @@ module Rubino
           created_at: now,
           updated_at: now
         )
+
+        return id unless drain_inline
 
         # If inline mode, execute immediately — but first drain any stale rows
         # a previous inline run left orphaned (#84/#224). Inline mode has no
@@ -179,6 +188,21 @@ module Rubino
           Rubino.logger.warn(event: "jobs.reap_orphan_failed", job_id: orphan_id, error: e.class.name,
                              message: e.message)
         end
+      end
+
+      # The next still-queued, due, UNLOCKED job row (no lock taken). Used by the
+      # detached post-turn polishing drain (#319), which runs each row through
+      # Jobs::Runner#run_job sequentially on its own thread — so it needs the
+      # next candidate, not a worker-locked claim. Returns nil when the queue has
+      # nothing due. Scanned fresh each call so rows a follow-up turn enqueues
+      # mid-drain are picked up by the same worker (coalescing).
+      def next_due_queued
+        now = Time.now.utc.iso8601
+        @db[:jobs]
+          .where(status: "queued", locked_by: nil)
+          .where { run_at <= now }
+          .order(:priority, :run_at)
+          .first
       end
 
       # Cleans up old completed jobs
