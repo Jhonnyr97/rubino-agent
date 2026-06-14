@@ -86,7 +86,7 @@ RSpec.describe Rubino::Interaction::Polishing do
     # continued, so the drain spun forever (observed 727k+ warnings). The fix
     # BREAKS the drain when the scan itself fails — no progress is possible —
     # logging a single polishing.drain_scan_failed event.
-    let(:handler_class) { Class.new { define_method(:perform) { |_payload| } } }
+    let(:handler_class) { Class.new { define_method(:perform) { |_payload| nil } } }
 
     it "breaks instead of busy-looping when the row scan keeps raising" do
       scan_calls = 0
