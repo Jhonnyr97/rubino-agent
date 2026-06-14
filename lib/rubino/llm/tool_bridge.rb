@@ -33,14 +33,15 @@ module Rubino
       CACHE_CONTROL_PROVIDER_PARAMS = { cache_control: { type: "ephemeral" } }.freeze
 
       def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil,
-                   cache_breakpoint: false)
+                   cache_breakpoint: false, budget_exhausted: nil)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
                   ui: ui || Rubino.ui,
                   event_bus: event_bus || Rubino.event_bus,
                   tool_executor: tool_executor,
                   call_id_provider: call_id_provider,
-                  cache_breakpoint: cache_breakpoint)
+                  cache_breakpoint: cache_breakpoint,
+                  budget_exhausted: budget_exhausted)
       end
 
       # Registers every Rubino tool (wrapped as a bridge) on a ruby_llm chat AND
@@ -50,10 +51,27 @@ module Rubino
       # right before each sequential, tool_concurrency=false dispatch) into a
       # holder the bridge reads back as call_id. Without this the streaming path
       # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
-      def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false)
+      def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false,
+                       budget_exhausted: nil, production: nil)
+        list = Array(tools)
+
+        # Security invariant (#355 defensive): approval + audit only fire when a
+        # ToolExecutor is wired — the nil fallback path calls the tool DIRECTLY,
+        # bypassing ApprovalPolicy#decide and record_audit. That fallback exists
+        # ONLY for unit/one-shot doubles. The production wiring (the adapter built
+        # by AdapterFactory) ALWAYS passes a tool_executor. Guard it so a future
+        # refactor can't silently install the unguarded bridge on a real run:
+        # when explicitly told this is a production install AND there are tools to
+        # install, a nil executor is a hard error rather than a silent
+        # approval/audit bypass. (No tools ⇒ nothing to guard, e.g. a probe.)
+        if production && tool_executor.nil? && !list.empty?
+          raise Rubino::Error,
+                "ToolBridge.install: refusing to install tools on a production path " \
+                "without a tool_executor — approval and audit would be bypassed."
+        end
+
         current_call_id = nil
         chat.before_tool_call { |tc| current_call_id = tc&.id } if chat.respond_to?(:before_tool_call)
-        list = Array(tools)
         # #311: cache the whole tool block by putting a single cache_control
         # breakpoint on the LAST tool. Tools arrive in the registry's
         # deterministic insertion order (register_defaults!), so "last" is
@@ -63,7 +81,8 @@ module Rubino
           chat.with_tool(self.for(tool, ui: ui, event_bus: event_bus,
                                         tool_executor: tool_executor,
                                         call_id_provider: -> { current_call_id },
-                                        cache_breakpoint: cache_tools && idx == last_index))
+                                        cache_breakpoint: cache_tools && idx == last_index,
+                                        budget_exhausted: budget_exhausted))
         end
       end
 
@@ -77,13 +96,17 @@ module Rubino
           define_method(:name) { tool_name }
 
           define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:,
-                                          call_id_provider: nil, cache_breakpoint: false|
+                                          call_id_provider: nil, cache_breakpoint: false,
+                                          budget_exhausted: nil|
             @agent_tool       = agent_tool
             @ui               = ui
             @event_bus        = event_bus
             @tool_executor    = tool_executor
             @call_id_provider = call_id_provider
             @cache_breakpoint = cache_breakpoint
+            # 0-arity predicate the Loop wires so a tool dispatched mid-stream can
+            # be HALTED once the per-turn iteration/time budget is spent (#355a).
+            @budget_exhausted = budget_exhausted
           end
 
           define_method(:description) { @agent_tool.description }
@@ -101,6 +124,21 @@ module Rubino
           define_method(:execute) do |**kwargs|
             name = @agent_tool.name
             args = kwargs.transform_keys(&:to_s)
+
+            # Budget-exhausted graceful abort (#355a). ruby_llm runs the whole
+            # model↔tool loop inside one ask(); the Loop can't re-check its budget
+            # between the intermediate round-trips. So before running THIS tool,
+            # consult the per-turn predicate the Loop wired: when the iteration/
+            # time budget is spent, DON'T execute — return RubyLLM::Tool::Halt,
+            # which makes Chat#handle_tool_calls stop recursing (it sets
+            # halt_result and returns) after adding a valid trailing tool message
+            # (no orphaned tool_use). Control returns to the Loop, which runs its
+            # existing budget-exhausted summary. The Halt content is the same
+            # MAX_ITERATIONS nudge the non-streaming path uses, so the model is
+            # told why it was cut off if the Loop chooses to surface it.
+            if @budget_exhausted&.call
+              return ::RubyLLM::Tool::Halt.new(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+            end
 
             if @tool_executor
               # Full pipeline: approval check → tool.call → truncation → audit record.

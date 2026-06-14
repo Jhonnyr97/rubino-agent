@@ -115,6 +115,15 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
+        # Round-trips ruby_llm ran INSIDE a single streaming ask() this turn
+        # (#355a). ruby_llm drives the whole model↔tool loop within one
+        # chat.ask, so the outer `iteration` counter above stays at 1 for the
+        # entire streaming turn and never re-consults the budget between the
+        # intermediate round-trips. The adapter calls #note_stream_round_trip
+        # once per round-trip (via on_round_trip), and #stream_budget_exhausted?
+        # reads this count so ToolBridge can Halt the in-ask loop once the
+        # iteration/time budget is spent. Reset per turn.
+        @stream_round_trips = 0
         # Accumulates the content streamed to the screen this turn so that an
         # interrupt mid-stream can persist EXACTLY what the user saw, marked
         # interrupted (#338b). Reset per turn — a one-shot CancelToken plus a
@@ -181,6 +190,18 @@ module Rubino
                           has_tool_calls: response.has_tool_calls?)
 
           token_total += response.total_tokens.to_i
+
+          if response.halted?
+            # #355a: the streaming round-trip loop was cut short mid-flight
+            # because this turn's iteration/time budget was spent (ToolBridge
+            # returned Tool::Halt). ruby_llm already added a valid trailing tool
+            # message, so the history is well-formed. Hand off to the same
+            # budget-exhausted summary the outer-loop cap uses (one final toolless
+            # model call that wraps up). `iteration` is still 1 for a streaming
+            # turn, so pass the round-trip count as the iteration reached.
+            return summarize_on_budget_exhausted(messages, @stream_round_trips,
+                                                 turn_started_at, token_total)
+          end
 
           if response.interrupted?
             # The upstream stream was cut before a clean completion (no
@@ -462,7 +483,17 @@ module Rubino
           messages: messages,
           tools: tools,
           image_paths: image_paths,
-          stream: streaming?
+          stream: streaming?,
+          # Round-trip hooks (#355 #351). ruby_llm runs the WHOLE model↔tool loop
+          # inside one streaming ask(); these let the Loop observe and bound that
+          # inner loop. on_intermediate_message persists each intermediate
+          # assistant(tool_use) row so the streaming transcript matches the
+          # non-streaming one (#351); on_round_trip counts round-trips so the
+          # budget can be consulted mid-loop; budget_exhausted is the predicate
+          # ToolBridge consults to Halt once the budget is spent (#355a).
+          on_intermediate_message: method(:persist_intermediate_assistant),
+          on_round_trip: method(:note_stream_round_trip),
+          budget_exhausted: method(:stream_budget_exhausted?)
         )
 
         # Single boundary entry (normalize_response seam).
@@ -678,6 +709,75 @@ module Rubino
         # Persisting the partial must never mask the interrupt itself — log and
         # let the Interrupted propagate so the turn still unwinds cleanly.
         Rubino.logger.warn(event: "loop.interrupt.persist_failed", error: e.message)
+      end
+
+      # #351: persist an INTERMEDIATE assistant(tool_use) message that ruby_llm
+      # produced inside a single streaming ask(). On the non-streaming path the
+      # Loop writes this row itself (via #persist_assistant_message before
+      # #execute_tool_calls); on the streaming path ruby_llm runs the whole loop
+      # internally and the row was previously never written — so resume /
+      # repair_tool_pairs / compaction saw tool(result) rows with no matching
+      # assistant(tool_use), and strict providers 400'd on the next turn. The
+      # adapter hands us the normalized message ({content:, tool_calls:,
+      # input_tokens:, output_tokens:}); we write the SAME shape the
+      # non-streaming path does (tool_calls + input_tokens in metadata).
+      #
+      # IDEMPOTENCY: the adapter only calls this for assistant messages that carry
+      # tool_calls — never the final text turn (which the Loop's own text path
+      # persists). Tokens are NOT folded into token_total here: the streaming
+      # build_response already SUMS every round-trip's usage into the single
+      # response whose total_tokens the loop adds once (#355b), so counting them
+      # again here would double-bill.
+      def persist_intermediate_assistant(msg)
+        # Orphan-avoidance (#355a + #351): on_round_trip fired just before this,
+        # so if the budget is now exhausted EVERY tool of this round-trip will be
+        # Halted by ToolBridge — no tool(result) row will be persisted for them.
+        # Persisting the assistant(tool_use) row anyway would leave an orphaned
+        # tool_use that repair_tool_pairs would later have to strip. The whole
+        # round-trip is voided by the Halt, so skip persisting it; the turn ends
+        # with the budget-exhausted summary instead. Completed round-trips (budget
+        # still available) persist normally and their tool results land via the
+        # ToolExecutor on_result sink.
+        return if stream_budget_exhausted?
+
+        tool_calls = msg[:tool_calls] || []
+        metadata = tool_calls.empty? ? {} : { tool_calls: tool_calls }
+        input_tokens = msg[:input_tokens].to_i
+        metadata[:input_tokens] = input_tokens if input_tokens.positive?
+
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: msg[:content],
+            token_count: msg[:output_tokens],
+            metadata: metadata
+          )
+        end
+      rescue StandardError => e
+        # A persistence hiccup on an intermediate row must never abort the live
+        # tool loop the model is mid-way through — log and carry on.
+        Rubino.logger&.warn(event: "loop.intermediate.persist_failed", error: e.message)
+      end
+
+      # #355a: counts one round-trip ruby_llm ran inside the streaming ask().
+      # Fired by the adapter (on_round_trip) on each assistant(tool_use) message.
+      def note_stream_round_trip
+        @stream_round_trips += 1
+      end
+
+      # #355a: the predicate ToolBridge consults BEFORE each mid-stream tool
+      # dispatch. True once the per-turn iteration/time budget can no longer
+      # accommodate the round-trips ruby_llm has already produced — at which
+      # point the bridge returns Tool::Halt to stop the in-ask loop gracefully
+      # (current batch + at most one more model call) and hand control back here
+      # for the existing budget-exhausted summary. Counting the round-trips as
+      # iterations maps the in-ask loop onto the same budget the non-streaming
+      # path consumes one iteration at a time.
+      def stream_budget_exhausted?
+        return false if @stream_round_trips.zero?
+
+        !@budget.can_continue?(@stream_round_trips)
       end
 
       def persist_assistant_message(response)

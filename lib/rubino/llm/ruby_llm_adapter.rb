@@ -80,15 +80,20 @@ module Rubino
       # are forwarded to ruby_llm's `with:` slot so the primary model ingests
       # the bytes natively (no `vision` tool round-trip). Only meaningful on
       # the first model call of a turn — Loop strips it for follow-ups.
-      def chat(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil)
+      def chat(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil,
+               on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil)
         if bedrock_bearer_mode?
           bedrock_bearer_client.chat(messages: messages, tools: tools)
         else
-          chat_instance = build_chat(tools: tools, response_format: response_format)
+          chat_instance = build_chat(tools: tools, response_format: response_format,
+                                     budget_exhausted: budget_exhausted)
           load_history(chat_instance, messages)
           apply_prefill(chat_instance, prefill)
+          usage = wire_round_trip_callbacks(chat_instance,
+                                            on_intermediate_message: on_intermediate_message,
+                                            on_round_trip: on_round_trip)
           response = chat_instance.ask(last_user_content(messages), with: presence(image_paths))
-          build_response(response)
+          build_response(response, usage: usage)
         end
       end
 
@@ -96,7 +101,8 @@ module Rubino
       # sentinels are routed to the :thinking channel. Buffered partial content
       # is preserved across mid-stream parse errors so downstream code can show
       # whatever the model produced before the failure.
-      def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil, &)
+      def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil,
+                 on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil, &)
         if bedrock_bearer_mode?
           # BedrockBearerClient#stream buffers the whole /converse response before
           # its first emit, so a transport error can only fire pre-first-chunk —
@@ -116,7 +122,9 @@ module Rubino
         # streaming-specific safety) stays here; the actual retrying is the
         # runner's job.
         stream_once(messages: messages, tools: tools, response_format: response_format,
-                    image_paths: image_paths, prefill: prefill, &)
+                    image_paths: image_paths, prefill: prefill,
+                    on_intermediate_message: on_intermediate_message,
+                    on_round_trip: on_round_trip, budget_exhausted: budget_exhausted, &)
       end
 
       # Returns model information (context window, etc.)
@@ -139,12 +147,21 @@ module Rubino
       # The raw #call dispatch (streaming vs non-streaming), shared by the
       # normal path and the one-shot thinking-budget retry (#75).
       def dispatch(request, &)
+        # Per-turn round-trip hooks (#355 #351) ride on the Request; pass them so
+        # the streaming/non-streaming transports can wire the ruby_llm callbacks
+        # (intermediate-message persistence, round-trip counting) and ToolBridge
+        # can consult the budget-exhausted predicate for graceful Halt.
+        hooks = {
+          on_intermediate_message: request.on_intermediate_message,
+          on_round_trip: request.on_round_trip,
+          budget_exhausted: request.budget_exhausted
+        }
         if request.stream?
           stream(messages: request.messages, tools: request.tools,
-                 image_paths: request.image_paths, prefill: request.prefill, &)
+                 image_paths: request.image_paths, prefill: request.prefill, **hooks, &)
         else
           chat(messages: request.messages, tools: request.tools,
-               image_paths: request.image_paths, prefill: request.prefill)
+               image_paths: request.image_paths, prefill: request.prefill, **hooks)
         end
       end
 
@@ -160,10 +177,22 @@ module Rubino
       # One streaming attempt. See #stream for the retry / no-double-output
       # contract. Inline <think>…</think> sentinels are routed to :thinking;
       # buffered content is preserved across mid-stream parse/transport errors.
-      def stream_once(messages:, tools:, response_format:, image_paths:, prefill: nil, &block)
-        chat_instance = build_chat(tools: tools, response_format: response_format)
+      def stream_once(messages:, tools:, response_format:, image_paths:, prefill: nil,
+                      on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil, &block)
+        chat_instance = build_chat(tools: tools, response_format: response_format,
+                                   budget_exhausted: budget_exhausted)
         load_history(chat_instance, messages)
         apply_prefill(chat_instance, prefill)
+
+        # Round-trip accounting (#355 #351): registered ADDITIVELY so it does not
+        # disturb the block-id wiring below (ruby_llm appends callbacks, never
+        # replaces). Persists intermediate assistant(tool_use) messages, counts
+        # round-trips for the budget, and sums per-message usage across the whole
+        # in-ask tool loop. Sums are read back into build_response so token_total
+        # reflects EVERY round-trip's spend, not just the final message.
+        usage = wire_round_trip_callbacks(chat_instance,
+                                          on_intermediate_message: on_intermediate_message,
+                                          on_round_trip: on_round_trip)
 
         think_filter  = InlineThinkFilter.new
         buffered      = +""
@@ -304,7 +333,77 @@ module Rubino
         # Guard flush in the same way as the per-chunk emit so a final UI error
         # doesn't lose the response. (issue #21)
         flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        build_response(response, buffered)
+        build_response(response, buffered, usage: usage)
+      end
+
+      # Wires the per-round-trip ruby_llm callbacks (#355 #351) and returns a
+      # mutable usage accumulator { input:, output: } the caller folds into
+      # build_response. ruby_llm fires after_message once per message it appends
+      # inside a single ask — the streamed/non-streamed assistant turns AND the
+      # synthetic tool result messages (Chat#complete L181, #handle_tool_calls
+      # L286). We:
+      #   * sum input/output tokens for EVERY assistant message so the response
+      #     reports the WHOLE turn's spend, not just the last message (#355b);
+      #   * for an INTERMEDIATE assistant message that carries tool_calls (i.e.
+      #     not the final text turn), hand the Loop a normalized hash so it
+      #     persists the same assistant(tool_use) row the non-streaming path
+      #     writes (#351), and bump the round-trip counter so the Loop can bound
+      #     the in-ask loop against its iteration/time budget (#355a).
+      #
+      # IDEMPOTENCY: the final assistant TEXT message has no tool_calls, so it is
+      # never sent to on_intermediate_message — the Loop keeps sole ownership of
+      # persisting the final turn. Tool result messages (role :tool) are skipped
+      # entirely. Registered additively, so the existing before/after_message
+      # block-id wiring is untouched.
+      def wire_round_trip_callbacks(chat_instance, on_intermediate_message:, on_round_trip:)
+        usage = { input: 0, output: 0 }
+        return usage unless chat_instance.respond_to?(:after_message)
+
+        chat_instance.after_message do |msg|
+          next unless msg&.respond_to?(:role) && msg.role == :assistant
+
+          usage[:input]  += msg.input_tokens.to_i  if msg.respond_to?(:input_tokens)
+          usage[:output] += msg.output_tokens.to_i if msg.respond_to?(:output_tokens)
+
+          next unless intermediate_tool_message?(msg)
+
+          on_round_trip&.call
+          on_intermediate_message&.call(normalize_intermediate(msg))
+        end
+        usage
+      end
+
+      # True when +msg+ is an intermediate assistant turn that requested tools
+      # (so it must be persisted as an assistant(tool_use) row). The final text
+      # turn carries no tool_calls and is excluded — the Loop persists it.
+      def intermediate_tool_message?(msg)
+        return false unless msg.respond_to?(:tool_call?)
+
+        msg.tool_call?
+      rescue StandardError
+        false
+      end
+
+      # Normalizes a ruby_llm assistant(tool_use) Message into the plain hash the
+      # Loop persists (mirrors AdapterResponse's tool_calls shape, so
+      # persist_assistant_message stores the same metadata the non-streaming path
+      # does — id/name/arguments + per-message usage).
+      def normalize_intermediate(msg)
+        {
+          content: msg.respond_to?(:content) ? msg.content : nil,
+          tool_calls: normalize_message_tool_calls(msg),
+          input_tokens: msg.respond_to?(:input_tokens) ? msg.input_tokens.to_i : 0,
+          output_tokens: msg.respond_to?(:output_tokens) ? msg.output_tokens.to_i : 0
+        }
+      end
+
+      def normalize_message_tool_calls(msg)
+        return [] unless msg.respond_to?(:tool_calls) && msg.tool_calls
+
+        Array(msg.tool_calls).map do |tc|
+          call = tc.is_a?(Array) ? tc.last : tc
+          { id: call.id, name: call.name, arguments: call.arguments }
+        end
       end
 
       # Flushes the think-filter, swallowing UI/flush errors so a late failure
@@ -440,7 +539,7 @@ module Rubino
         ProviderResolver.resolve(@model_id, explicit_provider: @config.model_provider)
       end
 
-      def build_chat(tools: nil, response_format: nil)
+      def build_chat(tools: nil, response_format: nil, budget_exhausted: nil)
         options = { model: @model_id }
         options[:response_format] = response_format if response_format
 
@@ -481,7 +580,9 @@ module Rubino
         # emit it where it is honored (and where the system breakpoint also fires).
         ToolBridge.install(chat, tools, ui: @ui, event_bus: @event_bus,
                                         tool_executor: @tool_executor,
-                                        cache_tools: tool_cache_breakpoint?)
+                                        cache_tools: tool_cache_breakpoint?,
+                                        budget_exhausted: budget_exhausted,
+                                        production: true)
         chat
       end
 
@@ -802,14 +903,44 @@ module Rubino
       # be dropped from the headless output and the persisted transcript (#261).
       # Prefer the buffer when present; it's already been streamed to the live
       # UI chunk-by-chunk, so using it here re-persists, never re-renders.
-      def build_response(response, buffered = nil)
+      #
+      # +usage+, when present (the round-trip accumulator from
+      # wire_round_trip_callbacks), reports the SUMMED input/output tokens across
+      # EVERY assistant message of the turn — so a multi-round-trip streaming turn
+      # bills its true spend, not just the final message (#355b). Falls back to
+      # the final response's own usage when no accumulator was wired (the
+      # accumulator is only zero when ruby_llm surfaced no per-message usage, in
+      # which case the final-message usage is the best we have).
+      def build_response(response, buffered = nil, usage: nil)
         return nil unless response
+
+        # Budget Halt (#355a): when ToolBridge returned RubyLLM::Tool::Halt to
+        # stop the in-ask loop, ruby_llm's handle_tool_calls returns the Halt
+        # itself (not a Message). It exposes no usage/tool_calls, so build a
+        # response from the buffered streamed text (the preamble the user already
+        # saw) with NO tool calls and the summed usage — the Loop then runs its
+        # budget-exhausted summary. content_for_halt prefers the buffer; the Halt
+        # content is the internal nudge, not user-facing answer text.
+        if response.is_a?(::RubyLLM::Tool::Halt)
+          summed_in, summed_out = usage ? [usage[:input].to_i, usage[:output].to_i] : [0, 0]
+          return AdapterResponse.new(
+            content: buffered.to_s,
+            tool_calls: [],
+            input_tokens: summed_in,
+            output_tokens: summed_out,
+            model_id: @model_id,
+            halted: true,
+            raw: response
+          )
+        end
+
+        input_tokens, output_tokens = summed_usage(response, usage)
 
         AdapterResponse.new(
           content: buffered && !buffered.empty? ? buffered : response.content,
           tool_calls: extract_tool_calls(response),
-          input_tokens: response.input_tokens,
-          output_tokens: response.output_tokens,
+          input_tokens: input_tokens,
+          output_tokens: output_tokens,
           model_id: @model_id,
           stop_reason: extract_stop_reason(response),
           thinking: extract_thinking(response),
@@ -817,6 +948,21 @@ module Rubino
           cache_creation_tokens: cache_token(response, :cache_creation_tokens),
           raw: response
         )
+      end
+
+      # Resolves the [input, output] token pair build_response reports. Prefers
+      # the per-round-trip accumulator (the WHOLE turn's spend, #355b); falls back
+      # to the final response's own usage when the accumulator saw no per-message
+      # usage (a provider/path that doesn't surface it) so single-call turns are
+      # unchanged.
+      def summed_usage(response, usage)
+        return [response.input_tokens, response.output_tokens] if usage.nil?
+
+        summed_in  = usage[:input].to_i
+        summed_out = usage[:output].to_i
+        return [response.input_tokens, response.output_tokens] if summed_in.zero? && summed_out.zero?
+
+        [summed_in, summed_out]
       end
 
       # Prompt-cache counter (#311) RubyLLM surfaces on the response message
