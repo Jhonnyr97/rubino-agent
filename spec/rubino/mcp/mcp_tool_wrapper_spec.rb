@@ -9,6 +9,15 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
     expect(wrapper.name).to eq("filesystem_read_file")
   end
 
+  # S1-MCP-2 — a hostile/buggy MCP server can advertise an absurdly long tool
+  # name; uncapped it breaks the `tools` table and 400s the provider.
+  it "caps an over-long advertised tool name" do
+    huge = described_class.new(double("mcp_tool", name: "x" * 20_000, description: "d"),
+                               server_name: "h")
+    expect(huge.name.length).to eq(described_class::MAX_NAME_LENGTH)
+    expect(huge.name).to start_with("h_xxx")
+  end
+
   it "delegates the description to the wrapped MCP tool" do
     expect(wrapper.description).to eq("Reads a file")
   end
@@ -42,6 +51,21 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
 
     it "falls back to an empty object schema otherwise" do
       expect(wrapper.input_schema).to eq(type: "object", properties: {})
+    end
+
+    # S1-MCP-1 — a server advertising a truthy non-Hash inputSchema (e.g. a
+    # string) would otherwise be forwarded verbatim into the wire `parameters:`,
+    # poisoning the whole tool list → provider 400s every subsequent call.
+    it "coerces a non-Hash params_schema to an empty object schema" do
+      allow(mcp_tool).to receive(:params_schema).and_return("this is not a schema")
+
+      expect(wrapper.input_schema).to eq(type: "object", properties: {})
+    end
+
+    it "coerces a non-Hash params_schema in to_tool_definition too" do
+      allow(mcp_tool).to receive(:params_schema).and_return("this is not a schema")
+
+      expect(wrapper.to_tool_definition[:parameters]).to eq(type: "object", properties: {})
     end
   end
 
