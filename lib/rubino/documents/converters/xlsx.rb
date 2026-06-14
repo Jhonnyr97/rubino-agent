@@ -33,9 +33,12 @@ module Rubino
         def convert(path, budget = Limits.null_budget)
           require "roo"
           # PRE-OPEN guard: a 400k-row xlsx expands its sheet XML far past the
-          # on-disk cap. Sum the uncompressed worksheet/sharedStrings sizes from
-          # the central directory and bail before roo inflates them.
-          Limits.guard_zip!(path, budget, ["xl/worksheets/*.xml", "xl/sharedStrings.xml"])
+          # on-disk cap. Sum the uncompressed sizes of EVERY entry under xl/
+          # (worksheets, sharedStrings, and any nested/non-standard part a bomb
+          # could hide behind a .rels Target) from the central directory and bail
+          # before roo inflates them. `xl/**` matches across `/` (guard_zip!
+          # globs without FNM_PATHNAME) so a deep bomb is summed too (#337).
+          Limits.guard_zip!(path, budget, ["xl/**"])
           book = Roo::Spreadsheet.open(path)
           parts = book.sheets.map { |name| sheet_markdown(book, name, budget) }.compact
           parts.join("\n\n")

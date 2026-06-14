@@ -38,9 +38,11 @@ module Rubino
           # PRE-OPEN guard: Docx::Document.open reads the whole (decompressed)
           # word/document*.xml and builds the full Nokogiri DOM before yielding a
           # paragraph, so a zip-expand bomb's RSS is paid at open(). Sum the
-          # uncompressed entry sizes from the central directory first and bail to
-          # the shell-hint before the gem inflates anything.
-          Limits.guard_zip!(path, budget, ["word/document*.xml"])
+          # uncompressed sizes of every entry under word/ from the central
+          # directory first and bail to the shell-hint before the gem inflates
+          # anything. `word/**` matches across `/` (guard_zip! globs without
+          # FNM_PATHNAME) so a nested bomb is summed too (#337).
+          Limits.guard_zip!(path, budget, ["word/**"])
           doc = ::Docx::Document.open(path)
           blocks = []
           # Iterate document order when the gem exposes it; otherwise paragraphs
