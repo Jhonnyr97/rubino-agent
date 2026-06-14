@@ -406,8 +406,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "bare-chat resume + teardown (#99/#100)" do
     let(:repo) { Rubino::Session::Repository.new(db: db.db) }
 
-    let(:resumed_session) { { id: "deadbeefcafef00d", title: "add modulo op", status: "active" } }
-    let(:new_session)     { { id: "00000000fresh000", title: nil, status: "active" } }
+    let(:resumed_session) do
+      { id: "deadbeefcafef00d", title: "add modulo op", status: "active",
+        message_count: 7, cwd: Dir.pwd }
+    end
+    let(:new_session) { { id: "00000000fresh000", title: nil, status: "active" } }
 
     before do
       allow(Rubino::Session::Repository).to receive(:new).and_return(repo)
@@ -439,9 +442,12 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       described_class.new({}).execute
 
-      line = null_ui.messages.find { |m| m[:message].to_s.include?("resuming") }
+      line = null_ui.messages.find { |m| m[:message].to_s.include?("resumed session") }
       expect(line).not_to be_nil
-      expect(line[:message]).to include("/new for a fresh session")
+      # OBVIOUS banner (F2): short id + message count + cwd + how to start fresh.
+      expect(line[:message]).to include("deadbeef")
+      expect(line[:message]).to include("7 msgs")
+      expect(line[:message]).to include("/new for fresh")
     end
 
     it "starts a fresh session (and welcomes) on a true first run" do

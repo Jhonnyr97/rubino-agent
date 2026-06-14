@@ -158,8 +158,8 @@ module Rubino
         @messages << { level: :tool_body, message: text, kind: kind }
       end
 
-      def tool_chunk(name, chunk)
-        @messages << { level: :tool_chunk, name: name, chunk: chunk }
+      def tool_chunk(name, chunk, kind: :plain)
+        @messages << { level: :tool_chunk, name: name, chunk: chunk, kind: kind }
       end
 
       def compression_started(at: nil)

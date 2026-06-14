@@ -126,7 +126,9 @@ RSpec.describe Rubino::UI::CLI do
         thread = ui.instance_variable_get(:@thinking_thread)
         expect(thread).to be_a(Thread)
         sleep 0.15
-        expect($stdout.string).to include("thinking · 0")
+        # A turn OPENS in the distinct "waiting for model…" state (F5), before
+        # the first byte arrives; it flips to "thinking" once activity starts.
+        expect($stdout.string).to include("waiting for model… · 0")
 
         ui.tool_started("shell", arguments: { command: "npm test" })
         # Label swap, not thread churn: the SAME engine thread keeps ticking.

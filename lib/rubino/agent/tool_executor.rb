@@ -143,7 +143,11 @@ module Rubino
         if tool.respond_to?(:stream_chunk=) && (@ui.respond_to?(:tool_chunk) || @event_bus)
           tool.stream_chunk = lambda do |chunk|
             streamed = true
-            @ui.tool_chunk(name, chunk) if @ui.respond_to?(:tool_chunk)
+            # Read stream_kind LAZILY: the tool only knows its output kind
+            # (e.g. :diff for `git diff`) once #call has inspected the command,
+            # which happens AFTER this lambda is installed.
+            kind = tool.respond_to?(:stream_kind) ? (tool.stream_kind || :plain) : :plain
+            @ui.tool_chunk(name, chunk, kind: kind) if @ui.respond_to?(:tool_chunk)
             # Mirror the chunk onto the bus so the API/SSE stream isn't silent
             # during a long tool call: the Recorder maps TOOL_PROGRESS to a
             # `tool.progress` event, which resets the idle watchdog. Without

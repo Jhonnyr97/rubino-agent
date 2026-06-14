@@ -1027,6 +1027,25 @@ RSpec.describe Rubino::UI::CLI do
       expect(notifier).not_to have_received(:turn_finished)
     end
 
+    # F5: the opening of a turn is a multi-second model round-trip with nothing
+    # happening locally. The first status must read "waiting for model…", not
+    # "thinking", so the gap doesn't look frozen — then flip to "thinking" the
+    # moment the first reasoning/content delta or tool arrives.
+    it "opens a turn in a distinct 'waiting for model' state, then thinking" do
+      # Force a painter so status_show is not a no-op off the TTY.
+      allow(ui).to receive(:thinking_painter).and_return(->(_f) {})
+      opening = after = nil
+      capture_stdout do
+        ui.turn_started
+        opening = ui.instance_variable_get(:@status)&.dup
+        ui.stream(type: :thinking, text: "let me look")
+        after = ui.instance_variable_get(:@status)&.dup
+        ui.turn_finished
+      end
+      expect(opening[:label]).to eq("waiting for model…")
+      expect(after[:label]).to eq("thinking")
+    end
+
     it "rings needs_approval when the approval card parks the run on the human" do
       allow(ui).to receive(:approval_choice).and_return(:no)
       capture_stdout do
@@ -1335,6 +1354,35 @@ RSpec.describe Rubino::UI::CLI do
       expect(marker).to be < close
     end
 
+    # G3: "show me the diff" — a diff is the answer, so render the FULL hunks
+    # (no 3-line collapse) and color them. Applies to BOTH the streamed shell
+    # path (git diff) and a non-streamed :diff body.
+    it "shows a streamed diff IN FULL, colored, with no collapse marker (G3)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      diff = "diff --git a/x b/x\n@@ -1,4 +1,4 @@\n ctx\n-old\n+new\n more\n"
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "git diff" })
+        diff.each_line { |l| ui.tool_chunk("shell", l, kind: :diff) }
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("old")
+      expect(out).to include("new")
+      expect(out).not_to include("full output → context")
+      expect(out).to match(/\e\[31m.*-old/)  # removed line red
+      expect(out).to match(/\e\[32m.*\+new/) # added line green
+    end
+
+    it "shows a :diff #tool_body IN FULL with no collapse marker (G3)" do
+      diff = (1..10).map { |i| "+added #{i}" }.join("\n")
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "git show" })
+        ui.tool_body(diff, kind: :diff)
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("added 10") # last hunk line not amputated
+      expect(out).not_to include("full output → context")
+    end
+
     it "keeps a short body intact, with no marker" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: nil)
@@ -1480,11 +1528,28 @@ RSpec.describe Rubino::UI::CLI do
     # plain "Approve once" now prints a one-time tip naming it.
     it "tips the session-scope option once after the first 'Approve once' (#110)" do
       stub_choice(:once)
+      first = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      expect(first).to include(%(tip: choose "Approve — all edits (this session)"))
+      expect(first).to include("approve all edits for the rest of this session")
+    end
+
+    # F4: a SECOND same-tool "Approve once" in one turn is the bulk-refactor
+    # signature — re-arm the nudge (louder "bulk edit detected" lead) so a batch
+    # already underway is told it can wave the rest through.
+    it "re-arms a louder nudge once a bulk edit batch is detected (F4)" do
+      stub_choice(:once)
+      ui.turn_started
       first  = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
       second = capture_stdout { ui.confirm("Allow edit?", scope: "edit:b", tool: "edit") }
-      expect(first).to include(%(tip: choose "Approve — this tool (this session)"))
-      expect(first).to include("for edit this session")
-      expect(second).not_to include("tip:")
+      third  = capture_stdout { ui.confirm("Allow edit?", scope: "edit:c", tool: "edit") }
+      expect(first).to include("tip:")
+      expect(second).to include("bulk edit detected")
+      expect(second).to include(%(Approve — all edits (this session)))
+      # The batch nudge fires only ONCE, not on every subsequent edit.
+      expect(third).not_to include("tip:")
+      expect(third).not_to include("bulk edit detected")
+    ensure
+      ui.turn_finished
     end
 
     it "prints no session-scope tip on a deny (#110)" do

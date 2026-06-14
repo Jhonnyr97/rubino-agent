@@ -24,6 +24,14 @@ module Rubino
       # tool with no streamable output (read, edit, glob) just ignores it.
       attr_accessor :stream_chunk
 
+      # Optional render hint the ToolExecutor forwards to the UI alongside each
+      # streamed chunk (and the end-of-call body). :diff makes the CLI colorize
+      # +/-/@@ lines AND show the full hunks instead of collapsing to the 3-line
+      # preview — so "show me the diff" surfaces the real diff, not a snippet.
+      # Default nil ⇒ :plain. Set it from #call once the command/content kind is
+      # known; the streaming lambda reads it live.
+      attr_accessor :stream_kind
+
       # Convenience guard so tools don't sprinkle nil-checks at every emit.
       def emit_chunk(text)
         return if text.nil? || text.to_s.empty?
