@@ -108,11 +108,11 @@ module Rubino
           # Add your API keys here. Do NOT commit this file.
           # `rubino setup` (on a terminal) can fill one in for you.
 
-          # MiniMax (recommended default — Anthropic-compatible)
-          # MINIMAX_API_KEY=...
-
-          # OpenAI
+          # OpenAI (recommended default — matches the seeded model openai/gpt-4.1)
           # OPENAI_API_KEY=sk-...
+
+          # MiniMax (Anthropic-compatible)
+          # MINIMAX_API_KEY=...
 
           # Anthropic
           # ANTHROPIC_API_KEY=sk-ant-...

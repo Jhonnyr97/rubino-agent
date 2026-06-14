@@ -169,7 +169,11 @@ module Rubino
         last_shown  = offset - 1
         byte_capped = false
 
-        File.open(expanded, "r") do |io|
+        # Open as UTF-8 regardless of the process locale (#273): under a bare
+        # C/POSIX locale the default external encoding is US-ASCII, which would
+        # tag every line ASCII and force the scrub below to mangle perfectly
+        # valid UTF-8 file content. Pinning UTF-8 reads it correctly.
+        File.open(expanded, "r:UTF-8") do |io|
           io.each_line do |line|
             total_lines += 1
             next if total_lines < offset

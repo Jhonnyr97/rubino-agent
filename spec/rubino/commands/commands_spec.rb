@@ -280,6 +280,25 @@ RSpec.describe Rubino::Commands::Command do
       result = cmd.render("")
       expect(result).to include("file not found")
     end
+
+    # Regression #273: under a bare C/POSIX locale the default external encoding
+    # is US-ASCII, so a plain File.read tagged the @-file content ASCII and
+    # gsub!-ing it into the UTF-8 prompt raised Encoding::CompatibilityError on
+    # the first non-ASCII byte. The file is now read as UTF-8 explicitly,
+    # independent of the locale, so a UTF-8 prompt file reads successfully.
+    it "reads a UTF-8 @file under a simulated ASCII external encoding (#273)" do
+      file_path = File.join(tmp_dir, "ctx.txt")
+      File.write(file_path, "café — über naïve ✓", encoding: "UTF-8")
+      cmd = write_command("cmd.md", "---\nname: cmd\n---\nContext: @#{file_path}")
+
+      # Simulate LANG=C/POSIX: a locale-default read would come back US-ASCII.
+      allow(Encoding).to receive(:default_external).and_return(Encoding::US_ASCII)
+
+      result = nil
+      expect { result = cmd.render("") }.not_to raise_error
+      expect(result).to include("café — über naïve ✓")
+      expect(result.encoding).to eq(Encoding::UTF_8)
+    end
   end
 end
 

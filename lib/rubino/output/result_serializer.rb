@@ -94,6 +94,36 @@ module Rubino
         }
       end
 
+      # A self-contained error result for a failure that happens BEFORE any run
+      # exists (#327): a bad CLI argument (empty prompt, invalid --output-format)
+      # in a json/stream-json mode. There is no recorder/session/usage yet, so
+      # this builds the same {type:"result", is_error:true, …} shape with zeroed
+      # usage and a nil session, so automation parsing `--output-format json`
+      # gets a JSON error envelope on stdout instead of a bare plain-text line.
+      def arg_error(message:, subtype: "error_invalid_argument", model: nil)
+        {
+          type: "result",
+          subtype: subtype,
+          is_error: true,
+          result: "",
+          session_id: nil,
+          exit_reason: subtype,
+          num_turns: 0,
+          duration_ms: 0,
+          usage: zero_usage,
+          total_cost_usd: 0.0,
+          model: model,
+          error: { type: "argument_error", message: message.to_s }
+        }
+      end
+
+      def zero_usage
+        {
+          input_tokens: 0, output_tokens: 0,
+          cache_creation_input_tokens: 0, cache_read_input_tokens: 0
+        }
+      end
+
       def usage(recorder)
         {
           input_tokens: recorder.input_tokens,

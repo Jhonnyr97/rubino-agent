@@ -68,10 +68,7 @@ module Rubino
         # front with a clear stderr message + non-zero exit, BEFORE any setup,
         # model-config check, or runner is built. A nil query (bare `chat`)
         # is the interactive path and is left untouched.
-        if query && query.strip.empty?
-          warn "rubino: no prompt provided"
-          exit(1)
-        end
+        fail_arg!("no prompt provided") if query && query.strip.empty?
 
         ensure_setup!
         ensure_model_configured!
@@ -135,8 +132,7 @@ module Rubino
 
         fmt = raw.tr("-", "_").to_sym
         unless OUTPUT_FORMATS.include?(fmt)
-          warn "rubino: invalid --output-format '#{raw}' (expected: text, json, stream-json)"
-          exit(2)
+          fail_arg!("invalid --output-format '#{raw}' (expected: text, json, stream-json)", exit_code: 2)
         end
         fmt
       end
@@ -145,6 +141,33 @@ module Rubino
       # stdout and ALL diagnostics to stderr (markdown rendering suppressed).
       def json_mode?(fmt = output_format)
         fmt != :text
+      end
+
+      # Whether the user ASKED for a machine-readable mode, decided WITHOUT going
+      # through #output_format (which exits on an invalid value — and the invalid
+      # value itself is one of the arg errors we want to report as JSON). Used by
+      # #fail_arg! so a bad CLI argument under --output-format json|stream-json
+      # still emits a JSON error envelope on stdout, not a bare plain-text line.
+      def json_requested?
+        return true if opt(:json) == true
+
+        raw = (opt(:output_format) || opt(:"output-format")).to_s.strip.tr("-", "_")
+        %w[json stream_json].include?(raw)
+      end
+
+      # Surface a CLI ARGUMENT error (empty prompt, invalid --output-format)
+      # consistently with the chosen output mode (#327): under a json/stream-json
+      # request, emit a {type:"result", is_error:true, …} envelope on stdout so
+      # automation can parse the failure; otherwise the plain "rubino: <msg>" on
+      # stderr. Always non-zero exit. No run/model/recorder exists at this point,
+      # so the envelope carries zeroed usage and a nil session.
+      def fail_arg!(message, exit_code: 1)
+        if json_requested?
+          emit_json(Output::ResultSerializer.arg_error(message: message))
+        else
+          warn "rubino: #{message}"
+        end
+        exit(exit_code)
       end
 
       def run_oneshot(query)

@@ -26,6 +26,10 @@ module Rubino
         true
       end
 
+      # Drop Thor's inherited `tree` so its banner doesn't render the doubled
+      # "rubino rubino skills tree" (#327); the top-level `rubino tree` covers it.
+      remove_command :tree
+
       desc "list", "List skills with enabled/disabled markers"
       def list
         Rubino.ensure_database_ready!
