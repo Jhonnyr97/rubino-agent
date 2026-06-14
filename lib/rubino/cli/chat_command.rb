@@ -219,7 +219,8 @@ module Rubino
       # chunk checkpoint — exits cleanly with the conventional 130, NOT a raw
       # 60-line backtrace. The partial the model produced is already persisted by
       # the Loop (marked interrupted), so the run stays truthful & resumable.
-      rescue Rubino::Interrupted, Interrupt, SignalException
+      # Interrupt is listed for doc value though SignalException already covers it.
+      rescue Rubino::Interrupted, Interrupt, SignalException # rubocop:disable Lint/ShadowedException
         warn "rubino: interrupted"
         exit(130)
       rescue SystemExit
@@ -308,7 +309,8 @@ module Rubino
       # object on stdout (flagged interrupted) so automation never sees a raw
       # backtrace, then exits with the conventional 130. The Loop already
       # persisted the partial (marked interrupted), so the session is truthful.
-      rescue Rubino::Interrupted, Interrupt, SignalException
+      # Interrupt is listed for doc value though SignalException already covers it.
+      rescue Rubino::Interrupted, Interrupt, SignalException # rubocop:disable Lint/ShadowedException
         warn "rubino: interrupted"
         emit_json(Output::ResultSerializer.error_result(
                     recorder: recorder, session: runner&.session,
