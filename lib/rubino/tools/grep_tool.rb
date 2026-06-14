@@ -70,7 +70,7 @@ module Rubino
         before  = (ctx || arguments["before"] || arguments[:before] || 0).to_i.clamp(0, 50)
         after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
 
-        expanded_path = File.expand_path(path)
+        expanded_path = expand_workspace_path(path)
         # Searching outside the workspace is DENIED, not "path not found": a
         # typed error keeps the model from treating an out-of-sandbox tree as
         # absent (r5 MF-1).

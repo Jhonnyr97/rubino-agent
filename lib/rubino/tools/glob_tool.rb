@@ -48,10 +48,10 @@ module Rubino
           return denied
         end
 
-        expanded_path = File.expand_path(path)
-        return "Error: Directory not found: #{path}" unless File.directory?(expanded_path)
+        expanded_path = File.expand_path(path, workspace_root)
+        full_pattern  = resolve_pattern(pattern, path, expanded_path)
+        return full_pattern if full_pattern.is_a?(String) && full_pattern.start_with?("Error:")
 
-        full_pattern = File.join(expanded_path, pattern)
         files = Dir.glob(full_pattern)
                    .select { |f| File.file?(f) }
                    .sort_by { |f| -File.mtime(f).to_i }
@@ -71,20 +71,42 @@ module Rubino
 
       private
 
+      # Builds the pattern passed to Dir.glob.
+      #
+      # An ABSOLUTE pattern (e.g. `/work/shopkit/cart.py`) names the exact file
+      # already — glob it as-is. Joining it onto the base produced a doubled
+      # path (`File.join("/work", "/work/…")` → `/work/work/…`) that matched
+      # nothing, so `glob` of a file that plainly exists returned "No files
+      # matched" and the agent fell back to `ls` (r6 F1). A RELATIVE pattern is
+      # anchored at the workspace primary root (terminal.cwd || launch cwd), not
+      # Dir.pwd, so it agrees with read/edit (r6 F3). Returns an "Error:" string
+      # when the relative base directory doesn't exist.
+      def resolve_pattern(pattern, path, expanded_path)
+        return pattern.to_s if pattern.to_s.start_with?(File::SEPARATOR)
+        return "Error: Directory not found: #{path}" unless File.directory?(expanded_path)
+
+        File.join(expanded_path, pattern)
+      end
+
       # If the search base (or an absolute pattern) resolves outside the
       # workspace, DENY with a typed error rather than letting the glob return
       # "no files matched" — otherwise the model concludes the file is missing
       # and offers to create it over a real file it just can't see (r5
       # MF-1/MF-2). Returns the typed error Hash, or nil to proceed.
       def workspace_denial(pattern, path)
-        base = if pattern.to_s.start_with?(File::SEPARATOR)
-                 pattern.to_s
-               else
-                 File.join(path.to_s, pattern.to_s)
-               end
-        return outside_workspace_message(base) if outside_workspace?(File.expand_path(base))
+        if pattern.to_s.start_with?(File::SEPARATOR)
+          base = File.expand_path(pattern.to_s)
+          return outside_workspace_message(base) if outside_workspace?(base)
 
-        expanded_path = File.expand_path(path)
+          return nil
+        end
+
+        # Relative pattern/base: resolve against the workspace primary root, the
+        # same anchor the glob itself now uses, so the guard and the search agree
+        # on what "outside" means.
+        expanded_path = File.expand_path(path.to_s, workspace_root)
+        base = File.join(expanded_path, pattern.to_s)
+        return outside_workspace_message(base) if outside_workspace?(File.expand_path(base))
         return outside_workspace_message(path) if outside_workspace?(expanded_path)
 
         nil

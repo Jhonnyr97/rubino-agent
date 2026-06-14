@@ -51,7 +51,7 @@ module Rubino
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
-        expanded = File.expand_path(file_path)
+        expanded = expand_workspace_path(file_path)
         # An out-of-workspace path is DENIED, not "missing": report it as such
         # (typed error) so the model never concludes the file doesn't exist and
         # proposes creating/overwriting it (r5 MF-1). Checked before existence

@@ -48,7 +48,7 @@ module Rubino
       def call(arguments)
         file_path, old_string, new_string, replace_all = parse_args(arguments)
 
-        expanded = File.expand_path(file_path)
+        expanded = expand_workspace_path(file_path)
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
