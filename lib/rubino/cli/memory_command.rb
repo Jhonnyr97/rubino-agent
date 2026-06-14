@@ -52,19 +52,36 @@ module Rubino
 
       # ONE fact-details rendering for both surfaces (#184): the CLI verb
       # above and the in-chat `/memory show <id>` (Commands::Executor).
+      #
+      # Memory content (and, defensively, every other stored field) is
+      # attacker-influenceable — facts are EXTRACTED from conversation, so a
+      # raw `\e]0;…\a` / `\e[2J` in `content` would hijack the window title or
+      # clear the screen the moment `info` printed it (CWE-150, R4-N2). The
+      # `info`/`success` family does NOT sanitize (PrinterBase#puts_colored is
+      # the shared funnel and legitimately receives rubino's OWN pastel ANSI
+      # from other callers, e.g. the `/agents` watch view, so it can't strip
+      # escapes wholesale). We therefore neutralize the UNTRUSTED CONTENT here,
+      # before it is handed to the printer, into visible caret notation.
       def self.render(memory, ui:)
-        ui.info("ID: #{memory[:id]}")
-        ui.info("Kind: #{memory[:kind]}")
-        ui.info("Confidence: #{memory[:confidence]}")
-        ui.info("Created: #{memory[:created_at]}")
+        ui.info("ID: #{safe(memory[:id])}")
+        ui.info("Kind: #{safe(memory[:kind])}")
+        ui.info("Confidence: #{safe(memory[:confidence])}")
+        ui.info("Created: #{safe(memory[:created_at])}")
         # The temporal chain (#88): a soft-retired fact shows when it stopped
         # being true and which fact replaced it.
         if memory[:valid_to]
-          ui.info("Retired: #{memory[:valid_to]}")
-          ui.info("Superseded by: #{memory[:superseded_by]}") if memory[:superseded_by]
+          ui.info("Retired: #{safe(memory[:valid_to])}")
+          ui.info("Superseded by: #{safe(memory[:superseded_by])}") if memory[:superseded_by]
         end
         ui.separator
-        ui.info(memory[:content])
+        ui.info(safe(memory[:content]))
+      end
+
+      # Neutralize terminal-control bytes in untrusted stored text to visible
+      # caret/<XX> notation (CWE-150). Shared by every memory surface that
+      # prints a fact field through the non-sanitizing `info` funnel.
+      def self.safe(text)
+        Util::Output.sanitize_terminal(text)
       end
 
       desc "delete ID", "Delete a specific memory"

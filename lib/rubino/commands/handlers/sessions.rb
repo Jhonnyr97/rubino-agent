@@ -180,8 +180,15 @@ module Rubino
           :handled
         end
 
+        # A session title is auto-generated from the conversation, so it is
+        # attacker-influenceable: a raw `\e]0;…\a` / `\e[2J` in it would hijack
+        # the window title or clear the screen the moment it reached the
+        # `info`/`success`/picker funnels (none of which sanitize) — CWE-150,
+        # R4-N2. Neutralize to caret notation at this single title funnel, which
+        # every title-printing path (resume, picker label, Resuming success)
+        # flows through.
         def session_title(session)
-          title = session[:title].to_s.strip
+          title = Rubino::Util::Output.sanitize_terminal(session[:title].to_s).strip
           title.empty? ? "(untitled)" : title
         end
 
