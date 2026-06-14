@@ -97,6 +97,11 @@ module Rubino
         # corrective re-prompts so it can stop honestly at the cap.
         @action_guard       = ActionClaimGuard.new(exposed_tool_names: @turn_tools.map { |t| tool_name_of(t) })
         @reflection_count   = 0
+        # The user request driving this turn, captured from the OPENING transcript
+        # (before any guard reflection note is appended) — the guard consults it
+        # to skip challenging a NO-ACTION (plan/explain/"don't run tools") turn the
+        # user explicitly asked for (#353a).
+        @turn_user_request  = originating_user_request(messages)
 
         # If a previous turn rotated to a fallback, restore the primary backend
         # so this turn gets a fresh attempt with the preferred model
@@ -408,7 +413,8 @@ module Rubino
           tool_count: @tool_count,
           denied_count: @denied_count,
           noninteractive: @noninteractive_block,
-          terminal: terminal
+          terminal: terminal,
+          user_request: @turn_user_request
         )
         return nil if verdict.nil?
 
@@ -421,8 +427,8 @@ module Rubino
         # :reflect — re-prompt once, under the cap. The reflection is appended as
         # a USER message at the same safe ordering boundary the steering injection
         # uses (after the cancel check, no open tool_use pair).
+        note = @action_guard.reflection_message(payload, prior_reflections: @reflection_count)
         @reflection_count += 1
-        note = @action_guard.reflection_message(payload)
         # The fabricated text already streamed to the UI on the streaming path;
         # close that box so the corrective re-prompt's answer renders cleanly
         # beneath it (the kept partial stays visible, like an interrupt).
@@ -433,6 +439,12 @@ module Rubino
         messages << { role: "user", content: note }
         @ui.note("checking that claim — no tool call was issued") if @ui.respond_to?(:note)
         :reflected
+      end
+
+      # The last user message in the OPENING transcript (no guard notes appended
+      # yet at this point), as a plain string. Defensive "" when there is none.
+      def originating_user_request(messages)
+        (Array(messages).reverse.find { |msg| msg[:role].to_s == "user" } || {}).fetch(:content, "").to_s
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
