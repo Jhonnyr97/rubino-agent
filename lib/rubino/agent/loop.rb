@@ -408,7 +408,8 @@ module Rubino
           tool_count: @tool_count,
           denied_count: @denied_count,
           noninteractive: @noninteractive_block,
-          terminal: terminal
+          terminal: terminal,
+          user_request: latest_user_request(messages)
         )
         return nil if verdict.nil?
 
@@ -421,8 +422,8 @@ module Rubino
         # :reflect — re-prompt once, under the cap. The reflection is appended as
         # a USER message at the same safe ordering boundary the steering injection
         # uses (after the cancel check, no open tool_use pair).
+        note = @action_guard.reflection_message(payload, prior_reflections: @reflection_count)
         @reflection_count += 1
-        note = @action_guard.reflection_message(payload)
         # The fabricated text already streamed to the UI on the streaming path;
         # close that box so the corrective re-prompt's answer renders cleanly
         # beneath it (the kept partial stays visible, like an interrupt).
@@ -433,6 +434,32 @@ module Rubino
         messages << { role: "user", content: note }
         @ui.note("checking that claim — no tool call was issued") if @ui.respond_to?(:note)
         :reflected
+      end
+
+      # The latest GENUINE user request driving this turn — the one the guard
+      # consults to tell whether the user asked for a no-action (plan / explain /
+      # "don't run tools") turn (#353a). Scans `messages` backward for the last
+      # user message that is NOT one of the guard's own injected reflections
+      # (those are user-role too), so a guard note never reads as the user
+      # request. Returns "" when there is no user message yet (defensive).
+      def latest_user_request(messages)
+        Array(messages).reverse_each do |m|
+          next unless (m[:role] || m["role"]).to_s == "user"
+
+          content = (m[:content] || m["content"]).to_s
+          next if guard_reflection_note?(content)
+
+          return content
+        end
+        ""
+      end
+
+      # True when a user-role message is one of the guard's own injected
+      # corrective notes (so #latest_user_request skips it). Both the full and the
+      # decayed (#353b) phrasings carry the "no tool call" core.
+      def guard_reflection_note?(content)
+        /issued NO tool call/i.match?(content) ||
+          /\bStill no tool call\b/i.match?(content)
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,

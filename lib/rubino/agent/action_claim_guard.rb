@@ -48,10 +48,27 @@ module Rubino
     #   * A turn that ASKS the user something (ends on a question) is a legitimate
     #     clarify, not a fabricated completion — left alone.
     class ActionClaimGuard
-      # aider caps reflected_message at 3; the same ceiling here. After this many
-      # corrective turns we stop and surface the model's last text honestly
-      # rather than loop forever against a model that won't call the tool.
-      MAX_REFLECTIONS = 3
+      # Absolute ceiling on corrective turns. After this many the guard becomes
+      # BINDING (G1): it stops re-prompting and surfaces an honest deterministic
+      # message rather than loop forever against a model that won't call the tool.
+      #
+      # Lowered from 3 → 2: three accumulated identical "you lied, nothing
+      # happened" challenges drove the model into a confession spiral — it stopped
+      # acting and started confabulating false histories / pre-emptively
+      # apologising, and a legitimate steering change got stranded for 3 turns
+      # (#353b). A fresh atomic instruction recovered the model, so the injected
+      # text was the aggravator. We now bind after 2, and the SECOND injection
+      # DECAYS to a short, non-accusatory atomic instruction (see
+      # #reflection_message) instead of repeating the heavy challenge — so the
+      # reflections cannot compound into an inescapable loop.
+      MAX_REFLECTIONS = 2
+
+      # After this many consecutive corrective injections the wording DECAYS to a
+      # short, atomic, non-accusatory instruction (a single concrete tool call to
+      # make) instead of re-injecting the full "nothing happened" challenge — the
+      # repeated heavy framing is what compounds into the confession spiral
+      # (#353b). The first challenge still names the fabrication in full.
+      DECAY_AFTER_REFLECTIONS = 1
 
       # Verbs that imply a state-changing action the agent performs THROUGH a
       # tool. Each maps to the tool name(s) that would actually carry it out, so
@@ -301,6 +318,58 @@ module Rubino
         Regexp::IGNORECASE
       )
 
+      # The LATEST user message explicitly requested a NO-ACTION turn — a plan,
+      # a list, an explanation, a recall-from-memory answer, or it forbade tools
+      # outright ("do not implement yet", "without using any tools", "answer from
+      # memory"). On such a turn the model is SUPPOSED to produce prose and call
+      # no tool, so its "here's the plan; I'll add X next" is the requested
+      # deliverable, NOT a fabricated "done" — challenging it makes the model
+      # apologise for obeying. We detect a small set of no-action intents and skip
+      # the claim-challenge for that turn. Deliberately narrow: a plain task
+      # request ("add the docstring", "run the tests") matches NONE of these, so
+      # the anti-fabrication core still fires on real task turns.
+      #
+      #   * explicit tool prohibition  — "do not / don't run|use|call … tool(s)",
+      #                                  "without (using) (any) tools", "no tools".
+      #   * answer-from-memory / recall — "from memory", "from what you know/recall",
+      #                                  "don't look it up", "without reading".
+      #   * plan / don't-implement-yet  — "don't implement (yet)", "just (the)
+      #                                  plan", "outline/list the plan/steps",
+      #                                  "plan only", "before you implement".
+      #   * explain/describe-only ask   — "just explain|describe|tell me|summarize",
+      #                                  "explanation only", "no code".
+      # NOTE: no interspersed comments inside this concatenation — a `#` would
+      # break the `\` line-continuation (same gotcha as CD_INTENT above). The four
+      # intent groups are, in order: (1) explicit tool prohibition; (2)
+      # answer-from-memory / recall / don't-look-up; (3) plan / don't-implement-yet;
+      # (4) explain/describe-only ask.
+      NO_ACTION_REQUEST = Regexp.new(
+        "(?:" \
+        '\b(?:do\s+not|don\s?\'?t|dont|please\s+do\s+not|please\s+don\s?\'?t)\b' \
+        '[^.!?\n]{0,30}?\b(?:run|use|call|invoke|execute|touch|edit|write|' \
+        'implement|change|modify)\b' \
+        '|\bwithout\s+(?:using\s+|running\s+|calling\s+|invoking\s+)?' \
+        '(?:any\s+)?(?:tools?|tool\s+calls?|the\s+tools?)\b' \
+        '|\bno\s+tools?\b|\bdon\s?\'?t\s+(?:use|call|run)\s+(?:any\s+)?tools?\b' \
+        '|\b(?:from|out\s+of)\s+(?:your\s+)?memory\b' \
+        '|\bfrom\s+(?:what\s+you\s+(?:know|recall|remember))\b' \
+        '|\b(?:answer|recall|tell\s+me)\b[^.!?\n]{0,30}?\bfrom\s+memory\b' \
+        '|\bwithout\s+(?:reading|looking\s+(?:it\s+)?up|searching|checking)\b' \
+        '|\bdon\s?\'?t\s+(?:look\s+(?:it\s+)?up|read|search|check)\b' \
+        '|\b(?:do\s+not|don\s?\'?t|dont)\b[^.!?\n]{0,20}?\bimplement\b' \
+        '|\bimplement\b[^.!?\n]{0,10}?\b(?:nothing|yet)\b' \
+        '|\bbefore\s+(?:you\s+)?implement(?:ing)?\b' \
+        '|\b(?:just|only)\b[^.!?\n]{0,20}?\bthe\s+plan\b' \
+        '|\bplan\s+only\b|\bonly\s+(?:the\s+)?plan\b' \
+        '|\b(?:outline|list|describe|sketch|propose|give\s+me|show\s+me)\b' \
+        '[^.!?\n]{0,30}?\b(?:plan|steps|approach|strategy)\b' \
+        '|\b(?:just|only|simply)\b[^.!?\n]{0,15}?\b(?:explain|describe|tell\s+me|' \
+        'summarize|summarise|outline)\b' \
+        '|\b(?:explanation|description)\s+only\b|\bno\s+code\b' \
+        ")",
+        Regexp::IGNORECASE
+      )
+
       # The text plainly admits the action did NOT / cannot happen — an honest
       # non-completion, not a fabricated "done". A bare "can't"/"unable" anywhere
       # in the answer is enough; this only EXEMPTS, never accuses, so a generous
@@ -321,7 +390,21 @@ module Rubino
 
       # The corrective user message injected when a tracked action verb appears in
       # a toolless turn. Names the offending claim so the model self-corrects.
-      def reflection_message(claimed_verb)
+      #
+      # `prior_reflections` is how many corrective injections this turn ALREADY
+      # had. On the FIRST challenge (0 prior) we name the fabrication in full. On
+      # a later one (>= DECAY_AFTER_REFLECTIONS) we DECAY to a short, atomic,
+      # NON-accusatory instruction — repeating the heavy "you lied, nothing
+      # happened" framing is what compounded into the confession spiral (#353b);
+      # a single concrete "make the tool call or say you can't, in one line" is
+      # what actually recovered a stuck model.
+      def reflection_message(claimed_verb, prior_reflections: 0)
+        if prior_reflections >= DECAY_AFTER_REFLECTIONS
+          return "Still no tool call. Don't apologise or re-explain — just make " \
+                 "ONE actual tool call now to #{claimed_verb}, or reply in a " \
+                 "single line that you cannot and why."
+        end
+
         "You said you'd #{claimed_verb} but issued NO tool call, so nothing " \
           "actually happened — that text is not a real result and the file is " \
           "unchanged on disk. Do ONE of two things now: (a) make the actual tool " \
@@ -405,6 +488,12 @@ module Rubino
       #   terminal     — true on the LAST chance (reflection budget exhausted):
       #                  the guard must now be BINDING and REPLACE the answer
       #                  rather than ask for one more corrective turn (G1).
+      #   user_request — the LATEST genuine user message that drove this turn (the
+      #                  Loop passes the originating request, NOT a guard
+      #                  reflection). When it requested a NO-ACTION turn (plan /
+      #                  list / explain / "don't run" / "without tools" / "from
+      #                  memory"), the model is SUPPOSED to answer in prose with no
+      #                  tool call, so we skip the claim-challenge for this turn.
       #
       # Returns one of:
       #   nil             — no fabrication detected; surface the text as-is.
@@ -417,7 +506,8 @@ module Rubino
       #
       # The Loop decides what to do with each (rewrite vs re-enter the loop), and
       # owns the MAX_REFLECTIONS cap (passing terminal: once it is reached).
-      def evaluate(content:, tool_count:, denied_count:, noninteractive: false, terminal: false)
+      def evaluate(content:, tool_count:, denied_count:, noninteractive: false,
+                   terminal: false, user_request: nil)
         text = content.to_s
         return nil if text.strip.empty?
         return nil unless tool_count.to_i.zero?
@@ -437,6 +527,15 @@ module Rubino
         # A turn that ends by asking the user is a legitimate clarify, not a
         # claimed completion.
         return nil if asks_user?(text)
+
+        # The user EXPLICITLY requested a no-action turn (a plan, a list, an
+        # explanation, an answer from memory, or "don't run/use any tools"). On
+        # such a turn the model is supposed to produce prose and call no tool, so
+        # its "here's the plan; I'll add X next" is the requested deliverable, not
+        # a fabricated "done". Skip the claim-challenge so the guard doesn't make
+        # the model apologise for obeying. (#353a) A plain task request matches
+        # none of these, so the anti-fabrication core still fires on real tasks.
+        return nil if no_action_requested?(user_request)
 
         return [:cd, CD_HONEST_ANSWER] if cd_intent?(text)
 
@@ -466,6 +565,17 @@ module Rubino
       end
 
       private
+
+      # The latest user request asked for a NO-ACTION turn (plan / list / explain
+      # / recall-from-memory / explicit "don't run|use tools"). nil/blank request
+      # → not a no-action turn (we can't tell, so we fall through to the normal
+      # fabrication checks — fail-safe toward catching fabrications). (#353a)
+      def no_action_requested?(user_request)
+        req = user_request.to_s
+        return false if req.strip.empty?
+
+        NO_ACTION_REQUEST.match?(req)
+      end
 
       def honest_inability?(text)
         INABILITY.match?(text)
