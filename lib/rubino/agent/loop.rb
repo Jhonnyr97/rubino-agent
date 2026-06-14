@@ -110,6 +110,11 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
+        # Accumulates the content streamed to the screen this turn so that an
+        # interrupt mid-stream can persist EXACTLY what the user saw, marked
+        # interrupted (#338b). Reset per turn — a one-shot CancelToken plus a
+        # fresh buffer means a stale partial can never attach to a later turn.
+        @interrupt_partial = +""
         # True once any denial this turn was a headless fail-closed block ("needs
         # approval but no interactive session", #260) — lets the binding guard
         # point at `--yolo` (F2) instead of "approve it" in the honest message.
@@ -145,11 +150,20 @@ module Rubino
             response = call_model(messages, tools, iteration)
           rescue Rubino::Interrupted
             # The streaming callback (or the per-iteration check above)
-            # observed cancellation. Close any open stream box on the UI
-            # (commits the partial answer streamed so far) and bail out — the
-            # standardized `⎿ interrupted` marker is appended once by the Runner's
-            # rescue, right after this kept partial. Lifecycle will not persist a
-            # turn that never completed, but the user already saw the partial.
+            # observed cancellation. Persist EXACTLY the partial that was shown
+            # on screen — flagged interrupted in metadata — so storage matches
+            # the screen and the transcript stays truthful & resumable (#338b).
+            # Without this, the on-screen `⎿ interrupted` partial was absent from
+            # the messages table and resume/compaction/memory diverged from what
+            # the user saw. Then close any open stream box (commits the partial
+            # answer streamed so far) and bail out — the standardized
+            # `⎿ interrupted` marker is appended once by the Runner's rescue,
+            # right after this kept partial. The upstream stream is already
+            # cancelled: raising out of the per-chunk callback unwinds Faraday's
+            # net-http read loop, which closes the socket (no drain) — verified
+            # against ruby_llm 1.x's Streaming#stream_response, where the block
+            # we raise from runs inside the on_data handler.
+            persist_interrupted_partial
             @ui.stream_end if streaming?
             raise
           end
@@ -443,7 +457,22 @@ module Rubino
         # The adapter dispatches stream-vs-chat off request.stream internally;
         # streaming yields chunks to the block, non-streaming returns in one shot.
         # The runner forwards this block straight through on each attempt.
+        #
+        # Interrupt path (#338): every content delta is also accumulated into
+        # @interrupt_partial so that if the user cancels mid-stream — and the
+        # adapter raises Rubino::Interrupted before returning a response — the
+        # Loop still has the exact text that was shown on screen to PERSIST as an
+        # interrupted partial (storage matches the screen, transcript stays
+        # truthful & resumable). And once the cancel token has flipped, a late
+        # chunk that escaped the per-chunk poll (arriving in the window between
+        # the flag flip and the adapter tearing down the socket) is DROPPED here
+        # — it is neither rendered nor accumulated, so no late token can bleed
+        # into the next turn (Gemini's turnCancelledRef pattern, belt-and-
+        # suspenders on top of the socket abort the raise already triggers).
         stream_chunk = lambda do |chunk|
+          next if @cancel_token&.cancelled?
+
+          @interrupt_partial << chunk[:text].to_s if chunk.is_a?(Hash) && chunk[:type] == :content
           @ui.stream(chunk)
           @event_bus.emit(Interaction::Events::MODEL_STREAM, chunk: chunk)
         end
@@ -610,6 +639,33 @@ module Rubino
 
       def session_repo
         @session_repo ||= Session::Repository.new
+      end
+
+      # Persists the partial assistant text streamed so far when the user
+      # interrupts mid-turn (#338b). Bound to THIS session (and thereby the
+      # current user turn — the user row was appended by Lifecycle before the
+      # model call), flagged interrupted: true in metadata so resume / audit /
+      # compaction can tell a cut-off turn from a completed one and never
+      # mistake the truncated buffer for a finished answer. No-op when nothing
+      # streamed (interrupt during "thinking" before the first content token) —
+      # there's no partial to keep, only a status row to clear.
+      def persist_interrupted_partial
+        partial = @interrupt_partial.to_s
+        return if partial.strip.empty?
+
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: partial,
+            metadata: { interrupted: true }
+          )
+        end
+        session_repo.increment_message_count!(@session[:id])
+      rescue StandardError => e
+        # Persisting the partial must never mask the interrupt itself — log and
+        # let the Interrupted propagate so the turn still unwinds cleanly.
+        Rubino.logger.warn(event: "loop.interrupt.persist_failed", error: e.message)
       end
 
       def persist_assistant_message(response)

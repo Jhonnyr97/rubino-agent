@@ -64,6 +64,58 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end.to output(/simulated provider failure/).to_stderr
       expect(status).to eq(1)
     end
+
+    # #335a — a one-shot SIGINT mid-turn used to raise a bare uncaught Interrupt
+    # (a 60-line backtrace from net/protocol). The one-shot path now traps
+    # SIGINT into a cooperative cancel; the Rubino::Interrupted that propagates
+    # — OR a bare Interrupt that landed deep in a blocking read before the next
+    # chunk checkpoint — exits CLEANLY with the conventional 130, no backtrace.
+    [["cooperative Rubino::Interrupted", Rubino::Interrupted],
+     ["bare Interrupt (deep in a blocking read)", Interrupt]].each do |label, klass|
+      it "exits 130 with a clean notice (no backtrace) on #{label}" do
+        runner = instance_double(Rubino::Agent::Runner)
+        allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+        allow(runner).to receive(:cancel!)
+        allow(runner).to receive(:run!).and_raise(klass)
+        allow(runner).to receive(:session).and_return({ id: "s1" })
+
+        status = nil
+        expect do
+          described_class.new("query" => "hi").execute
+        rescue SystemExit => e
+          status = e.status
+        end.to output(/interrupted/).to_stderr
+
+        # Exit 130 (clean), never the raw uncaught backtrace exit the bug showed.
+        expect(status).to eq(130)
+      end
+    end
+
+    it "emits a well-formed interrupted JSON result and exits 130 (--json)" do
+      runner = instance_double(Rubino::Agent::Runner)
+      allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+      allow(runner).to receive(:cancel!)
+      allow(runner).to receive(:run!).and_raise(Rubino::Interrupted)
+      allow(runner).to receive(:session).and_return({ id: "s1", model: "fake-model" })
+
+      status = nil
+      json_out = +""
+      orig = $stdout
+      $stdout = StringIO.new
+      begin
+        described_class.new("query" => "hi", "json" => true).execute
+      rescue SystemExit => e
+        status = e.status
+      ensure
+        json_out = $stdout.string
+        $stdout = orig
+      end
+
+      expect(status).to eq(130)
+      parsed = JSON.parse(json_out.lines.last)
+      expect(parsed["type"]).to eq("result")
+      expect(JSON.generate(parsed)).to match(/interrupt/i)
+    end
   end
 
   # P2-H3 — empty/whitespace one-shot input must NOT be dispatched to the

@@ -128,6 +128,80 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 
+  # A USER interrupt mid-stream (Enter-to-interrupt / Ctrl+C) must: cancel the
+  # in-flight stream, persist EXACTLY the partial that was shown (marked
+  # interrupted) bound to the current turn, and guarantee no late token bleeds
+  # into a following turn (#335 / #338). The cooperative pattern: the cancel
+  # token flips on another thread, the per-chunk poll raises Rubino::Interrupted,
+  # the Loop persists what streamed and re-raises.
+  describe "user interrupt mid-stream (#338)" do
+    let(:token) { Rubino::Interaction::CancelToken.new }
+
+    it "raises Interrupted (the stream is cancelled, not completed)" do
+      fake_llm.enqueue_user_interrupt(token, shown: %w[hello world])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+    end
+
+    it "persists the shown partial flagged interrupted, bound to the user turn" do
+      fake_llm.enqueue_user_interrupt(token, shown: %w[partial answer here])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages("the prompt"), tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      stored = message_store.for_session(session[:id])
+      assistant = stored.select { |m| m.role == "assistant" }
+      expect(assistant.size).to eq(1)
+      expect(assistant.last.content).to eq("partial answer here")
+      expect(assistant.last.metadata[:interrupted]).to be true
+    end
+
+    it "drops late tokens so they cannot bleed into the partial or a next turn" do
+      # 'late' words are emitted by the model AFTER the cancel — the Loop must
+      # never render or persist them. The fake never yields them once cancelled.
+      fake_llm.enqueue_user_interrupt(token, shown: %w[shown text], late: %w[LATE BLEED])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      stored = message_store.for_session(session[:id])
+      assistant = stored.select { |m| m.role == "assistant" }
+      expect(assistant.last.content).to eq("shown text")
+      expect(assistant.last.content).not_to include("LATE")
+      expect(assistant.last.content).not_to include("BLEED")
+    end
+
+    it "does not persist an assistant row when interrupted during thinking (no partial)" do
+      # No content streamed before the cancel — only a status row to clear.
+      fake_llm.enqueue_user_interrupt(token, shown: [])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      stored = message_store.for_session(session[:id])
+      expect(stored.select { |m| m.role == "assistant" }).to be_empty
+    end
+
+    it "a following turn's message does NOT contain the interrupted turn's tokens" do
+      # Turn 1: interrupted after streaming 'first partial'. Turn 2: a fresh,
+      # clean turn. The second turn's assistant content must be ONLY its own.
+      fake_llm.enqueue_user_interrupt(token, shown: %w[first partial], late: %w[STRAY])
+      loop_obj = build_loop(cancel_token: token)
+      expect { loop_obj.run(messages: user_messages, tools: []) }
+        .to raise_error(Rubino::Interrupted)
+
+      # A fresh token + loop for the next turn (Runner builds one per turn).
+      fresh = build_loop(cancel_token: Rubino::Interaction::CancelToken.new, llm: fake_llm)
+      fake_llm.enqueue_text("second turn answer")
+      result = fresh.run(messages: user_messages("next"), tools: [])
+
+      expect(result).to eq("second turn answer")
+      expect(result).not_to include("first")
+      expect(result).not_to include("STRAY")
+    end
+  end
+
   describe "plain text response (no tool calls)" do
     it "returns the assistant content" do
       fake_llm.enqueue_text("Hello, world!")

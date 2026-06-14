@@ -177,7 +177,18 @@ module Rubino
         # actually tell it failed.
         announce_attachment_upload(image_paths)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        response = runner.run!(text, image_paths: image_paths)
+        # SIGINT in a one-shot run (#335a): without a trap, Ctrl+C lands as a
+        # bare Interrupt inside net/protocol's blocking socket read and escapes
+        # as a 60-line uncaught backtrace, exit 130. Install a cooperative trap
+        # that flips the runner's cancel token so the in-flight LLM stream is
+        # cancelled at the next chunk checkpoint (the same mechanism the
+        # interactive path uses); the Interrupted that then propagates is caught
+        # below and turned into a clean, truthful "interrupted" exit. A second
+        # Ctrl+C (or one that races in before the first chunk, deep in the
+        # blocking read) still raises a bare Interrupt — also caught below.
+        response = with_oneshot_int_trap(runner) do
+          runner.run!(text, image_paths: image_paths)
+        end
 
         print_oneshot_answer(response.to_s)
         $stdout.flush
@@ -203,10 +214,16 @@ module Rubino
           headless_ui.blocked_messages.each { |m| warn m }
           exit(2)
         end
-      # rubocop:disable Lint/ShadowedException -- Interrupt is listed explicitly (doc value), though SignalException covers it
-      rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
+      # A user interrupt (#335a) — the cooperative Rubino::Interrupted, or a bare
+      # Interrupt/SIGINT that landed deep in a blocking read before the next
+      # chunk checkpoint — exits cleanly with the conventional 130, NOT a raw
+      # 60-line backtrace. The partial the model produced is already persisted by
+      # the Loop (marked interrupted), so the run stays truthful & resumable.
+      rescue Rubino::Interrupted, Interrupt, SignalException
+        warn "rubino: interrupted"
+        exit(130)
+      rescue SystemExit
         raise
-      # rubocop:enable Lint/ShadowedException
       rescue Exception => e # rubocop:disable Lint/RescueException
         warn "rubino: #{e.message}"
         exit(1)
@@ -254,7 +271,12 @@ module Rubino
 
         announce_attachment_upload(image_paths)
         started_at = monotonic_now
-        response = runner.run!(text, image_paths: image_paths)
+        # Same cooperative SIGINT trap as the text path (#335a): flip the cancel
+        # token so the in-flight stream is cancelled at the next checkpoint
+        # rather than letting a bare Interrupt escape as a raw backtrace.
+        response = with_oneshot_int_trap(runner) do
+          runner.run!(text, image_paths: image_paths)
+        end
         duration_ms = ((monotonic_now - started_at) * 1000).round
 
         if fmt == :stream_json
@@ -282,10 +304,22 @@ module Rubino
                     recorder: recorder, final_text: response.to_s, session: runner.session,
                     duration_ms: duration_ms, model: model_name
                   ))
-      # rubocop:disable Lint/ShadowedException
-      rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
+      # A user interrupt (#335a) still emits a well-formed, parseable result
+      # object on stdout (flagged interrupted) so automation never sees a raw
+      # backtrace, then exits with the conventional 130. The Loop already
+      # persisted the partial (marked interrupted), so the session is truthful.
+      rescue Rubino::Interrupted, Interrupt, SignalException
+        warn "rubino: interrupted"
+        emit_json(Output::ResultSerializer.error_result(
+                    recorder: recorder, session: runner&.session,
+                    duration_ms: started_at ? ((monotonic_now - started_at) * 1000).round : 0,
+                    model: model_name,
+                    error: { message: "interrupted by user", type: "Rubino::Interrupted",
+                             subtype: "error_interrupted" }
+                  ))
+        exit(130)
+      rescue SystemExit
         raise
-      # rubocop:enable Lint/ShadowedException
       rescue Exception => e # rubocop:disable Lint/RescueException
         # A failed run still produces a well-formed result object on stdout (with
         # the error on a top-level error block) so automation can parse the
@@ -685,6 +719,35 @@ module Rubino
         prev.each { |sig, handler| Signal.trap(sig, handler || "DEFAULT") }
       rescue ArgumentError
         nil
+      end
+
+      # Runs the one-shot turn under a cooperative SIGINT trap (#335a). The trap
+      # is async-signal-safe: it only flips the runner's cancel token (a
+      # single, lock-free, trap-safe boolean — see Interaction::CancelToken),
+      # exactly like the interactive path. That cancels the in-flight LLM stream
+      # at its next chunk checkpoint (the adapter raises Rubino::Interrupted out
+      # of the per-chunk callback, which unwinds Faraday's net-http read loop and
+      # closes the socket — no drain, no late-token bleed). The Interrupted then
+      # propagates to the caller's rescue, which prints a clean notice and exits
+      # 130. The trap is always restored. Platforms without SIGINT (Windows)
+      # just run the block — Signal.trap raises ArgumentError, swallowed.
+      def with_oneshot_int_trap(runner)
+        installed = false
+        begin
+          prev = Signal.trap("INT") { runner.cancel! }
+          installed = true
+        rescue ArgumentError
+          # SIGINT not supported on this platform — run without the trap.
+        end
+        yield
+      ensure
+        if installed
+          begin
+            Signal.trap("INT", prev || "DEFAULT")
+          rescue ArgumentError
+            nil
+          end
+        end
       end
 
       # Install the idle-prompt SIGINT trap (BH-2). The block is the whole
