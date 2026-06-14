@@ -68,6 +68,13 @@ module Rubino
       def write_atomic(path, contents)
         dir = File.dirname(path)
         FileUtils.mkdir_p(dir)
+        # Preserve plain-write semantics on an EXISTING read-only file: a temp +
+        # rename would otherwise sidestep the file's own 0444 (the writable dir
+        # lets us swap it in), silently clobbering a file the user marked
+        # read-only. Refuse with the same EACCES a File.write would have raised.
+        existing_mode = File.exist?(path) ? File.stat(path).mode : nil
+        raise Errno::EACCES, path if existing_mode && !File.writable?(path)
+
         tmp = File.join(dir, ".#{File.basename(path)}.#{Process.pid}.#{rand(1 << 32)}.tmp")
         begin
           File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |f|
@@ -75,6 +82,9 @@ module Rubino
             f.flush
             f.fsync
           end
+          # Carry the original file's permission bits across the replace so an
+          # in-place edit doesn't silently re-chmod the user's file to 0600.
+          File.chmod(existing_mode & 0o777, tmp) if existing_mode
           File.rename(tmp, path)
           fsync_dir(dir)
         ensure

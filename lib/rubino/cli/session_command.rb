@@ -18,6 +18,7 @@ module Rubino
       option :status, type: :string,  desc: "Filter by status"
       option :search, type: :string,  desc: "Filter by title (substring match)"
       def list
+        guard_corrupt_database!
         Rubino.ensure_database_ready!
         repo = Session::Repository.new
         # Reap sessions left "active" by a process that died without ending them
@@ -52,6 +53,7 @@ module Rubino
 
       desc "show ID", "Show session details"
       def show(id)
+        guard_corrupt_database!
         Rubino.ensure_database_ready!
         repo = Session::Repository.new
         session = repo.find(id)
@@ -110,6 +112,7 @@ module Rubino
       option :force, type: :boolean, default: false, aliases: "-f",
                      desc: "Skip the confirmation prompt"
       def delete(id)
+        guard_corrupt_database!
         Rubino.ensure_database_ready!
         repo = Session::Repository.new
         session = repo.find(id)
@@ -140,6 +143,7 @@ module Rubino
 
       desc "compact ID", "Manually trigger compaction on a session"
       def compact(id)
+        guard_corrupt_database!
         Rubino.ensure_database_ready!
         repo = Session::Repository.new
         session = repo.find(id)
@@ -151,6 +155,21 @@ module Rubino
         compressor = Context::Compressor.new(session_id: id)
         result = compressor.compact!
         Rubino.ui.compression_finished(result)
+      end
+
+      private
+
+      # Turn a corrupt/malformed on-disk DB into a clean, actionable diagnostic
+      # instead of leaking a raw Sequel/sqlite3 backtrace (HIGH-2). Without this
+      # the first DB touch (Repository.new → connect → `PRAGMA journal_mode=WAL`)
+      # throws SQLite3::CorruptException and dumps ~20 lines of trace. Thor prints
+      # a Thor::Error's message to stderr and exits non-zero with no backtrace.
+      def guard_corrupt_database!
+        return unless Rubino.database.corrupt?
+
+        raise Thor::Error,
+              "database is corrupt (malformed image): #{Rubino.database.db_path}\n" \
+              "Run `rubino setup` to quarantine it and recreate a fresh database."
       end
     end
   end

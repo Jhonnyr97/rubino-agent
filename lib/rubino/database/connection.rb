@@ -34,6 +34,57 @@ module Rubino
         false
       end
 
+      # True when the on-disk file is present but unopenable because its image
+      # is malformed/truncated (`SQLite3::CorruptException`). A brand-new or
+      # absent file is NOT corrupt — it's just not initialized yet — so this is
+      # the signal that distinguishes "needs setup" from "needs recovery".
+      def corrupt?
+        return false if memory? || !File.exist?(@db_path)
+
+        db.execute("SELECT 1")
+        false
+      rescue StandardError => e
+        corruption_error?(e)
+      end
+
+      # Quarantine an unopenable database file (and its WAL/SHM siblings) by
+      # renaming them aside to `<name>.corrupt-<timestamp>` so a fresh DB can be
+      # created in their place WITHOUT silently destroying the bytes — the user
+      # can still hand them to `sqlite3 .recover` if they want. Returns the path
+      # the main file was moved to, or nil when there was nothing to move.
+      def quarantine!
+        return nil if memory? || !File.exist?(@db_path)
+
+        close
+        stamp = Time.now.strftime("%Y%m%d%H%M%S")
+        moved = nil
+        ["", "-wal", "-shm"].each do |suffix|
+          src = "#{@db_path}#{suffix}"
+          next unless File.exist?(src)
+
+          dest = "#{@db_path}.corrupt-#{stamp}#{suffix}"
+          File.rename(src, dest)
+          moved = dest if suffix.empty?
+        end
+        moved
+      end
+
+      # True when +error+ (or anything in its cause chain) is the SQLite
+      # "database disk image is malformed" corruption error. Sequel wraps the
+      # driver exception in a Sequel::DatabaseError, so we walk #cause and also
+      # match the wrapped class name without hard-depending on the sqlite3 gem
+      # constant being loaded.
+      def corruption_error?(error)
+        e = error
+        while e
+          return true if e.class.name.to_s.include?("SQLite3::CorruptException")
+          return true if e.message.to_s.include?("database disk image is malformed")
+
+          e = e.cause
+        end
+        false
+      end
+
       # Closes the database connection
       def close
         @db&.disconnect

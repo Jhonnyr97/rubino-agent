@@ -79,7 +79,10 @@ module Rubino
         end
 
         new_content = replace_literal(content, old_string, new_string, replace_all)
-        File.write(expanded, new_content)
+        # Crash-safe write: temp-in-same-dir + fsync + atomic rename, so a
+        # SIGINT/crash mid-flush can't destroy the user's existing file content
+        # (this is a read-modify-write of an existing file — HIGH-1).
+        Util::AtomicFile.write_atomic(expanded, new_content)
         # Refresh-on-own-write: the bytes we just wrote are now authoritative,
         # so the very next edit to this file passes the read-gate instead of
         # "changed on disk since last read" (r5 B2).

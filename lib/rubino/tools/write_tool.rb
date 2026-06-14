@@ -54,7 +54,11 @@ module Rubino
         end
 
         FileUtils.mkdir_p(File.dirname(expanded))
-        File.write(expanded, content)
+        # Crash-safe write: temp-in-same-dir + fsync + atomic rename, so a
+        # SIGINT/SIGTERM/OOM-kill mid-write leaves the ORIGINAL file intact
+        # rather than a torn/truncated one (HIGH-1). The bare File.write here
+        # could be cut mid-flush, destroying the user's existing content.
+        Util::AtomicFile.write_atomic(expanded, content)
         # Refresh-on-own-write so a later edit of this just-written file passes
         # the read-gate (r5 B2) and a re-read sees it as authoritative.
         @read_tracker&.note_write(expanded, content)

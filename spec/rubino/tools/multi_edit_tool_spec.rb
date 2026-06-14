@@ -100,4 +100,19 @@ RSpec.describe Rubino::Tools::MultiEditTool do
     out = tool.call("file_path" => path, "edits" => [])
     expect(out).to include("non-empty array")
   end
+
+  # HIGH-1: the tool's description advertises writing "atomically" — make it
+  # true on the disk seam too. The single final write goes through
+  # AtomicFile.write_atomic (temp + fsync + atomic rename) so a mid-write crash
+  # can't leave a torn file.
+  describe "crash-safe (atomic) write" do
+    it "writes the staged result through Util::AtomicFile.write_atomic" do
+      File.write(path, "alpha beta\n")
+      expect(Rubino::Util::AtomicFile).to receive(:write_atomic)
+        .with(path, "ALPHA beta\n").and_call_original
+      tool.call("file_path" => path,
+                "edits" => [{ "old_string" => "alpha", "new_string" => "ALPHA" }])
+      expect(File.read(path)).to eq("ALPHA beta\n")
+    end
+  end
 end

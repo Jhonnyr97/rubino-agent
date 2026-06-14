@@ -105,7 +105,10 @@ module Rubino
           applied_count += replace_all ? count : 1
         end
 
-        File.write(expanded, working)
+        # Crash-safe write: temp-in-same-dir + fsync + atomic rename. The tool's
+        # description advertises "atomically" — make it true on the disk seam too,
+        # so a SIGINT/crash mid-flush leaves the ORIGINAL file intact (HIGH-1).
+        Util::AtomicFile.write_atomic(expanded, working)
         # Refresh-on-own-write so a follow-up edit to this file isn't refused
         # as "changed on disk since last read" (r5 B2).
         @read_tracker&.note_write(expanded, working)

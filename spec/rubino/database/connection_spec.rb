@@ -98,4 +98,60 @@ RSpec.describe Rubino::Database::Connection do
       end
     end
   end
+
+  # HIGH-2: a truncated/malformed on-disk DB must be DETECTABLE (so callers can
+  # offer recovery instead of crashing with a raw SQLite3::CorruptException) and
+  # QUARANTINABLE (rename aside, recreate fresh).
+  describe "corrupt-database detection & quarantine" do
+    # Build a real on-disk WAL DB then truncate it mid-file so the very first
+    # PRAGMA on connect raises SQLite3::CorruptException — the exact repro from
+    # the QA report (`truncate -s 20000 rubino.sqlite3`).
+    def corrupt_db_at(path)
+      conn = described_class.new(path)
+      conn.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| conn.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      conn.close
+      File.truncate(path, 20_000)
+    end
+
+    it "reports corrupt? => true for a malformed on-disk file" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        corrupt_db_at(path)
+        expect(described_class.new(path).corrupt?).to be true
+      end
+    end
+
+    it "reports corrupt? => false for a healthy DB and for an absent file" do
+      Dir.mktmpdir do |tmp|
+        healthy = File.join(tmp, "ok.sqlite3")
+        described_class.new(healthy).tap(&:db).close
+        expect(described_class.new(healthy).corrupt?).to be false
+        expect(described_class.new(File.join(tmp, "missing.sqlite3")).corrupt?).to be false
+      end
+    end
+
+    it "corrupt? => false for an in-memory DB (never on disk)" do
+      expect(described_class.new(":memory:").corrupt?).to be false
+    end
+
+    it "quarantine! renames the malformed file (and its WAL/SHM) aside" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        corrupt_db_at(path)
+        File.write("#{path}-wal", "w")
+        File.write("#{path}-shm", "s")
+
+        moved = described_class.new(path).quarantine!
+
+        expect(File.exist?(path)).to be false
+        expect(moved).to match(/db\.sqlite3\.corrupt-\d{14}\z/)
+        expect(File.exist?(moved)).to be true
+        expect(Dir["#{path}.corrupt-*-wal"]).not_to be_empty
+        expect(Dir["#{path}.corrupt-*-shm"]).not_to be_empty
+        # A fresh connection at the original path is now healthy.
+        expect(described_class.new(path).healthy?).to be true
+      end
+    end
+  end
 end
