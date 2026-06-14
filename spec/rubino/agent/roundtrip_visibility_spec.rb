@@ -154,8 +154,8 @@ RSpec.describe Rubino::Agent::Loop do
 
   def install_fake_chat(chat, executor, budget_exhausted)
     Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                          tool_executor: executor,
-                                          budget_exhausted: budget_exhausted)
+                                                        tool_executor: executor,
+                                                        budget_exhausted: budget_exhausted)
     chat
   end
 
