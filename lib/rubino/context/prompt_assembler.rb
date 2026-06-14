@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "ruby_llm"
+
 module Rubino
   module Context
     # Assembles the complete prompt from all context sources.
@@ -58,11 +60,15 @@ module Rubino
       def build
         messages = []
 
-        # Single system message: base prompt followed by the session summary
-        # section (when compacted). Folded into one role:"system" entry so
-        # RubyLLM's Anthropic provider isn't handed multiple system messages
-        # (#253) — one block, same content, intact prompt-cache breakpoints.
-        messages << { role: "system", content: build_system_prompt }
+        # Single system message. The content is split into a STABLE PREFIX
+        # (identity / product / env / user-profile snapshot / skills / project
+        # context) and a VOLATILE TAIL (freshly-retrieved relevant-memories +
+        # the post-compaction session-summary). The prefix carries the prompt-
+        # cache breakpoint (#311); the tail — which can change turn-to-turn —
+        # sits AFTER it so the cached bytes stay byte-stable. Both regions live
+        # in ONE role:"system" entry (#253), built as a Content::Raw array of
+        # text blocks when caching is on, or a plain joined String otherwise.
+        messages << { role: "system", content: system_content }
 
         # Conversation history. Repair tool pairing across the FULL list before
         # mapping to wire format — this is the defensive "net" that recovers
@@ -155,17 +161,54 @@ module Rubino
         )
       end
 
-      # Assembles the system prompt as a stack of labelled blocks:
-      #   1. Identity        — role-specific built-in prompt (or override)
-      #   2. Product preamble— config.prompts.preamble, customer-side
-      #   3. Environment     — date/OS/cwd/git/runtimes/PATH utilities
-      #   4. User profile    — from memory
-      #   5. Relevant memories
-      #   6. Skills index   — "## Skills (mandatory)" catalogue (auto-trigger)
-      #   7. Project context — AGENTS.md / CLAUDE.md walk
+      # Assembles the system prompt as a stack of labelled blocks, split into a
+      # STABLE PREFIX and a VOLATILE TAIL for prompt caching (#311):
+      #   PREFIX (cached): 1. Identity 2. Product preamble 3. Environment
+      #                    4. User profile 5. Skills index 6. Project context
+      #   TAIL (uncached): 7. Relevant memories 8. Session summary
       # Each block is independent: if a section is empty/disabled it just
       # drops out without leaving a stray header.
+      # The system message content. When prompt caching is enabled (the
+      # default) this is a RubyLLM::Content::Raw array of text blocks — the
+      # STABLE PREFIX block carries an Anthropic cache_control breakpoint (#311),
+      # the VOLATILE TAIL block (when present) does not — so the cached prefix
+      # bytes stay identical across turns. When caching is disabled it is the
+      # plain joined String (prefix + tail), byte-identical to the pre-#311
+      # single-string output, so non-anthropic providers and the existing
+      # String-shaped contract are unaffected.
+      def system_content
+        prefix = stable_prefix
+        tail   = volatile_tail
+
+        unless prompt_cache_enabled?
+          return tail.empty? ? prefix : "#{prefix}\n\n#{tail}"
+        end
+
+        blocks = [{ type: "text", text: prefix, cache_control: { type: "ephemeral" } }]
+        # The tail rides in its OWN, UNCACHED block AFTER the breakpoint. Without
+        # a tail the system block is just the one cached prefix block.
+        blocks << { type: "text", text: tail } unless tail.empty?
+        ::RubyLLM::Content::Raw.new(blocks)
+      end
+
+      # Back-compat shim: the full system prompt as a single String (prefix +
+      # tail), the pre-#311 shape. Retained for any caller/spec that wants the
+      # rendered text regardless of the cache wire-shape.
       def build_system_prompt
+        prefix = stable_prefix
+        tail   = volatile_tail
+        tail.empty? ? prefix : "#{prefix}\n\n#{tail}"
+      end
+
+      # The STABLE region of the system prompt — the bytes BEFORE the cache
+      # breakpoint. Every section here is session-stable: the identity/product
+      # text is fixed, the [Environment] block is process-cached, and the memory
+      # snapshot ([User Profile]) is FROZEN per session (see @snapshots). So
+      # these bytes are byte-identical on turn 2..N of a session — exactly what
+      # the prompt-cache prefix requires. Freshly-retrieved [Relevant Memories]
+      # and the post-compaction [Session Summary] are deliberately NOT here —
+      # they go in the volatile tail.
+      def stable_prefix
         # Memory snapshot is frozen for the lifetime of the session — see
         # the class-level @snapshots cache for why. The first assembly in
         # a session captures @memory_context; later assemblies reuse it
@@ -183,11 +226,6 @@ module Rubino
           parts << "[User Profile]\n#{snapshot[:user_profile]}"
         end
 
-        if snapshot[:relevant_memories]&.any?
-          memories_text = snapshot[:relevant_memories].map { |m| "- #{m[:content]}" }.join("\n")
-          parts << "[Relevant Memories]\n#{memories_text}"
-        end
-
         skills_index = skills_index_block
         parts << skills_index if skills_index
 
@@ -201,14 +239,61 @@ module Rubino
         project_ctx = load_project_context
         parts << "[Project Context]\n#{project_ctx}" if project_ctx
 
-        # Session summary (when this session has been compacted). Kept as the
-        # last section so the base prompt comes first; folded in here rather
-        # than emitted as a second role:"system" message to avoid RubyLLM's
-        # "multiple system messages" warning (#253).
+        parts.join("\n\n")
+      end
+
+      # The VOLATILE region — the bytes AFTER the cache breakpoint. These can
+      # change turn-to-turn within a session, so caching them would invalidate
+      # the prefix on every change (#311):
+      #   - [Relevant Memories]: a relevance-aware backend re-ranks recall per
+      #     turn against the new user message, so the set is not session-stable.
+      #     (The default backend returns a stable set; either way it is safe
+      #     here — correctness is unchanged, only cacheability differs.)
+      #   - [Session Summary]: written by compaction MID-session, so it appears
+      #     (and grows) part-way through; keeping it out of the prefix means a
+      #     compaction does not bust the cached prefix.
+      def volatile_tail
+        snapshot = self.class.snapshot_for(@session[:id]) { @memory_context }
+
+        parts = []
+
+        if snapshot[:relevant_memories]&.any?
+          memories_text = snapshot[:relevant_memories].map { |m| "- #{m[:content]}" }.join("\n")
+          parts << "[Relevant Memories]\n#{memories_text}"
+        end
+
         summary = load_summary
         parts << "[Session Summary]\n#{summary}" if summary
 
         parts.join("\n\n")
+      end
+
+      # Prompt-cache breakpoints are emitted only when (a) caching is enabled in
+      # config (default on) AND (b) the resolved provider is anthropic-family —
+      # cache_control is an Anthropic concept and openai-style endpoints reject
+      # the extra wire keys. The adapter applies the SAME gate to the tool
+      # breakpoint (#tool_cache_breakpoint?), so the two breakpoints stay paired.
+      def prompt_cache_enabled?
+        config_value = @config.dig("prompts", "prompt_cache")
+        return false unless config_value.nil? || config_value == true
+
+        anthropic_family_provider?
+      rescue StandardError
+        false
+      end
+
+      # Mirrors RubyLLMAdapter#anthropic_generation_path? from config: an
+      # explicit anthropic/bedrock provider, the Bedrock-bearer override, or a
+      # provider declaring anthropic_compatible: true (e.g. MiniMax /anthropic).
+      def anthropic_family_provider?
+        provider = LLM::ProviderResolver.resolve(
+          @session[:model], explicit_provider: @config.model_provider
+        )
+        return true if %w[anthropic bedrock].include?(provider.to_s)
+
+        @config.provider_config(provider)["anthropic_compatible"] == true
+      rescue StandardError
+        false
       end
 
       # The "## Skills (mandatory)" catalogue. This is the load-bearing trigger

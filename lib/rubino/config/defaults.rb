@@ -480,13 +480,21 @@ module Rubino
         #   prompts.overrides.<role> — full replacement of the built-in
         #     role prompt (escape hatch; prefer preamble for incremental
         #     tweaks).
+        #   prompts.prompt_cache — when true (default) the assembler emits
+        #     Anthropic prompt-cache breakpoints (cache_control) on the stable
+        #     system prefix and the last tool definition, so the fixed prompt
+        #     prefix + tool block are cached across turns (#311). The volatile
+        #     tail (fresh relevant-memories + post-compaction summary) is kept
+        #     AFTER the system breakpoint so the cached bytes stay byte-stable.
+        #     Honored by anthropic-family providers; other providers ignore it.
         "prompts" => {
           "preamble" => nil,
           "environment" => {
             "enabled" => true,
             "extra_utilities" => []
           },
-          "overrides" => {}
+          "overrides" => {},
+          "prompt_cache" => true
         },
         "quick_commands" => {},
         "mcp" => {

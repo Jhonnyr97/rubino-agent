@@ -81,6 +81,7 @@ RSpec.configure do |config|
     # specs that don't load a given const still pass.
     Rubino::Tools::Registry.reset! if defined?(Rubino::Tools::Registry)
     Rubino::Tools::BackgroundTasks.reset! if defined?(Rubino::Tools::BackgroundTasks)
+    Rubino::Tools::ShellRegistry.reset! if defined?(Rubino::Tools::ShellRegistry)
     Rubino::Run::GateRegistry.reset! if defined?(Rubino::Run::GateRegistry)
     # Use null UI and in-memory SQLite for tests
     Rubino.ui = Rubino::UI::Null.new

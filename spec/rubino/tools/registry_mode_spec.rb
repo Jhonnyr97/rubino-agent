@@ -28,6 +28,11 @@ RSpec.describe Rubino::Tools::Registry do
         # `tools.web: false` default; enable it so this example asserts the
         # full mode whitelist rather than the (independent) config gate.
         Rubino.configuration.set("tools", "web", true)
+        # shell_output is in the plan whitelist but is ALSO situational-gated
+        # (#313): it only appears once a background shell exists. Stub the
+        # session-stable signal so this example asserts the full MODE whitelist
+        # rather than tripping the (independent) situational gate.
+        allow(Rubino::Tools::ShellRegistry.instance).to receive(:any?).and_return(true)
         names = described_class.enabled_tools.map(&:name).sort
         expect(names).to match_array(Rubino::Modes::READ_ONLY_TOOLS.sort)
       ensure

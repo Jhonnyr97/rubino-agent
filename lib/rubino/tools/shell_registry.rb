@@ -24,6 +24,13 @@ module Rubino
         def instance
           @instance ||= new
         end
+
+        # Test seam: drop the process-wide registry between examples so the
+        # situational shell-tool gate (#313) starts each spec with no background
+        # shell. Mirrors BackgroundTasks.reset!.
+        def reset!
+          @instance = nil
+        end
       end
 
       def initialize
@@ -71,6 +78,16 @@ module Rubino
 
       def find(id)
         @mutex.synchronize { @entries[id] }
+      end
+
+      # True when at least one background shell has been started this session
+      # (and not yet removed). The session-stable signal #313 gates the
+      # shell-management tools on: a normal turn with no background shell never
+      # ships shell_input/shell_output/shell_tail/shell_kill. Flips at most once
+      # per session (when the first background shell is spawned), so the cached
+      # tool prefix stays stable across ordinary turns.
+      def any?
+        @mutex.synchronize { !@entries.empty? }
       end
 
       def remove(id)
