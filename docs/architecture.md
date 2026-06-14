@@ -148,8 +148,8 @@ User Input
   ├─→ Commands::Executor (if /command)
   │     └─→ Render template → feed to agent
   │
-  ├─→ Agent::Router (if @mention)
-  │     └─→ Select agent definition
+  ├─→ ActiveAgent (if /agent, /<name>, or Tab)
+  │     └─→ Select primary agent definition
   │
   └─→ Interaction::Lifecycle
         │

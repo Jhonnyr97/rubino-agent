@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "tmpdir"
+require "fileutils"
 
 RSpec.describe Rubino::CLI::MemoryCommand do
   subject(:command) { described_class.new }
@@ -164,6 +165,33 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       expect(Rubino.ui).to receive(:info).with(/Active backend:/)
       expect(Rubino.ui).to receive(:info).with(/Available:.*default/)
       command.backend
+    end
+  end
+
+  # #333b: `memory list` was the one user command that still dumped a raw
+  # ~20-line Sequel/sqlite3 backtrace on a file-corrupt DB (sessions list /
+  # doctor already guarded it). It must instead degrade to a clean Thor::Error
+  # (stderr, no backtrace) that points the user at `rubino doctor`.
+  describe "corrupt-database guard (#333b)" do
+    let(:corrupt_dir)  { Dir.mktmpdir("ra-mem-corrupt") }
+    let(:corrupt_path) { File.join(corrupt_dir, "rubino.sqlite3") }
+
+    after { FileUtils.remove_entry(corrupt_dir) }
+
+    before do
+      seed = Rubino::Database::Connection.new(corrupt_path)
+      seed.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| seed.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      seed.close
+      File.truncate(corrupt_path, 20_000)
+      allow(Rubino).to receive(:database)
+        .and_return(Rubino::Database::Connection.new(corrupt_path))
+    end
+
+    it "#list raises a clean Thor::Error pointing at doctor (no raw backtrace)" do
+      cmd = described_class.new
+      cmd.options = { limit: 20 }
+      expect { cmd.list }.to raise_error(Thor::Error, /corrupt.*doctor/m)
     end
   end
 end

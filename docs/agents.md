@@ -1,15 +1,22 @@
 # Agents & Subagents
 
-rubino has two distinct multi-agent surfaces. Only the first one ships today:
+rubino has two distinct multi-agent surfaces, and **both ship today**:
 
 1. **Background subagents** (✅ shipping) — the agent delegates bounded sub-tasks
    to isolated subagent runs via its `task` tool, and you supervise them with
-   `/agents` and `/reply`. This is the surface you will actually use.
-2. **Primary-agent switching** (⏳ not yet wired) — Tab-cycling between primary
-   agents and `@mention` routing. The machinery exists (`Agent::Router`,
-   `Agent::Definition`, `AgentRegistry`) but no call site passes an agent
-   definition yet, so the default (build) agent handles every turn. See
-   [the last section](#planned-primary-agent-switching--mentions-not-yet-wired).
+   `/agents` and `/reply`.
+2. **Primary-agent switching** (✅ shipping) — pick the primary agent that
+   handles your turns: `/agent <name>` (or a bare `/<name>` for a primary)
+   pins it for the session, **Tab** cycles through the primaries, and a one-shot
+   `/<name> <message>` routes a single message to any agent. The selected agent's
+   Definition (its system prompt and tool scope) is threaded into the runner each
+   turn, so the choice actually changes the model's persona/tools. See
+   [Primary-agent switching](#primary-agent-switching) below.
+
+> **Channels are cleanly separated:** `@` is the **workspace file** picker
+> (`@path/to/file`), and `/` is the **agent/command** channel. There are no
+> `@mention` agent routes — a filename like `@explore.rb` is always a file, never
+> an agent. Use `/explore`, `/plan`, etc. to reach an agent.
 
 ---
 
@@ -132,14 +139,15 @@ apply (hardline floor still enforced — see [security.md](security.md)).
 ## Built-in agent definitions
 
 These definitions exist in `Agent::AgentRegistry` today. The two *subagents*
-are live as `task` targets; the two *primary* agents are only reachable as the
-default (`build`) or via the plan **mode** (`/mode plan`), not via agent
-switching; the *utility* agents are internal.
+are live as `task` targets; the two *primary* agents are switchable per session
+(`/agent <name>`, a bare `/<name>`, or Tab — see
+[Primary-agent switching](#primary-agent-switching)); the *utility* agents are
+internal.
 
 | Agent | Type | Access | Description |
 |-------|------|--------|-------------|
-| **build** | primary | Full tools | Default development agent. Handles every turn today. |
-| **plan** | primary | Read-only | Analysis/planning definition (the shipping read-only surface is `/mode plan`). |
+| **build** | primary | Full tools | Default development agent (the registry default). |
+| **plan** | primary | Read-only | Analysis/planning agent. Switch to it with `/agent plan`; `/mode plan` is the orthogonal read-only run **mode**. |
 | **explore** | subagent | Read-only | Fast codebase search and navigation (`task` target). |
 | **general** | subagent | Full tools | Complex multi-step tasks (`task` target). |
 | **compaction** | utility | None | Internal: compresses context. Hidden. |
@@ -173,18 +181,29 @@ pattern-based permission overrides (merged over the global rules by
 
 ---
 
-## Planned: primary-agent switching & @mentions (not yet wired)
+## Primary-agent switching
 
-> **Status:** the machinery exists — `Agent::Router` (@mention detection,
-> Tab-cycling, default routing) and the `agent_definition:` plumbing through the
-> runner — but **no call site passes an agent definition**, so Tab and
-> `@explore`/`@plan`/`@general` mentions currently do nothing. Use the
-> background-subagent surface above for real work.
-
-The intended design: press **Tab** to cycle through primary agents, or route a
-single message with an `@mention`:
+You choose which primary agent handles your turns. The pinned agent is a
+process-level slot (`Rubino::ActiveAgent`, sibling to `Rubino::Modes`): a fresh
+`rubino chat` boots on the registry default (`build`), and an explicit switch
+takes effect for the rest of that process (no premature persistence). Switching
+is entirely on the **slash** channel and **Tab** — there is no `@mention` agent
+routing (`@` is the workspace file picker).
 
 ```
-you > @explore Where is the database connection configured?
-you > @plan How should we restructure the auth module?
+you > /agent plan          # pin a primary agent for the session
+you > /plan                # bare /<name> — same, for a primary agent
+you > <Tab>                # cycle through the primary agents, wrapping around
+you > /explore Where is the database connection configured?   # one-shot route a single message
 ```
+
+- **`/agent <name>`** (or a bare **`/<name>`** when `<name>` is a primary) pins
+  the agent for the session. Only **primary** agents are switchable; subagents
+  (`explore`/`general`) are never pinned.
+- **Tab** cycles through the primary agents.
+- **`/<name> <message>`** routes a single message to any agent (primary or
+  subagent) without changing the sticky selection.
+
+The selected agent's Definition — its system prompt and tool scope — is threaded
+into the runner on every turn, so switching actually changes the model's
+persona and the tools it can call, not just a cosmetic label.

@@ -28,7 +28,18 @@ RSpec.describe Rubino::Security::HardlineGuard do
       "chmod -R 000 /" => %r{chmod/chown of root filesystem},
       "chown -R nobody /" => %r{chmod/chown of root filesystem},
       "echo hi && rm -rf /" => /root filesystem/,
-      "halt" => %r{shutdown/reboot}
+      "halt" => %r{shutdown/reboot},
+      # #325: canonicalization bypasses that the pre-fix normalize() missed.
+      "rm -rf '/'" => /root filesystem/,            # single-quoted root
+      "rm -rf \"/\"" => /root filesystem/,          # double-quoted root
+      "rm -rf //" => /root filesystem/,             # double-slash root
+      "rm -rf /." => /root filesystem/,             # /. equivalent to /
+      "rm -rf /./" => /root filesystem/,            # /./ equivalent to /
+      "rm -rf /usr/" => /system directory/,         # trailing slash
+      "rm -rf '/usr'" => /system directory/,        # quoted system dir
+      "rm -rf ${HOME}" => /home directory/,         # brace-expanded $HOME
+      "rm -rf \"$HOME\"" => /home directory/,       # quoted $HOME
+      "rm -rf ${home}" => /home directory/          # brace lowercase home
     }.each do |command, description_match|
       it "blocks #{command.inspect}" do
         blocked, description = described_class.detect(command)
@@ -53,7 +64,12 @@ RSpec.describe Rubino::Security::HardlineGuard do
       "git reset --hard",
       "chmod -R 755 ./bin",
       "kill -9 1234",
-      "systemctl status nginx"
+      "systemctl status nginx",
+      # #325: canonicalization must NOT introduce false positives on legit paths
+      # that merely contain a trailing slash, a dot-relative, or a bare slash.
+      "rm -rf /tmp/build/",
+      "rm -rf ./node_modules",
+      "echo /"
     ].each do |command|
       it "allows #{command.inspect}" do
         blocked, = described_class.detect(command)
