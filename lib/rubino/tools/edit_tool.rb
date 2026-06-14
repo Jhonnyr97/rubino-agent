@@ -48,20 +48,12 @@ module Rubino
       def call(arguments)
         file_path, old_string, new_string, replace_all = parse_args(arguments)
 
-        # Guard an empty old_string (#329a): a literal sub/gsub with an empty
-        # needle matches at EVERY character boundary, so replace_all would
-        # inject new_string between every char and corrupt the file. Reject it
-        # with an actionable message instead.
-        if old_string.nil? || old_string.empty?
-          return "Error: old_string is empty. Provide the exact existing text to replace " \
-                 "(use the write tool to create or fully replace a file)."
-        end
-
-        # No-op guard (#329b): identical old/new changes nothing, so reporting
-        # "1 replacement applied" misleads the model. Reject it the same way
-        # multi_edit already does, so the two tools behave consistently.
-        if old_string == new_string
-          return "Error: old_string and new_string are identical — nothing to change."
+        # Input guards (#329a/b): reject an empty needle (a literal sub/gsub on
+        # "" matches at every char boundary and would corrupt the file under
+        # replace_all) and a no-op old==new (reporting "1 replacement" misleads
+        # the model — multi_edit already rejects it, so match that).
+        if (guard = guard_args(old_string, new_string))
+          return guard
         end
 
         expanded = expand_workspace_path(file_path)
@@ -124,6 +116,18 @@ module Rubino
       end
 
       private
+
+      # Returns an error string when old/new_string are unusable (#329a/b), or
+      # nil when they're fine. Kept out of #call so it stays under the length gate.
+      def guard_args(old_string, new_string)
+        if old_string.nil? || old_string.empty?
+          return "Error: old_string is empty. Provide the exact existing text to replace " \
+                 "(use the write tool to create or fully replace a file)."
+        end
+        return unless old_string == new_string
+
+        "Error: old_string and new_string are identical — nothing to change."
+      end
 
       # Pull the four inputs (string- or symbol-keyed) in one place so #call
       # stays under the complexity gate.
