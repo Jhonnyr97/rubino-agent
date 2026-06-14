@@ -37,7 +37,12 @@ namespace :parallel do
     cmd += ["-n", count.to_s] if count && !count.empty?
     cmd += ["--runtime-log", RUNTIME_LOG]
     cmd += ["--group-by", "runtime"] if File.exist?(RUNTIME_LOG)
-    cmd += ["--", "spec"]
+    # The project's .rspec pins `--format documentation`, which overrides the
+    # per-worker RuntimeLogger that parallel_tests would otherwise inject — so
+    # no timings get recorded. Re-add the logger explicitly (appending another
+    # --format is additive, the documentation formatter still runs) so each run
+    # writes RUNTIME_LOG for the next run's runtime-based balancing.
+    cmd += ["--", "-o", RUNTIME_LOG, "-f", "ParallelTests::RSpec::RuntimeLogger", "--", "spec"]
     sh(*cmd)
   end
 end
