@@ -20,11 +20,15 @@ RSpec.describe Rubino::Memory::SqliteGraph do
     }.merge(overrides)
   end
 
+  # Durable user content so the turn clears the salience gate and the stubbed
+  # extraction path (edges[]) actually runs — a bare "hi" would NOOP first.
   def seed_session(id = "s1")
     now = Time.now.utc.iso8601
     db[:sessions].insert(id: id, source: "test", status: "active",
                          message_count: 0, token_count: 0, created_at: now, updated_at: now)
-    Rubino::Session::Store.new(db: db).create(session_id: id, role: "user", content: "hi")
+    Rubino::Session::Store.new(db: db).create(
+      session_id: id, role: "user", content: "I use Redis for caching in this project."
+    )
   end
 
   def stub_llm(json)

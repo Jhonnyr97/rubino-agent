@@ -29,11 +29,20 @@ module Rubino
       class Sqlite < Backend
         include SqliteGraph
         include SqliteExtraction
+        include SalienceGate
+        include AuxRetry
 
         TABLE = :memory_facts
         FTS   = :memory_facts_fts
         RRF_K = 60
         DEFAULT_K = 20
+
+        # Bounded retry budget for the aux extraction call on a transient error
+        # (429/overloaded/5xx). Small by design: extraction is best-effort
+        # background work, and the per-session cursor re-feeds an exhausted turn
+        # next time, so we ride out a brief rate-limit window without piling up
+        # background backoff. Overridable via `memory.extract_max_retries`.
+        DEFAULT_EXTRACT_MAX_RETRIES = 3
 
         # Weighted-RRF list weights for the DIRECT relevance signals (FTS/BM25 and
         # vector KNN). Graph (1-hop) and recency are no longer fused here — they
@@ -137,6 +146,14 @@ module Rubino
           new_messages = unextracted_messages(session_id)
           turn = turn_text(new_messages)
           return [] if turn.strip.empty?
+
+          # Salience gate (r5 F5/F6/F7): a greeting, a one-word "help", or any
+          # turn whose USER text asserts nothing durable is a NOOP — skip the aux
+          # call AND advance the cursor so it never mints a fact nor gets re-fed.
+          unless salient?(turn)
+            advance_extraction_cursor(session_id, new_messages)
+            return []
+          end
 
           result = call_llm(session_id: session_id, turn: turn)
           # A nil result means the aux call failed/parsed to nothing — leave the
@@ -517,36 +534,28 @@ module Rubino
 
         # ---- LLM ----
 
+        # ONE aux-LLM extraction call, retried on a transient error via AuxRetry
+        # (r5 C-2): a 429/overloaded/5xx backs off (honouring Retry-After) and
+        # retries up to `memory.extract_max_retries` instead of dropping the fact
+        # on the first RateLimitError. Only after the budget is exhausted (or on a
+        # non-retryable error) do we rescue and return nil — and the caller leaves
+        # the cursor put on nil, so even an exhausted turn is re-fed next time
+        # rather than silently lost.
         def call_llm(session_id:, turn:)
-          response = aux_client.call(
-            task: :compression,
-            messages: [
-              { role: "system", content: SqliteExtractionPrompt::SYSTEM },
-              { role: "user", content: SqliteExtractionPrompt.user_message(
-                now: Time.now.utc.iso8601, live_facts: live_facts_for_prompt, turn: turn
-              ) }
-            ]
-          )
-          parse_json(response&.content)
+          with_aux_retry do
+            response = aux_client.call(
+              task: :compression,
+              messages: [
+                { role: "system", content: SqliteExtractionPrompt::SYSTEM },
+                { role: "user", content: SqliteExtractionPrompt.user_message(
+                  now: Time.now.utc.iso8601, live_facts: live_facts_for_prompt, turn: turn
+                ) }
+              ]
+            )
+            parse_json(response&.content)
+          end
         rescue StandardError => e
           log_skip(e)
-          nil
-        end
-
-        def live_facts_for_prompt
-          live_dataset.order(Sequel.desc(:created_at)).limit(60).all.map do |r|
-            { id: r[:id][0, 8], kind: r[:kind], text: r[:text] }
-          end
-        end
-
-        # The aux model may wrap JSON in prose or a fenced block; extract the
-        # outermost object and parse leniently.
-        def parse_json(content)
-          return nil if content.to_s.strip.empty?
-
-          str = content[/\{.*\}/m] || content
-          JSON.parse(str)
-        rescue JSON::ParserError
           nil
         end
 
