@@ -440,6 +440,33 @@ RSpec.describe Rubino::Session::Repository do
     end
   end
 
+  # #347: the explicit-resume owner-guard reuses the SAME live-owner predicate
+  # auto-resume relies on, now exposed publicly so the Runner can consult it.
+  describe "#owned_by_other_live_process?" do
+    it "is true for an active session a DIFFERENT live process owns" do
+      s = repo.create(source: "cli")
+      repo.update(s[:id], status: "active", owner_pid: 999_999)
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(999_999).and_return(true)
+      expect(repo.owned_by_other_live_process?(repo.find(s[:id]))).to be true
+    end
+
+    it "is false for our OWN pid, a dead owner, no pid, or a non-active status" do
+      ours = repo.create(source: "cli") # owner_pid = our pid
+      expect(repo.owned_by_other_live_process?(repo.find(ours[:id]))).to be false
+
+      dead = repo.create(source: "cli")
+      repo.update(dead[:id], status: "active", owner_pid: 999_999)
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(999_999).and_return(false)
+      expect(repo.owned_by_other_live_process?(repo.find(dead[:id]))).to be false
+
+      ended = repo.create(source: "cli")
+      repo.update(ended[:id], status: "ended", owner_pid: 999_999)
+      expect(repo.owned_by_other_live_process?(repo.find(ended[:id]))).to be false
+    end
+  end
+
   describe ".derive_title" do
     it "derives a clean one-line title from the first user message" do
       expect(described_class.derive_title("Add a modulo operation")).to eq("Add a modulo operation")

@@ -115,6 +115,17 @@ module Rubino
           return { name: "database", status: :fail }
         end
 
+        # A corrupt-but-present DB is its own diagnosis (#359): report it as
+        # "corrupt" pointing at `rubino setup` (which quarantines + recreates),
+        # NOT the vague "database not accessible" — and NEVER by letting the raw
+        # SQLite3::CorruptException (with its stray `PRAGMA journal_mode=WAL`
+        # fragment) leak through the StandardError rescue below into user output.
+        if Rubino.database.corrupt?
+          ui.error("database is corrupt (malformed image): #{Rubino.database.db_path}. " \
+                   "Run 'rubino setup' to quarantine it and recreate a fresh database")
+          return { name: "database", status: :fail }
+        end
+
         if Rubino.database.healthy?
           ui.success("Database accessible: #{Rubino.database.db_path}")
           { name: "database", status: :ok }
@@ -123,7 +134,15 @@ module Rubino
           { name: "database", status: :fail }
         end
       rescue StandardError => e
-        ui.error("database error: #{e.message}")
+        # Last-resort guard: still strip a corruption backtrace to the clean
+        # diagnostic if it somehow reaches here (#359), so the raw exception
+        # class + PRAGMA fragment never reach the user.
+        if Rubino.database.corruption_error?(e)
+          ui.error("database is corrupt (malformed image): #{Rubino.database.db_path}. " \
+                   "Run 'rubino setup' to quarantine it and recreate a fresh database")
+        else
+          ui.error("database error: #{e.message}")
+        end
         { name: "database", status: :fail }
       end
 
@@ -131,6 +150,17 @@ module Rubino
         ui = Rubino.ui
         unless database_on_disk?
           ui.error("migrations not run — no database. Run 'rubino setup'")
+          return { name: "migrations", status: :fail }
+        end
+
+        # Skip the pending-migrations probe on a corrupt DB (#359): `pending?`
+        # connects and runs `PRAGMA journal_mode=WAL`, which throws
+        # SQLite3::CorruptException — the old `rescue` then printed that raw
+        # exception (class name + the stray PRAGMA fragment) as the "migration
+        # check failed" reason. check_database already reports the corruption
+        # with the actionable fix; degrade cleanly here without re-leaking it.
+        if Rubino.database.corrupt?
+          ui.error("migration check skipped — database corrupt (run 'rubino setup')")
           return { name: "migrations", status: :fail }
         end
 
@@ -144,7 +174,13 @@ module Rubino
           { name: "migrations", status: :ok }
         end
       rescue StandardError => e
-        ui.error("migration check failed: #{e.message}")
+        # Final guard so a corruption backtrace (raw class + PRAGMA fragment)
+        # never reaches user output even if it surfaces here (#359).
+        if Rubino.database.corruption_error?(e)
+          ui.error("migration check skipped — database corrupt (run 'rubino setup')")
+        else
+          ui.error("migration check failed: #{e.message}")
+        end
         { name: "migrations", status: :fail }
       end
 
