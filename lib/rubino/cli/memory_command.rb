@@ -42,10 +42,11 @@ module Rubino
       def show(id)
         memory = backend_store.find(id)
 
-        if memory.nil?
-          Rubino.ui.error("memory not found: #{id}")
-          return
-        end
+        # Mirror SessionCommand (#20, P2-H1/H2): a not-found is a FAILURE, so
+        # raise Thor::Error — exit_on_failure? turns it into a non-zero exit with
+        # the message on stderr, so automation can detect the miss and a piped
+        # stdout stays clean. ui.error wrote to stdout and returned 0.
+        raise Thor::Error, "memory not found: #{id}" if memory.nil?
 
         self.class.render(memory, ui: Rubino.ui)
       end
@@ -86,11 +87,11 @@ module Rubino
 
       desc "delete ID", "Delete a specific memory"
       def delete(id)
-        if backend_store.delete(id)
-          Rubino.ui.success("Memory deleted: #{id}")
-        else
-          Rubino.ui.error("memory not found: #{id}")
-        end
+        # Same not-found-is-failure contract as #show (P2-H1/H2): exit non-zero
+        # with the error on stderr instead of stdout-printing and returning 0.
+        raise Thor::Error, "memory not found: #{id}" unless backend_store.delete(id)
+
+        Rubino.ui.success("Memory deleted: #{id}")
       end
 
       desc "backend [NAME]", "Show the active memory backend, or switch to NAME"
@@ -98,10 +99,8 @@ module Rubino
         return show_backend if name.nil?
 
         unless Memory::Backends.registered?(name)
-          Rubino.ui.error(
-            "Unknown memory backend: #{name}. Available: #{Memory::Backends.names.join(", ")}"
-          )
-          return
+          raise Thor::Error,
+                "Unknown memory backend: #{name}. Available: #{Memory::Backends.names.join(", ")}"
         end
 
         Config::Writer.new(config_path: config_path).set("memory.backend", name)

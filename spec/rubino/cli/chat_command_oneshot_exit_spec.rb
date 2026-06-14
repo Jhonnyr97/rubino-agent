@@ -66,6 +66,34 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # P2-H3 — empty/whitespace one-shot input must NOT be dispatched to the
+  # model (an empty `-q`/`prompt ""` is truthy in Ruby, so it used to spend a
+  # real API turn). Mirror interactive mode's `next if input.strip.empty?`:
+  # a clear "no prompt provided" message on stderr + non-zero exit, BEFORE any
+  # runner is built or the model is called.
+  describe "empty-input guard on the one-shot path (P2-H3)" do
+    before do
+      # No FakeLLM and no credential stub — the guard must fire well before any
+      # model/credential code is reached. A built runner would prove the guard
+      # failed, so spy on the constructor and assert it never ran.
+      allow(Rubino::Agent::Runner).to receive(:new).and_call_original
+    end
+
+    [["empty string", ""], ["whitespace only", "   \t\n"]].each do |label, blank|
+      it "rejects #{label} with a stderr message, non-zero exit, and no runner built" do
+        status = nil
+        expect do
+          described_class.new("query" => blank).execute
+        rescue SystemExit => e
+          status = e.status
+        end.to output(/no prompt provided/).to_stderr
+
+        expect(status).to eq(1)
+        expect(Rubino::Agent::Runner).not_to have_received(:new)
+      end
+    end
+  end
+
   # #260 — headless FAIL-CLOSED. A non-allowlisted shell command in a one-shot
   # run has no human to approve it (UI::Null), so it must be BLOCKED (not
   # auto-run, the old RCE foot-gun) and the process must exit NON-ZERO so

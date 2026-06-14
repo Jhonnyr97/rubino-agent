@@ -34,14 +34,27 @@ RSpec.describe Rubino::CLI::ConfigCommand do
     end
   end
 
-  # `config get` of a not-found key is a warning, not a hard failure: it does
-  # NOT exit non-zero (the value simply renders as "not found"). Documented
-  # contract — kept distinct from the `set` failure above.
-  describe "#get of a key under a scalar intermediate" do
-    it "does not exit (treated as not found, status 0)" do
-      expect { described_class.new.get("model.default.foo") }.not_to raise_error
-      warn = ui.messages.find { |m| m[:level] == :warning }
-      expect(warn[:message]).to include("not found")
+  # P2-H1/H2: `config get` of a missing key is a FAILURE on the automation
+  # surface — it now raises Thor::Error so the CLI exits non-zero with the
+  # message on stderr (the shared renderer no longer warns on stdout for this
+  # path), matching SessionCommand. A scalar-intermediate descent is the same
+  # "not found" case. The in-chat `/config get` keeps its stdout warning (it
+  # ignores render_get's return value) — pinned in the commands handler spec.
+  describe "#get of a missing / scalar-intermediate key" do
+    it "raises Thor::Error (non-zero exit) for a key under a scalar intermediate" do
+      expect { described_class.new.get("model.default.foo") }
+        .to raise_error(Thor::Error, /config key not found: model\.default\.foo/)
+    end
+
+    it "raises Thor::Error (non-zero exit) for a wholly unknown key" do
+      expect { described_class.new.get("nonexistent.key") }
+        .to raise_error(Thor::Error, /config key not found: nonexistent\.key/)
+    end
+
+    it "does not emit a stdout warning on a miss (error goes to stderr via Thor)" do
+      described_class.new.get("nonexistent.key")
+    rescue Thor::Error
+      expect(ui.messages.any? { |m| m[:level] == :warning }).to be(false)
     end
   end
 

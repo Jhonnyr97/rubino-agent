@@ -48,10 +48,10 @@ module Rubino
       desc "show NAME", "Print a skill's SKILL.md body (review it before enabling)"
       def show(name)
         skill = Skills::Registry.trusted.find(name)
-        if skill.nil?
-          Rubino.ui.error("unknown skill: #{name}")
-          return
-        end
+        # Not-found is a FAILURE on the automation surface (P2-H1/H2): raise so
+        # exit_on_failure? exits non-zero with the message on stderr, matching
+        # SessionCommand. ui.error wrote to stdout and returned 0.
+        raise Thor::Error, "unknown skill: #{name}" if skill.nil?
 
         Rubino.ui.info(skill.content)
       end
@@ -79,24 +79,26 @@ module Rubino
           source ||= DOCUMENTS_SOURCE
           wanted = DOCUMENT_SKILLS.dup if wanted.empty?
         end
-        if source.nil?
-          Rubino.ui.error("missing source — pass owner/repo, a git URL, or --documents")
-          return
-        end
+        # Missing source / no-skills / fetch failure are all FAILURES on the
+        # automation surface (P2-H1/H2): raise Thor::Error so the run exits
+        # non-zero with the message on stderr instead of stdout-printing and
+        # returning 0.
+        raise Thor::Error, "missing source — pass owner/repo, a git URL, or --documents" if source.nil?
 
         installer = Skills::Installer.new
         fetched = installer.fetch(source) do |checkout, sha|
           found = installer.discover(checkout)
           if found.empty?
-            Rubino.ui.warning("no skills found in #{source} (expected <name>/SKILL.md directories)")
+            raise Thor::Error, "no skills found in #{source} (expected <name>/SKILL.md directories)"
           elsif options[:list]
             discovered_table(found)
           else
             install_selected(installer, found, wanted, checkout: checkout, source: source, commit: sha)
           end
+
           true
         end
-        Rubino.ui.error("could not fetch #{source} — check the source name/URL and your network") if fetched.nil?
+        raise Thor::Error, "could not fetch #{source} — check the source name/URL and your network" if fetched.nil?
       end
 
       desc "update [NAME ...]", "Re-fetch installed skills from their recorded sources"
@@ -107,14 +109,24 @@ module Rubino
           return
         end
 
+        # Report every name's outcome, but if ANY failed (unknown / fetch
+        # failed), exit non-zero so automation detects the partial failure
+        # (P2-H1). Per-name error lines go to stderr (warn), successes/notices
+        # stay on stdout.
+        failures = []
         installer.update(names).each do |name, status|
           case status
           when :updated     then Rubino.ui.success("Updated skill: #{name}")
           when :up_to_date  then Rubino.ui.info("#{name} is up to date.")
-          when :unknown     then Rubino.ui.error("unknown skill: #{name} (not installed via `rubino skills install`)")
-          else                   Rubino.ui.error("could not update #{name} — fetch failed or the skill left its source")
+          when :unknown
+            warn "✗ unknown skill: #{name} (not installed via `rubino skills install`)"
+            failures << name
+          else
+            warn "✗ could not update #{name} — fetch failed or the skill left its source"
+            failures << name
           end
         end
+        raise Thor::Error, "failed to update: #{failures.join(", ")}" unless failures.empty?
       end
 
       desc "remove NAME", "Remove a skill installed via `rubino skills install`"
@@ -125,9 +137,11 @@ module Rubino
           return
         end
 
-        Rubino.ui.error("#{name} wasn't installed via `rubino skills install` (no provenance entry)")
+        # Nothing removed — a FAILURE (P2-H1/H2). The "delete manually" hint
+        # goes to stderr alongside the error, then raise so exit != 0.
         dir = File.join(installer.skills_dir, name)
-        Rubino.ui.info("It exists at #{dir} — delete the directory manually.") if File.directory?(dir)
+        warn "It exists at #{dir} — delete the directory manually." if File.directory?(dir)
+        raise Thor::Error, "#{name} wasn't installed via `rubino skills install` (no provenance entry)"
       end
 
       private
@@ -153,10 +167,12 @@ module Rubino
         Rubino.ensure_database_ready!
         registry = Skills::Registry.trusted
         unless Skills::Toggle.set(name, enabled: enabled, registry: registry)
-          Rubino.ui.error("unknown skill: #{name}")
+          # Unknown-skill toggle is a FAILURE (P2-H1/H2): list the available
+          # names on stderr (Thor::Shell#say with :stderr) for the hint, then
+          # raise so the run exits non-zero with the error on stderr too.
           available = registry.names
-          Rubino.ui.info("Available: #{available.join(", ")}") unless available.empty?
-          return
+          warn "Available: #{available.join(", ")}" unless available.empty?
+          raise Thor::Error, "unknown skill: #{name}"
         end
 
         Rubino.ui.success("#{enabled ? "Enabled" : "Disabled"} skill: #{name}")
@@ -172,9 +188,10 @@ module Rubino
           if wanted.any?
             missing = wanted - found.map { |e| e[:name] }
             unless missing.empty?
-              Rubino.ui.error("not found in #{source}: #{missing.join(", ")}")
-              Rubino.ui.info("Available: #{found.map { |e| e[:name] }.join(", ")}")
-              return
+              # Requested skill name(s) absent from the source: a FAILURE
+              # (P2-H1/H2). Available list on stderr, then raise so exit != 0.
+              warn "Available: #{found.map { |e| e[:name] }.join(", ")}"
+              raise Thor::Error, "not found in #{source}: #{missing.join(", ")}"
             end
             found.select { |e| wanted.include?(e[:name]) }
           elsif options[:all] || found.size == 1
