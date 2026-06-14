@@ -20,11 +20,24 @@ module Rubino
     # made the chat trap raise ThreadError, the flag never flipped, and the
     # turn ran on. Keep this lock-free and trap-safe.
     class CancelToken
+      # Why the turn was cancelled — distinguishes a deliberate user interrupt
+      # (Esc / Ctrl+C) from an EXTERNAL teardown (SIGTERM/SIGHUP from systemd,
+      # a terminal close, or a supervisor kill). Both unwind the turn the same
+      # way, but the result LABEL must not claim "interrupted by user" when no
+      # user interrupted (#361b). Defaults to :user — the overwhelmingly common
+      # case and the one the historical message described.
+      attr_reader :reason
+
       def initialize
         @cancelled = false
+        @reason = :user
       end
 
-      def cancel!
+      # +reason+ records WHY: :user (Esc/Ctrl+C, default) or :external
+      # (SIGTERM/SIGHUP teardown). One-shot like @cancelled — the first reason
+      # wins, so a later cancel! can't relabel a genuine user interrupt.
+      def cancel!(reason: :user)
+        @reason = reason unless @cancelled
         @cancelled = true
       end
 
@@ -34,9 +47,12 @@ module Rubino
 
       # Raises Interrupted if the token has been cancelled. Used as a poll
       # point inside hot loops (per-chunk in streams, per-iteration in the
-      # agent loop).
+      # agent loop). The Interrupted carries a reason-appropriate message so an
+      # external-signal teardown is not mislabeled as a user interrupt (#361b).
       def check!
-        raise Rubino::Interrupted if cancelled?
+        return unless cancelled?
+
+        raise Rubino::Interrupted.new(reason: @reason)
       end
     end
   end

@@ -69,4 +69,35 @@ RSpec.describe Rubino::Interaction::CancelToken do
     token.cancel!
     expect(token.cancelled?).to be true
   end
+
+  # Regression #361(b): an EXTERNAL teardown (SIGTERM/SIGHUP from systemd, a
+  # terminal close, a supervisor kill) used to unwind via the same
+  # Rubino::Interrupted whose message claimed "interrupted by user" — mislabeling
+  # a kill the user never issued. The reason now distinguishes the two.
+  describe "cancellation reason (#361b)" do
+    it "defaults to :user and #check! raises with the user message" do
+      token.cancel!
+      expect(token.reason).to eq(:user)
+      expect { token.check! }.to raise_error(Rubino::Interrupted) do |e|
+        expect(e.reason).to eq(:user)
+        expect(e.message).to eq("interrupted by user")
+      end
+    end
+
+    it "records :external and #check! raises with the external-signal message" do
+      token.cancel!(reason: :external)
+      expect(token.reason).to eq(:external)
+      expect { token.check! }.to raise_error(Rubino::Interrupted) do |e|
+        expect(e.reason).to eq(:external)
+        expect(e.message).to eq("interrupted by external signal")
+        expect(e.message).not_to include("user")
+      end
+    end
+
+    it "is one-shot on the reason too: a later cancel! can't relabel a user interrupt" do
+      token.cancel!(reason: :user)
+      token.cancel!(reason: :external)
+      expect(token.reason).to eq(:user)
+    end
+  end
 end

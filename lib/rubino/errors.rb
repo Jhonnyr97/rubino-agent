@@ -60,12 +60,25 @@ module Rubino
     end
   end
 
-  # User interrupted an in-progress LLM turn (Esc / Ctrl+C in the chat TUI).
-  # Caught by the Loop/Lifecycle so partial content can still be persisted
-  # and the UI can return to a ready state cleanly.
+  # An in-progress LLM turn was aborted. +reason+ distinguishes a deliberate
+  # user interrupt (Esc / Ctrl+C in the chat TUI — :user) from an EXTERNAL
+  # teardown (SIGTERM/SIGHUP from systemd, a terminal close, or a supervisor
+  # kill — :external). Both are caught by the Loop/Lifecycle so partial content
+  # can still be persisted and the UI returns to a ready state cleanly, but the
+  # result LABEL must not claim "interrupted by user" when no user interrupted
+  # (#361b). Default stays :user with the historical message for compatibility.
   class Interrupted < Error
-    def initialize(message = "interrupted by user")
-      super
+    attr_reader :reason
+
+    def initialize(message = nil, reason: :user)
+      @reason = reason
+      super(message || default_message(reason))
+    end
+
+    private
+
+    def default_message(reason)
+      reason == :external ? "interrupted by external signal" : "interrupted by user"
     end
   end
 

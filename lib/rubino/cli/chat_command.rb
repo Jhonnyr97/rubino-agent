@@ -265,7 +265,7 @@ module Rubino
       # 60-line backtrace. The partial the model produced is already persisted by
       # the Loop (marked interrupted), so the run stays truthful & resumable.
       # Interrupt is listed for doc value though SignalException already covers it.
-      rescue Rubino::Interrupted, Interrupt, SignalException # rubocop:disable Lint/ShadowedException
+      rescue Rubino::Interrupted, Interrupt, SignalException => e # rubocop:disable Lint/ShadowedException
         # Print the partial the model streamed before the interrupt (#349). The
         # Loop already persisted it (marked interrupted:true), but run! raises out
         # before #print_oneshot_answer — so without this, `rubino -q` on SIGINT
@@ -277,7 +277,11 @@ module Rubino
           print_oneshot_answer(partial)
           $stdout.flush
         end
-        warn "rubino: interrupted"
+        # Label truthfully (#361b): an EXTERNAL teardown (SIGTERM/SIGHUP) is not a
+        # user interrupt. Bare Interrupt/SignalException (not our cooperative
+        # Rubino::Interrupted) is a raw signal → external.
+        external = e.is_a?(Rubino::Interrupted) ? e.reason == :external : true
+        warn "rubino: #{external ? "interrupted by external signal" : "interrupted"}"
         exit(130)
       rescue SystemExit
         raise
@@ -371,8 +375,15 @@ module Rubino
       # backtrace, then exits with the conventional 130. The Loop already
       # persisted the partial (marked interrupted), so the session is truthful.
       # Interrupt is listed for doc value though SignalException already covers it.
-      rescue Rubino::Interrupted, Interrupt, SignalException # rubocop:disable Lint/ShadowedException
-        warn "rubino: interrupted"
+      rescue Rubino::Interrupted, Interrupt, SignalException => e # rubocop:disable Lint/ShadowedException
+        # Label truthfully: an EXTERNAL teardown (SIGTERM/SIGHUP) is not a user
+        # interrupt, so don't claim "interrupted by user" when no user
+        # interrupted (#361b). Bare Interrupt/SignalException (not our
+        # cooperative Rubino::Interrupted) is a raw signal → external.
+        external = e.is_a?(Rubino::Interrupted) ? e.reason == :external : true
+        message = external ? "interrupted by external signal" : "interrupted by user"
+        subtype = external ? "error_external_signal" : "error_interrupted"
+        warn "rubino: #{message}"
         # Carry the persisted partial into the result envelope's `result` field
         # (#349) so automation parsing the interrupted run still sees the
         # answer-so-far, not an empty string — the JSON twin of printing the
@@ -381,8 +392,8 @@ module Rubino
                     recorder: recorder, session: runner&.session,
                     duration_ms: started_at ? ((monotonic_now - started_at) * 1000).round : 0,
                     model: model_name,
-                    error: { message: "interrupted by user", type: "Rubino::Interrupted",
-                             subtype: "error_interrupted",
+                    error: { message: message, type: "Rubino::Interrupted",
+                             subtype: subtype,
                              result_text: oneshot_interrupted_partial(runner) }
                   ))
         exit(130)
@@ -814,6 +825,12 @@ module Rubino
           next unless Signal.list.key?(sig)
 
           prev[sig] = Signal.trap(sig) do
+            # External teardown (systemd SIGTERM / terminal-close SIGHUP), not a
+            # user interrupt: flip the cancel token with reason :external so any
+            # in-flight turn that unwinds via Rubino::Interrupted is labeled
+            # truthfully ("interrupted by external signal"), not "by user"
+            # (#361b). Trap-safe — cancel! only flips lock-free booleans.
+            runner.cancel!(reason: :external)
             runner.end_session!
             exit(0)
           end
