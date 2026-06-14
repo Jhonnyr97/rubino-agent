@@ -105,6 +105,7 @@ detect_shell_rc() {
   case "$shell_name" in
     zsh)  printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
     bash) printf '%s\n' "$HOME/.bashrc" ;;
+    fish) printf '%s\n' "${__fish_config_dir:-$HOME/.config/fish}/config.fish" ;;
     *)    printf '%s\n' "$HOME/.profile" ;;
   esac
 }
@@ -130,9 +131,29 @@ rc_targets() {
       else printf '%s\n' "$HOME/.profile"
       fi
       ;;
+    fish)
+      # fish does NOT read ~/.profile (it isn't POSIX); its config lives in
+      # config.fish, sourced for every fish session (login + interactive).
+      printf '%s\n' "${__fish_config_dir:-$HOME/.config/fish}/config.fish"
+      ;;
     *)
       printf '%s\n' "$HOME/.profile"
       ;;
+  esac
+}
+
+# The shell-correct line that prepends $1 (a directory) to PATH, persisted into
+# an rc file. POSIX shells (bash/zsh/sh) get `export PATH="DIR:$PATH"`; fish does
+# NOT understand that syntax (no `$PATH` colon list, no `export`) — it needs
+# `fish_add_path DIR`. Writing the POSIX form into config.fish would be ignored
+# (or error), leaving fish users with a broken PATH while we report success
+# (INST-R3-1). Args: $1 = bindir.
+path_persist_line() {
+  local dir="$1" shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    fish) printf 'fish_add_path %s\n' "$dir" ;;
+    *)    printf 'export PATH="%s:$PATH"\n' "$dir" ;;
   esac
 }
 
@@ -172,7 +193,10 @@ with_rc_lock() {
 # race a concurrent install. Echoes "touched" if the line is present afterward.
 _append_line_to_rc() {
   local line="$1" rc="$2"
-  # Create the file if missing (login shells will source it).
+  # Create the file if missing (login shells will source it). Ensure the parent
+  # dir exists first — fish's config.fish lives under ~/.config/fish, which may
+  # not exist yet on a fresh box (a bare `: >"$rc"` would then fail silently).
+  [ -e "$rc" ] || mkdir -p "$(dirname "$rc")" 2>/dev/null || true
   [ -e "$rc" ] || : >"$rc" 2>/dev/null || return 0
   if grep -qF "$line" "$rc" 2>/dev/null; then
     printf 'touched'
@@ -223,6 +247,18 @@ verify_fresh_shell() {
   local found=1
   case "$shell_name" in
     zsh)  zsh  -i -c "command -v ${BIN_NAME} >/dev/null 2>&1" >/dev/null 2>&1 || found=0 ;;
+    # fish: probe fish itself (a fresh login+interactive session sources
+    # config.fish), NOT bash -lic — bash would find a POSIX export the user's
+    # fish never reads, reporting a false success over a broken fish (INST-R3-1).
+    # `type -q` is fish's `command -v`. If fish isn't installed to probe with,
+    # fall through to a best-effort PATH check rather than claim success.
+    fish)
+      if command -v fish >/dev/null 2>&1; then
+        fish -l -i -c "type -q ${BIN_NAME}" >/dev/null 2>&1 || found=0
+      else
+        command -v "${BIN_NAME}" >/dev/null 2>&1 || found=0
+      fi
+      ;;
     *)    bash -lic "command -v ${BIN_NAME} >/dev/null 2>&1" >/dev/null 2>&1 || found=0 ;;
   esac
 
@@ -723,8 +759,14 @@ setup_mise() {
     bash) act_sh="bash" ;;
     *)    act_sh="$shell_name" ;;
   esac
-  # Use a bare `mise` in the persisted line so it stays valid if the binary moves.
-  act_line="eval \"\$($mise_bin activate ${act_sh:-bash})\""
+  # The activation snippet differs by shell: POSIX shells eval the command
+  # substitution; fish pipes it to `source` (fish has no `eval "$(...)"`). Using
+  # the POSIX form in config.fish would error and leave fish broken (INST-R3-1).
+  if [ "$shell_name" = "fish" ]; then
+    act_line="$mise_bin activate fish | source"
+  else
+    act_line="eval \"\$($mise_bin activate ${act_sh:-bash})\""
+  fi
 
   if command -v "${BIN_NAME}" >/dev/null 2>&1; then
     ok "${BIN_NAME} is already on your PATH (mise is activated)."
@@ -871,7 +913,8 @@ else
   PATH_OK=0
 fi
 
-PATH_LINE="export PATH=\"${GEM_BIN_DIR}:\$PATH\""
+# Shell-correct PATH-persist line (fish needs `fish_add_path`, not POSIX export).
+PATH_LINE="$(path_persist_line "${GEM_BIN_DIR}")"
 
 if [ "$PATH_OK" -ne 1 ]; then
   # Persist the PATH line to the user's rc so a fresh login shell finds rubino —

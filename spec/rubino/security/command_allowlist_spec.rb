@@ -100,6 +100,25 @@ RSpec.describe Rubino::Security::CommandAllowlist do
       end
     end
 
+    # ------------------------------------------------------------------
+    # CFG-R3-1 — `command_allowlist: "git status"` as a YAML SCALAR (not a
+    # sequence) used to reach CommandAllowlist#allowlist_token_lists, which
+    # calls #filter_map on the value. A bare String has no #filter_map, so an
+    # unhandled NoMethodError escaped the approval path (a crash, not the clean
+    # fail-closed contract). The config accessor now coerces a scalar to a
+    # single-entry array, so the matcher gets a well-formed list and never
+    # raises. (`security_command_allowlist` is exercised directly in the config
+    # spec; here we prove the matcher no longer crashes and behaves sanely.)
+    # ------------------------------------------------------------------
+    context "when command_allowlist is a YAML scalar string, not a sequence (CFG-R3-1)" do
+      it "does not raise NoMethodError and matches the coerced single entry" do
+        list = allowlist("git status") # scalar, not ["git status"]
+        expect { list.allowed?("git status") }.not_to raise_error
+        expect(list.allowed?("git status")).to be(true)
+        expect(list.allowed?("rm -rf /tmp/x")).to be(false)
+      end
+    end
+
     context "with a multi-segment line where EVERY segment is allowlisted" do
       it "allows a pipe when both heads are allowlisted and the line is safe" do
         expect(allowlist(["git status", "grep"]).allowed?("git status | grep foo")).to be(true)
@@ -208,6 +227,35 @@ RSpec.describe Rubino::Security::CommandAllowlist do
         expect(list.allowed?("git status")).to be(true)
         expect(list.allowed?("git diff HEAD~1")).to be(true)
         expect(list.allowed?("git log --oneline")).to be(true)
+      end
+    end
+
+    # ------------------------------------------------------------------
+    # SEC-R3-1 — `--config-env=<name>=<envvar>` sets config exactly like the
+    # already-blocked `-c`, but sources the VALUE from an environment variable.
+    # So `git --config-env=alias.x=PWNVAR x` with PWNVAR='!cmd' is the same
+    # alias-RCE as `git -c alias.x='!cmd' x`. The old denylist listed only `-c`,
+    # so this and `--attr-source` (reads .gitattributes from an arbitrary tree)
+    # slipped through on a UI-persisted bare-`git` allowlist. They are now
+    # rejected; plain read-only git still allowed.
+    # ------------------------------------------------------------------
+    context "with the --config-env / --attr-source global flags (SEC-R3-1)" do
+      it "rejects `git --config-env=alias.x=V x` (env-sourced alias = RCE)" do
+        expect(allowlist(["git"]).allowed?("git --config-env=alias.x=PWNVAR x")).to be(false)
+      end
+
+      it "rejects `git --config-env=core.pager=V log`" do
+        expect(allowlist(["git"]).allowed?("git --config-env=core.pager=PWNVAR log")).to be(false)
+      end
+
+      it "rejects `git --attr-source=<tree> status`" do
+        expect(allowlist(["git"]).allowed?("git --attr-source=evilbranch status")).to be(false)
+      end
+
+      it "does NOT regress plain read-only git under an allowlisted bare `git`" do
+        list = allowlist(["git"])
+        expect(list.allowed?("git status")).to be(true)
+        expect(list.allowed?("git diff")).to be(true)
       end
     end
 

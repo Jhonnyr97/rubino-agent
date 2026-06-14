@@ -133,6 +133,23 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "anything not listed" })).to eq(:ask)
     end
+
+    # CFG-R3-1 — a YAML scalar (`command_allowlist: git status`) once raised an
+    # unhandled NoMethodError (String#filter_map) OUT of #decide: it crashed
+    # closed (no exec) but spewed a backtrace, violating the clean-diagnostic
+    # contract. #decide must now resolve normally (coerced to a single entry).
+    it "does not raise when command_allowlist is a scalar string (CFG-R3-1)" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "command_allowlist" => "git status" } # scalar, not a sequence
+      )
+      pol = described_class.new(config: cfg)
+      expect { pol.decide(tool, arguments: { "command" => "rm -rf /tmp/x" }) }.not_to raise_error
+      # The coerced entry still pre-approves its exact command; an unlisted
+      # write/shell still routes to the prompt (fails closed).
+      expect(pol.decide(tool, arguments: { "command" => "git status" })).to eq(:allow)
+      expect(pol.decide(tool, arguments: { "command" => "rm -rf /tmp/x" })).to eq(:ask)
+    end
   end
 
   describe "#decide read-only auto-allow (step 6b)" do

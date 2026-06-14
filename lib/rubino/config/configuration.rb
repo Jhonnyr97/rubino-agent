@@ -383,8 +383,21 @@ module Rubino
         require_confirmation_for_shell? ? :confirm_all : :dangerous_only
       end
 
+      # The pre-approved command allowlist, always returned as an Array.
+      #
+      # YAML lets a user write `command_allowlist: git status` (a scalar) where
+      # a sequence was meant. The matcher (CommandAllowlist#allowlist_token_lists)
+      # calls #filter_map on this value; a bare String would raise an unhandled
+      # NoMethodError out of the approval path (a crash, not the clean
+      # fail-closed contract — CFG-R3-1). Coerce a scalar to a single-entry
+      # array and drop any nil so the matcher always receives a well-formed list.
       def security_command_allowlist
-        dig("security", "command_allowlist") || []
+        raw = dig("security", "command_allowlist")
+        case raw
+        when Array then raw
+        when nil then []
+        else [raw]
+        end
       end
 
       # -- Providers section --
