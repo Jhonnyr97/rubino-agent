@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Machine-readable headless output (`--output-format json | stream-json`, #312).**
+  `rubino prompt` / `chat -q` can now emit Claude-Code-aligned JSON for
+  CI/automation instead of prose. `--output-format json` (or the `--json` alias)
+  prints a single `{type:"result", subtype, is_error, result, session_id,
+  exit_reason, num_turns, duration_ms, usage:{input/output/cache_* tokens},
+  total_cost_usd, model}` object on stdout at completion; `--output-format
+  stream-json` emits JSONL (a `system`/`init` line, then Messages-API-shaped
+  `assistant`/`user` step objects, then the same final `result`). In both modes
+  ALL JSON goes to stdout and ALL logs/diagnostics/errors to stderr, and markdown
+  rendering is suppressed. The fail-closed / exit-code contract is preserved: a
+  blocked tool still emits the result with `is_error:true` and a non-zero exit.
+  The schema lives in a single shared serializer (`Rubino::Output::ResultSerializer`)
+  so it never drifts. `text` (default) is unchanged.
+
 ### Security
 
 - **Hardened/narrowed the command-allowlist convenience layer (SEC-R2-1/2/3).**

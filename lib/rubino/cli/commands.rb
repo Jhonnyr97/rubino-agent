@@ -138,6 +138,16 @@ module Rubino
       option :max_turns,               type: :numeric, desc: "Max tool iterations per turn"
       option :ignore_rules,            type: :boolean, desc: "Skip AGENTS.md and context files"
 
+      # Machine-readable headless output (one-shot / -q only). `text` (default)
+      # prints prose; `json` emits a single result object on stdout at
+      # completion; `stream-json` emits JSONL (system→assistant→user→result).
+      # In json/stream-json modes ALL JSON goes to stdout and ALL logs/errors to
+      # stderr, and markdown rendering is suppressed. `--json` is an alias for
+      # `--output-format json`.
+      option :output_format, type: :string, banner: "FORMAT",
+                             desc: "One-shot output: text | json | stream-json (default text)"
+      option :json,          type: :boolean, desc: "Alias for --output-format json"
+
       # Add extra allowed workspace roots at launch (repeatable), like Claude
       # Code's --add-dir. Write/edit tools then accept files under any added
       # root; an added dir's project context/skills are gated by folder-trust.
@@ -165,6 +175,9 @@ module Rubino
       option :ignore_rules,                type: :boolean, desc: "Skip AGENTS.md/context files"
       option :add_dir,                     type: :string, repeatable: true,
                                            desc: "Add an extra allowed workspace directory (repeatable)"
+      option :output_format,               type: :string, banner: "FORMAT",
+                                           desc: "Output: text | json | stream-json (default text)"
+      option :json,                        type: :boolean, desc: "Alias for --output-format json"
       def prompt(*args)
         query = args.join(" ")
         opts = options.to_h.merge(query: query)

@@ -2,6 +2,7 @@
 
 require "pastel"
 require "io/console"
+require "json"
 
 module Rubino
   module CLI
@@ -33,6 +34,11 @@ module Rubino
 
       PROMPT_CARET = "❯"
       PROMPT_RAIL  = "▍"
+
+      # Valid --output-format values (one-shot only). `text` is the default prose
+      # path; `json`/`stream-json` are the machine-readable headless modes
+      # (0.5.0, #312). The hyphen spelling is normalized to an underscore symbol.
+      OUTPUT_FORMATS = %i[text json stream_json].freeze
 
       def initialize(options = {})
         @options = options
@@ -104,8 +110,35 @@ module Rubino
 
       # --- One-shot mode ---
 
+      # Resolves the effective one-shot output format from --output-format and
+      # the --json alias. --json wins (it's the explicit shorthand). An unknown
+      # value fails fast with a clear stderr message + non-zero exit BEFORE any
+      # model work, so a typo never silently degrades to prose. Default :text.
+      def output_format
+        return :json if opt(:json) == true
+
+        raw = (opt(:output_format) || opt(:"output-format")).to_s.strip
+        return :text if raw.empty?
+
+        fmt = raw.tr("-", "_").to_sym
+        unless OUTPUT_FORMATS.include?(fmt)
+          warn "rubino: invalid --output-format '#{raw}' (expected: text, json, stream-json)"
+          exit(2)
+        end
+        fmt
+      end
+
+      # True for the machine-readable headless modes, where ALL JSON goes to
+      # stdout and ALL diagnostics to stderr (markdown rendering suppressed).
+      def json_mode?(fmt = output_format)
+        fmt != :text
+      end
+
       def run_oneshot(query)
         resolve_yolo!
+
+        fmt = output_format
+        return run_oneshot_json(query, fmt) if json_mode?(fmt)
 
         # Structured JSON log lines (llm.retry & friends) must never contaminate
         # the one-shot stdout (#99): `answer=$(rubino prompt ...)` pipes stdout,
@@ -179,6 +212,118 @@ module Rubino
         exit(1)
       ensure
         restore_logger(prev_log_io)
+      end
+
+      # Machine-readable headless one-shot (0.5.0, #312). Emits Claude-Code-aligned
+      # JSON for CI/automation instead of prose:
+      #
+      #   :json        — a SINGLE {type:"result", …} object on stdout at completion.
+      #   :stream_json — JSONL: {type:"system",subtype:"init",…} then one
+      #                  {type:"assistant"|"user", message:{…}} per persisted step
+      #                  then the SAME final {type:"result", …}.
+      #
+      # Discipline: ALL JSON goes to stdout; ALL logs/diagnostics/errors go to
+      # stderr (the logger is already pinned to stderr below, and the Null UI
+      # suppresses markdown), so NOTHING but JSON lands on stdout. The existing
+      # fail-closed / exit-code contract is preserved: a blocked tool ⇒ the json
+      # still emits with is_error:true and a non-zero exit; a failed run ⇒ an
+      # error result + exit 1.
+      def run_oneshot_json(query, fmt)
+        prev_log_io = redirect_logger_to_stderr
+        # The unknown-model warning still helps automation debug a typo — it goes
+        # to stderr, so the stdout JSON contract is untouched.
+        warn_unknown_model if model_override_given?
+        setup_workspace_and_trust!(Rubino.ui, interactive: false)
+
+        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
+        headless_ui = UI::Null.new
+        runner = build_runner(session_id: session_resolver.resolve_session_id,
+                              ui: headless_ui, announce_session: false)
+
+        recorder = Output::TurnRecorder.new.attach!
+        store    = ::Rubino::Session::Store.new
+        # Snapshot the transcript length so stream-json replays only THIS turn's
+        # newly-persisted messages (the user prompt, assistant/tool steps).
+        baseline = store.for_session(runner.session[:id]).length
+
+        if fmt == :stream_json
+          emit_json(Output::ResultSerializer.system_init(
+                      session: runner.session, model: model_name, tools: turn_tool_names(runner)
+                    ))
+        end
+
+        announce_attachment_upload(image_paths)
+        started_at = monotonic_now
+        response = runner.run!(text, image_paths: image_paths)
+        duration_ms = ((monotonic_now - started_at) * 1000).round
+
+        if fmt == :stream_json
+          new_messages = store.for_session(runner.session[:id]).drop(baseline)
+          Output::ResultSerializer.message_frames(new_messages).each { |f| emit_json(f) }
+        end
+
+        notify_oneshot_finished(duration_ms / 1000.0)
+
+        # Fail-closed (#260) preserved in JSON form: a blocked tool still emits a
+        # complete result, but flagged is_error with exit 2 so CI fails loudly.
+        if headless_ui.approval_blocked?
+          headless_ui.blocked_messages.each { |m| warn m }
+          emit_json(Output::ResultSerializer.error_result(
+                      recorder: recorder, session: runner.session, duration_ms: duration_ms,
+                      model: model_name,
+                      error: { subtype: "error_tool_blocked", type: "tool_blocked",
+                               result_text: response.to_s,
+                               message: headless_ui.blocked_messages.join("; ") }
+                    ))
+          exit(2)
+        end
+
+        emit_json(Output::ResultSerializer.result(
+                    recorder: recorder, final_text: response.to_s, session: runner.session,
+                    duration_ms: duration_ms, model: model_name
+                  ))
+      # rubocop:disable Lint/ShadowedException
+      rescue Rubino::Interrupted, Interrupt, SystemExit, SignalException
+        raise
+      # rubocop:enable Lint/ShadowedException
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        # A failed run still produces a well-formed result object on stdout (with
+        # the error on a top-level error block) so automation can parse the
+        # failure — the message ALSO goes to stderr for human logs. Exit 1.
+        warn "rubino: #{e.message}"
+        emit_json(Output::ResultSerializer.error_result(
+                    recorder: recorder, session: runner&.session,
+                    duration_ms: started_at ? ((monotonic_now - started_at) * 1000).round : 0,
+                    model: model_name,
+                    error: { message: e.message, type: e.class.name,
+                             subtype: "error_during_execution" }
+                  ))
+        exit(1)
+      ensure
+        recorder&.detach!
+        restore_logger(prev_log_io)
+      end
+
+      # Writes one JSON object as a single line to the REAL stdout and flushes.
+      # All headless JSON goes through here so the stdout=JSON discipline has one
+      # chokepoint. JSON.generate emits no embedded newlines, so json mode is one
+      # line and stream-json is valid JSONL (one object per line).
+      def emit_json(object)
+        $stdout.puts(JSON.generate(object))
+        $stdout.flush
+      end
+
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # The tool names offered this turn, for stream-json's system/init frame.
+      # Best-effort: a registry hiccup must never break the headless run — fall
+      # back to an empty list so the frame still emits.
+      def turn_tool_names(_runner)
+        Rubino::Tools::Registry.instance.enabled_tools.map { |t| t.respond_to?(:name) ? t.name.to_s : t.to_s }
+      rescue StandardError
+        []
       end
 
       # One deterministic status line before a request that carries attachments
