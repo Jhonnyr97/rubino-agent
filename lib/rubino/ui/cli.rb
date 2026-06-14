@@ -96,6 +96,14 @@ module Rubino
       # together. Field order is the header order the caller chose, which the
       # list callers now lead with the identifying fields (ID/Title/Created).
       def table(headers:, rows:)
+        # Row cells carry UNTRUSTED text — MCP tool/server names (/mcp), memory
+        # content (/memory), session/agent titles. A raw `\e[…` there would
+        # drive the terminal straight out of the grid (R3C-1, CWE-150), and it
+        # would also corrupt TTY::Table's width math / the card layout. Sanitize
+        # every cell to caret notation HERE — the single chokepoint both the
+        # grid and the card paths flow through — before any width measurement.
+        # Headers are rubino's own fixed labels but cost nothing to clean too.
+        rows = rows.map { |row| Array(row).map { |cell| safe(cell.to_s) } }
         if grid_overflows?(headers, rows)
           render_cards(headers, rows)
         else
@@ -284,10 +292,16 @@ module Rubino
 
         # ⚠ is the attention glyph (P7): ◆ belongs to the animated status row.
         rule = derive_rule(tool, command, pattern_key)
-        $stdout.puts @pastel.yellow("⚠ #{question}")
+        # The question/description carry the UNTRUSTED command+args the human is
+        # about to authorize — THE most security-critical sink (R3C-1, CWE-150).
+        # A raw `\e[…` in the command can move the cursor / clear the line and
+        # SPOOF what the approval card shows ("rm -rf" hidden, a benign command
+        # painted over it), so the human approves something other than what runs.
+        # Neutralize to visible caret notation before the trusted @pastel wrap.
+        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
         # The danger annotation is the single most safety-relevant line on the
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
-        $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
+        $stdout.puts @pastel.red.bold("  ⚠ #{safe(description)}") unless description.to_s.empty?
 
         choice   = approval_choice(rule, tool: tool)
         approved = apply_choice(choice, scope: scope, command: command, rule: rule)
@@ -311,7 +325,9 @@ module Rubino
       # every non-interactive path (piped stdin) decline, and only an explicit
       # "y"/"yes" proceeds. Returns true only when the user affirmatively agreed.
       def confirm_destructive(question)
-        $stdout.puts @pastel.yellow("⚠ #{question}")
+        # The question may interpolate an untrusted name (a session title, a fact
+        # body) — sanitize before the trusted yellow wrap (R3C-1, CWE-150).
+        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
         # Off a real terminal there is no one to answer; fail closed (decline)
         # so a piped `n` — or any pipe at all — can never destroy (#218).
         return false unless interactive_terminal?
@@ -400,7 +416,14 @@ module Rubino
         # The metric can carry newlines (e.g. a task_result body): interpolating
         # it raw would continue flush-left and unstyled on the next lines —
         # inline it into the ONE styled row instead.
-        inline = metric ? truncate_inline(metric, 120) : nil
+        #
+        # The metric is UNTRUSTED: for a String-returning tool (e.g. shell_output
+        # reading a background buffer) it is the tool's truncated_preview — the
+        # raw bytes the shell emitted. A `\e]0;…\a` there would set the window
+        # title / a `\e[2J` clear the screen straight from this close row
+        # (R3C-1, CWE-150). #truncate_inline flattens newlines but does NOT touch
+        # escape bytes, so sanitize the source first.
+        inline = metric ? truncate_inline(safe(metric), 120) : nil
         if failed
           suffix = inline && !inline.empty? ? " · #{inline}" : ""
           $stdout.puts @pastel.red("  └ ✗ failed · #{name}#{suffix}")
@@ -414,7 +437,10 @@ module Rubino
       # Approval requested: renders as `◆ summary`
       def approval_requested(summary:, choices:)
         $stdout.puts
-        $stdout.puts @pastel.yellow("◆ #{summary}")
+        # The summary is derived from the proposed tool/command (untrusted) —
+        # sanitize before the trusted wrap (R3C-1, CWE-150). Choice labels are
+        # rubino's own fixed menu text (trusted).
+        $stdout.puts @pastel.yellow("◆ #{safe(summary)}")
         choices.each do |choice|
           $stdout.puts @pastel.dim("  [#{choice[:key]}] #{choice[:label]}")
         end
@@ -554,7 +580,12 @@ module Rubino
       # (#input_injected elides the already-shown Result body).
       def subagent_lifecycle(line, status: "done", report: nil, id: nil)
         $stdout.puts unless @last_block == :gap
-        $stdout.puts(status == "failed" ? @pastel.red(line) : @pastel.dim(line))
+        # The lifecycle line embeds the subagent name/summary (untrusted) —
+        # sanitize before the trusted color wrap (R3C-1, CWE-150). The report
+        # body goes through #commit_markdown_block, which renders structured
+        # tokens (no raw passthrough), so it is not a raw-escape sink.
+        safe_line = safe(line)
+        $stdout.puts(status == "failed" ? @pastel.red(safe_line) : @pastel.dim(safe_line))
         if report && !report.to_s.strip.empty?
           $stdout.puts @pastel.dim("  ↳ report:")
           commit_markdown_block(report)
@@ -574,8 +605,9 @@ module Rubino
       def subagent_ask_banner(id, subagent, question)
         $stdout.puts
         $stdout.puts @pastel.dim("┄ a subagent needs you ┄")
-        $stdout.puts @pastel.red.bold("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer")
-        $stdout.puts @pastel.yellow("   ❓ #{question}")
+        $stdout.puts @pastel.red.bold("⛔ #{safe(id)} (#{safe(subagent)}) is BLOCKED, waiting on your answer")
+        # The child's escalated question is untrusted — sanitize (R3C-1, CWE-150).
+        $stdout.puts @pastel.yellow("   ❓ #{safe(question)}")
         $stdout.puts @pastel.dim("   everything it needs is paused until you answer — #{ask_timeout_hint}")
         $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
         $stdout.flush
@@ -696,7 +728,10 @@ module Rubino
         end
         clear_line
         first, rest = elide_shown_reports(text.to_s).split("\n", 2)
-        $stdout.puts @pastel.dim("↳ received while working: #{first}")
+        # The injected first line is a subagent completion notice (untrusted) —
+        # sanitize before the trusted dim wrap (R3C-1, CWE-150). The rest goes
+        # through #commit_markdown_block, which renders structured tokens.
+        $stdout.puts @pastel.dim("↳ received while working: #{safe(first)}")
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
       end
@@ -1541,6 +1576,20 @@ module Rubino
         end
       end
 
+      # The single chokepoint for UNTRUSTED inline text (R3C-1, CWE-150): tool
+      # command/args on the approval card, tool/shell output reflected in a
+      # metric or close row, a subagent's name/summary/question. Neutralizes
+      # every terminal-control byte to visible caret/<XX> notation BEFORE the
+      # caller wraps it in rubino's own (trusted) @pastel styling — so a raw
+      # `\e[2J` / `\e]0;…\a` / cursor-move embedded in that text can never clear
+      # the screen, set the window title, or SPOOF the line the human is about
+      # to authorize. #write_body_lines is the parallel chokepoint for the
+      # multi-line tool BODY; this one covers the single-line interpolated sinks.
+      # rubino's own ANSI is applied around the result and is never passed here.
+      def safe(text)
+        Util::Output.sanitize_terminal(text)
+      end
+
       # Applies a style hash to a token string.
       def apply_style(text, style)
         return text if style.nil? || style.empty?
@@ -1953,9 +2002,11 @@ module Rubino
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub
-        preview = prompt ? "  #{truncate_inline(prompt, 60)}" : ""
+        # subagent name + prompt preview are UNTRUSTED (model-chosen args):
+        # sanitize before the trusted dim wrap (R3C-1, CWE-150).
+        preview = prompt ? "  #{truncate_inline(safe(prompt), 60)}" : ""
         $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{sub}#{preview}")}"
+        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{safe(sub)}#{preview}")}"
         @activity_open = true
         @activity_name = "task"
         @last_block = :tool
@@ -1978,15 +2029,18 @@ module Rubino
         if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
           # Background spawn: ONE lifecycle grammar (P6) — the live-card row
           # shape, dim, no green ✓ (nothing finished yet; it only started).
-          $stdout.puts @pastel.dim("  └ ▸ #{m[2]} · #{m[1]} · started")
+          # The spawn handle's name fields come from model args — sanitize.
+          $stdout.puts @pastel.dim("  └ ▸ #{safe(m[2])} · #{safe(m[1])} · started")
         else
-          summary = truncate_inline(output.strip, 80)
+          # The subagent's output is UNTRUSTED — sanitize before the close-row
+          # wrap (R3C-1, CWE-150).
+          summary = truncate_inline(safe(output.strip), 80)
           icon, color =
             if delegation_failed?(result)        then ["✗", :red]
             elsif delegation_noop?(result)       then ["⊘", :dim]
             else                                      ["✓", :dim] # quiet close — color only on failure (P1)
             end
-          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
+          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{safe(sub)}: #{summary}")
         end
         @delegation_subagent = nil
         @last_block = :tool
@@ -2041,7 +2095,12 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        hint  = Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s
+        # The masked value is the UNTRUSTED command/path/pattern — neutralize
+        # escape bytes BEFORE building the open-row hint, so a `\e]0;…` in a
+        # filename/command can't drive the terminal from the `● name hint` row
+        # (R3C-1, CWE-150). Sanitize the raw text here, then rubino's own OSC-8
+        # hyperlink wrap (trusted) is applied around the clean label.
+        hint  = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
         first = hint.lines.first.to_s.strip
         label = first.length > 60 ? "#{first[0, 57]}..." : first
 
@@ -2060,7 +2119,9 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        first = Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s.lines.first.to_s.strip
+        # The status row repaints 10×/s through the live region — an unsanitized
+        # escape here would drive the terminal on every frame (R3C-1, CWE-150).
+        first = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s).lines.first.to_s.strip
         first.length > 30 ? "#{first[0, 29]}…" : first
       end
 
