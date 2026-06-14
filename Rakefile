@@ -31,7 +31,7 @@ namespace :parallel do
   desc "Run the RSpec suite in parallel across CPU cores (rake parallel:spec[N])"
   task :spec, [:count] do |_t, args|
     count = args[:count]
-    cmd = ["bundle", "exec", "parallel_rspec"]
+    cmd = %w[bundle exec parallel_rspec]
     cmd += ["-n", count.to_s] if count && !count.empty?
     cmd += ["--", "spec"]
     sh(*cmd)
