@@ -17,7 +17,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
     # These are the verbatim / paraphrased narrations from the r5 reports that
     # ended a turn with `0 tools` and let a fake success reach the user.
     it "flags the bare-lead 'Running the suite now.' (r5 F1)" do
-      expect(verdict("Running the suite now.")).to eq([:reflect, "run"])
+      expect(verdict("Running the suite now.")).to eq([:reflect, "would run"])
     end
 
     it "flags the post-deny 'Saved to <path> and ran it:' fabrication (r5 ux-first F1)" do
@@ -40,6 +40,71 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
 
     it "flags 'I ran the tests and they all pass.'" do
       expect(verdict("I ran the tests and they all pass.").first).to eq(:reflect)
+    end
+  end
+
+  # r5c gate-loop: the three proven gaps where a 0-tool turn surfaced a
+  # fabricated file/state MUTATION as the final answer (file unchanged on disk).
+  # These FAIL on the pre-fix guard (only first-person/completion-window verbs).
+  describe "fabricated file/state MUTATIONS (r5c NEW-1 / B1 — the high-cost class)" do
+    it "flags STATE-RESULT phrasing 'Done. <file> now contains X' (r5c NEW-1)" do
+      text = 'Done. /home/dev/api/README.md now contains "API v2".'
+      expect(verdict(text).first).to eq(:reflect)
+    end
+
+    it "flags more state-result shapes (now has / is now set to / now reads)" do
+      expect(verdict("The file now has the import at the top.").first).to eq(:reflect)
+      expect(verdict("X is now set to 5.").first).to eq(:reflect)
+      expect(verdict("The contents now read: API v2.").first).to eq(:reflect)
+    end
+
+    it "flags a BUNDLED edit-claim + trailing future intent, on the EDIT (r5c B1)" do
+      # Pre-fix the guard challenged only the trailing 'run the tests' sub-claim
+      # and let the fabricated multi_edit pass. Now the EDIT is what's flagged.
+      text = "Updated both methods to use item instead of it. Running the tests now."
+      kind, claim = verdict(text)
+      expect(kind).to eq(:reflect)
+      expect(claim).to match(/updated|edit/i)
+    end
+
+    it "flags a FIRST-in-chain mutation claim 'Added the docstring' (r5c B1)" do
+      expect(verdict("Added the docstring to count().").first).to eq(:reflect)
+    end
+
+    it "flags past-tense mutation verbs asserted anywhere in the message" do
+      expect(verdict("Wrote test_stats.py.").first).to eq(:reflect)
+      expect(verdict("Removed mode() from both files.").first).to eq(:reflect)
+      expect(verdict("I have applied the patch to cart.py.").first).to eq(:reflect)
+      expect(verdict("I edited the config and saved it.").first).to eq(:reflect)
+      expect(verdict("Created config.rb with the defaults.").first).to eq(:reflect)
+    end
+
+    it "does NOT challenge a mutation claim when NO write-family tool is exposed" do
+      narrow = described_class.new(exposed_tool_names: %w[read grep shell])
+      v = narrow.evaluate(content: "I updated the config file.",
+                          tool_count: 0, denied_count: 0)
+      expect(v).to be_nil
+    end
+
+    it "still does NOT challenge mutation ADVICE / how-to (no false positive)" do
+      expect(verdict("You can add a docstring to count() with a triple-quoted string."))
+        .to be_nil
+      expect(verdict("You should update the import to point at the new module."))
+        .to be_nil
+      expect(verdict("To save the file, use the write tool.")).to be_nil
+    end
+
+    it "does NOT challenge a plain description of file state ('the file contains a bug')" do
+      expect(verdict("The file contains a bug in apply_discount.")).to be_nil
+      expect(verdict("README.md has the old API version string.")).to be_nil
+    end
+
+    it "does NOT challenge an honest non-mutation ('I cannot update it …')" do
+      expect(verdict("I cannot update the file — there is no such method.")).to be_nil
+    end
+
+    it "does NOT challenge a pure read/answer turn that names a file" do
+      expect(verdict("README.md is 62 bytes and starts with '# Orders API'.")).to be_nil
     end
   end
 
