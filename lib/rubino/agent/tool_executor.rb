@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "securerandom"
+
 module Rubino
   module Agent
     # Executes tool calls with approval checks and result formatting.
@@ -450,7 +452,21 @@ module Rubino
         dir = File.join(Rubino.home_path, "tool-results")
         FileUtils.mkdir_p(dir)
         path = File.join(dir, "#{id}.txt")
-        File.write(path, text)
+        # Write ATOMICALLY (temp + rename): a plain File.write can be cut MID-
+        # WRITE by an Interrupt (Ctrl+C) — which is NOT a StandardError, so the
+        # rescue below never catches it — leaving a TRUNCATED recovery file the
+        # marker still points the model at, so it reads back a silently partial
+        # output. rename(2) on the same filesystem is atomic, so a reader sees
+        # either the old file or the complete new one, never a torn one; the temp
+        # is cleaned up if the interrupt lands before the rename.
+        tmp = "#{path}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
+        begin
+          File.write(tmp, text)
+          File.rename(tmp, path)
+        rescue Exception # rubocop:disable Lint/RescueException
+          FileUtils.rm_f(tmp)
+          raise
+        end
         path
       rescue StandardError => e
         Rubino.logger&.warn(event: "tool_output.spill_failed", error: e.message)
