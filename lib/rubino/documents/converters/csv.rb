@@ -20,15 +20,16 @@ module Rubino
           File.extname(path.to_s).downcase == ".csv"
         end
 
-        def convert(path)
-          rows = parse(path)
+        def convert(path, budget = Limits.null_budget)
+          rows = parse(path, budget)
           Table.emit(rows)
         end
 
         private
 
-        def parse(path)
+        def parse(path, budget = Limits.null_budget)
           raw = File.read(path, encoding: "bom|utf-8")
+          budget.add_bytes(raw.bytesize)
           require "csv"
           ::CSV.parse(raw)
         rescue LoadError, ::CSV::MalformedCSVError

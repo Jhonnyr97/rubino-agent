@@ -29,14 +29,21 @@ module Rubino
     # the file (unknown format, or the format's optional gem isn't installed, or
     # extraction produced nothing). Never raises -- a converter failure degrades
     # to nil so the caller emits the actionable shell-hint.
-    def to_markdown(path, mime: nil)
+    def to_markdown(path, mime: nil, cancel_token: nil)
       converter = Registry.for(mime: mime, path: path)
       return nil unless converter
 
-      out = converter.convert(path)
+      budget = Limits.budget(cancel_token: cancel_token)
+      out = converter.convert(path, budget)
       out = out.to_s
       out.strip.empty? ? nil : out
-    rescue LoadError, StandardError
+    rescue Rubino::Interrupted
+      # A cancelled turn must propagate so the run aborts cleanly; do NOT
+      # swallow it into the nil/shell-hint degrade path.
+      raise
+    rescue CapExceeded, LoadError, StandardError
+      # Decompression bomb / runaway / missing gem / extraction failure all
+      # degrade to nil so the caller emits the actionable shell-hint.
       nil
     end
 

@@ -30,10 +30,14 @@ module Rubino
           EXTS.include?(File.extname(path.to_s).downcase)
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           require "roo"
+          # PRE-OPEN guard: a 400k-row xlsx expands its sheet XML far past the
+          # on-disk cap. Sum the uncompressed worksheet/sharedStrings sizes from
+          # the central directory and bail before roo inflates them.
+          Limits.guard_zip!(path, budget, ["xl/worksheets/*.xml", "xl/sharedStrings.xml"])
           book = Roo::Spreadsheet.open(path)
-          parts = book.sheets.map { |name| sheet_markdown(book, name) }.compact
+          parts = book.sheets.map { |name| sheet_markdown(book, name, budget) }.compact
           parts.join("\n\n")
         ensure
           book&.close if defined?(book) && book.respond_to?(:close)
@@ -41,18 +45,24 @@ module Rubino
 
         private
 
-        def sheet_markdown(book, name)
+        def sheet_markdown(book, name, budget = Limits.null_budget)
           sheet = book.sheet(name)
           rows = []
           if sheet.first_row && sheet.last_row
+            # budget.tick per row bails a 400k-row bomb DURING extraction --
+            # before roo materialises every cell into memory.
             (sheet.first_row..sheet.last_row).each do |r|
-              rows << (sheet.first_column..sheet.last_column).map { |c| sheet.cell(r, c) }
+              cells = (sheet.first_column..sheet.last_column).map { |c| sheet.cell(r, c) }
+              budget.tick(bytes: cells.sum { |c| c.to_s.bytesize })
+              rows << cells
             end
           end
           table = Table.emit(rows)
           return nil if table.empty?
 
           "## #{name}\n\n#{table}"
+        rescue Rubino::Interrupted, CapExceeded
+          raise
         rescue StandardError
           nil
         end
