@@ -5,6 +5,16 @@ module Rubino
     # Orchestrates the full lifecycle of a single user interaction.
     # Coordinates all phases from input to final response and post-turn jobs.
     class Lifecycle
+      # The session this lifecycle is currently bound to. Starts as the session
+      # passed in, but an automatic budget-triggered compaction swaps it to the
+      # compaction child (see #check_and_compact). The owning Runner reads this
+      # back after #execute so the NEXT turn runs on the (small) child rather
+      # than re-compacting the dead parent every turn (P3 F1). Defined as a
+      # method (not attr_reader) because @session is REASSIGNED on compaction.
+      def active_session
+        @session
+      end
+
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
