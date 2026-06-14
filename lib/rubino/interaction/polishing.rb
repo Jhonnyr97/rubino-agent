@@ -118,18 +118,32 @@ module Rubino
 
         loop do
           token.check!
-          row = next_polishing_row(queue)
+
+          # Fetching the next row is the loop's only source of progress. If it
+          # raises (e.g. the queue DB went away on a torn-down session), the
+          # drain can't advance — retrying would spin forever — so we stop.
+          begin
+            row = next_polishing_row(queue)
+          rescue Rubino::Interrupted
+            raise
+          rescue StandardError => e
+            Rubino.logger.warn(event: "polishing.drain_scan_failed",
+                               error: e.class.name, message: e.message)
+            break
+          end
           break unless row
 
-          runner.run_job(row[:id])
-        rescue Rubino::Interrupted
-          raise
-        rescue StandardError => e
-          # Defence-in-depth: run_job already failure-isolates a bad row, but a
-          # surprise raise here (e.g. a DB hiccup) must not abort the whole
-          # detached drain.
-          Rubino.logger.warn(event: "polishing.drain_row_failed",
-                             error: e.class.name, message: e.message)
+          begin
+            runner.run_job(row[:id])
+          rescue Rubino::Interrupted
+            raise
+          rescue StandardError => e
+            # Defence-in-depth: run_job already failure-isolates a bad row, but a
+            # surprise raise here (e.g. a DB hiccup on one row) must not abort the
+            # whole detached drain — skip this row and carry on.
+            Rubino.logger.warn(event: "polishing.drain_row_failed",
+                               error: e.class.name, message: e.message)
+          end
         end
       end
 

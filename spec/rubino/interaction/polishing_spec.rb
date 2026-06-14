@@ -80,6 +80,37 @@ RSpec.describe Rubino::Interaction::Polishing do
     end
   end
 
+  describe "drain busy-loop guard (persistent row-scan failure)" do
+    # Regression: the queue DB torn down at session end made next_polishing_row
+    # raise on EVERY iteration. The old `rescue StandardError` skipped-and-
+    # continued, so the drain spun forever (observed 727k+ warnings). The fix
+    # BREAKS the drain when the scan itself fails — no progress is possible —
+    # logging a single polishing.drain_scan_failed event.
+    let(:handler_class) { Class.new { define_method(:perform) { |_payload| } } }
+
+    it "breaks instead of busy-looping when the row scan keeps raising" do
+      scan_calls = 0
+      allow(polishing).to receive(:next_polishing_row) do
+        scan_calls += 1
+        # Trip a tripwire so a regressed (continue-on-scan-failure) loop can't
+        # hang the suite — it would blow this up rather than spin indefinitely.
+        raise "scan tripwire (busy-loop)" if scan_calls > 50
+
+        raise StandardError, "queue DB torn down"
+      end
+      logged = []
+      allow(Rubino.logger).to receive(:warn) { |**kw| logged << kw }
+
+      polishing.start(ui: ui, event_bus: bus)
+      polishing.wait(5)
+
+      # Finite: the scan was attempted exactly once, then the loop broke.
+      expect(scan_calls).to eq(1)
+      expect(logged).to include(hash_including(event: "polishing.drain_scan_failed"))
+      expect(polishing.running?).to be(false)
+    end
+  end
+
   describe "#cancel! (Esc) keeping partial work" do
     let(:perform_log) { [] }
     let(:handler_class) { Class.new } # replaced per-example below
