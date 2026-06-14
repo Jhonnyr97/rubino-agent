@@ -79,23 +79,32 @@ RSpec.describe Rubino::Agent::Loop do
       expect(contents.join("\n")).to match(/issued NO tool call/i)
     end
 
-    it "stops HONESTLY after the reflection cap rather than fabricating forever" do
-      # The model keeps narrating without ever calling a tool. The guard reflects
-      # MAX_REFLECTIONS times, then surfaces the last text (still no fake success
-      # silently accepted on the FIRST toolless turn).
+    it "BINDS after the reflection cap — REPLACES the fabrication, never surfaces it (G1)" do
+      # The model keeps narrating a git mutation without ever calling a tool.
+      # After MAX_REFLECTIONS corrective turns the guard becomes BINDING: it
+      # REPLACES the fabricated final answer with an honest deterministic message
+      # rather than letting the hallucinated "committed as <sha>" reach the user.
       (Rubino::Agent::ActionClaimGuard::MAX_REFLECTIONS + 2).times do
-        fake_llm.enqueue_text("Running the suite now.")
+        fake_llm.enqueue_text("Done. New branch feature/tax committed as 0f60f1d.")
       end
 
-      result = build_loop.run(messages: user_messages, tools: tools)
+      result = build_loop.run(messages: user_messages("create a branch and move my changes"),
+                              tools: tools)
 
-      # It still terminates (didn't loop forever) and the corrective prompt was
-      # issued the capped number of times.
       reflections = message_store.for_session(session[:id])
                                  .map(&:content)
                                  .count { |c| c.to_s.match?(/issued NO tool call/i) }
       expect(reflections).to eq(Rubino::Agent::ActionClaimGuard::MAX_REFLECTIONS)
-      expect(result).to be_a(String)
+      # The fabricated SHA / "committed as" NEVER becomes the user-visible answer.
+      expect(result).not_to include("0f60f1d")
+      expect(result).not_to match(/committed as/i)
+      # Instead the honest deterministic message is surfaced AND persisted.
+      expect(result).to match(/no tool call was made/i)
+      expect(result).to match(/nothing was changed on disk/i)
+      stored = message_store.for_session(session[:id])
+                            .select { |m| m.role == "assistant" }
+                            .map(&:content)
+      expect(stored.last).to match(/no tool call was made/i)
     end
 
     it "reflects a fabricated MUTATION 'Done. <file> now contains X' (r5c NEW-1)" do
@@ -133,6 +142,64 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to eq("The mean of [1,2,3] is 2.")
       contents = message_store.for_session(session[:id]).map(&:content)
       expect(contents.join("\n")).not_to match(/issued NO tool call/i)
+    end
+  end
+
+  describe "blocked/denied-but-claims is replaced with the honest message (F1/F2)" do
+    # Drive a real noninteractive BLOCK: the model calls write, the executor
+    # denies it as :noninteractive (headless fail-closed), and the model then
+    # hands back a fabricated 'ready to git apply' diff for a file it never wrote.
+    # The guard must REPLACE that with the honest "blocked, nothing applied, use
+    # --yolo" message — the fabricated diff must NOT reach the user.
+    let(:blocked_result) do
+      Rubino::Tools::Result.denied(name: "write", call_id: "c1", reason: :noninteractive)
+    end
+
+    let(:fabricated_diff) do
+      <<~TXT
+        The rename is complete and ready to apply with `git apply`:
+
+        --- a/shopkit/invoice.py
+        +++ b/shopkit/invoice.py
+        @@ -1,2 +1,2 @@
+        -from shopkit.pricing import calc_total
+        +from shopkit.pricing import compute_subtotal
+      TXT
+    end
+
+    it "replaces a fabricated 'git apply' diff after a headless block with --yolo guidance" do
+      fake_llm.enqueue_tool_call("write", { "path" => "/work/shopkit/invoice.py", "content" => "x" })
+      fake_llm.enqueue_text(fabricated_diff)
+
+      # Stub the executor to BLOCK the write headlessly, routing through the
+      # loop's on_result sink exactly like production so @denied_count bumps and
+      # the noninteractive reason is recorded.
+      loop_obj = build_loop
+      allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
+        # Route through the loop's registered sink exactly like production so
+        # @denied_count bumps and the noninteractive reason is recorded.
+        loop_obj.send(:handle_tool_result, name: name, arguments: arguments,
+                                           call_id: call_id, result: blocked_result)
+        blocked_result
+      end
+
+      result = loop_obj.run(messages: user_messages("rename calc_total across the repo"),
+                            tools: tools)
+
+      # The fabricated diff hunks NEVER become the final answer (the honest
+      # message itself mentions `git apply` only to say it is NOT applyable).
+      expect(result).not_to include("@@")
+      expect(result).not_to include("+++ b/")
+      expect(result).not_to include("compute_subtotal")
+      expect(result).not_to match(/ready to apply/i)
+      # The honest blocked message is surfaced instead, naming --yolo (F2).
+      expect(result).to match(/blocked/i)
+      expect(result).to include("--yolo")
+      expect(result).to match(/approvals\.mode: skip/i)
+      stored = message_store.for_session(session[:id])
+                            .select { |m| m.role == "assistant" }
+                            .map(&:content)
+      expect(stored.last).to match(/blocked/i)
     end
   end
 
