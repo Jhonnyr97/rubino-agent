@@ -97,10 +97,6 @@ module Rubino
         # corrective re-prompts so it can stop honestly at the cap.
         @action_guard       = ActionClaimGuard.new(exposed_tool_names: @turn_tools.map { |t| tool_name_of(t) })
         @reflection_count   = 0
-        # The originating user request for this turn — the guard consults it to
-        # tell whether the user asked for a NO-ACTION (plan/explain/"don't run
-        # tools") turn and must NOT be challenged for obeying (#353a).
-        @turn_user_request  = Array(messages).reverse.find { |m| m[:role].to_s == "user" }&.fetch(:content, "").to_s
 
         # If a previous turn rotated to a fallback, restore the primary backend
         # so this turn gets a fresh attempt with the preferred model
@@ -413,7 +409,7 @@ module Rubino
           denied_count: @denied_count,
           noninteractive: @noninteractive_block,
           terminal: terminal,
-          user_request: @turn_user_request
+          user_request: originating_user_request(messages)
         )
         return nil if verdict.nil?
 
@@ -438,6 +434,13 @@ module Rubino
         messages << { role: "user", content: note }
         @ui.note("checking that claim — no tool call was issued") if @ui.respond_to?(:note)
         :reflected
+      end
+
+      # The last user message in the turn's opening transcript — the request that
+      # drives this turn (#353a). Defensive "" when there is no user message.
+      def originating_user_request(messages)
+        m = Array(messages).reverse.find { |msg| msg[:role].to_s == "user" }
+        m ? m.fetch(:content, "").to_s : ""
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
