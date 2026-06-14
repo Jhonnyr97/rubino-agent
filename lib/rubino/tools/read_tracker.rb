@@ -115,10 +115,17 @@ module Rubino
         @mutex.synchronize { @state.key?(key) }
       end
 
-      # True when the file on disk still matches what we last saw — by mtime OR
-      # by content hash. The hash arm lets a no-op touch / CRLF / linter rewrite
-      # to identical bytes pass without forcing a re-read (r5 B2). Returns false
-      # when we never saw the file, or it genuinely changed.
+      # True when the file on disk still matches what we last saw. The content
+      # hash is AUTHORITATIVE for change-detection: we never trust mtime alone to
+      # declare freshness, because on a coarse-mtime filesystem (Docker/linuxkit
+      # VM, some network mounts, two rapid consecutive writes) an external
+      # content change can land WITHOUT the mtime advancing — trusting mtime <=
+      # stored there would let an edit proceed on stale bytes and clobber the
+      # external change. So mtime is at most a hint: a NEWER mtime means recheck;
+      # an equal/older mtime still falls through to a hash comparison. The hash
+      # arm also lets a no-op touch / CRLF / linter rewrite to identical bytes
+      # pass without forcing a re-read (r5 B2). Returns false when we never saw
+      # the file, or it genuinely changed on disk.
       def fresh?(path)
         key = canonical(path)
         return false unless key
@@ -127,9 +134,8 @@ module Rubino
           state = @state[key]
           next false unless state
 
-          current_mtime = file_mtime(key)
-          next true if current_mtime && state[:mtime] && current_mtime <= state[:mtime]
-
+          # Content hash is authoritative: equal/older mtime does NOT prove
+          # freshness on a coarse-mtime FS, so always confirm via the hash.
           state[:hash] && state[:hash] == hash_of(key)
         end
       end

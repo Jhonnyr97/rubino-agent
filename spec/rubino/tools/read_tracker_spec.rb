@@ -54,6 +54,49 @@ RSpec.describe Rubino::Tools::ReadTracker do
     expect(tracker.seen?("")).to be(false)
   end
 
+  describe "#fresh?" do
+    it "is fresh when the on-disk content is unchanged" do
+      path = write_file("a.txt", "hello")
+      tracker.register(path, File.mtime(path))
+      expect(tracker.fresh?(path)).to be(true)
+    end
+
+    it "is fresh after a no-op touch (mtime bumped, content identical)" do
+      path = write_file("a.txt", "hello")
+      tracker.register(path, File.mtime(path))
+      # A touch / linter rewrite to byte-identical content bumps mtime but the
+      # hash still matches — must NOT force a re-read (r5 B2).
+      File.utime(Time.now + 5, Time.now + 5, path)
+      expect(tracker.fresh?(path)).to be(true)
+    end
+
+    # The bug this guards: on a coarse-mtime filesystem (Docker/linuxkit VM,
+    # some network mounts, two rapid consecutive writes) an external content
+    # change can land WITHOUT the mtime advancing. The content hash must be
+    # AUTHORITATIVE — equal/older mtime alone must never be trusted as fresh.
+    it "is STALE when content changed but the mtime is identical (coarse-mtime FS)" do
+      path = write_file("a.txt", "hello")
+      stored_mtime = File.mtime(path)
+      tracker.register(path, stored_mtime)
+      # Another process rewrites the bytes; on a low-res FS the mtime does not
+      # advance, so we pin it back to the exact stored value to simulate that.
+      File.write(path, "mutated")
+      File.utime(stored_mtime, stored_mtime, path)
+      expect(File.mtime(path)).to eq(stored_mtime) # mtime truly unchanged
+      expect(tracker.fresh?(path)).to be(false)    # but the hash betrays the change
+    end
+
+    it "is STALE when content changed and the mtime went backwards (clock skew / restore)" do
+      path = write_file("a.txt", "hello")
+      stored_mtime = File.mtime(path)
+      tracker.register(path, stored_mtime)
+      File.write(path, "mutated")
+      older = stored_mtime - 60
+      File.utime(older, older, path)
+      expect(tracker.fresh?(path)).to be(false)
+    end
+  end
+
   # #151: the tracker is SESSION-scoped, not per-turn — a read in turn 1
   # still satisfies the read-before-edit gate in turn 2 (same process, same
   # session) while the file is unchanged; the existing mtime check in
