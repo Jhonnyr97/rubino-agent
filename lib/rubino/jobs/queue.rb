@@ -81,7 +81,7 @@ module Rubino
       # sees the row already `running` and gets false. The reaper (#346) claims
       # through here before running each orphan, so two processes can never
       # double-run (and double-bill) the same ExtractMemoryJob.
-      def claim!(job_id, worker_id:)
+      def claim!(job_id, worker_id:) # rubocop:disable Naming/PredicateMethod -- a mutating CAS (bang), not a query; the boolean reports whether THIS caller won the lock
         now = Time.now.utc.iso8601
         updated = @db[:jobs]
                   .where(id: job_id, status: "queued")

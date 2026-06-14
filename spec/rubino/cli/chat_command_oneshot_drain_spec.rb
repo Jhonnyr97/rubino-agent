@@ -31,9 +31,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     let(:backend) do
       facts = extracted
       bk = instance_double(Rubino::Memory::Backends::Sqlite)
-      allow(bk).to receive(:user_profile).and_return(nil)
-      allow(bk).to receive(:project_context).and_return(nil)
-      allow(bk).to receive(:retrieve).and_return([])
+      allow(bk).to receive_messages(user_profile: nil, project_context: nil, retrieve: [])
       allow(bk).to receive(:extract) do |session_id|
         facts.push(session_id)
         [{ id: "fact-1234", content: "user prefers tabs" }]

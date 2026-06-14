@@ -217,8 +217,10 @@ RSpec.describe Rubino::Jobs::Queue do
     before do
       allow(Rubino).to receive_messages(database: db_connection, configuration: config)
       # A real no-op handler so seeded orphans complete (not the resolution-
-      # failure path). Each #perform call is recorded so we can count executions.
-      Rubino::Jobs::Registry.register("TestJob", Class.new { def perform(_payload) = nil })
+      # failure path). Each run_job execution records a job_runs row, which is
+      # how the "exactly once" assertions count executions.
+      noop = Class.new { define_method(:perform) { |_payload| nil } }
+      Rubino::Jobs::Registry.register("TestJob", noop)
     end
 
     after { Rubino::Jobs::Registry.reset! }
@@ -255,8 +257,13 @@ RSpec.describe Rubino::Jobs::Queue do
     it "lets #claim! succeed for exactly one of two concurrent claimers" do
       id = seed_orphan
       results = Array.new(2)
-      Array.new(2) { |i| Thread.new { results[i] = described_class.new(db: db_connection.db, config: config).claim!(id, worker_id: "w#{i}") } }
-        .each(&:join)
+      threads = Array.new(2) do |i|
+        Thread.new do
+          q = described_class.new(db: db_connection.db, config: config)
+          results[i] = q.claim!(id, worker_id: "w#{i}")
+        end
+      end
+      threads.each(&:join)
 
       expect(results.count(true)).to eq(1) # the CAS lets exactly one win
       expect(db_connection.db[:jobs].where(id: id).first[:status]).to eq("running")
