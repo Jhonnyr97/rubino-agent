@@ -236,9 +236,24 @@ module Rubino
                   "Try `rubino sessions list`, or resume by id prefix."
           end
 
+          # Owner-guard on EXPLICIT resume (#347): auto-resume already skips a
+          # session a DIFFERENT live process is actively writing, but explicit
+          # `--resume <id>` / `-s <id>` had NO guard — N processes could latch
+          # the same "active" row and interleave writes into one malformed
+          # transcript (user user user … assistant), poisoning the next resume's
+          # history. When the target is live-owned by another process, fork a
+          # fresh child that inherits the full history instead of stomping the
+          # live session; the user keeps their context and the two writers never
+          # interleave.
+          return fork_busy_session(session) if @session_repo.owned_by_other_live_process?(session)
+
           # An existing row is already in the DB; mark it so the lazy-persist
-          # path (#144) treats it as persisted and never re-inserts.
+          # path (#144) treats it as persisted and never re-inserts. Claim
+          # ownership for THIS process so a later concurrent resume sees us as
+          # the live owner and forks rather than interleaving.
+          @session_repo.update(session[:id], owner_pid: Process.pid)
           session[:persisted] = true
+          session[:owner_pid] = Process.pid
           @ui.status("Resuming session: #{session[:id][0..7]}...") if @announce_session
           session
         else
@@ -255,6 +270,36 @@ module Rubino
           @ui.status("New session: #{session[:id][0..7]}")
           session
         end
+      end
+
+      # Forks a child session off a parent another live process is still writing
+      # (#347), copying the parent's full history so the explicit-resume user
+      # keeps their context, while writing to a SEPARATE row so the two writers
+      # never interleave into one malformed transcript. The child is owned by
+      # THIS process. Mirrors the /branch copy (history + extraction watermark +
+      # message_count sync) without a probe seed.
+      def fork_busy_session(parent)
+        store = @message_store
+        child = @session_repo.create(
+          source: "cli",
+          model: parent[:model] || @model_id,
+          provider: parent[:provider] || @provider_override,
+          title: parent[:title],
+          parent_session_id: parent[:id],
+          cwd: parent[:cwd]
+        )
+        store.copy_into(child[:id], store.for_session(parent[:id]))
+        store.seed_extraction_cursor(child[:id])
+        @session_repo.update(child[:id], message_count: store.count(child[:id]))
+
+        if @announce_session
+          @ui.status(
+            "Session #{parent[:id][0..7]} is in use by another rubino — " \
+            "forked a copy: #{child[:id][0..7]}"
+          )
+        end
+        child[:persisted] = true
+        child
       end
     end
   end

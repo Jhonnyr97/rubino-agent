@@ -183,6 +183,41 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # #359: a corrupt-but-PRESENT DB used to be routed to "rubino isn't set up yet
+  # — run `rubino setup`" (misleading: the DB exists, it's corrupt). The chat
+  # entry guard must route corruption to the doctor diagnostic instead, mirroring
+  # the guarded path `sessions list` uses (#333).
+  describe "#ensure_database_ready! corrupt-DB routing (#359)" do
+    let(:corrupt_dir)  { Dir.mktmpdir("ra-chat-corrupt") }
+    let(:corrupt_path) { File.join(corrupt_dir, "rubino.sqlite3") }
+
+    after { FileUtils.remove_entry(corrupt_dir) }
+
+    before do
+      seed = Rubino::Database::Connection.new(corrupt_path)
+      seed.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| seed.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      seed.close
+      File.truncate(corrupt_path, 20_000)
+      allow(Rubino).to receive(:database)
+        .and_return(Rubino::Database::Connection.new(corrupt_path))
+    end
+
+    it "tells the user the DB is corrupt and points at doctor, NOT setup" do
+      cmd = described_class.new({})
+      expect do
+        expect { cmd.send(:ensure_database_ready!) }.to raise_error(SystemExit)
+      end.to output(/corrupt.*doctor/m).to_stderr
+    end
+
+    it "does NOT print the misleading 'isn't set up' / setup message" do
+      cmd = described_class.new({})
+      expect do
+        expect { cmd.send(:ensure_database_ready!) }.to raise_error(SystemExit)
+      end.not_to output(/isn't set up|run `rubino setup`/).to_stderr
+    end
+  end
+
   # -----------------------------------------------------------------------
   # One-shot detection
   # -----------------------------------------------------------------------

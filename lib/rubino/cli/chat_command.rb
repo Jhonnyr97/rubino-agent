@@ -229,6 +229,15 @@ module Rubino
         print_oneshot_answer(response.to_s)
         $stdout.flush
 
+        # Drain the detached post-turn polishing before exit (#358). In headless
+        # one-shot mode there is no live REPL to pick the queued post-turn rows
+        # up at a future enqueue, and the process exits the moment run! returns —
+        # so memory-extract / skill-distill / summarize would pile up `queued`
+        # and NEVER run (memory_facts stayed 0, the queue grew unbounded across
+        # headless runs). Join the worker the turn just kicked off so the
+        # extraction completes at least once per headless session.
+        drain_post_turn_jobs!(runner)
+
         # Fire the turn-finished attention seam for headless runs (#215). A
         # scripted `rubino prompt`/-q run never goes through UI::CLI#turn_finished
         # (it uses UI::Null), so the documented notifications.command hook —
@@ -257,6 +266,20 @@ module Rubino
       # the Loop (marked interrupted), so the run stays truthful & resumable.
       # Interrupt is listed for doc value though SignalException already covers it.
       rescue Rubino::Interrupted, Interrupt, SignalException => e # rubocop:disable Lint/ShadowedException
+        # Print the partial the model streamed before the interrupt (#349). The
+        # Loop already persisted it (marked interrupted:true), but run! raises out
+        # before #print_oneshot_answer — so without this, `rubino -q` on SIGINT
+        # produced ZERO bytes on stdout even though the answer-so-far IS stored.
+        # `answer=$(rubino -q …)` then captured nothing on Ctrl+C. Emit whatever
+        # was produced so the partial reaches the caller before the 130 exit.
+        partial = oneshot_interrupted_partial(runner)
+        unless partial.to_s.empty?
+          print_oneshot_answer(partial)
+          $stdout.flush
+        end
+        # Label truthfully (#361b): an EXTERNAL teardown (SIGTERM/SIGHUP) is not a
+        # user interrupt. Bare Interrupt/SignalException (not our cooperative
+        # Rubino::Interrupted) is a raw signal → external.
         external = e.is_a?(Rubino::Interrupted) ? e.reason == :external : true
         warn "rubino: #{external ? "interrupted by external signal" : "interrupted"}"
         exit(130)
@@ -317,6 +340,11 @@ module Rubino
         end
         duration_ms = ((monotonic_now - started_at) * 1000).round
 
+        # Drain the detached post-turn polishing before exit (#358), same as the
+        # text path: a headless JSON/stream-json run also exits the instant run!
+        # returns, so without joining the worker the post-turn jobs never run.
+        drain_post_turn_jobs!(runner)
+
         if fmt == :stream_json
           new_messages = store.for_session(runner.session[:id]).drop(baseline)
           Output::ResultSerializer.message_frames(new_messages).each { |f| emit_json(f) }
@@ -356,12 +384,17 @@ module Rubino
         message = external ? "interrupted by external signal" : "interrupted by user"
         subtype = external ? "error_external_signal" : "error_interrupted"
         warn "rubino: #{message}"
+        # Carry the persisted partial into the result envelope's `result` field
+        # (#349) so automation parsing the interrupted run still sees the
+        # answer-so-far, not an empty string — the JSON twin of printing the
+        # partial on the text path above.
         emit_json(Output::ResultSerializer.error_result(
                     recorder: recorder, session: runner&.session,
                     duration_ms: started_at ? ((monotonic_now - started_at) * 1000).round : 0,
                     model: model_name,
                     error: { message: message, type: "Rubino::Interrupted",
-                             subtype: subtype }
+                             subtype: subtype,
+                             result_text: oneshot_interrupted_partial(runner) }
                   ))
         exit(130)
       rescue SystemExit
@@ -431,6 +464,47 @@ module Rubino
         else
           $stdout.puts text
         end
+      end
+
+      # Drains the post-turn polishing jobs before a headless one-shot exits
+      # (#358). The interactive REPL drains them on the detached worker and picks
+      # up stragglers at the next idle prompt / on #end_session!'s bounded wait —
+      # but a one-shot process exits the moment run! returns, with no future
+      # enqueue and no REPL, so the memory-extract / skill-distill rows the turn
+      # queued would sit `queued` forever (memory_facts stayed 0; the queue grew
+      # unbounded across runs).
+      #
+      # First JOIN the detached worker the turn kicked off so its in-flight
+      # extraction finishes. Then sweep any rows still `queued` synchronously via
+      # the inline reaper — a belt-and-braces drain that also recovers rows a
+      # PRIOR interrupted headless run orphaned, so a stuck queue self-heals on
+      # the next headless turn. Best-effort: a drain detail must never fail the
+      # run or contaminate stdout.
+      def drain_post_turn_jobs!(runner)
+        runner.polishing.wait if runner.respond_to?(:polishing) && runner.polishing
+        Jobs::Queue.new.reap_inline_orphans
+      rescue StandardError => e
+        Rubino.logger.warn(event: "oneshot.drain_failed", error: e.class.name, message: e.message)
+        nil
+      end
+
+      # The partial answer the Loop persisted when a one-shot turn was interrupted
+      # (#349), or "" when none. On SIGINT, run! raises before the answer is
+      # printed, but the Loop already stored what streamed so far as the last
+      # assistant message flagged metadata[:interrupted] — read it back so the
+      # interrupt handler can surface it (stdout on the text path, the result
+      # envelope on the JSON path). Best-effort: never let a lookup error mask the
+      # interrupt — return "" so the run still exits 130 cleanly.
+      def oneshot_interrupted_partial(runner)
+        return "" unless runner&.session
+
+        messages = ::Rubino::Session::Store.new.for_session(runner.session[:id])
+        last = messages.reverse.find do |m|
+          m.role == "assistant" && m.metadata.is_a?(Hash) && m.metadata[:interrupted]
+        end
+        last&.content.to_s
+      rescue StandardError
+        ""
       end
 
       # Drives the turn-finished attention notifier after a one-shot run (#215),
@@ -2183,6 +2257,18 @@ module Rubino
       # to run every boot. Only fall back to a friendly "run setup" message if
       # the auto-init itself fails, never a Ruby backtrace.
       def ensure_database_ready!
+        # A corrupt-but-PRESENT DB is NOT an un-setup install (#359): the file
+        # exists, its image is just malformed, so `ensure_database_ready!` fails
+        # (the migrate touch raises CorruptException) and the old message
+        # misleadingly told the user to run `rubino setup` as if nothing was
+        # there. Route corruption to the doctor diagnostic instead — mirroring
+        # the guarded path `sessions list` uses (#333) — so the user is pointed
+        # at recovery, not first-run setup.
+        if Rubino.database.corrupt?
+          warn "rubino database is corrupt (malformed image) — run `rubino doctor`."
+          exit(1)
+        end
+
         return if Rubino.ensure_database_ready!
 
         warn "rubino isn't set up yet — run `rubino setup` first."

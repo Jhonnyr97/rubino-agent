@@ -162,9 +162,24 @@ module Rubino
         # Single-styled not-found error (#20), as in #show above.
         raise Thor::Error, "session not found: #{id}" if session.nil?
 
-        Rubino.ui.info("Compacting session #{id}...")
-        compressor = Context::Compressor.new(session_id: id)
+        Rubino.ui.info("Compacting session #{session[:id][0..7]}...")
+        # Pass the RESOLVED full id, not the user's short id (#352): the
+        # Compressor now re-resolves internally too, but feeding it the full id
+        # keeps the contract explicit and the not-found path honest.
+        compressor = Context::Compressor.new(session_id: session[:id])
         result = compressor.compact!
+
+        # A no-op compaction must NOT print the "┄ compacted · saved 0 tok ┄"
+        # fake success (#352): a session with nothing to compact (0 messages, or
+        # too few to split) should say so plainly. Only a real compaction —
+        # something was actually moved into a summary — renders the saved-tokens
+        # line.
+        if result[:skipped]
+          raise Thor::Error,
+                "nothing to compact in session #{session[:id][0..7]}: " \
+                "it has too few messages to summarize."
+        end
+
         Rubino.ui.compression_finished(result)
       end
 

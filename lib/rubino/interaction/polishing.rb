@@ -115,6 +115,7 @@ module Rubino
       def drain(token)
         runner = Jobs::Runner.new
         queue = Jobs::Queue.new
+        worker_id = "polish-#{Process.pid}"
 
         loop do
           token.check!
@@ -132,6 +133,12 @@ module Rubino
             break
           end
           break unless row
+
+          # CAS-claim before running (#346): two processes sharing one
+          # RUBINO_HOME can each scan the same `queued` post-turn row, so claim
+          # it through the same lock #dequeue uses and skip if another worker
+          # already took it — never double-run (and double-bill) the same job.
+          next unless queue.claim!(row[:id], worker_id: worker_id)
 
           begin
             runner.run_job(row[:id])
