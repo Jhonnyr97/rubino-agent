@@ -100,12 +100,18 @@ RSpec.describe Rubino::Documents::Limits do
       FileUtils.rm_f(path) if path
     end
 
-    it "ignores entries outside the matched globs" do
-      path = bomb_zip("docProps/thumbnail.bin", 5_000_000)
+    it "ignores entries outside the matched globs (under the whole-archive backstop)" do
+      # 500 KB out-of-glob entry: above the 50 KB BODY cap (so this proves it is
+      # NOT summed by the body glob) but below the whole-archive backstop
+      # (50 KB * 20 = 1 MB), so it must pass. (#350 raised the backstop; a body
+      # cap of 50 KB no longer bounds out-of-glob media -- the looser archive cap
+      # does, and 500 KB is under it.)
+      path = bomb_zip("docProps/thumbnail.bin", 500_000)
       budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
                                                      max_decompressed_bytes: 50_000,
                                                      wall_clock_seconds: 60)
-      # The huge entry is not a body XML, so it is not summed -> no bail.
+      # The entry is not a body XML, so it is not summed against the body cap; it
+      # is under the whole-archive backstop -> no bail.
       expect { described_class.guard_zip!(path, budget, ["word/document*.xml"]) }.not_to raise_error
     ensure
       FileUtils.rm_f(path) if path
