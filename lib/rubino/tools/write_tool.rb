@@ -40,7 +40,7 @@ module Rubino
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
-        expanded = File.expand_path(file_path)
+        expanded = expand_workspace_path(file_path)
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
         existed = File.exist?(expanded)

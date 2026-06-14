@@ -57,7 +57,7 @@ module Rubino
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
         return "Error: edits must be a non-empty array" if !edits.is_a?(Array) || edits.empty?
 
-        expanded = File.expand_path(file_path)
+        expanded = expand_workspace_path(file_path)
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
 
