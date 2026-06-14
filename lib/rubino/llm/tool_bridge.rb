@@ -32,6 +32,7 @@ module Rubino
       # final tool caches every tool definition.
       CACHE_CONTROL_PROVIDER_PARAMS = { cache_control: { type: "ephemeral" } }.freeze
 
+      # rubocop:disable Metrics/ParameterLists
       def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil,
                    cache_breakpoint: false, budget_exhausted: nil)
         klass = bridge_class_for(agent_tool.name)
@@ -43,6 +44,7 @@ module Rubino
                   cache_breakpoint: cache_breakpoint,
                   budget_exhausted: budget_exhausted)
       end
+      # rubocop:enable Metrics/ParameterLists
 
       # Registers every Rubino tool (wrapped as a bridge) on a ruby_llm chat AND
       # wires the call-id capture the streaming path needs. ruby_llm hands the
@@ -51,6 +53,7 @@ module Rubino
       # right before each sequential, tool_concurrency=false dispatch) into a
       # holder the bridge reads back as call_id. Without this the streaming path
       # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
+      # rubocop:disable Metrics/ParameterLists
       def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false,
                        budget_exhausted: nil, production: nil)
         list = Array(tools)
@@ -85,12 +88,14 @@ module Rubino
                                         budget_exhausted: budget_exhausted))
         end
       end
+      # rubocop:enable Metrics/ParameterLists
 
       def self.bridge_class_for(tool_name)
         @cache ||= {}
         @cache[tool_name] ||= build_class(tool_name)
       end
 
+      # rubocop:disable Metrics/ParameterLists, Metrics/PerceivedComplexity
       def self.build_class(tool_name)
         klass = Class.new(::RubyLLM::Tool) do
           define_method(:name) { tool_name }
@@ -182,6 +187,7 @@ module Rubino
 
         klass
       end
+      # rubocop:enable Metrics/ParameterLists, Metrics/PerceivedComplexity
     end
   end
 end

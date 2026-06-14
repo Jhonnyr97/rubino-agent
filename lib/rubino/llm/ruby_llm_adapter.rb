@@ -360,7 +360,8 @@ module Rubino
         return usage unless chat_instance.respond_to?(:after_message)
 
         chat_instance.after_message do |msg|
-          next unless msg&.respond_to?(:role) && msg.role == :assistant
+          next if msg.nil?
+          next unless msg.respond_to?(:role) && msg.role == :assistant
 
           usage[:input]  += msg.input_tokens.to_i  if msg.respond_to?(:input_tokens)
           usage[:output] += msg.output_tokens.to_i if msg.respond_to?(:output_tokens)

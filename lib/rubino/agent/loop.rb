@@ -4,7 +4,7 @@ module Rubino
   module Agent
     # The core agent loop that handles LLM calls and tool execution cycles.
     # Runs until the LLM produces a final text response or budget is exhausted.
-    class Loop
+    class Loop # rubocop:disable Metrics/ClassLength
       # Nudge issued on the final, toolless model call when the iteration/budget
       # ceiling is hit. Mirrors the reference handle_max_iterations summary request
       # — ask the model to wrap up in prose
@@ -81,7 +81,7 @@ module Rubino
       end
 
       # Runs the agent loop, returning the final assistant response content.
-      def run(messages:, tools:)
+      def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity
         # Stash the resolved toolset so #streaming? can decide, per run, whether
         # this turn might block on a human (clarify/approval). When it might, we
         # run NON-STREAMING so the LLM HTTP request completes and CLOSES before
@@ -191,14 +191,13 @@ module Rubino
 
           token_total += response.total_tokens.to_i
 
+          # #355a: the streaming round-trip loop was cut short mid-flight because
+          # this turn's iteration/time budget was spent (ToolBridge returned
+          # Tool::Halt). ruby_llm already added a valid trailing tool message, so
+          # the history is well-formed — hand off to the same budget-exhausted
+          # summary the outer-loop cap uses. `iteration` is still 1 for a
+          # streaming turn, so pass the round-trip count as the iteration reached.
           if response.halted?
-            # #355a: the streaming round-trip loop was cut short mid-flight
-            # because this turn's iteration/time budget was spent (ToolBridge
-            # returned Tool::Halt). ruby_llm already added a valid trailing tool
-            # message, so the history is well-formed. Hand off to the same
-            # budget-exhausted summary the outer-loop cap uses (one final toolless
-            # model call that wraps up). `iteration` is still 1 for a streaming
-            # turn, so pass the round-trip count as the iteration reached.
             return summarize_on_budget_exhausted(messages, @stream_round_trips,
                                                  turn_started_at, token_total)
           end

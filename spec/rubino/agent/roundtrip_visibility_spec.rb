@@ -13,7 +13,93 @@ require "ruby_llm"
 # handle_tool_calls semantics (fires before/after_message + before_tool_call per
 # round-trip, returns staged messages carrying tool_calls + per-message tokens,
 # and honours RubyLLM::Tool::Halt). No live model.
-RSpec.describe "round-trip visibility (#355 #351)" do
+# A staged round-trip: an assistant message carrying N tool_calls (tool_calls
+# present), or the final plain-text turn (tool_calls nil). Per-message tokens
+# ride on the assistant message. Defined at file scope (not in a block) to
+# satisfy Lint/ConstantDefinitionInBlock.
+RoundTripStage = Struct.new(:tool_calls, :text, :input_tokens, :output_tokens, keyword_init: true)
+
+# A fake ruby_llm Chat that faithfully replays Chat#complete +
+# #handle_tool_calls over a script of staged round-trips:
+#   * supports additive before/after_message + before_tool_call callbacks;
+#   * per staged assistant(tool_use) message: appends a real RubyLLM::Message
+#     (tokens + tool_calls), fires after_message, then for each tool_call fires
+#     before_tool_call and INVOKES the registered bridge tool with just the
+#     parsed arguments (as ruby_llm does);
+#   * honours a RubyLLM::Tool::Halt return: adds the trailing tool message,
+#     stops recursing, returns the Halt itself (chat.rb L283-292);
+#   * the final text stage returns its RubyLLM::Message as the response.
+class FakeReplayChat
+  attr_reader :messages
+
+  def initialize(stages)
+    @stages = stages
+    @tools = {}
+    @after = []
+    @before_tc = []
+    @messages = []
+  end
+
+  def with_instructions(*) = self
+  def with_temperature(*) = self
+  def with_params(**) = self
+  def with_thinking(**) = self
+  def before_message(&) = self
+  def after_message(&block) = tap { @after << block }
+  def before_tool_call(&block) = tap { @before_tc << block }
+
+  def with_tool(tool)
+    @tools[tool.name.to_s] = tool
+    self
+  end
+
+  def ask(_content, **_kw, &_block)
+    @stages.each do |stage|
+      return final_message(stage) if stage.tool_calls.nil?
+
+      halt = run_tool_round_trip(stage)
+      return halt if halt
+    end
+    @messages.last
+  end
+
+  private
+
+  def final_message(stage)
+    msg = RubyLLM::Message.new(role: :assistant, content: stage.text,
+                               input_tokens: stage.input_tokens, output_tokens: stage.output_tokens)
+    @messages << msg
+    fire_after(msg)
+    msg
+  end
+
+  # Appends the assistant(tool_use) message, fires after_message, then dispatches
+  # each tool through the registered bridge. Returns a Tool::Halt to stop, else nil.
+  def run_tool_round_trip(stage)
+    rl_calls = stage.tool_calls.to_h do |tc|
+      [tc[:id], RubyLLM::ToolCall.new(id: tc[:id], name: tc[:name], arguments: tc[:arguments])]
+    end
+    amsg = RubyLLM::Message.new(role: :assistant, content: stage.text, tool_calls: rl_calls,
+                                input_tokens: stage.input_tokens, output_tokens: stage.output_tokens)
+    @messages << amsg
+    fire_after(amsg)
+
+    rl_calls.each_value do |tool_call|
+      @before_tc.each { |b| b.call(tool_call) }
+      result = @tools.fetch(tool_call.name).call(tool_call.arguments)
+      content = result.is_a?(RubyLLM::Tool::Halt) ? result.content : result.to_s
+      tmsg = RubyLLM::Message.new(role: :tool, content: content, tool_call_id: tool_call.id)
+      @messages << tmsg
+      fire_after(tmsg)
+      return result if result.is_a?(RubyLLM::Tool::Halt)
+    end
+    nil
+  end
+
+  def fire_after(msg) = @after.each { |b| b.call(msg) }
+end
+
+RSpec.describe Rubino::Agent::Loop do
   let(:db)        { test_database }
   let(:null_ui)   { Rubino::UI::Null.new }
   let(:event_bus) { Rubino::Interaction::EventBus.new }
@@ -25,118 +111,7 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     )
   end
   let(:message_store) { Rubino::Session::Store.new }
-  let(:session) do
-    Rubino::Session::Repository.new.create(source: "test", model: "gpt-4o")
-  end
-
-  before { allow(Rubino).to receive(:database).and_return(db) }
-
-  # ---------------------------------------------------------------------------
-  # A staged round-trip: an assistant message carrying N tool_calls (or, for the
-  # final round-trip, plain text). per_message tokens ride on the assistant msg.
-  # ---------------------------------------------------------------------------
-  Stage = Struct.new(:tool_calls, :text, :input_tokens, :output_tokens, keyword_init: true)
-
-  def tool_rt(calls, input:, output:)
-    Stage.new(tool_calls: calls, text: nil, input_tokens: input, output_tokens: output)
-  end
-
-  def text_rt(text, input:, output:)
-    Stage.new(tool_calls: nil, text: text, input_tokens: input, output_tokens: output)
-  end
-
-  # A fake ruby_llm Chat that faithfully replays Chat#complete +
-  # #handle_tool_calls over a script of staged round-trips. It:
-  #   * supports additive before/after_message + before_tool_call callbacks;
-  #   * for each staged assistant(tool_use) message: appends a real
-  #     RubyLLM::Message (with tokens + tool_calls), fires after_message, then
-  #     for each tool_call fires before_tool_call and INVOKES the registered
-  #     bridge tool with just the parsed arguments (as ruby_llm does);
-  #   * honours a RubyLLM::Tool::Halt return: adds the trailing tool message,
-  #     stops recursing, and returns the Halt itself (exactly chat.rb L283-292);
-  #   * the final text stage returns its RubyLLM::Message as the response.
-  def fake_chat(stages)
-    chat = Object.new
-    chat.instance_variable_set(:@stages, stages)
-    chat.instance_variable_set(:@tools, {})
-    chat.instance_variable_set(:@after, [])
-    chat.instance_variable_set(:@before_tc, [])
-
-    def chat.messages = (@messages ||= [])
-    def chat.with_instructions(*) = self
-    def chat.with_temperature(*) = self
-    def chat.with_params(**) = self
-    def chat.with_thinking(**) = self
-    def chat.with_tool(tool)
-      @tools[tool.name.to_s] = tool
-      self
-    end
-    def chat.before_message(&blk) = self # additive no-op for this fake
-    def chat.after_message(&blk) = (@after << blk; self)
-    def chat.before_tool_call(&blk) = (@before_tc << blk; self)
-
-    def chat.fire_after(msg) = @after.each { |b| b.call(msg) }
-
-    def chat.ask(_content, **_kw, &_block)
-      tool_call_struct = Struct.new(:id, :name, :arguments)
-      @stages.each do |stage|
-        if stage.tool_calls.nil?
-          # Final text turn: a plain assistant message, no tool_calls.
-          msg = RubyLLM::Message.new(role: :assistant, content: stage.text,
-                                     input_tokens: stage.input_tokens,
-                                     output_tokens: stage.output_tokens)
-          messages << msg
-          fire_after(msg)
-          return msg
-        end
-
-        # Assistant(tool_use) message: tool_calls is a Hash keyed by id, as
-        # ruby_llm builds it (handle_tool_calls iterates each_value).
-        rl_calls = stage.tool_calls.each_with_object({}) do |tc, h|
-          h[tc[:id]] = RubyLLM::ToolCall.new(id: tc[:id], name: tc[:name], arguments: tc[:arguments])
-        end
-        amsg = RubyLLM::Message.new(role: :assistant, content: stage.text,
-                                    tool_calls: rl_calls,
-                                    input_tokens: stage.input_tokens,
-                                    output_tokens: stage.output_tokens)
-        messages << amsg
-        fire_after(amsg)
-
-        rl_calls.each_value do |tool_call|
-          @before_tc.each { |b| b.call(tool_call) }
-          tool = @tools.fetch(tool_call.name)
-          result = tool.call(tool_call.arguments)
-          content = result.is_a?(RubyLLM::Tool::Halt) ? result.content : result.to_s
-          tmsg = RubyLLM::Message.new(role: :tool, content: content, tool_call_id: tool_call.id)
-          messages << tmsg
-          fire_after(tmsg)
-          return result if result.is_a?(RubyLLM::Tool::Halt)
-        end
-      end
-      # Should not reach here in a well-formed script.
-      messages.last
-    end
-
-    chat
-  end
-
-  # A real RubyLLMAdapter whose build_chat returns our fake replaying chat.
-  def adapter_with(stages, tool_executor:)
-    a = Rubino::LLM::RubyLLMAdapter.new(model_id: "gpt-4o", config: config,
-                                        ui: null_ui, event_bus: event_bus,
-                                        tool_executor: tool_executor)
-    allow(a).to receive(:build_chat).and_wrap_original do |orig, **kw|
-      chat = fake_chat(stages)
-      # Still install the real bridge so budget_exhausted + executor wiring run.
-      Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                            tool_executor: tool_executor,
-                                            budget_exhausted: kw[:budget_exhausted])
-      chat
-    end
-    a
-  end
-
-  # A trivial agent tool the bridge wraps.
+  let(:session) { Rubino::Session::Repository.new.create(source: "test", model: "gpt-4o") }
   let(:agent_tool) do
     Class.new(Rubino::Tools::Base) do
       def name = "echo"
@@ -146,10 +121,42 @@ RSpec.describe "round-trip visibility (#355 #351)" do
       def call(args) = "ran:#{args["v"]}"
     end.new
   end
-
   let(:registry)        { double("Registry", find: agent_tool) }
   let(:approval_policy) { double("ApprovalPolicy", decide: :allow) }
   let(:audit_repo)      { double("ToolCallRepository") }
+
+  before do
+    allow(Rubino).to receive(:database).and_return(db)
+    allow(audit_repo).to receive(:record)
+  end
+
+  def tool_rt(calls, input:, output:)
+    RoundTripStage.new(tool_calls: calls, text: nil, input_tokens: input, output_tokens: output)
+  end
+
+  def text_rt(text, input:, output:)
+    RoundTripStage.new(tool_calls: nil, text: text, input_tokens: input, output_tokens: output)
+  end
+
+  def stage_call(id, value) = { id: id, name: "echo", arguments: { "v" => value } }
+
+  # A real RubyLLMAdapter whose build_chat returns the fake replaying chat (with
+  # the real ToolBridge installed so budget_exhausted + executor wiring run).
+  def adapter_with(stages, tool_executor:)
+    adapter = Rubino::LLM::RubyLLMAdapter.new(model_id: "gpt-4o", config: config,
+                                              ui: null_ui, event_bus: event_bus,
+                                              tool_executor: tool_executor)
+    allow(adapter).to receive(:build_chat).and_wrap_original do |_orig, **kw|
+      install_fake_chat(FakeReplayChat.new(stages), tool_executor, kw[:budget_exhausted])
+    end
+    adapter
+  end
+
+  def install_fake_chat(chat, executor, budget_exhausted)
+    Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
+                                          tool_executor: executor, budget_exhausted: budget_exhausted)
+    chat
+  end
 
   def tool_executor(session_id: session[:id])
     Rubino::Agent::ToolExecutor.new(
@@ -160,24 +167,20 @@ RSpec.describe "round-trip visibility (#355 #351)" do
   end
 
   def build_loop(adapter, executor, budget)
-    Rubino::Agent::Loop.new(
+    described_class.new(
       session: session, llm_adapter: adapter, tool_executor: executor,
       message_store: message_store, budget: budget, ui: null_ui,
       event_bus: event_bus, config: config
     )
   end
 
-  def call(id, v) = { id: id, name: "echo", arguments: { "v" => v } }
-
-  before { allow(audit_repo).to receive(:record) }
-
   # ===========================================================================
   # Spec 1 — round-trip count: budget consulted per round-trip, not once.
   # ===========================================================================
   it "consults the budget once PER round-trip (3 round-trips), not once for the turn" do
     stages = [
-      tool_rt([call("c1", "a")], input: 10, output: 5),
-      tool_rt([call("c2", "b")], input: 10, output: 5),
+      tool_rt([stage_call("c1", "a")], input: 10, output: 5),
+      tool_rt([stage_call("c2", "b")], input: 10, output: 5),
       text_rt("done", input: 10, output: 5)
     ]
     executor = tool_executor
@@ -210,9 +213,9 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     # 3 tool round-trips staged; budget caps at 2. RT3's single tool must Halt;
     # the model is then asked (toolless) to summarise — exactly once.
     stages = [
-      tool_rt([call("c1", "a")], input: 1, output: 1),
-      tool_rt([call("c2", "b")], input: 1, output: 1),
-      tool_rt([call("c3", "c")], input: 1, output: 1),
+      tool_rt([stage_call("c1", "a")], input: 1, output: 1),
+      tool_rt([stage_call("c2", "b")], input: 1, output: 1),
+      tool_rt([stage_call("c3", "c")], input: 1, output: 1),
       text_rt("never-reached-as-tool-turn", input: 1, output: 1)
     ]
     executor = tool_executor
@@ -253,19 +256,15 @@ RSpec.describe "round-trip visibility (#355 #351)" do
 
   it "halts when max_turn_seconds elapses mid-loop (clock stub)" do
     stages = [
-      tool_rt([call("c1", "a")], input: 1, output: 1),
-      tool_rt([call("c2", "b")], input: 1, output: 1),
-      tool_rt([call("c3", "c")], input: 1, output: 1),
+      tool_rt([stage_call("c1", "a")], input: 1, output: 1),
+      tool_rt([stage_call("c2", "b")], input: 1, output: 1),
+      tool_rt([stage_call("c3", "c")], input: 1, output: 1),
       text_rt("unused", input: 1, output: 1)
     ]
     executor = tool_executor
-    cfg = test_configuration(
-      "streaming" => { "enabled" => true, "transport" => "off" },
-      "display" => { "streaming" => true },
-      "model" => { "provider" => "openai", "default" => "gpt-4o" },
-      "agent" => { "max_turns" => 90, "max_tool_iterations" => 50, "max_turn_seconds" => 100 }
-    )
-    budget = Rubino::Agent::IterationBudget.new(config: cfg)
+    allow(config).to receive(:agent_max_turn_seconds).and_return(100)
+    allow(config).to receive(:agent_max_tool_iterations).and_return(50)
+    budget = Rubino::Agent::IterationBudget.new(config: config)
     # Controllable clock: starts at the budget's start time and stays there until
     # at least one tool has run, then jumps PAST the 100s deadline. This makes
     # the first round-trip pass the time check and a later round-trip's check
@@ -280,20 +279,8 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     end
     allow(Time).to receive(:now) { tools_ran[:n].zero? ? start : start + 200 }
 
-    adapter = Rubino::LLM::RubyLLMAdapter.new(model_id: "gpt-4o", config: cfg, ui: null_ui,
-                                              event_bus: event_bus, tool_executor: executor)
-    allow(adapter).to receive(:build_chat).and_wrap_original do |_orig, **kw|
-      chat = fake_chat(stages)
-      Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                            tool_executor: executor,
-                                            budget_exhausted: kw[:budget_exhausted])
-      chat
-    end
-    loop_runner = Rubino::Agent::Loop.new(
-      session: session, llm_adapter: adapter, tool_executor: executor,
-      message_store: message_store, budget: budget, ui: null_ui,
-      event_bus: event_bus, config: cfg
-    )
+    adapter = adapter_with(stages, tool_executor: executor)
+    loop_runner = build_loop(adapter, executor, budget)
     summary_calls = 0
     allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |*|
       summary_calls += 1
@@ -312,8 +299,8 @@ RSpec.describe "round-trip visibility (#355 #351)" do
   # ===========================================================================
   it "sums input/output usage across every round-trip into the response + token_total" do
     stages = [
-      tool_rt([call("c1", "a")], input: 100, output: 50),
-      tool_rt([call("c2", "b")], input: 120, output: 40),
+      tool_rt([stage_call("c1", "a")], input: 100, output: 50),
+      tool_rt([stage_call("c2", "b")], input: 120, output: 40),
       text_rt("done", input: 80, output: 200)
     ]
     executor = tool_executor
@@ -359,8 +346,8 @@ RSpec.describe "round-trip visibility (#355 #351)" do
   # ===========================================================================
   it "persists assistant(tool_use) + tool(result) per round-trip and final text exactly once" do
     stages = [
-      tool_rt([call("c1", "a")], input: 5, output: 5),
-      tool_rt([call("c2", "b")], input: 5, output: 5),
+      tool_rt([stage_call("c1", "a")], input: 5, output: 5),
+      tool_rt([stage_call("c2", "b")], input: 5, output: 5),
       text_rt("all done", input: 5, output: 5)
     ]
     executor = tool_executor
@@ -418,7 +405,7 @@ RSpec.describe "round-trip visibility (#355 #351)" do
   # ===========================================================================
   it "routes every mid-stream tool through ApprovalPolicy#decide AND writes an audit row" do
     stages = [
-      tool_rt([call("c1", "a")], input: 1, output: 1),
+      tool_rt([stage_call("c1", "a")], input: 1, output: 1),
       text_rt("ok", input: 1, output: 1)
     ]
     executor = tool_executor
@@ -436,14 +423,14 @@ RSpec.describe "round-trip visibility (#355 #351)" do
   end
 
   it "rejects installing the production bridge with a nil tool_executor (approval/audit invariant)" do
-    chat = fake_chat([])
+    chat = FakeReplayChat.new([])
     expect do
       Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, tool_executor: nil, production: true)
     end.to raise_error(Rubino::Error, /without a tool_executor/)
   end
 
   it "still allows the unguarded fallback bridge OFF the production path (tests/one-shot)" do
-    chat = fake_chat([])
+    chat = FakeReplayChat.new([])
     expect do
       Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, tool_executor: nil)
     end.not_to raise_error
@@ -456,7 +443,7 @@ RSpec.describe "round-trip visibility (#355 #351)" do
   # ===========================================================================
   it "persists the final assistant text exactly once (no dup from after_message)" do
     stages = [
-      tool_rt([call("c1", "a")], input: 1, output: 1),
+      tool_rt([stage_call("c1", "a")], input: 1, output: 1),
       text_rt("final", input: 1, output: 1)
     ]
     executor = tool_executor
