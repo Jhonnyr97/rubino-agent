@@ -91,9 +91,13 @@ RSpec.describe Rubino::Agent::Loop do
       result = build_loop.run(messages: user_messages("create a branch and move my changes"),
                               tools: tools)
 
+      # Both reflection shapes count: the FIRST names the fabrication in full
+      # ("issued NO tool call"); a later one DECAYS to the short atomic
+      # instruction ("Still no tool call") so the heavy framing cannot compound
+      # into a confession spiral (#353b).
       reflections = message_store.for_session(session[:id])
                                  .map(&:content)
-                                 .count { |c| c.to_s.match?(/issued NO tool call/i) }
+                                 .count { |c| c.to_s.match?(/issued NO tool call|Still no tool call/i) }
       expect(reflections).to eq(Rubino::Agent::ActionClaimGuard::MAX_REFLECTIONS)
       # The fabricated SHA / "committed as" NEVER becomes the user-visible answer.
       expect(result).not_to include("0f60f1d")
@@ -142,6 +146,65 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to eq("The mean of [1,2,3] is 2.")
       contents = message_store.for_session(session[:id]).map(&:content)
       expect(contents.join("\n")).not_to match(/issued NO tool call/i)
+    end
+  end
+
+  # #353a — the guard is context-aware end-to-end: a USER-requested no-action turn
+  # (plan / answer-from-memory) is surfaced as-is, NOT challenged.
+  describe "user-requested no-action turn is surfaced as-is (#353a)" do
+    it "does NOT challenge a 'list the plan, don't implement' turn" do
+      plan = "Here's the plan:\n1. I'll add a guard to parse().\n2. Then I'll run the tests."
+      fake_llm.enqueue_text(plan)
+
+      result = build_loop.run(
+        messages: user_messages("Do not implement yet — just list the plan."),
+        tools: tools
+      )
+
+      expect(result).to eq(plan)
+      contents = message_store.for_session(session[:id]).map(&:content)
+      expect(contents.join("\n")).not_to match(/issued NO tool call/i)
+    end
+
+    it "does NOT challenge 'answer from memory without using any tools'" do
+      answer = "From memory: foo() validates input, then I'll write the result to disk."
+      fake_llm.enqueue_text(answer)
+
+      result = build_loop.run(
+        messages: user_messages("Without using any tools, answer from memory: what does foo() do?"),
+        tools: tools
+      )
+
+      expect(result).to eq(answer)
+      contents = message_store.for_session(session[:id]).map(&:content)
+      expect(contents.join("\n")).not_to match(/issued NO tool call/i)
+    end
+  end
+
+  # #353b — the reflection that recovers a stuck model DECAYS to a short atomic
+  # instruction on the 2nd injection instead of repeating the heavy challenge.
+  describe "reflections are bounded + decay so they don't compound (#353b)" do
+    it "injects the FULL challenge first, then a DECAYED atomic instruction" do
+      # Two 0-tool fabrications in a row, then a real tool call recovers.
+      fake_llm.enqueue_text("I ran the tests and they all pass.")
+      fake_llm.enqueue_text("I ran the tests and they all pass.")
+      fake_llm.enqueue_tool_call("test", {})
+      fake_llm.enqueue_text("Tests passed.")
+
+      allow(tool_executor).to receive(:execute).and_return(
+        Rubino::Tools::Result.success(name: "test", call_id: "c1", output: "ok")
+      )
+
+      result = build_loop.run(messages: user_messages("run the tests"), tools: tools)
+
+      injected = message_store.for_session(session[:id])
+                              .select { |m| m.role == "user" }
+                              .map(&:content)
+      # First injection: the full named challenge.
+      expect(injected.any? { |c| c.match?(/issued NO tool call/i) }).to be(true)
+      # Second injection: the decayed, short atomic instruction (no heavy framing).
+      expect(injected.any? { |c| c.match?(/Still no tool call/i) }).to be(true)
+      expect(result).to eq("Tests passed.")
     end
   end
 

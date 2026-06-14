@@ -214,8 +214,8 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
     end
   end
 
-  it "caps reflections at 3 (aider parity)" do
-    expect(described_class::MAX_REFLECTIONS).to eq(3)
+  it "caps reflections at 2 (lowered from 3 to avoid the confession spiral, #353b)" do
+    expect(described_class::MAX_REFLECTIONS).to eq(2)
   end
 
   # G1 (CRITICAL): the reflection budget is spent and the poisoned-context model
@@ -295,6 +295,100 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       text = "That edit was blocked because there's no interactive session — " \
              "nothing was applied. Re-run with --yolo to allow it."
       expect(verdict(text, denied_count: 1, noninteractive: true)).to be_nil
+    end
+  end
+
+  # #353a — context-awareness: when the LATEST user message explicitly requested a
+  # NO-ACTION turn (a plan / list / explanation / answer-from-memory / "don't
+  # run|use tools"), the model is SUPPOSED to answer in prose with no tool call.
+  # The guard must NOT challenge such a turn (it was making the model apologise
+  # for obeying). A plain task request still triggers the anti-fabrication core.
+  describe "context-aware: user requested a NO-ACTION turn (#353a)" do
+    def verdict_for(req, text)
+      guard.evaluate(content: text, tool_count: 0, denied_count: 0, user_request: req)
+    end
+
+    it "does NOT challenge a plan turn the user asked for ('don't implement yet, list the plan')" do
+      req  = "Do not implement anything yet — just list the plan."
+      text = "Here's the plan:\n1. I'll add a guard clause to parse().\n" \
+             "2. Then I'll update the tests."
+      expect(verdict_for(req, text)).to be_nil
+    end
+
+    it "does NOT challenge 'answer from memory without using any tools'" do
+      req  = "Without using any tools, answer from memory: what does foo() do?"
+      text = "From memory: foo() validates the input and writes the result to disk."
+      expect(verdict_for(req, text)).to be_nil
+    end
+
+    it "does NOT challenge an explicit 'don't run any tools' turn" do
+      req  = "Don't run any tools. Just tell me what the next step would be."
+      text = "Next I would run the test suite and then commit the change."
+      expect(verdict_for(req, text)).to be_nil
+    end
+
+    it "does NOT challenge an 'outline the steps / approach' (plan-only) request" do
+      req  = "Outline the steps you'd take to fix this — don't write any code."
+      text = "I'll first edit cart.rb, then I'll run the tests."
+      expect(verdict_for(req, text)).to be_nil
+    end
+
+    it "does NOT challenge a 'just explain' request" do
+      req  = "Just explain how the discount logic works."
+      text = "I updated my mental model: the discount is applied before tax."
+      expect(verdict_for(req, text)).to be_nil
+    end
+
+    # The anti-fabrication CORE is preserved: a PLAIN task request (no no-action
+    # intent) with a 0-tool 'done' claim is STILL challenged.
+    it "STILL challenges a fabricated 'done' on a normal task request (core preserved)" do
+      req  = "Add the docstring to count() and run the tests."
+      text = "Done — I ran the tests and they all pass. Saved the file."
+      expect(verdict_for(req, text).first).to eq(:reflect)
+    end
+
+    it "STILL challenges a fabricated mutation on a normal task request" do
+      req  = "Set README to API v2."
+      text = "Updated both methods and saved the file."
+      expect(verdict_for(req, text).first).to eq(:reflect)
+    end
+
+    it "falls through (challenges) when no user_request is available (fail-safe)" do
+      # nil/blank request → we can't tell it was no-action, so we DON'T suppress.
+      expect(verdict("I ran the tests and they all pass.")).to eq([:reflect, "run that"])
+    end
+
+    it "does NOT over-suppress: 'run the tests' is a task, not a no-action request" do
+      req = "Run the tests and report the result."
+      expect(verdict_for(req, "I ran the tests and they all pass.").first).to eq(:reflect)
+    end
+  end
+
+  # #353b — bounded / decaying reflections: repeated identical heavy challenges
+  # drove the model into a confession spiral. The injected text must DECAY after
+  # the first challenge and the cap is lowered so the reflections can't compound.
+  describe "bounded + decaying reflections (#353b)" do
+    it "names the fabrication in full on the FIRST challenge (prior_reflections: 0)" do
+      msg = guard.reflection_message("run that", prior_reflections: 0)
+      expect(msg).to match(/issued NO tool call/i)
+      expect(msg).to match(/nothing\s+actually\s+happened/i)
+    end
+
+    it "DECAYS to a short, non-accusatory atomic instruction on a later challenge" do
+      msg = guard.reflection_message("run that", prior_reflections: 1)
+      # No repeated heavy "you said you'd … nothing happened" framing.
+      expect(msg).not_to match(/issued NO tool call/i)
+      expect(msg).to match(/Still no tool call/i)
+      expect(msg).to match(/make ONE actual tool call/i)
+      expect(msg).to match(/run that/i)
+      # Atomic instruction is materially SHORTER than the full challenge.
+      expect(msg.length).to be < guard.reflection_message("run that", prior_reflections: 0).length
+    end
+
+    it "decays at DECAY_AFTER_REFLECTIONS and binds at the lowered MAX_REFLECTIONS" do
+      expect(described_class::DECAY_AFTER_REFLECTIONS).to eq(1)
+      expect(described_class::MAX_REFLECTIONS).to eq(2)
+      expect(described_class::DECAY_AFTER_REFLECTIONS).to be < described_class::MAX_REFLECTIONS
     end
   end
 end
