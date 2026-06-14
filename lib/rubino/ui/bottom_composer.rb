@@ -1128,10 +1128,14 @@ module Rubino
         end
       end
 
-      # Delete from the start of the line to the cursor (Ctrl+U).
+      # Ctrl+U: clear the whole input line. Standard readline kills only to the
+      # start of the line, but on a single-line composer users reach for Ctrl+U
+      # to "clear what I typed" — and leaving the tail behind is exactly what
+      # let a half-cleared buffer concatenate into `/memorymemory`. Clear it all
+      # so a fresh command (or a slash completion) starts from an empty line.
       def kill_to_start
         @render.synchronize do
-          @buffer.replace(@buffer.chars.drop(@cursor).join)
+          @buffer.replace("")
           @cursor = 0
           @history.reset!
           auto_update_menu
@@ -1317,6 +1321,13 @@ module Rubino
         @render.synchronize do
           start, len, replacement = @menu.accept_splice
           chars = @buffer.chars
+          # The menu measures the token only up to the cursor. If the cursor sits
+          # mid-token (or there's residual text right after it — e.g. `/mem|ory`
+          # or a leftover `memory`), the un-measured tail would survive the
+          # splice and concatenate into the accepted command (`/memoryory`,
+          # `/memorymemory`). Extend the replaced span over the rest of the
+          # contiguous non-space run so accepting replaces the WHOLE token.
+          len += 1 while chars[start + len] && !chars[start + len].match?(/\s/)
           chars[start, len] = replacement.chars
           @buffer.replace(chars.join)
           @cursor = start + replacement.chars.length

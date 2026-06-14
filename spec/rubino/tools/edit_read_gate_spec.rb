@@ -90,7 +90,8 @@ RSpec.describe "Read-before-Edit gate" do
           { "old_string" => "two", "new_string" => "2" }
         ]
       )
-      expect(out).to include("Applied 2 edit(s)")
+      msg = out.is_a?(Hash) ? out[:output] : out.to_s
+      expect(msg).to include("Applied 2 edit(s)")
       expect(File.read(path)).to eq("1 2 three")
     end
 

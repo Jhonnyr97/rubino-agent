@@ -349,6 +349,12 @@ module Rubino
 
             input = input.strip
 
+            # The single most likely first keystroke for a newcomer is a bare
+            # `help` (or `commands`/`?`). Routing it to the LLM burns a slow,
+            # multi-thousand-token turn to answer what `/help` shows instantly.
+            # Treat these aliases as the slash command so they dispatch locally.
+            input = help_alias_to_command(input)
+
             # Image-input commands manipulate the pending-attachment state local
             # to this REPL (not the agent), so they're handled here before the
             # slash dispatcher. `/paste` grabs a clipboard image; `/clear-images`
@@ -1701,8 +1707,23 @@ module Rubino
         false
       end
 
+      # Bare words that end the session. Beyond the obvious exit/quit/bye we
+      # honour the vim/less reflexes — `q`, `:q`, `:wq`, `:quit` — that a dev
+      # types on muscle memory; otherwise they'd burn an LLM turn (and have
+      # weirdly made the model load skills). Cheap to recognize, saves a turn.
       def exit_command?(input)
-        %w[exit quit bye /exit /quit].include?(input.strip.downcase)
+        %w[exit quit bye /exit /quit q :q :wq :quit].include?(input.strip.downcase)
+      end
+
+      # Maps a bare `help` / `commands` / `?` (typed alone) onto its slash
+      # command so it shows the help/commands listing instead of becoming an
+      # LLM turn. Anything else passes through untouched.
+      def help_alias_to_command(input)
+        case input.strip.downcase
+        when "help", "?" then "/help"
+        when "commands"  then "/commands"
+        else input
+        end
       end
 
       # Background subagents die with the process (nothing is persisted), so a

@@ -102,11 +102,40 @@ module Rubino
         end
 
         File.write(expanded, working)
-        "Applied #{edits.size} edit(s), #{applied_count} replacement(s) in #{file_path}"
+        { output: "Applied #{edits.size} edit(s), #{applied_count} replacement(s) in #{file_path}",
+          metrics: "#{edits.size} edit#{"s" if edits.size != 1} · " \
+                   "#{applied_count} replacement#{"s" if applied_count != 1}",
+          body: build_diff_preview(edits),
+          body_kind: :diff }
       rescue StandardError => e
         # Uniform with WriteTool/EditTool: a read-only target (Errno::EACCES)
         # or any other filesystem error returns a clean message.
         "Error editing #{file_path}: #{e.message}"
+      end
+
+      # Inline diff for the applied result, mirroring EditTool: per edit, the
+      # old lines as `-` then the new lines as `+`, edits separated by a blank
+      # line. Trimmed to the first MAX_DIFF_LINES so a big batch stays a
+      # preview (the edits all still apply).
+      MAX_DIFF_LINES = 16
+
+      private
+
+      def build_diff_preview(edits)
+        lines = []
+        edits.each_with_index do |edit, idx|
+          old_s = edit["old_string"] || edit[:old_string]
+          new_s = edit["new_string"] || edit[:new_string]
+          lines << "" unless idx.zero?
+          lines.concat(old_s.to_s.lines.map { |l| "- #{l.chomp}" })
+          lines.concat(new_s.to_s.lines.map { |l| "+ #{l.chomp}" })
+        end
+        if lines.size > MAX_DIFF_LINES
+          dropped = lines.size - MAX_DIFF_LINES
+          lines   = lines.first(MAX_DIFF_LINES)
+          lines << "  [… #{dropped} more line(s)]"
+        end
+        lines.join("\n")
       end
     end
   end
