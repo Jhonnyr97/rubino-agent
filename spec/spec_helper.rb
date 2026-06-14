@@ -124,6 +124,9 @@ RSpec.configure do |config|
     Rubino::Tools::BackgroundTasks.reset! if defined?(Rubino::Tools::BackgroundTasks)
     Rubino::Tools::ShellRegistry.reset! if defined?(Rubino::Tools::ShellRegistry)
     Rubino::Run::GateRegistry.reset! if defined?(Rubino::Run::GateRegistry)
+    # The one-time "sandbox degraded" warning flag is process state; reset so
+    # each spec can assert the warning fires exactly once (#290).
+    Rubino::Execution::SandboxBackend.reset_warned! if defined?(Rubino::Execution::SandboxBackend)
     # Use null UI and in-memory SQLite for tests
     Rubino.ui = Rubino::UI::Null.new
   end

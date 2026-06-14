@@ -217,7 +217,15 @@ module Rubino
         # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
         # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
         # of being masked by an innocuous last stage (#156).
-        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+        #
+        # The argv comes from Execution::Backend, the OS-sandbox seam (#290).
+        # DEFAULT is LocalBackend -> exactly the historical
+        # ["bash","-o","pipefail","-c",command]. When execution.sandbox is on,
+        # SandboxBackend wraps it in sandbox-exec/bwrap; the launcher becomes
+        # the pgroup leader so `pgroup: true` + group-kill still reaps the
+        # whole subtree. chdir:/out:/err:/timeout/cancel are unchanged.
+        argv = Execution::Backend.argv(command, writable_roots: Workspace.canonical_roots)
+        pid = Process.spawn(*argv,
                             chdir: cwd, pgroup: true, out: wr, err: wr)
         pgid = pid
         wr.close

@@ -157,6 +157,25 @@ module Rubino
           # OS-level thread death). Set to nil to disable.
           "idle_event_timeout" => 300
         },
+        "execution" => {
+          # OS-level execution sandbox (#290). OFF by default: the seam is
+          # opt-in so existing behaviour is byte-identical. When `sandbox` is
+          # true, shell commands run inside the platform sandbox launcher
+          # (macOS sandbox-exec / Linux bwrap); if neither is available the
+          # backend degrades to unsandboxed with a one-time warning.
+          "sandbox" => false,
+          # Mode when the sandbox is on (mirrors Codex):
+          #   "read_only"       — no filesystem writes anywhere.
+          #   "workspace_write" — writable = workspace roots + /tmp + $TMPDIR
+          #                       (the default when sandbox is enabled).
+          #   "full_access"     — no sandbox (== LocalBackend); equivalent to
+          #                       the runtime --yolo escape hatch.
+          "mode" => "workspace_write",
+          # Network egress from inside the sandbox. Off by default; set true
+          # to allow outbound connections (macOS allow network*, Linux drops
+          # --unshare-net).
+          "network" => false
+        },
         "database" => {
           # Sentinel: resolved at read time (Configuration#database_path) to
           # "<resolved home>/rubino.sqlite3" so the DB follows

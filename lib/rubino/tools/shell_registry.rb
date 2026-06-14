@@ -52,7 +52,11 @@ module Rubino
         # pgid == child pid. Lets shell_kill send SIGTERM to the whole tree.
         # bash -o pipefail keeps this path consistent with the foreground
         # shell: a mid-pipeline crash surfaces as the exit status (#156).
-        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+        # argv via Execution::Backend (#290): Local by default (byte-identical),
+        # SandboxBackend when execution.sandbox is enabled. The wrapper is the
+        # pgroup leader so shell_kill still SIGTERMs the whole subtree.
+        argv = Execution::Backend.argv(command, writable_roots: Rubino::Workspace.canonical_roots)
+        pid = Process.spawn(*argv,
                             chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
         wr.close
         in_rd.close

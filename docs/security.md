@@ -125,6 +125,33 @@ A run parked on a human decision is bounded by `approvals.wait_timeout_seconds` 
 
 `tools.workspace_strict: true` (default) confines write/edit/delete tools to the workspace root (`terminal.cwd` or `Dir.pwd`). Set it to `false` only if you trust the model plus the approval flow alone to touch any path the process can reach.
 
+## OS-level execution sandbox (opt-in)
+
+The layers above decide *whether* a shell command runs and try to block accidents, but they are advisory: a creative one-liner can still write outside the workspace or reach the network. `execution.sandbox` adds a real, **kernel-enforced** boundary around every shell command. Three layers, distinct jobs:
+
+1. **ApprovalPolicy / allowlist** — *whether* it runs (advisory).
+2. **HardlineGuard** — best-effort anti-accident blocklist.
+3. **`Execution::SandboxBackend`** — the actual OS sandbox the process cannot escape.
+
+It is **off by default** (behaviour is byte-identical to not having it). When enabled, shell commands run inside the platform's unprivileged sandbox launcher:
+
+- **macOS** — `/usr/bin/sandbox-exec` with a generated SBPL profile: `(deny default)`, reads allowed broadly, writes allowed only to the workspace roots plus `/tmp` and `$TMPDIR`, with `~/.rubino` and each repo's `.git` forced read-only, and network denied unless enabled.
+- **Linux** — `bwrap` (bubblewrap) with `--ro-bind / /`, the workspace + temp dirs bound writable, `~/.rubino` and `.git` re-bound read-only, and `--unshare-net` when the network is disabled.
+- **Degrade** — if neither mechanism is available (no `sandbox-exec`, no `bwrap`, unprivileged userns blocked) it falls back to the normal unsandboxed shell with a one-time warning. It never hard-fails.
+
+Enable it in `config.yml`:
+
+```yaml
+execution:
+  sandbox: true              # default false
+  mode: workspace_write      # read_only | workspace_write | full_access
+  network: false             # allow outbound connections inside the sandbox
+```
+
+Modes mirror Codex: `read_only` (no writes anywhere), `workspace_write` (writable = workspace + `/tmp` + `$TMPDIR`; the default when the sandbox is on), and `full_access` (no sandbox — equivalent to the runtime `--yolo` escape hatch). Runtime `--yolo` always maps to `full_access` so it keeps its "trust the model to move fast" contract.
+
+The sandbox launcher becomes the process-group leader, so the existing timeout/cancel path (SIGTERM the group) still reaps the whole subtree.
+
 ## Attachment SSRF guard
 
 URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped. The same policy gates CLI image attachments (`-i`/`--image`, `@image` tokens, dropped paths, `/paste`): a file that fails classification or the size cap is rejected client-side, before any provider call.

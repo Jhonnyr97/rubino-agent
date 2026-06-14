@@ -120,6 +120,19 @@ run:
   idle_event_timeout: 300   # SSE watchdog: mark a stalled run failed after N idle seconds (null = off)
 ```
 
+### execution
+
+OS-level execution sandbox for shell commands (opt-in). Off by default — behaviour is byte-identical to not setting it. See [Security › OS-level execution sandbox](security.md#os-level-execution-sandbox-opt-in).
+
+```yaml
+execution:
+  sandbox: false             # turn on the OS sandbox (macOS sandbox-exec / Linux bwrap)
+  mode: workspace_write      # read_only | workspace_write | full_access
+  network: false             # allow outbound connections inside the sandbox
+```
+
+When `sandbox: true` and the OS mechanism is unavailable, it degrades to the normal unsandboxed shell with a one-time warning (never hard-fails). `mode: full_access` and runtime `--yolo` both bypass the sandbox.
+
 ### database
 
 ```yaml
