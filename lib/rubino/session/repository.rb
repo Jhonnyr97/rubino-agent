@@ -16,6 +16,12 @@ module Rubino
     #   session_summaries and runs inside a single transaction (no FK cascade
     #   in schema; the runs FK would otherwise block the session delete).
     class Repository
+      # LIKE-pattern escape char for the SAFE id-prefix match (#333a): `%` and
+      # `_` are LIKE wildcards, so an unescaped `find("%")` matched EVERY
+      # session. id_prefix_match escapes the metacharacters and declares this as
+      # the explicit ESCAPE char so only the trailing `%` we append is a wildcard.
+      LIKE_ESCAPE = "\\"
+
       def initialize(db: nil)
         @db = db || Rubino.database.db
       end
@@ -320,8 +326,6 @@ module Rubino
       # metacharacters in the user portion and declare an explicit ESCAPE char so
       # only the trailing `%` we append stays a wildcard. `\` escapes itself
       # first so a literal backslash in the input can't smuggle past the escape.
-      LIKE_ESCAPE = "\\"
-
       def id_prefix_match(query)
         escaped = query.to_s
                        .gsub(LIKE_ESCAPE, "#{LIKE_ESCAPE}#{LIKE_ESCAPE}")

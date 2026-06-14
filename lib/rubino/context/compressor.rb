@@ -54,13 +54,32 @@ module Rubino
           previous_summary: previous_summary
         )
 
-        # Steps 6-8 are the irreversible state mutation (insert summary → create
-        # child + copy head/summary/tail → mark parent compacted → record
-        # lineage). Wrap them in ONE transaction so a crash mid-compaction (e.g.
-        # a failed message copy) rolls the WHOLE thing back: #332 [MED]. Without
-        # it a raise during the child copy left an orphan child row AND a
-        # dangling summary row with the parent already half-mutated — the next
-        # resume then found a partial, incoherent child. All-or-nothing instead.
+        # Steps 6-8 are the irreversible state mutation; commit them atomically.
+        summary_id, child_session = commit_compaction!(
+          session: session, head: head, tail: tail, messages: messages,
+          new_summary: new_summary, previous_summary_id: previous_summary_id
+        )
+
+        {
+          source_session_id: @session_id,
+          target_session_id: child_session[:id],
+          original_messages: messages.size,
+          compacted_messages: head.size + tail.size + 1, # +1 for summary
+          saved_tokens: estimate_tokens(middle),
+          summary_id: summary_id
+        }
+      end
+
+      private
+
+      # Steps 6-8 of compaction (insert summary → create child + copy
+      # head/summary/tail → mark parent compacted → record lineage), wrapped in
+      # ONE transaction so a crash mid-compaction rolls the WHOLE mutation back:
+      # #332 [MED]. Without it a raise during the child copy left an orphan child
+      # row AND a dangling summary row with the parent already half-mutated — the
+      # next resume then found a partial, incoherent child. All-or-nothing.
+      # Returns [summary_id, child_session].
+      def commit_compaction!(session:, head:, tail:, messages:, new_summary:, previous_summary_id:)
         summary_id = nil
         child_session = nil
         @db.transaction do
@@ -80,18 +99,8 @@ module Rubino
             compacted_tokens: estimate_tokens(head + tail)
           )
         end
-
-        {
-          source_session_id: @session_id,
-          target_session_id: child_session[:id],
-          original_messages: messages.size,
-          compacted_messages: head.size + tail.size + 1, # +1 for summary
-          saved_tokens: estimate_tokens(middle),
-          summary_id: summary_id
-        }
+        [summary_id, child_session]
       end
-
-      private
 
       def flush_memory!
         flusher = Memory::Flusher.new
