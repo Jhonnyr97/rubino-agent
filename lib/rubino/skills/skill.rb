@@ -16,6 +16,16 @@ module Rubino
     class Skill
       attr_reader :name, :description, :path, :metadata, :linked_files
 
+      # Languages this skill is scoped to (lower-cased tokens, e.g. ["ruby"]),
+      # parsed from the optional `languages:` frontmatter key. Empty means the
+      # skill is language-agnostic and always surfaced. A scoped skill is only
+      # auto-listed in the system-prompt catalogue when the project uses one of
+      # its languages — see Registry#summaries — so a Ruby skill no longer
+      # brands a Python project. It stays discoverable/loadable on demand.
+      def languages
+        Array(@metadata["languages"]).map { |l| l.to_s.strip.downcase }.reject(&:empty?)
+      end
+
       def initialize(path:)
         @path = path
         @metadata = {}
