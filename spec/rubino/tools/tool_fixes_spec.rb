@@ -300,9 +300,14 @@ RSpec.describe Rubino::Tools::GrepTool do
 
   let(:tmp_dir) { Dir.mktmpdir("grep_fix_spec") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   before do
+    # grep is workspace-sandboxed (r5 MF-1) — root the workspace at tmp_dir.
+    Rubino.configuration.set("terminal", "cwd", tmp_dir)
     File.write(File.join(tmp_dir, "safe.rb"), "hello world\n")
   end
 

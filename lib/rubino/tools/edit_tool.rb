@@ -46,10 +46,7 @@ module Rubino
       end
 
       def call(arguments)
-        file_path = arguments["file_path"] || arguments[:file_path]
-        old_string = arguments["old_string"] || arguments[:old_string]
-        new_string = arguments["new_string"] || arguments[:new_string]
-        replace_all = arguments["replace_all"] || arguments[:replace_all] || false
+        file_path, old_string, new_string, replace_all = parse_args(arguments)
 
         expanded = File.expand_path(file_path)
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
@@ -64,6 +61,11 @@ module Rubino
         content = read_scrubbed(expanded)
 
         unless content.include?(old_string)
+          # The model's mental model of the file was wrong (hallucinated text).
+          # Flag a recovery so its next read of this path bypasses dedup and
+          # returns FRESH bytes instead of a stale "[DUPLICATE READ]" nudge
+          # (r5 B3).
+          @read_tracker&.note_edit_failure(expanded)
           return "Error: old_string not found in file content. " \
                  "Make sure the text matches exactly including whitespace."
         end
@@ -76,7 +78,12 @@ module Rubino
                  "or set replace_all: true to replace all occurrences."
         end
 
-        File.write(expanded, replace_literal(content, old_string, new_string, replace_all))
+        new_content = replace_literal(content, old_string, new_string, replace_all)
+        File.write(expanded, new_content)
+        # Refresh-on-own-write: the bytes we just wrote are now authoritative,
+        # so the very next edit to this file passes the read-gate instead of
+        # "changed on disk since last read" (r5 B2).
+        @read_tracker&.note_write(expanded, new_content)
 
         replaced_count = replace_all ? count : 1
         added   = new_string.to_s.lines.size
@@ -94,6 +101,15 @@ module Rubino
       end
 
       private
+
+      # Pull the four inputs (string- or symbol-keyed) in one place so #call
+      # stays under the complexity gate.
+      def parse_args(arguments)
+        [arguments["file_path"]  || arguments[:file_path],
+         arguments["old_string"] || arguments[:old_string],
+         arguments["new_string"] || arguments[:new_string],
+         arguments["replace_all"] || arguments[:replace_all] || false]
+      end
 
       # Block form so new_string is treated as a literal replacement, not a
       # pattern — avoids \0, \1, \& interpolation bugs in the new text.
