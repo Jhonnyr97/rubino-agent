@@ -92,8 +92,20 @@ module Rubino
           max_tool_iterations: @max_turns
         )
 
-        lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
-                                 paste_expansions: paste_expansions)
+        response = lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
+                                            paste_expansions: paste_expansions)
+
+        # Adopt an automatic-compaction swap so the NEXT turn runs on the (small)
+        # compaction child, not the dead parent (P3 F1). When #check_and_compact
+        # fires, it reassigns the lifecycle's session to the child; without
+        # picking that up here the Runner would rebuild every subsequent turn's
+        # Lifecycle on the un-shrunk parent → re-compact every turn (superlinear
+        # DB/context bloat + ~2.9x slowdown). This is the automatic-path
+        # counterpart to the manual /compact swap (chat_command rebuilds the
+        # runner on result[:compact_into]).
+        @session = lifecycle.active_session
+
+        response
       end
 
       # Flips the current turn's cancel token. Called from the UI thread when
