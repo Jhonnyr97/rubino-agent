@@ -141,6 +141,42 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
     end
   end
 
+  # Regression #327(b): a deterministic 4xx request-validation rejection
+  # ("invalid params" / "invalid request") that some providers surface
+  # STATUSLESS used to fall through to unknown→retryable and burn the whole
+  # api_max_retries:5 backoff (~85s) on a request that fails identically every
+  # time. Now it fails fast as a permanent FORMAT_ERROR.
+  describe ".classify — invalid-params/request validation is not retryable (#327)" do
+    [
+      "invalid params: the thinking budget is not supported by this model",
+      "invalid request: messages[0].role must be one of user|assistant",
+      "Unprocessable Entity: temperature must be <= 2",
+      'API request failed: {"error":{"type":"invalid_request_error","message":"bad tool schema"}}'
+    ].each do |message|
+      it "no-status #{message[0, 28].inspect}… -> format_error, not retryable" do
+        c = described_class.classify(RubyLLM::Error.new(nil, message))
+        expect(c.reason).to eq(FR::FORMAT_ERROR)
+        expect(c.retryable).to be false
+      end
+    end
+
+    it "surfaces the offending field in the classified message" do
+      c = described_class.classify(RubyLLM::Error.new(nil, "invalid params: temperature out of range"))
+      expect(c.message).to include("temperature")
+    end
+
+    it "a 400 'invalid params' is permanent via the status path too" do
+      err = ruby_llm_error(RubyLLM::BadRequestError, 400, "invalid params: bad field")
+      expect(described_class.retryable?(err)).to be false
+    end
+
+    it "does NOT swallow a context-overflow phrased as an invalid request (stays compress-not-fail)" do
+      c = described_class.classify(RubyLLM::Error.new(nil, "invalid request: prompt is too long for the context window"))
+      expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
+      expect(c.should_compress).to be true
+    end
+  end
+
   describe ".classify — MiniMax unknown-provider blip (folds Slice 0b)" do
     it "no-status 'unknown error' -> unknown, retryable" do
       c = described_class.classify(RubyLLM::Error.new(nil, "unknown error"))

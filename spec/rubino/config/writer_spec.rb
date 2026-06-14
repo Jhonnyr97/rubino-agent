@@ -75,9 +75,61 @@ RSpec.describe Rubino::Config::Writer do
       expect(writer.get("model.provider")).to eq("auto")
     end
 
-    it "creates intermediate sections when they are absent" do
-      writer.set("new.section.key", "v")
-      expect(writer.get("new.section.key")).to eq("v")
+    it "creates intermediate sections when they are absent under an open-map section" do
+      # providers.<name> is an open map (provider names are free-form), so a
+      # never-seen provider's known leaf is accepted and intermediate sections
+      # are materialized.
+      writer.set("providers.minimax.api_key", "secret")
+      expect(writer.get("providers.minimax.api_key")).to eq("secret")
+    end
+  end
+
+  # #327(a): `config set` used to accept ANY key and ANY value with a green ✓,
+  # so a typo'd key or a wrong-typed/garbage value persisted silently and only
+  # surfaced later (a runtime crash, or a deterministic provider 4xx the agent
+  # then retried for ~85s). Set-time schema validation now rejects these up
+  # front with a clean ConfigurationError (→ non-zero exit at the CLI).
+  describe "set-time schema validation (#327)" do
+    it "rejects an unknown top-level key" do
+      expect { writer.set("foo.bar.baz", "1") }
+        .to raise_error(Rubino::ConfigurationError, /unknown config key 'foo\.bar\.baz'/)
+    end
+
+    it "rejects an unknown leaf under a known section" do
+      expect { writer.set("model.nope", "x") }
+        .to raise_error(Rubino::ConfigurationError, /unknown config key 'model\.nope'/)
+    end
+
+    it "rejects a type mismatch on a numeric default (model.temperature banana)" do
+      expect { writer.set("model.temperature", "banana") }
+        .to raise_error(Rubino::ConfigurationError, /invalid value for 'model\.temperature'.*expected number/)
+    end
+
+    it "rejects a non-URL value for a base_url leaf (providers.minimax.base_url)" do
+      expect { writer.set("providers.minimax.base_url", "not a url") }
+        .to raise_error(Rubino::ConfigurationError, /invalid value for 'providers\.minimax\.base_url'.*not a valid http/)
+    end
+
+    it "does not corrupt the file when it refuses an invalid value" do
+      writer.set("model.temperature", "banana")
+    rescue Rubino::ConfigurationError
+      raw = YAML.safe_load_file(config_path)
+      expect(raw.dig("model", "temperature")).to be_nil
+    end
+
+    it "still accepts a well-typed value at a known leaf" do
+      writer.set("model.temperature", "0.7")
+      expect(writer.get("model.temperature")).to eq(0.7)
+    end
+
+    it "accepts a free-form provider's api_key (open-map section)" do
+      writer.set("providers.minimax.api_key", "mm_secret")
+      expect(writer.get("providers.minimax.api_key")).to eq("mm_secret")
+    end
+
+    it "accepts a valid http(s) base_url for a custom provider" do
+      writer.set("providers.minimax.base_url", "https://api.minimax.io/anthropic")
+      expect(writer.get("providers.minimax.base_url")).to eq("https://api.minimax.io/anthropic")
     end
   end
 

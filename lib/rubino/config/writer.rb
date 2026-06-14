@@ -22,6 +22,12 @@ module Rubino
           raw = parse_raw(current)
           keys = key_path.split(".")
           reject_scalar_over_section!(key_path, keys, raw, value)
+          # Set-time schema validation (#327): an unknown key or a value whose
+          # type/format can't match the schema is rejected HERE with a clear
+          # ConfigurationError and a non-zero exit, instead of being written with
+          # a green ✓ and only surfacing later as a runtime crash or a
+          # deterministic 4xx the agent then retries for ~85s.
+          Validator.validate!(key_path, keys, value)
           hash = raw
 
           keys[0..-2].each_with_index do |k, i|
@@ -93,6 +99,13 @@ module Rubino
       end
 
       def coerce_value(value)
+        self.class.coerce_value(value)
+      end
+
+      # The string→typed coercion `config set` applies to a CLI-supplied value,
+      # exposed as a class method so set-time validation (Config::Validator)
+      # compares the SAME coerced type the file will actually store.
+      def self.coerce_value(value)
         case value
         when "true" then true
         when "false" then false

@@ -185,8 +185,11 @@ module Rubino
           ui.success("API key configured (#{provider})")
           { name: "provider_keys", status: :ok }
         else
-          ui.warning("No credentials found for provider '#{provider}'")
-          { name: "provider_keys", status: :warn }
+          # A missing key for the CONFIGURED provider is a hard ✗, not a soft ⚠
+          # (#327): it is REQUIRED for any model call, so the agent can't work
+          # without it. The warning glyph understated a broken install.
+          ui.error("No credentials found for provider '#{provider}'. Set its API key (run 'rubino setup')")
+          { name: "provider_keys", status: :fail }
         end
       rescue TypeError => e
         # A corrupt config (a scalar over the `model`/`providers` section) makes
@@ -200,18 +203,59 @@ module Rubino
         ui = Rubino.ui
         model = Rubino.configuration.model_default
 
-        if model && !model.empty?
+        if model.nil? || model.empty?
+          ui.error("no model configured")
+          return { name: "model", status: :fail }
+        end
+
+        # Validate the model actually EXISTS, not just that a non-empty string is
+        # present (#327): a typo'd `model.default` used to pass doctor and only
+        # fail at the first model call with a 4xx. A custom/assume-exists provider
+        # (MiniMax anthropic_compatible, an openai_compatible gateway) passes
+        # arbitrary ids through deliberately, so its model is reported :ok without
+        # a registry lookup. For a registry-backed provider, an id the catalog
+        # doesn't know is a :warn — likely a typo — without blocking the score.
+        if assume_exists_provider? || model_in_catalog?(model)
           ui.success("Model configured: #{model}")
           { name: "model", status: :ok }
         else
-          ui.error("no model configured")
-          { name: "model", status: :fail }
+          ui.warning("Model '#{model}' is not in the known catalog for this provider (possible typo)")
+          { name: "model", status: :warn }
         end
       rescue TypeError => e
         # `model.default` can't be read when the `model` section was clobbered
         # with a scalar — fail gracefully (check_config already explained why).
         ui.error("model check skipped — config corrupt: #{e.message}")
         { name: "model", status: :fail }
+      end
+
+      # True when the configured provider deliberately accepts arbitrary model
+      # ids (a custom anthropic_compatible / openai_compatible backend, or an
+      # explicit assume_model_exists gateway), so a registry lookup would report
+      # a false "unknown model". The "fake" dev provider is treated the same.
+      def assume_exists_provider?
+        provider = LLM::CredentialCheck.resolved_provider
+        return true if provider == "fake"
+
+        cfg = Rubino.configuration.provider_config(provider)
+        cfg["anthropic_compatible"] == true ||
+          cfg["openai_compatible"] == true ||
+          cfg["assume_model_exists"] == true
+      rescue StandardError
+        # Any resolution hiccup: don't manufacture a false "unknown model" — let
+        # the model be reported present rather than risk a spurious warning.
+        true
+      end
+
+      # True when the model id resolves in ruby_llm's registry. Any registry
+      # hiccup is treated as "known" so a cosmetic check never blocks doctor.
+      def model_in_catalog?(model)
+        require "ruby_llm"
+        !RubyLLM.models.find(model.to_s).nil?
+      rescue RubyLLM::ModelNotFoundError
+        false
+      rescue StandardError
+        true
       end
 
       # Verifies the OAuth-token encryption key is present and well-formed

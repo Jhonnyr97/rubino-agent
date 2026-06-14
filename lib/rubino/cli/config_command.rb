@@ -14,6 +14,13 @@ module Rubino
         true
       end
 
+      # Drop the `tree` command Thor injects into every subclass (#327): under a
+      # registered subcommand its usage banner renders the doubled "rubino rubino
+      # config tree" (the parent's `rubino` prefix + this class's own "rubino
+      # config" namespace). The top-level `rubino tree` already prints the whole
+      # command tree, so the inherited copy here is redundant noise; remove it.
+      remove_command :tree
+
       desc "get KEY", "Get a configuration value (dot-notation; secrets masked)"
       def get(key)
         # A missing key is a FAILURE on the automation surface (P2-H1/H2): when

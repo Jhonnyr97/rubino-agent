@@ -59,12 +59,19 @@ module Rubino
       end
 
       # Replace @path/to/file references with file content.
+      #
+      # The file is read as UTF-8 EXPLICITLY, independent of the process locale
+      # (#273): under a bare C/POSIX locale the default external encoding is
+      # US-ASCII, so File.read returns an ASCII-tagged string and gsub!-ing a
+      # UTF-8 prompt with it raises Encoding::CompatibilityError on the first
+      # non-ASCII byte. Forcing UTF-8 makes reading a UTF-8 prompt file work
+      # regardless of LANG/LC_ALL.
       def process_file_references!(prompt)
         prompt.gsub!(%r{@([\w/._-]+)}) do
           file_path = Regexp.last_match(1)
           expanded  = File.expand_path(file_path)
           if File.exist?(expanded)
-            File.read(expanded)
+            File.read(expanded, encoding: "UTF-8")
           else
             "@#{file_path} (file not found)"
           end
@@ -76,7 +83,10 @@ module Rubino
       end
 
       def parse!
-        raw = File.read(@path)
+        # Read the command template as UTF-8 regardless of the process locale
+        # (#273): a bare C/POSIX locale would otherwise tag it US-ASCII and later
+        # string ops against UTF-8 prompt content raise Encoding::CompatibilityError.
+        raw = File.read(@path, encoding: "UTF-8")
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
