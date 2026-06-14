@@ -4,6 +4,15 @@ module Rubino
   module Security
     # Hardline (unconditional) blocklist — a floor BELOW yolo.
     #
+    # SCOPE: this is a best-effort anti-ACCIDENT guard, NOT an anti-adversary
+    # boundary. It stops the agent (or a careless user) from fat-fingering an
+    # unrecoverable command via --yolo; it is NOT a sandbox and a determined
+    # adversary with shell access can always evade a regex floor (base64, here-
+    # docs, indirection, a written-then-run script). The real containment
+    # boundary is the deferred OS-level sandbox (#290). Within that scope we
+    # still canonicalize aggressively so trivial-but-common evasions (quoting,
+    # trailing slashes, path-equivalents, ${HOME}) don't defeat the floor (#325).
+    #
     # Commands so catastrophic they must NEVER run via the agent, regardless
     # of --yolo, skip-approvals mode, a permissions:allow rule, or a
     # command_allowlist entry. Opting into yolo is the user trusting the agent
@@ -67,12 +76,22 @@ module Rubino
 
       # Returns [true, description] when the command hits the hardline floor
       # (a HARDLINE_PATTERN or the sudo-stdin guard), else [false, nil].
+      #
+      # We match the patterns against TWO forms and OR the results: the raw
+      # whitespace/case-normalized string, and a canonicalized form that strips
+      # quoting, expands $HOME and collapses path-equivalents (see #canonicalize).
+      # Canonicalization closes the trivial bypasses (rm -rf '/', /usr/, ${HOME},
+      # //, /./); matching the raw form too is fail-open insurance for the rare
+      # case where canonicalization rewrites a separator/redirect out of a match
+      # (an anti-accident guard should never become LESS strict than before).
       def detect(command)
         normalized = normalize(command)
+        canonical = canonicalize(normalized)
         HARDLINE_PATTERNS.each do |regex, description|
-          return [true, description] if normalized.match?(regex)
+          return [true, description] if normalized.match?(regex) || canonical.match?(regex)
         end
-        return [true, "sudo password guessing via stdin (sudo -S)"] if sudo_stdin?(normalized)
+        sudo_hit = sudo_stdin?(normalized) || sudo_stdin?(canonical)
+        return [true, "sudo password guessing via stdin (sudo -S)"] if sudo_hit
 
         [false, nil]
       end
@@ -99,6 +118,52 @@ module Rubino
       # the hardline floor.
       def normalize(command)
         command.to_s.gsub(/[ \t]+/, " ").strip.downcase
+      end
+
+      # Canonicalize the (already normalized) command so common, trivial
+      # evasions of the hardline patterns collapse onto the bare forms the
+      # patterns expect. This is the #325 hardening: instead of growing the
+      # pattern list to chase each quoting/path-equivalent variant, we normalize
+      # the INPUT the patterns see. Steps, per token:
+      #   1. Shell-word split (Shellwords) — strips quotes so '/' "/" '/usr'
+      #      collapse to /, /usr. Unbalanced quotes raise ArgumentError; we then
+      #      FALL BACK to the raw normalized string (fail-open — never raise out
+      #      of a security check).
+      #   2. Expand a TINY fixed env set ($HOME, ${HOME}, "$HOME", $home, ${home})
+      #      to ~ so the home-directory pattern fires on the brace/quote forms
+      #      the (?:~|\$home) regex misses.
+      #   3. For path-shaped tokens (start with / or ~), Pathname#cleanpath
+      #      (pure-string, no FS touch) collapses /usr/ -> /usr, // -> /,
+      #      /. -> /, /./ -> /, /home/../ -> / .
+      # Re-join with single spaces and append a trailing space so a token-final
+      # `/` still satisfies the patterns' (?:\s|$) anchor.
+      def canonicalize(normalized)
+        require "shellwords"
+        require "pathname"
+        tokens = shell_split(normalized)
+        return normalized if tokens.nil? # unbalanced quotes: fail open to raw
+
+        cleaned = tokens.map { |tok| clean_token(tok) }
+        "#{cleaned.join(" ")} "
+      end
+
+      # Shell-word split, or nil on unbalanced quotes (caller falls back to raw).
+      def shell_split(normalized)
+        Shellwords.split(normalized)
+      rescue ArgumentError
+        nil
+      end
+
+      # Expand the tiny HOME env set, then cleanpath absolute-path tokens.
+      def clean_token(tok)
+        # $HOME / ${HOME} / $home / ${home} -> ~ (Shellwords already stripped the
+        # surrounding quotes of "$HOME"). Only when the token IS (or starts) the
+        # HOME ref, so we don't rewrite an unrelated $homedir.
+        tok = tok.sub(%r{\A\$\{?home\}?(?=\z|/)}, "~")
+        return tok unless tok.start_with?("/")
+
+        # Pure-string path cleanup: /usr/ -> /usr, // -> /, /. -> /, /home/../ -> /.
+        Pathname.new(tok).cleanpath.to_s
       end
     end
   end
