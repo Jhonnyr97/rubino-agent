@@ -462,20 +462,6 @@ formatters:
   "*.py": "black"
 ```
 
-### agents
-
-Custom agent definitions:
-
-```yaml
-agents:
-  security:
-    type: subagent
-    model: "anthropic/claude-sonnet-4-20250514"
-    description: "Security-focused code review"
-    tools: [read, grep, glob]
-    mcp_servers: []
-```
-
 ### prompts
 
 System-prompt layering. The defaults ship the built-in role prompts.
@@ -514,9 +500,17 @@ formatters:
   "*.py": "black"
 ```
 
-### agents (planned)
+### agents (planned — not yet read)
 
-Custom agent definitions (multi-agent routing is not fully wired yet — see [agents.md](agents.md)):
+> **Status: planned, has no effect today.** The `agents:` key is reserved but is
+> **not read** by the registry, so declaring custom agents in `config.yml` does
+> nothing yet. Primary-agent *switching* among the built-in agents already ships
+> (`/agent`, `/<name>`, Tab — see [agents.md](agents.md#primary-agent-switching));
+> what is not wired is authoring NEW agents from config. To register a custom
+> agent today, use `AgentRegistry#register` programmatically (see
+> [agents.md](agents.md#custom-agents-via-code)).
+
+The intended shape, once config-authored agents land:
 
 ```yaml
 agents:

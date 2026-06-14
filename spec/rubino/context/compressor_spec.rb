@@ -141,6 +141,39 @@ RSpec.describe Rubino::Context::Compressor do
       expect(compaction[:previous_summary_id]).to eq(prior_id)
     end
 
+    # #332 [MED]: steps 6-8 (summary insert → child create+copy → lineage
+    # record) must be atomic. A raise mid-compaction (here: during the child
+    # message copy) used to leave an orphan child row AND a dangling summary
+    # row, half-mutating the parent — the next resume then found a partial,
+    # incoherent child. Wrapping 6-8 in one transaction rolls it ALL back.
+    it "rolls back the summary and child on a crash mid-compaction (atomic)" do
+      lineage_config = test_configuration(
+        "compression" => Rubino::Config::Defaults.to_hash["compression"]
+                                                 .merge("protect_first_n" => 1, "protect_last_n" => 1)
+      )
+      15.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }
+
+      allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(
+        instance_double(Rubino::Context::SummaryBuilder, build: "NEW SUMMARY")
+      )
+      allow_any_instance_of(Rubino::Memory::Flusher).to receive(:flush_before_compaction!)
+
+      summaries_before = db[:session_summaries].count
+      sessions_before  = db[:sessions].count
+
+      compressor = described_class.new(session_id: parent[:id], config: lineage_config, db: db)
+      # Blow up DURING the child copy (step 7), after the summary insert (step 6).
+      allow(compressor).to receive(:create_child_session).and_raise(RuntimeError, "copy boom")
+
+      expect { compressor.compact! }.to raise_error(RuntimeError, /copy boom/)
+
+      # No dangling summary, no orphan child, parent untouched.
+      expect(db[:session_summaries].count).to eq(summaries_before)
+      expect(db[:sessions].count).to eq(sessions_before)
+      expect(db[:sessions].where(id: parent[:id]).get(:status)).to eq("active")
+      expect(db[:compactions].count).to eq(0)
+    end
+
     it "produces a child wire list with no orphan tool pairs" do
       assistant_with_call("call_head")
       store.create(session_id: parent[:id], role: "tool", content: "head out", tool_call_id: "call_head")
