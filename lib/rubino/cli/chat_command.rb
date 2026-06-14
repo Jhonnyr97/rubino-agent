@@ -2169,6 +2169,18 @@ module Rubino
       # to run every boot. Only fall back to a friendly "run setup" message if
       # the auto-init itself fails, never a Ruby backtrace.
       def ensure_database_ready!
+        # A corrupt-but-PRESENT DB is NOT an un-setup install (#359): the file
+        # exists, its image is just malformed, so `ensure_database_ready!` fails
+        # (the migrate touch raises CorruptException) and the old message
+        # misleadingly told the user to run `rubino setup` as if nothing was
+        # there. Route corruption to the doctor diagnostic instead — mirroring
+        # the guarded path `sessions list` uses (#333) — so the user is pointed
+        # at recovery, not first-run setup.
+        if Rubino.database.corrupt?
+          warn "rubino database is corrupt (malformed image) — run `rubino doctor`."
+          exit(1)
+        end
+
         return if Rubino.ensure_database_ready!
 
         warn "rubino isn't set up yet — run `rubino setup` first."

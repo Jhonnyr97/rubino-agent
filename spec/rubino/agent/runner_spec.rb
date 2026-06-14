@@ -72,6 +72,79 @@ RSpec.describe Rubino::Agent::Runner do
   end
 
   # -----------------------------------------------------------------------
+  # #347: explicit `--resume <id>` owner-guard. Auto-resume already skips a
+  # session a DIFFERENT live process is writing; explicit resume had no guard,
+  # so N processes latched the same active row and interleaved writes into one
+  # malformed transcript. The Runner must fork a child (with copied history)
+  # when the target is live-owned by another process, and claim ownership when
+  # it isn't — so two concurrent explicit resumes never write to one row.
+  # -----------------------------------------------------------------------
+  describe "explicit-resume owner-guard (#347)" do
+    let(:repo)  { Rubino::Session::Repository.new(db: db.db) }
+    let(:store) { Rubino::Session::Store.new(db: db.db) }
+
+    def seed_session_with_history(owner_pid:)
+      s = repo.create(source: "cli", model: "gpt-4o")
+      store.create(session_id: s[:id], role: "user", content: "hello")
+      store.create(session_id: s[:id], role: "assistant", content: "hi there")
+      repo.update(s[:id], status: "active", owner_pid: owner_pid,
+                          message_count: store.count(s[:id]))
+      repo.find(s[:id])
+    end
+
+    it "forks a fresh child (copying history) when another LIVE process owns it" do
+      parent = seed_session_with_history(owner_pid: 999_999)
+      allow_any_instance_of(Rubino::Session::Repository)
+        .to receive(:process_alive?).and_call_original
+      allow_any_instance_of(Rubino::Session::Repository)
+        .to receive(:process_alive?).with(999_999).and_return(true)
+
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      child = runner.session
+
+      # A SEPARATE row, lineage back to the parent, the FULL history copied.
+      expect(child[:id]).not_to eq(parent[:id])
+      expect(child[:parent_session_id]).to eq(parent[:id])
+      expect(store.count(child[:id])).to eq(2)
+      # The live parent is left untouched (the other process still owns it).
+      expect(repo.find(parent[:id])[:owner_pid]).to eq(999_999)
+    end
+
+    it "claims (does not fork) a session owned by a DEAD process" do
+      parent = seed_session_with_history(owner_pid: 999_999)
+      allow_any_instance_of(Rubino::Session::Repository)
+        .to receive(:process_alive?).and_call_original
+      allow_any_instance_of(Rubino::Session::Repository)
+        .to receive(:process_alive?).with(999_999).and_return(false)
+
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(runner.session[:id]).to eq(parent[:id])
+      expect(repo.find(parent[:id])[:owner_pid]).to eq(Process.pid)
+    end
+
+    it "claims ownership of a free session so a LATER concurrent resume forks" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      # First explicit resume: free session, claimed by us (this process).
+      first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(first.session[:id]).to eq(parent[:id])
+      expect(repo.find(parent[:id])[:owner_pid]).to eq(Process.pid)
+
+      # Second concurrent resume simulates ANOTHER live process: it must see the
+      # now-claimed live owner and FORK instead of latching onto the same row,
+      # so the two never interleave writes into one malformed transcript.
+      allow_any_instance_of(Rubino::Session::Repository)
+        .to receive(:owned_by_other_live_process?) do |_inst, row|
+          row[:id] == parent[:id] && row[:owner_pid] == Process.pid
+        end
+      second = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      expect(second.session[:id]).not_to eq(parent[:id])
+      expect(second.session[:parent_session_id]).to eq(parent[:id])
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # model_id
   # -----------------------------------------------------------------------
 
