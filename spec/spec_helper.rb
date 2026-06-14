@@ -74,7 +74,7 @@ RSpec.configure do |config|
   # (and corrupt) the same spec/examples.txt. Sequential runs keep the plain
   # path so `--only-failures` / `--next-failure` still work as before.
   config.example_status_persistence_file_path =
-    if (n = ENV["TEST_ENV_NUMBER"]) && !n.empty?
+    if (n = ENV.fetch("TEST_ENV_NUMBER", nil)) && !n.empty?
       "spec/examples.#{n}.txt"
     else
       "spec/examples.txt"
