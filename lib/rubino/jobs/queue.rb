@@ -168,7 +168,17 @@ module Rubino
                   .order(:priority, :run_at)
         dataset = dataset.exclude(id: before) if before
 
-        dataset.select_map(:id).each { |orphan_id| runner.run_job(orphan_id) }
+        # Isolate each orphan: run_job already failure-isolates a bad row
+        # terminally, but a defence-in-depth guard here means even an
+        # unexpected raise (e.g. a DB error draining one row) can NEVER abort
+        # the live turn that is enqueuing — mirrors the poison-row defence
+        # Scheduler#schedule has for unparseable cron rows (#J1).
+        dataset.select_map(:id).each do |orphan_id|
+          runner.run_job(orphan_id)
+        rescue StandardError => e
+          Rubino.logger.warn(event: "jobs.reap_orphan_failed", job_id: orphan_id, error: e.class.name,
+                             message: e.message)
+        end
       end
 
       # Cleans up old completed jobs

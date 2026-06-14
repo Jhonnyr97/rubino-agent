@@ -125,6 +125,66 @@ RSpec.describe Rubino::Jobs::Queue do
         expect(queue.pending_count).to eq(0)
       end
 
+      # Regression for J1 (poison payload): a queued row whose payload_json is
+      # NOT valid JSON used to crash the inline enqueue path. run_job parsed the
+      # payload OUTSIDE its begin/rescue, so JSON::ParserError escaped through
+      # reap_inline_orphans → enqueue → the live turn's outer rescue (marking
+      # the whole interaction FAILED after the answer was produced). The corrupt
+      # row never reached fail!, stayed queued forever, and re-poisoned every
+      # subsequent turn — pending grew unbounded (2→3→4). The fix: a bad payload
+      # is now failure-isolated terminally (fail!), and the reap loop guards
+      # each row so one poison can never abort the enqueue.
+      it "drains a corrupt-payload queued orphan terminally without aborting the live enqueue (J1)" do
+        now = Time.now.utc.iso8601
+        corrupt = SecureRandom.uuid
+        db_connection.db[:jobs].insert(
+          id: corrupt, type: "TestJob", status: "queued", priority: 100,
+          payload_json: "this is not json {{{", attempts: 0, max_attempts: 3,
+          run_at: now, created_at: now, updated_at: now
+        )
+
+        # Three real turns: each must complete the live enqueue (not raise),
+        # the corrupt row must become terminal, and pending must NOT grow.
+        3.times do |i|
+          expect { queue.enqueue("TestJob", { turn: i }) }.not_to raise_error
+          row = db_connection.db[:jobs].where(id: corrupt).first
+          expect(row[:status]).not_to eq("queued") # terminal, not stuck
+          expect(row[:status]).to(satisfy { |s| %w[failed dead].include?(s) })
+        end
+
+        # The poison row consumed at most its max_attempts; pending stays bounded
+        # (the corrupt row is no longer counted, fresh turns completed).
+        expect(queue.pending_count).to eq(0)
+      end
+
+      # The reap loop must not let an unexpected raise from one orphan abort the
+      # whole inline enqueue — defence-in-depth mirroring Scheduler#schedule.
+      it "isolates a raising orphan in the reap loop so the live enqueue survives (J1)" do
+        now = Time.now.utc.iso8601
+        boom = SecureRandom.uuid
+        db_connection.db[:jobs].insert(
+          id: boom, type: "TestJob", status: "queued", priority: 100,
+          payload_json: "{}", attempts: 0, max_attempts: 3,
+          run_at: now, created_at: now, updated_at: now
+        )
+        # Force run_job to raise for the orphan but not for the fresh enqueue.
+        # The reap loop builds its own Runner(db:) — stub a real instance and
+        # have it raise only for the poison row.
+        reaping_runner = Rubino::Jobs::Runner.new(db: db_connection.db)
+        allow(Rubino::Jobs::Runner).to receive(:new).and_call_original
+        allow(Rubino::Jobs::Runner).to receive(:new).with(db: db_connection.db).and_return(reaping_runner)
+        original_run = reaping_runner.method(:run_job)
+        allow(reaping_runner).to receive(:run_job) do |jid|
+          raise "boom draining orphan" if jid == boom
+
+          original_run.call(jid)
+        end
+
+        fresh = nil
+        expect { fresh = queue.enqueue("TestJob", { data: 1 }) }.not_to raise_error
+        expect(db_connection.db[:jobs].where(id: fresh).first[:status]).to eq("completed")
+      end
+
       it "does not reap a queued row that is not yet due (run_at in the future)" do
         future = (Time.now + 3600).utc.iso8601
         now = Time.now.utc.iso8601

@@ -16,16 +16,21 @@ module Rubino
         job = @db[:jobs].where(id: job_id).first
         return unless job
 
-        handler = Registry.handler_for(job[:type])
-        unless handler
-          @queue.fail!(job_id, error: "No handler registered for: #{job[:type]}")
-          return
-        end
-
-        payload = JSON.parse(job[:payload_json], symbolize_names: true)
         run_id = record_run_start(job_id)
 
+        # Handler resolution and payload parsing live INSIDE the rescue so a
+        # bad row (unknown type, or non-JSON payload_json written by an older
+        # build / a corrupt write) is failure-isolated exactly like a handler
+        # exception: it reaches fail! (terminal in inline mode) instead of
+        # escaping. In inline mode run_job is driven directly by enqueue/
+        # reap_inline_orphans on a live turn, so an escaping JSON::ParserError
+        # would otherwise take down the whole interaction (#J1).
         begin
+          handler = Registry.handler_for(job[:type])
+          raise "No handler registered for: #{job[:type]}" unless handler
+
+          payload = JSON.parse(job[:payload_json], symbolize_names: true)
+
           Rubino.event_bus.emit(Interaction::Events::JOB_STARTED, type: job[:type])
           handler.new.perform(payload)
           @queue.complete!(job_id)
