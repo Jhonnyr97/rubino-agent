@@ -98,6 +98,35 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to be_a(String)
     end
 
+    it "reflects a fabricated MUTATION 'Done. <file> now contains X' (r5c NEW-1)" do
+      # 0-tool state-result fabrication, then the forced real write.
+      fake_llm.enqueue_text('Done. /work/README.md now contains "API v2".')
+      fake_llm.enqueue_tool_call("write", { "path" => "/work/README.md", "content" => "API v2" })
+      fake_llm.enqueue_text("README.md updated to API v2.")
+
+      allow(tool_executor).to receive(:execute).and_return(
+        Rubino::Tools::Result.success(name: "write", call_id: "c1", output: "wrote 6 bytes")
+      )
+
+      result = build_loop.run(messages: user_messages("set README to API v2"), tools: tools)
+
+      expect(result).to eq("README.md updated to API v2.")
+      expect(result).not_to include("now contains")
+      contents = message_store.for_session(session[:id]).map(&:content)
+      expect(contents.join("\n")).to match(/issued NO tool call/i)
+    end
+
+    it "reflects a BUNDLED edit-claim + trailing intent on the EDIT (r5c B1)" do
+      fake_llm.enqueue_text("Updated both methods to use item instead of it. Running the tests now.")
+      fake_llm.enqueue_text("I did not actually edit the file — there was no tool call.")
+
+      result = build_loop.run(messages: user_messages("rename it to item"), tools: tools)
+
+      expect(result).to match(/did not actually edit/i)
+      contents = message_store.for_session(session[:id]).map(&:content)
+      expect(contents.join("\n")).to match(/issued NO tool call/i)
+    end
+
     it "passes a genuine text answer straight through (no tool claim, no nag)" do
       fake_llm.enqueue_text("The mean of [1,2,3] is 2.")
       result = build_loop.run(messages: user_messages("what is the mean"), tools: tools)

@@ -77,6 +77,100 @@ module Rubino
         "fetched" => %w[web_fetch shell git]
       }.freeze
 
+      # File/state MUTATION verbs — the highest-cost class for a coding agent.
+      # A toolless turn that asserts ANY of these as the assistant's own past
+      # action ("Updated both methods", "Added the docstring", "I removed mode()")
+      # has, by construction, changed nothing on disk. Unlike the verbs above,
+      # these are matched ANYWHERE in the message (not just sentence-initial or
+      # inside a completion window) and PRIORITISED over a trailing future-intent
+      # verb, so a message that bundles a fabricated edit-claim with a "then I'll
+      # run the tests" is challenged on the EDIT, not on the trailing run. Each
+      # maps to the write-family tool(s) that would actually carry it out, so the
+      # claim is only challenged when rubino actually exposed a way to mutate.
+      MUTATION_TOOLS = {
+        "edited" => %w[edit multi_edit write patch],
+        "wrote" => %w[write edit multi_edit patch],
+        "written" => %w[write edit multi_edit patch],
+        "updated" => %w[edit multi_edit write patch],
+        "created" => %w[write edit multi_edit],
+        "added" => %w[edit multi_edit write patch],
+        "removed" => %w[edit multi_edit write patch shell],
+        "saved" => %w[write edit multi_edit patch],
+        "modified" => %w[edit multi_edit write patch],
+        "renamed" => %w[shell edit multi_edit],
+        "deleted" => %w[shell edit multi_edit write],
+        "applied" => %w[patch edit multi_edit write],
+        "changed" => %w[edit multi_edit write patch],
+        "replaced" => %w[write edit multi_edit patch],
+        "inserted" => %w[edit multi_edit write patch],
+        "appended" => %w[edit multi_edit write patch],
+        "fixed" => %w[edit multi_edit write patch]
+      }.freeze
+
+      # The assistant asserts a mutation as its OWN completed action — past-tense
+      # mutation verb in a first-person OR a bare/completion narration, ANYWHERE
+      # in the text. Built per-verb from MUTATION_TOOLS' keys (which are already
+      # the past/participle surface forms). Matches "I updated…", "I've added…",
+      # "Updated both methods", "Done. Added the docstring", "✓ wrote the file",
+      # "- removed mode()". Deliberately past-tense only: a bare future "I'll
+      # update…" with a real tool call is handled by tool_count > 0; a future
+      # intent with NO tool call is still a fabrication and is also caught here
+      # via the first-person future framing below.
+      # Three alternatives, no interspersed comments (a `#` mid-concatenation
+      # would break the `\` line-continuation into a bare `(?:`):
+      #   1. first-person past / completed — "I updated", "I've added",
+      #      "I just wrote", "we removed", "now i updated".
+      #   2. first-person immediate-future with NO tool call — still a
+      #      fabrication — "I'll update…", "let me add…", "I will write…".
+      #   3. bare sentence-initial / list-item / post-completion past form —
+      #      "Updated both methods", "Added the docstring", "Done. Wrote the
+      #      file", "✓ removed mode()", "- created config.rb".
+      MUTATION_SELF_SRC =
+        "(?:" \
+        '\b(?:i|we|i\s?\'?ve|we\s?\'?ve|i\s+have|we\s+have|i\s+just|now\s+i)\b' \
+        '\s+(?:just\s+|now\s+|already\s+|go\s+ahead\s+and\s+)?(VERB)\b' \
+        '|\b(?:i\s?\'?ll|i\s+will|let\s+me|i\s?\'?m\s+going\s+to|i\s+am\s+going\s+to|' \
+        'going\s+to|about\s+to)\b\s+(?:just\s+|now\s+|go\s+ahead\s+and\s+)?(VERBBASE)\b' \
+        '|(?:\A|[.!?\n]\s*|^[-*]\s*|' \
+        '(?:\b(?:done|finished|complete|completed|ok|okay)\b|✓|✅|all\s+(?:set|done))[^.!?\n]{0,30}?)' \
+        '(VERB)\b' \
+        ")"
+
+      # base form of each mutation verb (for the immediate-future framing above):
+      # "I'll update", "let me add". Keyed by the past form stored in
+      # MUTATION_TOOLS so the alternation stays in lockstep with the tool map.
+      MUTATION_BASE = {
+        "edited" => "edit", "wrote" => "write", "written" => "write",
+        "updated" => "update", "created" => "create", "added" => "add",
+        "removed" => "remove", "saved" => "save", "modified" => "modify",
+        "renamed" => "rename", "deleted" => "delete", "applied" => "apply",
+        "changed" => "change", "replaced" => "replace", "inserted" => "insert",
+        "appended" => "append", "fixed" => "fix"
+      }.freeze
+
+      # State-RESULT phrasing — a fabricated mutation dressed as a fact about the
+      # file/state rather than as an action verb: "README.md now contains 'API
+      # v2'", "the file now has the import", "X is now set to 5", "the contents
+      # now read …", "it now reflects the change". No action verb at all, so the
+      # verb-based matchers above miss it entirely (this was the r5c NEW-1 hole).
+      # We require a "now" + a state predicate so we don't trip on a plain
+      # description ("the file contains a bug"). Backed by the write-family tools.
+      STATE_RESULT = Regexp.new(
+        '\bnow\s+(?:contains|has|holds|includes|reads|reflects|shows|' \
+        'looks\s+like|points\s+to)\b' \
+        '|\b(?:is|are|reads)\s+now\s+(?:set\s+to|equal\s+to|)' \
+        '|\bnow\s+(?:set\s+to|equal\s+to)\b' \
+        '|\bthe\s+(?:file|contents?|method|function|class|line|import|' \
+        'docstring|code|config(?:uration)?)\b[^.!?\n]{0,40}?\bnow\b' \
+        '|\b(?:contents?|file|value|content)\b[^.!?\n]{0,30}?\b(?:is|are)\s+now\b',
+        Regexp::IGNORECASE
+      )
+
+      # The write-family tools any mutation/state-result claim needs on offer for
+      # the guard to challenge it — no point challenging "the file now contains X"
+      # if rubino has no way to write at all this turn.
+      WRITE_FAMILY = %w[write edit multi_edit patch].freeze
+
       # base verb => [progressive, past] surface forms. Stored explicitly rather
       # than derived so English irregulars (run→running→ran, write→writing→wrote)
       # are correct. Fuels the bare-lead / completion-lead / first-person matches.
@@ -162,10 +256,11 @@ module Rubino
       # The corrective user message injected when a tracked action verb appears in
       # a toolless turn. Names the offending claim so the model self-corrects.
       def reflection_message(claimed_verb)
-        "You stated you would #{claimed_verb} but issued NO tool call, so nothing " \
-          "actually happened — that text is not a real result. Do ONE of two things " \
-          "now: (a) make the actual tool call to carry it out, or (b) if you cannot " \
-          "(missing info, blocked, denied, or no such capability), say so plainly and " \
+        "You stated you #{claimed_verb} but issued NO tool call, so nothing " \
+          "actually happened — that text is not a real result and the file is " \
+          "unchanged on disk. Do ONE of two things now: (a) make the actual tool " \
+          "call to carry it out, or (b) if you cannot (missing info, blocked, " \
+          "denied, or no such capability), say plainly that you did NOT do it and " \
           "explain why. Do NOT restate that it is done."
       end
 
@@ -211,6 +306,14 @@ module Rubino
         # don't nag it.
         return nil if honest_inability?(text)
 
+        # HIGHEST-COST class first: a fabricated file/state MUTATION ("Updated
+        # both methods", "Added the docstring", "README now contains 'API v2'")
+        # anywhere in the message. Prioritised over the trailing-intent verb
+        # below so a message that bundles a fake edit-claim with a "then I'll run
+        # the tests" is challenged on the EDIT, not the trailing run (r5c B1).
+        mutation = fabricated_mutation(text)
+        return [:reflect, mutation] if mutation
+
         verb = fabricated_action_verb(text)
         return [:reflect, verb] if verb
 
@@ -239,9 +342,62 @@ module Rubino
           next unless tools.any? { |t| @exposed.include?(t) }
           next unless asserts_verb?(text, verb)
 
-          return verb
+          return "would #{verb}"
         end
         nil
+      end
+
+      # The first fabricated file/state MUTATION the toolless turn asserts, as a
+      # human-readable claim phrase for the reflection ("updated the file",
+      # "added the docstring", "the file now contains that"). Fires on:
+      #   * a past-tense mutation verb asserted as the assistant's own action
+      #     ANYWHERE in the message (not just sentence-initial), or
+      #   * a state-RESULT phrasing ("X now contains …", "the file now has …").
+      # Gated on a write-family tool being exposed and on the claim NOT being
+      # 2nd-person advice ("you should add…", "you can write…", "to update…").
+      # nil when the turn makes no fabricated mutation claim.
+      def fabricated_mutation(text)
+        return nil unless WRITE_FAMILY.any? { |t| @exposed.include?(t) }
+        return nil if advice_only?(text)
+
+        MUTATION_TOOLS.each do |past, tools|
+          next unless tools.any? { |t| @exposed.include?(t) }
+          next unless asserts_mutation?(text, past)
+
+          return "#{past} the file"
+        end
+
+        # State-result phrasing with no action verb at all ("README now contains
+        # 'API v2'", "the file now has the import") — a mutation dressed as fact.
+        return "left the file in the state you described" if STATE_RESULT.match?(text)
+
+        nil
+      end
+
+      # True when `past` (an already-past/participle mutation form) is asserted as
+      # the assistant's OWN completed (or unfulfilled-future) mutation anywhere in
+      # the text. Built from MUTATION_SELF_SRC with the past form and its base
+      # form (for the "I'll <base>…" future framing) substituted in.
+      def asserts_mutation?(text, past)
+        base = MUTATION_BASE.fetch(past, past)
+        src = MUTATION_SELF_SRC.gsub("VERBBASE", Regexp.escape(base))
+                               .gsub("VERB", Regexp.escape(past))
+        Regexp.new(src, Regexp::IGNORECASE).match?(text)
+      end
+
+      # The whole message is 2nd-person ADVICE / a how-to, not a 1st-person
+      # claim — "you should add the import", "you can write it with…", "to update
+      # the file, use the edit tool". A mutation verb in that framing is help
+      # text, not a fabricated completion, so the guard must leave it alone. We
+      # only treat it as advice when there is NO competing first-person claim, so
+      # "I updated it; you can run it" is still challenged.
+      def advice_only?(text)
+        return false if /\b(?:i|we)\b\s*'?(?:ll|ve|m)?\b/i.match?(text) &&
+                        first_person_anywhere?(text)
+
+        /\byou\s+(?:can|could|should|may|might|will|need\s+to|have\s+to|want\s+to)\b/i
+          .match?(text) ||
+          /\bto\s+\w+[^.!?\n]{0,40}?,?\s*use\s+the\b/i.match?(text)
       end
 
       # True when `verb` appears in a first-person "I'll/I just/now" framing OR as
