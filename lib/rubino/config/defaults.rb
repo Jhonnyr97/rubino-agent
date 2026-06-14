@@ -406,6 +406,18 @@ module Rubino
             # Documents are hint-only by default (cost / injection blast radius);
             # the flag is reserved for a future in-process extract path.
             "auto_extract_documents" => false,
+            # Decompression-bomb / runaway-conversion caps for the in-process
+            # document converters (Documents::Limits). The 25 MB on-disk
+            # max_file_bytes is trivially defeated by zip compression (a 100 KB
+            # .docx expands to ~34 MB of XML / 1M paragraphs), so the converter
+            # caps BEFORE/DURING conversion: a paragraph/row/page/slide count
+            # ceiling, an accumulated decompressed-bytes ceiling (also checked
+            # against the OOXML central directory BEFORE the gem inflates), and
+            # a wall-clock budget. On any cap it bails to the shell-extraction
+            # hint instead of hanging / OOM-killing the turn.
+            "convert_max_elements" => 50_000,
+            "convert_max_decompressed_bytes" => 5_000_000, # ~5 MB extracted text
+            "convert_wall_clock_seconds" => 15.0,
             # Routing an image to an EXTERNAL aux model is data egress; on by
             # default to preserve the existing aux-vision behaviour.
             "aux_vision_egress" => true,

@@ -18,8 +18,12 @@ module Rubino
           %w[.html .htm .xhtml].include?(File.extname(path.to_s).downcase)
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           raw = File.read(path, encoding: "bom|utf-8")
+          # Enforce the decompressed-bytes ceiling BEFORE kramdown parses the
+          # whole tree: a deeply-nested / huge HTML is the html-equivalent of an
+          # expand bomb. Over the cap -> CapExceeded -> shell-hint.
+          budget.add_bytes(raw.bytesize)
           Documents::Html.to_markdown(raw)
         end
       end

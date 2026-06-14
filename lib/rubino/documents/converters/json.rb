@@ -20,8 +20,9 @@ module Rubino
           File.extname(path.to_s).downcase == ".json"
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           raw = File.read(path, encoding: "bom|utf-8")
+          budget.add_bytes(raw.bytesize)
           pretty = begin
             ::JSON.pretty_generate(::JSON.parse(raw))
           rescue ::JSON::ParserError

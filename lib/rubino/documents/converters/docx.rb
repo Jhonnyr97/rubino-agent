@@ -33,22 +33,41 @@ module Rubino
           File.extname(path.to_s).downcase == ".docx"
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           require "docx"
+          # PRE-OPEN guard: Docx::Document.open reads the whole (decompressed)
+          # word/document*.xml and builds the full Nokogiri DOM before yielding a
+          # paragraph, so a zip-expand bomb's RSS is paid at open(). Sum the
+          # uncompressed entry sizes from the central directory first and bail to
+          # the shell-hint before the gem inflates anything.
+          Limits.guard_zip!(path, budget, ["word/document*.xml"])
           doc = ::Docx::Document.open(path)
           blocks = []
           # Iterate document order when the gem exposes it; otherwise paragraphs
           # then tables (best-effort -- the gem version dictates what's available).
+          # budget.tick per paragraph bails a paragraph bomb (1M <w:p>) DURING
+          # iteration -- before the 34 MB of XML is fully materialised to text.
           if doc.respond_to?(:each_paragraph)
-            doc.each_paragraph { |p| blocks << paragraph_markdown(p) }
+            doc.each_paragraph { |p| blocks << emit_paragraph(p, budget) }
           else
-            doc.paragraphs.each { |p| blocks << paragraph_markdown(p) }
+            doc.paragraphs.each { |p| blocks << emit_paragraph(p, budget) }
           end
-          doc.tables.each { |t| blocks << table_markdown(t) } if doc.respond_to?(:tables)
+          if doc.respond_to?(:tables)
+            doc.tables.each do |t|
+              budget.tick
+              blocks << table_markdown(t, budget)
+            end
+          end
           blocks.compact.reject(&:empty?).join("\n\n")
         end
 
         private
+
+        def emit_paragraph(para, budget)
+          md = paragraph_markdown(para)
+          budget.tick(bytes: md.bytesize)
+          md
+        end
 
         def paragraph_markdown(para)
           text = inline_text(para)
@@ -115,11 +134,14 @@ module Rubino
           false
         end
 
-        def table_markdown(table)
+        def table_markdown(table, budget = Limits.null_budget)
           rows = table.rows.map do |row|
+            budget.tick
             row.cells.map { |cell| cell.respond_to?(:text) ? cell.text.to_s : cell.to_s }
           end
           Table.emit(rows)
+        rescue Rubino::Interrupted, CapExceeded
+          raise
         rescue StandardError
           ""
         end
