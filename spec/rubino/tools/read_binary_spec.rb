@@ -9,7 +9,13 @@ RSpec.describe Rubino::Tools::ReadTool do
 
   let(:tmp_dir) { Dir.mktmpdir("read-binary") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  # read is workspace-sandboxed (r5 MF-1) — root the workspace at tmp_dir.
+  before { Rubino.configuration.set("terminal", "cwd", tmp_dir) }
+
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   def write_binary(name, bytes)
     path = File.join(tmp_dir, name)

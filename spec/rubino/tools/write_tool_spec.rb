@@ -50,6 +50,52 @@ RSpec.describe Rubino::Tools::WriteTool do
     expect(tool.call("file_path" => "", "content" => "x")).to include("file_path is required")
   end
 
+  # r5 MF-2 — read-before-overwrite guard. Blind `write` over an EXISTING file
+  # the model never read this session would clobber content it can't see; new
+  # files are unaffected.
+  describe "read-before-overwrite guard" do
+    subject(:tool) { described_class.new.tap { |t| t.read_tracker = tracker } }
+
+    let(:tracker) { Rubino::Tools::ReadTracker.new }
+
+    it "blocks overwriting an existing un-read file and leaves it intact" do
+      path = File.join(tmp_dir, "exists.txt")
+      File.write(path, "PRECIOUS")
+      out = tool.call("file_path" => path, "content" => "clobber")
+      expect(out).to be_a(Hash)
+      expect(out[:error_code]).to eq(:unread_overwrite)
+      expect(out[:output]).to include("refusing to overwrite")
+      expect(File.read(path)).to eq("PRECIOUS") # untouched
+    end
+
+    it "allows creating a NEW file (no read required)" do
+      path = File.join(tmp_dir, "brand_new.txt")
+      out = payload(tool.call("file_path" => path, "content" => "fresh"))
+      expect(out).to include("created")
+      expect(File.read(path)).to eq("fresh")
+    end
+
+    it "allows overwriting once the file was read this session" do
+      path = File.join(tmp_dir, "exists.txt")
+      File.write(path, "old")
+      Rubino::Tools::ReadTool.new.tap { |t| t.read_tracker = tracker }.call("file_path" => path)
+      out = payload(tool.call("file_path" => path, "content" => "new"))
+      expect(out).to include("overwrote")
+      expect(File.read(path)).to eq("new")
+    end
+
+    it "blocks an overwrite when the read is stale (content changed on disk)" do
+      path = File.join(tmp_dir, "exists.txt")
+      File.write(path, "v1")
+      Rubino::Tools::ReadTool.new.tap { |t| t.read_tracker = tracker }.call("file_path" => path)
+      File.write(path, "v2 from elsewhere")
+      out = tool.call("file_path" => path, "content" => "clobber")
+      expect(out).to be_a(Hash)
+      expect(out[:error_code]).to eq(:unread_overwrite)
+      expect(File.read(path)).to eq("v2 from elsewhere")
+    end
+  end
+
   # Regression: a prompt-injected `file_path: "/etc/passwd"` used to be
   # silently expanded and written. The path is now rejected at the tool
   # boundary, before the approval prompt sees it.
