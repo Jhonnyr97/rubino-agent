@@ -122,8 +122,13 @@ module Rubino
       # ---- Linux: bwrap --------------------------------------------------
 
       def linux_argv(inner, roots)
+        # --ro-bind / / makes the whole filesystem readable but read-only;
+        # writable access is then re-granted per directory below. --dev/--proc
+        # give a clean /dev and /proc. We deliberately do NOT --tmpfs /tmp:
+        # /tmp is added as a writable --bind via temp_roots (workspace_write),
+        # and left read-only (under --ro-bind /) in read_only mode.
         args = ["bwrap", "--die-with-parent", "--ro-bind", "/", "/",
-                "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+                "--dev", "/dev", "--proc", "/proc"]
         unless @mode == :read_only
           (roots + temp_roots).uniq.each { |p| args += ["--bind", p, p] if File.exist?(p) }
         end

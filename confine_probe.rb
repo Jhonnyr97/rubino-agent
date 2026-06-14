@@ -34,3 +34,8 @@ puts "WRITE_ETC     exit=#{etc_rc} (expect !=0)  file_exists=#{File.exist?("/etc
 # 4. network egress with network disabled -> should FAIL
 net_rc = run("getent hosts example.com >/dev/null 2>&1 && curl -sS --max-time 5 http://1.1.1.1 >/dev/null", roots: roots)
 puts "NETWORK_OFF   exit=#{net_rc} (expect !=0)"
+
+# 5. workspace OUTSIDE /tmp (proves the per-root bind, not just the /tmp bind)
+WORK2 = "/opt/ws2"; FileUtils.mkdir_p(WORK2)
+in2 = run("echo hi > #{WORK2}/inside.txt", roots: [WORK2])
+puts "WRITE_OPT_WS  exit=#{in2} (expect 0)  file_exists=#{File.exist?("#{WORK2}/inside.txt")}"
