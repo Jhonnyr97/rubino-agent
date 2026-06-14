@@ -784,7 +784,10 @@ RSpec.describe Rubino::Tools::TaskTool do
       out   = tool.call("subagent" => "explore", "prompt" => "find needle")
       task_id = out[/sa_[0-9a-f]+/]
 
-      wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).tool_count.positive? }
+      # Wait on the actual asserted state. tool_count is bumped by tool_started,
+      # but activity_log is appended a beat later by tool_finished; polling on
+      # tool_count.positive? races the activity_log assertion below (S3-1).
+      wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).activity_log.any? }
       entry = Rubino::Tools::BackgroundTasks.instance.find(task_id)
       expect(entry.tool_count).to eq(1)
       expect(entry.last_activity).to eq("grep needle")

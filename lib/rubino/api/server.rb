@@ -2,6 +2,7 @@
 
 require "rack"
 require "uri"
+require "json"
 require "puma"
 require "puma/configuration"
 require "puma/launcher"
@@ -62,8 +63,26 @@ module Rubino
           c.bind(bind_url)
           c.app(app)
           c.quiet
+          # Errors raised below the Rack stack (e.g. Puma's HTTP parser rejecting
+          # an oversized QUERY_STRING) bypass ErrorHandler and would otherwise
+          # render Puma's verbose default page — leaking the Puma version and
+          # gem file paths/line numbers (S5-1). Render the same clean envelope
+          # with no internals instead.
+          c.lowlevel_error_handler(Server.lowlevel_error_handler)
         end
         Puma::Launcher.new(config).run
+      end
+
+      # A Puma lowlevel_error_handler that mirrors ErrorHandler's
+      # {error:{code,message}} JSON envelope and never exposes the exception
+      # class, message, backtrace, Puma version, or file paths.
+      #
+      # @return [Proc] callable Puma invokes as (error, env=nil, status=nil)
+      def self.lowlevel_error_handler
+        lambda do |_error, _env = nil, _status = nil|
+          body = JSON.generate(error: { code: "bad_request", message: "bad request" })
+          [400, { "content-type" => "application/json" }, [body]]
+        end
       end
 
       # Composes the Rack middleware stack around the router. Order matters:
