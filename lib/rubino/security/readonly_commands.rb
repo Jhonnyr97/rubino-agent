@@ -246,9 +246,18 @@ module Rubino
       #     core.pager, core.editor, core.hooksPath, core.fsmonitor,
       #     uploadpack/receivepack.* — all run a command. We reject -c entirely
       #     for an auto-approved git: a read-only git never needs per-call config.
+      #   --config-env=<name>=<envvar>       sets config like -c, sourcing the
+      #     VALUE from an environment variable (so `--config-env=alias.x=PWNVAR`
+      #     with PWNVAR='!cmd' is the same RCE as `-c alias.x='!cmd'`). Rejected
+      #     for the same reason as -c (SEC-R3-1).
+      #   --attr-source=<tree>               reads .gitattributes from an
+      #     arbitrary tree-ish; not config, but never part of a read-only intent,
+      #     so rejected too (SEC-R3-1).
       #   -C <path> / --exec-path[=path]     changes the working dir / git's exec
       #     path (which can point git at attacker binaries).
-      GIT_GLOBAL_EXEC_FLAGS = %w[-c -C --exec-path --git-dir --work-tree --namespace].freeze
+      GIT_GLOBAL_EXEC_FLAGS = %w[
+        -c --config-env --exec-path --git-dir --work-tree --namespace --attr-source -C
+      ].freeze
 
       # Subcommands that mutate the working tree / apply attacker-supplied data /
       # run hooks, never part of a read-only intent. An allowlisted git head must
