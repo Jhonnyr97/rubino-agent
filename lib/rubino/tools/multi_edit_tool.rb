@@ -65,8 +65,11 @@ module Rubino
           return gate
         end
 
-        # Scrubs a stray non-UTF-8 byte before include?/scan/sub (see Base).
-        content       = read_scrubbed(expanded)
+        # Read RAW bytes (binary) so the read-modify-write preserves every byte
+        # outside the matched spans — a non-UTF-8 byte on an untouched line is
+        # written back verbatim (#326). The model-supplied needles/replacements
+        # are matched and spliced as bytes too (see Base#to_match_bytes).
+        content       = read_for_edit(expanded)
         working       = content.dup
         applied_count = 0
 
@@ -81,9 +84,15 @@ module Rubino
           replace_all = edit["replace_all"] || edit[:replace_all] || false
 
           return "Error: edit ##{idx + 1} is missing old_string or new_string" if old_s.nil? || new_s.nil?
+          # Empty needle would match at every char boundary and corrupt the
+          # file under replace_all (#329a) — reject it like a missing string.
+          return "Error: edit ##{idx + 1}: old_string is empty" if old_s.empty?
           return "Error: edit ##{idx + 1}: old_string and new_string are identical" if old_s == new_s
 
-          unless working.include?(old_s)
+          old_b = to_match_bytes(old_s)
+          new_b = to_match_bytes(new_s)
+
+          unless working.include?(old_b)
             # Mental model was wrong — let the model's next read of this path
             # bypass dedup and fetch fresh bytes for recovery (r5 B3).
             @read_tracker&.note_edit_failure(expanded)
@@ -91,16 +100,16 @@ module Rubino
                    "remember edits see the result of prior edits)"
           end
 
-          count = working.scan(old_s).size
+          count = working.scan(old_b).size
           if count > 1 && !replace_all
             return "Error: edit ##{idx + 1}: #{count} matches for old_string. " \
                    "Add surrounding context to disambiguate, or set replace_all: true."
           end
 
           working = if replace_all
-                      working.gsub(old_s) { new_s }
+                      working.gsub(old_b) { new_b }
                     else
-                      working.sub(old_s) { new_s }
+                      working.sub(old_b) { new_b }
                     end
           applied_count += replace_all ? count : 1
         end

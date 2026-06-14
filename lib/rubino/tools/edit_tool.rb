@@ -48,6 +48,22 @@ module Rubino
       def call(arguments)
         file_path, old_string, new_string, replace_all = parse_args(arguments)
 
+        # Guard an empty old_string (#329a): a literal sub/gsub with an empty
+        # needle matches at EVERY character boundary, so replace_all would
+        # inject new_string between every char and corrupt the file. Reject it
+        # with an actionable message instead.
+        if old_string.nil? || old_string.empty?
+          return "Error: old_string is empty. Provide the exact existing text to replace " \
+                 "(use the write tool to create or fully replace a file)."
+        end
+
+        # No-op guard (#329b): identical old/new changes nothing, so reporting
+        # "1 replacement applied" misleads the model. Reject it the same way
+        # multi_edit already does, so the two tools behave consistently.
+        if old_string == new_string
+          return "Error: old_string and new_string are identical — nothing to change."
+        end
+
         expanded = expand_workspace_path(file_path)
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
@@ -57,10 +73,14 @@ module Rubino
           return gate
         end
 
-        # Scrubs a stray non-UTF-8 byte before include?/scan/sub (see Base).
-        content = read_scrubbed(expanded)
+        # Read the RAW bytes (binary) for the read-modify-write so non-UTF-8
+        # bytes on untouched lines are preserved verbatim on write (#326); the
+        # model-supplied needle/replacement are matched/spliced as bytes too.
+        content    = read_for_edit(expanded)
+        old_bytes  = to_match_bytes(old_string)
+        new_bytes  = to_match_bytes(new_string)
 
-        unless content.include?(old_string)
+        unless content.include?(old_bytes)
           # The model's mental model of the file was wrong (hallucinated text).
           # Flag a recovery so its next read of this path bypasses dedup and
           # returns FRESH bytes instead of a stale "[DUPLICATE READ]" nudge
@@ -71,14 +91,14 @@ module Rubino
         end
 
         # Count occurrences
-        count = content.scan(old_string).size
+        count = content.scan(old_bytes).size
         if count > 1 && !replace_all
           return "Error: Found #{count} matches for old_string. " \
                  "Provide more surrounding context to make it unique, " \
                  "or set replace_all: true to replace all occurrences."
         end
 
-        new_content = replace_literal(content, old_string, new_string, replace_all)
+        new_content = replace_literal(content, old_bytes, new_bytes, replace_all)
         # Crash-safe write: temp-in-same-dir + fsync + atomic rename, so a
         # SIGINT/crash mid-flush can't destroy the user's existing file content
         # (this is a read-modify-write of an existing file — HIGH-1).
