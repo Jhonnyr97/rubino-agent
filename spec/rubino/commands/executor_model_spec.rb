@@ -66,11 +66,39 @@ RSpec.describe Rubino::Commands::Executor do
       expect(Rubino.configuration.dig("model", "default")).to eq("gpt-5.2")
     end
 
-    it "notes that an explicit non-matching model.provider keeps pinning the routing" do
+    it "REJECTS a switch under a pinned catalog-less provider (label would lie) — F3" do
       Rubino.configuration.set("model", "provider", "minimax")
+      # minimax isn't a registry provider → no catalog to enumerate.
+      allow(Rubino::LLM::ModelCatalog).to receive(:ids_for).with("minimax").and_return([])
+
       exec.try_execute("/model claude-sonnet-4-5")
-      note = ui.messages.map { |m| m[:message].to_s }.join("\n")
-      expect(note).to include("still route via provider 'minimax'")
+
+      # Not persisted, runner not retargeted, footer (status_model) unchanged.
+      expect(runner).not_to have_received(:switch_model!)
+      expect(Rubino.configuration.dig("model", "default")).not_to eq("claude-sonnet-4-5")
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("requests would still route to 'minimax'")
+      expect(err[:message]).to include("Not switched")
+    end
+
+    it "REJECTS an unknown id when the provider HAS a catalog (typo guard) — F3" do
+      allow(Rubino::LLM::ModelCatalog).to receive(:ids_for)
+        .with("openai").and_return(%w[gpt-4.1 gpt-5.2])
+
+      exec.try_execute("/model gpt4")
+
+      expect(runner).not_to have_received(:switch_model!)
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("not a known model for provider 'openai'")
+    end
+
+    it "ALLOWS a catalogued id and confirms the switch" do
+      allow(Rubino::LLM::ModelCatalog).to receive(:ids_for)
+        .with("openai").and_return(%w[gpt-4.1 gpt-5.2])
+
+      exec.try_execute("/model gpt-5.2")
+
+      expect(runner).to have_received(:switch_model!).with("gpt-5.2")
     end
   end
 
@@ -87,13 +115,24 @@ RSpec.describe Rubino::Commands::Executor do
       expect(out).to include("/model gpt-5.2")
     end
 
-    it "degrades to a usage hint when the provider isn't enumerable" do
+    it "degrades to a usage hint when an UNPINNED provider isn't enumerable" do
       allow(Rubino::LLM::ModelCatalog).to receive(:ids_for).and_return([])
 
       exec.try_execute("/model")
 
       out = ui.messages.map { |m| m[:message].to_s }.join("\n")
-      expect(out).to include("/model <name> switches anyway")
+      expect(out).to include("still switches (the id picks the provider)")
+    end
+
+    it "warns the id is a label-only when a PINNED provider isn't enumerable" do
+      Rubino.configuration.set("model", "provider", "minimax")
+      allow(Rubino::LLM::ModelCatalog).to receive(:ids_for).and_return([])
+
+      exec.try_execute("/model")
+
+      out = ui.messages.map { |m| m[:message].to_s }.join("\n")
+      expect(out).to include("pinned and has no model catalog")
+      expect(out).to include("won't change the backend")
     end
 
     it "caps the listing and defers the rest to the dropdown" do

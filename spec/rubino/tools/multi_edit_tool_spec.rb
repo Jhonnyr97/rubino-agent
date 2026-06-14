@@ -23,7 +23,22 @@ RSpec.describe Rubino::Tools::MultiEditTool do
       ]
     )
     expect(File.read(path)).to eq("ALPHA beta GAMMA\n")
-    expect(out).to include("Applied 2 edit(s)")
+    expect(out[:output]).to include("Applied 2 edit(s)")
+  end
+
+  it "renders a per-edit red/green diff body on success (F4/F5)" do
+    File.write(path, "alpha beta gamma\n")
+    out = tool.call(
+      "file_path" => path,
+      "edits" => [
+        { "old_string" => "alpha", "new_string" => "ALPHA" },
+        { "old_string" => "gamma", "new_string" => "GAMMA" }
+      ]
+    )
+    expect(out[:body_kind]).to eq(:diff)
+    expect(out[:body]).to include("- alpha").and include("+ ALPHA")
+    expect(out[:body]).to include("- gamma").and include("+ GAMMA")
+    expect(out[:metrics]).to include("2 edits").and include("2 replacements")
   end
 
   it "sees the result of prior edits inside the same call" do

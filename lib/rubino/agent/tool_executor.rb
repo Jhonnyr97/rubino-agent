@@ -408,6 +408,14 @@ module Rubino
         # header followed by nothing reads as a truncated/broken card (#109).
         return "#{tool.name} wants to run" if pairs.empty?
 
+        # multi_edit carries an `edits` ARRAY whose generic .to_s render is an
+        # unreadable escaped Ruby hash (literal \n, truncated). Lay it out as
+        # clean per-edit `- old` / `+ new` blocks, matching how the single
+        # `edit` tool already previews — so the user can see what will change.
+        if (edits_preview = multi_edit_preview(tool, arguments))
+          return edits_preview
+        end
+
         # The common case — ONE short single-line argument (a shell command, a
         # file path) — inlines onto the header: `shell wants:  touch hello.txt`
         # (P7). Multi-arg / multi-line calls keep the per-key layout below.
@@ -437,6 +445,37 @@ module Rubino
         else
           ["  #{key}: #{text}"]
         end
+      end
+
+      # Clean per-edit preview for multi_edit: a header with the file path then,
+      # for each edit, its `- old` / `+ new` lines (edits blank-line separated),
+      # trimmed to a sane line budget. nil for any other tool / shape so the
+      # generic per-key formatter handles it. Mirrors EditTool's diff preview.
+      MULTI_EDIT_PREVIEW_LINES = 16
+      def multi_edit_preview(tool, arguments)
+        return nil unless tool.name == "multi_edit"
+
+        edits = arguments["edits"] || arguments[:edits]
+        return nil unless edits.is_a?(Array) && !edits.empty?
+
+        path  = arguments["file_path"] || arguments[:file_path]
+        lines = ["multi_edit wants:  #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
+        body  = []
+        edits.each_with_index do |edit, idx|
+          old_s = edit["old_string"] || edit[:old_string]
+          new_s = edit["new_string"] || edit[:new_string]
+          body << "" unless idx.zero?
+          body.concat(Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" })
+          body.concat(Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" })
+        end
+        if body.size > MULTI_EDIT_PREVIEW_LINES
+          dropped = body.size - MULTI_EDIT_PREVIEW_LINES
+          body    = body.first(MULTI_EDIT_PREVIEW_LINES)
+          body << "  [… #{dropped} more line(s)]"
+        end
+        (lines + body).join("\n")
+      rescue StandardError
+        nil
       end
 
       # Persists the complete (pre-truncation) output to a per-call file under

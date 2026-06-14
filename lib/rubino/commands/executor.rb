@@ -357,6 +357,10 @@ module Rubino
           return
         end
 
+        # Guard against a label that won't actually take effect — the status
+        # bar must never advertise a model the next turn won't run on.
+        return unless model_switch_ok?(name)
+
         Rubino.configuration.set("model", "default", name)
         persist_config("model.default", name)
         @runner.switch_model!(name) if @runner.respond_to?(:switch_model!)
@@ -368,6 +372,43 @@ module Rubino
         warn_cross_provider_model(name)
       end
 
+      # True when switching to +name+ will genuinely change what the next turn
+      # runs on; false (with an honest error) when it would only relabel the
+      # status bar without changing routing. Two reject cases:
+      #   1. The serving provider HAS a catalog but doesn't list +name+ — a
+      #      typo/unknown id. Reject so we don't persist a model the backend
+      #      can't serve (and the footer doesn't lie).
+      #   2. The provider is explicitly PINNED (e.g. "minimax") with NO catalog
+      #      to enumerate — the id can't re-route (the pin owns routing) and
+      #      isn't verifiable, so accepting it would just paint a fake name on
+      #      the footer while requests keep hitting the pinned backend.
+      # With no pin AND no catalog, the id itself drives routing (auto pattern
+      # match), so the switch is real — allow it.
+      def model_switch_ok?(name)
+        explicit = Rubino.configuration.model_provider
+        pinned   = !(explicit.nil? || explicit.to_s.empty? || explicit == "auto")
+        provider = pinned ? explicit : LLM::ProviderResolver.resolve(name)
+        ids      = LLM::ModelCatalog.ids_for(provider)
+
+        if ids.any?
+          return true if ids.include?(name)
+
+          @ui.error("'#{name}' is not a known model for provider '#{provider}' — " \
+                    "not switched. Run `/model` to see the valid ids.")
+          return false
+        end
+
+        if pinned
+          @ui.error("'#{name}' can't be verified for provider '#{provider}', and the " \
+                    "provider is pinned — requests would still route to '#{provider}'. " \
+                    "Not switched (the status bar would otherwise show a model that isn't in use). " \
+                    "Change the backend with model.provider in config.")
+          return false
+        end
+
+        true
+      end
+
       def show_model
         current  = status_model
         provider = active_provider(current)
@@ -375,7 +416,15 @@ module Rubino
 
         ids = LLM::ModelCatalog.ids_for(provider)
         if ids.empty?
-          @ui.info("No model catalog for provider '#{provider}' — /model <name> switches anyway.")
+          explicit = Rubino.configuration.model_provider
+          if explicit.nil? || explicit.to_s.empty? || explicit == "auto"
+            @ui.info("No model catalog for provider '#{provider}' — `/model <name>` still " \
+                     "switches (the id picks the provider).")
+          else
+            @ui.info("Provider '#{provider}' is pinned and has no model catalog — the model id " \
+                     "is just a label here and `/model <name>` won't change the backend. " \
+                     "Switch backends via model.provider in config.")
+          end
           return
         end
 
@@ -540,7 +589,16 @@ module Rubino
         @ui.info("Workspace roots (#{roots.size}):")
         roots.each_with_index do |dir, i|
           marker = i.zero? ? "▸" : " "
-          trust  = Rubino::Trust.trusted?(dir) ? "" : "  (untrusted — context/skills withheld)"
+          # "withheld" only applies to a dir that HAS project context/skills the
+          # user declined to load. A plain scratch dir (no AGENTS.md, no skills)
+          # has nothing to withhold — labelling it "untrusted" alarms for no
+          # reason (MF-6). Show its real state instead.
+          trust =
+            if Rubino::Trust.trusted?(dir) || !Rubino::CLI::TrustGate.gateworthy?(dir)
+              ""
+            else
+              "  (not trusted — its AGENTS.md/skills aren't loaded; run /add-dir to trust)"
+            end
           @ui.info("  #{marker} #{dir}#{trust}")
         end
         @ui.info("Add more with /add-dir <path>")

@@ -51,9 +51,22 @@ RSpec.describe "Rubino::Commands::Executor workspace verbs" do
       expect(joined).to include(File.realpath(extra))
     end
 
-    it "marks an untrusted root" do
+    # MF-6: a plain scratch dir (no AGENTS.md, no .rubino/skills) has nothing
+    # to withhold, so it must NOT be branded "untrusted — context/skills
+    # withheld". Only a gateworthy dir the user declined earns that wording.
+    it "does NOT brand a non-gateworthy scratch root as untrusted" do
       expect(exec.try_execute("/dirs")).to eq(:handled)
-      expect(info_lines.join("\n")).to include("untrusted")
+      joined = info_lines.join("\n")
+      expect(joined).not_to include("untrusted")
+      expect(joined).not_to include("withheld")
+    end
+
+    it "flags a gateworthy untrusted root with honest 'not trusted' copy" do
+      File.write(File.join(primary, "AGENTS.md"), "# project context\n")
+      expect(exec.try_execute("/dirs")).to eq(:handled)
+      joined = info_lines.join("\n")
+      expect(joined).to include("not trusted")
+      expect(joined).to include("AGENTS.md/skills aren't loaded")
     end
   end
 end
