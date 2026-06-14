@@ -889,7 +889,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       repo.create(source: "cli", title: "ordered")
       exec.try_execute("/sessions")
       headers = ui.messages.find { |m| m[:level] == :table }[:message][:headers]
-      expect(headers).to eq(%w[ID Title Created Status Msgs])
+      expect(headers).to eq(%w[ID Title Dir Created Status Msgs])
     end
 
     it "resumes by id and returns a resume signal the REPL acts on" do

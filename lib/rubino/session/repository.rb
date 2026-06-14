@@ -20,8 +20,10 @@ module Rubino
         @db = db || Rubino.database.db
       end
 
-      # Creates a new session and returns its record
-      def create(source:, model: nil, provider: nil, title: nil, parent_session_id: nil)
+      # Creates a new session and returns its record. +cwd+ stamps the launch
+      # directory so resume can be scoped per-cwd (r5 MF-4 / C-1); defaults to the
+      # current workspace primary root so every session records where it started.
+      def create(source:, model: nil, provider: nil, title: nil, parent_session_id: nil, cwd: default_cwd)
         now = Time.now.utc.iso8601
         id = generate_id
 
@@ -34,6 +36,7 @@ module Rubino
           title: title,
           status: "active",
           owner_pid: Process.pid,
+          cwd: cwd,
           message_count: 0,
           token_count: 0,
           created_at: now,
@@ -48,7 +51,7 @@ module Rubino
       # sends a message (#144). The row is inserted lazily by #persist! on the
       # first message; a session the user opens and immediately exits never
       # touches the DB, so `/sessions` stays free of (untitled)/0-msg junk.
-      def build(source:, model: nil, provider: nil, title: nil, parent_session_id: nil)
+      def build(source:, model: nil, provider: nil, title: nil, parent_session_id: nil, cwd: default_cwd)
         now = Time.now.utc.iso8601
         {
           id: generate_id,
@@ -58,6 +61,7 @@ module Rubino
           provider: provider,
           title: title,
           status: "active",
+          cwd: cwd,
           message_count: 0,
           token_count: 0,
           created_at: now,
@@ -81,6 +85,7 @@ module Rubino
           title: session[:title],
           status: session[:status] || "active",
           owner_pid: Process.pid,
+          cwd: session[:cwd],
           message_count: 0,
           token_count: 0,
           created_at: session[:created_at] || Time.now.utc.iso8601,
@@ -224,6 +229,39 @@ module Rubino
           .first
       end
 
+      # Bare `chat` / `--continue` auto-resume target, SCOPED to the launch dir
+      # (r5 MF-4 / C-1): the latest resumable session whose stored cwd matches the
+      # current directory, never the globally-latest. This is what kills
+      # "folder B silently resumes folder A": a session started in /api carries
+      # cwd=/api and is invisible to a `chat` launched in /web, which instead
+      # finds /web's own latest (or nil ⇒ fresh) — mirroring Claude Code/Codex's
+      # per-cwd picker. Two sessions stamped to DIFFERENT dirs can never resolve
+      # to each other, so concurrent instances in different folders don't stomp.
+      #
+      # Also excludes sessions a DIFFERENT live process currently owns
+      # (status="active" + an alive owner_pid that isn't us): a second tab in the
+      # SAME dir must not silently latch onto the session the first tab is still
+      # writing (the two-tabs-stomp-one-session bleed). It forks a fresh session
+      # instead; the user can still reattach explicitly with `--resume <id>`.
+      # Compares on canonical (realpath) paths so a symlinked launch dir matches
+      # the stored root. Returns nil ⇒ caller starts fresh.
+      def latest_resumable_for_cwd(cwd = default_cwd)
+        target = canonical(cwd)
+        return nil if target.nil?
+
+        @db[:sessions]
+          .where { message_count > 0 }
+          .exclude(cwd: nil)
+          .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
+          .all
+          .find do |row|
+            next false unless canonical(row[:cwd]) == target
+
+            # Skip a session another live process is actively writing.
+            !live_owned_by_other?(row)
+          end
+      end
+
       # A first prompt shorter than this is junk for titling purposes (#128): a
       # throwaway "y"/"ok" the user immediately interrupted would otherwise
       # become the session title and a useless one-char `--resume "y"` matcher.
@@ -289,6 +327,44 @@ module Rubino
 
       def generate_id
         SecureRandom.uuid
+      end
+
+      # The directory to stamp a new session with: the workspace primary root
+      # (terminal.cwd when set, else the process cwd) — the same value the
+      # sandbox, @-picker and shell agree is "the" root. Defensive fallback to
+      # Dir.pwd if Workspace isn't loaded (e.g. a bare repo spec).
+      def default_cwd
+        if defined?(Rubino::Workspace)
+          Rubino::Workspace.primary_root
+        else
+          Dir.pwd
+        end
+      end
+
+      # Canonical (realpath, symlinks resolved) form of a path, so a session's
+      # stored cwd and the launch dir compare equal even through symlinks. Falls
+      # back to an expanded path when the dir no longer exists on disk, and to
+      # nil for blank input.
+      def canonical(path)
+        return nil if path.nil? || path.to_s.empty?
+
+        File.realpath(path.to_s)
+      rescue StandardError
+        File.expand_path(path.to_s)
+      end
+
+      # True when this session row is currently owned by a DIFFERENT live process
+      # (status="active", a recorded owner_pid that is alive and isn't us). Such a
+      # session is being actively written by another tab, so auto-resume must not
+      # latch onto it. A dead/zombie owner, no pid, an ended session, or our own
+      # pid are all fine to resume.
+      def live_owned_by_other?(row)
+        pid = row[:owner_pid]
+        return false if pid.nil?
+        return false if pid == Process.pid
+        return false unless row[:status].to_s == "active"
+
+        process_alive?(pid)
       end
     end
   end
