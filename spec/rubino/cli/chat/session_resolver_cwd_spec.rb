@@ -69,4 +69,33 @@ RSpec.describe Rubino::CLI::Chat::SessionResolver do
       expect(resolver.resolve_session_id).to eq(api[:id])
     end
   end
+
+  # F2: a bare `chat` silently auto-resuming the last session is dangerous —
+  # a dev pollutes an old session without noticing. The banner must make the
+  # resume OBVIOUS: short id + message count + cwd + how to start fresh.
+  describe "#print_auto_resume_line banner (F2)" do
+    let(:ui) { Rubino::UI::Null.new }
+
+    it "surfaces id, message count, cwd, and the /new escape hatch" do
+      session = { id: "deadbeefcafef00d", title: "", message_count: 12,
+                  cwd: "#{Dir.home}/proj/api" }
+      described_class.new({}).print_auto_resume_line(ui, session)
+
+      line = ui.messages.find { |m| m[:message].to_s.include?("resumed session") }
+      expect(line).not_to be_nil
+      expect(line[:level]).to eq(:warning) # stands out, not a dim status line
+      expect(line[:message]).to include("deadbeef")
+      expect(line[:message]).to include("12 msgs")
+      expect(line[:message]).to include("~/proj/api")
+      expect(line[:message]).to include("/new for fresh")
+    end
+
+    it "singularizes a one-message session and tolerates a missing cwd" do
+      session = { id: "abc12345ffffffff", message_count: 1, cwd: nil }
+      described_class.new({}).print_auto_resume_line(ui, session)
+      line = ui.messages.find { |m| m[:message].to_s.include?("resumed session") }
+      expect(line[:message]).to include("1 msg")
+      expect(line[:message]).not_to include("1 msgs")
+    end
+  end
 end

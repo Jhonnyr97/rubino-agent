@@ -305,11 +305,18 @@ module Rubino
 
         choice   = approval_choice(rule, tool: tool)
         approved = apply_choice(choice, scope: scope, command: command, rule: rule)
-        # First plain "Approve once" of the session: point at the session-scope
-        # menu options so a multi-edit refactor doesn't keep interrupting
-        # without the user knowing it can stop (#110). Presentation only — the
-        # approval model is untouched.
-        session_scope_tip(tool, choice) if approved
+        # Surface the session-scope escape hatch so a bulk multi-file refactor
+        # doesn't re-prompt per file without the user knowing it can stop (#110,
+        # F4). Fire on the FIRST "Approve once" of the session AND again the
+        # moment a BATCH is detected — a second `:once` for the SAME tool in one
+        # turn (the N-edit refactor signature) — since that's exactly when the
+        # per-file fatigue starts. Presentation only; the approval model is
+        # untouched.
+        if approved && choice == :once
+          @turn_once_by_tool ||= Hash.new(0)
+          @turn_once_by_tool[tool.to_s] += 1
+          session_scope_tip(tool, batch: @turn_once_by_tool[tool.to_s] >= 2)
+        end
         # A deny is a safety action: confirm explicitly that nothing ran, in the
         # same red ✗ styling failed tools use, so "Done." can't be read as "ran"
         # (#83). Approve/allow paths are unchanged.
@@ -342,18 +349,38 @@ module Rubino
         false
       end
 
-      # One dim line, once per session, after the FIRST "Approve once" (#110):
-      # the "this tool (this session)" option already exists in the menu, but
-      # nothing surfaced it, so users approved every single edit by hand.
-      def session_scope_tip(tool, choice)
-        return unless choice == :once
-        return if @session_scope_tip_shown
+      # One dim line per session pointing at the session-scope menu option so a
+      # user stops hand-approving every edit (#110, F4). Re-armed once when a
+      # BATCH is detected (+batch+: the 2nd same-tool "Approve once" in a turn)
+      # so a bulk refactor that's already underway gets a louder nudge even if
+      # the user dismissed the opening tip. Tool-aware wording: an edit/write
+      # batch reads "all edits"/"all writes", which is what the user actually
+      # wants to wave through — not the abstract "this tool".
+      def session_scope_tip(tool, batch: false)
+        return if @session_scope_tip_shown && !batch
+        return if batch && @session_batch_tip_shown
 
         @session_scope_tip_shown = true
-        label = tool.to_s.empty? ? "this tool" : tool
+        @session_batch_tip_shown = true if batch
+        noun = session_scope_noun(tool)
+        lead = batch ? "bulk edit detected" : "tip"
         $stdout.puts @pastel.dim(
-          %(┄ tip: choose "Approve — this tool (this session)" to stop being asked for #{label} this session ┄)
+          %(┄ #{lead}: choose "Approve — #{noun} (this session)" to approve #{noun} for the rest of this session ┄)
         )
+      end
+
+      # How the session-scope option reads for a given tool: a batch of edits is
+      # "all edits", writes "all writes", shell "all shell commands"; anything
+      # else falls back to "this tool". Kept in sync with #approval_choice's
+      # :always_tool label.
+      def session_scope_noun(tool)
+        case tool.to_s
+        when "edit", "multi_edit" then "all edits"
+        when "write"              then "all writes"
+        when "shell"              then "all shell commands"
+        when "", nil              then "this tool"
+        else                           "all #{tool} calls"
+        end
       end
 
       # Explicit, visible confirmation that a denied command was NOT executed.
@@ -973,9 +1000,24 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
+        # Per-turn tally of plain "Approve once" choices by tool — drives the
+        # bulk-refactor batch nudge (F4); reset each turn so a new refactor
+        # re-detects its batch.
+        @turn_once_by_tool = nil
+        # The FIRST status of a turn is "waiting for model…", not "thinking":
+        # before the first byte arrives there's a multi-second network/model
+        # round-trip with nothing happening locally (F5). A distinct label makes
+        # that gap read as model latency, not a frozen client. The first stream
+        # delta / reasoning / tool relabels it to "thinking" — every one of those
+        # paths already calls status_ensure/status_show, so the transition is
+        # automatic; we only seed a different opening label here.
         @thinking_indicator = true if thinking_painter
-        status_show("thinking", phase: :thinking)
+        status_show(MODEL_WAIT_LABEL, phase: :thinking)
       end
+
+      # The opening "nothing's happening yet" label (F5), distinct from
+      # "thinking" so the ~12s pre-first-token stall doesn't look like a hang.
+      MODEL_WAIT_LABEL = "waiting for model…"
 
       # Marks the end of a TURN (normal completion, error, or interrupt): the
       # one place the turn-scoped ticker thread is allowed to die.
@@ -1158,21 +1200,20 @@ module Rubino
       def tool_body(text, kind: :plain)
         return if text.nil? || text.to_s.empty?
 
+        # A diff is shown IN FULL (no collapse): the +/- hunks ARE the answer
+        # when the user asked to see the diff (G3); collapsing them to 3 lines
+        # defeats the point. Plain output keeps the head-N-lines preview.
+        if kind == :diff
+          write_body_lines(text.to_s) { |chomped| diff_line_color(chomped) }
+          @last_block = :tool
+          return
+        end
+
         limit  = tool_preview_limit
         lines  = text.to_s.lines
         shown  = limit.positive? ? lines.first(limit) : lines
         hidden = lines.size - shown.size
-        write_body_lines(shown.join) do |chomped|
-          if kind == :diff
-            case chomped[0]
-            when "+" then @pastel.green(chomped)
-            when "-" then @pastel.red(chomped)
-            else          @pastel.dim(chomped)
-            end
-          else
-            @pastel.dim(chomped)
-          end
-        end
+        write_body_lines(shown.join) { |chomped| @pastel.dim(chomped) }
         $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
         @last_block = :tool
       end
@@ -1181,8 +1222,17 @@ module Rubino
       # accumulated across chunks. Lines past the preview budget are counted
       # silently; #activity_finished flushes the `… +N lines` marker right
       # before the close row.
-      def tool_chunk(_name, chunk)
+      def tool_chunk(_name, chunk, kind: :plain)
         return if chunk.nil? || chunk.to_s.empty?
+
+        # A diff the user asked to SEE (`git diff`, `git show`): colorize the
+        # hunks and DON'T collapse to the 3-line preview — a code review wants
+        # the full +/- (G3). Plain output keeps the head-N-lines collapse.
+        if kind == :diff
+          write_body_lines(chunk.to_s) { |chomped| diff_line_color(chomped) }
+          @last_block = :tool
+          return
+        end
 
         limit = tool_preview_limit
         unless limit.positive?
@@ -1199,6 +1249,19 @@ module Rubino
           end
         end
         @last_block = :tool
+      end
+
+      # +/-/@@ unified-diff coloring shared by streamed diff chunks (#tool_chunk)
+      # and the end-of-call diff body (#tool_body). `+++`/`---` file headers are
+      # left dim (not green/red) so they don't read as added/removed lines.
+      def diff_line_color(line)
+        case line
+        when /\A[-+]{3}\s/, /\A@@/, /\Adiff /, /\Aindex /
+          @pastel.dim(line)
+        when /\A\+/ then @pastel.green(line)
+        when /\A-/  then @pastel.red(line)
+        else             @pastel.dim(line)
+        end
       end
 
       # Tool finished renders as the compact `└ ✓ metric` close row, or
@@ -1529,8 +1592,8 @@ module Rubino
           approval_prompt.select("approve?", cycle: false) do |menu|
             menu.choice "Approve once", :once
             menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
-            menu.choice "Approve — #{narrow} (always)",         :always_command
-            menu.choice "Approve — this tool (this session)",   :always_tool
+            menu.choice "Approve — #{narrow} (always)", :always_command
+            menu.choice "Approve — #{session_scope_noun(tool)} (this session)", :always_tool
             menu.choice "Deny once",                            :no
             menu.choice "Deny — #{narrow} (always)",            :deny_always
           end

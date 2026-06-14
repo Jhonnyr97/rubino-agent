@@ -131,7 +131,7 @@ module Rubino
       # line and repainting the cards per chunk would flood the parent terminal
       # (the watch drill-in re-reads the tail on its own tick). Legacy mode
       # stays quiet (the start/finish rows already say what ran).
-      def tool_chunk(_name, chunk)
+      def tool_chunk(_name, chunk, kind: :plain)
         Tools::BackgroundTasks.instance.record_tool_output(@entry_id, chunk) if card_mode?
       end
 

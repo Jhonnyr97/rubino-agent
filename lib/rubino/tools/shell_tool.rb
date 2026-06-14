@@ -39,6 +39,22 @@ module Rubino
         code.zero? || code == SIGPIPE_EXIT
       end
 
+      # True when the command's primary output is a unified diff the dev is
+      # asking to SEE — `git diff`, `git show`, `git log -p`, or plain `diff`.
+      # Matched on the FIRST stage of the command only (anything piped into a
+      # pager/`head`/grep is the user already reshaping it, so don't force
+      # diff-render on that). Word-boundary anchored so `gitdiff`/`diffstat`
+      # don't false-positive, and `git difftool` (opens an editor) is excluded.
+      DIFF_COMMAND = /\A\s*
+        (?:git\s+(?:diff|show|whatchanged)(?!\w)(?!\S*tool)
+          |git\s+log\b[^|&;]*\s-p\b
+          |diff\s)
+      /x
+
+      def self.diff_command?(command)
+        DIFF_COMMAND.match?(command.to_s)
+      end
+
       def name
         "shell"
       end
@@ -91,6 +107,13 @@ module Rubino
 
         return "Error: command is required" if command.nil? || command.to_s.empty?
 
+        # "show me the diff" DX: when the command's job is to PRODUCE a diff
+        # (`git diff`, `git show`, `diff …`), render its output as a real diff —
+        # +/- coloring AND full hunks (no 3-line collapse) — instead of dimming
+        # and truncating it like any other shell dump (G3). The streaming lambda
+        # and the end-of-call body both read this hint.
+        @stream_kind = self.class.diff_command?(command) ? :diff : :plain
+
         if (denied = destructive_pattern_match(command))
           return { output: "Error: refusing to run #{denied} — this is hardcoded as " \
                            "destructive and not overridable by --yolo. " \
@@ -113,7 +136,7 @@ module Rubino
           { output: run[:text],
             metrics: foreground_metric(run),
             body: Util::Output.preview(run[:text]),
-            body_kind: :plain,
+            body_kind: @stream_kind || :plain,
             exit_code: run[:exit_code],
             timed_out: run[:timed_out],
             cancelled: run[:cancelled],

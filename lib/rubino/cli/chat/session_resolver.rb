@@ -73,14 +73,23 @@ module Rubino
              @auto_resumed_session)
         end
 
-        # One-liner shown when a bare `chat` auto-resumed the last session (#99),
-        # so the continuation is never silent and the user knows how to opt out.
+        # Prominent one-line banner shown when a bare `chat` auto-resumed the
+        # last session (#99, F2): make it OBVIOUS which session was picked up so
+        # a dev never accidentally continues/pollutes an old one. Carries the
+        # SHORT id, the message count, and the cwd it belongs to — the three
+        # facts a "wait, what session am I in?" moment needs — plus how to start
+        # fresh. Rendered as a warning (not dim status) so it actually stands out
+        # against the resumed history that follows.
         def print_auto_resume_line(ui, session)
           return unless session
 
-          title = session[:title].to_s.strip
-          label = title.empty? ? session[:id][0..7] : %("#{title}")
-          ui.status("▸ resuming #{label} (#{session[:id][0..7]}) — /new for a fresh session")
+          id     = session[:id].to_s[0..7]
+          msgs   = session[:message_count].to_i
+          msgcnt = "#{msgs} msg#{"s" if msgs != 1}"
+          cwd    = pretty_cwd(session[:cwd])
+          where  = cwd ? ", #{cwd}" : ""
+          banner = "▸ resumed session #{id} (#{msgcnt}#{where}) — /new for fresh"
+          ui.respond_to?(:warning) ? ui.warning(banner) : ui.status(banner)
         end
 
         # On exit, hand the user back the exact command to return to this chat.
@@ -159,6 +168,19 @@ module Rubino
 
         def pastel
           @pastel ||= Pastel.new
+        end
+
+        # Abbreviate the session's cwd for the resume banner: collapse $HOME to
+        # ~ and show just the basename's last two segments so a deep path
+        # doesn't blow the line width. nil for a session with no recorded cwd.
+        def pretty_cwd(cwd)
+          path = cwd.to_s.strip
+          return nil if path.empty?
+
+          home = Dir.home
+          path = path.sub(%r{\A#{Regexp.escape(home)}(?=/|\z)}, "~") if home && !home.empty?
+          segs = path.split("/")
+          segs.length > 3 ? "…/#{segs.last(2).join("/")}" : path
         end
 
         # Best-effort parse of the timestamp the DB stored on a Message.
