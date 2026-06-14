@@ -216,6 +216,14 @@ module Rubino
       @database ||= Database::Connection.new(configuration.database_path)
     end
 
+    # Drops the memoized DB connection so the next #database call opens the file
+    # afresh. Used by `setup` after quarantining a corrupt DB so it reconnects
+    # to the newly-recreated file rather than the closed/renamed handle.
+    def reset_database!
+      @database&.close
+      @database = nil
+    end
+
     # First-run guard for any DB-touching entry point. A brand-new RUBINO_HOME
     # has no schema yet (setup/chat hasn't migrated it), so a read path like
     # `rubino sessions list` would otherwise hit a raw

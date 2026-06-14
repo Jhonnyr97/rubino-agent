@@ -80,6 +80,25 @@ RSpec.describe Rubino::Util::AtomicFile do
       strays = Dir.children(dir).grep(/\.tmp\z/)
       expect(strays).to be_empty
     end
+
+    # The temp+rename swap could sidestep an EXISTING file's read-only bit (the
+    # writable dir lets us rename over it). Preserve plain-write semantics:
+    # refuse with EACCES so an `edit` of a 0444 file still fails cleanly.
+    it "refuses to clobber an existing read-only file (raises EACCES)" do
+      described_class.write_atomic(path, "orig")
+      File.chmod(0o444, path)
+      expect { described_class.write_atomic(path, "new") }.to raise_error(Errno::EACCES)
+      expect(File.read(path)).to eq("orig")
+    ensure
+      File.chmod(0o644, path) if File.exist?(path)
+    end
+
+    it "preserves the existing file's permission bits across the replace" do
+      described_class.write_atomic(path, "v1")
+      File.chmod(0o640, path)
+      described_class.write_atomic(path, "v2")
+      expect(File.stat(path).mode & 0o777).to eq(0o640)
+    end
   end
 
   describe ".read_shared" do

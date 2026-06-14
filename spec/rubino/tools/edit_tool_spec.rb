@@ -72,4 +72,16 @@ RSpec.describe Rubino::Tools::EditTool do
       expect(result).to include("3 matches")
     end
   end
+
+  # HIGH-1: an edit is a read-modify-write of an EXISTING file, so a mid-write
+  # crash would destroy the user's original content. The fix routes the final
+  # write through AtomicFile.write_atomic (temp + fsync + atomic rename).
+  describe "crash-safe (atomic) write" do
+    it "writes the result through Util::AtomicFile.write_atomic" do
+      path = write_file("atomic.rb", "alpha\n")
+      expect(Rubino::Util::AtomicFile).to receive(:write_atomic).with(path, "beta\n").and_call_original
+      tool.call("file_path" => path, "old_string" => "alpha", "new_string" => "beta")
+      expect(File.read(path)).to eq("beta\n")
+    end
+  end
 end

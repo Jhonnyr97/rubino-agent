@@ -124,4 +124,32 @@ RSpec.describe Rubino::Tools::WriteTool do
       end
     end
   end
+
+  # HIGH-1: a SIGINT/crash mid-write must not corrupt the user's file. The fix
+  # routes the final write through AtomicFile.write_atomic (temp-in-same-dir +
+  # fsync + atomic rename), so an interrupt leaves the ORIGINAL intact rather
+  # than a torn/truncated file. Fails on a plain File.write.
+  describe "crash-safe (atomic) write" do
+    it "writes through Util::AtomicFile.write_atomic" do
+      path = File.join(tmp_dir, "atomic.txt")
+      expect(Rubino::Util::AtomicFile).to receive(:write_atomic).with(path, "body").and_call_original
+      tool.call("file_path" => path, "content" => "body")
+      expect(File.read(path)).to eq("body")
+    end
+
+    it "leaves the ORIGINAL file intact when killed mid-write (no torn file)" do
+      path = File.join(tmp_dir, "victim.txt")
+      File.write(path, "original-content")
+      big = "Z" * (8 * 1024 * 1024)
+      pid = fork { described_class.new.call("file_path" => path, "content" => big) }
+      sleep 0.001 # kill almost certainly mid-flush of the 8 MB temp file
+      Process.kill("KILL", pid)
+      Process.wait(pid)
+      content = File.read(path)
+      # The atomic rename is all-or-nothing: either the old or the full new —
+      # never a torn partial of the 8 MB payload.
+      expect(content).to eq("original-content").or eq(big)
+      expect(content.bytesize).not_to be_between(17, big.bytesize - 1)
+    end
+  end
 end
