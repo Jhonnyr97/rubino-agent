@@ -39,7 +39,15 @@ RSpec.describe Rubino::Security::HardlineGuard do
       "rm -rf '/usr'" => /system directory/,        # quoted system dir
       "rm -rf ${HOME}" => /home directory/,         # brace-expanded $HOME
       "rm -rf \"$HOME\"" => /home directory/,       # quoted $HOME
-      "rm -rf ${home}" => /home directory/          # brace lowercase home
+      "rm -rf ${home}" => /home directory/,         # brace lowercase home
+      # #348: line-continuation, ${IFS} word-split, ${HOME:-/} param-default.
+      "rm -rf \\\n/" => /root filesystem/,          # backslash-newline continuation
+      "rm -rf \\\n  /" => /root filesystem/,        # continuation + leading indent
+      "rm \\\n  -rf \\\n  /" => /root filesystem/,  # multiple continuations
+      "rm${IFS}-rf${IFS}/" => /root filesystem/,    # ${IFS} word-splitting
+      "rm${IFS}-rf${IFS}/etc" => /system directory/, # ${IFS} -> system dir
+      "rm -rf ${HOME:-/}" => /root filesystem/,     # ${HOME:-/} defaults to /
+      "rm -rf ${HOME:=/}" => /root filesystem/      # ${HOME:=/} defaults to /
     }.each do |command, description_match|
       it "blocks #{command.inspect}" do
         blocked, description = described_class.detect(command)
@@ -69,7 +77,12 @@ RSpec.describe Rubino::Security::HardlineGuard do
       # that merely contain a trailing slash, a dot-relative, or a bare slash.
       "rm -rf /tmp/build/",
       "rm -rf ./node_modules",
-      "echo /"
+      "echo /",
+      # #348: the new continuation/word-split handling must NOT add false
+      # positives on legit multi-line / IFS-adjacent commands.
+      "rm -rf \\\n/tmp/build",       # continuation to a SAFE path
+      "echo hello \\\nworld",        # continuation in a harmless command
+      "rm${IFS}-rf${IFS}/tmp/build"  # ${IFS} to a SAFE path
     ].each do |command|
       it "allows #{command.inspect}" do
         blocked, = described_class.detect(command)
