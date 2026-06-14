@@ -52,6 +52,13 @@ RSpec.describe Rubino::UI::StatusBar do
         expect(line).to eq(" plan · branch:ab12cd · skill s · m3 · ~100 tok")
       end
 
+      # #320: the active primary agent chip sits right after the mode.
+      it "renders the agent token after the mode" do
+        line = described_class.render(model: "m3", tokens: 100, window: nil,
+                                      chips: { mode: :default, agent: "plan" }, pastel: plain)
+        expect(line).to eq(" default · agent plan · m3 · ~100 tok")
+      end
+
       it "omits every chip when none is given (legacy bare bar)" do
         line = described_class.render(model: "m3", tokens: 100, window: nil, pastel: plain)
         expect(line).to eq(" m3 · ~100 tok")

@@ -32,6 +32,13 @@ module Rubino
         built_in_result = handle_built_in(name, arguments)
         return built_in_result if built_in_result
 
+        # Agent switching (#320): a bare `/<primary>` pins it, a `/<agent>
+        # <message>` routes one turn to it. Resolved against the live registry so
+        # built-in (build/plan/explore/general) AND user-registered agents are
+        # reachable — checked BEFORE custom .md commands so an agent name wins.
+        agent_result = agent_switch_handler.handle_command(name, arguments)
+        return agent_result if agent_result
+
         # Look up custom command
         command = @loader.find(name)
         unless command
@@ -147,6 +154,11 @@ module Rubino
         when "config"
           config_handler.handle_config(arguments)
           :handled
+        when "agent"
+          # `/agent` lists the switchable primary agents (and the one-shot
+          # subagents); `/agent <name>` pins a primary. The sticky switch is a
+          # signal the REPL applies to the live runner + Rubino::ActiveAgent.
+          agent_switch_handler.handle_picker(arguments)
         when "agents", "tasks"
           agents_handler.handle_agents(arguments)
           # handle_agents delegates to the puts-based UI (info/table), whose
@@ -197,6 +209,10 @@ module Rubino
       # memory backend memo, the watch pastel).
       def agents_handler
         @agents_handler ||= Handlers::Agents.new(ui: @ui)
+      end
+
+      def agent_switch_handler
+        @agent_switch_handler ||= Handlers::AgentSwitch.new(ui: @ui)
       end
 
       def sessions_handler

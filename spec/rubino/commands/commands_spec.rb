@@ -475,16 +475,19 @@ RSpec.describe Rubino::Commands::Executor do
     end
 
     it "includes agent and model from command" do
+      # A non-agent name: a custom command sharing a name with a registered
+      # agent (e.g. "plan") is intentionally shadowed by the agent (#320 — the
+      # `/<name>` agent channel is resolved before custom .md commands).
       cmd = instance_double(
         Rubino::Commands::Command,
-        name: "plan", description: "Plan",
+        name: "myplan", description: "Plan",
         agent: "plan", model: "claude-3-haiku"
       )
       allow(cmd).to receive(:render).and_return("plan prompt")
-      allow(loader).to receive(:parse).and_return(["plan", ""])
-      allow(loader).to receive(:find).with("plan").and_return(cmd)
+      allow(loader).to receive(:parse).and_return(["myplan", ""])
+      allow(loader).to receive(:find).with("myplan").and_return(cmd)
 
-      result = executor.try_execute("/plan")
+      result = executor.try_execute("/myplan")
       expect(result[:agent]).to eq("plan")
       expect(result[:model]).to eq("claude-3-haiku")
     end
