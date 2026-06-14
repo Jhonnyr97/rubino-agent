@@ -110,6 +110,45 @@ RSpec.describe Rubino::Documents::Limits do
     ensure
       FileUtils.rm_f(path) if path
     end
+
+    # #337: a zip-bomb planted at a NESTED, non-standard path (reachable via the
+    # workbook .rels Target) must still be summed and rejected. Pre-fix, the glob
+    # ran with File::FNM_PATHNAME so `*` stopped at `/`: a bomb at
+    # xl/worksheets/deep/sheet1.xml summed to zero and slipped through to roo's
+    # inflate. The fix sums across `/` (xl/** without FNM_PATHNAME), so it bails.
+    it "REJECTS a bomb at a nested non-standard path (xlsx, #337)" do
+      path = bomb_zip("xl/worksheets/deep/sheet1.xml", 200_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect do
+        described_class.guard_zip!(path, budget, ["xl/**"])
+      end.to raise_error(Rubino::Documents::CapExceeded, /zip size cap/)
+    ensure
+      FileUtils.rm_f(path) if path
+    end
+
+    it "REJECTS a bomb at a nested non-standard path (pptx, #337)" do
+      path = bomb_zip("ppt/slides/extra/slide99.xml", 200_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect do
+        described_class.guard_zip!(path, budget, ["ppt/**"])
+      end.to raise_error(Rubino::Documents::CapExceeded, /zip size cap/)
+    ensure
+      FileUtils.rm_f(path) if path
+    end
+
+    it "still passes a normal small xlsx with a nested path under the cap (#337)" do
+      path = bomb_zip("xl/worksheets/sheet1.xml", 1_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect { described_class.guard_zip!(path, budget, ["xl/**"]) }.not_to raise_error
+    ensure
+      FileUtils.rm_f(path) if path
+    end
   end
 
   describe "end-to-end: a paragraph-bomb .docx bails to the shell-hint path", if: docx_available? do

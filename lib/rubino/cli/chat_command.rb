@@ -47,6 +47,19 @@ module Rubino
       def execute
         query = opt(:query) || opt(:q)
 
+        # Stdin fallback (#329c): when no prompt was given on the command line
+        # (no -q/--query, no positional) AND stdin is a pipe/file (not a TTY),
+        # read the prompt from stdin so `echo "..." | rubino prompt` and
+        # `rubino prompt < file` work like other Unix tools. `prompt` with no
+        # args supplies an EMPTY query (args.join == ""), so a blank query also
+        # falls through to stdin here; only when stdin is also empty do we hit
+        # the no-prompt guard below. A TTY stdin (bare interactive use) is left
+        # untouched — nil query stays the interactive path.
+        if query.nil? || query.strip.empty?
+          piped = read_piped_prompt
+          query = piped if piped && !piped.strip.empty?
+        end
+
         # Empty/whitespace guard for the headless path (P2-H3): an empty
         # `-q`/`prompt ""` is truthy in Ruby, so it used to be dispatched
         # straight to the model — a wasted API turn and unpredictable
@@ -1827,6 +1840,20 @@ module Rubino
 
       def opt(key)
         @options[key] || @options[key.to_s]
+      end
+
+      # Reads the one-shot prompt from $stdin when it's piped/redirected (#329c).
+      # Returns the whole stdin body (so a multi-line heredoc/file becomes one
+      # prompt), or nil when stdin is a TTY (interactive — never block waiting on
+      # a human to type) or on any read error. Best-effort: a stdin hiccup must
+      # never crash the launch.
+      def read_piped_prompt
+        return nil if $stdin.respond_to?(:tty?) && $stdin.tty?
+
+        body = $stdin.read
+        body unless body.nil? || body.empty?
+      rescue StandardError
+        nil
       end
 
       # Seeds extra workspace roots from --add-dir and runs the folder-trust

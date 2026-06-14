@@ -115,4 +115,36 @@ RSpec.describe Rubino::Tools::MultiEditTool do
       expect(File.read(path)).to eq("ALPHA beta\n")
     end
   end
+
+  # #326 — a one-line ASCII edit on a file carrying non-UTF-8 (Latin-1) bytes on
+  # OTHER lines must leave those lines byte-identical, not scrub them to U+FFFD.
+  describe "byte-safe edit on an invalid-UTF-8 file (#326)" do
+    it "preserves Latin-1 bytes on untouched lines" do
+      latin1 = +"name: André\ncity: Zürich\nport: 8080\n"
+      latin1.encode!("ISO-8859-1")
+      File.binwrite(path, latin1)
+
+      out = tool.call("file_path" => path,
+                      "edits" => [{ "old_string" => "8080", "new_string" => "9090" }])
+      expect(out).to be_a(Hash)
+
+      after = File.binread(path)
+      expect(after).to include("port: 9090".b)
+      expect(after.b).to include("Andr\xE9".b)
+      expect(after.b).to include("Z\xFCrich".b)
+    end
+  end
+
+  # #329a — an empty old_string in any edit would match at every char boundary
+  # under replace_all and corrupt the file. Reject it atomically (no write).
+  describe "empty old_string guard (#329a)" do
+    it "refuses the whole multi_edit when an edit has an empty old_string" do
+      File.write(path, "hello world")
+      out = tool.call("file_path" => path,
+                      "edits" => [{ "old_string" => "", "new_string" => "X", "replace_all" => true }])
+      expect(out).to be_a(String)
+      expect(out).to include("empty")
+      expect(File.read(path)).to eq("hello world") # untouched (atomic)
+    end
+  end
 end

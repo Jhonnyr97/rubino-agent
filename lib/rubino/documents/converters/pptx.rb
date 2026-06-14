@@ -28,8 +28,11 @@ module Rubino
 
         def convert(path, budget = Limits.null_budget)
           require "ruby_powerpoint"
-          # PRE-OPEN guard against a slide/text zip-expand bomb (see Docx).
-          Limits.guard_zip!(path, budget, ["ppt/slides/*.xml", "ppt/notesSlides/*.xml"])
+          # PRE-OPEN guard against a slide/text zip-expand bomb (see Docx). Sum
+          # EVERY entry under ppt/ -- including a bomb hidden at a nested/non-
+          # standard path behind a .rels Target. `ppt/**` matches across `/`
+          # (guard_zip! globs without FNM_PATHNAME) so a deep bomb is caught (#337).
+          Limits.guard_zip!(path, budget, ["ppt/**"])
           ppt = RubyPowerpoint::Presentation.new(path)
           parts = ppt.slides.each_with_index.map do |slide, i|
             md = slide_markdown(slide, i + 1)

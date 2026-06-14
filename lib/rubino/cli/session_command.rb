@@ -17,10 +17,12 @@ module Rubino
       # "rubino rubino sessions tree" (#327); the top-level `rubino tree` covers it.
       remove_command :tree
 
-      desc "list", "List recent sessions"
+      desc "list", "List recent sessions in this directory (--all for every dir)"
       option :limit,  type: :numeric, default: 20, desc: "Max results"
       option :status, type: :string,  desc: "Filter by status"
       option :search, type: :string,  desc: "Filter by title (substring match)"
+      option :all,    type: :boolean, default: false,
+                      desc: "List sessions from every directory, not just this one"
       def list
         guard_corrupt_database!
         Rubino.ensure_database_ready!
@@ -29,11 +31,16 @@ module Rubino
         # (hard terminal kill / SIGKILL, #11) so the list never shows a stale
         # "active" for a window that is actually gone.
         repo.reap_orphaned_active!
+        # Default to THIS directory's sessions (#334) so a multi-folder user
+        # isn't shown another project's history; --all opts back into the global
+        # listing. nil cwd ⇒ unscoped (all dirs).
+        cwd = options[:all] ? nil : Rubino::Workspace.primary_root
         sessions = repo.list(limit: options[:limit], status: options[:status],
-                             search: options[:search])
+                             search: options[:search], cwd: cwd)
 
         if sessions.empty?
-          Rubino.ui.info("No sessions found.")
+          msg = options[:all] ? "No sessions found." : "No sessions found in this directory (try --all)."
+          Rubino.ui.info(msg)
           return
         end
 

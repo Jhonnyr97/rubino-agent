@@ -46,15 +46,23 @@ module Rubino
       # paragraph -- so per-element ticking alone is too late. The central
       # directory carries each entry's UNCOMPRESSED size, readable without
       # decompressing, so we sum the relevant XML entries first and bail to the
-      # shell-hint before the gem inflates anything. `glob` matches the content
-      # entries that hold the document body (word/document*.xml, xl/**, ppt/**),
-      # which is where a structural bomb lives. Raises CapExceeded over cap.
+      # shell-hint before the gem inflates anything.
+      #
+      # The sum runs WITHOUT File::FNM_PATHNAME so `*` crosses `/` -- a bomb
+      # planted at a nested, non-standard path (e.g. xl/worksheets/deep/sheet.xml,
+      # reachable via the workbook .rels Target, or ppt/slides/extra/s.xml) is
+      # caught just like one at the canonical depth. The pre-fix glob used
+      # FNM_PATHNAME, so `*` stopped at `/` and a deep bomb summed to zero and
+      # slipped through to roo's inflate (#337). Globs still scope the sum to the
+      # body parts (word/document*.xml, xl/**, ppt/**) so a large thumbnail/media
+      # blob doesn't false-positive. Raises CapExceeded over cap.
       def guard_zip!(path, budget, globs)
         require "zip"
         total = 0
         Zip::File.open(path) do |zip|
           zip.each do |entry|
-            next unless globs.any? { |g| File.fnmatch?(g, entry.name, File::FNM_PATHNAME) }
+            # No FNM_PATHNAME: `*` matches across `/` so nested-path bombs sum.
+            next unless globs.any? { |g| File.fnmatch?(g, entry.name) }
 
             total += entry.size.to_i
             if total > budget.max_decompressed_bytes
