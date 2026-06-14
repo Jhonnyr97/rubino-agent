@@ -149,8 +149,11 @@ module Rubino
       # one-shot and idle-when-untouched, so cancelling the not-running side is a
       # harmless no-op. The polishing worker stops between jobs and its aux
       # retry/backoff aborts mid-wait, leaving partial work in place.
-      def cancel!
-        @cancel_token&.cancel!
+      # +reason+ records WHY the turn was cancelled so the result label stays
+      # truthful: :user (Esc/Ctrl+C, default) vs :external (SIGTERM/SIGHUP
+      # teardown). Plumbed through to the CancelToken / Interrupted (#361b).
+      def cancel!(reason: :user)
+        @cancel_token&.cancel!(reason: reason)
         @polishing&.cancel!
       end
 

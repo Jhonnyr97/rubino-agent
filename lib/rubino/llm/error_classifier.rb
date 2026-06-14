@@ -126,6 +126,7 @@ module Rubino
 
         result = classify_missing_credential(error) ||
                  classify_invalid_credential(error) ||
+                 classify_unresolvable_host(error) ||
                  classify_transport(error) ||
                  classify_invalid_media(error) ||
                  classify_invalid_params(error) ||
@@ -199,9 +200,37 @@ module Rubino
                    retryable: false, should_rotate_credential: true, should_fallback: true)
       end
 
+      # An UNRESOLVABLE host is a PERMANENT misconfiguration, not a transient
+      # transport blip: every retry re-runs the same DNS lookup and fails
+      # identically, so retrying burns the whole budget (~81s) on a typo'd
+      # base_url (#361a). faraday-net_http wraps the underlying SocketError
+      # ("getaddrinfo: Name or service not known" / "nodename nor servname
+      # provided" / "Temporary failure in name resolution") in a
+      # Faraday::ConnectionFailed, so we match on the literal resolver phrasings
+      # rather than the wrapper class. Kept narrow so a genuine connection
+      # reset/refused (transient) still retries via classify_transport below.
+      DNS_FAILURE_PATTERNS = [
+        "getaddrinfo",
+        "name or service not known",
+        "nodename nor servname provided",
+        "temporary failure in name resolution",
+        "no address associated with hostname",
+        "failure in name resolution"
+      ].freeze
+
+      def classify_unresolvable_host(error)
+        msg = error.message.to_s.downcase
+        return unless DNS_FAILURE_PATTERNS.any? { |p| msg.include?(p) }
+
+        result_for(FailoverReason::FORMAT_ERROR, nil, error,
+                   retryable: false, should_fallback: true)
+      end
+
       # Transport drops (Faraday::ConnectionFailed for the MiniMax EOF, read/
       # connect timeouts, …) are retryable regardless of message — they never
-      # reach an HTTP status. STREAM_DROP_ERRORS lives on the adapter.
+      # reach an HTTP status. STREAM_DROP_ERRORS lives on the adapter. An
+      # unresolvable host is caught BEFORE this (in #classify) so a permanent
+      # DNS failure does not get swept into the retryable timeout bucket.
       def classify_transport(error)
         return unless STREAM_DROP_ERRORS.any? { |klass| error.is_a?(klass) }
 
@@ -259,6 +288,18 @@ module Rubino
 
       # Typed ruby_llm errors we can name without a status lookup.
       def classify_typed(error)
+        # A permanent context-overflow can arrive DISGUISED as a 5xx: MiniMax
+        # wraps the "context window exceeds limit" 400 in a RubyLLM::ServerError,
+        # which the blanket ServerError/OverloadedError branches below would
+        # blindly mark retryable -> a 5x retry storm (~133s) on a request that
+        # fails identically every time (#356). Run the message-based overflow
+        # check FIRST so an overflow masquerading as 5xx routes to
+        # compress-not-retry, regardless of the wrapping error class.
+        if context_overflow?(error)
+          return result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error,
+                            retryable: false, should_compress: true)
+        end
+
         case error
         when RubyLLM::ContextLengthExceededError
           result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error,

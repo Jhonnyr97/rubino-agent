@@ -221,6 +221,20 @@ module Rubino
           chat_instance.on_end_message(&close_block)
         end
 
+        # #360: the per-chunk check_stream_stale! only fires WHEN a chunk
+        # arrives — so if the upstream opens the stream then goes silent (a
+        # stalled SSE / a 200 that never sends an event), nothing inside the
+        # callback ever runs and the only backstop is the 600s socket
+        # read-timeout. Bound the idle gap INDEPENDENTLY of chunk arrival with a
+        # watchdog thread that wakes on `stale_after` (300s default, well below
+        # 600s; configurable via providers.<name>.stale_timeout_seconds) and, on
+        # observing an idle past the deadline, raises StreamStaleError INTO this
+        # streaming thread to break it out of the blocking socket read. The
+        # rescue below then surfaces a clear "stream stalled" and lets the retry
+        # ladder run. The closure reads `last_chunk_at`/`chunks_seen` live (they
+        # are reassigned in the callback) via a shared binding.
+        watchdog = start_stale_watchdog(stale_after) { last_chunk_at }
+
         begin
           response = chat_instance.ask(last_user_content(messages), with: presence(image_paths)) do |chunk|
             # User interrupt poll. Raised here propagates out of the streaming
@@ -248,7 +262,20 @@ module Rubino
           # what arrived before they hit Esc.
           flush_filter(think_filter, &emit)
           raise
-        rescue JSON::ParserError, StreamStaleError => e
+        rescue StreamStaleError => e
+          # The stream stalled (no chunk within the idle bound). If NOTHING was
+          # emitted yet, RAISE so the runner re-issues a fresh request — safe, no
+          # token reached the user, and the user sees "stream stalled — retrying"
+          # rather than a 600s hang (#360). If chunks already flowed, preserve the
+          # partial and stop (same no-double-output contract as a transport drop).
+          if chunks_seen.zero?
+            log_safely(event: "llm.stream.stalled", error: e.message)
+            raise
+          end
+          log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
+          flush_filter(think_filter, &emit)
+          return partial_response(buffered)
+        rescue JSON::ParserError => e
           # Preserve whatever we've buffered so far so the user sees partial
           # output instead of a blank failure. (issues #12, #22)
           log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
@@ -267,6 +294,11 @@ module Rubino
                      buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
           return partial_response(buffered)
+        ensure
+          # Always tear the watchdog down — on success, on partial-return, and on
+          # a raised StreamStaleError/transport drop — so it never leaks a thread
+          # or fires against a finished stream.
+          stop_stale_watchdog(watchdog)
         end
 
         # Guard flush in the same way as the per-chunk emit so a final UI error
@@ -621,6 +653,42 @@ module Rubino
         return if (monotonic_now - last_chunk_at) <= stale_after
 
         raise StreamStaleError, "no chunk received for #{stale_after}s"
+      end
+
+      # Watchdog that bounds a STALLED stream independent of chunk arrival
+      # (#360): the per-chunk check_stream_stale! cannot fire once chunks stop,
+      # so a stream that opens then goes silent would otherwise block on the
+      # blocking socket read until the 600s read-timeout. This thread wakes on
+      # short ticks, recomputes the idle gap from the live `last_chunk_at`
+      # (read via the given block each tick), and on observing an idle past
+      # `stale_after` raises StreamStaleError INTO the streaming thread to break
+      # it out of the read. nil when stale_after <= 0 (watchdog disabled).
+      def start_stale_watchdog(stale_after, &last_chunk_at_reader)
+        return if stale_after.to_i <= 0
+
+        target = Thread.current
+        # Tick fast enough to bound the OVERSHOOT past the deadline, but never
+        # busy-spin: cap the tick at 1s and never exceed the deadline itself.
+        tick = [[stale_after.to_f / 4.0, 1.0].min, 0.01].max
+        Thread.new do
+          loop do
+            sleep(tick)
+            idle = monotonic_now - last_chunk_at_reader.call
+            next if idle <= stale_after
+
+            target.raise(StreamStaleError.new("no chunk received for #{stale_after}s"))
+            break
+          end
+        end
+      end
+
+      def stop_stale_watchdog(watchdog)
+        return unless watchdog
+
+        watchdog.kill
+        watchdog.join
+      rescue StandardError
+        nil
       end
 
       def log_safely(**fields)
