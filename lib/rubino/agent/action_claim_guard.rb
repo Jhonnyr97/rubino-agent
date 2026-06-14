@@ -21,8 +21,21 @@ module Rubino
     #      mapped to a tool rubino DOES expose — we REFLECT one corrective turn
     #      ("you said you would <X> but issued no tool call; call the tool now or
     #      say you cannot and why"), capped at MAX_REFLECTIONS (aider's
-    #      reflected_message pattern, capped). After the cap we stop honestly
-    #      rather than surface the fabricated "done".
+    #      reflected_message pattern, capped). After the cap the guard becomes
+    #      BINDING: it REPLACES the fabricated final answer with a deterministic
+    #      honest message rather than letting the model's "done" reach the user
+    #      (G1). The structured tool-call channel is the only thing that advances
+    #      state, so a terminal turn that still asserts a mutation with zero tool
+    #      calls has, by construction, changed nothing — and we say exactly that.
+    #
+    #   3. a tool was DENIED or BLOCKED this turn (user-denied, or headless
+    #      fail-closed "needs approval but no interactive session"), and the model
+    #      then narrates success OR hands back a fabricated unified diff/patch for
+    #      files it never wrote (F1/F2). The action did NOT happen, so the diff is
+    #      not a real artifact; we REPLACE the answer with the honest "that was
+    #      blocked — nothing was applied; pass --yolo (or approve interactively)"
+    #      so a plausible-looking but partly-invented diff can never stand as if
+    #      real and get `git apply`-ed.
     #
     # Deliberately conservative — it must never nag a legitimate text answer:
     #   * Only fires when the WHOLE turn ran zero tools AND zero denied tools.
@@ -166,10 +179,63 @@ module Rubino
         Regexp::IGNORECASE
       )
 
+      # Git-MUTATION RESULT phrasing — a fabricated VCS mutation narrated as a
+      # fact rather than a first-person/sentence-initial action verb. This is the
+      # exact G1 shape: "Done. New branch feature/tax … committed as 0f60f1d." —
+      # a bare "committed as <sha>", "created (the) branch X", "new branch X",
+      # "pushed to origin/X", "the commit is <sha>", "on branch X now". The
+      # action-verb matcher misses these (the verb is mid-sentence, no "I", and
+      # the completion marker is >20 chars away from the verb), so a hallucinated
+      # SHA/branch sailed through to the user. Gated on a git/shell tool being
+      # exposed (handled at the call site). A bare SHA on its own is NOT enough
+      # (too noisy) — we require a commit/branch/push CONTEXT around it.
+      GIT_RESULT = Regexp.new(
+        '\bcommitted\s+(?:as|in|with(?:\s+(?:sha|hash|id))?|to)\b' \
+        '|\b(?:created|made|added|cut)\s+(?:a\s+|the\s+|new\s+)*branch\b' \
+        '|\bnew\s+branch\b[^.!?\n]{0,60}?\b(?:committed|created|with\s+the)\b' \
+        '|\bbranch\b[^.!?\n]{0,40}?\bcommitted\s+as\b' \
+        '|\b(?:pushed|push(?:ed)?)\s+(?:it\s+)?to\s+(?:origin|remote|the\s+remote)\b' \
+        '|\bthe\s+commit\s+(?:is|hash\s+is|sha\s+is)\b' \
+        '|\b(?:commit|sha|hash)\s+(?:is\s+)?\b[0-9a-f]{7,40}\b',
+        Regexp::IGNORECASE
+      )
+
+      # Base/infinitive surface of a tracked action verb so the claim phrase
+      # ("commit that", "run that") fits both the reflection ("you'd <claim>")
+      # and the binding replacement ("I did not <claim>") templates. ACTION_TOOLS
+      # keys mix base ("run") and past ("ran", "committed") forms; map the past
+      # ones back to base, leave the rest as-is.
+      ACTION_BASE = {
+        "ran" => "run", "executed" => "execute", "tested" => "test",
+        "saved" => "save", "wrote" => "write", "edited" => "edit",
+        "created" => "create", "deleted" => "delete", "removed" => "remove",
+        "moved" => "move", "renamed" => "rename", "installed" => "install",
+        "committed" => "commit", "pushed" => "push", "fetched" => "fetch"
+      }.freeze
+
       # The write-family tools any mutation/state-result claim needs on offer for
       # the guard to challenge it — no point challenging "the file now contains X"
       # if rubino has no way to write at all this turn.
       WRITE_FAMILY = %w[write edit multi_edit patch].freeze
+
+      # The VCS tools a fabricated git-mutation RESULT ("committed as <sha>")
+      # needs on offer for the guard to challenge it.
+      GIT_TOOLS = %w[git github shell].freeze
+
+      # The text honestly reports the block instead of fabricating success —
+      # "it was blocked", "nothing was applied", "not run/applied", "wasn't run",
+      # "needs approval", "no interactive session". Lets a denied/blocked turn
+      # that owns up be surfaced as-is; a fabricated diff dressed in honest words
+      # is still caught by FABRICATED_DIFF (checked first).
+      BLOCKED_HONEST = Regexp.new(
+        '\b(?:was|were|is|got)\s+blocked\b' \
+        '|\bnothing\s+(?:was|were|got)?\s*(?:applied|changed|written|run|saved)\b' \
+        '|\bnot\s+(?:been\s+)?(?:applied|run|executed|saved|written|committed)\b' \
+        '|\b(?:was|were)n\s?\'?t\s+(?:applied|run|executed|saved|written|committed)\b' \
+        '|\bneeds?\s+approval\b' \
+        '|\bno\s+interactive\s+session\b',
+        Regexp::IGNORECASE
+      )
 
       # base verb => [progressive, past] surface forms. Stored explicitly rather
       # than derived so English irregulars (run→running→ran, write→writing→wrote)
@@ -256,12 +322,64 @@ module Rubino
       # The corrective user message injected when a tracked action verb appears in
       # a toolless turn. Names the offending claim so the model self-corrects.
       def reflection_message(claimed_verb)
-        "You stated you #{claimed_verb} but issued NO tool call, so nothing " \
+        "You said you'd #{claimed_verb} but issued NO tool call, so nothing " \
           "actually happened — that text is not a real result and the file is " \
           "unchanged on disk. Do ONE of two things now: (a) make the actual tool " \
           "call to carry it out, or (b) if you cannot (missing info, blocked, " \
           "denied, or no such capability), say plainly that you did NOT do it and " \
           "explain why. Do NOT restate that it is done."
+      end
+
+      # A fabricated unified diff / patch / git-apply artifact in the prose —
+      # the F1 class: when its write tool is blocked, the model hands back a
+      # confident "ready to `git apply`" diff for files it never read, with
+      # invented hunks that would CORRUPT those files if applied. We detect the
+      # diff shape (a `--- a/…` + `+++ b/…` header, a `@@ … @@` hunk header, an
+      # explicit "git apply"/"apply this patch", or a ```diff/```patch fence) so
+      # that, on a denied/blocked turn, the diff is never surfaced as if it were
+      # a real, applicable artifact.
+      FABRICATED_DIFF = Regexp.new(
+        '^\s*---\s+a?/?\S.*\n\+\+\+\s+b?/?\S' \
+        '|^\s*@@\s.*@@' \
+        '|\bgit\s+apply\b' \
+        '|\bapply\s+(?:this\s+)?(?:the\s+)?patch\b' \
+        '|```(?:diff|patch)\b',
+        Regexp::IGNORECASE
+      )
+
+      # The honest answer that REPLACES a fabricated "I did the mutation" final
+      # answer once the reflection budget is spent (G1, BINDING). The model ran
+      # zero tools, so nothing changed on disk; we say so deterministically and
+      # name the claim, instead of letting its fabricated "Done. committed as
+      # <sha>" stand. `claim` is the human-readable phrase the guard already
+      # built ("committed the change", "the file now …").
+      def replacement_for_fabrication(claim)
+        "No tool call was made, so nothing was changed on disk — I did not " \
+          "#{claim}. (The previous lines claiming otherwise were not backed by " \
+          "any action and are not a real result.) Tell me to proceed and I'll " \
+          "actually run the tool to carry it out."
+      end
+
+      # The honest answer that REPLACES a success-narration OR a fabricated diff
+      # emitted AFTER a tool was denied/blocked this turn (F1/F2). The action was
+      # blocked and nothing was applied; any diff in the text is not a real,
+      # applicable artifact. `noninteractive` tailors the escape hatch: headless
+      # fail-closed → `--yolo` (and notes approvals.mode: skip no longer
+      # auto-runs non-interactively, #281/F2); user-denied → re-ask/approve.
+      def replacement_for_blocked(noninteractive:)
+        hatch =
+          if noninteractive
+            "nothing was applied. To run it non-interactively pass `--yolo` " \
+              "(note: `approvals.mode: skip` no longer auto-runs non-interactively " \
+              "for safety — use `--yolo`), or run rubino interactively and approve " \
+              "the action."
+          else
+            "nothing was applied. Approve the action (or re-run and allow it) " \
+              "if you want me to carry it out."
+          end
+        "That action was blocked, so #{hatch} Any diff or \"done\" above is not " \
+          "a real, applied change — I did not read/write those files, so I'm not " \
+          "presenting it as something to `git apply`."
       end
 
       # The honest answer that REPLACES a fabricated "I changed the directory"
@@ -278,22 +396,44 @@ module Rubino
       # The verdict for a finished, TEXT-ONLY turn.
       #
       #   tool_count   — tools that actually ran this turn (Loop's @tool_count)
-      #   denied_count — tools the user denied this turn (Loop's @denied_count)
+      #   denied_count — tools denied/blocked this turn (Loop's @denied_count):
+      #                  user-denied AND headless fail-closed both count here.
       #   content      — the assistant's final text
+      #   noninteractive — true when a denial this turn was a headless
+      #                  "no interactive session" block (#260), so the honest
+      #                  message can point at `--yolo` (F2) vs "approve it".
+      #   terminal     — true on the LAST chance (reflection budget exhausted):
+      #                  the guard must now be BINDING and REPLACE the answer
+      #                  rather than ask for one more corrective turn (G1).
       #
       # Returns one of:
-      #   nil            — no fabrication detected; surface the text as-is.
-      #   [:cd, msg]     — replace the final answer with the honest cd message.
-      #   [:reflect, vb] — reflect a corrective turn; `vb` is the claimed verb.
+      #   nil             — no fabrication detected; surface the text as-is.
+      #   [:cd, msg]      — replace the final answer with the honest cd message.
+      #   [:blocked, msg] — replace the answer: a tool was denied/blocked yet the
+      #                     text narrates success or emits a fabricated diff.
+      #   [:reflect, vb]  — reflect a corrective turn; `vb` is the claimed verb.
+      #   [:replace, msg] — BINDING terminal override: replace the fabricated
+      #                     "done" final text with the honest deterministic msg.
       #
       # The Loop decides what to do with each (rewrite vs re-enter the loop), and
-      # owns the MAX_REFLECTIONS cap.
-      def evaluate(content:, tool_count:, denied_count:)
+      # owns the MAX_REFLECTIONS cap (passing terminal: once it is reached).
+      def evaluate(content:, tool_count:, denied_count:, noninteractive: false, terminal: false)
         text = content.to_s
         return nil if text.strip.empty?
-        # The model DID act (or was denied) this turn — its closing prose is a
-        # real summary / recovery, not a fabrication. Never nag those.
-        return nil unless tool_count.to_i.zero? && denied_count.to_i.zero?
+        return nil unless tool_count.to_i.zero?
+
+        # A tool was DENIED/BLOCKED this turn but none RAN. If the text then
+        # narrates success or hands back a fabricated diff/patch for files it
+        # never wrote (F1/F2), the action did NOT happen — replace it with the
+        # honest "blocked, nothing applied, use --yolo" message so the invented
+        # diff can never read as an applicable artifact. An honest "it was
+        # blocked / I couldn't" answer is left alone.
+        if denied_count.to_i.positive?
+          return nil unless blocked_but_claims?(text)
+
+          return [:blocked, replacement_for_blocked(noninteractive: noninteractive)]
+        end
+
         # A turn that ends by asking the user is a legitimate clarify, not a
         # claimed completion.
         return nil if asks_user?(text)
@@ -306,24 +446,65 @@ module Rubino
         # don't nag it.
         return nil if honest_inability?(text)
 
-        # HIGHEST-COST class first: a fabricated file/state MUTATION ("Updated
-        # both methods", "Added the docstring", "README now contains 'API v2'")
-        # anywhere in the message. Prioritised over the trailing-intent verb
-        # below so a message that bundles a fake edit-claim with a "then I'll run
-        # the tests" is challenged on the EDIT, not the trailing run (r5c B1).
-        mutation = fabricated_mutation(text)
-        return [:reflect, mutation] if mutation
+        # HIGHEST-COST class first: a fabricated file/state/git MUTATION
+        # ("Updated both methods", "committed as 0f60f1d", "README now contains
+        # 'API v2'") anywhere in the message. Prioritised over the trailing-intent
+        # verb below so a message that bundles a fake edit-claim with a "then I'll
+        # run the tests" is challenged on the EDIT, not the trailing run (r5c B1).
+        claim = fabricated_git_result(text) ||
+                fabricated_mutation(text) ||
+                fabricated_action_verb(text)
+        return nil if claim.nil?
 
-        verb = fabricated_action_verb(text)
-        return [:reflect, verb] if verb
+        # BINDING terminal override (G1): the reflection budget is spent and the
+        # model is STILL asserting a mutation it never made. Don't surface the
+        # fabrication — replace it with the honest deterministic message. Off the
+        # terminal turn we ask for one corrective turn first.
+        return [:replace, replacement_for_fabrication(claim)] if terminal
 
-        nil
+        [:reflect, claim]
       end
 
       private
 
       def honest_inability?(text)
         INABILITY.match?(text)
+      end
+
+      # After a tool was DENIED/BLOCKED this turn, does the text still try to pass
+      # off the action as done — by narrating success (a mutation/action claim or
+      # a state-result), OR by handing back a fabricated unified diff/patch for
+      # files it never wrote (F1)? A fabricated diff fires on its own (the most
+      # dangerous artifact: it reads as `git apply`-able). A plain honest "it was
+      # blocked / I couldn't" with no success-claim and no diff is left alone.
+      def blocked_but_claims?(text)
+        return true if FABRICATED_DIFF.match?(text)
+        # An honest "blocked / can't / nothing was applied" answer with no diff
+        # is a real deny-recovery summary — leave it alone.
+        return false if honest_inability?(text) || blocked_honest?(text)
+
+        !!(cd_intent?(text) ||
+           fabricated_git_result(text) ||
+           fabricated_mutation(text) ||
+           fabricated_action_verb(text) ||
+           STATE_RESULT.match?(text))
+      end
+
+      # A fabricated VCS-mutation RESULT narrated as fact ("committed as 0f60f1d",
+      # "created branch feature/tax", "pushed to origin/main") — the G1 shape the
+      # verb matchers miss. Gated on a git/shell tool being on offer, and on the
+      # claim NOT being 2nd-person advice. Returns the human-readable claim phrase
+      # ("commit/create that on a branch") or nil.
+      def fabricated_git_result(text)
+        return nil unless GIT_TOOLS.any? { |t| @exposed.include?(t) }
+        return nil if advice_only?(text)
+        return nil unless GIT_RESULT.match?(text)
+
+        "make that git change (commit/branch/push)"
+      end
+
+      def blocked_honest?(text)
+        BLOCKED_HONEST.match?(text)
       end
 
       # The text claims to have changed the working directory — and rubino can't.
@@ -336,15 +517,22 @@ module Rubino
       end
 
       # The first tracked action verb the text asserts as the assistant's own
-      # doing, whose backing tool rubino actually exposed this turn. nil when none.
+      # doing, whose backing tool rubino actually exposed this turn, as a
+      # base-form claim phrase ("run that", "commit that") that reads naturally
+      # in BOTH "You said you'd <claim>" (reflection) and "I did not <claim>"
+      # (binding replacement). nil when none.
       def fabricated_action_verb(text)
         ACTION_TOOLS.each do |verb, tools|
           next unless tools.any? { |t| @exposed.include?(t) }
           next unless asserts_verb?(text, verb)
 
-          return "would #{verb}"
+          return "#{action_base(verb)} that"
         end
         nil
+      end
+
+      def action_base(verb)
+        ACTION_BASE.fetch(verb, verb)
       end
 
       # The first fabricated file/state MUTATION the toolless turn asserts, as a
@@ -364,12 +552,14 @@ module Rubino
           next unless tools.any? { |t| @exposed.include?(t) }
           next unless asserts_mutation?(text, past)
 
-          return "#{past} the file"
+          # Base form so the phrase reads in BOTH "you'd <claim>" and "I did not
+          # <claim>" ("update the file", "apply the change").
+          return "#{MUTATION_BASE.fetch(past, past)} the file"
         end
 
         # State-result phrasing with no action verb at all ("README now contains
         # 'API v2'", "the file now has the import") — a mutation dressed as fact.
-        return "left the file in the state you described" if STATE_RESULT.match?(text)
+        return "make that change to the file" if STATE_RESULT.match?(text)
 
         nil
       end
