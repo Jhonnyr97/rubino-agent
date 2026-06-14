@@ -359,7 +359,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
     end
 
     it "does NOT over-suppress: 'run the tests' is a task, not a no-action request" do
-      req  = "Run the tests and report the result."
+      req = "Run the tests and report the result."
       expect(verdict_for(req, "I ran the tests and they all pass.").first).to eq(:reflect)
     end
   end

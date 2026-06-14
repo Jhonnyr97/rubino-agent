@@ -436,30 +436,17 @@ module Rubino
         :reflected
       end
 
-      # The latest GENUINE user request driving this turn — the one the guard
-      # consults to tell whether the user asked for a no-action (plan / explain /
-      # "don't run tools") turn (#353a). Scans `messages` backward for the last
-      # user message that is NOT one of the guard's own injected reflections
-      # (those are user-role too), so a guard note never reads as the user
-      # request. Returns "" when there is no user message yet (defensive).
+      # The latest GENUINE user request driving this turn — the guard consults it
+      # to tell whether the user asked for a no-action (plan / explain / "don't
+      # run tools") turn (#353a). The last user message that is NOT one of the
+      # guard's own injected reflections (user-role too; both the full and the
+      # decayed #353b phrasings carry the "no tool call" marker).
       def latest_user_request(messages)
-        Array(messages).reverse_each do |m|
-          next unless (m[:role] || m["role"]).to_s == "user"
-
-          content = (m[:content] || m["content"]).to_s
-          next if guard_reflection_note?(content)
-
-          return content
+        m = Array(messages).reverse_each.find do |msg|
+          (msg[:role] || msg["role"]).to_s == "user" &&
+            !/issued NO tool call|\bStill no tool call\b/i.match?((msg[:content] || msg["content"]).to_s)
         end
-        ""
-      end
-
-      # True when a user-role message is one of the guard's own injected
-      # corrective notes (so #latest_user_request skips it). Both the full and the
-      # decayed (#353b) phrasings carry the "no tool call" core.
-      def guard_reflection_note?(content)
-        /issued NO tool call/i.match?(content) ||
-          /\bStill no tool call\b/i.match?(content)
+        m ? (m[:content] || m["content"]).to_s : ""
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
