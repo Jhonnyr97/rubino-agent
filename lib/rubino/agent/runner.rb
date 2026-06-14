@@ -242,9 +242,7 @@ module Rubino
           # fresh child that inherits the full history instead of stomping the
           # live session; the user keeps their context and the two writers never
           # interleave.
-          if @session_repo.owned_by_other_live_process?(session)
-            return fork_busy_session(session)
-          end
+          return fork_busy_session(session) if @session_repo.owned_by_other_live_process?(session)
 
           # An existing row is already in the DB; mark it so the lazy-persist
           # path (#144) treats it as persisted and never re-inserts. Claim
