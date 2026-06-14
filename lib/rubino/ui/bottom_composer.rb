@@ -171,12 +171,18 @@ module Rubino
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
-                     on_double_esc: nil, on_escape: nil)
+                     on_double_esc: nil, on_agent_cycle: nil,
+                     on_escape: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
         @on_ctrl_o     = on_ctrl_o
         @on_mode_cycle = on_mode_cycle
+        # Invoked on a Tab with nothing to complete (empty buffer, menu closed):
+        # cycle the active PRIMARY agent and adopt the returned status-bar line
+        # — the agent counterpart of @on_mode_cycle (Shift+Tab). nil ⇒ Tab stays
+        # a plain completion key.
+        @on_agent_cycle = on_agent_cycle
         @on_double_esc = on_double_esc
         # Invoked on a LONE Esc at the idle prompt with no menu open, BEFORE the
         # Esc-Esc rewind chord arms (#319). Returns truthy to CONSUME the Esc
@@ -1292,6 +1298,28 @@ module Rubino
           accept_completion
         elsif @menu.open(@buffer, @cursor)
           @render.synchronize { redraw }
+        elsif @buffer.strip.empty?
+          # Nothing to complete (empty input, no menu): Tab cycles the active
+          # PRIMARY agent instead of being a dead key. A buffer with text still
+          # falls through to a no-op (we never insert a literal tab), so command
+          # / @file completion is unaffected.
+          cycle_agent
+        end
+      end
+
+      # Tab on empty input: ask the callback to cycle + persist the primary
+      # agent, then adopt the status-bar line it returns (the agent chip leads
+      # the bar) and redraw. A nil return (no callback, or a single agent) is a
+      # no-op. Mirrors #cycle_mode for Shift+Tab.
+      def cycle_agent
+        return unless @on_agent_cycle
+
+        new_status = @on_agent_cycle.call
+        return if new_status.nil?
+
+        @render.synchronize do
+          @status = new_status.to_s
+          redraw
         end
       end
 

@@ -622,8 +622,19 @@ module Rubino
                   interacted = false
                   next
                 end
+                if result[:select_agent]
+                  # `/agent <name>` (or a bare `/<primary>`): pin the primary
+                  # agent for the rest of the session — its Definition rides the
+                  # runner from the next turn, and the slot drives the status-bar
+                  # chip + Tab cycle. No turn runs.
+                  switch_primary_agent(result[:select_agent], runner, ui)
+                  next
+                end
                 interacted = true
-                run_turn(runner, result[:prompt], ui, input_queue)
+                # `/<agent> <message>` (or a custom command's `agent:` frontmatter)
+                # routes THIS turn to the named agent's Definition without
+                # disturbing the sticky pick; a nil/blank agent runs the sticky one.
+                run_turn(runner, result[:prompt], ui, input_queue, agent_name: result[:agent])
               else interacted = true
                    run_turn(runner, input, ui, input_queue)
               end
@@ -849,6 +860,7 @@ module Rubino
           rail: composer_rail,
           on_ctrl_o: ctrl_o_handler,
           on_mode_cycle: mode_cycle_handler(runner),
+          on_agent_cycle: agent_cycle_handler(runner),
           completion_source: @completion_source,
           history: @input_history,
           echo: :prompt,
@@ -1053,11 +1065,18 @@ module Rubino
       # print_above instead of clobbering the input line — zero changes to those
       # call sites. The proxy is torn down and the terminal restored to cooked
       # mode in +ensure+ so raw mode / the swap never leak on a raise.
-      def run_turn(runner, prompt, ui, input_queue = nil)
+      def run_turn(runner, prompt, ui, input_queue = nil, agent_name: nil)
         # A real turn has happened, so any prior probe is no longer the
         # "immediately-preceding interaction" — a later /branch must NOT fold it
         # into the seed. Clear it here, the single chokepoint for real turns.
         @last_probe = nil
+
+        # Pin the runner to the user's sticky primary agent (Tab / `/agent
+        # <name>` set Rubino::ActiveAgent) so its Definition — system prompt +
+        # tool scope — rides EVERY plain turn. A one-shot `/<agent> <message>`
+        # passes +agent_name+ to run THIS turn under a different agent without
+        # disturbing the pin (see #run below).
+        runner.agent_definition = Rubino::ActiveAgent.definition if runner.respond_to?(:agent_definition=)
 
         # Consume the turn's queued image attachments (the native vision slot)
         # so they're attached exactly once, not re-sent next turn.
@@ -1145,7 +1164,12 @@ module Rubino
         # Only thread the paste expansions when a placeholder was actually
         # collected, so a normal turn's runner.run signature is unchanged.
         run_kwargs[:paste_expansions] = paste_expansions unless paste_expansions.empty?
-        runner.run(prompt, **run_kwargs)
+        oneshot = one_shot_agent_definition(agent_name)
+        if oneshot && runner.respond_to?(:run_with_agent)
+          runner.run_with_agent(oneshot, prompt, **run_kwargs)
+        else
+          runner.run(prompt, **run_kwargs)
+        end
       rescue Interrupt
         # Reached on the second tap (raised from the trap) or a stray INT that
         # escaped the cooperative path. Cancel and re-raise so run_interactive's
@@ -1196,7 +1220,8 @@ module Rubino
         budget   = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
         messages = ::Rubino::Session::Store.new.for_session(session[:id])
         UI::StatusBar.render(
-          chips: { mode: Rubino::Modes.current, branch: @branch_short_id,
+          chips: { mode: Rubino::Modes.current, agent: status_agent_chip,
+                   branch: @branch_short_id,
                    skill: Rubino::ActiveSkill.current },
           model: session[:model] || model_name,
           tokens: context_tokens(messages, budget),
@@ -1205,6 +1230,15 @@ module Rubino
         )
       rescue StandardError
         nil
+      end
+
+      # The status-bar agent chip (#320): the active primary agent name, but
+      # only when it differs from the registry default (build) — like the
+      # branch/skill chips, a plain session keeps the bare bar. nil ⇒ no chip.
+      def status_agent_chip
+        current = Rubino::ActiveAgent.current
+        default = Rubino.agent_registry.default&.name
+        current if current && current != default
       end
 
       # Estimated tokens in the session's context: the last recorded REAL
@@ -1608,6 +1642,55 @@ module Rubino
       # returned status line.
       def mode_cycle_handler(runner)
         -> { cycle_mode(runner) }
+      end
+
+      # --- primary-agent switching (#320) ------------------------------------
+
+      # The Tab callback for the composer: cycle to the next PRIMARY agent
+      # (Rubino::ActiveAgent), show a transient toast, and RETURN the freshly
+      # built status-bar line so the agent chip updates LIVE — same shape as
+      # #mode_cycle_handler. Only fires when there's nothing to complete (the
+      # composer routes a buffer-empty / menu-closed Tab here), so file/command
+      # completion is untouched.
+      def agent_cycle_handler(runner)
+        -> { cycle_agent(runner) }
+      end
+
+      # Tab: cycle the active primary agent, toast the transition, and return the
+      # refreshed status-bar line (the agent chip lives in the bar). With a
+      # single primary agent it's a no-op (no toast, no repaint).
+      def cycle_agent(runner = nil)
+        names = Rubino::ActiveAgent.names
+        return nil if names.size < 2
+
+        previous = Rubino::ActiveAgent.current
+        nxt      = Rubino::ActiveAgent.cycle
+        runner.agent_definition = Rubino::ActiveAgent.definition if runner.respond_to?(:agent_definition=)
+        desc = Rubino.agent_registry.find(nxt)&.description.to_s
+        show_mode_footer("┄ agent #{previous} → #{nxt} — #{desc}, tab to cycle ┄")
+        build_status_line(runner)
+      end
+
+      # Applies a sticky `/agent <name>` switch: pin the slot (the status-bar
+      # source of truth), retarget the live runner so the NEXT turn runs under
+      # the new Definition, and confirm. An unknown/non-primary name is rejected
+      # by ActiveAgent.set; we surface it instead of crashing the REPL.
+      def switch_primary_agent(name, runner, ui)
+        previous = Rubino::ActiveAgent.current
+        Rubino::ActiveAgent.set(name)
+        runner.agent_definition = Rubino::ActiveAgent.definition if runner.respond_to?(:agent_definition=)
+        ui.success("agent: #{previous} → #{Rubino::ActiveAgent.current}")
+      rescue ArgumentError => e
+        ui.error(e.message)
+      end
+
+      # Resolves a one-shot `/<agent> <message>` route to its Definition, or nil
+      # when no agent was named (the plain-turn path). An unknown name degrades
+      # to nil (the turn runs under the sticky agent) rather than crashing.
+      def one_shot_agent_definition(agent_name)
+        return nil if agent_name.nil? || agent_name.to_s.strip.empty?
+
+        Rubino.agent_registry.find(agent_name.to_s.strip)
       end
 
       # Shift+Tab: cycle the mode, show a SINGLE TRANSIENT confirmation banner,

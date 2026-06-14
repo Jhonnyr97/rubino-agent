@@ -52,7 +52,7 @@ module Rubino
           rescue StandardError
             []
           end
-          names  = (::Rubino::Commands::BuiltIns::NAMES + custom).uniq
+          names  = (::Rubino::Commands::BuiltIns::NAMES + agent_command_names + custom).uniq
           files  = -> { Rubino::Workspace.primary_root }
           # ARGUMENT sources: the dropdown completes the argument of these commands
           # the same way it completes `/command` and `@file`.
@@ -79,10 +79,22 @@ module Rubino
           #     verbs + the known config keys flattened from the defaults tree.
           #   * /skills — the `✗ none` clear entry + the enable/disable verbs +
           #     the skill names (#188); after a toggle verb, the names again.
-          arg_sources = {
+          Rubino::UI::CompletionSource.new(commands: names, files: files,
+                                           arg_sources: arg_sources,
+                                           descriptions: completion_descriptions)
+        end
+
+        private
+
+        # The per-command ARGUMENT completion sources (#39): the dropdown
+        # completes the argument of these commands the same way it completes
+        # `/command` and `@file`. See the per-entry notes inline.
+        def arg_sources
+          {
             "skills" => ->(args) { skills_arg_candidates(args) },
             "agents" => ->(args) { agents_arg_candidates(args) },
             "tasks" => ->(args) { agents_arg_candidates(args) },
+            "agent" => ->(args) { args.empty? ? primary_agent_names : [] },
             "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] },
             "mcp" => ->(args) { mcp_arg_candidates(args) },
             "mode" => ->(args) { args.empty? ? Rubino::Modes::ALL.map(&:to_s) : [] },
@@ -97,12 +109,35 @@ module Rubino
             "jobs" => ->(args) { args.empty? ? recent_job_ids : [] },
             "config" => ->(args) { config_arg_candidates(args) }
           }
-          Rubino::UI::CompletionSource.new(commands: names, files: files,
-                                           arg_sources: arg_sources,
-                                           descriptions: completion_descriptions)
         end
 
-        private
+        # Agent slash commands (#320): every visible agent is reachable as a
+        # `/<name>` (a bare `/<primary>` switches, `/<name> <msg>` routes one
+        # turn). Surfaced in the dropdown alongside the built-ins so they're
+        # discoverable; resolved lazily so a freshly registered agent appears.
+        def agent_command_names
+          ::Rubino.agent_registry.all.reject(&:hidden?).map { |a| "/#{a.name}" }
+        rescue StandardError
+          []
+        end
+
+        # The switchable primary-agent names, for the `/agent <name>` argument.
+        def primary_agent_names
+          ::Rubino.agent_registry.primary_agents.map(&:name)
+        rescue StandardError
+          []
+        end
+
+        # Describe each `/<name>` agent command so the dropdown explains what
+        # switching/routing to it does — primaries switch, subagents run one-shot.
+        def merge_agent_descriptions!(descriptions)
+          ::Rubino.agent_registry.all.reject(&:hidden?).each do |a|
+            verb = a.primary? ? "switch to" : "run one turn as"
+            descriptions["/#{a.name}"] = "#{verb} the #{a.name} agent — #{a.description}"
+          end
+        rescue StandardError
+          nil
+        end
 
         # Argument candidates per /agents position: ids → subcommands → nothing.
         def agents_arg_candidates(args)
@@ -247,6 +282,7 @@ module Rubino
           rescue StandardError
             nil
           end
+          merge_agent_descriptions!(descriptions)
           descriptions.merge(
             "steer" => "park a note the subagent folds in at its next turn",
             "probe" => "ask the subagent an ephemeral question (not saved)",

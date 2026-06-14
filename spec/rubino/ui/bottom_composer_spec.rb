@@ -1163,6 +1163,36 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "#handle_key Tab (agent cycle on empty input)" do
+    # #320: a Tab with nothing to complete (empty buffer, no menu) cycles the
+    # active PRIMARY agent and adopts the returned status line — the agent
+    # counterpart of Shift+Tab's mode cycle.
+    it "invokes on_agent_cycle and adopts the returned STATUS line" do
+      cycles = 0
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_agent_cycle: lambda {
+                                cycles += 1
+                                " default · agent plan · m3"
+                              })
+      c.handle_key("\t")
+      expect(cycles).to eq(1)
+      expect(output.string).to include(" default · agent plan · m3")
+    end
+
+    it "does NOT cycle the agent when there is text in the buffer (Tab stays completion)" do
+      cycles = 0
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_agent_cycle: -> { cycles += 1 })
+      "/he".each_char { |ch| c.handle_key(ch) } # a typed, completable token
+      c.handle_key("\t")
+      expect(cycles).to eq(0)
+    end
+
+    it "is a quiet no-op when no callback is wired" do
+      expect { composer.handle_key("\t") }.not_to raise_error
+    end
+  end
+
   describe "#handle_key Shift+Tab (mode cycle)" do
     # Shift+Tab arrives as ESC[Z: preload the bytes after ESC, then trigger the
     # escape consumer via handle_key("\e") — the same way the paste specs drive it.
