@@ -16,6 +16,15 @@ module Rubino
     #   session_summaries and runs inside a single transaction (no FK cascade
     #   in schema; the runs FK would otherwise block the session delete).
     class Repository
+      # Public re-export of the live-owner check (#347): explicit `--resume <id>`
+      # (the Runner) needs the SAME stomp guard auto-resume already applies, so a
+      # second process resuming a session a first live process is still writing
+      # can fork instead of interleaving writes into one malformed transcript.
+      # True when this row is "active" with an alive owner_pid that isn't us.
+      def owned_by_other_live_process?(row)
+        live_owned_by_other?(row)
+      end
+
       # LIKE-pattern escape char for the SAFE id-prefix match (#333a): `%` and
       # `_` are LIKE wildcards, so an unescaped `find("%")` matched EVERY
       # session. id_prefix_match escapes the metacharacters and declares this as

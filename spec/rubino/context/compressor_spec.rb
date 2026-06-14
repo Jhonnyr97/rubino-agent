@@ -196,5 +196,33 @@ RSpec.describe Rubino::Context::Compressor do
       expect(results - declared).to be_empty
       expect(declared.sort).to eq(%w[call_head call_tail])
     end
+
+    # #352: a SHORT id resolves the session row via #find (prefix match), but the
+    # old compact! then looked up messages with `for_session(short_id)` — an
+    # EXACT match — and got 0 rows, short-circuiting to no_op_result and a fake
+    # "saved 0 tok" success. Resolving the short id to the FULL id before the
+    # message lookup must compact the REAL transcript, not no-op.
+    it "compacts the real session when given a SHORT id (#352)" do
+      lineage_config = test_configuration(
+        "compression" => Rubino::Config::Defaults.to_hash["compression"]
+                                                 .merge("protect_first_n" => 1, "protect_last_n" => 1)
+      )
+      15.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }
+
+      allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(
+        instance_double(Rubino::Context::SummaryBuilder, build: "NEW SUMMARY")
+      )
+      allow_any_instance_of(Rubino::Memory::Flusher).to receive(:flush_before_compaction!)
+
+      short_id = parent[:id][0, 8]
+      result = described_class.new(session_id: short_id, config: lineage_config, db: db).compact!
+
+      # Real compaction: NOT a 0-tok no-op, a child session was created, and the
+      # source id was normalized to the full id (not left as the short prefix).
+      expect(result[:skipped]).to be_nil
+      expect(result[:saved_tokens]).to be > 0
+      expect(result[:source_session_id]).to eq(parent[:id])
+      expect(result[:target_session_id]).to be_truthy
+    end
   end
 end

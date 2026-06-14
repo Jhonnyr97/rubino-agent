@@ -100,12 +100,18 @@ RSpec.describe Rubino::Documents::Limits do
       FileUtils.rm_f(path) if path
     end
 
-    it "ignores entries outside the matched globs" do
-      path = bomb_zip("docProps/thumbnail.bin", 5_000_000)
+    it "ignores entries outside the matched globs (under the whole-archive backstop)" do
+      # 500 KB out-of-glob entry: above the 50 KB BODY cap (so this proves it is
+      # NOT summed by the body glob) but below the whole-archive backstop
+      # (50 KB * 20 = 1 MB), so it must pass. (#350 raised the backstop; a body
+      # cap of 50 KB no longer bounds out-of-glob media -- the looser archive cap
+      # does, and 500 KB is under it.)
+      path = bomb_zip("docProps/thumbnail.bin", 500_000)
       budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
                                                      max_decompressed_bytes: 50_000,
                                                      wall_clock_seconds: 60)
-      # The huge entry is not a body XML, so it is not summed -> no bail.
+      # The entry is not a body XML, so it is not summed against the body cap; it
+      # is under the whole-archive backstop -> no bail.
       expect { described_class.guard_zip!(path, budget, ["word/document*.xml"]) }.not_to raise_error
     ensure
       FileUtils.rm_f(path) if path
@@ -142,6 +148,61 @@ RSpec.describe Rubino::Documents::Limits do
 
     it "still passes a normal small xlsx with a nested path under the cap (#337)" do
       path = bomb_zip("xl/worksheets/sheet1.xml", 1_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect { described_class.guard_zip!(path, budget, ["xl/**"]) }.not_to raise_error
+    ensure
+      FileUtils.rm_f(path) if path
+    end
+
+    # #350: an ODS keeps its body (content.xml) at the archive ROOT, not under
+    # xl/. Routed through the same roo/xlsx converter, an ODS bomb summed to ZERO
+    # under the `xl/**`-only scope and slipped to roo's inflate. With the ODS
+    # read-path globs (content.xml / root *.xml) the pre-open guard rejects it.
+    it "REJECTS an ODS bomb rooted at content.xml (#350)" do
+      path = bomb_zip("content.xml", 200_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect do
+        described_class.guard_zip!(path, budget, ["content.xml", "*.xml"])
+      end.to raise_error(Rubino::Documents::CapExceeded, /zip size cap/)
+    ensure
+      FileUtils.rm_f(path) if path
+    end
+
+    it "still passes a normal small ODS (content.xml under the cap) (#350)" do
+      path = bomb_zip("content.xml", 1_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect { described_class.guard_zip!(path, budget, ["content.xml", "*.xml"]) }.not_to raise_error
+    ensure
+      FileUtils.rm_f(path) if path
+    end
+
+    # #350 backstop: even a bomb at a path NO body glob matches is bounded by the
+    # whole-archive uncompressed-bytes cap (ARCHIVE_CAP_MULTIPLIER x the body
+    # cap), so an unforeseen read path can't be unbounded.
+    it "REJECTS an out-of-glob bomb via the whole-archive backstop (#350)" do
+      path = bomb_zip("weird/unexpected.dat", 2_000_000)
+      budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
+                                                     max_decompressed_bytes: 50_000,
+                                                     wall_clock_seconds: 60)
+      expect do
+        described_class.guard_zip!(path, budget, ["xl/**"])
+      end.to raise_error(Rubino::Documents::CapExceeded, /whole-archive/)
+    ensure
+      FileUtils.rm_f(path) if path
+    end
+
+    # The backstop is LOOSE (multiplier x body cap) so legit large media/
+    # thumbnails the converter never reads don't false-positive: under the
+    # whole-archive cap and outside the body glob -> passes clean.
+    it "still passes large out-of-glob media under the whole-archive cap (#350)" do
+      # 500 KB < body_cap(50 KB) * ARCHIVE_CAP_MULTIPLIER(20) = 1 MB; not xl/**.
+      path = bomb_zip("Thumbnails/thumbnail.png", 500_000)
       budget = Rubino::Documents::Limits::Budget.new(max_elements: 1 << 30,
                                                      max_decompressed_bytes: 50_000,
                                                      wall_clock_seconds: 60)

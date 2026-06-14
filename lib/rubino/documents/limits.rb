@@ -56,16 +56,35 @@ module Rubino
       # slipped through to roo's inflate (#337). Globs still scope the sum to the
       # body parts (word/document*.xml, xl/**, ppt/**) so a large thumbnail/media
       # blob doesn't false-positive. Raises CapExceeded over cap.
+      #
+      # #350: scoping to the OOXML body globs alone missed formats whose read
+      # paths live OUTSIDE that prefix -- notably an ODS, whose `content.xml`
+      # sits at the archive ROOT (not under xl/) yet is routed through the same
+      # roo/xlsx converter. Such a bomb summed to ZERO under `xl/**` and slipped
+      # to roo's inflate. The converter now passes the ACTUAL read-path globs per
+      # format (ODS adds `content.xml`/root `*.xml`). As a backstop we ALSO sum
+      # the WHOLE archive's uncompressed bytes against a (looser) total cap, so a
+      # bomb at any unforeseen path is still bounded even if no body glob matches
+      # it. The two caps are independent: the per-glob sum keeps the body tight,
+      # the whole-archive backstop guarantees no out-of-glob path is unbounded.
       def guard_zip!(path, budget, globs)
         require "zip"
-        total = 0
+        scoped = 0
+        archive = 0
+        archive_cap = total_archive_cap(budget)
         Zip::File.open(path) do |zip|
           zip.each do |entry|
+            size = entry.size.to_i
+            archive += size
+            if archive > archive_cap
+              raise CapExceeded, "decompressed zip size cap (whole-archive #{archive_cap} bytes) exceeded"
+            end
+
             # No FNM_PATHNAME: `*` matches across `/` so nested-path bombs sum.
             next unless globs.any? { |g| File.fnmatch?(g, entry.name) }
 
-            total += entry.size.to_i
-            if total > budget.max_decompressed_bytes
+            scoped += size
+            if scoped > budget.max_decompressed_bytes
               raise CapExceeded, "decompressed zip size cap (#{budget.max_decompressed_bytes} bytes) exceeded"
             end
           end
@@ -77,6 +96,19 @@ module Rubino
         # converter handle it (it degrades to nil/shell-hint). Don't block a
         # valid file because the pre-check tripped on an exotic zip layout.
         nil
+      end
+
+      # Whole-archive backstop cap (#350). Looser than the per-glob body cap so a
+      # legit doc with large media/thumbnails the converter never reads doesn't
+      # false-positive, but still finite so an out-of-glob bomb can't be
+      # unbounded. Defaults to ARCHIVE_CAP_MULTIPLIER x the body cap (∞ stays ∞).
+      ARCHIVE_CAP_MULTIPLIER = 20
+
+      def total_archive_cap(budget)
+        body = budget.max_decompressed_bytes
+        return body if body == Float::INFINITY
+
+        body * ARCHIVE_CAP_MULTIPLIER
       end
 
       # A no-op budget for direct converter calls / tests that don't thread a
