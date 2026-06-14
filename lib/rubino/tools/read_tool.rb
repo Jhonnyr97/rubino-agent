@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+
 module Rubino
   module Tools
     # Reads a file with `cat -n` style line numbers, offset/limit windowing,
@@ -50,6 +52,11 @@ module Rubino
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = File.expand_path(file_path)
+        # An out-of-workspace path is DENIED, not "missing": report it as such
+        # (typed error) so the model never concludes the file doesn't exist and
+        # proposes creating/overwriting it (r5 MF-1). Checked before existence
+        # so we don't leak whether a file outside the sandbox is present.
+        return outside_workspace_message(file_path) if outside_workspace?(expanded)
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
@@ -64,20 +71,21 @@ module Rubino
         offset = 1 if offset < 1
         limit  = DEFAULT_LIMIT if limit <= 0
 
-        # Stash mtime BEFORE rendering so a slow render on a huge file doesn't
-        # race with a concurrent writer — we want the mtime the model "saw",
-        # not the one at end-of-render.
-        mtime = File.mtime(expanded)
-        @read_tracker&.register(expanded, mtime)
+        # Stash mtime + content hash BEFORE rendering so a slow render on a huge
+        # file doesn't race with a concurrent writer — we want the state the
+        # model "saw", not the one at end-of-render. The hash is the single
+        # source of truth the edit-gate and dedup both consult.
+        mtime  = File.mtime(expanded)
+        digest = Digest::SHA256.hexdigest(File.binread(expanded))
+        @read_tracker&.register(expanded, mtime, digest)
 
-        # Re-reading the exact same window (same file, offset, limit, unchanged
-        # mtime) within a turn just re-injects bytes already in context. Return
-        # a short nudge instead so the conversation doesn't carry the same
-        # content twice. A real edit bumps mtime, so legitimate re-reads pass.
-        dup = @read_tracker&.register_window(expanded, offset, limit, mtime)
-        if dup && dup > 1
+        # Re-reading the exact same window of UNCHANGED bytes just re-injects
+        # content already in context. Skip the work with a nudge — but only when
+        # the file still hashes the same, the TTL holds, and no edit-failure
+        # recovery is pending (those serve fresh content). See ReadTracker.
+        if @read_tracker&.duplicate_read?(expanded, offset, limit, digest)
           return { output: "[DUPLICATE READ] Exact repeat of an earlier read of #{file_path} " \
-                           "(lines #{offset}-#{offset + limit - 1}) this turn — reuse that result " \
+                           "(lines #{offset}-#{offset + limit - 1}) — reuse that result " \
                            "instead of re-reading.",
                    metrics: "duplicate" }
         end

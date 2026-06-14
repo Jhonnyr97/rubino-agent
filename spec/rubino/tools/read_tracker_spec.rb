@@ -98,14 +98,15 @@ RSpec.describe Rubino::Tools::ReadTracker do
       expect(File.read(path)).to eq("world")
     end
 
-    it "still demands a re-read when the file changed on disk between turns" do
+    it "still demands a re-read when the file content changed on disk between turns" do
       path = write_file("changed.rb", "hello")
       tracker = described_class.for_session("sess2")
-      tracker.register(path, File.mtime(path) - 5) # the turn-1 read is stale now
+      tracker.register(path, File.mtime(path)) # turn-1 read of "hello"
+      File.write(path, "mutated") # changed by another process between turns
       editor = Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = described_class.for_session("sess2") }
       out = editor.call("file_path" => path, "old_string" => "hello", "new_string" => "world")
       expect(out[:output]).to include("changed on disk since the last read")
-      expect(File.read(path)).to eq("hello")
+      expect(File.read(path)).to eq("mutated")
     end
   end
 end

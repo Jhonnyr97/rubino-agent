@@ -13,9 +13,15 @@ RSpec.describe Rubino::Tools::GlobTool do
 
   let(:tmp_dir) { Dir.mktmpdir("glob_tool_spec") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   before do
+    # glob is now workspace-sandboxed (r5 MF-1): root the workspace at tmp_dir
+    # so these fixtures are inside it. Out-of-workspace has its own example.
+    Rubino.configuration.set("terminal", "cwd", tmp_dir)
     File.write(File.join(tmp_dir, "foo.rb"), "")
     File.write(File.join(tmp_dir, "bar.rb"), "")
     File.write(File.join(tmp_dir, "readme.md"), "")
@@ -55,8 +61,16 @@ RSpec.describe Rubino::Tools::GlobTool do
     expect(result).to include("No files matched")
   end
 
-  it "returns an error for non-existent directory" do
+  it "returns an error for a non-existent directory inside the workspace" do
+    result = payload(tool.call("pattern" => "*.rb", "path" => File.join(tmp_dir, "no_such_dir")))
+    expect(result).to include("Directory not found")
+  end
+
+  it "reports an out-of-workspace path as outside the workspace, not missing (r5 MF-1)" do
     result = tool.call("pattern" => "*.rb", "path" => "/no/such/dir")
-    expect(result).to include("Error")
+    expect(result).to be_a(Hash)
+    expect(result[:error_code]).to eq(:outside_workspace)
+    expect(result[:output]).to include("outside your workspace")
+    expect(result[:output]).not_to include("not found")
   end
 end

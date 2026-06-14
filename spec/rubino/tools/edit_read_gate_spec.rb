@@ -43,14 +43,24 @@ RSpec.describe "Read-before-Edit gate" do
       expect(File.read(path)).to eq("world")
     end
 
-    it "refuses when the file's mtime advanced after the recorded read" do
+    it "refuses when the file's content changed on disk after the recorded read" do
       path = write_file("a.rb", "hello")
-      tracker.register(path, File.mtime(path) - 5) # stash a stale mtime
+      tracker.register(path, File.mtime(path)) # records mtime + hash of "hello"
+      File.write(path, "HELLO ON DISK") # someone else mutated it
       out = tool.call("file_path" => path, "old_string" => "hello", "new_string" => "world")
       msg = out.is_a?(Hash) ? out[:output].to_s : out.to_s
       expect(msg).to include("changed on disk since the last read")
       expect(msg).to include("so the edit reflect the current contents")
-      expect(File.read(path)).to eq("hello") # unchanged
+      expect(File.read(path)).to eq("HELLO ON DISK") # unchanged by the refused edit
+    end
+
+    it "does NOT trip the stale guard on a no-op touch (same bytes, newer mtime) — r5 B2" do
+      path = write_file("a.rb", "hello")
+      tracker.register(path, File.mtime(path))
+      FileUtils.touch(path, mtime: File.mtime(path) + 10) # mtime bumped, bytes identical
+      out = tool.call("file_path" => path, "old_string" => "hello", "new_string" => "world")
+      expect(out).to be_a(Hash) # gate passed on content-hash match
+      expect(File.read(path)).to eq("world")
     end
 
     it "is a no-op gate when no tracker is injected" do
@@ -94,9 +104,10 @@ RSpec.describe "Read-before-Edit gate" do
       expect(File.read(path)).to eq("1 2 three")
     end
 
-    it "refuses when the file mtime advanced since the recorded read" do
+    it "refuses when the file content changed on disk since the recorded read" do
       path = write_file("b.rb", "one")
-      tracker.register(path, File.mtime(path) - 5)
+      tracker.register(path, File.mtime(path))
+      File.write(path, "ONE CHANGED")
       out = tool.call(
         "file_path" => path,
         "edits" => [{ "old_string" => "one", "new_string" => "1" }]
@@ -105,7 +116,7 @@ RSpec.describe "Read-before-Edit gate" do
       expect(msg).to include("changed on disk since the last read")
       expect(msg).to include("so the edits reflect the current contents")
       expect(out[:error_code]).to eq(:stale_read) if out.is_a?(Hash)
-      expect(File.read(path)).to eq("one")
+      expect(File.read(path)).to eq("ONE CHANGED")
     end
   end
 

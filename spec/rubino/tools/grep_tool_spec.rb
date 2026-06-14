@@ -13,9 +13,15 @@ RSpec.describe Rubino::Tools::GrepTool do
 
   let(:tmp_dir) { Dir.mktmpdir("grep_tool_spec") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   before do
+    # grep is now workspace-sandboxed (r5 MF-1): root the workspace at tmp_dir
+    # so these fixtures are inside it. Out-of-workspace has its own example.
+    Rubino.configuration.set("terminal", "cwd", tmp_dir)
     File.write(File.join(tmp_dir, "alpha.rb"), "def hello\n  puts 'world'\nend\n")
     File.write(File.join(tmp_dir, "beta.rb"), "def goodbye\n  puts 'bye'\nend\n")
     File.write(File.join(tmp_dir, "notes.txt"), "remember to fix the hello bug")
@@ -67,9 +73,17 @@ RSpec.describe Rubino::Tools::GrepTool do
     expect(result).to include("No matches")
   end
 
-  it "returns an error for non-existent path" do
+  it "returns an error for a non-existent path inside the workspace" do
+    result = payload(tool.call("pattern" => "x", "path" => File.join(tmp_dir, "no_such_dir")))
+    expect(result).to include("Path not found")
+  end
+
+  it "reports an out-of-workspace path as outside the workspace, not missing (r5 MF-1)" do
     result = tool.call("pattern" => "x", "path" => "/no/such/dir")
-    expect(result).to include("Error")
+    expect(result).to be_a(Hash)
+    expect(result[:error_code]).to eq(:outside_workspace)
+    expect(result[:output]).to include("outside your workspace")
+    expect(result[:output]).not_to include("not found")
   end
 
   describe "grepping a single file (Bug B)" do

@@ -191,6 +191,52 @@ module Rubino
           "Set tools.workspace_strict=false in config.yml to disable this check."
       end
 
+      # Typed "outside workspace" error for READ-side tools (read/glob/grep).
+      #
+      # The model must hear "outside your workspace — /add-dir it" and NEVER
+      # "doesn't exist / no files matched": the latter makes it propose
+      # CREATING or overwriting a real file it can't see, the near-data-loss
+      # path in r5 MF-1/MF-2. The error_code lets the UI/automation branch on
+      # the denial without parsing the string. A `path` is outside the
+      # workspace iff within_workspace? is false (strict mode on); when strict
+      # mode is off this never fires, matching the write-side behaviour.
+      def outside_workspace?(expanded)
+        return false unless workspace_strict?
+        return false if within_workspace?(expanded)
+        # The agent's OWN home dir (~/.rubino) holds pastes, attachments and
+        # session files the agent explicitly points the model at ("read it with
+        # the read tool"). Those reads are legitimate even though the dir sits
+        # outside the project workspace — don't flag them as outside.
+        return false if under_agent_home?(expanded)
+
+        true
+      end
+
+      # True when +expanded+ resolves under the Rubino home directory. Symlinks
+      # are resolved on both sides so a link can't be used to claim home-ness.
+      def under_agent_home?(expanded)
+        home = Rubino.home_path
+        return false if home.nil? || home.to_s.empty?
+
+        home_real   = (File.realpath(home) if File.exist?(home)) || File.expand_path(home)
+        target_real = canonical_path(expanded)
+        return false unless target_real
+
+        target_real == home_real || target_real.start_with?("#{home_real}#{File::SEPARATOR}")
+      rescue StandardError
+        false
+      end
+
+      def outside_workspace_message(path)
+        roots = workspace_roots
+        roots_list = roots.length == 1 ? roots.first : roots.join(", ")
+        { output: "Error: '#{path}' is outside your workspace roots (#{roots_list}) — " \
+                  "it is NOT missing, you are not allowed to access it here. " \
+                  "Run `/add-dir #{File.dirname(File.expand_path(path.to_s))}` to include its folder, " \
+                  "or relaunch in that directory. Do not try to create or overwrite it.",
+          error_code: :outside_workspace }
+      end
+
       # Reads a file and scrubs a stray non-UTF-8 byte (e.g. a Latin-1 `é` in a
       # legacy/EU source) to the replacement char. Shared by EditTool and
       # MultiEditTool so a single bad byte doesn't raise "invalid byte sequence
@@ -218,14 +264,41 @@ module Rubino
                    error_code: :stale_read }
         end
 
+        # Fresh? matches on EITHER unchanged mtime OR unchanged content hash, so
+        # the agent's own write (refreshed via note_write), a no-op touch, a
+        # CRLF normalisation, or a linter rewrite to identical bytes does NOT
+        # trip this guard (r5 B2). Only a genuine content change does.
+        return nil if @read_tracker.fresh?(expanded)
+
         stashed = @read_tracker.mtime_at_read(expanded)
         current = File.mtime(expanded)
-        return nil if stashed.nil? || current <= stashed
-
         { output: "Error: #{display_path} changed on disk since the last read " \
-                  "(read at #{stashed.utc.iso8601}, now #{current.utc.iso8601}). " \
+                  "(read at #{stashed&.utc&.iso8601}, now #{current.utc.iso8601}). " \
                   "Re-read the file before editing so the #{verb} reflect the current contents.",
           error_code: :stale_read }
+      end
+
+      # Read-before-overwrite gate for WriteTool on an EXISTING file (r5 MF-2).
+      # Refuses a blind `write` that would clobber a file the model never read
+      # this session (or read but is now stale on disk). New files don't reach
+      # here. Returns nil (proceed) or an error Hash with error_code:
+      # :unread_overwrite. No tracker → no gate.
+      def overwrite_guard_error(expanded, display_path)
+        return nil unless @read_tracker
+
+        unless @read_tracker.seen?(expanded)
+          return { output: "Error: refusing to overwrite existing file #{display_path} — " \
+                           "you have not read it this session, so a blind write would clobber its " \
+                           "current contents. Read it first (then use `edit`/`multi_edit` for a " \
+                           "targeted change, or `write` the full intended content).",
+                   error_code: :unread_overwrite }
+        end
+
+        return nil if @read_tracker.fresh?(expanded)
+
+        { output: "Error: #{display_path} changed on disk since you last read it — " \
+                  "re-read it before overwriting so you don't clobber newer content.",
+          error_code: :unread_overwrite }
       end
     end
   end

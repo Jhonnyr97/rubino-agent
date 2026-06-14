@@ -10,7 +10,15 @@ RSpec.describe Rubino::Tools::ReadTool do
 
   let(:tmp_dir) { Dir.mktmpdir("read_tool_spec") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  # read is now workspace-sandboxed (r5 MF-1): point the root at tmp_dir so
+  # these in-tmp fixtures are inside the workspace, mirroring the write-side
+  # specs. The out-of-workspace path gets its own example below.
+  before { Rubino.configuration.set("terminal", "cwd", tmp_dir) }
+
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   it "has name 'read' and :low risk" do
     expect(tool.name).to eq("read")
@@ -70,8 +78,9 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(out).to include("[line truncated]")
   end
 
-  it "returns an error for missing file" do
-    expect(tool.call("file_path" => "/no/such/file.txt")).to include("File not found")
+  it "returns an error for a missing file inside the workspace" do
+    out = payload(tool.call("file_path" => File.join(tmp_dir, "nope.txt")))
+    expect(out).to include("File not found")
   end
 
   it "returns an error when offset is past EOF" do

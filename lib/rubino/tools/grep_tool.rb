@@ -71,6 +71,10 @@ module Rubino
         after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
 
         expanded_path = File.expand_path(path)
+        # Searching outside the workspace is DENIED, not "path not found": a
+        # typed error keeps the model from treating an out-of-sandbox tree as
+        # absent (r5 MF-1).
+        return outside_workspace_message(path) if outside_workspace?(expanded_path)
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?
