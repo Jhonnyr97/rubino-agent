@@ -155,15 +155,30 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
     # #186: workspace roots + trust — the #1 "why are my skills/AGENTS.md not
     # loading" confusion gets a line, but only when there is something to say.
     describe "dirs line (#186)" do
-      it "shows root count and untrusted count when a root is untrusted" do
+      it "flags a GATEWORTHY untrusted root as not-trusted (context not loaded) — MF-6" do
         allow(Rubino::Workspace).to receive(:canonical_roots).and_return(["/a", "/b"])
         # Default first: the skills line ALSO consults Trust (for the cwd).
         allow(Rubino::Trust).to receive(:trusted?).and_return(true)
         allow(Rubino::Trust).to receive(:trusted?).with("/b").and_return(false)
+        # Only a dir with something to withhold (gateworthy) earns the flag.
+        allow(Rubino::CLI::TrustGate).to receive(:gateworthy?).and_return(true)
 
         exec.try_execute("/status")
         expect(info_lines.join("\n"))
-          .to match(%r{dirs\s+2 roots · 1 untrusted \(context/skills withheld\)\s+\(use /dirs\)})
+          .to match(%r{dirs\s+2 roots · 1 not trusted \(context/skills not loaded\)\s+\(use /dirs\)})
+      end
+
+      it "does NOT flag a non-gateworthy untrusted scratch root — MF-6" do
+        allow(Rubino::Workspace).to receive(:canonical_roots).and_return(["/a", "/b"])
+        allow(Rubino::Trust).to receive(:trusted?).and_return(true)
+        allow(Rubino::Trust).to receive(:trusted?).with("/b").and_return(false)
+        allow(Rubino::CLI::TrustGate).to receive(:gateworthy?).and_return(false)
+
+        exec.try_execute("/status")
+        out = info_lines.join("\n")
+        expect(out).to match(/dirs\s+2 roots/)
+        expect(out).not_to include("not trusted")
+        expect(out).not_to include("withheld")
       end
 
       it "shows the count for multiple trusted roots" do

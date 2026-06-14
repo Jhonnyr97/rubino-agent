@@ -94,7 +94,8 @@ RSpec.describe Rubino::Tools::MultiEditTool do
         "edits" => [{ "old_string" => 'VERSION="1.0"', "new_string" => 'VERSION="2.0"' }]
       )
 
-      expect(result).to include("replacement")
+      msg = result.is_a?(Hash) ? result[:output] : result.to_s
+      expect(msg).to include("replacement")
       expect(File.read(path, encoding: "UTF-8").scrub).to include('VERSION="2.0"')
     end
   end

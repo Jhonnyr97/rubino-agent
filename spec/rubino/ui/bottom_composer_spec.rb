@@ -199,6 +199,21 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("a")
     end
 
+    # F9 — Ctrl+U clears the WHOLE line (not just to the start), so a half
+    # typed command can't leave residual text that concatenates into the next.
+    it "Ctrl+U clears the whole line, cursor at end of buffer" do
+      "/memory".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\x15") # Ctrl+U
+      expect(composer.buffer).to eq("")
+    end
+
+    it "Ctrl+U clears even when the cursor is parked mid-line" do
+      "hello world".each_char { |c| composer.handle_key(c) }
+      composer.send(:move_to, 5) # cursor after "hello"
+      composer.handle_key("\x15")
+      expect(composer.buffer).to eq("")
+    end
+
     it "ignores stray control bytes" do
       composer.handle_key("a")
       composer.handle_key("") # Ctrl+A
@@ -774,6 +789,18 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "Tab accepts the highlighted candidate (token replaced + trailing space)" do
       "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
       tab(composer) # accept the first (/reasoning)
+      expect(composer.buffer).to eq("/reasoning ")
+      expect(composer.menu_open?).to be(false)
+    end
+
+    # F9 — accepting a completion while the cursor sits MID-token must replace
+    # the WHOLE token, not concatenate the un-measured tail (`/reasoningasoning`,
+    # the `/memorymemory` class of bug). The accept swallows the trailing run.
+    it "accepting mid-token replaces the whole token (no residual concat)" do
+      "/reasoning".each_char { |ch| composer.handle_key(ch) }
+      composer.send(:move_to, 3) # cursor at "/re|asoning"; menu re-opens for /re
+      expect(composer.menu_open?).to be(true)
+      tab(composer) # accept /reasoning
       expect(composer.buffer).to eq("/reasoning ")
       expect(composer.menu_open?).to be(false)
     end

@@ -17,6 +17,20 @@ module Rubino
     #   - --ignore-rules was passed (project context is off regardless), or
     #   - the run is non-interactive (-q / no TTY): we never block automation.
     class TrustGate
+      # A directory is only worth a trust decision when it actually ships
+      # something rubino auto-injects: a project-context file or a skills dir.
+      # An empty scratch dir has nothing to gate — so nothing is withheld and
+      # the "untrusted — context/skills withheld" label would be misleading.
+      # Exposed at the class level so the /dirs and /status listings can tell
+      # "user declined" (gateworthy + not trusted) from "nothing to trust here"
+      # (not gateworthy) and word the line honestly.
+      def self.gateworthy?(dir)
+        Context::FileDiscovery.new(base_path: dir).discover_files.any? ||
+          File.directory?(File.join(dir, Skills::PromptIndex::DEFAULT_SKILL_DIR))
+      rescue StandardError
+        false
+      end
+
       def initialize(ui: nil, interactive: true, ignore_rules: false)
         @ui = ui || Rubino.ui
         @interactive = interactive
@@ -57,14 +71,9 @@ module Rubino
         end
       end
 
-      # A directory is only worth a trust prompt when it actually ships
-      # something rubino auto-injects: a project-context file or a skills dir.
-      # An empty scratch dir gets no prompt — there's nothing to be steered by.
+      # See TrustGate.gateworthy? — instance delegate kept for the gate flow.
       def gateworthy?(dir)
-        Context::FileDiscovery.new(base_path: dir).discover_files.any? ||
-          File.directory?(File.join(dir, Skills::PromptIndex::DEFAULT_SKILL_DIR))
-      rescue StandardError
-        false
+        self.class.gateworthy?(dir)
       end
     end
   end

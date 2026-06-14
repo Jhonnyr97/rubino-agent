@@ -68,4 +68,45 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(text).to include("still running — quitting stops")
     end
   end
+
+  # F8 — vim/less reflexes (:q, q) end the session like exit/quit, instead of
+  # burning an LLM turn (and weirdly loading skills).
+  describe "#exit_command? quit aliases" do
+    %w[exit quit bye /exit /quit q :q :wq :quit EXIT :Q].each do |word|
+      it "treats #{word.inspect} as a quit command" do
+        expect(command.send(:exit_command?, word)).to be(true)
+      end
+    end
+
+    %w[help status /help hello qq exitnow].each do |word|
+      it "does NOT treat #{word.inspect} as quit" do
+        expect(command.send(:exit_command?, word)).to be(false)
+      end
+    end
+  end
+
+  # F4 — a bare `help` (the single most likely first keystroke) must show the
+  # help listing locally, not become a multi-thousand-token LLM turn.
+  describe "#help_alias_to_command" do
+    it "maps a bare 'help' to /help" do
+      expect(command.send(:help_alias_to_command, "help")).to eq("/help")
+    end
+
+    it "maps a bare '?' to /help" do
+      expect(command.send(:help_alias_to_command, "?")).to eq("/help")
+    end
+
+    it "maps a bare 'commands' to /commands" do
+      expect(command.send(:help_alias_to_command, "commands")).to eq("/commands")
+    end
+
+    it "is case-insensitive" do
+      expect(command.send(:help_alias_to_command, "HELP")).to eq("/help")
+    end
+
+    it "leaves a real question untouched (only the bare word aliases)" do
+      expect(command.send(:help_alias_to_command, "help me debug this")).to eq("help me debug this")
+      expect(command.send(:help_alias_to_command, "what commands exist")).to eq("what commands exist")
+    end
+  end
 end

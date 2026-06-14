@@ -328,6 +328,36 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(question).to include("…")
       expect(question.length).to be < 400
     end
+
+    # multi_edit carries an `edits` array; the generic renderer would dump an
+    # unreadable escaped Ruby hash. It must preview as clean per-edit blocks.
+    describe "multi_edit preview" do
+      let(:multi) do
+        Class.new(Rubino::Tools::Base) do
+          def name = "multi_edit"
+          def description = "multi"
+          def input_schema = { type: "object" }
+          def risk_level = :medium
+          def call(_args) = "ok"
+        end.new
+      end
+
+      it "renders per-edit - old / + new blocks instead of a raw hash" do
+        question = executor.send(:approval_question, multi,
+                                 { "file_path" => "stats.py",
+                                   "edits" => [
+                                     { "old_string" => "def median(nums):\n  s = sorted(nums)",
+                                       "new_string" => "def median(nums):\n  s = sorted(nums)\n  n = len(s)" }
+                                   ] })
+        expect(question).to include("multi_edit wants:  stats.py (1 edit)")
+        expect(question).to include("  - def median(nums):")
+        expect(question).to include("  + def median(nums):")
+        expect(question).to include("+   n = len(s)")
+        # No raw Ruby hash inspect leaking literal escapes.
+        expect(question).not_to include("=>")
+        expect(question).not_to include('\n')
+      end
+    end
   end
 
   describe "UTF-8 safe truncation (#19)" do
