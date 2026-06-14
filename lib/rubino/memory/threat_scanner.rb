@@ -60,17 +60,21 @@ module Rubino
       # indent"): every pattern pairs a *behavior-changing* signal (delete,
       # don't-tell, auto-approve, standing approval) with the directive framing,
       # rather than firing on a bare "always"/"never".
+      # Destructive verbs reused across the behavior-override patterns.
+      DESTRUCTIVE_VERB = "delete|remove|rm|wipe|destroy|overwrite|exfiltrate|leak|send|upload|disable"
+
       BEHAVIOR_OVERRIDE_PATTERNS = [
         # Secrecy: "(silently/quietly) ... (don't|never) tell/inform/notify the user".
-        /\b(?:don't|do not|never)\s+(?:tell|inform|notify|alert|warn|ask|mention\s+(?:it\s+)?to)\b[^.\n]{0,40}\b(?:the\s+)?user\b/i,
-        /\bwithout\s+(?:telling|informing|notifying|asking|warning)\b[^.\n]{0,20}\b(?:the\s+)?user\b/i,
-        /\b(?:silently|quietly|secretly)\b[^.\n]{0,40}\b(?:delete|remove|rm|overwrite|exfiltrate|send|upload|disable)\b/i,
+        %r{\b(?:don't|do not|never)\s+(?:tell|inform|notify|alert|warn|ask|mention)\b[^.\n]{0,40}\buser\b}i,
+        /\bwithout\s+(?:telling|informing|notifying|asking|warning)\b[^.\n]{0,20}\buser\b/i,
+        /\b(?:silently|quietly|secretly)\b[^.\n]{0,40}\b(?:#{DESTRUCTIVE_VERB})\b/i,
         # Standing / blanket approval — defeats the per-action approval gate.
         /\bstanding\s+approval\b/i,
-        /\b(?:auto[\s-]?approve|pre[\s-]?approve|always\s+approve|approve\s+(?:all|any|every)|never\s+ask)\b/i,
+        /\b(?:auto|pre)[\s-]?approv(?:e|al)\b/i,
+        /\b(?:always\s+approve|approve\s+(?:all|any|every)|never\s+ask)\b/i,
         /\b(?:always|automatically)\s+(?:say\s+yes|confirm|allow|permit|approve)\b/i,
         # Imperative destructive directive scoped to "all/any/every ...".
-        /\b(?:delete|remove|wipe|destroy|overwrite|exfiltrate|leak|disable)\b[^.\n]{0,30}\b(?:all|any|every)\b/i
+        /\b(?:#{DESTRUCTIVE_VERB})\b[^.\n]{0,30}\b(?:all|any|every)\b/i
       ].freeze
 
       class << self
