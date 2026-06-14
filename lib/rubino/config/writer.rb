@@ -34,8 +34,31 @@ module Rubino
                   "cannot set '#{key_path}': '#{traversed}' is a scalar value, not a section"
           end
 
-          hash[keys.last] = coerce_value(value)
+          # Set-time schema validation (#327): runs AFTER the structural
+          # scalar-over-section / scalar-intermediate checks above (so those
+          # keep their more specific messages) but BEFORE the write — an unknown
+          # key or a value whose type/format can't match the schema is rejected
+          # with a clear ConfigurationError and a non-zero exit, instead of being
+          # written with a green ✓ and only surfacing later as a runtime crash or
+          # a deterministic provider 4xx the agent then retries for ~85s.
+          Validator.validate!(key_path, keys, value)
+
+          hash[keys.last] = self.class.coerce_value(value)
           raw.to_yaml
+        end
+      end
+
+      # The string→typed coercion `config set` applies to a CLI-supplied value,
+      # exposed as a class method so set-time validation (Config::Validator)
+      # compares the SAME coerced type the file will actually store.
+      def self.coerce_value(value)
+        case value
+        when "true" then true
+        when "false" then false
+        when "nil", "null" then nil
+        when /\A\d+\z/ then value.to_i
+        when /\A\d+\.\d+\z/ then value.to_f
+        else value
         end
       end
 
@@ -90,17 +113,6 @@ module Rubino
         return {} if text.nil? || text.empty?
 
         YAML.safe_load(text, permitted_classes: [Symbol]) || {}
-      end
-
-      def coerce_value(value)
-        case value
-        when "true" then true
-        when "false" then false
-        when "nil", "null" then nil
-        when /\A\d+\z/ then value.to_i
-        when /\A\d+\.\d+\z/ then value.to_f
-        else value
-        end
       end
     end
   end

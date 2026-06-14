@@ -34,6 +34,65 @@ RSpec.describe Rubino::CLI::ConfigCommand do
     end
   end
 
+  # #327(c): Thor injects a `tree` command into every subclass; under a
+  # registered subcommand its banner rendered the DOUBLED "rubino rubino config
+  # tree". The inherited copy is removed so the subcommand help is clean (the
+  # top-level `rubino tree` still prints the full command tree).
+  describe "no inherited `tree` command (#327)" do
+    it "does not register a tree command on the config subcommand" do
+      expect(described_class.commands).not_to have_key("tree")
+    end
+
+    it "config help no longer renders the doubled 'rubino rubino config tree'" do
+      out = capture_config_help
+      expect(out).not_to include("rubino rubino config tree")
+    end
+
+    def capture_config_help
+      original = $stdout
+      buffer   = StringIO.new
+      $stdout  = buffer
+      begin
+        described_class.start(["help"])
+      rescue SystemExit
+        nil
+      ensure
+        $stdout = original
+      end
+      buffer.string
+    end
+  end
+
+  # #327(a): an unknown key or a wrong-typed value is rejected at write time,
+  # and the CLI verb must surface that as a clean error + non-zero exit (the
+  # same ConfigurationError→exit(1) contract as a scalar-intermediate set) so a
+  # typo never persists silently with a green ✓.
+  describe "#set with an invalid key/value (#327)" do
+    it "exits with status 1 on an unknown key" do
+      expect { described_class.new.set("foo.bar.baz", "1") }
+        .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "prints a clean 'unknown config key' error before exiting" do
+      described_class.new.set("foo.bar.baz", "1")
+    rescue SystemExit
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("unknown config key 'foo.bar.baz'")
+    end
+
+    it "exits with status 1 on a type mismatch" do
+      expect { described_class.new.set("model.temperature", "banana") }
+        .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "names the offending key in the type-mismatch error" do
+      described_class.new.set("model.temperature", "banana")
+    rescue SystemExit
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("invalid value for 'model.temperature'")
+    end
+  end
+
   # P2-H1/H2: `config get` of a missing key is a FAILURE on the automation
   # surface — it now raises Thor::Error so the CLI exits non-zero with the
   # message on stderr (the shared renderer no longer warns on stdout for this

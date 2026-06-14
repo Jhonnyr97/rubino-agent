@@ -54,20 +54,10 @@ module Rubino
           previous_summary: previous_summary
         )
 
-        # 6. Save summary (chains parent_summary_id to the previous row)
-        summary_id = @summary_store.insert(session_id: @session_id, content: new_summary)
-
-        # 7. Create child session with compacted context
-        child_session = create_child_session(session, head, new_summary, tail)
-
-        # 8. Record compaction lineage
-        record_compaction(
-          source_id: @session_id,
-          target_id: child_session[:id],
-          previous_summary_id: previous_summary_id,
-          new_summary_id: summary_id,
-          original_tokens: estimate_tokens(messages),
-          compacted_tokens: estimate_tokens(head + tail)
+        # Steps 6-8 are the irreversible state mutation; commit them atomically.
+        summary_id, child_session = commit_compaction!(
+          session: session, head: head, tail: tail, messages: messages,
+          new_summary: new_summary, previous_summary_id: previous_summary_id
         )
 
         {
@@ -81,6 +71,36 @@ module Rubino
       end
 
       private
+
+      # Steps 6-8 of compaction (insert summary → create child + copy
+      # head/summary/tail → mark parent compacted → record lineage), wrapped in
+      # ONE transaction so a crash mid-compaction rolls the WHOLE mutation back:
+      # #332 [MED]. Without it a raise during the child copy left an orphan child
+      # row AND a dangling summary row with the parent already half-mutated — the
+      # next resume then found a partial, incoherent child. All-or-nothing.
+      # Returns [summary_id, child_session].
+      def commit_compaction!(session:, head:, tail:, messages:, new_summary:, previous_summary_id:)
+        summary_id = nil
+        child_session = nil
+        @db.transaction do
+          # 6. Save summary (chains parent_summary_id to the previous row)
+          summary_id = @summary_store.insert(session_id: @session_id, content: new_summary)
+
+          # 7. Create child session with compacted context
+          child_session = create_child_session(session, head, new_summary, tail)
+
+          # 8. Record compaction lineage
+          record_compaction(
+            source_id: @session_id,
+            target_id: child_session[:id],
+            previous_summary_id: previous_summary_id,
+            new_summary_id: summary_id,
+            original_tokens: estimate_tokens(messages),
+            compacted_tokens: estimate_tokens(head + tail)
+          )
+        end
+        [summary_id, child_session]
+      end
 
       def flush_memory!
         flusher = Memory::Flusher.new

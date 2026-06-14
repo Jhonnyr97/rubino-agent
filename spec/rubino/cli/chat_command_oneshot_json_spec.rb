@@ -166,6 +166,27 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(stderr).to include("invalid --output-format")
       expect(status).to eq(2)
     end
+
+    # #327(c): an ARGUMENT error (empty prompt) under --output-format json must
+    # emit a JSON error envelope on stdout, not a bare plain-text line — so a
+    # caller parsing the JSON stream gets a structured failure.
+    it "emits a JSON error envelope for an empty prompt under json mode" do
+      stdout, _stderr, status = run_oneshot("query" => "   ", "output_format" => "json")
+
+      obj = JSON.parse(stdout.each_line.map(&:strip).reject(&:empty?).last)
+      expect(obj["type"]).to eq("result")
+      expect(obj["is_error"]).to be(true)
+      expect(obj.dig("error", "message")).to include("no prompt provided")
+      expect(status).to eq(1)
+    end
+
+    it "emits a JSON error envelope for an empty prompt under the --json alias" do
+      stdout, _stderr, status = run_oneshot("query" => "", "json" => true)
+
+      obj = JSON.parse(stdout.each_line.map(&:strip).reject(&:empty?).last)
+      expect(obj["is_error"]).to be(true)
+      expect(status).to eq(1)
+    end
   end
 
   describe "text mode unchanged" do

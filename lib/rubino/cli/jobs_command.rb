@@ -13,6 +13,10 @@ module Rubino
         true
       end
 
+      # Drop Thor's inherited `tree` so its banner doesn't render the doubled
+      # "rubino rubino jobs tree" (#327); the top-level `rubino tree` covers it.
+      remove_command :tree
+
       desc "list", "List jobs in queue"
       option :status, type: :string, desc: "Filter by status (queued, running, completed, failed)"
       option :limit, type: :numeric, default: 20, desc: "Max results"

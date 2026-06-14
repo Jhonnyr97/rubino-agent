@@ -47,6 +47,19 @@ module Rubino
       def execute
         query = opt(:query) || opt(:q)
 
+        # Stdin fallback (#329c): when no prompt was given on the command line
+        # (no -q/--query, no positional) AND stdin is a pipe/file (not a TTY),
+        # read the prompt from stdin so `echo "..." | rubino prompt` and
+        # `rubino prompt < file` work like other Unix tools. `prompt` with no
+        # args supplies an EMPTY query (args.join == ""), so a blank query also
+        # falls through to stdin here; only when stdin is also empty do we hit
+        # the no-prompt guard below. A TTY stdin (bare interactive use) is left
+        # untouched — nil query stays the interactive path.
+        if query.nil? || query.strip.empty?
+          piped = read_piped_prompt
+          query = piped if piped && !piped.strip.empty?
+        end
+
         # Empty/whitespace guard for the headless path (P2-H3): an empty
         # `-q`/`prompt ""` is truthy in Ruby, so it used to be dispatched
         # straight to the model — a wasted API turn and unpredictable
@@ -55,10 +68,7 @@ module Rubino
         # front with a clear stderr message + non-zero exit, BEFORE any setup,
         # model-config check, or runner is built. A nil query (bare `chat`)
         # is the interactive path and is left untouched.
-        if query && query.strip.empty?
-          warn "rubino: no prompt provided"
-          exit(1)
-        end
+        fail_arg!("no prompt provided") if query && query.strip.empty?
 
         ensure_setup!
         ensure_model_configured!
@@ -122,8 +132,7 @@ module Rubino
 
         fmt = raw.tr("-", "_").to_sym
         unless OUTPUT_FORMATS.include?(fmt)
-          warn "rubino: invalid --output-format '#{raw}' (expected: text, json, stream-json)"
-          exit(2)
+          fail_arg!("invalid --output-format '#{raw}' (expected: text, json, stream-json)", exit_code: 2)
         end
         fmt
       end
@@ -132,6 +141,33 @@ module Rubino
       # stdout and ALL diagnostics to stderr (markdown rendering suppressed).
       def json_mode?(fmt = output_format)
         fmt != :text
+      end
+
+      # Whether the user ASKED for a machine-readable mode, decided WITHOUT going
+      # through #output_format (which exits on an invalid value — and the invalid
+      # value itself is one of the arg errors we want to report as JSON). Used by
+      # #fail_arg! so a bad CLI argument under --output-format json|stream-json
+      # still emits a JSON error envelope on stdout, not a bare plain-text line.
+      def json_requested?
+        return true if opt(:json) == true
+
+        raw = (opt(:output_format) || opt(:"output-format")).to_s.strip.tr("-", "_")
+        %w[json stream_json].include?(raw)
+      end
+
+      # Surface a CLI ARGUMENT error (empty prompt, invalid --output-format)
+      # consistently with the chosen output mode (#327): under a json/stream-json
+      # request, emit a {type:"result", is_error:true, …} envelope on stdout so
+      # automation can parse the failure; otherwise the plain "rubino: <msg>" on
+      # stderr. Always non-zero exit. No run/model/recorder exists at this point,
+      # so the envelope carries zeroed usage and a nil session.
+      def fail_arg!(message, exit_code: 1)
+        if json_requested?
+          emit_json(Output::ResultSerializer.arg_error(message: message))
+        else
+          warn "rubino: #{message}"
+        end
+        exit(exit_code)
       end
 
       def run_oneshot(query)
@@ -1869,6 +1905,20 @@ module Rubino
 
       def opt(key)
         @options[key] || @options[key.to_s]
+      end
+
+      # Reads the one-shot prompt from $stdin when it's piped/redirected (#329c).
+      # Returns the whole stdin body (so a multi-line heredoc/file becomes one
+      # prompt), or nil when stdin is a TTY (interactive — never block waiting on
+      # a human to type) or on any read error. Best-effort: a stdin hiccup must
+      # never crash the launch.
+      def read_piped_prompt
+        return nil if $stdin.respond_to?(:tty?) && $stdin.tty?
+
+        body = $stdin.read
+        body unless body.nil? || body.empty?
+      rescue StandardError
+        nil
       end
 
       # Seeds extra workspace roots from --add-dir and runs the folder-trust
