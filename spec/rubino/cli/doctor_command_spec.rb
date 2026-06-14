@@ -9,8 +9,12 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
   describe "#check_migrations" do
     # memory?: true short-circuits the read-only on-disk guard (#68) so these
-    # examples keep exercising the migrator logic itself.
-    let(:db) { instance_double(Rubino::Database::Connection, memory?: true) }
+    # examples keep exercising the migrator logic itself. corrupt?: false so the
+    # #359 corruption short-circuit doesn't intercept the healthy-DB paths.
+    let(:db) do
+      instance_double(Rubino::Database::Connection,
+                      memory?: true, corrupt?: false, corruption_error?: false)
+    end
 
     before { allow(Rubino).to receive(:database).and_return(db) }
 
@@ -358,6 +362,53 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       errors = ui.messages.select { |m| m[:level] == :error }.map { |m| m[:message] }
       expect(errors.join("\n")).to include("config corrupt")
+    end
+  end
+
+  # #359: a corrupt-but-present DB used to leak the raw SQLite3::CorruptException
+  # class + a stray `PRAGMA journal_mode=WAL` fragment into doctor's output
+  # (check_migrations connected, ran the PRAGMA, and printed the wrapped
+  # exception message). The DB checks must report a clean "corrupt … run setup"
+  # diagnostic with NONE of that internal noise.
+  describe "corrupt-database output hygiene (#359)" do
+    let(:corrupt_dir)  { Dir.mktmpdir("ra-doctor-corrupt") }
+    let(:corrupt_path) { File.join(corrupt_dir, "rubino.sqlite3") }
+
+    after { FileUtils.remove_entry(corrupt_dir) }
+
+    before do
+      seed = Rubino::Database::Connection.new(corrupt_path)
+      seed.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| seed.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      seed.close
+      File.truncate(corrupt_path, 20_000)
+      allow(Rubino).to receive(:database)
+        .and_return(Rubino::Database::Connection.new(corrupt_path))
+    end
+
+    def all_messages
+      ui.messages.map { |m| m[:message].to_s }
+    end
+
+    it "check_database reports a clean corrupt diagnostic (no raw class / PRAGMA leak)" do
+      result = doctor.send(:check_database)
+
+      expect(result).to eq(name: "database", status: :fail)
+      last = ui.messages.last
+      expect(last[:level]).to eq(:error)
+      expect(last[:message]).to match(/corrupt/i)
+      expect(last[:message]).to include("rubino setup")
+      expect(all_messages.join("\n")).not_to include("SQLite3::CorruptException")
+      expect(all_messages.join("\n")).not_to include("journal_mode")
+    end
+
+    it "check_migrations degrades cleanly without leaking the exception or PRAGMA" do
+      result = doctor.send(:check_migrations)
+
+      expect(result).to eq(name: "migrations", status: :fail)
+      expect(ui.messages.last[:level]).to eq(:error)
+      expect(all_messages.join("\n")).not_to include("SQLite3::CorruptException")
+      expect(all_messages.join("\n")).not_to include("journal_mode")
     end
   end
 

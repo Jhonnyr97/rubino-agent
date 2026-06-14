@@ -185,6 +185,42 @@ RSpec.describe Rubino::CLI::SessionCommand do
     end
   end
 
+  # #352: `sessions compact <short-id>` used to resolve the row via #find but
+  # then hand the SHORT id to the Compressor, whose `for_session(short_id)`
+  # (exact match) returned 0 messages — a silent no-op the CLI dressed up as
+  # "┄ compacted · saved 0 tok ┄". The command must (a) feed the Compressor the
+  # FULL resolved id and (b) never report a no-op as success.
+  describe "#compact (#352)" do
+    it "passes the FULL resolved id to the Compressor, not the short prefix" do
+      repo.create(source: "cli", title: "to compact")
+      session = repo.list(limit: 1).first
+      short   = session[:id][0, 8]
+
+      captured = nil
+      fake = instance_double(Rubino::Context::Compressor,
+                             compact!: { source_session_id: session[:id], saved_tokens: 7,
+                                         target_session_id: "child" })
+      allow(Rubino::Context::Compressor).to receive(:new) do |session_id:|
+        captured = session_id
+        fake
+      end
+
+      described_class.new.compact(short)
+      expect(captured).to eq(session[:id])
+    end
+
+    it "errors clearly on a no-op instead of a fake 'saved 0 tok' success" do
+      repo.create(source: "cli", title: "too short")
+      session = repo.list(limit: 1).first
+
+      # A real session with too few messages compacts to a skipped no-op.
+      expect { described_class.new.compact(session[:id][0, 8]) }
+        .to raise_error(Thor::Error, /nothing to compact/i)
+      # And it must NOT have printed the fake-success token line.
+      expect(ui.messages.map { |m| m[:level] }).not_to include(:compression_finished)
+    end
+  end
+
   # HIGH-2: a corrupt/malformed DB used to dump a raw ~20-line Sequel/sqlite3
   # backtrace from `sessions list`. The guard turns it into a clean, actionable
   # Thor::Error (printed to stderr, no backtrace) pointing at `rubino setup`.

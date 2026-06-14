@@ -21,6 +21,14 @@ module Rubino
         session = @session_repo.find(@session_id)
         raise CompactionError, "Session not found: #{@session_id}" unless session
 
+        # Resolve a SHORT id to the FULL session id before any message lookup
+        # (#352): #find prefix-matches "5aebd8ce" to the row, but
+        # `for_session(short_id)` matches messages by EXACT session_id and so
+        # returned 0 rows — compaction then short-circuited to no_op_result and
+        # the CLI printed a fake "compacted · saved 0 tok" success. Pin every
+        # downstream lookup (messages, summaries, lineage) to the resolved id.
+        @session_id = session[:id]
+
         messages = @message_store.for_session(@session_id)
         return no_op_result if messages.size < minimum_messages
 
