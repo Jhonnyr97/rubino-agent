@@ -6,6 +6,7 @@ gemspec
 
 group :development, :test do
   gem "factory_bot", "~> 6.4"
+  gem "parallel_tests", "~> 4.7"
   gem "rack-test", "~> 2.1"
   gem "rspec", "~> 3.12"
   gem "rubocop", "~> 1.60"
