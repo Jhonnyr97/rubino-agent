@@ -39,9 +39,13 @@ module Rubino
           ui.success("Env template created: #{env_path}")
         end
 
-        # Initialize database
+        # Initialize database. `setup` is the documented remedy for a broken
+        # install, so it must SELF-HEAL a corrupt/truncated DB instead of
+        # crashing with a raw SQLite3::CorruptException backtrace (HIGH-2): if
+        # the file is present but unopenable, quarantine it aside (preserving the
+        # bytes for forensics) and recreate a fresh one.
         ui.status("Initializing database...")
-        connection = Rubino.database
+        connection = recover_corrupt_database(ui)
         migrator = Database::Migrator.new(connection)
         migrator.migrate!
         ui.success("Database initialized: #{connection.db_path}")
@@ -69,6 +73,21 @@ module Rubino
       end
 
       private
+
+      # Detect a corrupt on-disk DB and recover it. Returns a usable connection:
+      # the existing one when the file is healthy/absent, or a fresh connection
+      # after the malformed file has been renamed to `<name>.corrupt-<ts>`.
+      def recover_corrupt_database(ui)
+        connection = Rubino.database
+        return connection unless connection.corrupt?
+
+        moved = connection.quarantine!
+        ui.warning("Existing database was corrupt (malformed image).")
+        ui.status("Quarantined to: #{moved}") if moved
+        # Drop the memoized connection so the next access opens a brand-new file.
+        Rubino.reset_database!
+        Rubino.database
+      end
 
       def maybe_run_onboarding(ui)
         return unless interactive?

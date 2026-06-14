@@ -167,4 +167,35 @@ RSpec.describe Rubino::CLI::SessionCommand do
       expect(info_lines.join("\n")).to include("Dir: —")
     end
   end
+
+  # HIGH-2: a corrupt/malformed DB used to dump a raw ~20-line Sequel/sqlite3
+  # backtrace from `sessions list`. The guard turns it into a clean, actionable
+  # Thor::Error (printed to stderr, no backtrace) pointing at `rubino setup`.
+  describe "corrupt-database guard" do
+    let(:corrupt_dir)  { Dir.mktmpdir("ra-sess-corrupt") }
+    let(:corrupt_path) { File.join(corrupt_dir, "rubino.sqlite3") }
+
+    after { FileUtils.remove_entry(corrupt_dir) }
+
+    before do
+      seed = Rubino::Database::Connection.new(corrupt_path)
+      seed.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| seed.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      seed.close
+      File.truncate(corrupt_path, 20_000)
+      allow(Rubino).to receive(:database)
+        .and_return(Rubino::Database::Connection.new(corrupt_path))
+    end
+
+    it "#list raises a clean Thor::Error (no raw sqlite backtrace)" do
+      cmd = described_class.new
+      cmd.options = { limit: 20 }
+      expect { cmd.list }.to raise_error(Thor::Error, /corrupt.*rubino setup/m)
+    end
+
+    it "#show also degrades to the clean diagnostic" do
+      expect { described_class.new.show("anything") }
+        .to raise_error(Thor::Error, /corrupt/i)
+    end
+  end
 end

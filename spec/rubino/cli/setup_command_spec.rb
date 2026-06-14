@@ -63,4 +63,38 @@ RSpec.describe Rubino::CLI::SetupCommand do
 
     expect(success_lines).to include(a_string_matching(/Setup complete/))
   end
+
+  # HIGH-2: `setup` is the documented remedy for a broken install, so it must
+  # self-heal a corrupt/truncated DB rather than crashing with a raw
+  # SQLite3::CorruptException backtrace and leaving the file unrepaired.
+  describe "corrupt-database recovery" do
+    before { allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true) }
+
+    # Build a real WAL DB at the configured path, then truncate it mid-file so
+    # the next connect raises SQLite3::CorruptException (QA repro).
+    def write_corrupt_db!
+      path = Rubino.database.db_path
+      Rubino.database.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| Rubino.database.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      Rubino.database.close
+      File.truncate(path, 20_000)
+      Rubino.reset_database!
+      path
+    end
+
+    it "recovers without a backtrace: quarantines the corrupt file and recreates a working DB" do
+      path = write_corrupt_db!
+      expect(Rubino.database.corrupt?).to be true
+
+      expect { described_class.new.execute }.not_to raise_error
+
+      # Corrupt file moved aside; a fresh, healthy, migrated DB is in its place.
+      expect(Dir["#{path}.corrupt-*"]).not_to be_empty
+      Rubino.reset_database!
+      expect(Rubino.database.corrupt?).to be false
+      expect(Rubino.database.healthy?).to be true
+      expect(Rubino::Database::Migrator.new(Rubino.database).pending?).to be false
+      expect(ui.messages).to include([:warning, a_string_matching(/corrupt/i)])
+    end
+  end
 end
