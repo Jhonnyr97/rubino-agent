@@ -53,7 +53,7 @@ class FakeReplayChat
     self
   end
 
-  def ask(_content, **_kw, &_block)
+  def ask(_content, **_kw, &)
     @stages.each do |stage|
       return final_message(stage) if stage.tool_calls.nil?
 
@@ -154,7 +154,8 @@ RSpec.describe Rubino::Agent::Loop do
 
   def install_fake_chat(chat, executor, budget_exhausted)
     Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                          tool_executor: executor, budget_exhausted: budget_exhausted)
+                                          tool_executor: executor,
+                                          budget_exhausted: budget_exhausted)
     chat
   end
 
@@ -262,8 +263,7 @@ RSpec.describe Rubino::Agent::Loop do
       text_rt("unused", input: 1, output: 1)
     ]
     executor = tool_executor
-    allow(config).to receive(:agent_max_turn_seconds).and_return(100)
-    allow(config).to receive(:agent_max_tool_iterations).and_return(50)
+    allow(config).to receive_messages(agent_max_turn_seconds: 100, agent_max_tool_iterations: 50)
     budget = Rubino::Agent::IterationBudget.new(config: config)
     # Controllable clock: starts at the budget's start time and stays there until
     # at least one tool has run, then jumps PAST the 100s deadline. This makes
