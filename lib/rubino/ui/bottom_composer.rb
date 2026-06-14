@@ -190,10 +190,10 @@ module Rubino
         # falsy (nothing to cancel) to fall through to the normal arm. Runs on
         # the reader thread — the hook must only flip a flag, never block.
         @on_escape     = on_escape
-        # Monotonic time of the last LONE Esc (nil when unarmed) — the
-        # double-tap window the Esc-Esc rewind chord measures against.
-        @last_esc_at   = nil
-        @echo, @on_interrupt = echo, on_interrupt
+        # @last_esc_at: monotonic time of the last LONE Esc — nil (unarmed) by
+        # default; only read behind `&&` (the double-tap rewind chord window).
+        @echo          = echo
+        @on_interrupt  = on_interrupt
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
         @paste_store   = paste_store
