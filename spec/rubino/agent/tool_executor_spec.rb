@@ -149,6 +149,36 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
   end
 
+  # #335b: a cancel that flips while a previous tool was running (or during the
+  # thinking phase) must halt the turn at the NEXT tool boundary — on the
+  # streaming path ruby_llm dispatches tools mid-stream through here, far below
+  # the loop's per-iteration #check!, so without a checkpoint in #execute the
+  # interrupt isn't observed and one more tool fires after the user hit Enter.
+  describe "cancellation checkpoint before a tool runs (#335b)" do
+    subject(:cancellable) do
+      described_class.new(registry: registry, approval_policy: policy, ui: ui,
+                          config: config, tool_call_repository: repo, cancel_token: token)
+    end
+
+    let(:token) { Rubino::Interaction::CancelToken.new }
+
+    it "raises Interrupted and never runs the tool when the token is cancelled" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      token.cancel!
+      expect(tool).not_to receive(:call)
+      expect do
+        cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+      end.to raise_error(Rubino::Interrupted)
+    end
+
+    it "runs the tool normally when the token is not cancelled" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(repo).to receive(:record)
+      result = cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+      expect(result.output).to eq("ok")
+    end
+  end
+
   # Regression: arguments.inspect on multi-line values collapsed everything
   # into one giant line, the terminal cropped at 80 columns, and the user
   # approved a "ls -la" they could see while the model had actually sent
