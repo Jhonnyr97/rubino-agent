@@ -817,7 +817,18 @@ module Rubino
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
       # Tables are fit to the terminal width minus the 2-space indent that
       # #commit_markdown_block adds, so wide tables wrap instead of overflowing.
+      #
+      # The SOURCE text is untrusted (a closed assistant-content block, a
+      # subagent report body), so neutralize its terminal-control bytes to
+      # visible caret notation BEFORE parsing (CWE-150, R4-F1): a raw `\e[2J`
+      # in the assistant text would otherwise clear/recolor the screen when the
+      # committed line printed. Sanitizing the SOURCE (not the rendered lines)
+      # leaves the renderer's OWN trusted ANSI — applied per token below — the
+      # only escapes that reach the terminal. This is the shared funnel for the
+      # committed block (#commit_markdown_block) and the atomic block
+      # (#margined_render), so both paths are covered.
       def render_markdown_block(text)
+        text = Util::Output.sanitize_terminal(text)
         MarkdownRenderer.new(width: markdown_width).render(text).map do |line_tokens|
           line_tokens.map do |token, style|
             style.nil? ? token : apply_style(token, style)
@@ -1741,7 +1752,14 @@ module Rubino
       # column as the rendered block they snap into. A blank tail passes
       # through untouched (it just clears the transient row).
       def margined_tail(tail)
-        text = tail.to_s
+        # The in-flight tail is RAW untrusted model text (CWE-150, R4-F2): a
+        # streamed `\e[2J` / `\e]0;…\a` would clear the screen or hijack the
+        # window title as the transient row painted. Neutralize to visible caret
+        # notation BEFORE wrapping (so the wrap measurement and #paint_live both
+        # see safe text). Sanitizing here — not in #paint_live — keeps rubino's
+        # OWN trusted frames (the status row, the empty clear) untouched, since
+        # those reach #paint_live without passing through this model-tail seam.
+        text = Util::Output.sanitize_terminal(tail.to_s)
         return text if text.empty?
 
         budget = terminal_cols - MD_MARGIN.length - 1

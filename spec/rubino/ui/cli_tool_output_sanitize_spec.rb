@@ -195,4 +195,47 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("PWN")
     end
   end
+
+  # R4 — the LAST content-bearing sinks that printed attacker-influenceable
+  # text through the NON-sanitizing info/success funnel or the markdown/
+  # live-tail renderers (PrinterBase#puts_colored does NOT sanitize, because it
+  # also carries rubino's OWN pastel ANSI from other callers — so the untrusted
+  # CONTENT is neutralized at each sink before it is combined with that ANSI).
+  # Each asserts the raw payload is neutralized to caret notation.
+
+  describe "memory show renders attacker-influenceable fact content safely (R4-N2)" do
+    # Fact content is EXTRACTED from conversation; `info` does not sanitize, so a
+    # raw `\e]0;…\a` / `\e[2J` here would hijack the window title / clear screen.
+    it "neutralizes escapes in the fact content line" do
+      memory = { id: "abc12345", kind: "fact", confidence: 1.0,
+                 created_at: "2026-06-14", content: pwn }
+      out = capture_stdout { Rubino::CLI::MemoryCommand.render(memory, ui: ui) }
+      expect_neutralized(out)
+    end
+  end
+
+  describe "a committed markdown block sanitizes its source (R4-F1)" do
+    # A closed assistant-content block / subagent report body with a raw `0x1B`
+    # must render the escape as caret text, never clear/recolor the terminal —
+    # the renderer's OWN render-time ANSI survives, the attacker's does not.
+    it "neutralizes raw escapes in the block source" do
+      out = capture_stdout { ui.send(:commit_markdown_block, "report:\n#{pwn}") }
+      expect(out).not_to include("\e[2J")
+      expect(out).not_to include("\e]0;")
+      expect(out).to include("PWN")
+      expect(out).to include("^[")
+    end
+  end
+
+  describe "the live in-flight tail sanitizes the raw model text (R4-F2)" do
+    # The streamed model tail is RAW: a `\e[2J` / `\e]0;…\a` mid-stream would
+    # clear the screen / hijack the title as the transient row painted.
+    it "neutralizes escapes in the margined tail" do
+      out = ui.send(:margined_tail, "tail line\n#{pwn}")
+      expect(out).not_to include("\e[2J")
+      expect(out).not_to include("\e]0;")
+      expect(out).to include("PWN")
+      expect(out).to include("^[")
+    end
+  end
 end

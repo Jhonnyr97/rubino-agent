@@ -65,6 +65,13 @@ module Rubino
       #      at read-time.
       def create(kind:, content:, source_session_id: nil, confidence: 1.0, metadata: {})
         validate_kind!(kind)
+        # Coerce to clean, persistable UTF-8 (valid encoding + no NUL) at the
+        # write seam (R4-N3): a NUL in fact content makes the SQLite3 driver
+        # raise "unrecognized token" (the row never persists), and a non-UTF-8
+        # byte breaks the JSON-tagged metadata path — both leave the fact lost.
+        # Defense-in-depth: today's writers are model-mediated, but a future
+        # extractor that pipes raw tool/file bytes into a fact would wedge here.
+        content = Util::Output.scrub_utf8(content)
         enforce_threat_scan!(content)
         enforce_char_budget!(kind, content)
 
