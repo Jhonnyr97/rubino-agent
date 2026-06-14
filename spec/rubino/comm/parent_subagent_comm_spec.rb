@@ -293,7 +293,14 @@ RSpec.describe "parent <-> subagent communication" do
       subagent = Rubino.agent_registry.find("explore")
       primary  = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
 
-      expect(subagent.resolved_tools.map(&:name)).to include("ask_parent", "task")
+      # ask_parent is also situationally gated (#313) on running AS a subagent
+      # (the current_subagent_id thread-local, set by TaskTool around a child
+      # run). Reproduce that context for the subagent assertion; the primary
+      # resolves outside it, exactly as a top-level agent does.
+      subagent_tools = Rubino.with_current_subagent_id("sa_test") do
+        subagent.resolved_tools.map(&:name)
+      end
+      expect(subagent_tools).to include("ask_parent", "task")
       expect(primary.resolved_tools.map(&:name)).to include("task")
       expect(primary.resolved_tools.map(&:name)).not_to include("ask_parent")
     end

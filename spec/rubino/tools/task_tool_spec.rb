@@ -81,7 +81,14 @@ RSpec.describe Rubino::Tools::TaskTool do
     it "keeps ask_parent subagent-only (off the primary, on the subagent)" do
       Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
 
-      explore_tools = Rubino.agent_registry.find("explore").resolved_tools.map(&:name)
+      # ask_parent is doubly-gated (#313): subagent-only at the Definition layer
+      # AND situational at the Registry layer (only when running AS a subagent —
+      # the current_subagent_id thread-local is set). A real child run resolves
+      # its tools INSIDE with_current_subagent_id (TaskTool wraps the child
+      # Runner#run!), so reproduce that context here.
+      explore_tools = Rubino.with_current_subagent_id("sa_test") do
+        Rubino.agent_registry.find("explore").resolved_tools.map(&:name)
+      end
       expect(explore_tools).to include("ask_parent")
 
       primary = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
