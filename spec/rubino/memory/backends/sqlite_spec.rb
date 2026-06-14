@@ -19,12 +19,15 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
   end
 
   # The extract() path reads recent messages; give it a real session row so the
-  # FK-on messages insert succeeds.
-  def seed_session(id = "s1")
+  # FK-on messages insert succeeds. The seed user message carries a durable
+  # assertion so the turn clears the salience gate (SalienceGate) and the
+  # stubbed apply path is actually exercised — a bare "hi" would (correctly)
+  # NOOP before the aux call. Gate-specific tests seed their own throwaway text.
+  def seed_session(id = "s1", content = "My name is Mel and I prefer concise answers.")
     now = Time.now.utc.iso8601
     db[:sessions].insert(id: id, source: "test", status: "active",
                          message_count: 0, token_count: 0, created_at: now, updated_at: now)
-    Rubino::Session::Store.new(db: db).create(session_id: id, role: "user", content: "hi")
+    Rubino::Session::Store.new(db: db).create(session_id: id, role: "user", content: content)
   end
 
   def stub_llm(json)
@@ -666,6 +669,132 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(backend.user_profile).to include("Alice")
       expect(backend.user_profile).not_to include("Bob")
       expect(db[:memory_facts].where(id: old[:id]).first[:valid_to]).not_to be_nil
+    end
+  end
+
+  # r5 F5/F6/F7 — salience gate: a trivial turn must NOOP (no aux call, no fact),
+  # while a durable assertion still extracts and recalls cross-session.
+  describe "#extract — salience gate (NOOP for trivial turns)" do
+    let(:store) { Rubino::Session::Store.new(db: db) }
+
+    before do
+      now = Time.now.utc.iso8601
+      db[:sessions].insert(id: "s1", source: "test", status: "active",
+                           message_count: 0, token_count: 0, created_at: now, updated_at: now)
+    end
+
+    it "does NOT call the aux model for a one-word 'help' turn (NOOP)" do
+      store.create(session_id: "s1", role: "user", content: "help")
+      expect(aux_client).not_to receive(:call)
+      expect(backend.extract("s1")).to eq([])
+      expect(db[:memory_facts].count).to eq(0)
+    end
+
+    it "does NOT call the aux model for a bare greeting (NOOP)" do
+      store.create(session_id: "s1", role: "user", content: "hi there")
+      expect(aux_client).not_to receive(:call)
+      expect(backend.extract("s1")).to eq([])
+    end
+
+    it "advances the cursor past a NOOP turn so it is never re-fed" do
+      store.create(session_id: "s1", role: "user", content: "thanks")
+      allow(aux_client).to receive(:call)
+      backend.extract("s1")
+      cursor = db[:sessions].where(id: "s1").get(:memory_extracted_msg_id)
+      expect(cursor).to eq(store.last_id("s1"))
+      expect(aux_client).not_to have_received(:call)
+    end
+
+    it "still extracts and stores a genuine durable preference" do
+      store.create(session_id: "s1", role: "user", content: "My name is Mel and I deploy with Kamal.")
+      stub_llm('{"add":[{"text":"User deploys with Kamal.","kind":"env"}],"supersede":[]}')
+      stored = backend.extract("s1")
+      expect(stored.map { |s| s[:content] }).to eq(["User deploys with Kamal."])
+      # Cross-session recall still works.
+      out = backend.retrieve(session_id: "s2", query: "How does the user deploy?")
+      expect(out.map { |r| r[:content] }).to include("User deploys with Kamal.")
+    end
+  end
+
+  # r5 C-2 — the aux extraction call must RETRY a transient rate-limit instead of
+  # dropping the fact on the first RubyLLM::RateLimitError.
+  describe "#extract — rate-limit retry (C-2)" do
+    let(:store) { Rubino::Session::Store.new(db: db) }
+    # A real 429 the classifier maps to RATE_LIMIT (retryable).
+    let(:rate_limited) do
+      response = double("FaradayResponse", status: 429, body: "rate limited", headers: {})
+      RubyLLM::RateLimitError.new(response, "rate limited")
+    end
+
+    before do
+      now = Time.now.utc.iso8601
+      db[:sessions].insert(id: "s1", source: "test", status: "active",
+                           message_count: 0, token_count: 0, created_at: now, updated_at: now)
+      store.create(session_id: "s1", role: "user", content: "Remember: I deploy with Kamal on Hetzner.")
+      stub_backoff_sleep
+    end
+
+    # Use a real BackoffPolicy (so wait_seconds/parse_retry_after work) but neuter
+    # its #sleep, instead of sleeping through the jittered backoff in the test.
+    def stub_backoff_sleep
+      policy = Rubino::Agent::BackoffPolicy.new
+      allow(policy).to receive(:sleep)
+      allow(Rubino::Agent::BackoffPolicy).to receive(:new).and_return(policy)
+    end
+
+    it "retries on 429 and eventually stores the fact (not dropped)" do
+      good = OpenStruct.new(content: '{"add":[{"text":"User deploys with Kamal.","kind":"env"}],"supersede":[]}')
+      # Two 429s, then success.
+      call_count = 0
+      allow(aux_client).to receive(:call) do
+        call_count += 1
+        raise rate_limited if call_count <= 2
+
+        good
+      end
+
+      stored = backend.extract("s1")
+      expect(call_count).to eq(3)
+      expect(stored.map { |s| s[:content] }).to eq(["User deploys with Kamal."])
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(1)
+    end
+
+    it "after exhausting retries, leaves the cursor put so the turn is re-fed (never silently lost)" do
+      allow(aux_client).to receive(:call).and_raise(rate_limited)
+
+      expect(backend.extract("s1")).to eq([])
+      # Cursor unchanged → the unextracted message is retried next turn.
+      expect(db[:sessions].where(id: "s1").get(:memory_extracted_msg_id)).to be_nil
+
+      # Next extraction succeeds and stores the same (not-lost) message.
+      allow(aux_client).to receive(:call)
+        .and_return(OpenStruct.new(content: '{"add":[{"text":"User deploys with Kamal.","kind":"env"}],"supersede":[]}'))
+      expect(backend.extract("s1").map { |s| s[:content] }).to eq(["User deploys with Kamal."])
+    end
+
+    it "honours the configured retry budget (memory.extract_max_retries)" do
+      cfg = test_configuration("memory" => default_memory_cfg("extract_max_retries" => 1))
+      b = described_class.new(config: cfg, db: db, aux_client: aux_client)
+      count = 0
+      allow(aux_client).to receive(:call) do
+        count += 1
+        raise rate_limited
+      end
+      expect(b.extract("s1")).to eq([])
+      # 1 retry => 2 total attempts.
+      expect(count).to eq(2)
+    end
+
+    it "does NOT retry a non-retryable error (e.g. bad request) — fails fast" do
+      response = double("FaradayResponse", status: 400, body: "bad", headers: {})
+      bad = RubyLLM::BadRequestError.new(response, "bad request")
+      count = 0
+      allow(aux_client).to receive(:call) do
+        count += 1
+        raise bad
+      end
+      expect(backend.extract("s1")).to eq([])
+      expect(count).to eq(1)
     end
   end
 end
