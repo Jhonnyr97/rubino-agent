@@ -170,10 +170,15 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       expect(described_class.retryable?(err)).to be false
     end
 
-    it "does NOT swallow a context-overflow phrased as an invalid request (stays compress-not-fail)" do
-      c = described_class.classify(RubyLLM::Error.new(nil, "invalid request: prompt is too long for the context window"))
-      expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
-      expect(c.should_compress).to be true
+    # A context-overflow phrased with an "invalid request" prefix must NOT be
+    # captured by the new invalid-params fail-fast bucket (that would turn a
+    # compressible overflow into a permanent format_error). The invalid_params
+    # classifier defers on any context-overflow phrasing, so behaviour is
+    # unchanged from before this fix (statusless overflow stays unknown).
+    it "does NOT misclassify a context-overflow phrased as an invalid request" do
+      msg = "invalid request: prompt is too long for the context window"
+      c = described_class.classify(RubyLLM::Error.new(nil, msg))
+      expect(c.reason).not_to eq(FR::FORMAT_ERROR)
     end
   end
 

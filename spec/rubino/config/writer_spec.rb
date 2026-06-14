@@ -107,7 +107,8 @@ RSpec.describe Rubino::Config::Writer do
 
     it "rejects a non-URL value for a base_url leaf (providers.minimax.base_url)" do
       expect { writer.set("providers.minimax.base_url", "not a url") }
-        .to raise_error(Rubino::ConfigurationError, /invalid value for 'providers\.minimax\.base_url'.*not a valid http/)
+        .to raise_error(Rubino::ConfigurationError,
+                        /invalid value for 'providers\.minimax\.base_url'.*not a valid http/)
     end
 
     it "does not corrupt the file when it refuses an invalid value" do
@@ -143,7 +144,9 @@ RSpec.describe Rubino::Config::Writer do
     it "keeps config.yml valid YAML with ALL keys present under 6 concurrent writers" do
       config_path # force the lazy let to resolve in the PARENT so every forked
       # child writes to the SAME config file (not its own fresh path).
-      keys = (1..6).map { |i| "section.key#{i}" }
+      # `agents` is an open-map section (arbitrary child keys), so each
+      # concurrent set targets a distinct, schema-valid key.
+      keys = (1..6).map { |i| "agents.key#{i}" }
 
       pids = keys.map do |key|
         fork do
@@ -161,7 +164,7 @@ RSpec.describe Rubino::Config::Writer do
       # No lost update: every concurrently-set key survived.
       reader = described_class.new(config_path: config_path)
       keys.each { |key| expect(reader.get(key)).to eq("v-#{key}") }
-      expect(raw["section"].keys).to match_array((1..6).map { |i| "key#{i}" })
+      expect(raw["agents"].keys).to match_array((1..6).map { |i| "key#{i}" })
     end
   end
 end
