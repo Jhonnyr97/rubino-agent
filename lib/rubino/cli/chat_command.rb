@@ -856,7 +856,11 @@ module Rubino
           status_line: build_status_line(runner),
           max_input_rows: Rubino.configuration.display_input_max_rows,
           paste_store: paste_store,
-          on_double_esc: runner ? -> { rewind_pending = true } : nil
+          on_double_esc: runner ? -> { rewind_pending = true } : nil,
+          # ONE Esc cancels the detached post-turn polishing (#319): only when
+          # it's actually in flight, so a stray idle Esc still falls through to
+          # the rewind chord. Trap-safe — flips the polishing cancel token only.
+          on_escape: idle_polishing_escape(runner)
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -883,8 +887,16 @@ module Rubino
         int_pending = false
         prev_int    = trap_idle_int { int_pending = true }
 
+        # Non-blocking "polishing… (Esc to skip)" indicator (#319): the detached
+        # post-turn polishing is still running while THIS idle prompt is live, so
+        # surface a dim status line that does NOT own the input — the composer is
+        # active with the cursor in the box, the user can type immediately. We
+        # only swap the status line on a state CHANGE (running ↔ idle) so the bar
+        # never busy-repaints, restoring the model/context line on completion.
+        polishing_shown = false
         line = nil
         loop do
+          polishing_shown = update_polishing_indicator(composer, runner, polishing_shown)
           # Drained the idle Ctrl+C the trap recorded: clear the draft (non-empty)
           # or arm/confirm the two-tap exit (empty). Done here, not in the trap,
           # so the render mutex is safe.
@@ -942,6 +954,48 @@ module Rubino
           @pending_draft = pending unless pending.strip.empty?
         end
         composer&.stop
+      end
+
+      # The idle composer's single-Esc hook (#319): cancel the detached post-turn
+      # polishing IF it's in flight (returns true → the composer consumes the
+      # Esc), else nil so the Esc falls through to the rewind chord. Runs on the
+      # composer's reader thread, so it only flips the polishing cancel token —
+      # the cooperative aux retry loop and the worker pick it up. nil runner
+      # (no session) ⇒ no hook.
+      def idle_polishing_escape(runner)
+        return nil unless runner
+
+        lambda {
+          next nil unless runner.polishing?
+
+          runner.cancel!
+          true
+        }
+      end
+
+      # Keep the non-blocking polishing indicator in sync with the detached
+      # worker's liveness, repainting only on a state change. Returns the new
+      # "shown?" flag. While running: a dim "polishing memory… (Esc to skip)"
+      # line under the still-active input. On completion: restore the normal
+      # model/context status bar. A cosmetic repaint must never break the prompt.
+      def update_polishing_indicator(composer, runner, shown)
+        return shown unless composer.respond_to?(:set_status)
+
+        running = runner&.polishing? || false
+        return shown if running == shown
+
+        composer.set_status(running ? polishing_status_line : build_status_line(runner))
+        running
+      rescue StandardError
+        shown
+      end
+
+      # The dim, non-blocking indicator text. Reads as background (not a block)
+      # precisely because the composer stays editable beneath it (#319).
+      def polishing_status_line
+        pastel.dim("polishing memory… (Esc to skip)")
+      rescue StandardError
+        "polishing memory… (Esc to skip)"
       end
 
       # Seed a carried-over draft into the composer char-by-char so cursor/delete

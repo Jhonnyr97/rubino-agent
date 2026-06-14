@@ -250,6 +250,29 @@ RSpec.describe Rubino::Agent::Runner do
   end
 
   # -----------------------------------------------------------------------
+  # detached post-turn polishing (#319)
+  # -----------------------------------------------------------------------
+  describe "#cancel! extends to the detached polishing" do
+    let(:runner) { described_class.new(model_override: "gpt-4o", ui: null_ui) }
+
+    it "passes the runner-owned polishing worker into the lifecycle" do
+      runner.run!("hi")
+      expect(Rubino::Interaction::Lifecycle)
+        .to have_received(:new).with(hash_including(polishing: runner.polishing))
+    end
+
+    it "ONE Esc cancels BOTH the foreground turn AND the background polishing" do
+      expect(runner.polishing).to receive(:cancel!)
+      runner.cancel!
+    end
+
+    it "#polishing? reflects the detached worker's liveness" do
+      allow(runner.polishing).to receive(:running?).and_return(true)
+      expect(runner.polishing?).to be(true)
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # live model switch (/model)
   # -----------------------------------------------------------------------
   describe "#switch_model!" do

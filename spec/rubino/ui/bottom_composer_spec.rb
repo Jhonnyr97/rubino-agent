@@ -2204,4 +2204,33 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("")
     end
   end
+
+  # #319: a single Esc at the idle prompt cancels the detached post-turn
+  # polishing IF the on_escape hook claims it — and only then; otherwise the
+  # Esc still falls through to the Esc-Esc rewind arm.
+  describe "on_escape (single-Esc polishing cancel)" do
+    it "consumes a lone Esc when the hook claims it (cancel polishing)" do
+      fired = false
+      rewound = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_escape: -> { fired = true },
+                              on_double_esc: -> { rewound = true })
+      2.times { c.send(:handle_lone_esc) } # two lone Escs within the window
+
+      # The first Esc was consumed by on_escape (polishing cancel), so the
+      # rewind chord never armed/fired — even on the second Esc.
+      expect(fired).to be(true)
+      expect(rewound).to be(false)
+    end
+
+    it "falls through to the rewind chord when on_escape declines (nothing to cancel)" do
+      rewound = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_escape: -> {}, # nothing in flight (falsy)
+                              on_double_esc: -> { rewound = true })
+      2.times { c.send(:handle_lone_esc) }
+
+      expect(rewound).to be(true)
+    end
+  end
 end
