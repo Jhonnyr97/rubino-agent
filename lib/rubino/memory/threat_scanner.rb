@@ -65,7 +65,7 @@ module Rubino
 
       BEHAVIOR_OVERRIDE_PATTERNS = [
         # Secrecy: "(silently/quietly) ... (don't|never) tell/inform/notify the user".
-        %r{\b(?:don't|do not|never)\s+(?:tell|inform|notify|alert|warn|ask|mention)\b[^.\n]{0,40}\buser\b}i,
+        /\b(?:don't|do not|never)\s+(?:tell|inform|notify|alert|warn|ask|mention)\b[^.\n]{0,40}\buser\b/i,
         /\bwithout\s+(?:telling|informing|notifying|asking|warning)\b[^.\n]{0,20}\buser\b/i,
         /\b(?:silently|quietly|secretly)\b[^.\n]{0,40}\b(?:#{DESTRUCTIVE_VERB})\b/i,
         # Standing / blanket approval — defeats the per-action approval gate.
