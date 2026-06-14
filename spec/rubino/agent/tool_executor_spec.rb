@@ -155,12 +155,12 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   # the loop's per-iteration #check!, so without a checkpoint in #execute the
   # interrupt isn't observed and one more tool fires after the user hit Enter.
   describe "cancellation checkpoint before a tool runs (#335b)" do
-    let(:token) { Rubino::Interaction::CancelToken.new }
-
     subject(:cancellable) do
       described_class.new(registry: registry, approval_policy: policy, ui: ui,
                           config: config, tool_call_repository: repo, cancel_token: token)
     end
+
+    let(:token) { Rubino::Interaction::CancelToken.new }
 
     it "raises Interrupted and never runs the tool when the token is cancelled" do
       allow(policy).to receive(:decide).and_return(:allow)

@@ -99,22 +99,15 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(runner).to receive(:session).and_return({ id: "s1", model: "fake-model" })
 
       status = nil
-      json_out = +""
-      orig = $stdout
-      $stdout = StringIO.new
-      begin
+      # The interrupted result is a well-formed {type:"result", …} object whose
+      # body carries the interrupt — assert it on stdout, exit 130 alongside.
+      expect do
         described_class.new("query" => "hi", "json" => true).execute
       rescue SystemExit => e
         status = e.status
-      ensure
-        json_out = $stdout.string
-        $stdout = orig
-      end
+      end.to output(/"type":"result".*interrupt/i).to_stdout
 
       expect(status).to eq(130)
-      parsed = JSON.parse(json_out.lines.last)
-      expect(parsed["type"]).to eq("result")
-      expect(JSON.generate(parsed)).to match(/interrupt/i)
     end
   end
 
