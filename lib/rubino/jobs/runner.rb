@@ -11,10 +11,23 @@ module Rubino
         @queue = Queue.new(db: @db)
       end
 
+      # Statuses a job can never be re-run from — it already reached a terminal
+      # outcome. run_job refuses these (#346) so a double-call (two processes
+      # reaping the same orphan, a stale retry) can NEVER execute — and re-bill —
+      # an already-finished job a second time.
+      TERMINAL_STATUSES = %w[completed failed dead].freeze
+
       # Runs a specific job by ID
       def run_job(job_id)
         job = @db[:jobs].where(id: job_id).first
         return unless job
+
+        # Defence-in-depth re-check (#346): refuse a row that already reached a
+        # terminal status. The CAS claim in Queue#reap_inline_orphans/#dequeue is
+        # the primary guard against two processes double-running an orphan; this
+        # second check means even a direct run_job on an already-completed row is
+        # a harmless no-op rather than a second (billed) execution.
+        return if TERMINAL_STATUSES.include?(job[:status])
 
         run_id = record_run_start(job_id)
 
