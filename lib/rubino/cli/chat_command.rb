@@ -1208,7 +1208,10 @@ module Rubino
           model: parent[:model],
           provider: parent[:provider],
           title: title,
-          parent_session_id: parent[:id]
+          parent_session_id: parent[:id],
+          # A branch inherits the parent's launch dir so it resumes from the
+          # same directory (r5 MF-4).
+          cwd: parent[:cwd]
         )
 
         store.copy_into(child[:id], store.for_session(parent[:id]))
@@ -1351,7 +1354,9 @@ module Rubino
           model: parent[:model],
           provider: parent[:provider],
           title: nil,
-          parent_session_id: parent[:id]
+          parent_session_id: parent[:id],
+          # A rewind-fork inherits the parent's launch dir (r5 MF-4).
+          cwd: parent[:cwd]
         )
         store = ::Rubino::Session::Store.new
         # Mine the parent's un-mined tail before the (truncated) copy, same as

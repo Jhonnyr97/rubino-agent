@@ -278,6 +278,13 @@ module Rubino
           # throttled by it or long multi-session conversations stall once the
           # injection budget fills. `nil` = unbounded ingest (the default).
           "ingest_char_limit" => nil,
+          # Bounded retry budget for the aux extraction call on a transient
+          # error (429 rate-limit / overloaded / 5xx). Under concurrent load the
+          # aux call used to drop the fact on the first RateLimitError; now it
+          # backs off and retries up to this many times (honouring Retry-After)
+          # before giving up, and the per-session cursor re-feeds the turn next
+          # time even then — so memory isn't lost to a transient rate limit.
+          "extract_max_retries" => 3,
           # tiny-Zep SQLite backend tuning. `vector` enables best-effort
           # sqlite-vec/RubyLLM.embed KNN on top of the always-on FTS5 hybrid;
           # off by default so the stock install needs no extra deps. `graph`

@@ -82,7 +82,11 @@ module Rubino
 
           return "Error: edit ##{idx + 1} is missing old_string or new_string" if old_s.nil? || new_s.nil?
           return "Error: edit ##{idx + 1}: old_string and new_string are identical" if old_s == new_s
+
           unless working.include?(old_s)
+            # Mental model was wrong — let the model's next read of this path
+            # bypass dedup and fetch fresh bytes for recovery (r5 B3).
+            @read_tracker&.note_edit_failure(expanded)
             return "Error: edit ##{idx + 1}: old_string not found (check whitespace; " \
                    "remember edits see the result of prior edits)"
           end
@@ -102,6 +106,9 @@ module Rubino
         end
 
         File.write(expanded, working)
+        # Refresh-on-own-write so a follow-up edit to this file isn't refused
+        # as "changed on disk since last read" (r5 B2).
+        @read_tracker&.note_write(expanded, working)
         { output: "Applied #{edits.size} edit(s), #{applied_count} replacement(s) in #{file_path}",
           metrics: "#{edits.size} edit#{"s" if edits.size != 1} · " \
                    "#{applied_count} replacement#{"s" if applied_count != 1}",

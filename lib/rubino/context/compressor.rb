@@ -93,7 +93,10 @@ module Rubino
           model: parent_session[:model],
           provider: parent_session[:provider],
           title: parent_session[:title],
-          parent_session_id: parent_session[:id]
+          parent_session_id: parent_session[:id],
+          # Inherit the parent's launch dir so a compacted session stays
+          # discoverable/resumable from the SAME directory (r5 MF-4).
+          cwd: parent_session[:cwd]
         )
 
         # Copy head messages — faithful copy preserves metadata[:tool_calls]
