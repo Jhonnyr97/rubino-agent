@@ -110,7 +110,11 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
-        token_total     = 0
+        # True once any denial this turn was a headless fail-closed block ("needs
+        # approval but no interactive session", #260) — lets the binding guard
+        # point at `--yolo` (F2) instead of "approve it" in the honest message.
+        @noninteractive_block = false
+        token_total = 0
 
         loop do
           iteration += 1
@@ -366,26 +370,35 @@ module Rubino
       #   :reflected — a corrective user message was appended to `messages`; the
       #                Loop must re-enter (the model now either calls the tool or
       #                says it can't). Capped at MAX_REFLECTIONS.
-      #   String     — an honest replacement for the final answer (the cd case:
-      #                rubino has no cd tool, so the claim can never be true).
+      #   String     — an honest replacement for the final answer. The cd case
+      #                (rubino has no cd tool); the BINDING terminal override
+      #                (G1: reflection budget spent, model still fabricating a
+      #                mutation); and the denied/blocked-but-claims case (F1/F2:
+      #                a fabricated success-narration or diff after a tool was
+      #                blocked) all return their honest replacement text here.
       #   nil        — nothing to do; surface the model's text as-is.
       def guard_text_only_turn(response, messages)
+        # The reflection budget is spent → the guard must be BINDING this turn:
+        # replace a still-fabricated answer rather than ask for one more turn.
+        terminal = @reflection_count >= ActionClaimGuard::MAX_REFLECTIONS
         verdict = @action_guard.evaluate(
           content: response.content,
           tool_count: @tool_count,
-          denied_count: @denied_count
+          denied_count: @denied_count,
+          noninteractive: @noninteractive_block,
+          terminal: terminal
         )
         return nil if verdict.nil?
 
         kind, payload = verdict
-        return guard_cd_claim(response, payload) if kind == :cd
+        # cd / blocked / terminal-replace all REPLACE the final answer with the
+        # honest deterministic text (payload) — the guard's verdict overrides the
+        # model's fabrication on this terminal turn.
+        return payload if %i[cd blocked replace].include?(kind)
 
-        # :reflect — re-prompt once, under the cap. At the cap we stop honestly:
-        # surface the model's last text rather than loop forever. The reflection
-        # is appended as a USER message at this same safe ordering boundary the
-        # steering injection uses (after the cancel check, no open tool_use pair).
-        return nil if @reflection_count >= ActionClaimGuard::MAX_REFLECTIONS
-
+        # :reflect — re-prompt once, under the cap. The reflection is appended as
+        # a USER message at the same safe ordering boundary the steering injection
+        # uses (after the cancel check, no open tool_use pair).
         @reflection_count += 1
         note = @action_guard.reflection_message(payload)
         # The fabricated text already streamed to the UI on the streaming path;
@@ -398,15 +411,6 @@ module Rubino
         messages << { role: "user", content: note }
         @ui.note("checking that claim — no tool call was issued") if @ui.respond_to?(:note)
         :reflected
-      end
-
-      # cd intent: rubino has no cd tool, so the model's "I changed the
-      # directory" is a guaranteed no-op. Replace the final answer with the
-      # honest message. On the streaming path the fabricated line already
-      # reached the screen, so we additionally surface the correction as a note
-      # (the returned String is what the headless/transcript path keeps).
-      def guard_cd_claim(_response, honest_answer)
-        honest_answer
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
@@ -542,6 +546,10 @@ module Rubino
         # "0 run · 1 denied" so the deny outcome is unambiguous (#83).
         if result.respond_to?(:denied?) && result.denied?
           @denied_count += 1
+          # A headless fail-closed block carries the distinctive noninteractive
+          # denial output; remember it so the binding guard's honest message can
+          # name `--yolo` rather than "approve interactively" (F2).
+          @noninteractive_block = true if result.output.to_s.include?("no interactive session")
         else
           @tool_count += 1
         end

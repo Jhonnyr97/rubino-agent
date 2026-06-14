@@ -9,15 +9,16 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
     %w[shell ruby test write edit multi_edit patch git github read grep web_fetch]
   end
 
-  def verdict(text, tool_count: 0, denied_count: 0)
-    guard.evaluate(content: text, tool_count: tool_count, denied_count: denied_count)
+  def verdict(text, tool_count: 0, denied_count: 0, noninteractive: false, terminal: false)
+    guard.evaluate(content: text, tool_count: tool_count, denied_count: denied_count,
+                   noninteractive: noninteractive, terminal: terminal)
   end
 
   describe "fabricated action claims with ZERO tool calls (the r5 trust-killer)" do
     # These are the verbatim / paraphrased narrations from the r5 reports that
     # ended a turn with `0 tools` and let a fake success reach the user.
     it "flags the bare-lead 'Running the suite now.' (r5 F1)" do
-      expect(verdict("Running the suite now.")).to eq([:reflect, "would run"])
+      expect(verdict("Running the suite now.")).to eq([:reflect, "run that"])
     end
 
     it "flags the post-deny 'Saved to <path> and ran it:' fabrication (r5 ux-first F1)" do
@@ -64,7 +65,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       text = "Updated both methods to use item instead of it. Running the tests now."
       kind, claim = verdict(text)
       expect(kind).to eq(:reflect)
-      expect(claim).to match(/updated|edit/i)
+      expect(claim).to match(/update/i)
     end
 
     it "flags a FIRST-in-chain mutation claim 'Added the docstring' (r5c B1)" do
@@ -170,8 +171,21 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       expect(verdict("Ran the tests; all pass.", tool_count: 2)).to be_nil
     end
 
-    it "suppresses when a tool was DENIED this turn (legit deny-recovery prose)" do
-      expect(verdict("Saved the file.", denied_count: 1)).to be_nil
+    it "suppresses when a tool was DENIED but the prose honestly reports the block" do
+      # An honest "blocked / couldn't" answer is a real deny-recovery summary —
+      # left alone even though a tool was denied this turn.
+      expect(verdict("That tool was blocked, so I couldn't save the file.", denied_count: 1))
+        .to be_nil
+    end
+
+    it "REPLACES a fabricated success-narration AFTER a tool was denied/blocked (F1/F2)" do
+      # When a tool was denied/blocked but the model still narrates success, the
+      # claim is a fabrication — the guard must override it with the honest
+      # 'blocked, nothing applied' message, not surface the lie.
+      kind, msg = verdict("Saved the file.", denied_count: 1)
+      expect(kind).to eq(:blocked)
+      expect(msg).to match(/blocked/i)
+      expect(msg).to match(/nothing was applied/i)
     end
   end
 
@@ -202,5 +216,85 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
 
   it "caps reflections at 3 (aider parity)" do
     expect(described_class::MAX_REFLECTIONS).to eq(3)
+  end
+
+  # G1 (CRITICAL): the reflection budget is spent and the poisoned-context model
+  # is STILL fabricating a git/file mutation with zero tool calls. The guard must
+  # be BINDING — REPLACE the fabricated final answer with an honest deterministic
+  # message, never surface the model's "Done … committed as <sha>".
+  describe "BINDING terminal override (G1 — guard verdict overrides the model)" do
+    it "REPLACES a fabricated git-commit claim on the terminal turn, not :reflect" do
+      text = "Done. New branch feature/tax with the cart.rb change committed as 0f60f1d."
+      kind, msg = verdict(text, terminal: true)
+      expect(kind).to eq(:replace)
+      expect(msg).to match(/no tool call was made/i)
+      expect(msg).to match(/nothing was changed on disk/i)
+      # The fabricated SHA / "Done … committed" must NOT survive in the replacement.
+      expect(msg).not_to include("0f60f1d")
+      expect(msg).not_to match(/committed as/i)
+    end
+
+    it "REPLACES a fabricated file-mutation claim on the terminal turn" do
+      kind, msg = verdict("Updated both methods and saved the file.", terminal: true)
+      expect(kind).to eq(:replace)
+      expect(msg).to match(/i did not/i)
+    end
+
+    it "still only REFLECTS (not replaces) before the budget is spent" do
+      text = "Done. committed as 0f60f1d."
+      expect(verdict(text, terminal: false).first).to eq(:reflect)
+    end
+
+    it "leaves a genuine non-claim final answer untouched even on the terminal turn" do
+      expect(verdict("Here's how the discount code works in cart.rb.", terminal: true))
+        .to be_nil
+    end
+  end
+
+  # F1/F2 (HIGH): a tool was denied/blocked (headless fail-closed, or user-denied)
+  # and the model then narrates success OR hands back a fabricated unified diff
+  # for files it never wrote. Replace it with the honest blocked message.
+  describe "denied/blocked-but-claims (F1/F2 — never let a fabricated diff stand)" do
+    let(:headless_diff) do
+      <<~TXT
+        The rename is complete and ready to apply with `git apply`:
+
+        --- a/shopkit/invoice.py
+        +++ b/shopkit/invoice.py
+        @@ -1,4 +1,4 @@
+        -from shopkit.pricing import calc_total
+        +from shopkit.pricing import compute_subtotal
+      TXT
+    end
+
+    it "REPLACES a fabricated 'ready to git apply' diff after a headless block (F1)" do
+      kind, msg = verdict(headless_diff, denied_count: 1, noninteractive: true)
+      expect(kind).to eq(:blocked)
+      expect(msg).to match(/blocked/i)
+      expect(msg).to include("--yolo")
+      # F2: the headless message must name the skip-mode behaviour change.
+      expect(msg).to match(/approvals\.mode: skip/i)
+      expect(msg).to match(/no longer auto-runs/i)
+      # The honest message must NOT present the diff as applyable.
+      expect(msg).to match(/not a real, applied change/i)
+    end
+
+    it "REPLACES a fabricated diff even with NO narration verb (the diff alone)" do
+      diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+      expect(verdict(diff, denied_count: 1, noninteractive: true).first).to eq(:blocked)
+    end
+
+    it "uses the approve-it hatch (not --yolo) for a user-denied block" do
+      kind, msg = verdict("Saved the file.", denied_count: 1, noninteractive: false)
+      expect(kind).to eq(:blocked)
+      expect(msg).to match(/approve the action/i)
+      expect(msg).not_to include("--yolo")
+    end
+
+    it "leaves an HONEST blocked answer (no success-claim, no diff) untouched" do
+      text = "That edit was blocked because there's no interactive session — " \
+             "nothing was applied. Re-run with --yolo to allow it."
+      expect(verdict(text, denied_count: 1, noninteractive: true)).to be_nil
+    end
   end
 end
