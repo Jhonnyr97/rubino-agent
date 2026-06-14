@@ -202,6 +202,78 @@ RSpec.describe Rubino::Jobs::Queue do
     end
   end
 
+  # Regression for #346: the inline orphan reaper used to call Runner#run_job
+  # directly — no lock, no terminal re-check — so two processes sharing one
+  # RUBINO_HOME both saw the same `queued` orphans and DOUBLE-RAN them (each
+  # billed ExtractMemoryJob ran twice). The reaper now CAS-claims every row
+  # through the same lock #dequeue uses before running it, and run_job refuses a
+  # row that already reached a terminal status. Each orphan runs at most once.
+  describe "concurrent orphan reaping (#346)" do
+    let(:config) do
+      test_configuration("jobs" => { "mode" => "inline", "max_attempts" => 3,
+                                     "poll_interval" => 1, "retry_backoff_seconds" => 0 })
+    end
+
+    before do
+      allow(Rubino).to receive_messages(database: db_connection, configuration: config)
+      # A real no-op handler so seeded orphans complete (not the resolution-
+      # failure path). Each #perform call is recorded so we can count executions.
+      Rubino::Jobs::Registry.register("TestJob", Class.new { def perform(_payload) = nil })
+    end
+
+    after { Rubino::Jobs::Registry.reset! }
+
+    def seed_orphan
+      now = Time.now.utc.iso8601
+      id = SecureRandom.uuid
+      db_connection.db[:jobs].insert(
+        id: id, type: "TestJob", status: "queued", priority: 100,
+        payload_json: "{}", attempts: 0, max_attempts: 3,
+        run_at: now, created_at: now, updated_at: now
+      )
+      id
+    end
+
+    it "runs each seeded orphan EXACTLY once across concurrent reaps" do
+      orphans = Array.new(8) { seed_orphan }
+
+      # Two reapers race over the SAME seeded orphans, exactly as two processes
+      # sharing one RUBINO_HOME would. Each run_job execution inserts one
+      # job_runs row, so the count of job_runs per job_id is the execution count.
+      threads = Array.new(2) do
+        Thread.new { described_class.new(db: db_connection.db, config: config).reap_inline_orphans }
+      end
+      threads.each(&:join)
+
+      runs_per_job = db_connection.db[:job_runs].group_and_count(:job_id).to_h { |r| [r[:job_id], r[:count]] }
+      orphans.each do |id|
+        expect(runs_per_job[id]).to eq(1), "job #{id} ran #{runs_per_job[id].inspect} times, expected exactly 1"
+        expect(db_connection.db[:jobs].where(id: id).first[:status]).to eq("completed")
+      end
+    end
+
+    it "lets #claim! succeed for exactly one of two concurrent claimers" do
+      id = seed_orphan
+      results = Array.new(2)
+      Array.new(2) { |i| Thread.new { results[i] = described_class.new(db: db_connection.db, config: config).claim!(id, worker_id: "w#{i}") } }
+        .each(&:join)
+
+      expect(results.count(true)).to eq(1) # the CAS lets exactly one win
+      expect(db_connection.db[:jobs].where(id: id).first[:status]).to eq("running")
+    end
+
+    it "refuses to re-run a job that already reached a terminal status" do
+      id = seed_orphan
+      db_connection.db[:jobs].where(id: id).update(status: "completed")
+
+      # A direct run_job on an already-completed row must be a no-op: no second
+      # (billed) execution, no new job_runs row.
+      Rubino::Jobs::Runner.new(db: db_connection.db).run_job(id)
+
+      expect(db_connection.db[:job_runs].where(job_id: id).count).to eq(0)
+    end
+  end
+
   describe "#dequeue" do
     it "returns and locks the next job" do
       queue.enqueue("TestJob", { data: 1 })

@@ -69,18 +69,29 @@ module Rubino
 
         return nil unless job
 
-        # Lock the job
+        return nil unless claim!(job[:id], worker_id: worker_id)
+
+        @db[:jobs].where(id: job[:id]).first
+      end
+
+      # Atomically claims a single row by id: the SAME compare-and-swap lock
+      # #dequeue uses, transitioning queued → running only while the row is
+      # still `queued`. Returns true to exactly ONE caller; every concurrent
+      # claim (another process sharing this RUBINO_HOME, or a re-entrant reap)
+      # sees the row already `running` and gets false. The reaper (#346) claims
+      # through here before running each orphan, so two processes can never
+      # double-run (and double-bill) the same ExtractMemoryJob.
+      def claim!(job_id, worker_id:)
+        now = Time.now.utc.iso8601
         updated = @db[:jobs]
-                  .where(id: job[:id], status: "queued")
+                  .where(id: job_id, status: "queued")
                   .update(
                     status: "running",
                     locked_at: now,
                     locked_by: worker_id,
                     updated_at: now
                   )
-
-        # Return nil if another worker grabbed it first
-        updated > 0 ? @db[:jobs].where(id: job[:id]).first : nil
+        updated.positive?
       end
 
       # Marks a job as completed
@@ -170,6 +181,7 @@ module Rubino
       def reap_inline_orphans(before: nil)
         now = Time.now.utc.iso8601
         runner = Runner.new(db: @db)
+        worker_id = "reap-#{Process.pid}"
 
         dataset = @db[:jobs]
                   .where(status: "queued", locked_by: nil)
@@ -182,7 +194,16 @@ module Rubino
         # unexpected raise (e.g. a DB error draining one row) can NEVER abort
         # the live turn that is enqueuing — mirrors the poison-row defence
         # Scheduler#schedule has for unparseable cron rows (#J1).
+        #
+        # CAS-claim each orphan through the SAME lock #dequeue uses BEFORE
+        # running it (#346). Two processes sharing one RUBINO_HOME used to both
+        # see the same queued orphans and run_job them directly — no lock, no
+        # terminal re-check — double-running (and double-billing) the aux work.
+        # The atomic claim transitions queued → running for exactly one caller;
+        # a row another process already grabbed returns false and is skipped.
         dataset.select_map(:id).each do |orphan_id|
+          next unless claim!(orphan_id, worker_id: worker_id)
+
           runner.run_job(orphan_id)
         rescue StandardError => e
           Rubino.logger.warn(event: "jobs.reap_orphan_failed", job_id: orphan_id, error: e.class.name,
