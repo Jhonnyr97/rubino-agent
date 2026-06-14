@@ -258,7 +258,7 @@ module Rubino
       # Interrupt is listed for doc value though SignalException already covers it.
       rescue Rubino::Interrupted, Interrupt, SignalException => e # rubocop:disable Lint/ShadowedException
         external = e.is_a?(Rubino::Interrupted) ? e.reason == :external : true
-        warn "rubino: #{external ? 'interrupted by external signal' : 'interrupted'}"
+        warn "rubino: #{external ? "interrupted by external signal" : "interrupted"}"
         exit(130)
       rescue SystemExit
         raise

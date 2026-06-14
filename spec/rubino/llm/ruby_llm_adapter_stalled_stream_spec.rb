@@ -19,6 +19,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     )
   end
   let(:adapter) { described_class.new(model_id: "gpt-4o", config: config) }
+  let(:noop_sink) { ->(_) {} }
 
   # A chat double whose #ask simulates a stream that OPENS then goes idle: it
   # blocks (long enough to dwarf the idle bound) and NEVER yields a chunk. Until
@@ -33,8 +34,6 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     end
     chat
   end
-
-  let(:noop_sink) { ->(_) {} }
 
   before do
     allow(adapter).to receive(:load_history)

@@ -669,7 +669,7 @@ module Rubino
         target = Thread.current
         # Tick fast enough to bound the OVERSHOOT past the deadline, but never
         # busy-spin: cap the tick at 1s and never exceed the deadline itself.
-        tick = [[stale_after.to_f / 4.0, 1.0].min, 0.01].max
+        tick = (stale_after.to_f / 4.0).clamp(0.01, 1.0)
         Thread.new do
           loop do
             sleep(tick)
