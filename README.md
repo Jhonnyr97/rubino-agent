@@ -197,7 +197,8 @@ These are designed-in but not fully wired yet — don't depend on them in produc
 
 ```bash
 bundle install
-bundle exec rspec               # run tests
+bundle exec rspec               # run tests (sequential, with coverage)
+bundle exec rake parallel:spec  # run tests across all CPU cores
 bundle exec rubino doctor   # verify setup
 ```
 

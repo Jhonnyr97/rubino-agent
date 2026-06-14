@@ -96,6 +96,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "roo", "~> 2.10"
 
   # Development dependencies
+  spec.add_development_dependency "parallel_tests", "~> 4.7"
   spec.add_development_dependency "rack-test", "~> 2.1"
   spec.add_development_dependency "rspec", "~> 3.12"
   spec.add_development_dependency "rubocop", "~> 1.60"

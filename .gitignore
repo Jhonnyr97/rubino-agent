@@ -6,6 +6,8 @@
 /pkg/
 /spec/reports/
 /spec/examples.txt
+# Per-worker example-status files written by parallel_tests (spec/examples.2.txt, ...).
+/spec/examples.*.txt
 /tmp/
 
 # Binary document fixtures (xlsx/docx/pdf) are regenerated deterministically

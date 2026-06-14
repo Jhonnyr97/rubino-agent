@@ -171,7 +171,7 @@ RSpec.describe Rubino::Documents::Limits do
   end
 
   describe "a NORMAL small .docx still converts correctly", if: docx_available? do
-    let(:fixtures) { File.expand_path("../../fixtures/documents", __dir__) }
+    let(:fixtures) { documents_fixtures_dir }
 
     it "converts the committed sample.docx with caps in force" do
       md = with_tight_convert_caps do
@@ -183,7 +183,7 @@ RSpec.describe Rubino::Documents::Limits do
   end
 
   describe "a long conversion is interruptible (cancel_token honored)", if: docx_available? do
-    let(:fixtures) { File.expand_path("../../fixtures/documents", __dir__) }
+    let(:fixtures) { documents_fixtures_dir }
 
     it "raises Interrupted out of to_markdown when the token is flipped" do
       token = Rubino::Interaction::CancelToken.new
