@@ -114,7 +114,6 @@ module Rubino
 
         YAML.safe_load(text, permitted_classes: [Symbol]) || {}
       end
-
     end
   end
 end

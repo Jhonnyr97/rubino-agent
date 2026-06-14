@@ -45,7 +45,7 @@ RSpec.describe Rubino::CLI::ConfigCommand do
 
     it "config help no longer renders the doubled 'rubino rubino config tree'" do
       out = capture_config_help
-      expect(out).not_to match(/rubino rubino config tree/)
+      expect(out).not_to include("rubino rubino config tree")
     end
 
     def capture_config_help
