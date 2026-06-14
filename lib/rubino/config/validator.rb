@@ -24,26 +24,21 @@ module Rubino
     module Validator
       module_function
 
-      # Sections whose CHILD keys are open-ended maps (provider names, custom
-      # command/permission/agent ids, MCP server names, per-role prompt
-      # overrides). A path that descends through one of these stops being
-      # checked for "unknown key" past the open node — but its leaf is still
-      # type/format-checked against any matching default template.
-      OPEN_MAP_PREFIXES = [
-        %w[providers],
-        %w[auxiliary],
-        %w[quick_commands],
-        %w[permissions],
-        %w[formatters],
-        %w[agents],
-        %w[mcp servers],
-        %w[prompts overrides]
-      ].freeze
-
       # A per-provider leaf (providers.<name>.<leaf>) is type-checked against the
       # openai provider template, the canonical OpenAI-compatible provider shape,
       # so providers.minimax.request_timeout_seconds "soon" is still rejected.
       PROVIDER_TEMPLATE = "openai"
+
+      # Top-level sections that are REAL config namespaces but intentionally not
+      # seeded in Defaults (e.g. read at point-of-use with a fallback, or kept
+      # unseeded on purpose). They are valid roots, so a key under them is not an
+      # "unknown key" even though Defaults has no entry. The unknown-key check is
+      # deliberately SHALLOW — it only rejects a typo'd TOP-LEVEL section (the
+      # `foo.bar.baz` footgun from #327) — because the schema's leaves are
+      # intentionally incomplete (model.api_key, display.reasoning, …), so a
+      # deeper check would reject legitimate-but-unseeded keys. Type/format
+      # checks still apply to every known leaf regardless.
+      EXTRA_TOP_LEVEL_SECTIONS = %w[sessions].freeze
 
       def validate!(key_path, keys, value)
         default = leaf_default(keys)
@@ -74,20 +69,19 @@ module Rubino
       end
 
       def reject_unknown_key!(key_path, keys)
-        return if under_open_map?(keys)
+        return if known_top_level?(keys.first)
 
         raise ConfigurationError,
-              "unknown config key '#{key_path}'. Run 'rubino config show' to see " \
-              "the valid keys (or 'rubino config tree' for the command list)"
+              "unknown config key '#{key_path}': '#{keys.first}' is not a config " \
+              "section. Run 'rubino config show' to see the valid sections"
       end
 
-      # True when the path descends THROUGH a known open-map section (so the
-      # unknown segment is an expected free-form child key, e.g. a provider or
-      # MCP server name), rather than a genuine typo at a fixed-schema path.
-      def under_open_map?(keys)
-        OPEN_MAP_PREFIXES.any? do |prefix|
-          keys.length > prefix.length && keys[0, prefix.length] == prefix
-        end
+      # A top-level section is known when Defaults seeds it or it's one of the
+      # documented intentionally-unseeded namespaces. Everything settable hangs
+      # off one of these, so an UNKNOWN first segment is the typo we reject.
+      def known_top_level?(section)
+        Defaults::MODULE_DEFAULTS.key?(section) ||
+          EXTRA_TOP_LEVEL_SECTIONS.include?(section)
       end
 
       def check_type!(key_path, value, default)

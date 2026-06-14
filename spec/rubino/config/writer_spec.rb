@@ -90,14 +90,17 @@ RSpec.describe Rubino::Config::Writer do
   # then retried for ~85s). Set-time schema validation now rejects these up
   # front with a clean ConfigurationError (→ non-zero exit at the CLI).
   describe "set-time schema validation (#327)" do
-    it "rejects an unknown top-level key" do
+    it "rejects an unknown top-level section" do
       expect { writer.set("foo.bar.baz", "1") }
         .to raise_error(Rubino::ConfigurationError, /unknown config key 'foo\.bar\.baz'/)
     end
 
-    it "rejects an unknown leaf under a known section" do
-      expect { writer.set("model.nope", "x") }
-        .to raise_error(Rubino::ConfigurationError, /unknown config key 'model\.nope'/)
+    it "accepts an intentionally-unseeded leaf under a KNOWN section (model.api_key)" do
+      # The unknown-key check is shallow (top-level only): the schema's leaves
+      # are intentionally incomplete (secrets, display.reasoning, …), so a key
+      # under a real section is allowed even when Defaults has no entry for it.
+      writer.set("model.api_key", "sk-secret")
+      expect(writer.get("model.api_key")).to eq("sk-secret")
     end
 
     it "rejects a type mismatch on a numeric default (model.temperature banana)" do
