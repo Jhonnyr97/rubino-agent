@@ -104,7 +104,7 @@ module Rubino
 
       # Finds a session by ID (supports prefix matching)
       def find(id)
-        @db[:sessions].where(Sequel.like(:id, "#{id}%")).first
+        @db[:sessions].where(id_prefix_match(id)).first
       end
 
       # Resolves a user-supplied query to a session: tries ID prefix first
@@ -122,7 +122,7 @@ module Rubino
       def find_by_id_or_title(query)
         return nil if query.nil? || query.to_s.empty?
 
-        id_matches = @db[:sessions].where(Sequel.like(:id, "#{query}%")).all
+        id_matches = @db[:sessions].where(id_prefix_match(query)).all
         if id_matches.size > 1
           raise AmbiguousSessionError.new(query, id_matches)
         elsif id_matches.size == 1
@@ -143,12 +143,25 @@ module Rubino
         nil
       end
 
-      # Lists sessions with optional filters
-      def list(limit: 20, status: nil, search: nil)
-        dataset = @db[:sessions].order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid"))).limit(limit)
+      # Lists sessions with optional filters. +cwd+ scopes the listing to a
+      # single launch directory (#334): a bare `sessions list` defaults to the
+      # current dir so a multi-folder user only sees THIS project's sessions,
+      # mirroring the per-cwd auto-resume picker; pass cwd: nil (the `--all`
+      # flag) to list every directory's sessions as before. Compared on
+      # canonical (realpath) paths so a symlinked launch dir still matches the
+      # stored root, which means the cwd filter runs in Ruby (not SQL) AFTER the
+      # status/search predicates — the limit is therefore applied post-filter.
+      def list(limit: 20, status: nil, search: nil, cwd: nil)
+        dataset = @db[:sessions].order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
         dataset = dataset.where(status: status) if status
         dataset = dataset.where(Sequel.like(:title, "%#{search}%")) if search && !search.empty?
-        dataset.all
+
+        return dataset.limit(limit).all if cwd.nil?
+
+        target = canonical(cwd)
+        return dataset.limit(limit).all if target.nil?
+
+        dataset.all.select { |row| canonical(row[:cwd]) == target }.first(limit)
       end
 
       # Updates a session's attributes
@@ -298,6 +311,28 @@ module Rubino
       end
 
       private
+
+      # Builds a SAFE id-prefix LIKE condition (#333a). User-supplied short ids
+      # flow straight into `Sequel.like(:id, "#{query}%")`, but `%` and `_` are
+      # LIKE wildcards — an unescaped `find("%")` matched EVERY session (and
+      # `find("a_c")` treated `_` as "any char"), so a stray/crafted query
+      # silently resolved to the wrong (or first-of-all) session. Escape the
+      # metacharacters in the user portion and declare an explicit ESCAPE char so
+      # only the trailing `%` we append stays a wildcard. `\` escapes itself
+      # first so a literal backslash in the input can't smuggle past the escape.
+      LIKE_ESCAPE = "\\"
+
+      def id_prefix_match(query)
+        escaped = query.to_s
+                       .gsub(LIKE_ESCAPE, "#{LIKE_ESCAPE}#{LIKE_ESCAPE}")
+                       .gsub("%", "#{LIKE_ESCAPE}%")
+                       .gsub("_", "#{LIKE_ESCAPE}_")
+        # `Sequel.like` in Sequel 5 emits no ESCAPE clause, so the escaped
+        # metacharacters above would still be treated as wildcards. Declare the
+        # escape character explicitly via a parameterized literal (placeholders,
+        # not interpolation, so the value stays bound and injection-safe).
+        Sequel.lit("id LIKE ? ESCAPE ?", "#{escaped}%", LIKE_ESCAPE)
+      end
 
       # The full first user message of a session — what derive_title truncated
       # the title from — so resume-by-title can match the whole prompt (#70).

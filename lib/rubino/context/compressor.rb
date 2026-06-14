@@ -54,21 +54,32 @@ module Rubino
           previous_summary: previous_summary
         )
 
-        # 6. Save summary (chains parent_summary_id to the previous row)
-        summary_id = @summary_store.insert(session_id: @session_id, content: new_summary)
+        # Steps 6-8 are the irreversible state mutation (insert summary → create
+        # child + copy head/summary/tail → mark parent compacted → record
+        # lineage). Wrap them in ONE transaction so a crash mid-compaction (e.g.
+        # a failed message copy) rolls the WHOLE thing back: #332 [MED]. Without
+        # it a raise during the child copy left an orphan child row AND a
+        # dangling summary row with the parent already half-mutated — the next
+        # resume then found a partial, incoherent child. All-or-nothing instead.
+        summary_id = nil
+        child_session = nil
+        @db.transaction do
+          # 6. Save summary (chains parent_summary_id to the previous row)
+          summary_id = @summary_store.insert(session_id: @session_id, content: new_summary)
 
-        # 7. Create child session with compacted context
-        child_session = create_child_session(session, head, new_summary, tail)
+          # 7. Create child session with compacted context
+          child_session = create_child_session(session, head, new_summary, tail)
 
-        # 8. Record compaction lineage
-        record_compaction(
-          source_id: @session_id,
-          target_id: child_session[:id],
-          previous_summary_id: previous_summary_id,
-          new_summary_id: summary_id,
-          original_tokens: estimate_tokens(messages),
-          compacted_tokens: estimate_tokens(head + tail)
-        )
+          # 8. Record compaction lineage
+          record_compaction(
+            source_id: @session_id,
+            target_id: child_session[:id],
+            previous_summary_id: previous_summary_id,
+            new_summary_id: summary_id,
+            original_tokens: estimate_tokens(messages),
+            compacted_tokens: estimate_tokens(head + tail)
+          )
+        end
 
         {
           source_session_id: @session_id,
