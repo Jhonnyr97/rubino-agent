@@ -53,7 +53,7 @@ class FakeReplayChat
     self
   end
 
-  def ask(_content, **_kw, &)
+  def ask(_content, **_kwargs, &)
     @stages.each do |stage|
       return final_message(stage) if stage.tool_calls.nil?
 
