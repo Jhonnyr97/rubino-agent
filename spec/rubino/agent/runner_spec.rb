@@ -8,9 +8,20 @@ RSpec.describe Rubino::Agent::Runner do
     instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE")
   end
 
+  # Holds the session the Lifecycle reports active AFTER a turn. Defaults to the
+  # session the Lifecycle was built on (a non-compacting turn changes nothing);
+  # a test exercising the P3 F1 compaction swap sets this to the child.
+  let(:lifecycle_active_session) { {} }
+
   before do
     allow(Rubino).to receive(:database).and_return(db)
-    allow(Rubino::Interaction::Lifecycle).to receive(:new).and_return(fake_lifecycle)
+    allow(fake_lifecycle).to receive(:active_session) do
+      lifecycle_active_session[:override] || lifecycle_active_session[:built_on]
+    end
+    allow(Rubino::Interaction::Lifecycle).to receive(:new) do |**kwargs|
+      lifecycle_active_session[:built_on] = kwargs[:session]
+      fake_lifecycle
+    end
   end
 
   # -----------------------------------------------------------------------
@@ -85,6 +96,28 @@ RSpec.describe Rubino::Agent::Runner do
 
     it "executes lifecycle and returns response" do
       expect(runner.run("hello")).to eq("RESPONSE")
+    end
+
+    # P3 F1: when an automatic budget-triggered compaction fires mid-turn, the
+    # Lifecycle swaps its active session to the compaction child. The Runner
+    # MUST adopt that child so the NEXT turn rebuilds Lifecycle on the SMALL
+    # child instead of the un-shrunk parent (which would re-compact every turn
+    # → superlinear DB/context bloat + ~2.9x slowdown). Fails on pre-fix code,
+    # where @session stayed pinned to the parent across turns.
+    it "adopts the compaction child as its active session after an auto-compaction turn" do
+      parent_id = runner.session[:id]
+      lifecycle_active_session[:override] = { id: "child-after-compaction", model: "gpt-4o", status: "active" }
+
+      runner.run("a turn that crosses the compaction threshold")
+
+      expect(runner.session[:id]).to eq("child-after-compaction")
+      expect(runner.session[:id]).not_to eq(parent_id)
+    end
+
+    it "keeps the same active session across a turn with no compaction" do
+      before_id = runner.session[:id]
+      runner.run("an ordinary turn")
+      expect(runner.session[:id]).to eq(before_id)
     end
 
     it "passes ignore_rules to lifecycle" do

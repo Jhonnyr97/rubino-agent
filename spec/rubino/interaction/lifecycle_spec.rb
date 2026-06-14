@@ -90,6 +90,90 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     end
   end
 
+  # F1 (P3 endurance): automatic budget-triggered compaction MUST swap the
+  # active session to the compaction child, exactly as the manual /compact path
+  # does (chat_command.rb: result[:compact_into] → build_runner on the child).
+  # Before the fix, #check_and_compact called Compressor#compact! but never
+  # reassigned @session, so every subsequent turn persisted back to the dead
+  # parent, the parent never shrank, needs_compaction? stayed permanently true,
+  # and the gem re-compacted on EVERY turn (superlinear DB/context bloat + the
+  # ~2.9x per-turn slowdown). These specs fail on the pre-fix code.
+  describe "#check_and_compact" do
+    subject(:lifecycle) do
+      described_class.new(
+        session: parent_session, event_bus: event_bus, ui: null_ui, config: nil
+      )
+    end
+
+    let(:parent_session) { { id: "parent-1", model: "gpt-4o" } }
+    let(:child_session)  { { id: "child-9",  model: "gpt-4o" } }
+    let(:long_messages)  { Array.new(10) { { role: "user", content: "x" } } }
+    let(:budget) { instance_double(Rubino::Context::TokenBudget) }
+    let(:compressor) { instance_double(Rubino::Context::Compressor) }
+    let(:session_repo) { instance_double(Rubino::Session::Repository) }
+    let(:assembler) { instance_double(Rubino::Context::PromptAssembler, build: %i[compacted]) }
+
+    before do
+      allow(Rubino::Context::TokenBudget).to receive(:new).and_return(budget)
+      allow(Rubino::Context::Compressor).to receive(:new).and_return(compressor)
+      allow(Rubino::Context::PromptAssembler).to receive(:new).and_return(assembler)
+      lifecycle.instance_variable_set(:@session_repo, session_repo)
+      allow(session_repo).to receive(:find).with("child-9").and_return(child_session)
+    end
+
+    it "reassigns the active session to the compaction child after compact!" do
+      allow(budget).to receive(:needs_compaction?).and_return(true)
+      allow(compressor).to receive(:compact!).and_return(
+        source_session_id: "parent-1", target_session_id: "child-9",
+        original_messages: 10, compacted_messages: 5, saved_tokens: 12, summary_id: "sum-1"
+      )
+
+      lifecycle.send(:check_and_compact, long_messages)
+
+      # The fix: subsequent phases (run_agent_loop, update_session_state,
+      # enqueue_post_turn_jobs) must now bind to the SMALL child, not the parent.
+      active = lifecycle.instance_variable_get(:@session)
+      expect(active[:id]).to eq("child-9")
+    end
+
+    it "rebuilds the prompt from the child session, not the dead parent" do
+      allow(budget).to receive(:needs_compaction?).and_return(true)
+      allow(compressor).to receive(:compact!).and_return(
+        source_session_id: "parent-1", target_session_id: "child-9"
+      )
+
+      lifecycle.send(:check_and_compact, long_messages)
+
+      # The post-compaction assembler must read the child session so the turn
+      # runs on the compacted context — not the dead parent.
+      expect(Rubino::Context::PromptAssembler).to have_received(:new)
+        .with(hash_including(session: child_session))
+    end
+
+    it "leaves the active session untouched when no compaction is needed" do
+      allow(budget).to receive(:needs_compaction?).and_return(false)
+      expect(compressor).not_to receive(:compact!)
+
+      result = lifecycle.send(:check_and_compact, long_messages)
+
+      expect(result).to eq(long_messages)
+      expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
+    end
+
+    # A no-op compaction (too few messages / empty middle) creates no child and
+    # returns no target_session_id — the parent must stay active in that case.
+    it "keeps the parent active when compaction is a no-op (no child created)" do
+      allow(budget).to receive(:needs_compaction?).and_return(true)
+      allow(compressor).to receive(:compact!).and_return(
+        source_session_id: "parent-1", saved_tokens: 0, skipped: true
+      )
+
+      lifecycle.send(:check_and_compact, long_messages)
+
+      expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
+    end
+  end
+
   describe "#load_memory" do
     subject(:lifecycle) do
       described_class.new(

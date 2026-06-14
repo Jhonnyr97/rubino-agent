@@ -5,6 +5,16 @@ module Rubino
     # Orchestrates the full lifecycle of a single user interaction.
     # Coordinates all phases from input to final response and post-turn jobs.
     class Lifecycle
+      # The session this lifecycle is currently bound to. Starts as the session
+      # passed in, but an automatic budget-triggered compaction swaps it to the
+      # compaction child (see #check_and_compact). The owning Runner reads this
+      # back after #execute so the NEXT turn runs on the (small) child rather
+      # than re-compacting the dead parent every turn (P3 F1). Defined as a
+      # method (not attr_reader) because @session is REASSIGNED on compaction.
+      def active_session
+        @session
+      end
+
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
@@ -183,7 +193,26 @@ module Rubino
           @event_bus.emit(Events::COMPRESSION_FINISHED, **result)
           @ui.compression_finished(result)
 
-          # Reload messages after compaction
+          # Swap the active session to the compaction child (F1). compact!
+          # wrote head+summary+tail into a fresh child and marked THIS parent
+          # status="compacted" — exactly the swap the manual /compact path
+          # performs (chat_command.rb: result[:compact_into] → build_runner on
+          # the child). The automatic path used to skip this, so the turn's
+          # response, update_session_state, and the post-turn jobs all stayed
+          # bound to the now-dead parent: it never shrank, needs_compaction?
+          # stayed permanently true, and the gem re-compacted EVERY subsequent
+          # turn (superlinear DB/context bloat + ~2.9x slowdown). Reassigning
+          # @session to the child means subsequent turns persist to the small
+          # child and compaction fires only once per genuine threshold-cross.
+          # Guard against a no-op compaction (too few messages / empty middle),
+          # which creates no child and returns no target — keep the parent then.
+          child_id = result[:target_session_id]
+          if child_id
+            child = @session_repo.find(child_id)
+            @session = child if child
+          end
+
+          # Reload messages after compaction (from the now-active session)
           assembler = Context::PromptAssembler.new(
             session: @session,
             memory_context: {},
