@@ -106,4 +106,59 @@ RSpec.describe Rubino::Tools::RubyTool do
     expect(out).to include("cancelled")
     expect(elapsed).to be < 5 # far below the 60s sleep / configured timeout
   end
+
+  # #328 — a snippet that backgrounds a child (system("... &"), spawn, fork)
+  # used to ORPHAN that grandchild on timeout: #terminate killed only the
+  # direct child PID. The fix spawns the child in its own process group and
+  # signals the WHOLE group (negative PID) on timeout/cancel, mirroring
+  # ShellTool, so no descendant survives the call.
+  it "kills backgrounded descendants on timeout (no orphans)" do
+    skip "POSIX process groups only" if Gem.win_platform?
+
+    Dir.mktmpdir do |dir|
+      pidfile = File.join(dir, "child.pid")
+      allow(Rubino.configuration).to receive(:agent_max_turn_seconds).and_return(1)
+
+      # Background a long-lived grandchild whose PID we record, then sleep so the
+      # PARENT snippet hits the 1s timeout while the grandchild is still alive.
+      code = <<~RUBY
+        child = spawn("sleep 30")
+        Process.detach(child)
+        File.write(#{pidfile.dump}, child.to_s)
+        $stdout.flush
+        sleep 30
+      RUBY
+
+      out = tool.call("code" => code)
+      expect(out).to include("timed out")
+
+      # Wait for the pidfile then assert the grandchild is gone (signalled via
+      # the process group). Poll briefly so the group-kill has a beat to land.
+      sleep 0.05 until File.exist?(pidfile) && !File.read(pidfile).strip.empty?
+      grandchild = File.read(pidfile).strip.to_i
+      expect(grandchild).to be > 0
+
+      alive = nil
+      20.times do
+        alive = begin
+          Process.kill(0, grandchild) # raises ESRCH once it's truly gone
+          true
+        rescue Errno::ESRCH
+          false
+        end
+        break unless alive
+
+        sleep 0.1
+      end
+
+      # Cleanup safeguard so a regression doesn't leak a real sleeper.
+      begin
+        Process.kill("KILL", grandchild) if alive
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
+
+      expect(alive).to be(false), "grandchild #{grandchild} survived the ruby tool timeout (orphaned)"
+    end
+  end
 end

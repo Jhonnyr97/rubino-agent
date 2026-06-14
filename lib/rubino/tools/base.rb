@@ -270,9 +270,36 @@ module Rubino
       # MultiEditTool so a single bad byte doesn't raise "invalid byte sequence
       # in UTF-8" out of the include?/scan/sub that follow and leave the file
       # uneditable. Lossy on the offending byte, graceful for everything else.
+      #
+      # IMPORTANT (#326): this is for MODEL CONTEXT only — NEVER feed the
+      # scrubbed buffer to a File.write, because `scrub` rewrites every
+      # non-UTF-8 byte on UNTOUCHED lines to U+FFFD, so a one-line ASCII edit
+      # would lossily corrupt the whole file. Use #read_for_edit for the
+      # read-modify-write path.
       def read_scrubbed(path)
         content = File.read(path)
         content.valid_encoding? ? content : content.scrub
+      end
+
+      # Reads a file for the edit/multi_edit READ-MODIFY-WRITE path (#326).
+      #
+      # Returns the raw bytes as BINARY (ASCII-8BIT) so the literal
+      # include?/scan/sub/gsub run byte-wise and every byte OUTSIDE the matched
+      # span is preserved exactly — a Latin-1 `André` on an untouched line is
+      # written back byte-identical even when the file isn't valid UTF-8. The
+      # model-supplied old_string/new_string are likewise compared/spliced as
+      # bytes (see #to_match_bytes), so a UTF-8 needle still matches its UTF-8
+      # bytes in the file. Valid-UTF-8 files behave exactly as before.
+      def read_for_edit(path)
+        File.binread(path)
+      end
+
+      # Forces a model-supplied string to the SAME binary encoding the on-disk
+      # content carries in #read_for_edit, so include?/scan/sub compare raw
+      # bytes (a UTF-8 `é` needle matches its two on-disk bytes). dup so we
+      # never mutate the caller's frozen literal.
+      def to_match_bytes(str)
+        str.to_s.dup.force_encoding(Encoding::BINARY)
       end
 
       # Read-before-edit gate shared by EditTool and MultiEditTool. Refuses the
