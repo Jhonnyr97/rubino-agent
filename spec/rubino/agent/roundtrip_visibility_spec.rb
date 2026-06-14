@@ -227,7 +227,7 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     # spying on summarize_on_budget_exhausted.
     loop_runner = build_loop(adapter, executor, budget)
     summary_calls = 0
-    allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |orig, *args|
+    allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |*|
       summary_calls += 1
       "summary"
     end
@@ -285,7 +285,8 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     allow(adapter).to receive(:build_chat).and_wrap_original do |_orig, **kw|
       chat = fake_chat(stages)
       Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                            tool_executor: executor, budget_exhausted: kw[:budget_exhausted])
+                                            tool_executor: executor,
+                                            budget_exhausted: kw[:budget_exhausted])
       chat
     end
     loop_runner = Rubino::Agent::Loop.new(
@@ -294,7 +295,7 @@ RSpec.describe "round-trip visibility (#355 #351)" do
       event_bus: event_bus, config: cfg
     )
     summary_calls = 0
-    allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |_orig, *_a|
+    allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |*|
       summary_calls += 1
       "timed-summary"
     end
@@ -329,9 +330,8 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     # the final message's 80/200.
     expect(captured[:input_tokens]).to eq(300)
     expect(captured[:output_tokens]).to eq(290)
-    # And the Loop's token_total reflects the same sum (300+290).
-    summary = nil
-    # token_total is local to #run; assert via the turn-summary event tokens.
+    # And the Loop's token_total reflects the same sum (300+290). token_total is
+    # local to #run; assert it via the turn-summary event's reported tokens.
     expect(captured[:input_tokens] + captured[:output_tokens]).to eq(590)
   end
 
@@ -370,9 +370,8 @@ RSpec.describe "round-trip visibility (#355 #351)" do
     loop_runner.run(messages: [{ role: "user", content: "hi" }], tools: [agent_tool])
 
     rows = message_store.for_session(session[:id])
-    roles = rows.map(&:role)
-    # user, assistant(tool_use #1), tool(result #1), assistant(tool_use #2),
-    # tool(result #2), final assistant(text).
+    # Expected order: user, assistant(tool_use #1), tool(result #1),
+    # assistant(tool_use #2), tool(result #2), final assistant(text).
     assistant_rows = rows.select { |m| m.role == "assistant" }
     tool_rows      = rows.select { |m| m.role == "tool" }
 
@@ -423,28 +422,32 @@ RSpec.describe "round-trip visibility (#355 #351)" do
       text_rt("ok", input: 1, output: 1)
     ]
     executor = tool_executor
-    expect(approval_policy).to receive(:decide).with(agent_tool, hash_including("v" => "a")).and_return(:allow)
-    expect(audit_repo).to receive(:record).with(hash_including(status: "completed", call_id: "c1"))
 
     adapter = adapter_with(stages, tool_executor: executor)
     budget = Rubino::Agent::IterationBudget.new(config: config)
     build_loop(adapter, executor, budget)
       .run(messages: [{ role: "user", content: "hi" }], tools: [agent_tool])
+
+    # ApprovalPolicy#decide gated the mid-stream tool, and the executor wrote a
+    # completed audit row keyed on the real provider call_id — approval + audit
+    # fire on the streaming path, not the unguarded direct-call fallback.
+    expect(approval_policy).to have_received(:decide).with(agent_tool, hash_including("v" => "a"))
+    expect(audit_repo).to have_received(:record).with(hash_including(status: "completed", call_id: "c1"))
   end
 
   it "rejects installing the production bridge with a nil tool_executor (approval/audit invariant)" do
     chat = fake_chat([])
     expect do
       Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                            tool_executor: nil, production: true)
+                                            tool_executor: nil,
+                                            production: true)
     end.to raise_error(Rubino::Error, /without a tool_executor/)
   end
 
   it "still allows the unguarded fallback bridge OFF the production path (tests/one-shot)" do
     chat = fake_chat([])
     expect do
-      Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, event_bus: event_bus,
-                                            tool_executor: nil)
+      Rubino::LLM::ToolBridge.install(chat, [agent_tool], ui: null_ui, tool_executor: nil)
     end.not_to raise_error
   end
 
