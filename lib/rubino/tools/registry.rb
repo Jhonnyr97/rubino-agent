@@ -49,7 +49,8 @@ module Rubino
             disabled.include?(tool.name) ||
               !tool_enabled_in_config?(tool, config) ||
               !Rubino::Modes.allows_tool?(tool.name) ||
-              !aux_dependency_satisfied?(tool, config)
+              !aux_dependency_satisfied?(tool, config) ||
+              situational_tool_hidden?(tool)
           end
         end
 
@@ -129,7 +130,74 @@ module Rubino
           register(Rubino::Tools::AnswerChildTool.new)
         end
 
+        # Tools that ONLY make sense once a child SUBAGENT (a background `task`)
+        # exists this session — the parent->child comm channels. Before any task
+        # is spawned they are dead weight (a `steer`/`probe`/`answer_child` with
+        # no child just errors "not your child"; `task_result`/`task_stop` have
+        # nothing to poll). `task` itself (spawn) stays always-on. (#313)
+        TASK_DEPENDENT_TOOLS = %w[task_result task_stop steer probe answer_child].freeze
+
+        # Tools that ONLY make sense once a background SHELL exists this session —
+        # the shell-management channels. Before any `shell run_in_background:true`
+        # they have no handle to act on. `shell` itself stays always-on. (#313)
+        SHELL_DEPENDENT_TOOLS = %w[shell_input shell_output shell_tail shell_kill].freeze
+
         private
+
+        # Context-gates (#313) on SESSION-STABLE lifecycle signals, NOT per-turn
+        # relevance — they flip at most once per session (when a subagent / a
+        # background shell first appears), so the cached tool prefix that the
+        # prompt-cache breakpoint (#311) protects stays byte-stable across the
+        # common turn. Saves ~2k tokens on a normal file-edit turn that has
+        # neither a child nor a background shell.
+        #
+        #   - ask_parent: exposed ONLY when running AS a subagent (the
+        #     thread-local current_subagent_id is set ⇒ this run has a parent).
+        #     Mirrors Definition#resolved_tools' SUBAGENT_ONLY gate so the base
+        #     registry view is honest even outside an agent definition.
+        #   - task_* / steer / probe / answer_child: exposed only once ≥1 child
+        #     task exists in the BackgroundTasks registry (any state — live or
+        #     finished; a finished child can still be polled via task_result).
+        #   - shell_* management: exposed only once ≥1 background shell exists in
+        #     the ShellRegistry.
+        def situational_tool_hidden?(tool)
+          case tool.name
+          when "ask_parent"
+            !running_as_subagent?
+          when *TASK_DEPENDENT_TOOLS
+            !any_subagent?
+          when *SHELL_DEPENDENT_TOOLS
+            !any_background_shell?
+          else
+            false
+          end
+        end
+
+        # True when THIS run is executing as a subagent (has a parent). The
+        # thread-local is set by TaskTool around a child Runner#run!; nil on the
+        # top-level / parent thread, which is exactly the "no parent to ask"
+        # signal ask_parent itself uses to refuse.
+        def running_as_subagent?
+          !Rubino.current_subagent_id.nil?
+        rescue StandardError
+          false
+        end
+
+        # True once at least one child task (in any state) exists this session.
+        def any_subagent?
+          BackgroundTasks.instance.list.any?
+        rescue StandardError
+          # Never let a registry probe failure hide a tool that should show — be
+          # permissive (expose) on error, matching the opt-out posture elsewhere.
+          true
+        end
+
+        # True once at least one background shell exists this session.
+        def any_background_shell?
+          ShellRegistry.instance.any?
+        rescue StandardError
+          true
+        end
 
         def tool_enabled_in_config?(tool, config)
           # Single source of truth: the tool declares its own `tools.<key>`

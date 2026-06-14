@@ -443,8 +443,13 @@ module Rubino
         # Register tools and wire the streaming call-id capture (ToolBridge owns
         # both so the spill / tool_call_id linkage works on the streaming path —
         # STRM-2). Falls back to direct tool.call when @tool_executor is nil.
+        # cache_tools (#311): on the anthropic-family path, with prompt caching
+        # enabled, put a cache_control breakpoint on the last tool so the whole
+        # tool block is cached. Other providers ignore cache_control, so we only
+        # emit it where it is honored (and where the system breakpoint also fires).
         ToolBridge.install(chat, tools, ui: @ui, event_bus: @event_bus,
-                                        tool_executor: @tool_executor)
+                                        tool_executor: @tool_executor,
+                                        cache_tools: tool_cache_breakpoint?)
         chat
       end
 
@@ -500,6 +505,19 @@ module Rubino
       def anthropic_generation_path?
         anthropic_compatible_provider? ||
           %w[anthropic bedrock].include?(@provider.to_s)
+      end
+
+      # True when the tool block should carry an Anthropic prompt-cache
+      # breakpoint (#311): the anthropic-family path AND prompt caching enabled
+      # in config (prompts.prompt_cache, default on). cache_control is an
+      # Anthropic concept, so we never emit it on the openai path.
+      def tool_cache_breakpoint?
+        return false unless anthropic_generation_path?
+
+        value = @config.dig("prompts", "prompt_cache")
+        value.nil? || value == true
+      rescue StandardError
+        false
       end
 
       # Configurable max output tokens. providers.<name>.max_tokens wins, then
@@ -649,7 +667,10 @@ module Rubino
         history.each do |msg|
           role    = (msg[:role] || msg["role"]).to_sym
           content = msg[:content] || msg["content"]
-          next if content.nil? || content.empty?
+          # A Content::Raw (the #311 prompt-cache system block) is a structured
+          # provider payload, not a String — it has no #empty?. Treat it as
+          # always-present; only String/nil content is empty-checked.
+          next if content.nil? || (content.respond_to?(:empty?) && content.empty?)
 
           case role
           when :system
@@ -724,8 +745,22 @@ module Rubino
           model_id: @model_id,
           stop_reason: extract_stop_reason(response),
           thinking: extract_thinking(response),
+          cache_read_tokens: cache_token(response, :cache_read_tokens),
+          cache_creation_tokens: cache_token(response, :cache_creation_tokens),
           raw: response
         )
+      end
+
+      # Prompt-cache counter (#311) RubyLLM surfaces on the response message
+      # (cache_read_tokens / cache_creation_tokens, from the Anthropic
+      # cache_read_input_tokens / cache_creation_input_tokens usage fields).
+      # Defaults to 0 on any path/provider that doesn't report it.
+      def cache_token(response, reader)
+        return 0 unless response.respond_to?(reader)
+
+        response.public_send(reader).to_i
+      rescue StandardError
+        0
       end
 
       # Normalize the provider's finish/stop reason to the boundary's

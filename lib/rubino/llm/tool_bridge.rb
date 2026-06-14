@@ -25,13 +25,22 @@ module Rubino
       # messages.tool_call_id / tool_calls metadata persist (STRM-2). nil in
       # the test/one-shot fallback path, where the bridge calls tool.call
       # directly and no real id exists.
-      def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil)
+      # Anthropic prompt-cache breakpoint (#311) placed on the LAST tool's wire
+      # definition. RubyLLM's Anthropic::Tools.function_for deep_merges a tool's
+      # provider_params onto its wire def, and Anthropic caches the WHOLE tool
+      # block up to and including the breakpoint — so one cache_control on the
+      # final tool caches every tool definition.
+      CACHE_CONTROL_PROVIDER_PARAMS = { cache_control: { type: "ephemeral" } }.freeze
+
+      def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil,
+                   cache_breakpoint: false)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
                   ui: ui || Rubino.ui,
                   event_bus: event_bus || Rubino.event_bus,
                   tool_executor: tool_executor,
-                  call_id_provider: call_id_provider)
+                  call_id_provider: call_id_provider,
+                  cache_breakpoint: cache_breakpoint)
       end
 
       # Registers every Rubino tool (wrapped as a bridge) on a ruby_llm chat AND
@@ -41,13 +50,20 @@ module Rubino
       # right before each sequential, tool_concurrency=false dispatch) into a
       # holder the bridge reads back as call_id. Without this the streaming path
       # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
-      def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil)
+      def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false)
         current_call_id = nil
         chat.before_tool_call { |tc| current_call_id = tc&.id } if chat.respond_to?(:before_tool_call)
-        Array(tools).each do |tool|
+        list = Array(tools)
+        # #311: cache the whole tool block by putting a single cache_control
+        # breakpoint on the LAST tool. Tools arrive in the registry's
+        # deterministic insertion order (register_defaults!), so "last" is
+        # stable across turns — the cache key over the tool block holds.
+        last_index = list.size - 1
+        list.each_with_index do |tool, idx|
           chat.with_tool(self.for(tool, ui: ui, event_bus: event_bus,
                                         tool_executor: tool_executor,
-                                        call_id_provider: -> { current_call_id }))
+                                        call_id_provider: -> { current_call_id },
+                                        cache_breakpoint: cache_tools && idx == last_index))
         end
       end
 
@@ -60,16 +76,27 @@ module Rubino
         klass = Class.new(::RubyLLM::Tool) do
           define_method(:name) { tool_name }
 
-          define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:, call_id_provider: nil|
+          define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:,
+                                          call_id_provider: nil, cache_breakpoint: false|
             @agent_tool       = agent_tool
             @ui               = ui
             @event_bus        = event_bus
             @tool_executor    = tool_executor
             @call_id_provider = call_id_provider
+            @cache_breakpoint = cache_breakpoint
           end
 
           define_method(:description) { @agent_tool.description }
           define_method(:params_schema) { @agent_tool.input_schema }
+
+          # PER-INSTANCE provider_params (#311). RubyLLM::Tool#provider_params
+          # is normally class-level, but bridge classes are CACHED and shared
+          # across tools/turns — a class-level write would leak the breakpoint
+          # onto every tool of that name. Overriding per instance keeps the
+          # cache_control on exactly the one final tool the installer marked.
+          define_method(:provider_params) do
+            @cache_breakpoint ? Rubino::LLM::ToolBridge::CACHE_CONTROL_PROVIDER_PARAMS : {}
+          end
 
           define_method(:execute) do |**kwargs|
             name = @agent_tool.name

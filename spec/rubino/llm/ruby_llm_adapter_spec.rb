@@ -115,14 +115,16 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(bare.raw).to be_nil
       end
 
-      it "exposes usage as a nil-safe token hash" do
-        expect(bare.usage).to eq(input_tokens: 1, output_tokens: 2)
+      it "exposes usage as a nil-safe token hash (incl. #311 prompt-cache counters)" do
+        expect(bare.usage).to eq(input_tokens: 1, output_tokens: 2,
+                                 cache_read_input_tokens: 0, cache_creation_input_tokens: 0)
       end
 
       it "zeroes usage when tokens are nil" do
         r = described_class.new(content: "hi", tool_calls: [],
                                 input_tokens: nil, output_tokens: nil, model_id: "m")
-        expect(r.usage).to eq(input_tokens: 0, output_tokens: 0)
+        expect(r.usage).to eq(input_tokens: 0, output_tokens: 0,
+                              cache_read_input_tokens: 0, cache_creation_input_tokens: 0)
       end
     end
 

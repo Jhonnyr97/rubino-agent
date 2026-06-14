@@ -256,6 +256,7 @@ Metrics/BlockLength:
 Metrics/ClassLength:
   Exclude:
     - 'lib/rubino/cli/chat_command.rb'
+    - 'lib/rubino/llm/ruby_llm_adapter.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
     - 'lib/rubino/ui/cli.rb'
 
@@ -451,6 +452,7 @@ RSpec/AnyInstance:
     - 'spec/rubino/commands/commands_spec.rb'
     - 'spec/rubino/context/compressor_spec.rb'
     - 'spec/rubino/context/prompt_assembler_active_skill_spec.rb'
+    - 'spec/rubino/context/prompt_assembler_cache_breakpoints_spec.rb'
     - 'spec/rubino/context/prompt_assembler_ignore_rules_spec.rb'
     - 'spec/rubino/context/prompt_assembler_layering_spec.rb'
     - 'spec/rubino/context/prompt_assembler_memory_snapshot_spec.rb'
@@ -462,8 +464,10 @@ RSpec/BeforeAfterAll:
     - '**/spec/spec_helper.rb'
     - '**/spec/rails_helper.rb'
     - '**/spec/support/**/*.rb'
+    - 'spec/rubino/llm/tool_bridge_cache_breakpoint_spec.rb'
     - 'spec/rubino/security/approval_policy_mode_spec.rb'
     - 'spec/rubino/tools/registry_mode_spec.rb'
+    - 'spec/rubino/tools/registry_situational_gating_spec.rb'
     - 'spec/rubino/tools/registry_spec.rb'
 
 # Offense count: 31
@@ -550,7 +554,11 @@ RSpec/DescribeMethod:
     - 'spec/rubino/api/middleware/json_body_size_spec.rb'
     - 'spec/rubino/cli/chat_command_continue_spec.rb'
     - 'spec/rubino/cli/commands_version_spec.rb'
+    - 'spec/rubino/llm/ruby_llm_adapter_cache_spec.rb'
+    - 'spec/rubino/llm/tool_bridge_cache_breakpoint_spec.rb'
+    - 'spec/rubino/tools/registry_situational_gating_spec.rb'
     - 'spec/rubino/context/prompt_assembler_active_skill_spec.rb'
+    - 'spec/rubino/context/prompt_assembler_cache_breakpoints_spec.rb'
     - 'spec/rubino/context/prompt_assembler_ignore_rules_spec.rb'
     - 'spec/rubino/context/prompt_assembler_layering_spec.rb'
     - 'spec/rubino/context/prompt_assembler_memory_snapshot_spec.rb'
