@@ -375,7 +375,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "--continue fetches latest resumable session" do
-      allow(repo).to receive(:latest_resumable).and_return(session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(session)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: "abc123ef")
@@ -383,7 +383,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "--continue passes nil when no resumable session" do
-      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: nil)
@@ -423,7 +423,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "auto-resumes the most recent resumable session on a bare chat" do
-      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(resumed_session)
       allow(fake_runner).to receive(:session).and_return(resumed_session)
 
       described_class.new({}).execute
@@ -434,7 +434,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "prints the resume one-liner so the continuation is never silent" do
-      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(resumed_session)
       allow(fake_runner).to receive(:session).and_return(resumed_session)
 
       described_class.new({}).execute
@@ -445,7 +445,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "starts a fresh session (and welcomes) on a true first run" do
-      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
       allow(fake_runner).to receive(:session).and_return(new_session)
 
       described_class.new({}).execute
@@ -458,7 +458,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "--new forces a fresh session even when one is resumable" do
-      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(resumed_session)
       allow(fake_runner).to receive(:session).and_return(new_session)
 
       described_class.new("new" => true).execute
@@ -469,7 +469,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "marks the session ended on a clean teardown (#100)" do
-      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
       allow(fake_runner).to receive(:session).and_return(new_session)
 
       described_class.new({}).execute

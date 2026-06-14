@@ -297,6 +297,98 @@ RSpec.describe Rubino::Session::Repository do
     end
   end
 
+  # r5 MF-4 / C-1: every session is stamped with the dir it was launched in so
+  # resume can be scoped per-cwd, killing "folder B silently resumes folder A".
+  describe "cwd stamping" do
+    it "#create stamps an explicit cwd and #find returns it" do
+      s = repo.create(source: "cli", cwd: "/home/dev/api")
+      expect(s[:cwd]).to eq("/home/dev/api")
+      expect(repo.find(s[:id])[:cwd]).to eq("/home/dev/api")
+    end
+
+    it "#create defaults cwd to the workspace primary root when not given" do
+      allow(Rubino::Workspace).to receive(:primary_root).and_return("/home/dev/web")
+      s = repo.create(source: "cli")
+      expect(repo.find(s[:id])[:cwd]).to eq("/home/dev/web")
+    end
+
+    it "#build carries a cwd that #persist! writes through to the row" do
+      built = repo.build(source: "cli", cwd: "/home/dev/scripts")
+      expect(built[:cwd]).to eq("/home/dev/scripts")
+      repo.persist!(built)
+      expect(repo.find(built[:id])[:cwd]).to eq("/home/dev/scripts")
+    end
+  end
+
+  describe "#latest_resumable_for_cwd" do
+    def resumable_in(dir)
+      s = repo.create(source: "cli", cwd: dir)
+      repo.increment_message_count!(s[:id])
+      s
+    end
+
+    it "resumes the latest session FOR THIS dir, never a newer one in another dir" do
+      api = resumable_in("/home/dev/api")
+      resumable_in("/home/dev/web") # newer, different dir
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(api[:id])
+    end
+
+    it "does NOT resume folder A's session when launched in folder B (MF-4 / C-1)" do
+      resumable_in("/home/dev/api") # only session exists, in /api
+      # A bare chat in /web must start fresh, not latch onto /api.
+      expect(repo.latest_resumable_for_cwd("/home/dev/web")).to be_nil
+      # ...whereas the global latest_resumable WOULD have grabbed /api (the bug).
+      expect(repo.latest_resumable[:cwd]).to eq("/home/dev/api")
+    end
+
+    it "two different dirs each resolve to their OWN latest (no cross-stomp)" do
+      api = resumable_in("/home/dev/api")
+      web = resumable_in("/home/dev/web")
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(api[:id])
+      expect(repo.latest_resumable_for_cwd("/home/dev/web")[:id]).to eq(web[:id])
+    end
+
+    it "matches through symlinks/non-canonical paths (realpath compare)" do
+      s = resumable_in(Dir.pwd)
+      # A trailing-dot / "./" form of the same dir still resolves.
+      expect(repo.latest_resumable_for_cwd(File.join(Dir.pwd, "."))[:id]).to eq(s[:id])
+    end
+
+    it "skips a session a DIFFERENT live process is actively writing (no two-tab stomp)" do
+      s = resumable_in("/home/dev/api")
+      # Simulate another live tab owning this active session.
+      repo.update(s[:id], status: "active", owner_pid: 999_999)
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(999_999).and_return(true)
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")).to be_nil
+    end
+
+    it "still resumes a session owned by our OWN pid (same tab reopening)" do
+      s = repo.create(source: "cli", cwd: "/home/dev/api") # owner_pid = our pid
+      repo.increment_message_count!(s[:id])
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(s[:id])
+    end
+
+    it "resumes a session whose owner is DEAD (a crashed prior tab)" do
+      s = resumable_in("/home/dev/api")
+      repo.update(s[:id], status: "active", owner_pid: 999_999)
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(999_999).and_return(false)
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(s[:id])
+    end
+
+    it "ignores pre-cwd-column sessions (NULL cwd never matches a dir)" do
+      s = repo.create(source: "cli", cwd: nil)
+      repo.increment_message_count!(s[:id])
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")).to be_nil
+    end
+
+    it "returns nil when no session has messages in this dir" do
+      repo.create(source: "cli", cwd: "/home/dev/api") # 0 messages
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")).to be_nil
+    end
+  end
+
   describe ".derive_title" do
     it "derives a clean one-line title from the first user message" do
       expect(described_class.derive_title("Add a modulo operation")).to eq("Add a modulo operation")

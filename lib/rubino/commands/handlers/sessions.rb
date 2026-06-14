@@ -133,9 +133,10 @@ module Rubino
         # the key field first, not buried (#84).
         def sessions_table_fallback(sessions)
           rows = sessions.map do |s|
-            [s[:id].to_s[0..7], session_title(s), s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
+            [s[:id].to_s[0..7], session_title(s), session_dir(s),
+             s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
           end
-          @ui.table(headers: %w[ID Title Created Status Msgs], rows: rows)
+          @ui.table(headers: %w[ID Title Dir Created Status Msgs], rows: rows)
           @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
           :handled
         end
@@ -147,8 +148,10 @@ module Rubino
           id    = session[:id].to_s[0..7]
           title = session_title(session)
           msgs  = session[:message_count]
+          dir   = session_dir(session)
           meta  = [
             ("#{msgs} msg#{"s" if msgs != 1}" if msgs),
+            (dir unless dir == "—"),
             session_age(session),
             (session[:status].to_s unless ["", "ended"].include?(session[:status].to_s))
           ].compact.join(" · ")
@@ -190,6 +193,19 @@ module Rubino
         def session_title(session)
           title = Rubino::Util::Output.sanitize_terminal(session[:title].to_s).strip
           title.empty? ? "(untitled)" : title
+        end
+
+        # The session's launch dir (r5 MF-4), home-collapsed and terminal-escape
+        # sanitized for display in the picker/table. "—" for pre-cwd-column rows.
+        def session_dir(session)
+          raw = session[:cwd].to_s
+          return "—" if raw.empty?
+
+          home = Dir.home
+          collapsed = raw.start_with?(home) ? raw.sub(home, "~") : raw
+          Rubino::Util::Output.sanitize_terminal(collapsed)
+        rescue StandardError
+          Rubino::Util::Output.sanitize_terminal(session[:cwd].to_s)
         end
 
         # The bare-list row cap (#183): configurable (`sessions.list_limit`) and

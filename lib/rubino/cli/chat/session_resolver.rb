@@ -42,22 +42,26 @@ module Rubino
             # auto-resume would (#43): the latest RESUMABLE session (any status,
             # message_count > 0), not just an "active" one — otherwise a cleanly
             # ended prior session is invisible and -c silently forks a fresh one,
-            # losing context. When there genuinely is none, tell the user instead
-            # of silently starting over.
-            @auto_resumed_session = Session::Repository.new.latest_resumable
+            # losing context. SCOPED to the launch dir (r5 MF-4 / C-1) so -c in
+            # folder B never resumes folder A's conversation, and a session a
+            # different live tab is still writing is skipped (no two-tab stomp).
+            # When there genuinely is none for this dir, tell the user instead of
+            # silently starting over.
+            @auto_resumed_session = Session::Repository.new.latest_resumable_for_cwd
             return @auto_resumed_session[:id] if @auto_resumed_session
 
-            warn pastel.yellow("No previous session to continue — starting a new one.")
+            warn pastel.yellow("No previous session to continue in this directory — starting a new one.")
             return nil
           end
 
           # --new forces a brand-new session; otherwise a BARE interactive `chat`
-          # auto-resumes the most recent resumable session so a user who closed
-          # the terminal continues where they left off. nil ⇒ no prior session
-          # (true first run) ⇒ fresh session + welcome panel.
+          # auto-resumes the most recent resumable session FOR THIS dir so a user
+          # who closed the terminal continues where they left off — without ever
+          # grabbing another folder's session (r5 MF-4 / C-1). nil ⇒ no prior
+          # session for this dir (true first run here) ⇒ fresh session + welcome.
           return nil if opt(:new) || !auto_resume
 
-          @auto_resumed_session = Session::Repository.new.latest_resumable
+          @auto_resumed_session = Session::Repository.new.latest_resumable_for_cwd
           @auto_resumed_session&.dig(:id)
         end
 

@@ -33,12 +33,19 @@ module Rubino
         end
 
         rows = sessions.map do |s|
-          [s[:id][0..7], s[:title] || "(untitled)", s[:status],
-           s[:message_count].to_s, s[:created_at]]
+          # cwd (the launch dir) lets a multi-folder/multi-tab user tell which
+          # project each session belongs to (r5 MF-4); home-collapsed and
+          # terminal-escape-sanitized like the other stored fields.
+          [self.class.safe(s[:id][0..7]),
+           self.class.safe(s[:title] || "(untitled)"),
+           self.class.safe(self.class.collapse_home(s[:cwd])),
+           self.class.safe(s[:status]),
+           self.class.safe(s[:message_count].to_s),
+           self.class.safe(s[:updated_at] || s[:created_at])]
         end
 
         Rubino.ui.table(
-          headers: %w[ID Title Status Messages Created],
+          headers: %w[ID Title Dir Status Messages Updated],
           rows: rows
         )
       end
@@ -68,6 +75,7 @@ module Rubino
         ui.info("Session: #{safe(session[:id])}")
         ui.info("Title: #{safe(session[:title] || "(untitled)")}")
         ui.info("Status: #{safe(session[:status])}")
+        ui.info("Dir: #{safe(collapse_home(session[:cwd]))}")
         ui.info("Model: #{safe(session[:model])}")
         ui.info("Messages: #{safe(session[:message_count])}")
         ui.info("Tokens: #{safe(session[:token_count])}")
@@ -83,6 +91,19 @@ module Rubino
       # visible caret notation before the non-sanitizing `info` funnel (CWE-150).
       def self.safe(text)
         Util::Output.sanitize_terminal(text)
+      end
+
+      # Home-collapsed display path for a session's launch dir. Returns a dash
+      # for sessions created before the cwd column existed (NULL cwd) so the
+      # column stays aligned.
+      def self.collapse_home(path)
+        return "—" if path.nil? || path.to_s.empty?
+
+        home = Dir.home
+        str = path.to_s
+        str.start_with?(home) ? str.sub(home, "~") : str
+      rescue ArgumentError
+        path.to_s
       end
 
       desc "delete ID", "Permanently delete a session and all its messages/events"

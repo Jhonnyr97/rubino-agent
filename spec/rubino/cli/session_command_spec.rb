@@ -129,4 +129,42 @@ RSpec.describe Rubino::CLI::SessionCommand do
       expect(title_line).to include("^[")
     end
   end
+
+  # r5 MF-4: `sessions list` / `show` must expose each session's launch dir so a
+  # multi-folder user can tell which project a session belongs to.
+  describe "cwd in the listing (r5 MF-4)" do
+    def table_rows
+      msg = ui.messages.find { |m| m[:level] == :table }
+      msg && msg[:message]
+    end
+
+    it "#list includes a Dir column with each session's cwd" do
+      repo.create(source: "cli", title: "api work", cwd: "/home/dev/api")
+      repo.create(source: "cli", title: "web work", cwd: "/home/dev/web")
+
+      cmd = described_class.new
+      cmd.options = { limit: 20 }
+      cmd.list
+
+      table = table_rows
+      expect(table[:headers]).to include("Dir")
+      dir_idx = table[:headers].index("Dir")
+      dirs = table[:rows].map { |r| r[dir_idx] }
+      expect(dirs).to include("/home/dev/api", "/home/dev/web")
+    end
+
+    it "#show renders the session's Dir" do
+      repo.create(source: "cli", title: "inspect", cwd: "/home/dev/scripts")
+      session = repo.list(limit: 1).first
+      described_class.new.show(session[:id][0..7])
+      expect(info_lines.join("\n")).to include("Dir: /home/dev/scripts")
+    end
+
+    it "shows a dash for a pre-cwd-column (NULL cwd) session" do
+      repo.create(source: "cli", title: "legacy", cwd: nil)
+      session = repo.list(limit: 1).first
+      described_class.new.show(session[:id][0..7])
+      expect(info_lines.join("\n")).to include("Dir: —")
+    end
+  end
 end
