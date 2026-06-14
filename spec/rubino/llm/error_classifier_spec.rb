@@ -141,6 +141,67 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
     end
   end
 
+  # Regression #356: a PERMANENT context-overflow can arrive DISGUISED as a 5xx
+  # — MiniMax wraps the "context window exceeds limit" 400 in a
+  # RubyLLM::ServerError. The blanket ServerError→retryable branch used to win
+  # because classify_typed matched the class BEFORE the context-overflow message
+  # check, so a fail-fast/compress error was retried 5× (~133s) on a request
+  # that fails identically every time. Now the overflow check runs FIRST.
+  describe ".classify — context-overflow disguised as 5xx is not retryable (#356)" do
+    it "ServerError whose message mentions the context window -> context_overflow, not retryable" do
+      err = ruby_llm_error(RubyLLM::ServerError, 500, "internal error: context window exceeds limit")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
+      expect(c.retryable).to be false
+      expect(c.should_compress).to be true
+    end
+
+    it "OverloadedError wrapping a context-overflow phrase is also non-retryable" do
+      err = ruby_llm_error(RubyLLM::OverloadedError, 529, "prompt is too long for context window")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
+      expect(c.retryable).to be false
+      expect(c.should_compress).to be true
+    end
+
+    it "a plain ServerError with NO overflow phrase still stays retryable (no regression)" do
+      err = ruby_llm_error(RubyLLM::ServerError, 500, "internal server error")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::SERVER_ERROR)
+      expect(c.retryable).to be true
+    end
+  end
+
+  # Regression #361(a): an UNRESOLVABLE host is a PERMANENT misconfiguration
+  # (a typo'd base_url) — every retry re-runs the same DNS lookup and fails
+  # identically, so retrying burns the whole budget (~81s). faraday-net_http
+  # wraps the resolver's SocketError in a Faraday::ConnectionFailed, so a naive
+  # "any ConnectionFailed is retryable" classified it as transient. Now a DNS
+  # failure phrasing fails fast.
+  describe ".classify — unresolvable host fails fast (#361a)" do
+    [
+      "Failed to open TCP connection: getaddrinfo: Name or service not known",
+      "getaddrinfo: nodename nor servname provided, or not known",
+      "Temporary failure in name resolution"
+    ].each do |message|
+      it "#{message[0, 30].inspect}… -> not retryable" do
+        err = Faraday::ConnectionFailed.new(message)
+        c = described_class.classify(err)
+        expect(c.retryable).to be false
+        expect(c.reason).to eq(FR::FORMAT_ERROR)
+      end
+    end
+
+    it "a bare SocketError-style getaddrinfo message also fails fast" do
+      expect(described_class.retryable?(SocketError.new("getaddrinfo: Name or service not known"))).to be false
+    end
+
+    it "a genuine transient transport blip still retries (no over-broadening)" do
+      expect(described_class.retryable?(Faraday::ConnectionFailed.new("connection reset by peer"))).to be true
+      expect(described_class.retryable?(Faraday::ConnectionFailed.new("end of file reached"))).to be true
+    end
+  end
+
   # Regression #327(b): a deterministic 4xx request-validation rejection
   # ("invalid params" / "invalid request") that some providers surface
   # STATUSLESS used to fall through to unknown→retryable and burn the whole
