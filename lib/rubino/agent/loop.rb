@@ -442,11 +442,9 @@ module Rubino
       # guard's own injected reflections (user-role too; both the full and the
       # decayed #353b phrasings carry the "no tool call" marker).
       def latest_user_request(messages)
-        m = Array(messages).reverse_each.find do |msg|
-          (msg[:role] || msg["role"]).to_s == "user" &&
-            !/issued NO tool call|\bStill no tool call\b/i.match?((msg[:content] || msg["content"]).to_s)
-        end
-        m ? (m[:content] || m["content"]).to_s : ""
+        Array(messages).reverse_each
+          .map { |m| (m[:content] || m["content"]).to_s if (m[:role] || m["role"]).to_s == "user" }
+          .compact.find { |c| !/issued NO tool call|\bStill no tool call\b/i.match?(c) }.to_s
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
