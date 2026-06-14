@@ -56,11 +56,14 @@ module Rubino
           @ui.info("  Enter         - send; during a turn, interrupt it and run this next")
           @ui.info("  Alt-Enter     - queue this to run after the current turn (or /queued <msg>)")
           @ui.info("  Shift-Tab     - cycle mode (default → plan → yolo)")
+          @ui.info("  Tab           - complete the highlighted /command or @file (empty input: cycle agent)")
           @ui.info("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
           @ui.info("  Ctrl-C        - cancel the turn (twice to exit)")
           @ui.info("  Esc Esc       - rewind to an earlier message (fork + edit & resend)")
-          @ui.info("  Tab           - complete the highlighted /command or @file")
           @ui.info("  /             - start a command;  @  attach a file/image")
+          @ui.blank_line
+
+          show_agents_help
           @ui.blank_line
 
           custom = @loader.all
@@ -85,6 +88,25 @@ module Rubino
         end
 
         private
+
+        # The available primary agents (switch with /agent <name>, a bare
+        # /<name>, or Tab) and one-shot subagents (/<name> <message>) — #320.
+        # Best-effort: the registry is stable within a process, but a hiccup
+        # must never break /help.
+        def show_agents_help
+          registry = Rubino.agent_registry
+          current  = Rubino::ActiveAgent.current
+          @ui.info("Agents  (switch with /agent <name>, a bare /<name>, or Tab; current marked ▸):")
+          registry.primary_agents.each do |a|
+            marker = a.name == current ? "▸" : " "
+            @ui.info("  #{marker} /#{a.name.ljust(8)} - #{a.description}")
+          end
+          registry.subagents.each do |a|
+            @ui.info("    /#{a.name.ljust(8)} - #{a.description} (one-shot: /#{a.name} <message>)")
+          end
+        rescue StandardError
+          nil
+        end
 
         # The Built-in rows for /help, with synonyms collapsed so /help never
         # shows two rows that say the same thing (#87): /exit and /quit share one

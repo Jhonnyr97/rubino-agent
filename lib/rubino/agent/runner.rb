@@ -108,6 +108,26 @@ module Rubino
         response
       end
 
+      # Pins the agent Definition this runner threads into every subsequent turn
+      # (the sticky `/agent <name>` / Tab-cycle switch). Lifecycle reads
+      # @agent_definition fresh on each #run!, so swapping it here takes effect
+      # from the NEXT turn — the agent's system prompt and tool scope come along.
+      # nil restores the default (build) persona. The reader feeds the CLI
+      # status bar and a one-shot route that wants to restore it afterwards.
+      attr_accessor :agent_definition
+
+      # Runs ONE turn under +definition+ (a one-shot `/<name> <message>` route)
+      # without disturbing the runner's sticky agent. The override is swapped in
+      # for the single #run and restored in the ensure, so the next idle prompt
+      # is back on whatever the user had pinned.
+      def run_with_agent(definition, input, **)
+        sticky = @agent_definition
+        @agent_definition = definition
+        run(input, **)
+      ensure
+        @agent_definition = sticky
+      end
+
       # Flips the current turn's cancel token. Called from the UI thread when
       # the user hits Esc or a second Ctrl+C while the worker is mid-stream.
       # No-op when no turn is in flight.

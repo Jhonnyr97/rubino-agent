@@ -64,6 +64,11 @@ module Rubino
       def chip_segments(chips, pastel)
         segments = []
         segments << mode_segment(chips[:mode], pastel) if chips[:mode]
+        # The active primary agent (#320), shown "agent <name>" right after the
+        # mode so the user can see which persona the next turn runs under. Like
+        # branch/skill, the caller omits it when it's the default (build), so a
+        # plain session keeps the bare bar.
+        segments << pastel.cyan("agent #{chips[:agent]}") if chips[:agent]
         segments << pastel.dim("branch:#{chips[:branch]}") if chips[:branch]
         segments << pastel.dim("skill #{chips[:skill]}") if chips[:skill]
         segments

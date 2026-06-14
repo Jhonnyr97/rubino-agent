@@ -286,4 +286,40 @@ RSpec.describe Rubino::Agent::Runner do
       expect(repo.persisted?(runner.session[:id])).to be false
     end
   end
+
+  # Primary-agent switching (#320): the sticky `agent_definition=` and the
+  # one-shot #run_with_agent both thread the agent's Definition into the
+  # per-turn Lifecycle (where the system prompt + tool scope are applied).
+  describe "agent switching" do
+    let(:plan)    { Rubino.agent_registry.find("plan") }
+    let(:explore) { Rubino.agent_registry.find("explore") }
+
+    def last_agent_definition
+      built = nil
+      allow(Rubino::Interaction::Lifecycle).to receive(:new) do |**kwargs|
+        built = kwargs[:agent_definition]
+        lifecycle_active_session[:built_on] = kwargs[:session]
+        fake_lifecycle
+      end
+      yield
+      built
+    end
+
+    it "threads the sticky agent_definition into the Lifecycle" do
+      runner = described_class.new(model_override: "gpt-4o", ui: null_ui)
+      runner.agent_definition = plan
+      definition = last_agent_definition { runner.run("hi") }
+      expect(definition).to eq(plan)
+    end
+
+    it "uses the one-shot agent for #run_with_agent and restores the sticky" do
+      runner = described_class.new(model_override: "gpt-4o", ui: null_ui)
+      runner.agent_definition = plan
+
+      definition = last_agent_definition { runner.run_with_agent(explore, "go") }
+      expect(definition).to eq(explore)
+      # the sticky pin is back after the one-shot turn
+      expect(runner.agent_definition).to eq(plan)
+    end
+  end
 end

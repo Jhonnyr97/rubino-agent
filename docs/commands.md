@@ -174,6 +174,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/compact` | Compact the context now: older turns become a summary |
 | `/export` | Write the session transcript as markdown (/export [path]) |
 | `/memory` | Inspect/search/forget what the agent remembers (show ID, backend, --all) |
+| `/agent` | Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles) |
 | `/agents` | List background subagents; steer/probe a running one, or view output |
 | `/tasks` | Alias for /agents |
 | `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
@@ -384,6 +385,17 @@ Custom commands live as Markdown templates in `.rubino/commands/` (project) or `
 ```
 
 `/commands` lists the available custom commands and explains how to author them. See the [README](../README.md) for the template format (`$ARGUMENTS`, YAML frontmatter).
+
+### Primary agents: `/agent`, `/<name>`, and Tab
+
+Each turn runs under an **agent** — a persona with its own system prompt and tool scope. The built-ins are `build` (full access, the default) and `plan` (read-only analysis); `explore` and `general` are subagents you invoke one-shot. Switching the primary agent changes who answers the *next* turn:
+
+- `/agent` lists the switchable primaries (the current one marked `▸`) and the one-shot subagents.
+- `/agent <name>` — or a bare `/<name>` for a primary — **pins** that agent for the rest of the session (sticky). The active agent shows as an `agent <name>` chip in the status bar (omitted when it's the default `build`).
+- **Tab** on an empty prompt cycles the primary agents (the agent counterpart of Shift+Tab's mode cycle), updating the chip live.
+- `/<name> <message>` routes a **single** turn to that agent — any visible agent, primary or subagent (e.g. `/explore where is the parser`) — without disturbing your sticky pick.
+
+Distinct from `/agents` (plural), which drills into the background `task` subagents. `@` is the file picker, so a filename like `@explore.rb` is never shadowed by an agent named `explore`; agent switching lives entirely on the slash channel and Tab.
 
 ### Modes
 
