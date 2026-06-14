@@ -269,4 +269,66 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       recorder.detach!
     end
   end
+
+  # #319: the post-turn polishing must run DETACHED — it must NOT drain the aux
+  # jobs synchronously inside the turn (which blocked the next prompt and, under
+  # a 429 storm, stalled ~80s). With a polishing worker wired it only PERSISTS
+  # the rows (drain_inline: false) and hands off to the detached worker.
+  describe "#enqueue_post_turn_jobs detachment (#319)" do
+    let(:db_connection) { test_database }
+    let(:detach_config) do
+      test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1,
+                    "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => true },
+        "skills" => { "auto_distill" => false }
+      )
+    end
+    let(:polishing) { instance_spy(Rubino::Interaction::Polishing) }
+    let(:lifecycle) do
+      described_class.new(session: { id: "sess-1", model: "gpt-4o" },
+                          event_bus: event_bus, ui: null_ui, config: detach_config,
+                          polishing: polishing)
+    end
+
+    before do
+      allow(Rubino).to receive(:database).and_return(db_connection)
+      db_connection.db[:jobs].delete
+      # Short-circuit the >20-messages summarize gate so only the memory-extract
+      # row is enqueued (count is stubbed per-lifecycle on its message store).
+      [lifecycle].each { |lc| stub_message_count(lc, 1) }
+    end
+
+    def stub_message_count(lifecycle, count)
+      store = lifecycle.instance_variable_get(:@message_store)
+      allow(store).to receive(:count).and_return(count)
+    end
+
+    it "does NOT drain the aux job inline (the next prompt is never blocked)" do
+      # The blocking behavior on the old code path: enqueue → Jobs::Runner.new →
+      # run_job, synchronously. With the detached worker wired this must NOT fire.
+      expect(Rubino::Jobs::Runner).not_to receive(:new)
+
+      lifecycle.send(:enqueue_post_turn_jobs)
+
+      # The row is PERSISTED (queued), ready for the detached worker — not run.
+      row = db_connection.db[:jobs].where(type: "ExtractMemoryJob").first
+      expect(row[:status]).to eq("queued")
+    end
+
+    it "hands the drain off to the detached polishing worker" do
+      lifecycle.send(:enqueue_post_turn_jobs)
+      expect(polishing).to have_received(:start)
+    end
+
+    it "keeps the synchronous inline drain when NO polishing worker is wired" do
+      no_worker = described_class.new(session: { id: "sess-2", model: "gpt-4o" },
+                                      event_bus: event_bus, ui: null_ui, config: detach_config)
+      stub_message_count(no_worker, 1)
+      # API/server + subagent path: drain_inline stays true, so inline mode runs
+      # the job synchronously exactly as before.
+      expect(Rubino::Jobs::Runner).to receive(:new).at_least(:once).and_call_original
+      no_worker.send(:enqueue_post_turn_jobs)
+    end
+  end
 end

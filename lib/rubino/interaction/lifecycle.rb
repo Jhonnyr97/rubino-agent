@@ -18,7 +18,7 @@ module Rubino
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
-                     max_tool_iterations: nil)
+                     max_tool_iterations: nil, polishing: nil)
         @session = session
         @event_bus = event_bus
         @ui = ui
@@ -28,6 +28,12 @@ module Rubino
         @cancel_token = cancel_token
         @model_override = model_override
         @provider_override = provider_override
+        # The Runner-owned detached post-turn polishing worker (#319). When
+        # given, the post-turn jobs are handed to it to drain OFF the live
+        # turn's critical path so the next prompt is never gated. Nil on the
+        # API/server path and nested subagent runs, which keep the original
+        # synchronous inline drain (no interactive prompt to free up).
+        @polishing = polishing
         # Explicit per-run cap from `--max-turns` (Runner → here → IterationBudget).
         # nil ⇒ use the configured agent_max_tool_iterations (#141).
         @max_tool_iterations = max_tool_iterations
@@ -299,10 +305,15 @@ module Rubino
 
       def enqueue_post_turn_jobs
         queue = Jobs::Queue.new
+        # When a detached polishing worker is wired (interactive CLI), only
+        # PERSIST the rows here and let that worker drain them off the live
+        # turn's critical path (#319). Without one (API/server, subagent) keep
+        # the original behaviour: in inline mode #enqueue drains synchronously.
+        drain_inline = @polishing.nil?
 
         # Extract memory if enabled
         if @config.memory_auto_extract?
-          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] })
+          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
         end
 
@@ -315,16 +326,20 @@ module Rubino
         # is load-order independent: Jobs::Registry resolves the class from
         # the Handlers namespace on demand (#81).
         if @config.skills_auto_distill?
-          queue.enqueue("DistillSkillJob", { session_id: @session[:id] })
+          queue.enqueue("DistillSkillJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
         end
 
         # Summarize if session is getting long
         message_count = @message_store.count(@session[:id])
-        return unless message_count > 20
+        if message_count > 20
+          queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] }, drain_inline: drain_inline)
+          @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
+        end
 
-        queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] })
-        @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
+        # Detach: kick the polishing worker so it drains the rows just enqueued
+        # off this thread. Returns immediately — the next prompt is never gated.
+        @polishing&.start(ui: @ui, event_bus: @event_bus)
       end
     end
   end
