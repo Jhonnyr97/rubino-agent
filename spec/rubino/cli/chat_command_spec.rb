@@ -214,7 +214,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd = described_class.new({})
       expect do
         expect { cmd.send(:ensure_database_ready!) }.to raise_error(SystemExit)
-      end.to_not output(/isn't set up|run `rubino setup`/).to_stderr
+      end.not_to output(/isn't set up|run `rubino setup`/).to_stderr
     end
   end
 

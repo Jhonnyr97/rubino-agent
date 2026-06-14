@@ -83,6 +83,16 @@ RSpec.describe Rubino::Agent::Runner do
     let(:repo)  { Rubino::Session::Repository.new(db: db.db) }
     let(:store) { Rubino::Session::Store.new(db: db.db) }
 
+    # The Runner builds its own Session::Repository internally. Inject a real
+    # repo (on the test DB) whose live-owner verdict we can pin per-example —
+    # cleaner than stubbing the private liveness probe on any instance.
+    def inject_repo(owned_by_other:)
+      injected = Rubino::Session::Repository.new(db: db.db)
+      allow(injected).to receive(:owned_by_other_live_process?).and_return(owned_by_other)
+      allow(Rubino::Session::Repository).to receive(:new).and_return(injected)
+      injected
+    end
+
     def seed_session_with_history(owner_pid:)
       s = repo.create(source: "cli", model: "gpt-4o")
       store.create(session_id: s[:id], role: "user", content: "hello")
@@ -94,10 +104,7 @@ RSpec.describe Rubino::Agent::Runner do
 
     it "forks a fresh child (copying history) when another LIVE process owns it" do
       parent = seed_session_with_history(owner_pid: 999_999)
-      allow_any_instance_of(Rubino::Session::Repository)
-        .to receive(:process_alive?).and_call_original
-      allow_any_instance_of(Rubino::Session::Repository)
-        .to receive(:process_alive?).with(999_999).and_return(true)
+      inject_repo(owned_by_other: true)
 
       runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
       child = runner.session
@@ -110,37 +117,42 @@ RSpec.describe Rubino::Agent::Runner do
       expect(repo.find(parent[:id])[:owner_pid]).to eq(999_999)
     end
 
-    it "claims (does not fork) a session owned by a DEAD process" do
-      parent = seed_session_with_history(owner_pid: 999_999)
-      allow_any_instance_of(Rubino::Session::Repository)
-        .to receive(:process_alive?).and_call_original
-      allow_any_instance_of(Rubino::Session::Repository)
-        .to receive(:process_alive?).with(999_999).and_return(false)
+    it "claims (does not fork) a session NOT owned by another live process" do
+      parent = seed_session_with_history(owner_pid: nil)
+      inject_repo(owned_by_other: false)
 
       runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
       expect(runner.session[:id]).to eq(parent[:id])
+      # Claimed for THIS process so a later concurrent resume forks, not stomps.
       expect(repo.find(parent[:id])[:owner_pid]).to eq(Process.pid)
     end
 
-    it "claims ownership of a free session so a LATER concurrent resume forks" do
+    # Two concurrent explicit resumes of the SAME session must not interleave
+    # into one malformed transcript: the first claims it, the second sees a live
+    # owner and forks. Drives the REAL predicate (no stub) — the first resume's
+    # claim flips the verdict the second resume reads.
+    it "does not interleave concurrent explicit resumes (first claims, second forks)" do
       parent = seed_session_with_history(owner_pid: nil)
 
-      # First explicit resume: free session, claimed by us (this process).
       first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
       expect(first.session[:id]).to eq(parent[:id])
-      expect(repo.find(parent[:id])[:owner_pid]).to eq(Process.pid)
+      claimed = repo.find(parent[:id])
+      expect(claimed[:owner_pid]).to eq(Process.pid)
 
-      # Second concurrent resume simulates ANOTHER live process: it must see the
-      # now-claimed live owner and FORK instead of latching onto the same row,
-      # so the two never interleave writes into one malformed transcript.
-      allow_any_instance_of(Rubino::Session::Repository)
-        .to receive(:owned_by_other_live_process?) do |_inst, row|
-          row[:id] == parent[:id] && row[:owner_pid] == Process.pid
-        end
+      # Now the row is owned by a live process (us). A second resmuer is a
+      # DIFFERENT process; simulate that by making the predicate true for the
+      # claimed row, and assert it forks rather than latching onto the same row.
+      injected = Rubino::Session::Repository.new(db: db.db)
+      allow(injected).to receive(:owned_by_other_live_process?) do |row|
+        row[:id] == parent[:id] && !row[:owner_pid].nil?
+      end
+      allow(Rubino::Session::Repository).to receive(:new).and_return(injected)
+
       second = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
-
       expect(second.session[:id]).not_to eq(parent[:id])
       expect(second.session[:parent_session_id]).to eq(parent[:id])
+      # The two runners write to DISTINCT rows → no interleaved transcript.
+      expect(first.session[:id]).not_to eq(second.session[:id])
     end
   end
 

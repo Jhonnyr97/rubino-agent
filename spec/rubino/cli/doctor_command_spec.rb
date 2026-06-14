@@ -397,7 +397,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       last = ui.messages.last
       expect(last[:level]).to eq(:error)
       expect(last[:message]).to match(/corrupt/i)
-      expect(last[:message]).to match(/rubino setup/)
+      expect(last[:message]).to include("rubino setup")
       expect(all_messages.join("\n")).not_to include("SQLite3::CorruptException")
       expect(all_messages.join("\n")).not_to include("journal_mode")
     end
