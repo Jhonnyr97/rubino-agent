@@ -155,6 +155,10 @@ module Rubino
           end
           @event_bus.emit(Interaction::Events::MODEL_CALL_FINISHED,
                           tokens: response.total_tokens,
+                          input_tokens: response.input_tokens,
+                          output_tokens: response.output_tokens,
+                          stop_reason: response.stop_reason,
+                          model_id: response.model_id,
                           has_tool_calls: response.has_tool_calls?)
 
           token_total += response.total_tokens.to_i
@@ -348,6 +352,10 @@ module Rubino
         response = call_model(messages, [], iteration)
         @event_bus.emit(Interaction::Events::MODEL_CALL_FINISHED,
                         tokens: response.total_tokens,
+                        input_tokens: response.input_tokens,
+                        output_tokens: response.output_tokens,
+                        stop_reason: :max_iterations,
+                        model_id: response.model_id,
                         has_tool_calls: response.has_tool_calls?)
         token_total += response.total_tokens.to_i
 
