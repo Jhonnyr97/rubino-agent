@@ -150,7 +150,10 @@ module Rubino
       end
 
       def estimate_tokens(messages)
-        total = messages.sum { |m| (m.respond_to?(:content) ? m.content : m[:content] || "").length }
+        total = messages.sum do |m|
+          content = m.respond_to?(:content) ? m.content : m[:content]
+          TokenEstimate.content_char_length(content)
+        end
         (total / 4.0).ceil
       end
 

@@ -24,9 +24,11 @@ module Rubino
         override || @context_window
       end
 
-      # Estimates token count for a set of messages
+      # Estimates token count for a set of messages. Routes through
+      # TokenEstimate so a Content::Raw system block (#311) is sized correctly
+      # instead of crashing on a missing #length.
       def estimate_tokens(messages)
-        total_chars = messages.sum { |m| (m[:content] || "").length }
+        total_chars = messages.sum { |m| TokenEstimate.content_char_length(m[:content]) }
         (total_chars.to_f / CHARS_PER_TOKEN).ceil
       end
 
