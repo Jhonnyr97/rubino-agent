@@ -91,6 +91,13 @@ module Rubino
         iteration       = 0
         turn_started_at = monotonic_now
 
+        # Reflect-guard against fabricated "done" (the #1 trust-killer): a
+        # toolless turn whose prose claims an action it never carried out. Built
+        # once per turn from the toolset actually on offer; counts its own
+        # corrective re-prompts so it can stop honestly at the cap.
+        @action_guard       = ActionClaimGuard.new(exposed_tool_names: @turn_tools.map { |t| tool_name_of(t) })
+        @reflection_count   = 0
+
         # If a previous turn rotated to a fallback, restore the primary backend
         # so this turn gets a fresh attempt with the preferred model
         # (conversation_loop.py:427). No-op when we never left the primary.
@@ -168,10 +175,24 @@ module Rubino
           end
 
           if response.text_only?
-            persist_assistant_message(response)
-            finalize_stream(response)
+            # Fabricated-"done" gate: the structured tool-call channel is the
+            # ONLY thing that advances state. If this toolless turn's prose
+            # asserts an action against a tool we expose (or claims a `cd` we
+            # cannot do), DON'T let that reach the user as a completed answer.
+            guard = guard_text_only_turn(response, messages)
+            # A corrective user message was appended; loop again so the model
+            # either calls the tool or owns up. iteration/token_total carry on.
+            next if guard == :reflected
+
+            # cd: the claim can never be true, so we replaced the fabricated
+            # final answer with an honest message (how to actually change the
+            # workspace). Surface that, not the model's no-op claim.
+            final = guard.is_a?(String) ? guard : response.content
+
+            persist_final_text(response, final)
+            finalize_stream_text(response, final)
             emit_turn_summary(turn_started_at, token_total)
-            return response.content
+            return final
           end
 
           if response.has_tool_calls?
@@ -332,6 +353,62 @@ module Rubino
         response.content
       end
 
+      # The fabricated-"done" gate for a TEXT-ONLY turn (#r5 F1 / MF-3 / B1).
+      # Investigation: MiniMax-M3 via /anthropic DOES return structured tool_use
+      # blocks and rubino parses them correctly (verified with RUBYLLM_DEBUG) —
+      # the failure is not an XML-in-text leak, it's the model genuinely
+      # narrating an action ("Running the suite now.", "Saved to hello.py")
+      # while issuing ZERO tool calls, so a fake success reaches the user. Since
+      # the structured channel is the only thing that advances state, a toolless
+      # turn that asserts such an action is a claim with nothing behind it.
+      #
+      # Returns:
+      #   :reflected — a corrective user message was appended to `messages`; the
+      #                Loop must re-enter (the model now either calls the tool or
+      #                says it can't). Capped at MAX_REFLECTIONS.
+      #   String     — an honest replacement for the final answer (the cd case:
+      #                rubino has no cd tool, so the claim can never be true).
+      #   nil        — nothing to do; surface the model's text as-is.
+      def guard_text_only_turn(response, messages)
+        verdict = @action_guard.evaluate(
+          content: response.content,
+          tool_count: @tool_count,
+          denied_count: @denied_count
+        )
+        return nil if verdict.nil?
+
+        kind, payload = verdict
+        return guard_cd_claim(response, payload) if kind == :cd
+
+        # :reflect — re-prompt once, under the cap. At the cap we stop honestly:
+        # surface the model's last text rather than loop forever. The reflection
+        # is appended as a USER message at this same safe ordering boundary the
+        # steering injection uses (after the cancel check, no open tool_use pair).
+        return nil if @reflection_count >= ActionClaimGuard::MAX_REFLECTIONS
+
+        @reflection_count += 1
+        note = @action_guard.reflection_message(payload)
+        # The fabricated text already streamed to the UI on the streaming path;
+        # close that box so the corrective re-prompt's answer renders cleanly
+        # beneath it (the kept partial stays visible, like an interrupt).
+        @ui.stream_end if streaming?
+        persist_assistant_message(response)
+        messages << build_assistant_tool_use_message(response)
+        persist_user_message(note)
+        messages << { role: "user", content: note }
+        @ui.note("checking that claim — no tool call was issued") if @ui.respond_to?(:note)
+        :reflected
+      end
+
+      # cd intent: rubino has no cd tool, so the model's "I changed the
+      # directory" is a guaranteed no-op. Replace the final answer with the
+      # honest message. On the streaming path the fabricated line already
+      # reached the screen, so we additionally surface the correction as a note
+      # (the returned String is what the headless/transcript path keeps).
+      def guard_cd_claim(_response, honest_answer)
+        honest_answer
+      end
+
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
       # which owns the inner retry loop (call → validate → classify → backoff).
       # Returns a validated AdapterResponse or raises (EmptyModelResponseError on
@@ -386,6 +463,37 @@ module Rubino
           base_tokens: @config.dig("model", "max_tokens"),
           ui: @ui
         )
+      end
+
+      # Persist the turn's final assistant text. When the guard left the content
+      # untouched (`final` == response.content) this is exactly
+      # #persist_assistant_message. When the guard REPLACED it (cd honest answer),
+      # persist the replacement so --resume/audit keep the truthful turn, not the
+      # model's no-op claim.
+      def persist_final_text(response, final)
+        return persist_assistant_message(response) if final.equal?(response.content) || final == response.content
+
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: final,
+            token_count: response.output_tokens,
+            metadata: response.input_tokens.to_i.positive? ? { input_tokens: response.input_tokens } : {}
+          )
+        end
+      end
+
+      # Render the final text. Unchanged content streams/finalizes as before. A
+      # replaced cd answer: on the streaming path the fabricated line already
+      # reached the screen, so close that box and print the honest correction as
+      # a fresh block; on the non-streaming path just render the honest text.
+      def finalize_stream_text(response, final)
+        return finalize_stream(response) if final.equal?(response.content) || final == response.content
+
+        @ui.stream_end if streaming?
+        @ui.stream({ type: :content, text: final.to_s, message_id: 0 })
+        @ui.stream_end
       end
 
       def finalize_stream(response)
