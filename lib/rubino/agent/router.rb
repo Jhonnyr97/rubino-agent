@@ -2,11 +2,16 @@
 
 module Rubino
   module Agent
-    # Routes user input to the appropriate agent.
-    # Handles @mention syntax for subagent invocation and agent switching.
+    # Resolves which agent Definition a turn runs under.
+    #
+    # Bare-`@` agent routing was REMOVED (#320): `@` is the FILE picker, so a
+    # filename like `@explore.rb` must never be shadowed by an agent named
+    # "explore". Agent switching now lives entirely on the slash channel
+    # (`/agent <name>`, a bare `/<name>` for a primary, a one-shot
+    # `/<name> <message>` for any agent) and on Tab-cycling — see
+    # Rubino::ActiveAgent and CLI::ChatCommand. This Router stays a thin,
+    # registry-backed helper for selecting/cycling the sticky PRIMARY agent.
     class Router
-      MENTION_REGEX = /\A@(\w+)\s+(.+)/m
-
       def initialize(registry:, ui:)
         @registry = registry
         @ui = ui
@@ -15,7 +20,7 @@ module Rubino
 
       attr_reader :current_agent
 
-      # Switches to a different primary agent
+      # Switches to a different primary agent (the sticky `/agent <name>`).
       def switch_to(agent_name)
         agent = @registry.find(agent_name)
         unless agent
@@ -24,7 +29,7 @@ module Rubino
         end
 
         unless agent.primary?
-          @ui.error("cannot switch to subagent '#{agent_name}'. Use @#{agent_name} to invoke it.")
+          @ui.error("cannot switch to subagent '#{agent_name}'. Use /#{agent_name} <message> to invoke it.")
           return false
         end
 
@@ -33,30 +38,17 @@ module Rubino
         true
       end
 
-      # Routes input, returning [agent_definition, cleaned_input]
-      def route(input)
-        # Check for @mention
-        if input.match?(MENTION_REGEX)
-          match = input.match(MENTION_REGEX)
-          agent_name = match[1]
-          actual_input = match[2]
+      # Cycles to the next primary agent (Tab), wrapping around. Returns the new
+      # Definition.
+      def cycle
+        primaries = @registry.primary_agents
+        return @current_agent if primaries.empty?
 
-          agent = @registry.find(agent_name)
-          return [agent, actual_input] if agent && (agent.subagent? || agent.primary?)
-
-          @ui.warning("Unknown agent '#{agent_name}', using current agent")
-
-        end
-
-        [@current_agent, input]
+        idx = primaries.index { |a| a.name == @current_agent&.name } || -1
+        @current_agent = primaries[(idx + 1) % primaries.length]
       end
 
-      # Returns available agent names for autocomplete
-      def available_mentions
-        @registry.subagents.map { |a| "@#{a.name}" }
-      end
-
-      # Returns primary agent names for switching
+      # Returns primary agent names for switching.
       def switchable_agents
         @registry.primary_agents.map(&:name)
       end

@@ -19,6 +19,7 @@ module Rubino
         "/compact" => "Compact the context now: older turns become a summary",
         "/export" => "Write the session transcript as markdown (/export [path])",
         "/memory" => "Inspect/search/forget what the agent remembers (show ID, backend, --all)",
+        "/agent" => "Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles)",
         "/agents" => "List background subagents; steer/probe a running one, or view output",
         "/tasks" => "Alias for /agents",
         "/reply" => "Answer a subagent that is blocked waiting on you (ask_parent)",
