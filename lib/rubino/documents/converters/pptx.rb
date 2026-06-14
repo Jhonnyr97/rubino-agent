@@ -26,10 +26,16 @@ module Rubino
           File.extname(path.to_s).downcase == ".pptx"
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           require "ruby_powerpoint"
+          # PRE-OPEN guard against a slide/text zip-expand bomb (see Docx).
+          Limits.guard_zip!(path, budget, ["ppt/slides/*.xml", "ppt/notesSlides/*.xml"])
           ppt = RubyPowerpoint::Presentation.new(path)
-          parts = ppt.slides.each_with_index.map { |slide, i| slide_markdown(slide, i + 1) }
+          parts = ppt.slides.each_with_index.map do |slide, i|
+            md = slide_markdown(slide, i + 1)
+            budget.tick(bytes: md.to_s.bytesize)
+            md
+          end
           parts.compact.join("\n\n")
         end
 
