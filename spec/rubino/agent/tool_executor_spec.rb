@@ -221,7 +221,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     before { allow(policy).to receive(:decide).and_return(:allow) }
 
     it "streams chunks but does NOT re-render the body for a streaming tool" do
-      expect(streaming_ui).to receive(:tool_chunk).with("fake_stream", "13\n")
+      expect(streaming_ui).to receive(:tool_chunk).with("fake_stream", "13\n", kind: :plain)
       expect(streaming_ui).not_to receive(:tool_body)
       streaming_executor.execute(name: "fake_stream", arguments: {}, call_id: "s1")
     end
