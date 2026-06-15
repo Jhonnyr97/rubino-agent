@@ -16,6 +16,14 @@ module Rubino
     class ApprovalPolicy
       MODES = %w[manual auto skip].freeze
 
+      # Structured in-workspace file-edit tools. Under dangerous_only these run
+      # unprompted — SYMMETRIC with safe shell — because the always-on #413
+      # write-denylist + workspace sandbox (both enforced inside the tool's
+      # #call, regardless of approval) are the boundary, not a per-edit prompt
+      # (#427, mirrors Hermes file_safety + Claude Code acceptEdits / Codex
+      # auto-edit / aider).
+      STRUCTURED_EDIT_TOOLS = %w[edit write multi_edit apply_patch].freeze
+
       # Why the most recent #decide returned :deny — :hardline (the
       # non-bypassable floor), :permission_rule (an explicit permissions deny
       # rule), or :doom_loop (the repeated-identical-call guard). nil when the
@@ -184,6 +192,26 @@ module Rubino
             return :ask
           end
         end
+
+        # 8b. Structured in-workspace edit symmetry (#427). Under dangerous_only,
+        #    a safe `shell sed -i …` / `echo > file` runs UNPROMPTED (step 7-8),
+        #    but the structured edit/write/multi_edit/apply_patch tools are
+        #    :medium and would fall through to step 9 -> :ask, which fails closed
+        #    headless. That asymmetry pushes automation AWAY from the clean,
+        #    read-tracked, diff-producing structured tools and TOWARD raw shell
+        #    mutation — worse for safety/observability and the inverse of the
+        #    industry norm (Hermes runs structured in-workspace edits unprompted
+        #    with file_safety.is_write_denied as the boundary; Claude Code
+        #    acceptEdits, Codex auto-edit and aider all treat in-workspace edits
+        #    as LOWER friction than shell). So under dangerous_only these
+        #    structured edits are non-prompting too — SYMMETRIC with safe shell.
+        #    This NEVER widens reach: the always-on #413 write-denylist (refuses
+        #    .env/.ssh/.aws/etc even inside the workspace) and the workspace
+        #    sandbox both run inside the tool's #call regardless of approval, and
+        #    the hardline floor (step 1), permissions:deny (step 2) and
+        #    skill-create gate (step 6c) all already ran above. confirm_all
+        #    (non-default) still routes them through step 9 -> :ask unchanged.
+        return :allow if @confirm_policy == :dangerous_only && STRUCTURED_EDIT_TOOLS.include?(tool.name)
 
         # 9. Fall back to mode-based decision
         mode_based_decision(tool)

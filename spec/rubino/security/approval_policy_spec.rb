@@ -206,7 +206,13 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "never auto-allows the shell command of a NON-shell tool" do
-      cfg = test_configuration("approvals" => { "mode" => "manual" })
+      # Pin confirm_all so this isolates step 6b (read-only auto-allow is
+      # shell-only): under the dangerous_only default the write tool's own
+      # symmetry path (#427) would :allow it, which is a different gate.
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all" }
+      )
       tool = make_tool(name: "write", risk_level: :high, risky: true)
       expect(described_class.new(config: cfg).decide(tool, arguments: { "file_path" => "ls" })).to eq(:ask)
     end
@@ -521,6 +527,70 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       pol = described_class.new(config: cfg)
       # push is a mutating verb; the convenience layer never auto-approves it.
       expect(pol.decide(shell, arguments: { "command" => "git push origin main" })).to eq(:ask)
+    end
+
+    # #427: structured in-workspace edit symmetry. Under dangerous_only a safe
+    # `shell sed -i …` runs unprompted, so the structured edit/write/
+    # multi_edit/apply_patch tools must ALSO be unprompted — otherwise headless
+    # automation is pushed toward raw shell mutation and away from the safer,
+    # read-tracked, diff-producing tools. The always-on #413 write-denylist +
+    # workspace sandbox (enforced inside #call) remain the boundary; the
+    # hardline floor and permissions:deny still run first.
+    context "structured edit symmetry (#427)" do
+      let(:edit)       { make_tool(name: "edit",        risk_level: :medium, risky: true) }
+      let(:write_t)    { make_tool(name: "write",       risk_level: :medium, risky: true) }
+      let(:multi_edit) { make_tool(name: "multi_edit",  risk_level: :medium, risky: true) }
+      let(:apply_patch) { make_tool(name: "apply_patch", risk_level: :medium, risky: true) }
+
+      context "dangerous_only" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" }
+          ))
+        end
+
+        it "allows edit WITHOUT a prompt (symmetric with safe shell)" do
+          args = { "file_path" => "/ws/x", "old_string" => "a", "new_string" => "b" }
+          expect(pol.decide(edit, arguments: args)).to eq(:allow)
+        end
+
+        it "allows write WITHOUT a prompt" do
+          expect(pol.decide(write_t, arguments: { "file_path" => "/ws/y", "content" => "hi" })).to eq(:allow)
+        end
+
+        it "allows multi_edit WITHOUT a prompt" do
+          expect(pol.decide(multi_edit, arguments: { "file_path" => "/ws/x" })).to eq(:allow)
+        end
+
+        it "allows apply_patch WITHOUT a prompt" do
+          expect(pol.decide(apply_patch, arguments: { "patch" => "diff" })).to eq(:allow)
+        end
+
+        it "still honors an explicit permissions:deny on a structured edit (deny-class wins)" do
+          cfg = test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" },
+            "permissions" => { "edit *" => "deny" }
+          )
+          p = described_class.new(config: cfg)
+          expect(p.decide(edit, arguments: { "file_path" => "/ws/secret.env" })).to eq(:deny)
+        end
+      end
+
+      context "confirm_all (opt-in) keeps the prompt" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "confirm_all" }
+          ))
+        end
+
+        it "asks for a structured edit, unchanged" do
+          args = { "file_path" => "/ws/x", "old_string" => "a", "new_string" => "b" }
+          expect(pol.decide(edit, arguments: args)).to eq(:ask)
+        end
+      end
     end
   end
 
