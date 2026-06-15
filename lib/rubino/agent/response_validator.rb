@@ -27,6 +27,13 @@ module Rubino
       def valid?(response)
         return [false, :nil_response] if response.nil?
         return [false, :interrupted]  if response.interrupted?
+        # A budget-Halt response (#355a) is a deliberate turn-ending signal — the
+        # streaming round-trip loop was cut short because the iteration/time
+        # budget ran out, not a model failure. It may legitimately carry no
+        # content (no preamble streamed), so it must NOT be judged empty and sent
+        # through the recovery ladder; the Loop reads #halted? and runs its
+        # budget-exhausted summary.
+        return [true, nil]            if response.respond_to?(:halted?) && response.halted?
         return [true, nil]            if response.has_tool_calls?
         return [false, :empty_response] if response.content.to_s.strip.empty?
 
@@ -41,6 +48,7 @@ module Rubino
       # Tool-call responses are never degenerate — the tool call IS the answer.
       def degenerate?(response)
         return false if response.nil? || response.interrupted?
+        return false if response.respond_to?(:halted?) && response.halted?
         return false if response.has_tool_calls?
 
         !content_after_think_block?(response.content)
