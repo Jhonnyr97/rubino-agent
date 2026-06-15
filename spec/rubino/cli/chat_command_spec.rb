@@ -873,15 +873,33 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:run_turn, runner, "hello", ui)
     end
 
-    it "first Ctrl+C flips the token, warns the user, and stays in the REPL" do
+    it "first Ctrl+C flips the token, hints via the composer, and stays in the REPL" do
       allow(runner).to receive(:cancel!)
-      warned = nil
-      allow($stderr).to receive(:write) { |s| warned = s }
+      # #426 (Bug B): the double-tap hint no longer does a raw scrolling
+      # $stderr.write from the trap (that desynced the live-region geometry and
+      # duplicated the kept preamble). It routes through the composer's
+      # TRAP-SAFE #announce_pending, which paints the hint as an in-place
+      # transient row on the next finalize frame.
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:announce_pending)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      raw = nil
+      allow($stderr).to receive(:write) { |s| raw = s }
 
       expect { run_turn_firing_int(runner, taps: 1) }.not_to raise_error
 
       expect(runner).to have_received(:cancel!).at_least(:once)
-      expect(warned).to include("Ctrl+C again to exit")
+      expect(composer).to have_received(:announce_pending).with("(press Ctrl+C again to exit)")
+      # No raw scrolling write to the terminal — that was the geometry-desync source.
+      expect(raw).to be_nil
+    end
+
+    it "skips the hint cleanly (no raise) when no composer owns the screen" do
+      allow(runner).to receive(:cancel!)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(nil)
+
+      expect { run_turn_firing_int(runner, taps: 1) }.not_to raise_error
+      expect(runner).to have_received(:cancel!).at_least(:once)
     end
 
     it "second Ctrl+C within the window re-raises so the REPL exits" do
