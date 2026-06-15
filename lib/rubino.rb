@@ -227,6 +227,29 @@ module Rubino
       Thread.current[:rubino_aux_cancel_token] = prev
     end
 
+    # True while a HEADLESS one-shot run (`rubino prompt`/-q) is executing on
+    # THIS thread. Bound by ChatCommand#run_oneshot via #with_headless so tools
+    # that behave differently with no live REPL can tell — today only TaskTool,
+    # which forces `task` subagents to run FOREGROUND in headless mode (#380): in
+    # one-shot there is no IdleCardHost to fold a background child's result back
+    # in and the process exits the instant the parent's answer is ready, so a
+    # background fan-out would be silently dropped. Nil/false on the interactive
+    # REPL and the API/server path, where background subagents are surfaced.
+    def headless?
+      Thread.current[:rubino_headless] || false
+    end
+
+    # Binds the headless one-shot flag for the duration of the block (set by
+    # ChatCommand#run_oneshot around the turn, exactly like #with_ui). Thread-
+    # local so a tool reaches it with zero signature churn through the loop.
+    def with_headless
+      prev = Thread.current[:rubino_headless]
+      Thread.current[:rubino_headless] = true
+      yield
+    ensure
+      Thread.current[:rubino_headless] = prev
+    end
+
     # Returns the current structured logger.
     def logger
       @logger ||= Logger.new

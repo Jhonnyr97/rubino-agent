@@ -90,14 +90,41 @@ module Rubino
         ui.info("Status: #{safe(session[:status])}")
         ui.info("Dir: #{safe(collapse_home(session[:cwd]))}")
         ui.info("Model: #{safe(session[:model])}")
-        ui.info("Messages: #{safe(session[:message_count])}")
-        ui.info("Tokens: #{safe(session[:token_count])}")
+        ui.info("Messages: #{safe(message_summary(session[:id]))}")
+        ui.info("Tokens: #{safe(token_total(session[:id]))}")
         ui.info("Created: #{safe(session[:created_at])}")
         ui.info("Updated: #{safe(session[:updated_at])}")
 
         return unless session[:parent_session_id]
 
         ui.info("Parent: #{safe(session[:parent_session_id])}")
+      end
+
+      # Truthful, CUMULATIVE message count for `sessions show` (#382). The cached
+      # sessions.message_count column only counts top-level turns and hides every
+      # assistant(tool_use)/tool(result) row, so it under-reports a tool-heavy
+      # session. Count the actual messages table and label the tool rows so the
+      # breakdown is honest (e.g. "12 (4 tool)"). Falls back to the cached column
+      # if the live count can't be read — a display detail must not raise here.
+      def self.message_summary(session_id)
+        return nil unless session_id
+
+        by_role = Session::Store.new.count_by_role(session_id)
+        total   = by_role.values.sum
+        tool    = by_role["tool"].to_i
+        tool.positive? ? "#{total} (#{tool} tool)" : total.to_s
+      rescue StandardError
+        nil
+      end
+
+      # Truthful cumulative token total for `sessions show` (#382): the SUM over
+      # all persisted messages, not the non-cumulative cached column.
+      def self.token_total(session_id)
+        return nil unless session_id
+
+        Session::Store.new.token_sum(session_id)
+      rescue StandardError
+        nil
       end
 
       # Neutralize terminal-control bytes in untrusted stored session fields to
