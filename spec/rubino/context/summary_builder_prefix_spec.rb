@@ -17,7 +17,7 @@ RSpec.describe Rubino::Context::SummaryBuilder do
       once  = builder.with_summary_prefix("body")
       twice = builder.with_summary_prefix(once)
       expect(twice).to eq(once)
-      expect(twice.scan(/CONTEXT COMPACTION/).size).to eq(1)
+      expect(twice.scan("CONTEXT COMPACTION").size).to eq(1)
     end
 
     it "strips and re-normalizes the legacy [Compacted Summary] prefix" do
