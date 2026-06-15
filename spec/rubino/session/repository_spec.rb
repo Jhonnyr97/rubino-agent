@@ -346,6 +346,19 @@ RSpec.describe Rubino::Session::Repository do
       repo.create(source: "cli")
       expect(repo.latest_resumable).to be_nil
     end
+
+    # #394: a freshly-compacted child (source="compaction") carries a fully
+    # copied transcript but its cached message_count may still be 0 in the window
+    # before the Compressor syncs it (or if the process exits right after the
+    # copy). It must still be resumable via `--continue`, or the just-compacted
+    # arc is silently skipped and lost.
+    it "resumes a compaction child even when its cached message_count is 0" do
+      child = repo.create(source: "compaction") # message_count defaults to 0
+      expect(child[:message_count]).to eq(0)
+      expect(repo.latest_resumable[:id]).to eq(child[:id])
+      # ...while a 0-message NON-compaction session is still skipped (the
+      # "returns nil on a true first run" case above covers the cli source).
+    end
   end
 
   # r5 MF-4 / C-1: every session is stamped with the dir it was launched in so
@@ -437,6 +450,14 @@ RSpec.describe Rubino::Session::Repository do
     it "returns nil when no session has messages in this dir" do
       repo.create(source: "cli", cwd: "/home/dev/api") # 0 messages
       expect(repo.latest_resumable_for_cwd("/home/dev/api")).to be_nil
+    end
+
+    # #394: `--continue` (this method) must resume a freshly-compacted child in
+    # THIS dir even before its cached message_count is synced.
+    it "resumes a 0-count compaction child scoped to this dir" do
+      child = repo.create(source: "compaction", cwd: "/home/dev/api")
+      expect(child[:message_count]).to eq(0)
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(child[:id])
     end
   end
 

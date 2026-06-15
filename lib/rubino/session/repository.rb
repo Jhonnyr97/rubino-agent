@@ -287,7 +287,7 @@ module Rubino
       # a true first run, which the CLI uses to fall back to the welcome panel.
       def latest_resumable
         @db[:sessions]
-          .where { message_count > 0 }
+          .where(resumable_predicate)
           .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
           .first
       end
@@ -313,7 +313,7 @@ module Rubino
         return nil if target.nil?
 
         @db[:sessions]
-          .where { message_count > 0 }
+          .where(resumable_predicate)
           .exclude(cwd: nil)
           .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
           .all
@@ -370,6 +370,22 @@ module Rubino
       end
 
       private
+
+      # The "worth resuming on a bare `chat`/--continue" predicate shared by
+      # #latest_resumable and #latest_resumable_for_cwd (#394).
+      #
+      # Normally a session needs message_count > 0 — empty 0-message launches are
+      # skipped so a stray earlier launch never shadows real work (#99). But a
+      # COMPACTION child (source="compaction") is born with a fully-populated
+      # transcript (the copied head + summary + tail) that the Compressor syncs
+      # into message_count AFTER the copy — so if the process exits in the window
+      # between the copy and that sync (or the cached counter ever drifts), the
+      # arc would be silently skipped and the just-compacted conversation lost.
+      # Compaction children always have real messages, so resume them regardless
+      # of the cached counter; the count > 0 floor still guards every other source.
+      def resumable_predicate
+        Sequel.|({ source: "compaction" }, Sequel[:message_count] > 0)
+      end
 
       # Builds a SAFE id-prefix LIKE condition (#333a). User-supplied short ids
       # flow straight into `Sequel.like(:id, "#{query}%")`, but `%` and `_` are
