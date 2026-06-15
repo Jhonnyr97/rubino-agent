@@ -65,7 +65,7 @@ RSpec.describe Rubino::CLI::SetupCommand do
   end
 
   # #392a: a non-interactive `setup` can't prompt, so the seeded default
-  # (minimax/MiniMax-M3 → MINIMAX_API_KEY) is a dead end when the only key in the
+  # (openai/gpt-4.1 → OPENAI_API_KEY) is a dead end when the only key in the
   # env is another provider's. Auto-detect a single present provider key and point
   # model.provider/model.default at it so a headless setup lands usable.
   describe "non-interactive provider auto-detect (#392a)" do
@@ -100,12 +100,12 @@ RSpec.describe Rubino::CLI::SetupCommand do
       expect(model).to eq("gpt-4.1")
     end
 
-    it "keeps the seeded minimax default when no provider key is present" do
+    it "keeps the seeded openai default when no provider key is present" do
       described_class.new.execute
 
       provider, model = configured
-      expect(provider).to eq("auto").or eq("minimax")
-      expect(model).to eq("minimax/MiniMax-M3")
+      expect(provider).to eq("auto").or eq("openai")
+      expect(model).to eq("openai/gpt-4.1")
     end
 
     it "keeps the seeded default (ambiguous) when more than one key is present" do
@@ -115,7 +115,7 @@ RSpec.describe Rubino::CLI::SetupCommand do
       described_class.new.execute
 
       _provider, model = configured
-      expect(model).to eq("minimax/MiniMax-M3")
+      expect(model).to eq("openai/gpt-4.1")
     end
   end
 

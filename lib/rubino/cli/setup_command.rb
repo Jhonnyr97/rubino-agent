@@ -58,9 +58,9 @@ module Rubino
         maybe_run_onboarding(ui)
 
         # Non-interactive provider auto-detect (#392a): a headless `setup` can't
-        # prompt, so the seeded default (minimax/MiniMax-M3 → MINIMAX_API_KEY) is
-        # a dead end when the only key in the env is, say, OPENAI_API_KEY — doctor
-        # then fails "No credentials found for provider 'minimax'". When EXACTLY
+        # prompt, so the seeded default (openai/gpt-4.1 → OPENAI_API_KEY) is a
+        # dead end when the only key in the env is, say, MINIMAX_API_KEY — doctor
+        # then fails "No credentials found for provider 'openai'". When EXACTLY
         # ONE provider's key is present in the env, point model.provider /
         # model.default (and any required providers.<name> block) at it so a
         # CI/container `setup` lands on a usable config. Ambiguous (>1 key) or
@@ -173,12 +173,12 @@ module Rubino
           # Add your API keys here. Do NOT commit this file.
           # `rubino setup` (on a terminal) can fill one in for you.
 
-          # MiniMax (Anthropic-compatible — recommended default, matches the
-          # seeded model minimax/MiniMax-M3)
-          # MINIMAX_API_KEY=...
-
-          # OpenAI (GPT)
+          # OpenAI (GPT — recommended default, matches the seeded model
+          # openai/gpt-4.1)
           # OPENAI_API_KEY=sk-...
+
+          # MiniMax (Anthropic-compatible)
+          # MINIMAX_API_KEY=...
 
           # Anthropic
           # ANTHROPIC_API_KEY=sk-ant-...

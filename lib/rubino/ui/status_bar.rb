@@ -7,7 +7,7 @@ module Rubino
     # Formats the dim one-line status bar the {BottomComposer} renders BELOW
     # the pinned input row:
     #
-    #   default · minimax-m3 · ctx ~8.4k/64k (13%)
+    #   default · gpt-4.1 · ctx ~8.4k/64k (13%)
     #
     # Content: the session MODE leads (the prompt chip moved here in the
     # Rail-rubino redesign — the prompt is a constant "▍❯ "), then the

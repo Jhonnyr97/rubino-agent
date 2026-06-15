@@ -18,12 +18,16 @@ module Rubino
 
       MODULE_DEFAULTS = {
         "model" => {
-          # Aligned to the onboarding wizard / .env recommendation (MiniMax) to
-          # resolve the openai-vs-minimax inconsistency the audit flagged (#414):
-          # the stale openai/gpt-4.1 default never matched what setup recommends.
-          # FLAGGED FOR MAINTAINER CONFIRMATION — provider "auto" still lets a
-          # configured key for another backend take over.
-          "default" => "minimax/MiniMax-M3",
+          # Public-gem default is OpenAI gpt-4.1 (maintainer directive): it is
+          # the most broadly available provider and needs no special provider
+          # block to route — just OPENAI_API_KEY — so a defaults-only config is
+          # coherent and the first turn works. MiniMax stays an AVAILABLE wizard
+          # choice but is NOT the seeded/recommended default. The onboarding
+          # wizard's recommended (first) entry mirrors this exact default.
+          # provider "auto" derives the concrete provider from the model id
+          # (openai/* → openai); the wizard/auto-detect write an explicit
+          # provider when the user/env picks a non-OpenAI backend.
+          "default" => "openai/gpt-4.1",
           "provider" => "auto",
           "context_length" => nil,
           # nil = inherit the provider default (Hermes injects no temperature).

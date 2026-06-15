@@ -5,7 +5,7 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "model accessors" do
     it "returns model default" do
-      expect(config.model_default).to eq("minimax/MiniMax-M3")
+      expect(config.model_default).to eq("openai/gpt-4.1")
     end
 
     it "defaults temperature to nil (inherit provider default, #414)" do
