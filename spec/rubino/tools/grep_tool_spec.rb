@@ -102,4 +102,87 @@ RSpec.describe Rubino::Tools::GrepTool do
       expect(result).to include("hello")
     end
   end
+
+  # #375a — the rg path buffered ALL of rg's output (IO.popen(argv).read) then
+  # `.first(max_results)`: a pattern matching a huge file allocated +100MB just
+  # to return 50 lines. It now streams the pipe and stops after max_results.
+  describe "ripgrep streaming cap (#375a)" do
+    before do
+      skip "ripgrep not installed" unless system("which rg > /dev/null 2>&1")
+      # A file with FAR more matches than max_results.
+      File.write(File.join(tmp_dir, "many.txt"), Array.new(5_000) { |i| "match #{i}" }.join("\n"))
+    end
+
+    it "returns at most max_results lines and flags that more exist" do
+      result = tool.call("pattern" => "match", "path" => tmp_dir, "max_results" => 10)
+      out    = payload(result)
+      match_lines = out.lines.grep(/many\.txt:/)
+      expect(match_lines.size).to eq(10)
+      expect(out).to include("more")
+      expect(result[:metrics]).to include("+")
+    end
+
+    it "stops reading the rg pipe early instead of buffering all output" do
+      # The regression was IO.popen(...).read (whole-pipe slurp). Spy that the
+      # implementation never calls #read on the pipe.
+      io_double = nil
+      allow(IO).to receive(:popen).and_wrap_original do |orig, *args, **kw, &blk|
+        orig.call(*args, **kw) do |io|
+          io_double = io
+          allow(io).to receive(:read).and_call_original
+          blk.call(io)
+        end
+      end
+      tool.call("pattern" => "match", "path" => tmp_dir, "max_results" => 5)
+      expect(io_double).not_to have_received(:read)
+    end
+  end
+
+  # #375b — the rg path honors .gitignore but the Ruby fallback used a bare
+  # Dir.glob("**/*"), so the two returned DIFFERENT sets depending on whether rg
+  # was installed (non-deterministic; leaked ignored content). Both must apply
+  # the same ignore filter.
+  describe "rg / fallback ignore consistency (#375b)" do
+    let(:repo_dir) { Dir.mktmpdir("grep_ignore") }
+
+    before do
+      skip "ripgrep not installed" unless system("which rg > /dev/null 2>&1")
+      skip "git not installed" unless system("which git > /dev/null 2>&1")
+      Dir.chdir(repo_dir) do
+        system("git", "init", "-q", out: File::NULL, err: File::NULL)
+        system("git", "config", "user.email", "t@t", out: File::NULL, err: File::NULL)
+        system("git", "config", "user.name", "t", out: File::NULL, err: File::NULL)
+      end
+      File.write(File.join(repo_dir, ".gitignore"), "ignored.rb\n")
+      File.write(File.join(repo_dir, "tracked.rb"), "needle here\n")
+      File.write(File.join(repo_dir, "ignored.rb"), "needle here\n")
+      Rubino.configuration.set("terminal", "cwd", repo_dir)
+    end
+
+    after do
+      Rubino.configuration.set("terminal", "cwd", nil)
+      FileUtils.rm_rf(repo_dir)
+    end
+
+    # The two paths format the leading path differently (rg relative, the Ruby
+    # fallback absolute) — an independent cosmetic difference. #375b is about
+    # the ignore-filtered SET being identical, so compare by basename.
+    def matched_files(result)
+      payload(result).lines.grep(/needle/)
+                     .map { |l| File.basename(l.split(":").first.to_s.strip) }
+                     .uniq.sort
+    end
+
+    it "returns the same ignore-filtered file set for rg and the Ruby fallback" do
+      allow(tool).to receive(:ripgrep_available?).and_return(true)
+      rg_files = matched_files(tool.call("pattern" => "needle", "path" => repo_dir))
+
+      allow(tool).to receive(:ripgrep_available?).and_return(false)
+      ruby_files = matched_files(tool.call("pattern" => "needle", "path" => repo_dir))
+
+      expect(rg_files).to eq(ruby_files)
+      expect(rg_files).to include("tracked.rb")
+      expect(rg_files).not_to include("ignored.rb")
+    end
+  end
 end
