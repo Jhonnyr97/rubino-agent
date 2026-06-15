@@ -122,6 +122,42 @@ RSpec.describe Rubino::Database::Connection do
       end
     end
 
+    # #377 (residual #359): a garbage/truncated HEADER raises
+    # SQLite3::NotADatabaseException ("file is not a database"), NOT
+    # CorruptException. corruption_error? matched only the malformed case, so the
+    # predicate missed and `chat` said "isn't set up" while user commands leaked a
+    # raw backtrace. A file SQLite can't even recognise as a DB is corrupt-but-
+    # present too and must route to the doctor / quarantine path.
+    it "reports corrupt? => true for a garbage-header file (#377)" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        File.binwrite(path, "this is not a sqlite database at all\x00\xFF")
+        expect(described_class.new(path).corrupt?).to be true
+      end
+    end
+
+    it "corruption_error? matches NotADatabaseException by class and message (#377)" do
+      conn = described_class.new(":memory:")
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "garbage.sqlite3")
+        File.binwrite(path, "definitely not sqlite")
+        raised =
+          begin
+            described_class.new(path).db.execute("SELECT 1")
+            nil
+          rescue StandardError => e
+            e
+          end
+        expect(raised).not_to be_nil
+        expect(conn.corruption_error?(raised)).to be true
+      end
+
+      # Also matches a hand-built error by message substring, independent of the
+      # sqlite3 gem constants being loaded.
+      msg_only = StandardError.new("file is not a database")
+      expect(conn.corruption_error?(msg_only)).to be true
+    end
+
     it "reports corrupt? => false for a healthy DB and for an absent file" do
       Dir.mktmpdir do |tmp|
         healthy = File.join(tmp, "ok.sqlite3")

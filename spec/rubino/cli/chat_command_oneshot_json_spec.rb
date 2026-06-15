@@ -120,6 +120,30 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(result).to include("type" => "result", "is_error" => false)
       expect(status).to eq(0)
     end
+
+    # #370 part C: the stream-json result usage must be the ROUND-TRIP SUM of
+    # every model call in the turn, NOT the last message alone. This turn makes
+    # two model calls (tool_call 5/4 then final text 6/3); the reported usage
+    # must be 11 in / 7 out, not 6 / 3.
+    it "reports the round-trip-summed usage, not the last message's, in the result" do
+      fake_llm.enqueue_tool_call("read", { "file_path" => "a.rb" },
+                                 input_tokens: 5, output_tokens: 4)
+      fake_llm.enqueue_text("done reading", input_tokens: 6, output_tokens: 3)
+
+      stdout, _stderr, status = run_oneshot(
+        "query" => "read a.rb", "output_format" => "stream-json", "yolo" => true
+      )
+
+      result = stdout.each_line.map(&:strip).reject(&:empty?)
+                     .map { |l| JSON.parse(l) }.last
+
+      expect(result["num_turns"]).to eq(2)
+      expect(result["usage"]).to include(
+        "input_tokens" => 11,  # 5 + 6, summed across both round-trips
+        "output_tokens" => 7   # 4 + 3, NOT just the final message's 3
+      )
+      expect(status).to eq(0)
+    end
   end
 
   describe "exit-code contract preserved" do

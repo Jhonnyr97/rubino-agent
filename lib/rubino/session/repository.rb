@@ -20,7 +20,9 @@ module Rubino
       # (the Runner) needs the SAME stomp guard auto-resume already applies, so a
       # second process resuming a session a first live process is still writing
       # can fork instead of interleaving writes into one malformed transcript.
-      # True when this row is "active" with an alive owner_pid that isn't us.
+      # True when this row has an alive owner_pid that isn't us, for a session of
+      # ANY status (#376): an ended session a live process is re-writing is guarded
+      # too, so concurrent explicit resumes of it fork instead of interleaving.
       def owned_by_other_live_process?(row)
         live_owned_by_other?(row)
       end
@@ -402,15 +404,23 @@ module Rubino
       end
 
       # True when this session row is currently owned by a DIFFERENT live process
-      # (status="active", a recorded owner_pid that is alive and isn't us). Such a
-      # session is being actively written by another tab, so auto-resume must not
-      # latch onto it. A dead/zombie owner, no pid, an ended session, or our own
+      # (a recorded owner_pid that is alive and isn't us), REGARDLESS of status
+      # (#376/residual #347). The owner-guard used to fire only on status="active",
+      # but a finished turn leaves status="ended" while the resuming process still
+      # claims owner_pid (resume stamps owner_pid without flipping status back to
+      # active). Two concurrent explicit `--resume <id>` of that ENDED session then
+      # raced unguarded and interleaved writes into one malformed transcript
+      # (user,user …). Guarding on a live owner of ANY resumable session — not just
+      # active ones — makes the second resumer fork/serialize instead.
+      #
+      # A cleanly-ended session has owner_pid nil (end_session! clears it), so it
+      # stays freely resumable; only a session a DIFFERENT live process is right
+      # now writing/holding is guarded. A dead/zombie owner, no pid, or our own
       # pid are all fine to resume.
       def live_owned_by_other?(row)
         pid = row[:owner_pid]
         return false if pid.nil?
         return false if pid == Process.pid
-        return false unless row[:status].to_s == "active"
 
         process_alive?(pid)
       end

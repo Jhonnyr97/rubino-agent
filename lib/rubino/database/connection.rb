@@ -69,16 +69,30 @@ module Rubino
         moved
       end
 
-      # True when +error+ (or anything in its cause chain) is the SQLite
-      # "database disk image is malformed" corruption error. Sequel wraps the
-      # driver exception in a Sequel::DatabaseError, so we walk #cause and also
-      # match the wrapped class name without hard-depending on the sqlite3 gem
-      # constant being loaded.
+      # True when +error+ (or anything in its cause chain) is a SQLite
+      # corruption/garbage-header error. Two distinct driver exceptions signal a
+      # corrupt-but-present file:
+      #   * SQLite3::CorruptException / "database disk image is malformed" — a
+      #     valid SQLite header with internal damage.
+      #   * SQLite3::NotADatabaseException / "file is not a database" (#377) — a
+      #     garbage or truncated header, so SQLite can't even recognise it as a
+      #     DB. This is just as much "corrupt-but-present" as the malformed case:
+      #     the file exists and isn't openable, so it must route to the doctor /
+      #     setup-quarantine path, NOT be reported as "not set up", and user
+      #     commands (sessions list/compact) must not leak a raw backtrace.
+      # Sequel wraps the driver exception in a Sequel::DatabaseError, so we walk
+      # #cause and also match the wrapped class name + message substrings without
+      # hard-depending on the sqlite3 gem constants being loaded.
       def corruption_error?(error)
         e = error
         while e
-          return true if e.class.name.to_s.include?("SQLite3::CorruptException")
-          return true if e.message.to_s.include?("database disk image is malformed")
+          name = e.class.name.to_s
+          return true if name.include?("SQLite3::CorruptException")
+          return true if name.include?("SQLite3::NotADatabaseException")
+
+          msg = e.message.to_s
+          return true if msg.include?("database disk image is malformed")
+          return true if msg.include?("file is not a database")
 
           e = e.cause
         end
