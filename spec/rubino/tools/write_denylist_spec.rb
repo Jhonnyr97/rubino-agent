@@ -5,6 +5,7 @@
 # sandbox: write/edit/multi_edit/apply_patch must refuse credential & system
 # paths even when tools.workspace_strict=false AND even when the target sits
 # inside the workspace. A normal file in the same workspace stays writable.
+# rubocop:disable RSpec/DescribeClass -- spans all four write tools by design
 RSpec.describe "write-side credential denylist (#413)" do
   def payload(result) = result.is_a?(Hash) ? result[:output] : result
 
@@ -120,3 +121,4 @@ RSpec.describe "write-side credential denylist (#413)" do
     end
   end
 end
+# rubocop:enable RSpec/DescribeClass

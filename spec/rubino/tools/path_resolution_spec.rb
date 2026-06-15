@@ -84,8 +84,11 @@ RSpec.describe "tool path resolution (r6 F1/F3)", :path_resolution do # rubocop:
     end
 
     it "still refuses a relative path that escapes the workspace (guard #299)" do
+      # Use a non-denylisted basename: the #413 credential denylist would
+      # short-circuit `passwd`/.env etc. before the workspace check, so this
+      # example targets the WORKSPACE boundary specifically.
       result = Rubino::Tools::EditTool.new.call(
-        "file_path" => File.join("..", "..", "..", "etc", "passwd"),
+        "file_path" => File.join("..", "..", "..", "tmp", "escape.txt"),
         "old_string" => "x", "new_string" => "y"
       )
       expect(result).to include("outside")
