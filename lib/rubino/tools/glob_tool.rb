@@ -58,16 +58,7 @@ module Rubino
         full_pattern  = resolve_pattern(pattern, path, expanded_path)
         return full_pattern if full_pattern.is_a?(String) && full_pattern.start_with?("Error:")
 
-        # Honor .gitignore by default so glob agrees with grep's rg path
-        # (#375c): without this glob surfaced node_modules / build artifacts /
-        # ignored secrets that grep never would, an inconsistency the model
-        # tripped over. Pass include_ignored: true to opt back into the raw set.
-        ignore = include_ignored ? nil : Util::IgnoreRules.new
-        files = Dir.glob(full_pattern)
-                   .select { |f| File.file?(f) }
-                   .reject { |f| ignore&.ignored?(f, expanded_path) }
-                   .sort_by { |f| -File.mtime(f).to_i }
-                   .first(max_results)
+        files = matching_files(full_pattern, expanded_path, max_results, include_ignored)
 
         if files.empty?
           "No files matched pattern: #{pattern}"
@@ -82,6 +73,19 @@ module Rubino
       end
 
       private
+
+      # Globs +full_pattern+, drops dirs and (by default) git-ignored files,
+      # sorts newest-first, and caps at +max_results+. Honoring .gitignore here
+      # keeps glob consistent with grep's rg path (#375c); include_ignored: true
+      # opts back into the raw set.
+      def matching_files(full_pattern, expanded_path, max_results, include_ignored)
+        ignore = include_ignored ? nil : Util::IgnoreRules.new
+        Dir.glob(full_pattern)
+           .select { |f| File.file?(f) }
+           .reject { |f| ignore&.ignored?(f, expanded_path) }
+           .sort_by { |f| -File.mtime(f).to_i }
+           .first(max_results)
+      end
 
       # Builds the pattern passed to Dir.glob.
       #
