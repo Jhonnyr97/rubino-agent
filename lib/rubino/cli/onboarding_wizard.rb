@@ -19,13 +19,25 @@ module Rubino
       # Each provider: the model.provider to write, a default model id, the .env
       # key var, and any providers.<name> config block to persist. Ordered so the
       # recommended default comes first and matches the seeded config default
-      # (config/defaults.rb model.default => minimax/MiniMax-M3), keeping the
+      # (config/defaults.rb model.default => openai/gpt-4.1), keeping the
       # from-zero experience consistent between the wizard and the non-interactive
-      # fail-fast guidance. Aligned to MiniMax (#414) — see the seeded default.
+      # fail-fast guidance. OpenAI is the recommended default (maintainer
+      # directive); MiniMax stays a first-class selectable option — listed but
+      # NOT pushed or auto-selected — and carries the anthropic_compatible +
+      # base_url wiring it needs so picking it still yields a first-turn-working
+      # config.
       PROVIDERS = [
         {
+          key: "openai",
+          label: "OpenAI (GPT) — recommended default",
+          provider: "openai",
+          model: "gpt-4.1",
+          env_var: "OPENAI_API_KEY",
+          config: {}
+        },
+        {
           key: "minimax",
-          label: "MiniMax (Anthropic-compatible) — recommended default",
+          label: "MiniMax (Anthropic-compatible)",
           provider: "minimax",
           model: "MiniMax-M3",
           env_var: "MINIMAX_API_KEY",
@@ -34,14 +46,6 @@ module Rubino
             "base_url" => "https://api.minimax.io/anthropic",
             "api_key" => "${MINIMAX_API_KEY}"
           }
-        },
-        {
-          key: "openai",
-          label: "OpenAI (GPT)",
-          provider: "openai",
-          model: "gpt-4.1",
-          env_var: "OPENAI_API_KEY",
-          config: {}
         },
         {
           key: "anthropic",
@@ -128,7 +132,23 @@ module Rubino
         end
       end
 
+      # Prompt for the provider's API key — but if it is ALREADY in the
+      # environment (e.g. OPENAI_API_KEY, or MINIMAX_API_KEY when the user picks
+      # MiniMax), DETECT it and offer to reuse it rather than forcing a paste
+      # (the smooth path; matches Hermes/Claude Code/Codex, which all prefer an
+      # already-present env key over re-prompting). A bare Enter at the "use it?"
+      # prompt accepts the detected key; typing "n" falls through to a manual
+      # paste. The returned value is what lands in .env, so reusing the env key
+      # also persists it durably for future runs.
       def ask_api_key(choice)
+        env_key = ENV.fetch(choice[:env_var], nil).to_s.strip
+        unless env_key.empty?
+          @output.print "Detected #{choice[:env_var]} in your environment — use it? [Y/n]: "
+          @output.flush
+          ans = read_line.to_s.strip.downcase
+          return env_key unless %w[n no].include?(ans)
+        end
+
         @output.print "Paste your #{choice[:env_var]} (input hidden; Enter to skip): "
         @output.flush
         read_secret.to_s.strip

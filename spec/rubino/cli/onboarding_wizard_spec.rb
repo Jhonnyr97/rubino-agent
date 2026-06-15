@@ -25,30 +25,55 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     described_class.new(ui: ui, input: StringIO.new(script), output: output)
   end
 
-  it "defaults to the seeded model: the first (recommended) provider is minimax/MiniMax-M3" do
-    # #414: the wizard's recommended default must match the seeded
-    # config/defaults.rb default (model.default => minimax/MiniMax-M3) so the
-    # from-zero experience is consistent with the non-interactive fail-fast
-    # guidance, which names that same default. Aligned openai → MiniMax.
+  it "defaults to the seeded model: the first (recommended) provider is openai/gpt-4.1" do
+    # The wizard's recommended default must match the seeded config/defaults.rb
+    # default (model.default => openai/gpt-4.1) so the from-zero experience is
+    # consistent with the non-interactive fail-fast guidance, which names that
+    # same default (maintainer directive: OpenAI default, MiniMax not pushed).
     first = described_class::PROVIDERS.first
-    expect(first[:provider]).to eq("minimax")
-    expect(first[:model]).to eq("MiniMax-M3")
+    expect(first[:provider]).to eq("openai")
+    expect(first[:model]).to eq("gpt-4.1")
 
     seeded = Rubino::Config::Defaults.dig("model", "default")
-    expect(seeded).to eq("minimax/MiniMax-M3")
+    expect(seeded).to eq("openai/gpt-4.1")
     expect("#{first[:provider]}/#{first[:model]}").to eq(seeded)
   end
 
-  it "keeps OpenAI as a first-class selectable option (just not the default)" do
-    openai = described_class::PROVIDERS.find { |p| p[:provider] == "openai" }
-    expect(openai).not_to be_nil
-    expect(openai[:model]).to eq("gpt-4.1")
-    expect(described_class::PROVIDERS.first).not_to eq(openai)
+  it "keeps MiniMax as a first-class selectable option (just not the default)" do
+    minimax = described_class::PROVIDERS.find { |p| p[:provider] == "minimax" }
+    expect(minimax).not_to be_nil
+    expect(minimax[:model]).to eq("MiniMax-M3")
+    # Picking MiniMax must still yield a first-turn-working config: the catalog
+    # carries the anthropic_compatible + base_url wiring it needs to route.
+    expect(minimax[:config]["anthropic_compatible"]).to be true
+    expect(minimax[:config]["base_url"]).to eq("https://api.minimax.io/anthropic")
+    # Available, but NOT the recommended/auto-picked first entry.
+    expect(described_class::PROVIDERS.first).not_to eq(minimax)
   end
 
-  it "writes a usable MiniMax config + .env from scripted input (choice 1, the default)" do
-    # "1" = MiniMax (the recommended default), then the key (no base_url prompt).
-    ok = wizard("1\nsk-minimax-test\n").run
+  it "writes a usable OpenAI config + .env from scripted input (choice 1, the default)" do
+    # "1" = OpenAI (the recommended default), then the key (no base_url prompt).
+    ok = wizard("1\nsk-openai-test\n").run
+    expect(ok).to be true
+
+    loader = Rubino::Config::Loader.new(home_path: home)
+    raw    = YAML.safe_load_file(loader.config_path)
+    expect(raw.dig("model", "default")).to eq("gpt-4.1")
+    expect(raw.dig("model", "provider")).to eq("openai")
+
+    env = File.read(loader.env_path)
+    expect(env).to include("OPENAI_API_KEY=sk-openai-test")
+
+    # The config the agent loads is now usable (key visible in ENV + config).
+    config = Rubino::Config::Configuration.new(raw: loader.load)
+    expect(Rubino::LLM::CredentialCheck.usable?(config)).to be true
+  end
+
+  it "writes a usable MiniMax config + .env when MiniMax is chosen (choice 2)" do
+    # "2" = MiniMax (available, not the default), then the key (no base_url
+    # prompt). The anthropic_compatible + base_url block must land so the first
+    # turn can route — the coherence the F-SETUP-1 fix guarantees per provider.
+    ok = wizard("2\nsk-minimax-test\n").run
     expect(ok).to be true
 
     loader = Rubino::Config::Loader.new(home_path: home)
@@ -56,14 +81,34 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     expect(raw.dig("model", "default")).to eq("MiniMax-M3")
     expect(raw.dig("model", "provider")).to eq("minimax")
     expect(raw.dig("providers", "minimax", "anthropic_compatible")).to be true
+    expect(raw.dig("providers", "minimax", "base_url")).to eq("https://api.minimax.io/anthropic")
     expect(raw.dig("providers", "minimax", "api_key")).to eq("${MINIMAX_API_KEY}")
 
     env = File.read(loader.env_path)
     expect(env).to include("MINIMAX_API_KEY=sk-minimax-test")
 
-    # The config the agent loads is now usable (key visible in ENV + config).
     config = Rubino::Config::Configuration.new(raw: loader.load)
     expect(Rubino::LLM::CredentialCheck.usable?(config)).to be true
+  end
+
+  it "detects an already-present env key and reuses it instead of forcing a paste" do
+    # Smooth path (industry norm): when the chosen provider's env var is already
+    # set, the wizard offers to use it; a bare Enter accepts the detected key.
+    ENV["OPENAI_API_KEY"] = "sk-from-env"
+    begin
+      # "1" = OpenAI, then Enter to accept the detected env key.
+      ok = wizard("1\n\n").run
+      expect(ok).to be true
+
+      loader = Rubino::Config::Loader.new(home_path: home)
+      raw    = YAML.safe_load_file(loader.config_path)
+      expect(raw.dig("model", "provider")).to eq("openai")
+      # The detected key was persisted to .env (durable for future runs).
+      expect(File.read(loader.env_path)).to include("OPENAI_API_KEY=sk-from-env")
+      expect(output.string).to include("Detected OPENAI_API_KEY")
+    ensure
+      ENV.delete("OPENAI_API_KEY")
+    end
   end
 
   it "returns false (and writes nothing) when the user skips at the provider prompt" do
@@ -83,10 +128,10 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   end
 
   # #31: a single invalid (out-of-range) choice must re-prompt rather than
-  # abandon the wizard. Here it is out of range, then "2" (OpenAI) + a key.
+  # abandon the wizard. Here it is out of range, then "1" (OpenAI) + a key.
   it "re-prompts on an invalid choice instead of abandoning setup" do
     n = described_class::PROVIDERS.size
-    ok = wizard("#{n + 5}\n2\nsk-openai-test\n").run
+    ok = wizard("#{n + 5}\n1\nsk-openai-test\n").run
     expect(ok).to be true
 
     # The provider prompt was shown twice (initial + re-prompt after the typo).
