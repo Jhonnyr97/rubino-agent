@@ -57,6 +57,16 @@ module Rubino
         # the old behaviour (files created, no prompts).
         maybe_run_onboarding(ui)
 
+        # Non-interactive provider auto-detect (#392a): a headless `setup` can't
+        # prompt, so the seeded default (openai/gpt-4.1 → OPENAI_API_KEY) is a
+        # dead end when the only key in the env is, say, MINIMAX_API_KEY — doctor
+        # then fails "No credentials found for provider 'openai'". When EXACTLY
+        # ONE provider's key is present in the env, point model.provider /
+        # model.default (and any required providers.<name> block) at it so a
+        # CI/container `setup` lands on a usable config. Ambiguous (>1 key) or
+        # none keeps the seeded default untouched.
+        maybe_autodetect_provider(ui)
+
         ui.blank_line
         # Tell the truth about the end state (#31). A green "Setup complete!" is
         # only honest when a usable credential is actually configured — printing
@@ -94,6 +104,61 @@ module Rubino
         return if LLM::CredentialCheck.usable?
 
         OnboardingWizard.new(ui: ui).run
+      end
+
+      # Non-interactive provider auto-detect (#392a). Only the headless path
+      # (no TTY) reaches here — interactive setup uses the wizard, which already
+      # resolves provider/key explicitly. Picks the provider whose .env key is
+      # the single one present in the environment and rewrites the model
+      # provider/default + its required config block to match, so a fresh
+      # container `setup` that only has MINIMAX_API_KEY doesn't default to
+      # OpenAI and then fail doctor.
+      def maybe_autodetect_provider(ui)
+        return if interactive?
+
+        choice = single_env_provider
+        return unless choice
+        # Already pointed at this provider (e.g. config carried over): nothing
+        # to rewrite, and don't churn the file or its line on every re-run.
+        return if Rubino.configuration.model_provider == choice[:provider]
+
+        persist_autodetected!(choice)
+        Rubino.reload_configuration!
+        ui.success("Detected #{choice[:env_var]} — defaulting to #{choice[:provider]}/#{choice[:model]}.")
+      rescue StandardError => e
+        # Auto-detect is a convenience; a write hiccup must never fail setup.
+        Rubino.logger.warn(event: "setup.autodetect_failed", error: e.class.name, message: e.message)
+        nil
+      end
+
+      # The one provider catalog entry whose env key is present in ENV, or nil
+      # when none or MORE THAN ONE is set (ambiguous — keep the seeded default).
+      def single_env_provider
+        present = OnboardingWizard::PROVIDERS.select do |p|
+          val = ENV.fetch(p[:env_var], nil)
+          !val.nil? && !val.empty?
+        end
+        # Dedup by env_var: the gateway entry reuses OPENAI_API_KEY, so an
+        # OpenAI key would otherwise look "ambiguous". Collapse to distinct keys
+        # and only auto-detect when a single distinct provider key is present.
+        present.uniq! { |p| p[:env_var] }
+        present.one? ? present.first : nil
+      end
+
+      # Writes the detected provider's model.provider / model.default and its
+      # required providers.<name> block (the same blocks the wizard persists).
+      # Does NOT touch .env — the key is already in the environment.
+      def persist_autodetected!(choice)
+        loader = Config::Loader.new
+        loader.create_default_config! unless loader.config_exists?
+        writer = Config::Writer.new(config_path: loader.config_path)
+        writer.set("model.default", choice[:model])
+        writer.set("model.provider", choice[:provider])
+        choice[:config].each do |k, v|
+          next if v.nil? || (v.respond_to?(:empty?) && v.empty?)
+
+          writer.set("providers.#{choice[:provider]}.#{k}", v)
+        end
       end
 
       def interactive?

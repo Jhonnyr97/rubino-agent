@@ -40,10 +40,24 @@ module Rubino
       # checks still apply to every known leaf regardless.
       EXTRA_TOP_LEVEL_SECTIONS = %w[sessions].freeze
 
+      # Closed numeric ranges for the obvious bounded keys (#392b). A value that
+      # type-checks as a number but falls outside its range used to be persisted
+      # with a green ✓ (e.g. `model.temperature 9.9`) and only manifested as a
+      # provider 4xx or nonsensical behaviour at call time. Keyed by the LEAF
+      # name so the same bound applies wherever the key appears (model.* and the
+      # per-provider/aux mirrors). Bounds are inclusive.
+      RANGES = {
+        "temperature" => (0.0..2.0),
+        "threshold" => (0.0..1.0),
+        "gateway_threshold" => (0.0..1.0),
+        "target_ratio" => (0.0..1.0)
+      }.freeze
+
       def validate!(key_path, keys, value)
         default = leaf_default(keys)
         reject_unknown_key!(key_path, keys) if default == :__absent__
         check_type!(key_path, value, default) unless default == :__absent__
+        check_range!(key_path, keys, value)
         check_url_format!(key_path, keys, value)
       end
 
@@ -110,6 +124,24 @@ module Rubino
         when Hash then :hash
         else :other
         end
+      end
+
+      # Range-check a bounded numeric leaf (#392b). Only applies when the leaf
+      # name has a declared RANGE and the coerced value is numeric — a non-number
+      # is already caught by check_type!, and a nil (clearing the key) is left to
+      # the type-unconstrained nil-default path. Out of range is a hard reject
+      # with a clear message + non-zero exit, like the other set-time footguns.
+      def check_range!(key_path, keys, value)
+        range = RANGES[keys.last.to_s]
+        return unless range
+
+        coerced = Writer.coerce_value(value)
+        return unless coerced.is_a?(Numeric)
+        return if range.cover?(coerced)
+
+        raise ConfigurationError,
+              "invalid value for '#{key_path}': #{coerced} is out of range " \
+              "(expected #{range.begin}..#{range.end})"
       end
 
       # A *_url / base_url leaf must be a real http(s) URL when a non-empty value

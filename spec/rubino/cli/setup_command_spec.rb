@@ -64,6 +64,51 @@ RSpec.describe Rubino::CLI::SetupCommand do
     expect(success_lines).to include(a_string_matching(/Setup complete/))
   end
 
+  # #392a: a non-interactive `setup` can't prompt, so the seeded default
+  # (openai/gpt-4.1 → OPENAI_API_KEY) is a dead end when the only key in the env
+  # is another provider's. Auto-detect a single present provider key and point
+  # model.provider/model.default at it so a headless setup lands usable.
+  describe "non-interactive provider auto-detect (#392a)" do
+    before { allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true) }
+
+    def configured
+      Rubino.reload_configuration!
+      [Rubino.configuration.model_provider, Rubino.configuration.model_default]
+    end
+
+    it "defaults to minimax when ONLY MINIMAX_API_KEY is present" do
+      ENV["MINIMAX_API_KEY"] = "mm-test"
+
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("minimax")
+      expect(model).to eq("MiniMax-M2.7")
+      # The anthropic_compatible block must be written too, or the model is
+      # routed to a provider with no usable endpoint.
+      expect(Rubino.configuration.provider_config("minimax")["anthropic_compatible"]).to be true
+      expect(ui.messages).to include([:success, a_string_matching(/MINIMAX_API_KEY/)])
+    end
+
+    it "keeps the seeded openai default when no provider key is present" do
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("auto").or eq("openai")
+      expect(model).to eq("openai/gpt-4.1")
+    end
+
+    it "keeps the seeded default (ambiguous) when more than one key is present" do
+      ENV["MINIMAX_API_KEY"]   = "mm-test"
+      ENV["ANTHROPIC_API_KEY"] = "an-test"
+
+      described_class.new.execute
+
+      _provider, model = configured
+      expect(model).to eq("openai/gpt-4.1")
+    end
+  end
+
   # HIGH-2: `setup` is the documented remedy for a broken install, so it must
   # self-heal a corrupt/truncated DB rather than crashing with a raw
   # SQLite3::CorruptException backtrace and leaving the file unrepaired.
