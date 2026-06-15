@@ -101,9 +101,15 @@ RSpec.describe Rubino::Tools::WriteTool do
   # boundary, before the approval prompt sees it.
   describe "workspace sandbox" do
     it "refuses to write outside the workspace root" do
-      out = tool.call("file_path" => "/etc/passwd", "content" => "pwned")
+      # A non-denylisted absolute path (the #413 credential denylist would
+      # short-circuit /etc/passwd before the workspace check) so this still
+      # exercises the WORKSPACE boundary specifically.
+      outside = File.join(Dir.mktmpdir("ws_escape"), "loot.txt")
+      out = tool.call("file_path" => outside, "content" => "pwned")
       expect(out).to include("refusing to access")
-      expect(File.read("/etc/passwd")).not_to include("pwned") if File.readable?("/etc/passwd")
+      expect(File.exist?(outside)).to be false
+    ensure
+      FileUtils.rm_rf(File.dirname(outside))
     end
 
     it "refuses to write through ../../ traversal" do

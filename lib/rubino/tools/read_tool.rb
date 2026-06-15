@@ -52,11 +52,14 @@ module Rubino
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = expand_workspace_path(file_path)
-        # An out-of-workspace path is DENIED, not "missing": report it as such
-        # (typed error) so the model never concludes the file doesn't exist and
-        # proposes creating/overwriting it (r5 MF-1). Checked before existence
-        # so we don't leak whether a file outside the sandbox is present.
-        return outside_workspace_message(file_path) if outside_workspace?(expanded)
+        # Reads are BROAD (#406): like Hermes/Claude/Codex, read resolves any
+        # path — the read allowlist was never the data-loss boundary (that lives
+        # on the WRITE path: overwrite_guard / read_gate). Only a small secret
+        # denylist (defense-in-depth, NOT a hard boundary) is refused, so the
+        # model doesn't slurp credentials into context.
+        if (category = read_secret_category(expanded))
+          return read_secret_block_message(file_path, category)
+        end
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 

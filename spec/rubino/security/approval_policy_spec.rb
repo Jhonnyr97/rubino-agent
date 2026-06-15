@@ -209,6 +209,42 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
   end
 
+  # #405: the skill tool is :low (so a read_only agent keeps load/list/show),
+  # but skill(action: "create") WRITES a SKILL.md — it must route to :ask like
+  # any write, so a headless read_only subagent's :ask becomes a fail-closed
+  # block instead of a silent unapproved write. --yolo (step 3) still creates.
+  describe "#decide skill create write-gate (#405)" do
+    let(:skill) { make_tool(name: "skill", risk_level: :low, risky: false) }
+
+    it "asks before a skill(action: create) write even under auto mode" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { "action" => "create", "name" => "evil" })).to eq(:ask)
+    end
+
+    it "asks for a create whether the action key is a string or a symbol" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { action: "create", name: "evil" })).to eq(:ask)
+    end
+
+    it "still auto-allows the read-only skill actions (load/list/show)" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { "action" => "load", "name" => "git-flow" })).to eq(:allow)
+      expect(pol.decide(skill, arguments: { "action" => "list" })).to eq(:allow)
+      expect(pol.decide(skill, arguments: { "action" => "show", "name" => "git-flow" })).to eq(:allow)
+    end
+
+    it "lets a full-access --yolo agent create skills inline (step 3 wins)" do
+      allow(Rubino::Modes).to receive(:skip_approvals?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { "action" => "create", "name" => "ok" })).to eq(:allow)
+    end
+
+    it "scopes the approval string as '<action> <name>' for create granularity" do
+      str = described_class.command_string(skill, { "action" => "create", "name" => "deploy" })
+      expect(str).to eq("create deploy")
+    end
+  end
+
   describe ".command_string" do
     it "extracts the shell command" do
       tool = make_tool(name: "shell", risk_level: :high, risky: true)
