@@ -236,12 +236,11 @@ module Rubino
         end
 
         # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
-        # nothing (a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
-        # so `memory delete ""` wiped the whole store and reported success — data
-        # loss, #416). An EXACT id always wins; otherwise we accept a prefix ONLY
-        # when it is non-empty AND unambiguous (matches exactly one row), so a
-        # short id from `memory list` still works but a 1-char prefix can never
-        # mass-select. Returns the single row or nil.
+        # nothing — a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
+        # so `memory delete ""` wiped the whole store and reported success (#416).
+        # EXACT id wins; else accept a prefix ONLY when unambiguous (one match),
+        # so a short id from `memory list` works but a 1-char prefix can't
+        # mass-select. limit(2) distinguishes "one" from "many".
         def resolve_row(id)
           key = id.to_s
           return nil if key.strip.empty?
@@ -249,11 +248,6 @@ module Rubino
           exact = @db[TABLE].where(id: key).first
           return exact if exact
 
-          # Match `key` as a LITERAL prefix (id is a hyphenated hex UUID, never
-          # containing LIKE wildcards) and accept it ONLY when it is unambiguous
-          # — exactly one row. limit(2) is enough to tell "one" from "many", so a
-          # short prefix that spans multiple rows resolves to nil instead of
-          # selecting them all.
           matches = @db[TABLE].where(Sequel.like(:id, "#{key}%")).limit(2).all
           matches.size == 1 ? matches.first : nil
         end
