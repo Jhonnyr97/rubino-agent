@@ -686,8 +686,10 @@ RSpec.describe Rubino::Agent::Loop do
     # transcript is NOT truncated, and exactly one summary closes the turn at
     # the (now-extended) cap.
     it "continue: extends the budget and resumes the same turn with full context" do
-      # 2 iterations hit the cap → continue (+2) → 2 more iterations → cap again →
-      # summarize (script falls through) → terminate.
+      # 2 iterations hit the cap → continue (+10) → the remaining 2 tool
+      # round-trips run on the SAME turn → the model emits its final text. The
+      # generous +10 means the turn never re-caps, so it finishes cleanly with
+      # no force-summary nudge — proving the resume kept full context.
       ui = sequenced_ui_class.new([:continue])
       budget = Rubino::Agent::IterationBudget.new(config: tight_config)
       4.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
@@ -703,15 +705,19 @@ RSpec.describe Rubino::Agent::Loop do
       messages = user_messages
       result = loop_instance.run(messages: messages, tools: [looping_tool])
 
-      # extend! was invoked once with the configured step (= max_tool_iterations).
+      # extend! was invoked exactly once with the configured step — the cap was
+      # raised live rather than the turn being force-summarized.
       expect(extended).to eq([tight_config.agent_budget_extension_step])
+      # The turn RESUMED and ran to its natural final text (no force-summary
+      # truncation): all FOUR scripted tool round-trips ran post-extension and
+      # the model's own closing text — not a nudge-driven summary — is returned.
       expect(result).to eq("Final summary after the extension.")
-      # Transcript NOT truncated: the nudge appears once (the single closing
-      # summary), and all four tool round-trips' results are still present.
-      nudges = messages.count { |m| m[:content] == Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE }
-      expect(nudges).to eq(1)
       tool_results = messages.count { |m| m[:role] == "tool" }
       expect(tool_results).to eq(4)
+      # Transcript NOT truncated and NOT re-summarized: the extension gave enough
+      # room to finish cleanly, so the force-summarize nudge was never injected.
+      nudges = messages.count { |m| m[:content] == Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE }
+      expect(nudges).to eq(0)
     end
 
     # Spec 2: cap → summarize is byte-identical to today's force-summarize — one
