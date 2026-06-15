@@ -92,9 +92,9 @@ RSpec.describe Rubino::Security::HardlineGuard do
       "rm${IFS}-rf${IFS}/tmp/build", # ${IFS} to a SAFE path
       # #379: continuation INSIDE a token / ${IFS:0:1} / varname-default folding
       # must not false-positive on safe targets.
-      "rm -r\\\nf /tmp/build",       # token-split continuation, SAFE path
+      "rm -r\\\nf /tmp/build", # token-split continuation, SAFE path
       "rm${IFS:0:1}-rf${IFS:0:1}/tmp/build", # ${IFS:0:1} to a SAFE path
-      "echo ${EDITOR:-vim}"          # varname-default folding, harmless
+      "echo ${EDITOR:-vim}" # varname-default folding, harmless
     ].each do |command|
       it "allows #{command.inspect}" do
         blocked, = described_class.detect(command)

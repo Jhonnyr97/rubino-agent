@@ -23,6 +23,28 @@ module Rubino
 
         NAME_RE = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
 
+        # Common 4+-char English / dev words that carry no topical signal. A
+        # single one of these overlapping ("file", "code", "this", "with",
+        # "rails" sitting in a skill description) must NOT count as coverage —
+        # that single-shared-word rule (#368) over-suppressed legitimately
+        # distinct tasks ("deploy workflow for Rails" suppressed by the word
+        # "rails" appearing in ruby-expert's description).
+        STOPWORDS = %w[
+          this that with from your into about make made using used will would
+          should could have has had been being does done when then than them
+          they their there here what which while also some such only just like
+          want need help please thing things file files code line lines step
+          steps task tasks work works call calls user users data text time
+          name names show list find each both more most less very much many
+          good well over under again same other else type kind sort
+        ].to_set.freeze
+
+        # Coverage requires MEANINGFUL overlap (#368), not a single shared word:
+        # a name-level match, OR salient stopword-filtered tokens overlapping by
+        # at least COVERAGE_JACCARD with at least MIN_SHARED_SALIENT shared tokens.
+        COVERAGE_JACCARD = 0.4
+        MIN_SHARED_SALIENT = 2
+
         DISTILL_SYSTEM = <<~SYS
           You distil a just-finished agent task into a REUSABLE skill, or decline.
           You are given the user's task and a transcript of the tools the agent ran
@@ -71,34 +93,12 @@ module Rubino
           messages.count { |m| m.role == "tool" }
         end
 
-        # Common 4+-char English / dev words that carry no topical signal. A
-        # single one of these overlapping ("file", "code", "this", "with",
-        # "rails" sitting in a skill description) must NOT count as coverage —
-        # that single-shared-word rule (#368) over-suppressed legitimately
-        # distinct tasks ("deploy workflow for Rails" suppressed by the word
-        # "rails" appearing in ruby-expert's description).
-        STOPWORDS = %w[
-          this that with from your into about make made using used will would
-          should could have has had been being does done when then than them
-          they their there here what which while also some such only just like
-          want need help please thing things file files code line lines step
-          steps task tasks work works call calls user users data text time
-          name names show list find each both more most less very much many
-          good well done over under again same other else type kind sort
-        ].to_set.freeze
-
-        # "No skill already covering it": if the registry is empty, never covered.
-        # Otherwise covered only on a MEANINGFUL overlap — not a single shared
-        # word (#368). We treat a skill as covering the task when EITHER:
-        #   * the skill NAME (its tokens, kebab-split) is wholly present in the
-        #     task — a name-level match ("add-sinatra-post-endpoint" vs a task
-        #     about adding a Sinatra POST endpoint), OR
-        #   * the salient (stopword-filtered) tokens of task and skill overlap
-        #     by Jaccard >= COVERAGE_JACCARD AND share at least two such tokens.
-        # A lone common word ("rails", "file") can no longer suppress a job.
-        COVERAGE_JACCARD = 0.4
-        MIN_SHARED_SALIENT = 2
-
+        # "No skill already covering it": empty registry -> never covered. Else
+        # covered only on a MEANINGFUL overlap (#368) — the skill NAME's salient
+        # tokens are wholly present in the task (name-level match), or the
+        # stopword-filtered salient tokens overlap by Jaccard >= COVERAGE_JACCARD
+        # AND share >= MIN_SHARED_SALIENT tokens. A lone common word can no longer
+        # suppress a distinct task. Deterministic, cheap, no model call.
         def already_covered?(messages)
           skills = registry.all
           return false if skills.empty?
