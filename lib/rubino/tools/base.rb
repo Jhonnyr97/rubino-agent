@@ -289,6 +289,105 @@ module Rubino
           error_code: :secret_denied }
       end
 
+      # WRITE-side credential DENYLIST (#413, mirrors Hermes file_safety
+      # build_write_denied_paths/prefixes + is_write_denied). ALWAYS ON — it
+      # does NOT consult workspace_strict?, so it still refuses even when the
+      # workspace sandbox is disabled (tools.workspace_strict=false) AND even
+      # when the target sits INSIDE the workspace. This is a defense-in-depth
+      # FLOOR against a prompt-injected write/edit/multi_edit/apply_patch
+      # clobbering credentials or system files — NOT the security boundary
+      # (that remains the workspace sandbox + the approval flow). The shell
+      # tool can still touch anything; this only guards the structured write
+      # tools, where a single hallucinated file_path is the realistic risk.
+      #
+      # Refuses (by BASENAME, in any directory):
+      #   - project credential files: .env, .env.* (.env.local/.production), .envrc
+      #   - shell/credential dotfiles: .netrc, .pgpass, .npmrc, .pypirc,
+      #     .git-credentials, .bashrc, .zshrc, .profile, .bash_profile, .zprofile
+      # Refuses (by absolute PATH / PREFIX):
+      #   - ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.docker, ~/.azure,
+      #     ~/.config/gh, ~/.config/gcloud  (the whole tree)
+      #   - /etc/sudoers, /etc/sudoers.d/*, /etc/passwd, /etc/shadow,
+      #     /etc/systemd/*
+      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
+      #     the home .env, the sqlite DB, any *oauth* file, an mcp-tokens/ dir,
+      #     and *.key / *.pem material.
+      # Returns the matched category string (truthy) or nil when writable.
+      WRITE_SECRET_BASENAME_RE = /
+        \A\.env(\..+)?\z | \A\.envrc\z |
+        \A\.netrc\z | \A\.pgpass\z | \A\.npmrc\z | \A\.pypirc\z |
+        \A\.git-credentials\z |
+        \A\.bashrc\z | \A\.zshrc\z | \A\.profile\z | \A\.bash_profile\z | \A\.zprofile\z
+      /x
+
+      # Home-relative subtrees no write tool may touch (resolved against $HOME).
+      WRITE_DENIED_HOME_PREFIXES = [
+        ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure",
+        ".config/gh", ".config/gcloud"
+      ].freeze
+
+      # Absolute system paths/prefixes no write tool may touch.
+      WRITE_DENIED_SYSTEM_PATHS    = ["/etc/sudoers", "/etc/passwd", "/etc/shadow"].freeze
+      WRITE_DENIED_SYSTEM_PREFIXES = ["/etc/sudoers.d", "/etc/systemd"].freeze
+
+      def write_secret_category(expanded)
+        base   = File.basename(expanded.to_s)
+        target = canonical_path(expanded) || File.expand_path(expanded.to_s)
+
+        return "credential file (#{base})" if base.match?(WRITE_SECRET_BASENAME_RE)
+        if (cat = write_denied_path_category(target, base))
+          return cat
+        end
+
+        write_agent_home_secret_category(expanded, base, target)
+      end
+
+      # Absolute-path / prefix matches (SSH keys, cloud creds, /etc system
+      # files). Compared against the symlink-resolved target so an in-workspace
+      # link to ~/.ssh can't slip a key write past the basename check.
+      def write_denied_path_category(target, base)
+        home = File.expand_path("~")
+        WRITE_DENIED_HOME_PREFIXES.each do |rel|
+          root = File.join(home, rel)
+          return "credential directory (~/#{rel})" if under_path?(target, root)
+        end
+        return "system file (#{base})" if WRITE_DENIED_SYSTEM_PATHS.include?(target)
+
+        WRITE_DENIED_SYSTEM_PREFIXES.each do |prefix|
+          return "system path (#{prefix})" if under_path?(target, prefix)
+        end
+        nil
+      end
+
+      # Agent-home (~/.rubino) auth/secret material, mirroring the READ-side
+      # home rules so the write path can't overwrite the token store either.
+      def write_agent_home_secret_category(expanded, base, target)
+        return unless under_agent_home?(expanded)
+
+        lower = target.downcase
+        return unless base == ".env" || base.match?(WRITE_SECRET_BASENAME_RE) ||
+                      base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
+                      lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
+                      base.end_with?(".key") || base.end_with?(".pem")
+
+        "agent-home secret (#{base})"
+      end
+
+      # True when +target+ is +root+ itself or sits under it. Both are already
+      # absolute; root gets a trailing-separator guard so /etc/sudoers doesn't
+      # match /etc/sudoers-backup.
+      def under_path?(target, root)
+        target == root || target.start_with?("#{root}#{File::SEPARATOR}")
+      end
+
+      def write_secret_block_message(path, category)
+        { output: "Error: refusing to WRITE '#{path}' — it is a #{category}. " \
+                  "Writing to credential/system files is blocked as an always-on safeguard " \
+                  "(independent of the workspace sandbox; not the security boundary). " \
+                  "If the user genuinely needs this file changed, ask them to do it themselves.",
+          error_code: :write_secret_denied }
+      end
+
       # True when +expanded+ resolves under the Rubino home directory. Symlinks
       # are resolved on both sides so a link can't be used to claim home-ness.
       def under_agent_home?(expanded)

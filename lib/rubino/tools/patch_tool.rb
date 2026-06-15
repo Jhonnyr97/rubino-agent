@@ -66,6 +66,13 @@ module Rubino
         hunks.each do |hunk|
           file_path = File.expand_path(hunk[:file], base_path)
 
+          # ALWAYS-ON write-side credential denylist (#413), checked BEFORE the
+          # workspace toggle so it refuses even when workspace_strict=false.
+          if (category = write_secret_category(file_path))
+            return [nil, write_secret_block_message(hunk[:file], category)[:output] +
+                         " (no changes applied — apply_patch is two-phase)"]
+          end
+
           unless within_workspace?(file_path)
             return [nil, workspace_violation_message(hunk[:file]) +
                          " (no changes applied — apply_patch is two-phase)"]
