@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "tmpdir"
+
 RSpec.describe Rubino::Database::Migrator do
   subject(:migrator) { described_class.new(connection) }
 
@@ -26,5 +28,91 @@ RSpec.describe Rubino::Database::Migrator do
 
       expect { described_class.new(broken).pending? }.to raise_error(Sequel::DatabaseError)
     end
+  end
+
+  describe "#up_to_date? (side-effect-free fast path, #race)" do
+    # The fast path MUST NOT construct a Sequel migrator off the lock —
+    # constructing one inserts the version-0 row, which is the exact write that
+    # races into a duplicate-schema_info corruption. So `up_to_date?` reads
+    # `schema_info` directly and is a pure read.
+    it "is false on a fresh DB without inserting a schema_info row" do
+      expect(migrator.up_to_date?).to be(false)
+      # No row was created by the check — the table doesn't exist yet, proving
+      # the probe did not construct the migrator (which would have inserted 0).
+      expect(connection.db.table_exists?(:schema_info)).to be(false)
+    end
+
+    it "is true once migrations are applied" do
+      migrator.migrate!
+      expect(migrator.up_to_date?).to be(true)
+    end
+
+    it "is false (not a raise) when the migrator table has duplicate rows" do
+      seed_duplicate_schema_info(connection)
+      expect(migrator.up_to_date?).to be(false)
+    end
+  end
+
+  describe "concurrent #migrate! under a file lock (#race)" do
+    # Two processes migrating the SAME fresh on-disk DB at once used to produce a
+    # duplicate schema_info row (or a partial schema). With the flock + the
+    # side-effect-free fast path, the result is always a single row at the final
+    # version. Real processes (fork) on a real on-disk file are required: the
+    # bug and the lock are both inter-PROCESS.
+    it "ends at the final version with a SINGLE schema_info row" do
+      Dir.mktmpdir("migrator-race") do |home|
+        db_path = File.join(home, "rubino.sqlite3")
+        lock = File.join(home, ".migrate.lock")
+        barrier = Time.now.to_f + 0.3
+
+        pids = Array.new(6) do
+          fork do
+            conn = Rubino::Database::Connection.new(db_path)
+            mig = described_class.new(conn)
+            sleep([barrier - Time.now.to_f, 0].max)
+            # Mirror the boot path: skip the real migrate only when already
+            # current (side-effect-free), else migrate under the lock.
+            mig.migrate!(lock_path: lock) unless conn.healthy? && mig.up_to_date?
+            conn.close
+            exit!(0)
+          end
+        end
+        pids.each { |pid| Process.wait(pid) }
+
+        db = Sequel.sqlite(db_path)
+        versions = db[:schema_info].select_map(:version)
+        expect(versions).to eq([described_class.latest_version])
+        expect(db.table_exists?(:sessions)).to be(true)
+        db.disconnect
+      end
+    end
+  end
+
+  describe "#repair! (recover the #race duplicate-schema_info state)" do
+    it "dedupes the migrator table to one row and finishes migrations" do
+      Dir.mktmpdir("migrator-repair") do |home|
+        db_path = File.join(home, "rubino.sqlite3")
+        conn = Rubino::Database::Connection.new(db_path)
+        seed_duplicate_schema_info(conn)
+        mig = described_class.new(conn)
+
+        expect(mig.duplicate_version_rows?).to be(true)
+        mig.repair!(lock_path: File.join(home, ".migrate.lock"))
+
+        expect(conn.db[:schema_info].select_map(:version)).to eq([described_class.latest_version])
+        expect(mig.duplicate_version_rows?).to be(false)
+        expect(conn.db.table_exists?(:sessions)).to be(true)
+        conn.close
+      end
+    end
+  end
+
+  # Reproduce the race artifact deterministically: a schema_info table with TWO
+  # version-0 rows and no user tables.
+  def seed_duplicate_schema_info(conn)
+    db = conn.db
+    db.create_table?(:schema_info) { Integer :version, default: 0, null: false }
+    db[:schema_info].delete
+    db[:schema_info].multi_insert([{ version: 0 }, { version: 0 }])
   end
 end

@@ -285,14 +285,59 @@ module Rubino
     def ensure_database_ready!
       connection = database
       migrator   = Database::Migrator.new(connection)
-      return true unless connection.healthy? == false || migrator.pending?
+
+      # FAST PATH (lock-free, race-safe): a side-effect-free read of
+      # `schema_info` that does NOT construct a Sequel migrator. The common case
+      # — an already-set-up home — returns here without touching the lock. Note
+      # we MUST NOT call `migrator.pending?` off the lock: merely constructing
+      # Sequel's IntegerMigrator inserts the version-0 row, and two concurrent
+      # boots both inserting it is exactly the duplicate-row corruption (#race).
+      return true if connection.healthy? && migrator.up_to_date?
 
       ensure_directories!
-      migrator.migrate!
+      # Serialize the migration across concurrent boots (#race): N fresh
+      # `rubino` processes on a brand-new home would otherwise BOTH probe +
+      # migrate at once and corrupt the migrator bookkeeping. migrate! takes an
+      # exclusive flock and does the `pending?` probe + migrate entirely under
+      # it; waiters re-check and no-op. The lockfile lives in the home, which
+      # ensure_directories! just created.
+      migrator.migrate!(lock_path: migration_lock_path)
       true
     rescue StandardError => e
       logger.debug(event: "ensure_database_ready_failed", error: "#{e.class}: #{e.message}")
       false
+    end
+
+    # Path to the inter-process migration lockfile in the rubino home. A single
+    # source of truth so setup and the boot path lock on the SAME file.
+    def migration_lock_path
+      File.join(home_path, ".migrate.lock")
+    end
+
+    # A clean, actionable message when the on-disk DB is PRESENT but UNUSABLE,
+    # else nil. Covers two un-setup-able states a user command must never crash
+    # on with a raw backtrace (#333/#359/#race):
+    #   * corrupt/malformed image → quarantine + recreate via setup.
+    #   * duplicate `schema_info` version rows, the concurrent first-boot race
+    #     artifact → without this guard `sessions list` hits the partial schema
+    #     and dumps a raw `Sequel::DatabaseError: no such table: sessions`.
+    # Read-only: never creates the file (matches doctor's #68 contract).
+    def database_repair_message
+      db = database
+      return nil if db.memory? || !File.exist?(db.db_path)
+
+      if db.corrupt?
+        "database is corrupt (malformed image): #{db.db_path}\n" \
+          "Run `rubino doctor` to diagnose, then `rubino setup` to quarantine it " \
+          "and recreate a fresh database."
+      elsif Database::Migrator.new(db).duplicate_version_rows?
+        "database needs repair (interrupted/raced migration left duplicate version rows): #{db.db_path}\n" \
+          "Run `rubino setup` to repair it."
+      end
+    rescue StandardError
+      # Detection itself must never crash a command; treat an unexpected probe
+      # failure as "no clean message available" and let normal flow continue.
+      nil
     end
 
     # Returns the event bus instance

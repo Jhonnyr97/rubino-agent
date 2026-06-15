@@ -152,19 +152,16 @@ module Rubino
         Config::Loader.new.config_path
       end
 
-      # Turn a corrupt/malformed on-disk DB into a clean, actionable diagnostic
-      # instead of leaking a raw Sequel/sqlite3 backtrace (#333b) — mirrors
-      # SessionCommand#guard_corrupt_database!. `memory list` was the one user
-      # command that still dumped the ~20-line trace on a file-corrupt DB; route
-      # it through the same guarded path doctor already uses. Thor prints a
-      # Thor::Error's message to stderr and exits non-zero with no backtrace.
+      # Turn a PRESENT-but-UNUSABLE on-disk DB (corrupt image, or the duplicate
+      # `schema_info` rows a concurrent first-boot race leaves, #race) into a
+      # clean, actionable diagnostic instead of leaking a raw Sequel/sqlite3
+      # backtrace (#333b / #race) — shares one detection with
+      # SessionCommand#guard_corrupt_database! via Rubino.database_repair_message.
+      # Thor prints a Thor::Error's message to stderr and exits non-zero with no
+      # backtrace.
       def guard_corrupt_database!
-        return unless Rubino.database.corrupt?
-
-        raise Thor::Error,
-              "database is corrupt (malformed image): #{Rubino.database.db_path}\n" \
-              "Run `rubino doctor` to diagnose, then `rubino setup` to quarantine it " \
-              "and recreate a fresh database."
+        message = Rubino.database_repair_message
+        raise Thor::Error, message if message
       end
     end
   end
