@@ -146,14 +146,21 @@ module Rubino
         #    validator cannot prove read-only falls through to the prompt.
         return :allow if readonly_auto_allowed?(tool, command_str)
 
-        # 6c. skill(action: "create") WRITES .rubino/skills/<name>/SKILL.md and
-        #    must not be a silent low-risk allow (#405): the skill tool stays
+        # 6c. skill(action: "create") WRITES <RUBINO_HOME>/skills/<name>/SKILL.md
+        #    and must not be a silent low-risk allow (#405): the skill tool stays
         #    :low so a read_only agent keeps `skill load/list/show`, but the
         #    create action is a write and routes to :ask here — like any write.
         #    Below yolo (step 3), so a full-access --yolo agent still creates
         #    skills inline; a headless read_only subagent's :ask becomes the
         #    fail-closed block, closing the unapproved-write path. load is never
         #    gated (only the create action matches).
+        #
+        #    This gate is now a real boundary, not theater (SK-2): authored
+        #    skills are written under the agent HOME (outside the cwd workspace),
+        #    so the model can't sidestep it by emitting a plain `write` of the
+        #    same SKILL.md — the workspace sandbox (within_workspace?) refuses any
+        #    write outside the workspace, leaving this :ask-gated helper as the
+        #    ONLY way to author a skill.
         return :ask if skill_create?(tool, arguments)
 
         # 7-8. confirm_policy gate for a shell command not otherwise resolved.
