@@ -237,7 +237,10 @@ module Rubino
           thinking: request.thinking,
           prefill: seed,
           image_paths: request.image_paths,
-          stream: request.stream?
+          stream: request.stream?,
+          on_intermediate_message: request.on_intermediate_message,
+          on_round_trip: request.on_round_trip,
+          budget_exhausted: request.budget_exhausted
         )
       end
 

@@ -17,7 +17,7 @@ module Rubino
 
       def initialize(content:, tool_calls:, input_tokens:, output_tokens:, model_id:,
                      interrupted: false, thinking: nil, stop_reason: nil, raw: nil,
-                     cache_read_tokens: 0, cache_creation_tokens: 0)
+                     cache_read_tokens: 0, cache_creation_tokens: 0, halted: false)
         @content       = content
         @tool_calls    = tool_calls || []
         @input_tokens  = input_tokens || 0
@@ -43,6 +43,16 @@ module Rubino
         # Escape hatch to the underlying provider response. The loop must NOT
         # branch on it; it exists for diagnostics / later-slice needs only.
         @raw           = raw
+        # True when the streaming round-trip loop was HALTED mid-flight because
+        # the per-turn iteration/time budget was exhausted (#355a). The Loop reads
+        # this to run its budget-exhausted summary instead of treating the
+        # buffered preamble as the final answer.
+        @halted        = halted
+      end
+
+      # See #initialize — the streaming tool loop was cut short by the budget.
+      def halted?
+        @halted
       end
 
       # Token usage as a nil-safe Hash, the shape the recovery layers read.
