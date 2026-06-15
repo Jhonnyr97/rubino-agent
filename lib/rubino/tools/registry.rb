@@ -214,19 +214,49 @@ module Rubino
           true
         end
 
-        # Hides tools whose runtime dependency isn't configured. Currently only
-        # the `vision` tool: hide ONLY when no auxiliary is configured AND the
-        # primary can't see — that's the one case where calling the tool would
-        # error at runtime. In every other case keep it exposed, including when
-        # the primary already supports vision natively: the model may prefer to
-        # delegate to a better aux (e.g. primary "auto" routes to a mediocre
-        # VLM but auxiliary is Gemini 2.5 Flash / MiniMax-M3). Letting the
-        # model choose is cheap and sometimes the right call.
+        # Hides tools whose runtime dependency isn't configured.
+        #
+        # - vision: hide ONLY when no auxiliary is configured AND the primary
+        #   can't see — the one case where calling it would error at runtime. In
+        #   every other case keep it exposed (the model may prefer a better aux).
+        # - web (webfetch/websearch): now ships ON by default (#411), keyless via
+        #   DuckDuckGo. Hide it only when the web backend is provably unreachable
+        #   so an offline/air-gapped run DEGRADES gracefully (no web tool in the
+        #   request) instead of the model calling a tool that can only error. The
+        #   check is cached + best-effort: a reachable backend (an API key set,
+        #   or DNS resolves) keeps the tools; only a clear "no network at all"
+        #   removes them. On any uncertainty we KEEP the tools exposed (the tool
+        #   itself already returns an error string rather than crashing a turn).
         def aux_dependency_satisfied?(tool, config)
-          return true unless tool.name == "vision"
+          case tool.config_key
+          when "vision"
+            aux_model = config.auxiliary_vision_config["model"].to_s
+            !aux_model.empty? || config.model_supports_vision?
+          when "web"
+            web_backend_available?
+          else
+            true
+          end
+        end
 
-          aux_model = config.auxiliary_vision_config["model"].to_s
-          !aux_model.empty? || config.model_supports_vision?
+        # Best-effort capability check for the web tools (#411). A configured
+        # search API (Tavily/SearXNG) is taken as available without a network
+        # probe; otherwise we check that the DuckDuckGo host resolves. Result is
+        # memoized for the process so it never adds per-turn latency, and any
+        # error resolves to AVAILABLE (fail-open: keep the tool, let the call
+        # surface a runtime error string rather than silently hiding web access).
+        def web_backend_available?
+          return @web_backend_available unless @web_backend_available.nil?
+
+          @web_backend_available =
+            if ENV["TAVILY_API_KEY"] || ENV["SEARXNG_URL"]
+              true
+            else
+              require "resolv"
+              !Resolv.getaddress("html.duckduckgo.com").nil?
+            end
+        rescue StandardError
+          @web_backend_available = true
         end
       end
     end

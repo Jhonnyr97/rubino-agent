@@ -38,6 +38,29 @@ RSpec.describe Rubino::Security::DoomLoopDetector do
     end
   end
 
+  describe "defaults (#414 Hermes alignment)" do
+    it "defaults the threshold to 5 (raised from 3) and warns, not blocks" do
+      d = described_class.new
+      expect(d.threshold).to eq(5)
+      expect(d.hard_stop?).to be(false)
+    end
+
+    it "does not trip at the old threshold of 3 with the new default" do
+      d = described_class.new
+      3.times { expect(d.record(tool_name: "read", arguments: { "p" => "x" })).to be(false) }
+    end
+
+    it "trips at 5 identical calls under the default threshold" do
+      d = described_class.new
+      4.times { expect(d.record(tool_name: "read", arguments: { "p" => "x" })).to be(false) }
+      expect(d.record(tool_name: "read", arguments: { "p" => "x" })).to be(true)
+    end
+
+    it "honours hard_stop: true" do
+      expect(described_class.new(hard_stop: true).hard_stop?).to be(true)
+    end
+  end
+
   describe "#reset!" do
     it "clears history so a fresh sequence does not trigger immediately" do
       3.times { detector.record(tool_name: "x", arguments: {}) }

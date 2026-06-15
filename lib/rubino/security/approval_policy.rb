@@ -36,8 +36,23 @@ module Rubino
         @pattern_matcher = PatternMatcher.new(
           rules: load_permission_rules(agent_overrides)
         )
-        @doom_detector = DoomLoopDetector.new
+        # Doom-loop guard, config-driven (#414). Default WARN-not-block with a
+        # higher threshold (Hermes tool_guardrails alignment): a tripped detector
+        # under hard_stop:false surfaces a warning but lets the call run.
+        @doom_detector = DoomLoopDetector.new(
+          threshold: @config.respond_to?(:doom_loop_threshold) ? @config.doom_loop_threshold : DoomLoopDetector::DEFAULT_THRESHOLD,
+          hard_stop: @config.respond_to?(:doom_loop_hard_stop?) ? @config.doom_loop_hard_stop? : false
+        )
+        # Set true after a warn-mode doom-loop hit so ToolExecutor can surface a
+        # one-time warning to the model without denying the call. Cleared each
+        # #decide and on reset_turn!.
+        @doom_loop_warning = false
       end
+
+      # True when the LAST #decide tripped the doom-loop guard in WARN mode
+      # (hard_stop off): the call was allowed but the model should be told it is
+      # repeating an identical call. ToolExecutor reads this to attach a warning.
+      attr_reader :doom_loop_warning
 
       # Returns the decision for a tool call: :allow, :ask, :deny
       #
@@ -69,6 +84,7 @@ module Rubino
       # by a fast-path the way yolo used to override deny rules.
       def decide(tool, arguments: {})
         @last_deny_reason = nil
+        @doom_loop_warning = false
         command_str = self.class.command_string(tool, arguments)
 
         # 1. Hardline floor — a floor BELOW yolo. Catastrophic, unrecoverable
@@ -95,15 +111,15 @@ module Rubino
         #    run the doom detector AFTER, because an autopilot stuck in a loop
         #    is the one thing yolo isn't supposed to license.
         if Rubino::Modes.skip_approvals?
-          return deny_with(:doom_loop) if @doom_detector.record(tool_name: tool.name, arguments: arguments)
+          return deny_with(:doom_loop) if doom_loop_blocks?(tool, arguments)
 
           return :allow
         end
 
-        # 4. Doom loop guard.
-        if @doom_detector.record(tool_name: tool.name, arguments: arguments)
-          return deny_with(:doom_loop) # Break the loop
-        end
+        # 4. Doom loop guard. Blocks only under hard_stop (#414); in the default
+        #    warn mode it sets @doom_loop_warning and falls through to the normal
+        #    decision so a legitimate repeated call is not hard-denied.
+        return deny_with(:doom_loop) if doom_loop_blocks?(tool, arguments)
 
         # 5. Remaining explicit pattern rules (allow / ask). deny was already
         #    handled in step 2.
@@ -237,6 +253,21 @@ module Rubino
       end
 
       private
+
+      # Records the tool call in the doom detector and returns true ONLY when it
+      # tripped AND the guard is in hard_stop mode (=> block). In the default
+      # warn mode a trip sets @doom_loop_warning and returns false, so the call
+      # proceeds through the normal decision path (#414).
+      def doom_loop_blocks?(tool, arguments)
+        return false unless @doom_detector.record(tool_name: tool.name, arguments: arguments)
+
+        if @doom_detector.hard_stop?
+          true
+        else
+          @doom_loop_warning = true
+          false
+        end
+      end
 
       # Records WHY this deny fired before returning it (see #last_deny_reason).
       def deny_with(reason)

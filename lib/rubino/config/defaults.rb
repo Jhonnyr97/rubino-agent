@@ -18,10 +18,18 @@ module Rubino
 
       MODULE_DEFAULTS = {
         "model" => {
-          "default" => "openai/gpt-4.1",
+          # Aligned to the onboarding wizard / .env recommendation (MiniMax) to
+          # resolve the openai-vs-minimax inconsistency the audit flagged (#414):
+          # the stale openai/gpt-4.1 default never matched what setup recommends.
+          # FLAGGED FOR MAINTAINER CONFIRMATION — provider "auto" still lets a
+          # configured key for another backend take over.
+          "default" => "minimax/MiniMax-M3",
           "provider" => "auto",
           "context_length" => nil,
-          "temperature" => 0.3,
+          # nil = inherit the provider default (Hermes injects no temperature).
+          # 0.3 used to be hardcoded but is inert under thinking-on (forced to 1)
+          # and only surfaced when thinking was disabled (#414).
+          "temperature" => nil,
           # Max output tokens for the anthropic-family path (anthropic_compatible
           # MiniMax, native anthropic, bedrock). ruby_llm defaults the Anthropic
           # max_tokens to 4096, which a reasoning model can exhaust on thinking
@@ -110,12 +118,16 @@ module Rubino
           }
         },
         "agent" => {
+          # OUTER rail on tool iterations, enforced in IterationBudget alongside
+          # max_tool_iterations (#414): the budget caps at min(max_tool_iterations,
+          # max_turns). Previously DEAD config (assigned, never read); now wired as
+          # a real ceiling. `--max-turns N` overrides max_tool_iterations directly.
           "max_turns" => 90,
           # Per-turn model↔tool round-trip cap. Raised 8→25 (#399): 8 was a
           # rubino-only outlier (the Hermes reference uses 90; peer tools cluster
           # 10–25 for "stop-and-ask"). 25 matches Cursor's tuned interactive cap —
           # high enough that real multi-file tasks finish, low enough to still
-          # catch runaways. `max_turns`/`max_turn_seconds` stay as outer rails.
+          # catch runaways. Kept at 25 (a deliberate prior decision, #414).
           "max_tool_iterations" => 25,
           # At the iteration cap, in INTERACTIVE mode, prompt the user to
           # continue/summarize/abort instead of silently force-summarizing (#399).
@@ -124,10 +136,15 @@ module Rubino
           "budget_extension_prompt" => true,
           # The "+N" granted by one budget extension at the cap. nil ⇒ use
           # max_tool_iterations (so one extension doubles the runway). Capped by
-          # the outer max_turns / max_turn_seconds rails, which extensions do NOT
-          # raise — repeated extensions can never bypass the time/turn ceiling.
+          # the outer max_turns rail, which extensions do NOT raise — repeated
+          # extensions can never bypass the iteration/turn ceiling.
           "budget_extension_step" => nil,
-          "max_turn_seconds" => 120,
+          # Pure SAFETY-NET wall clock on a single turn, NOT a working-time cap
+          # (#408). Hermes' IterationBudget has no clock at all; the old 120s
+          # KILLED slow-but-legitimate test/build turns mid-work (and was the
+          # root that made the #403 budget-extension loop possible). Raised to a
+          # backstop only a genuinely runaway turn should ever hit. nil disables.
+          "max_turn_seconds" => 600,
           # 5 retries with exponential backoff = 1+2+4+8+16 = 31s total wait.
           # Sized to absorb common provider blips (MiniMax intl in particular
           # has been observed returning "API server error - please try again"
@@ -282,6 +299,14 @@ module Rubino
           "enabled" => true,
           "backend" => "sqlite",
           "auto_extract" => true,
+          # Throttle the background aux-LLM memory extraction to ~every N turns
+          # instead of EVERY turn (#412), mirroring Hermes' nudge_interval (10):
+          # extraction enqueues only when turns-since-last-extract >= this. 10x
+          # fewer aux calls + far less of the conversation shipped to the
+          # extractor. nil/<=1 = every turn (old behaviour). The extract is also
+          # ALWAYS backgrounded off the interactive critical path (never drained
+          # inline on the live CLI turn).
+          "auto_extract_interval" => 10,
           "auto_save" => true,
           "user_profile_enabled" => true,
           "project_context_enabled" => true,
@@ -349,12 +374,19 @@ module Rubino
           "git" => true,
           # Default ON: the agent ships to run inside an isolated per-customer
           # VM where running shell commands is the whole point. The blast radius
-          # is the VM, and security.require_confirmation_for_shell (default true)
-          # still gates every command behind an approval prompt.
+          # is the VM, and security.confirm_policy (default dangerous_only) still
+          # routes any DangerousPattern command through an approval prompt while
+          # safe commands run unprompted (set confirm_policy: confirm_all to gate
+          # every command).
           "shell" => true,
           "ruby" => true,
 
-          "web" => false,
+          # Default ON, matching Hermes (web tools ship in the default toolset,
+          # keyless via the DuckDuckGo backend) (#411). Gated at runtime on
+          # backend reachability in Registry#web_backend_available? so an
+          # unreachable network DEGRADES gracefully (the tool is hidden / its
+          # call returns an error string) rather than crashing a turn.
+          "web" => true,
           "memory" => true
         },
         "tool_output" => {
@@ -449,39 +481,47 @@ module Rubino
         },
         "security" => {
           # Prompt policy for shell commands not otherwise allowed/denied:
-          #   confirm_all    (DEFAULT) every such command prompts for approval.
-          #   dangerous_only (reference-faithful) safe commands run unprompted;
-          #                  only DangerousPatterns matches prompt.
-          # Intentionally NOT defaulted here: when the key is absent the
-          # accessor derives it from require_confirmation_for_shell below
-          # (true -> confirm_all, false -> dangerous_only). Setting the key
-          # explicitly makes confirm_policy win over the legacy alias. The
-          # hardline floor and permissions:deny always precede this regardless
-          # of policy, so dangerous_only never weakens the non-bypassable floor.
-          #
-          #   "confirm_policy" => "confirm_all",
-          #
-          # Legacy alias for confirm_policy (see above). Kept working for any
-          # existing readers. When true, every `shell` command goes through the
-          # approval prompt regardless of the tool's own risk level. Default ON.
-          "require_confirmation_for_shell" => true,
-          # Ships ONLY provably read-only git verbs. Test/build runners
-          # (`bundle exec rspec`, `rake`, `npm test`, ...) are deliberately NOT
-          # shipped auto-approved: they load and execute arbitrary project code
-          # by design (`rspec -r FILE`/`--require`, a Rakefile, a test helper),
-          # so an allowlist entry for one is a default-config RCE past the
-          # headless gate (SEC-R2-3). A code-loading runner is not safely
-          # allowlistable; users who want one opt in explicitly.
-          "command_allowlist" => [
-            "git status",
-            "git diff"
-          ],
+          #   dangerous_only (DEFAULT, reference-faithful) safe commands run
+          #                  unprompted; only DangerousPatterns matches prompt.
+          #   confirm_all    (opt-in hardening) every such command prompts.
+          # Aligned to Hermes (#409): Hermes has no confirm-policy concept —
+          # detect_dangerous_command is its SOLE prompt trigger; non-dangerous
+          # commands run unprompted. The old confirm_all default prompted on
+          # every npm test / make / ls — huge DX friction. The hardline floor
+          # and permissions:deny always precede this regardless of policy, so
+          # dangerous_only never weakens the non-bypassable floor. Set
+          # confirm_policy: "confirm_all" to restore prompt-on-everything.
+          "confirm_policy" => "dangerous_only",
+          # Legacy alias for confirm_policy. Kept working for existing readers;
+          # confirm_policy (set above) wins when both are present. Flipped to
+          # false so a config that only ever set this alias also gets the new
+          # dangerous_only default (#409).
+          "require_confirmation_for_shell" => false,
+          # EMPTY by default (#409), aligning to Hermes' empty allowlist: once
+          # the prompt policy is dangerous_only, safe commands (incl. git status
+          # / git diff) already run unprompted via the policy + read-only
+          # auto-allow, so the seeded entries were non-load-bearing. A
+          # code-loading runner (`bundle exec rspec`, `rake`, `npm test`) is
+          # still NOT safely allowlistable (SEC-R2-3: `rspec -r FILE` is RCE);
+          # users who want exact-command pre-approval opt in explicitly.
+          "command_allowlist" => [],
 
           "website_blocklist" => {
             "enabled" => false,
             "domains" => [],
             "shared_files" => []
           }
+        },
+        # Repeated-identical-tool-call guard (DoomLoopDetector). Aligned to
+        # Hermes' tool_guardrails (#414): hard_stop OFF by default (WARN, don't
+        # block) and a higher threshold, so a legitimate 3rd retry of an
+        # idempotent read is no longer hard-denied. With hard_stop:false the
+        # policy surfaces a doom-loop WARNING to the model on the Nth identical
+        # call but still lets it through; set hard_stop:true to restore the old
+        # block-at-threshold behaviour.
+        "doom_loop" => {
+          "hard_stop" => false,
+          "threshold" => 5
         },
         "privacy" => {
           "redact_pii" => false
@@ -537,6 +577,11 @@ module Rubino
           # number of LLM turns — can keep skills usable while turning off the
           # extra background aux call.
           "auto_distill" => true,
+          # Throttle post-turn skill distillation to ~every N turns (#414),
+          # mirroring memory.auto_extract_interval, so a tool-heavy session
+          # doesn't spend an aux-model call every single turn. nil/<=1 = every
+          # eligible turn. The job's own deterministic gate still applies on top.
+          "auto_distill_interval" => 10,
           # Discover the skills shipped *inside the gem* (skills/<name>/SKILL.md),
           # so every install gets the built-in catalogue (e.g. ruby-expert) with
           # no copy step, on top of the user paths below. Built-ins are scanned

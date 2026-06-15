@@ -311,8 +311,19 @@ module Rubino
         # the original behaviour: in inline mode #enqueue drains synchronously.
         drain_inline = @polishing.nil?
 
-        # Extract memory if enabled
-        if @config.memory_auto_extract?
+        # Turn index for the throttle gates below: message_count grows by a
+        # fixed 2 per completed turn (persist_user_message + update_session_state),
+        # so this is a deterministic, monotonic per-session turn counter — no new
+        # column needed (#412/#414).
+        turn_no = current_turn_index
+
+        # Extract memory if enabled — THROTTLED to ~every N turns (Hermes'
+        # nudge_interval) instead of every turn (#412). `drain_inline` is already
+        # false on the interactive CLI (a polishing worker drains it OFF the live
+        # turn's critical path); it is only true in API/server/subagent contexts
+        # that have no background drainer, so the throttle keeps the aux-LLM
+        # extract off the interactive path AND cuts its cadence ~10x.
+        if @config.memory_auto_extract? && interval_due?(turn_no, @config.memory_auto_extract_interval)
           queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
         end
@@ -325,7 +336,7 @@ module Rubino
         # already covered) before spending one aux-model call. Handler lookup
         # is load-order independent: Jobs::Registry resolves the class from
         # the Handlers namespace on demand (#81).
-        if @config.skills_auto_distill?
+        if @config.skills_auto_distill? && interval_due?(turn_no, @config.skills_auto_distill_interval)
           queue.enqueue("DistillSkillJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
         end
@@ -340,6 +351,27 @@ module Rubino
         # Detach: kick the polishing worker so it drains the rows just enqueued
         # off this thread. Returns immediately — the next prompt is never gated.
         @polishing&.start(ui: @ui, event_bus: @event_bus)
+      end
+
+      # Deterministic per-session turn counter for the throttle gates (#412/#414).
+      # sessions.message_count grows by a fixed 2 per completed turn
+      # (persist_user_message + update_session_state), so dividing by 2 yields the
+      # turn number. Reads the persisted row (not @session, which is reassigned on
+      # compaction). Falls back to 1 (always-due) if the row can't be read.
+      def current_turn_index
+        row = @session_repo.find(@session[:id])
+        count = row && (row[:message_count] || row["message_count"])
+        count ? [count.to_i / 2, 1].max : 1
+      rescue StandardError
+        1
+      end
+
+      # True when a turn-throttled job is due: every turn for interval <= 1, else
+      # on turns that land on the interval boundary. turn_no is always >= 1.
+      def interval_due?(turn_no, interval)
+        return true if interval.nil? || interval <= 1
+
+        (turn_no % interval).zero?
       end
     end
   end

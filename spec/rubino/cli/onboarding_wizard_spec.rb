@@ -25,47 +25,35 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     described_class.new(ui: ui, input: StringIO.new(script), output: output)
   end
 
-  it "defaults to the seeded model: the first (recommended) provider is openai/gpt-4.1" do
-    # Bug #12: the wizard's recommended default must match the seeded
-    # config/defaults.rb default (model.default => openai/gpt-4.1) so the
+  it "defaults to the seeded model: the first (recommended) provider is minimax/MiniMax-M3" do
+    # #414: the wizard's recommended default must match the seeded
+    # config/defaults.rb default (model.default => minimax/MiniMax-M3) so the
     # from-zero experience is consistent with the non-interactive fail-fast
-    # guidance, which names that same default.
+    # guidance, which names that same default. Aligned openai → MiniMax.
     first = described_class::PROVIDERS.first
-    expect(first[:provider]).to eq("openai")
-    expect(first[:model]).to eq("gpt-4.1")
+    expect(first[:provider]).to eq("minimax")
+    expect(first[:model]).to eq("MiniMax-M3")
 
     seeded = Rubino::Config::Defaults.dig("model", "default")
-    expect(seeded).to eq("openai/gpt-4.1")
+    expect(seeded).to eq("minimax/MiniMax-M3")
     expect("#{first[:provider]}/#{first[:model]}").to eq(seeded)
   end
 
-  it "keeps MiniMax as a first-class selectable option (just not the default)" do
-    minimax = described_class::PROVIDERS.find { |p| p[:provider] == "minimax" }
-    expect(minimax).not_to be_nil
-    expect(minimax[:model]).to eq("MiniMax-M2.7")
-    expect(described_class::PROVIDERS.first).not_to eq(minimax)
+  it "keeps OpenAI as a first-class selectable option (just not the default)" do
+    openai = described_class::PROVIDERS.find { |p| p[:provider] == "openai" }
+    expect(openai).not_to be_nil
+    expect(openai[:model]).to eq("gpt-4.1")
+    expect(described_class::PROVIDERS.first).not_to eq(openai)
   end
 
-  it "writes an OpenAI config from scripted input (choice 1, the default)" do
-    # "1" = OpenAI (the recommended default), then the key.
-    ok = wizard("1\nsk-openai-test\n").run
+  it "writes a usable MiniMax config + .env from scripted input (choice 1, the default)" do
+    # "1" = MiniMax (the recommended default), then the key (no base_url prompt).
+    ok = wizard("1\nsk-minimax-test\n").run
     expect(ok).to be true
 
     loader = Rubino::Config::Loader.new(home_path: home)
     raw    = YAML.safe_load_file(loader.config_path)
-    expect(raw.dig("model", "default")).to eq("gpt-4.1")
-    expect(raw.dig("model", "provider")).to eq("openai")
-    expect(File.read(loader.env_path)).to include("OPENAI_API_KEY=sk-openai-test")
-  end
-
-  it "writes a usable MiniMax config + .env from scripted input (choice 2)" do
-    # "2" = MiniMax, then the key (no base_url prompt — MiniMax has a default).
-    ok = wizard("2\nsk-minimax-test\n").run
-    expect(ok).to be true
-
-    loader = Rubino::Config::Loader.new(home_path: home)
-    raw    = YAML.safe_load_file(loader.config_path)
-    expect(raw.dig("model", "default")).to eq("MiniMax-M2.7")
+    expect(raw.dig("model", "default")).to eq("MiniMax-M3")
     expect(raw.dig("model", "provider")).to eq("minimax")
     expect(raw.dig("providers", "minimax", "anthropic_compatible")).to be true
     expect(raw.dig("providers", "minimax", "api_key")).to eq("${MINIMAX_API_KEY}")
@@ -95,10 +83,10 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   end
 
   # #31: a single invalid (out-of-range) choice must re-prompt rather than
-  # abandon the wizard. Here "7" is out of range, then "1" (OpenAI) + a key.
+  # abandon the wizard. Here it is out of range, then "2" (OpenAI) + a key.
   it "re-prompts on an invalid choice instead of abandoning setup" do
     n = described_class::PROVIDERS.size
-    ok = wizard("#{n + 5}\n1\nsk-openai-test\n").run
+    ok = wizard("#{n + 5}\n2\nsk-openai-test\n").run
     expect(ok).to be true
 
     # The provider prompt was shown twice (initial + re-prompt after the typo).

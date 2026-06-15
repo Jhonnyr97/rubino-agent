@@ -4,15 +4,34 @@ module Rubino
   module Security
     # Detects when the agent enters a doom loop - repeatedly calling
     # the same tool with identical arguments without progress.
+    #
+    # Two dimensions, both config-driven (Hermes tool_guardrails alignment,
+    # #414):
+    #   - threshold: how many identical consecutive calls trip detection
+    #     (default 5; Hermes grades 5-8). The old default was 3, which hard-
+    #     denied a legitimate 3rd retry of an idempotent read.
+    #   - hard_stop: when true, a tripped detector means BLOCK (the policy
+    #     returns :deny). When false (the default) it WARNS but allows — the
+    #     policy surfaces a one-time warning to the model and lets the call run.
     class DoomLoopDetector
-      DEFAULT_THRESHOLD = 3
+      DEFAULT_THRESHOLD = 5
 
-      def initialize(threshold: DEFAULT_THRESHOLD)
+      attr_reader :threshold
+
+      def initialize(threshold: DEFAULT_THRESHOLD, hard_stop: false)
         @threshold = threshold
+        @hard_stop = hard_stop
         @history = []
       end
 
+      # True when the detector is configured to BLOCK on detection (vs. warn).
+      def hard_stop?
+        @hard_stop == true
+      end
+
       # Records a tool call and returns true if a doom loop is detected
+      # (the last `threshold` calls are identical). Detection is independent
+      # of hard_stop — the caller decides whether a hit blocks or only warns.
       def record(tool_name:, arguments:)
         signature = generate_signature(tool_name, arguments)
         @history << signature

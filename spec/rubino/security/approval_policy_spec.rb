@@ -154,9 +154,17 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
   describe "#decide read-only auto-allow (step 6b)" do
     let(:shell) { make_tool(name: "shell", risk_level: :high, risky: true) }
-    let(:manual_cfg) { test_configuration("approvals" => { "mode" => "manual" }) }
+    # Pin confirm_all here so these examples isolate the read-only auto-allow
+    # gate (step 6b) from the dangerous_only default (#409): under confirm_all a
+    # not-read-only command falls through to :ask, which is what these test.
+    let(:manual_cfg) do
+      test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all" }
+      )
+    end
 
-    it "auto-allows a provably read-only command under the default confirm_all policy" do
+    it "auto-allows a provably read-only command even under confirm_all" do
       pol = described_class.new(config: manual_cfg)
       expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:allow)
       expect(pol.decide(shell, arguments: { "command" => "grep -rn TODO lib | head -20" })).to eq(:allow)
@@ -171,7 +179,12 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "is gated by approvals.auto_allow_readonly: false" do
-      cfg = test_configuration("approvals" => { "mode" => "manual", "auto_allow_readonly" => false })
+      # Pin confirm_all so a non-read-only fall-through is :ask (the default is
+      # now dangerous_only, under which a safe `ls -la` would :allow anyway).
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual", "auto_allow_readonly" => false },
+        "security" => { "confirm_policy" => "confirm_all" }
+      )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:ask)
     end
@@ -517,10 +530,27 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     let(:dangerous) { "git push --force origin main" }
     let(:hardline)  { "rm -rf /" }
 
-    context "confirm_all (default)" do
+    context "dangerous_only (default, #409 Hermes alignment)" do
       let(:pol) { described_class.new(config: test_configuration("approvals" => { "mode" => "manual" })) }
 
-      it "asks for a safe shell command (today's behavior, unchanged)" do
+      it "allows a safe shell command WITHOUT a prompt (the new default)" do
+        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
+      end
+
+      it "asks for a dangerous shell command" do
+        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
+      end
+    end
+
+    context "confirm_all (opt-in hardening)" do
+      let(:pol) do
+        described_class.new(config: test_configuration(
+          "approvals" => { "mode" => "manual" },
+          "security" => { "confirm_policy" => "confirm_all" }
+        ))
+      end
+
+      it "asks for a safe shell command when opted in" do
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:ask)
       end
 
@@ -662,22 +692,45 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.last_deny_reason).to eq(:permission_rule)
     end
 
-    it "is :doom_loop when the identical call repeats past the threshold" do
+    # Blocking is now opt-in (#414): the default is warn-not-block, so these
+    # assert :deny under an explicit doom_loop.hard_stop:true config, and at the
+    # raised default threshold of 5 identical calls.
+    it "is :doom_loop when the identical call repeats past the threshold (hard_stop)" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "doom_loop" => { "hard_stop" => true, "threshold" => 5 }
+      )
+      pol = described_class.new(config: cfg)
       tool = make_tool(name: "task_result", risk_level: :low, risky: false)
       args = { "task_id" => "sa_1" }
-      decisions = 4.times.map { policy.decide(tool, arguments: args) }
+      decisions = 5.times.map { pol.decide(tool, arguments: args) }
       expect(decisions.last).to eq(:deny)
-      expect(policy.last_deny_reason).to eq(:doom_loop)
+      expect(pol.last_deny_reason).to eq(:doom_loop)
     end
 
-    it "is :doom_loop under yolo too (the guard yolo cannot bypass)" do
+    it "is :doom_loop under yolo too with hard_stop (the guard yolo cannot bypass)" do
       Rubino::Modes.set(:yolo)
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "doom_loop" => { "hard_stop" => true, "threshold" => 5 }
+      )
+      pol = described_class.new(config: cfg)
       args = { "command" => "ls" }
-      decisions = 4.times.map { policy.decide(shell, arguments: args) }
+      decisions = 5.times.map { pol.decide(shell, arguments: args) }
       expect(decisions.last).to eq(:deny)
-      expect(policy.last_deny_reason).to eq(:doom_loop)
+      expect(pol.last_deny_reason).to eq(:doom_loop)
     ensure
       Rubino::Modes.reset!
+    end
+
+    it "WARNS not blocks on a repeated identical call by default (#414)" do
+      tool = make_tool(name: "task_result", risk_level: :low, risky: false)
+      args = { "task_id" => "sa_1" }
+      decisions = 6.times.map { policy.decide(tool, arguments: args) }
+      # No hard_stop ⇒ every call still resolves (low-risk tool ⇒ :allow), and
+      # the trip surfaces via #doom_loop_warning rather than a :deny.
+      expect(decisions).to all(eq(:allow))
+      expect(policy.doom_loop_warning).to be(true)
     end
 
     it "clears on the next non-deny decision so a stale reason never leaks" do

@@ -330,9 +330,12 @@ RSpec.describe Rubino::Security::CommandAllowlist do
         expect(allowlist(["bundle exec rspec"]).allowed?("bundle exec rspec")).to be(true)
       end
 
-      it "SHIPPED DEFAULTS do NOT include a code-loading runner (SEC-R2-3)" do
+      it "SHIPPED DEFAULTS are empty (#409 Hermes alignment) and never a code-loading runner (SEC-R2-3)" do
         defaults = Rubino::Config::Defaults::MODULE_DEFAULTS.dig("security", "command_allowlist")
-        expect(defaults).to eq(["git status", "git diff"])
+        # Aligned to Hermes' empty allowlist: with confirm_policy dangerous_only,
+        # safe commands run unprompted via the policy + read-only auto-allow, so
+        # the old seeded git entries were non-load-bearing (#409).
+        expect(defaults).to eq([])
         expect(defaults).not_to include("bundle exec rspec")
       end
 

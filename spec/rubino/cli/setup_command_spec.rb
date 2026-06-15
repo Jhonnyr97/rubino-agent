@@ -65,8 +65,8 @@ RSpec.describe Rubino::CLI::SetupCommand do
   end
 
   # #392a: a non-interactive `setup` can't prompt, so the seeded default
-  # (openai/gpt-4.1 → OPENAI_API_KEY) is a dead end when the only key in the env
-  # is another provider's. Auto-detect a single present provider key and point
+  # (minimax/MiniMax-M3 → MINIMAX_API_KEY) is a dead end when the only key in the
+  # env is another provider's. Auto-detect a single present provider key and point
   # model.provider/model.default at it so a headless setup lands usable.
   describe "non-interactive provider auto-detect (#392a)" do
     before { allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true) }
@@ -83,29 +83,39 @@ RSpec.describe Rubino::CLI::SetupCommand do
 
       provider, model = configured
       expect(provider).to eq("minimax")
-      expect(model).to eq("MiniMax-M2.7")
+      expect(model).to eq("MiniMax-M3")
       # The anthropic_compatible block must be written too, or the model is
       # routed to a provider with no usable endpoint.
       expect(Rubino.configuration.provider_config("minimax")["anthropic_compatible"]).to be true
       expect(ui.messages).to include([:success, a_string_matching(/MINIMAX_API_KEY/)])
     end
 
-    it "keeps the seeded openai default when no provider key is present" do
+    it "detects openai when ONLY OPENAI_API_KEY is present" do
+      ENV["OPENAI_API_KEY"] = "sk-openai-test"
+
       described_class.new.execute
 
       provider, model = configured
-      expect(provider).to eq("auto").or eq("openai")
-      expect(model).to eq("openai/gpt-4.1")
+      expect(provider).to eq("openai")
+      expect(model).to eq("gpt-4.1")
+    end
+
+    it "keeps the seeded minimax default when no provider key is present" do
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("auto").or eq("minimax")
+      expect(model).to eq("minimax/MiniMax-M3")
     end
 
     it "keeps the seeded default (ambiguous) when more than one key is present" do
-      ENV["MINIMAX_API_KEY"]   = "mm-test"
+      ENV["OPENAI_API_KEY"]    = "sk-openai-test"
       ENV["ANTHROPIC_API_KEY"] = "an-test"
 
       described_class.new.execute
 
       _provider, model = configured
-      expect(model).to eq("openai/gpt-4.1")
+      expect(model).to eq("minimax/MiniMax-M3")
     end
   end
 

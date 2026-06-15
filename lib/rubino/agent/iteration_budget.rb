@@ -6,7 +6,7 @@ module Rubino
     class IterationBudget
       def initialize(config: nil, max_tool_iterations: nil)
         @config = config || Rubino.configuration
-        @max_turns = @config.agent_max_turns
+        @max_turns = positive_int(@config.agent_max_turns)
         # An explicit override (the CLI `--max-turns N` flag, threaded through
         # Runner → Lifecycle) wins over the config default so the documented
         # control knob actually caps tool iterations (#141). A nil/blank
@@ -40,10 +40,11 @@ module Rubino
 
       # Grants `by` more tool iterations so a turn that hit the cap can resume
       # the SAME turn with full context (#399, the Cline/Roo "reset the counter,
-      # keep context" pattern). Only the iteration ceiling moves — the time/turn
-      # ceilings are untouched, so repeated extensions can never bypass the
-      # max_turn_seconds / max_turns rails (a runaway still stops on the clock).
-      # No-op on an unbounded (nil) cap. Returns the new ceiling.
+      # keep context" pattern). Only the soft iteration ceiling moves — the
+      # max_turns OUTER rail and the max_turn_seconds safety-net are untouched,
+      # so repeated extensions can never bypass the max_turns/clock ceiling (a
+      # runaway still stops at max_turns). No-op on an unbounded (nil) cap.
+      # Returns the new ceiling.
       def extend!(by)
         amount = positive_int(by)
         return @max_tool_iterations if amount.nil? || @max_tool_iterations.nil?
@@ -64,8 +65,13 @@ module Rubino
       end
 
       # A nil cap means "unbounded": never stop on that dimension rather than
-      # crashing the turn comparing a number with nil (#139).
+      # crashing the turn comparing a number with nil (#139). max_turns is the
+      # OUTER rail (#414) — even after extend! lifts the soft @max_tool_iterations
+      # ceiling, the iteration count may never exceed max_turns, so a runaway
+      # that keeps extending still terminates at the hard outer bound.
       def within_iteration_limit?(iteration)
+        return false unless @max_turns.nil? || iteration <= @max_turns
+
         @max_tool_iterations.nil? || iteration <= @max_tool_iterations
       end
 
