@@ -627,10 +627,33 @@ RSpec.describe Rubino::Agent::Loop do
       end
     end
 
+    # A UI that returns a SCRIPTED SEQUENCE of select choices (one per cap hit),
+    # falling back to :summarize once the script is spent so the turn terminates.
+    let(:sequenced_ui_class) do
+      Class.new(Rubino::UI::Null) do
+        attr_reader :select_prompts
+
+        def initialize(choices)
+          super()
+          @choices = choices.dup
+          @select_prompts = []
+        end
+
+        def select(prompt, _choices)
+          @select_prompts << prompt
+          @choices.shift || :summarize
+        end
+      end
+    end
+
     let(:tight_config) do
       test_configuration("agent" => {
                            "max_turns" => 90,
                            "max_tool_iterations" => 2,
+                           # A generous "+N" so a single extension leaves room for
+                           # the remaining scripted tool calls + the closing text,
+                           # and the turn doesn't re-cap mid-script.
+                           "budget_extension_step" => 10,
                            "max_turn_seconds" => 120,
                            "api_max_retries" => 1,
                            "budget_extension_prompt" => true,
@@ -657,25 +680,6 @@ RSpec.describe Rubino::Agent::Loop do
         message_store: message_store, budget: budget, ui: ui,
         event_bus: event_bus, config: config
       )
-    end
-
-    # A UI that returns a SCRIPTED SEQUENCE of select choices (one per cap hit),
-    # falling back to :summarize once the script is spent so the turn terminates.
-    let(:sequenced_ui_class) do
-      Class.new(Rubino::UI::Null) do
-        attr_reader :select_prompts
-
-        def initialize(choices)
-          super()
-          @choices = choices.dup
-          @select_prompts = []
-        end
-
-        def select(prompt, _choices)
-          @select_prompts << prompt
-          @choices.shift || :summarize
-        end
-      end
     end
 
     # Spec 1: cap → continue resumes the SAME turn — extend! is called, the

@@ -81,7 +81,7 @@ module Rubino
       end
 
       # Runs the agent loop, returning the final assistant response content.
-      def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity
+      def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity
         # Stash the resolved toolset so #streaming? can decide, per run, whether
         # this turn might block on a human (clarify/approval). When it might, we
         # run NON-STREAMING so the LLM HTTP request completes and CLOSES before
