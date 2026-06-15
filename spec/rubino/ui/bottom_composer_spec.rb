@@ -201,6 +201,76 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # TUI-2: a rendered INPUT row must fit ONE physical terminal line in DISPLAY
+  # columns. The wrap math in #layout_input already breaks on display width,
+  # but the drawn row is the defensive last line — a wide CJK/emoji glyph at a
+  # boundary, or a degenerate narrow width where the prefix alone is wider than
+  # the budget, must not leave a row at/over @cols that the terminal auto-wraps
+  # onto a SECOND physical line the logical-row clear never erases (the ghost
+  # "❯ …" rows that only Ctrl+L cleared). #fit_row right-truncates (whole-glyph,
+  # ANSI-safe) to one column short of the width so logical rows == physical rows.
+  describe "#fit_row (input-row width fit, TUI-2)" do
+    # winsize is [24, 40] → @cols 40, so a fitted row is <= 39 display columns.
+    it "fits a wide CJK row to one column short of the width" do
+      row = "❯ #{"中" * 40}" # 80 display columns, far over a 40-col terminal
+      fitted = composer.send(:fit_row, row)
+      expect(composer.send(:display_width, fitted)).to be <= 39
+    end
+
+    it "drops a trailing wide glyph WHOLE rather than splitting a cell" do
+      # At an odd remaining budget a width-2 glyph that would overflow is
+      # dropped entire — the fitted width never lands on a half-cell.
+      row = "x#{"中" * 30}"
+      fitted = composer.send(:fit_row, row)
+      expect(composer.send(:display_width, fitted)).to be <= 39
+      # No mojibake: every kept char is whole (re-measuring is stable).
+      flat = fitted.gsub(/\e\[[0-9;]*m/, "")
+      expect(composer.send(:display_width, fitted)).to eq(flat.chars.sum { |c| Unicode::DisplayWidth.of(c) })
+    end
+
+    it "right-truncates (keeps the HEAD), unlike the ellipsis clamp" do
+      row = ("a".."z").to_a.join * 3 # 78 ASCII columns
+      fitted = composer.send(:fit_row, row)
+      expect(fitted).to start_with("abcdefg") # the start the user typed is kept
+      expect(fitted).not_to start_with("…") # not the left-truncation marker
+    end
+
+    it "leaves a row that already fits unchanged" do
+      expect(composer.send(:fit_row, "❯ hello")).to eq("❯ hello")
+    end
+
+    it "never splits an ANSI escape while fitting a colored row" do
+      e = "\e"
+      row = "#{e}[31m▍#{e}[0m❯ " + ("界" * 40)
+      fitted = composer.send(:fit_row, row)
+      # Any SGR present still carries its leading ESC (no orphaned "[31m").
+      expect(fitted).not_to(match(/(?<!\e)\[[0-9;]+m/))
+      expect(composer.send(:display_width, fitted)).to be <= 39
+    end
+  end
+
+  # TUI-2 (root): a long CJK buffer at a narrow width must wrap onto MULTIPLE
+  # visual rows with NO drawn row exceeding the terminal — so the per-frame
+  # input-block clear (which walks the LOGICAL row count) stays exact and no
+  # ghost prompt rows accumulate in scrollback. The wrap path is display-width
+  # aware end to end; this pins that every emitted row fits one physical line.
+  describe "wide-char composer reflow (TUI-2)" do
+    it "lays a long CJK buffer into rows that each fit one physical line" do
+      ("中" * 60).each_char { |c| composer.handle_key(c) }
+      rows, = composer.send(:visible_input_rows)
+      cols = 40 # FakeTermIO winsize
+      rows.each do |row|
+        expect(composer.send(:display_width, row)).to be <= cols - 1
+      end
+    end
+
+    it "keeps every drawn input row within the terminal for mixed CJK + ASCII" do
+      "#{"测试很长的中文输入" * 3}ABCDEF".each_char { |c| composer.handle_key(c) }
+      rows, = composer.send(:visible_input_rows)
+      rows.each { |row| expect(composer.send(:display_width, row)).to be <= 39 }
+    end
+  end
+
   describe "buffer editing" do
     it "appends printable chars" do
       "abc".each_char { |c| composer.handle_key(c) }

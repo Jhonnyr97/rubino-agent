@@ -184,6 +184,30 @@ module Rubino
           Unicode::DisplayWidth.of(str.to_s.gsub(ANSI_SGR, ""))
         end
 
+        # The longest PREFIX of +str+ whose display width is <= +cols+. The
+        # mirror of {#take_last_columns}: walks from the FRONT over the same
+        # tokens (each ANSI SGR escape one zero-width token, every other char its
+        # own) so a wide trailing glyph that would overflow is dropped WHOLE
+        # rather than cut mid-cell, and an escape is never split. Used to fit a
+        # composer INPUT row to one physical line WITHOUT a leading "…" (the row
+        # is the user's live edit — truncating the head would hide what they just
+        # typed), so it right-truncates instead. Zero-width escapes that lead the
+        # row (color setup) are kept even at the boundary so styling isn't lost.
+        def take_first_columns(str, cols)
+          return "" if cols <= 0
+
+          used  = 0
+          taken = []
+          tokenize(str.to_s).each do |tok|
+            w = display_width(tok)
+            break if w.positive? && used + w > cols
+
+            taken << tok
+            used += w
+          end
+          taken.join
+        end
+
         # The longest SUFFIX of +str+ whose display width is <= +cols+. Walks
         # from the end over TOKENS — a whole ANSI SGR escape (\e[…m) is one
         # zero-width token — so a wide trailing glyph is dropped whole (never
