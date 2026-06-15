@@ -54,7 +54,17 @@ RSpec.describe Rubino::Security::HardlineGuard do
       "rm -rf ${X:-/}" => /root filesystem/,        # arbitrary varname default
       "rm -rf ${FOO:=/}" => /root filesystem/,      # arbitrary varname := default
       "rm${IFS:0:1}-rf${IFS:0:1}/" => /root filesystem/, # ${IFS:0:1} substring split
-      "rm${IFS:0:1}-rf${IFS:0:1}/etc" => /system directory/ # ${IFS:0:1} -> system dir
+      "rm${IFS:0:1}-rf${IFS:0:1}/etc" => /system directory/, # ${IFS:0:1} -> system dir
+      # #325 indirection gap: command substitution / backticks / brace-and-subshell
+      # groups wrap a catastrophic command so the rm patterns (anchored on a
+      # trailing space/EOL) miss the inner target. canonicalize now UNWRAPS them.
+      "$(rm -rf /)" => /root filesystem/,           # command substitution
+      "`rm -rf /`" => /root filesystem/,            # backtick substitution
+      "$(rm -rf ~)" => /home directory/,            # substitution -> home
+      "{ rm -rf /; }" => /root filesystem/,         # brace group
+      "( rm -rf / )" => /root filesystem/,          # subshell group
+      "echo $(rm -rf /*)" => /root filesystem/,     # padded substitution
+      "$(echo $(rm -rf /))" => /root filesystem/    # nested substitution
     }.each do |command, description_match|
       it "blocks #{command.inspect}" do
         blocked, description = described_class.detect(command)
@@ -94,7 +104,15 @@ RSpec.describe Rubino::Security::HardlineGuard do
       # must not false-positive on safe targets.
       "rm -r\\\nf /tmp/build", # token-split continuation, SAFE path
       "rm${IFS:0:1}-rf${IFS:0:1}/tmp/build", # ${IFS:0:1} to a SAFE path
-      "echo ${EDITOR:-vim}" # varname-default folding, harmless
+      "echo ${EDITOR:-vim}", # varname-default folding, harmless
+      # #325: unwrapping substitution must NOT over-block NON-destructive
+      # command substitutions — these run harmless inner commands.
+      "$(date)",                      # bare substitution, harmless
+      "$(ls)",                        # bare substitution, harmless
+      "echo $(pwd)",                  # padded substitution, harmless
+      "name=$(git rev-parse HEAD)",   # assignment from substitution
+      "files=$(ls /tmp)",             # substitution over a safe path
+      "echo ${IFS}"                   # ${IFS} param-expansion, not a group
     ].each do |command|
       it "allows #{command.inspect}" do
         blocked, = described_class.detect(command)
