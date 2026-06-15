@@ -219,25 +219,75 @@ module Rubino
           "Set tools.workspace_strict=false in config.yml to disable this check."
       end
 
-      # Typed "outside workspace" error for READ-side tools (read/glob/grep).
-      #
-      # The model must hear "outside your workspace — /add-dir it" and NEVER
-      # "doesn't exist / no files matched": the latter makes it propose
-      # CREATING or overwriting a real file it can't see, the near-data-loss
-      # path in r5 MF-1/MF-2. The error_code lets the UI/automation branch on
-      # the denial without parsing the string. A `path` is outside the
-      # workspace iff within_workspace? is false (strict mode on); when strict
-      # mode is off this never fires, matching the write-side behaviour.
+      # Typed "outside workspace" error gate, retained for the AUX-LLM read
+      # tools (summarize_file, vision) ONLY. Those route the raw file bytes
+      # through a third-party auxiliary model, so an out-of-workspace read would
+      # EXFILTRATE a sibling-repo secret / ~/.ssh file — a stronger threat than
+      # the in-process read/grep/glob, which were relaxed to broad in #406. A
+      # `path` is outside iff within_workspace? is false (strict mode on) and it
+      # isn't under the agent home; strict mode off never fires.
       def outside_workspace?(expanded)
         return false unless workspace_strict?
         return false if within_workspace?(expanded)
         # The agent's OWN home dir (~/.rubino) holds pastes, attachments and
-        # session files the agent explicitly points the model at ("read it with
-        # the read tool"). Those reads are legitimate even though the dir sits
-        # outside the project workspace — don't flag them as outside.
+        # session files the agent explicitly points the model at — legitimate
+        # reads even though they sit outside the project workspace.
         return false if under_agent_home?(expanded)
 
         true
+      end
+
+      def outside_workspace_message(path)
+        roots = workspace_roots
+        roots_list = roots.length == 1 ? roots.first : roots.join(", ")
+        { output: "Error: '#{path}' is outside your workspace roots (#{roots_list}) — " \
+                  "it is NOT missing, you are not allowed to access it here. " \
+                  "Run `/add-dir #{File.dirname(File.expand_path(path.to_s))}` to include its folder, " \
+                  "or relaunch in that directory. Do not try to create or overwrite it.",
+          error_code: :outside_workspace }
+      end
+
+      # READ-side secret DENYLIST (#406, defense-in-depth — NOT a security
+      # boundary). rubino reads broad like Hermes/Claude/Codex (write stays
+      # sandboxed); this denylist mirrors Hermes' file_safety.get_read_block_error
+      # so the model doesn't slurp credentials into context by accident. The
+      # shell tool can still `cat` anything — this is ergonomics, not enforcement.
+      #
+      # Refuses:
+      #   - project credential files by BASENAME, in any directory: .env,
+      #     .env.* (.env.local, .env.production, …), .envrc.
+      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
+      #     the home .env, the sqlite DB (encrypted OAuth tokens at rest), any
+      #     *oauth* file, and an mcp-tokens/ dir — while ordinary home reads
+      #     (pastes, attachments, sessions the agent points the model at) stay
+      #     allowed.
+      # Returns the matched-secret category string, or nil when the path is
+      # readable.
+      # Matches `.env`, `.env.<anything>` (.env.local/.production), and `.envrc`.
+      ENV_SECRET_BASENAME_RE = /\A\.env(\..+)?\z|\A\.envrc\z/
+      def read_secret_block?(expanded)
+        base = File.basename(expanded.to_s)
+        return "credential file (#{base})" if base.match?(ENV_SECRET_BASENAME_RE)
+
+        return nil unless under_agent_home?(expanded)
+
+        target = canonical_path(expanded) || File.expand_path(expanded.to_s)
+        lower  = target.downcase
+        if base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
+           lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
+           base.end_with?(".key") || base.end_with?(".pem")
+          return "agent-home secret (#{base})"
+        end
+
+        nil
+      end
+
+      def read_secret_block_message(path, category)
+        { output: "Error: refusing to READ '#{path}' — it is a #{category}. " \
+                  "Reading secrets into the model context is blocked as a safeguard " \
+                  "(not a hard boundary). If you genuinely need a value from it, " \
+                  "ask the user rather than reading the file.",
+          error_code: :secret_denied }
       end
 
       # True when +expanded+ resolves under the Rubino home directory. Symlinks
@@ -253,16 +303,6 @@ module Rubino
         target_real == home_real || target_real.start_with?("#{home_real}#{File::SEPARATOR}")
       rescue StandardError
         false
-      end
-
-      def outside_workspace_message(path)
-        roots = workspace_roots
-        roots_list = roots.length == 1 ? roots.first : roots.join(", ")
-        { output: "Error: '#{path}' is outside your workspace roots (#{roots_list}) — " \
-                  "it is NOT missing, you are not allowed to access it here. " \
-                  "Run `/add-dir #{File.dirname(File.expand_path(path.to_s))}` to include its folder, " \
-                  "or relaunch in that directory. Do not try to create or overwrite it.",
-          error_code: :outside_workspace }
       end
 
       # Reads a file and scrubs a stray non-UTF-8 byte (e.g. a Latin-1 `é` in a

@@ -53,10 +53,12 @@ RSpec.describe "tool path resolution (r6 F1/F3)", :path_resolution do # rubocop:
       expect(result).to include("cart.py")
     end
 
-    it "still denies an absolute pattern outside the workspace (guard #299)" do
-      result = glob.call("pattern" => "/etc/passwd")
-      expect(result).to be_a(Hash)
-      expect(result[:error_code]).to eq(:outside_workspace)
+    # #406: reads are BROAD now — an absolute pattern outside the workspace
+    # resolves and matches (Hermes/Claude/Codex parity); the read allowlist
+    # was never the data-loss boundary (that's on the WRITE path).
+    it "matches an absolute pattern OUTSIDE the workspace (reads broad, #406)" do
+      result = payload(glob.call("pattern" => "/etc/passwd"))
+      expect(result).to include("passwd")
     end
   end
 

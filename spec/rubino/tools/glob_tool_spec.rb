@@ -66,12 +66,15 @@ RSpec.describe Rubino::Tools::GlobTool do
     expect(result).to include("Directory not found")
   end
 
-  it "reports an out-of-workspace path as outside the workspace, not missing (r5 MF-1)" do
-    result = tool.call("pattern" => "*.rb", "path" => "/no/such/dir")
-    expect(result).to be_a(Hash)
-    expect(result[:error_code]).to eq(:outside_workspace)
-    expect(result[:output]).to include("outside your workspace")
-    expect(result[:output]).not_to include("not found")
+  # #406: reads are BROAD now. glob resolves a path OUTSIDE the workspace and
+  # lists matches; it only lists PATHS (no content) so there is no denylist.
+  it "globs a directory OUTSIDE the workspace (reads broad, #406)" do
+    outside = Dir.mktmpdir("glob_outside")
+    File.write(File.join(outside, "ext.rb"), "x")
+    result = payload(tool.call("pattern" => "*.rb", "path" => outside))
+    expect(result).to include("ext.rb")
+  ensure
+    FileUtils.rm_rf(outside)
   end
 
   # #375c — glob ignored .gitignore entirely, surfacing node_modules / build
