@@ -646,6 +646,28 @@ RSpec.describe Rubino::Agent::Loop do
       end
     end
 
+    # A scripted-select UI that records how many times @ui.select was invoked, so
+    # we can prove the prompt fired ZERO times on a time-exhausted cap (#403).
+    # Always answers :continue — the bug was that answering Continue looped
+    # forever, so a UI that keeps saying Continue is the harshest possible
+    # witness: if the prompt ever fires it would extend!, re-cap on the clock,
+    # and re-prompt without end.
+    let(:counting_continue_ui_class) do
+      Class.new(Rubino::UI::Null) do
+        attr_reader :select_calls
+
+        def initialize
+          super
+          @select_calls = 0
+        end
+
+        def select(_prompt, _choices)
+          @select_calls += 1
+          :continue
+        end
+      end
+    end
+
     let(:tight_config) do
       test_configuration("agent" => {
                            "max_turns" => 90,
@@ -773,6 +795,108 @@ RSpec.describe Rubino::Agent::Loop do
       expect(fake_llm.calls.last[:tools]).to eq([])
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
       expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(fake_llm.call_count).to eq(3)
+    end
+
+    # -------------------------------------------------------------------------
+    # #403 (HIGH regression): the budget-extension prompt must NOT fire when the
+    # TIME limit (not the iteration ceiling) is what's exhausted. extend! only
+    # raises the iteration cap, so prompting Continue on a time-blown turn grants
+    # a no-op and the next pass re-exhausts on the clock → INFINITE re-prompt.
+    # -------------------------------------------------------------------------
+
+    # Spec 1: TIME limit exhausted (iteration cap NOT the cause) → the loop goes
+    # straight to force-summarize. @ui.select is NEVER called, so there is no
+    # prompt to loop on. Driven by a budget whose wall clock is already past
+    # max_turn_seconds while the iteration cap (2) is generous enough that, were
+    # the clock ignored, iteration alone would not yet block.
+    it "time-limit exhausted: force-summarizes WITHOUT prompting (no infinite loop)" do
+      ui = counting_continue_ui_class.new
+      # Roomy iteration cap so the clock — not the iterations — is the limiter.
+      time_config = test_configuration("agent" => {
+                                         "max_turns" => 90,
+                                         "max_tool_iterations" => 50,
+                                         "budget_extension_step" => 10,
+                                         "max_turn_seconds" => 120,
+                                         "api_max_retries" => 1,
+                                         "budget_extension_prompt" => true,
+                                         "disabled_toolsets" => [],
+                                         "tool_use_enforcement" => "auto"
+                                       })
+      budget = Rubino::Agent::IterationBudget.new(config: time_config)
+      # Pin the wall clock past max_turn_seconds so within_time_limit? is false
+      # from the very first iteration while within_iteration_limit? stays true —
+      # i.e. extend! cannot help. The loop force-summarizes on iteration 1.
+      budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
+
+      # Only the summary text is ever consumed: the time limit blocks BEFORE the
+      # first model call, so no tool round runs. The spare must NOT be reached —
+      # if the prompt looped (extend! no-op → re-exhaust → re-prompt), the loop
+      # would keep calling the model and drain it.
+      fake_llm.enqueue_text("Summary after the time limit blew.")
+      fake_llm.enqueue_text("must never be reached")
+
+      loop_instance = build_loop_with(ui: ui, budget: budget, config: time_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      # Force-summarized, NOT extended: the prompt was never shown…
+      expect(ui.select_calls).to eq(0)
+      # …the closing call was toolless with the summary nudge…
+      expect(result).to eq("Summary after the time limit blew.")
+      expect(fake_llm.calls.last[:tools]).to eq([])
+      last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      # …and EXACTLY ONE model call ran — the summary. Time blew before any tool
+      # round, so there is just the one toolless summary. If the prompt had
+      # looped, call_count would balloon.
+      expect(fake_llm.call_count).to eq(1)
+    end
+
+    # Spec 3: a turn that extends on iteration-exhaustion and THEN blows the time
+    # limit force-summarizes instead of re-prompting. We drive the budget object:
+    # #extendable? is true at the first cap (continue extends), then we trip the
+    # clock so the second exhaustion is time-driven → no prompt, force-summarize.
+    it "extend then time blows: second exhaustion force-summarizes (no re-prompt loop)" do
+      ui = counting_continue_ui_class.new
+      step_config = test_configuration("agent" => {
+                                         "max_turns" => 90,
+                                         "max_tool_iterations" => 2,
+                                         "budget_extension_step" => 1,
+                                         "max_turn_seconds" => 120,
+                                         "api_max_retries" => 1,
+                                         "budget_extension_prompt" => true,
+                                         "disabled_toolsets" => [],
+                                         "tool_use_enforcement" => "auto"
+                                       })
+      budget = Rubino::Agent::IterationBudget.new(config: step_config)
+
+      # The moment the budget grants the (iteration) extension, trip the wall
+      # clock so the SAME turn's next exhaustion is the TIME limit — i.e.
+      # extendable? flips to false and the loop must force-summarize, not re-ask.
+      allow(budget).to receive(:extend!).and_wrap_original do |orig, by|
+        budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
+        orig.call(by)
+      end
+
+      # cap=2 → 2 tool rounds run, then iteration 3 hits the cap → Continue (+1)
+      # extends AND trips the clock → re-enter the turn → the next iteration's
+      # exhaustion is now TIME-driven (not iteration) → extendable? is false →
+      # force-summarize. So exactly 2 tool calls + 1 summary are consumed; the
+      # spare proves the loop didn't re-prompt and keep calling the model.
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Closed out after the clock ran out.")
+      fake_llm.enqueue_text("must never be reached")
+
+      loop_instance = build_loop_with(ui: ui, budget: budget, config: step_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      # The prompt fired EXACTLY ONCE — at the first (iteration) cap. The second
+      # exhaustion was time-driven and went straight to force-summarize: no
+      # repeated prompting, no infinite loop.
+      expect(ui.select_calls).to eq(1)
+      expect(result).to eq("Closed out after the clock ran out.")
+      expect(fake_llm.calls.last[:tools]).to eq([])
+      # 2 tool rounds + 1 summary = 3 calls. A re-prompt loop would keep going.
       expect(fake_llm.call_count).to eq(3)
     end
   end

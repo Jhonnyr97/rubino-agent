@@ -118,4 +118,53 @@ RSpec.describe Rubino::Agent::IterationBudget do
       expect(budget.can_continue?(1)).to be(false)
     end
   end
+
+  # #403 (regression): the interactive Continue prompt must fire ONLY when
+  # extending would help. extend! raises only the iteration ceiling, so it helps
+  # iff the ITERATION cap is the cause and time is still within budget. When the
+  # TIME limit is what's spent, extending is a no-op and re-prompting loops
+  # forever — #extendable? lets the Loop tell the two apart.
+  describe "#extendable? / #time_exhausted? (#403)" do
+    let(:tight) do
+      test_configuration("agent" => {
+                           "max_turns" => 90, "max_tool_iterations" => 2, "max_turn_seconds" => 120
+                         })
+    end
+
+    it "is true when the iteration cap is hit and time is still within budget" do
+      budget = described_class.new(config: tight)
+      # iteration 3 > cap 2, clock fresh → extending (+N iterations) would help.
+      expect(budget.extendable?(3)).to be(true)
+      expect(budget.time_exhausted?).to be(false)
+    end
+
+    it "is false when the iteration cap is NOT yet hit (nothing to extend)" do
+      budget = described_class.new(config: tight)
+      expect(budget.extendable?(2)).to be(false)
+    end
+
+    it "is false when the TIME limit is exhausted — extend! can't move the clock" do
+      budget = described_class.new(config: tight)
+      # Wall clock already past max_turn_seconds; iteration cap also blown.
+      budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
+      expect(budget.time_exhausted?).to be(true)
+      # Even with the iteration cap exceeded, extending is a no-op vs the clock,
+      # so the prompt must NOT be offered.
+      expect(budget.extendable?(3)).to be(false)
+    end
+
+    it "is false on an unbounded (nil) iteration cap — nothing to extend" do
+      budget = described_class.new(config: tight)
+      budget.instance_variable_set(:@max_tool_iterations, nil)
+      expect(budget.extendable?(10_000)).to be(false)
+    end
+
+    it "flips to false once a previously-extendable turn blows the time limit" do
+      budget = described_class.new(config: tight)
+      expect(budget.extendable?(3)).to be(true)
+      # The same turn keeps running and now exceeds max_turn_seconds.
+      budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
+      expect(budget.extendable?(3)).to be(false)
+    end
+  end
 end

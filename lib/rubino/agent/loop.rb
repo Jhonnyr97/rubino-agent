@@ -430,8 +430,15 @@ module Rubino
       # force-summarize. nil whenever the prompt is disabled by config OR the UI
       # can't prompt a human (@ui.select → nil on Null/Base/no-TTY) — the latter
       # is the headless guarantee, requiring zero special-casing here.
+      #
+      # #403: also nil when extending wouldn't help — i.e. the TIME limit (not
+      # the iteration ceiling) is what's exhausted. extend! only raises the
+      # iteration cap, so prompting "Continue (+N)" on a time-blown turn grants a
+      # no-op and the next pass re-exhausts on the clock → infinite re-prompt.
+      # Only offer the prompt when the budget says extending can actually help.
       def budget_extension_choice(iteration)
         return nil unless @config.agent_budget_extension_prompt?
+        return nil unless @budget.extendable?(iteration)
 
         step = @config.agent_budget_extension_step
         @ui.select(
