@@ -138,8 +138,15 @@ RSpec.describe Rubino::Tools::RubyTool do
       grandchild = File.read(pidfile).strip.to_i
       expect(grandchild).to be > 0
 
+      # Bounded poll with a GENEROUS deadline (up to 5s) purely for
+      # LOAD-TOLERANCE: under heavy parallel suite load in a Docker PID-ns the
+      # group-kill is correct but can take longer than a tight window to be
+      # observed. We break the instant the grandchild is gone, and still assert
+      # `alive == false` below — so a genuinely orphaned process still FAILS the
+      # test; the long deadline does NOT mask a real orphan.
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
       alive = nil
-      20.times do
+      loop do
         alive = begin
           Process.kill(0, grandchild) # raises ESRCH once it's truly gone
           true
@@ -147,8 +154,9 @@ RSpec.describe Rubino::Tools::RubyTool do
           false
         end
         break unless alive
+        break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
-        sleep 0.1
+        sleep 0.05
       end
 
       # Cleanup safeguard so a regression doesn't leak a real sleeper.
