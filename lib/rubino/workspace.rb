@@ -21,8 +21,16 @@ module Rubino
       # the same rule Tools::Base#workspace_root has always used, kept as the
       # single source of truth so the @-picker, shell/test cwd, file API and
       # attachment downloader all agree on "the" root.
+      #
+      # terminal.cwd MUST resolve to a String path: a malformed config (e.g. a
+      # YAML `terminal: { cwd: { ... } }` nested mapping) would otherwise hand a
+      # Hash to File.expand_path downstream, which raises "no implicit conversion
+      # of Hash into String" deep in a tool's #call — masking the real outcome
+      # (e.g. a write-denylist refusal) behind an opaque error. Anything that
+      # isn't a non-empty String degrades to the process cwd.
       def primary_root
-        Rubino.configuration&.dig("terminal", "cwd") || Dir.pwd
+        configured = Rubino.configuration&.dig("terminal", "cwd")
+        configured.is_a?(String) && !configured.empty? ? configured : Dir.pwd
       end
 
       # Every allowed root: the primary first, then each added dir, de-duped on
