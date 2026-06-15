@@ -646,6 +646,28 @@ RSpec.describe Rubino::Agent::Loop do
       end
     end
 
+    # A scripted-select UI that records how many times @ui.select was invoked, so
+    # we can prove the prompt fired ZERO times on a time-exhausted cap (#403).
+    # Always answers :continue — the bug was that answering Continue looped
+    # forever, so a UI that keeps saying Continue is the harshest possible
+    # witness: if the prompt ever fires it would extend!, re-cap on the clock,
+    # and re-prompt without end.
+    let(:counting_continue_ui_class) do
+      Class.new(Rubino::UI::Null) do
+        attr_reader :select_calls
+
+        def initialize
+          super
+          @select_calls = 0
+        end
+
+        def select(_prompt, _choices)
+          @select_calls += 1
+          :continue
+        end
+      end
+    end
+
     let(:tight_config) do
       test_configuration("agent" => {
                            "max_turns" => 90,
@@ -782,27 +804,6 @@ RSpec.describe Rubino::Agent::Loop do
     # raises the iteration cap, so prompting Continue on a time-blown turn grants
     # a no-op and the next pass re-exhausts on the clock → INFINITE re-prompt.
     # -------------------------------------------------------------------------
-
-    # A scripted-select UI that records how many times @ui.select was invoked, so
-    # we can prove the prompt fired ZERO times on a time-exhausted cap. Always
-    # answers :continue — the bug was that answering Continue looped forever, so
-    # a UI that keeps saying Continue is the harshest possible witness: if the
-    # prompt ever fires it would extend!, re-cap on the clock, and re-prompt.
-    let(:counting_continue_ui_class) do
-      Class.new(Rubino::UI::Null) do
-        attr_reader :select_calls
-
-        def initialize
-          super()
-          @select_calls = 0
-        end
-
-        def select(_prompt, _choices)
-          @select_calls += 1
-          :continue
-        end
-      end
-    end
 
     # Spec 1: TIME limit exhausted (iteration cap NOT the cause) → the loop goes
     # straight to force-summarize. @ui.select is NEVER called, so there is no
