@@ -47,7 +47,7 @@ module Rubino
         segments = chip_segments(chips, pastel)
         segments << pastel.dim(model.to_s)
         if window.to_i.positive?
-          pct = (tokens.to_i * 100.0 / window.to_i).round
+          pct = context_pct(tokens, window)
           ctx = pastel.dim("ctx ~#{abbreviate(tokens)}/#{abbreviate(window)}")
           ctx += " #{pastel.dim("(")}#{percent_segment(pct, pastel)}#{pastel.dim(")")}" if pct >= 1
           segments << ctx
@@ -80,6 +80,23 @@ module Rubino
         when "yolo" then pastel.red("yolo")
         else pastel.dim(mode.to_s)
         end
+      end
+
+      # The saturation percentage shown in parentheses, CLAMPED to 0..100.
+      # The gauge measures how full the context window is, so it must never
+      # read past 100% (TUI-5): the displayed `tokens` come from the provider's
+      # reported prompt size (system prompt + tool schemas + history — the
+      # whole assembled request), while `window` may be a user-pinned
+      # `context.max_tokens` smaller than that real prompt, or the provider can
+      # simply count more than the chars/4 estimate the window default assumes.
+      # Either way `tokens > window` is possible and an unclamped ratio printed
+      # an impossible "(245%)"; over budget the gauge pins at 100% (the red
+      # CRIT band) instead. The raw `tokens/window` pair is still shown verbatim
+      # next to it, so an over-budget session is visible without a nonsense pct.
+      def context_pct(tokens, window)
+        return 0 unless window.to_i.positive?
+
+        (tokens.to_i * 100.0 / window.to_i).round.clamp(0, 100)
       end
 
       # The "<pct>%" segment: dim normally, yellow from WARN_PCT, red from
