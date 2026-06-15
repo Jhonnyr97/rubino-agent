@@ -47,7 +47,14 @@ RSpec.describe Rubino::Security::HardlineGuard do
       "rm${IFS}-rf${IFS}/" => /root filesystem/,    # ${IFS} word-splitting
       "rm${IFS}-rf${IFS}/etc" => /system directory/, # ${IFS} -> system dir
       "rm -rf ${HOME:-/}" => /root filesystem/,     # ${HOME:-/} defaults to /
-      "rm -rf ${HOME:=/}" => /root filesystem/      # ${HOME:=/} defaults to /
+      "rm -rf ${HOME:=/}" => /root filesystem/,     # ${HOME:=/} defaults to /
+      # #379 (residual of #348): line-continuation INSIDE a token, arbitrary
+      # varname default, and the ${IFS:0:1} substring word-split form.
+      "rm -r\\\nf /" => /root filesystem/,          # continuation splitting -rf
+      "rm -rf ${X:-/}" => /root filesystem/,        # arbitrary varname default
+      "rm -rf ${FOO:=/}" => /root filesystem/,      # arbitrary varname := default
+      "rm${IFS:0:1}-rf${IFS:0:1}/" => /root filesystem/, # ${IFS:0:1} substring split
+      "rm${IFS:0:1}-rf${IFS:0:1}/etc" => /system directory/ # ${IFS:0:1} -> system dir
     }.each do |command, description_match|
       it "blocks #{command.inspect}" do
         blocked, description = described_class.detect(command)
@@ -82,7 +89,12 @@ RSpec.describe Rubino::Security::HardlineGuard do
       # positives on legit multi-line / IFS-adjacent commands.
       "rm -rf \\\n/tmp/build",       # continuation to a SAFE path
       "echo hello \\\nworld",        # continuation in a harmless command
-      "rm${IFS}-rf${IFS}/tmp/build"  # ${IFS} to a SAFE path
+      "rm${IFS}-rf${IFS}/tmp/build", # ${IFS} to a SAFE path
+      # #379: continuation INSIDE a token / ${IFS:0:1} / varname-default folding
+      # must not false-positive on safe targets.
+      "rm -r\\\nf /tmp/build",       # token-split continuation, SAFE path
+      "rm${IFS:0:1}-rf${IFS:0:1}/tmp/build", # ${IFS:0:1} to a SAFE path
+      "echo ${EDITOR:-vim}"          # varname-default folding, harmless
     ].each do |command|
       it "allows #{command.inspect}" do
         blocked, = described_class.detect(command)

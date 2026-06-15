@@ -71,19 +71,71 @@ module Rubino
           messages.count { |m| m.role == "tool" }
         end
 
+        # Common 4+-char English / dev words that carry no topical signal. A
+        # single one of these overlapping ("file", "code", "this", "with",
+        # "rails" sitting in a skill description) must NOT count as coverage —
+        # that single-shared-word rule (#368) over-suppressed legitimately
+        # distinct tasks ("deploy workflow for Rails" suppressed by the word
+        # "rails" appearing in ruby-expert's description).
+        STOPWORDS = %w[
+          this that with from your into about make made using used will would
+          should could have has had been being does done when then than them
+          they their there here what which while also some such only just like
+          want need help please thing things file files code line lines step
+          steps task tasks work works call calls user users data text time
+          name names show list find each both more most less very much many
+          good well done over under again same other else type kind sort
+        ].to_set.freeze
+
         # "No skill already covering it": if the registry is empty, never covered.
-        # Otherwise, covered when the user's task shares a salient keyword with an
-        # existing skill's name/description. Deterministic, cheap, no model call.
+        # Otherwise covered only on a MEANINGFUL overlap — not a single shared
+        # word (#368). We treat a skill as covering the task when EITHER:
+        #   * the skill NAME (its tokens, kebab-split) is wholly present in the
+        #     task — a name-level match ("add-sinatra-post-endpoint" vs a task
+        #     about adding a Sinatra POST endpoint), OR
+        #   * the salient (stopword-filtered) tokens of task and skill overlap
+        #     by Jaccard >= COVERAGE_JACCARD AND share at least two such tokens.
+        # A lone common word ("rails", "file") can no longer suppress a job.
+        COVERAGE_JACCARD = 0.4
+        MIN_SHARED_SALIENT = 2
+
         def already_covered?(messages)
           skills = registry.all
           return false if skills.empty?
 
-          task = first_user_text(messages).to_s.downcase
-          task_words = task.scan(/[a-z]{4,}/).to_set
+          task_tokens = salient_tokens(first_user_text(messages).to_s)
+          return false if task_tokens.empty?
+
           skills.any? do |s|
-            hay = "#{s.name} #{s.description}".downcase
-            hay.scan(/[a-z]{4,}/).any? { |w| task_words.include?(w) }
+            name_tokens = s.name.to_s.downcase.split(/[^a-z0-9]+/).reject(&:empty?).to_set
+            next true if name_level_match?(name_tokens, task_tokens)
+
+            skill_tokens = salient_tokens("#{s.name} #{s.description}")
+            meaningful_overlap?(task_tokens, skill_tokens)
           end
+        end
+
+        # Stopword-filtered salient tokens (4+ chars) of a piece of text.
+        def salient_tokens(text)
+          text.downcase.scan(/[a-z]{4,}/).reject { |w| STOPWORDS.include?(w) }.to_set
+        end
+
+        # The skill's name tokens (>=2, all salient) are all present in the task —
+        # a strong, name-level signal that the task is what the skill is for.
+        def name_level_match?(name_tokens, task_tokens)
+          salient = name_tokens.reject { |w| w.length < 4 || STOPWORDS.include?(w) }.to_set
+          salient.size >= 2 && salient.subset?(task_tokens)
+        end
+
+        # Jaccard similarity over salient tokens, gated by an absolute floor of
+        # shared tokens so two tiny token sets sharing one word can't clear the
+        # ratio. Both conditions must hold to count as coverage.
+        def meaningful_overlap?(task_tokens, skill_tokens)
+          shared = task_tokens & skill_tokens
+          return false if shared.size < MIN_SHARED_SALIENT
+
+          union = (task_tokens | skill_tokens).size
+          union.positive? && (shared.size.to_f / union) >= COVERAGE_JACCARD
         end
 
         def first_user_text(messages)
