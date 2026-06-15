@@ -62,6 +62,9 @@ module Rubino
         # Clears all registered tools (useful for testing)
         def reset!
           @tools = {}
+          # Drop the memoized web-capability probe (#411) so a fresh test run
+          # re-evaluates it rather than inheriting a prior process's verdict.
+          @web_backend_available = nil
         end
 
         # Registers all default tools

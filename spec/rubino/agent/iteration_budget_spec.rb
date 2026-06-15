@@ -177,6 +177,9 @@ RSpec.describe Rubino::Agent::IterationBudget do
     it "is false on an unbounded (nil) iteration cap — nothing to extend" do
       budget = described_class.new(config: tight)
       budget.instance_variable_set(:@max_tool_iterations, nil)
+      # Nil the outer max_turns rail too (#414), else within_iteration_limit?
+      # would still be false at 10_000 and extendable? could read true.
+      budget.instance_variable_set(:@max_turns, nil)
       expect(budget.extendable?(10_000)).to be(false)
     end
 
