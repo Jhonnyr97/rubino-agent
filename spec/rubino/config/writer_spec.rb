@@ -108,6 +108,29 @@ RSpec.describe Rubino::Config::Writer do
         .to raise_error(Rubino::ConfigurationError, /invalid value for 'model\.temperature'.*expected number/)
     end
 
+    # #392b: a value that type-checks as a number but is outside the key's
+    # sensible range (temperature 0..2) used to be accepted with a green ✓ and
+    # only manifested as a provider 4xx at call time. Reject it up front.
+    it "rejects an out-of-range temperature (model.temperature 9.9)" do
+      expect { writer.set("model.temperature", "9.9") }
+        .to raise_error(Rubino::ConfigurationError, /invalid value for 'model\.temperature'.*out of range/)
+    end
+
+    it "rejects a too-high temperature just past the upper bound (2.5)" do
+      expect { writer.set("model.temperature", "2.5") }
+        .to raise_error(Rubino::ConfigurationError, /out of range/)
+    end
+
+    it "accepts an in-range temperature at the boundary (2.0)" do
+      writer.set("model.temperature", "2.0")
+      expect(writer.get("model.temperature")).to eq(2.0)
+    end
+
+    it "rejects an out-of-range compression ratio (compression.target_ratio 5)" do
+      expect { writer.set("compression.target_ratio", "5") }
+        .to raise_error(Rubino::ConfigurationError, /out of range/)
+    end
+
     it "rejects a non-URL value for a base_url leaf (providers.minimax.base_url)" do
       expect { writer.set("providers.minimax.base_url", "not a url") }
         .to raise_error(Rubino::ConfigurationError,

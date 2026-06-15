@@ -33,6 +33,38 @@ RSpec.describe Rubino::CLI::SkillsCommand do
       expect(rows.find { |r| r[0] == "data-helper" }[1]).to eq("enabled")
       expect(rows.find { |r| r[0] == "legacy-flat" }[1]).to eq("disabled")
     end
+
+    # #369a: an untrusted cwd silently withholds its project-local skills from
+    # the trust-gated listing, leaving the user with no clue the repo's skills
+    # exist. `skills list` must note how many are hidden and how to surface them.
+    it "notes project-local skills hidden because the directory is untrusted" do
+      project = Dir.mktmpdir("rubino-untrusted")
+      skill_dir = File.join(project, ".rubino", "skills", "repo-skill")
+      FileUtils.mkdir_p(skill_dir)
+      File.write(File.join(skill_dir, "SKILL.md"),
+                 "---\nname: repo-skill\ndescription: project-only skill\n---\nbody")
+
+      # The cwd is untrusted, so the trust-gated listing drops the cwd-relative
+      # `.rubino/skills` (default config path) and hides repo-skill; a
+      # trust-inclusive scan rooted here surfaces it as "hidden".
+      allow(Rubino::Skills::Registry).to receive(:project_local_trusted?).and_return(false)
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(project)
+
+      # Default cwd-relative skills.paths (the project-local mechanism), no
+      # built-ins, so only repo-skill is discoverable — and only when trusted.
+      config_with_local = test_configuration(
+        "skills" => { "paths" => [".rubino/skills"], "include_builtin" => false }
+      )
+      allow(Rubino).to receive(:configuration).and_return(config_with_local)
+
+      Dir.chdir(project) { described_class.new.list }
+
+      hint = messages(:warning).join("\n")
+      expect(hint).to include("1 project-local skill hidden")
+      expect(hint).to include("not trusted")
+    ensure
+      FileUtils.remove_entry(project) if project
+    end
   end
 
   describe "#show" do
