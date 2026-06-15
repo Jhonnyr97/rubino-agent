@@ -157,9 +157,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "missing-key preflight is format-aware (STRUCT-F2)" do
     before do
       # Force the credential gate to fire (default path, no override).
-      allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
-      allow(Rubino::LLM::CredentialCheck).to receive(:missing_key_message)
-        .and_return("no API key configured — run `rubino setup`")
+      allow(Rubino::LLM::CredentialCheck).to receive_messages(
+        usable?: false,
+        missing_key_message: "no API key configured — run `rubino setup`"
+      )
       # Non-interactive so the wizard isn't attempted.
       allow($stdin).to receive(:tty?).and_return(false)
     end
