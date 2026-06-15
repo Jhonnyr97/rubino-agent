@@ -266,6 +266,66 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 
+  # #381 — PESSIMISTIC fabrication on the budget-exhausted summary path. The turn
+  # actually ran tools (the loop forces a final summary once the iteration budget
+  # is spent), but the model writes that summary claiming it did NOTHING. The
+  # harness ledger is the authority on side-effects, so the loop reconciles the
+  # false summary with a truthful note before it reaches/persists for the user.
+  describe "budget-exhausted summary that pessimistically claims 'I did nothing' (#381)" do
+    # Cap the budget at one tool iteration so iteration 2 fails can_continue? and
+    # the loop takes summarize_on_budget_exhausted — the exact #381 trigger path.
+    let(:config) { test_configuration("agent" => { "max_tool_iterations" => 1 }) }
+
+    def write_result
+      Rubino::Tools::Result.success(name: "write", call_id: "c1", output: "wrote 12 bytes")
+    end
+
+    it "reconciles the false summary with the real tool-call/edit counts" do
+      # Iteration 1: a REAL mutating tool call (counts as 1 tool, 1 edit).
+      fake_llm.enqueue_tool_call("write", { "path" => "/work/a.rb", "content" => "x = 1" })
+      # Budget now exhausted → the loop forces a summary. The model writes it
+      # PESSIMISTICALLY, claiming nothing happened.
+      fake_llm.enqueue_text("I have not read a single file, not run grep, not made any edits.")
+
+      loop_obj = build_loop
+      allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
+        loop_obj.send(:handle_tool_result, name: name, arguments: arguments,
+                                           call_id: call_id, result: write_result)
+        write_result
+      end
+
+      result = loop_obj.run(messages: user_messages("refactor a.rb"), tools: tools)
+
+      # The false "no edits" claim is reconciled, not surfaced bare.
+      expect(result).to match(/harness note/i)
+      expect(result).to match(/1 tool call actually ran/i)
+      expect(result).to match(/1 edit\b/)
+      expect(result).to match(/uncommitted changes/i)
+      # The reconciled (truthful) text is what gets PERSISTED for the user.
+      stored = message_store.for_session(session[:id])
+                            .select { |m| m.role == "assistant" }
+                            .map(&:content)
+      expect(stored.last).to match(/1 tool call actually ran/i)
+    end
+
+    it "leaves a TRUTHFUL budget-exhausted summary that names its tools untouched" do
+      fake_llm.enqueue_tool_call("write", { "path" => "/work/a.rb", "content" => "x = 1" })
+      fake_llm.enqueue_text("I edited a.rb and ran the suite — refactor is on disk, tests pass.")
+
+      loop_obj = build_loop
+      allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
+        loop_obj.send(:handle_tool_result, name: name, arguments: arguments,
+                                           call_id: call_id, result: write_result)
+        write_result
+      end
+
+      result = loop_obj.run(messages: user_messages("refactor a.rb"), tools: tools)
+
+      expect(result).to eq("I edited a.rb and ran the suite — refactor is on disk, tests pass.")
+      expect(result).not_to match(/harness note/i)
+    end
+  end
+
   describe "cd claim is rewritten honestly (rubino has no cd tool)" do
     it "replaces 'Changed directory ...' with the honest no-cd answer" do
       fake_llm.enqueue_text("Changed the working directory to /tmp/elsewhere and confirmed.")
