@@ -593,6 +593,49 @@ RSpec.describe Rubino::Agent::Loop do
       expect(warnings).not_to be_empty
       expect(warnings.first[:message]).to include("budget")
     end
+
+    # #421: the force-summary's final commit repaint runs after a fresh
+    # thinking-row phase + a streamed block, which desync the live-region row
+    # geometry — without a reset the WHOLE summary block repainted twice. The
+    # loop resets the region (UI::CLI#reset_finalize_geometry, the same seam the
+    # interrupt finalize / Ctrl+L #395 / resize #401 use) BEFORE finalizing the
+    # summary text. Guarded by respond_to? so non-CLI UIs are untouched; assert
+    # it's called when the UI exposes it, and exactly once for the one summary.
+    it "resets the live-region geometry before the force-summary final commit (#421)" do
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Here's what I accomplished and what remains.")
+
+      # null_ui doesn't define the seam by default — give it the CLI's method so
+      # the respond_to? guard fires, and count calls through a local closure.
+      reset_calls = []
+      null_ui.define_singleton_method(:reset_finalize_geometry) { reset_calls << :reset }
+
+      loop_instance = described_class.new(
+        session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: tight_budget, ui: null_ui,
+        event_bus: event_bus, config: tight_config
+      )
+
+      loop_instance.run(messages: user_messages, tools: [looping_tool])
+      expect(reset_calls.size).to eq(1)
+    end
+
+    # #421 guard: a UI WITHOUT the seam (the default Null) must not break the
+    # force-summary — the respond_to? guard skips the reset cleanly.
+    it "force-summarizes fine when the UI lacks the geometry-reset seam (#421)" do
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("summary text")
+
+      loop_instance = described_class.new(
+        session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: tight_budget, ui: null_ui,
+        event_bus: event_bus, config: tight_config
+      )
+
+      expect(null_ui).not_to respond_to(:reset_finalize_geometry)
+      expect(loop_instance.run(messages: user_messages, tools: [looping_tool]))
+        .to eq("summary text")
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -1659,6 +1659,50 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # #421: the stream FINALIZE / INTERRUPT / force-summary commit repaints run
+  # after the status-row ticker + a flurry of transient frames have left the
+  # region's recorded geometry out of step with the physical rows, so the next
+  # #print_above walked one row short and stranded the live prompt (ghost `❯`) /
+  # repainted the kept partial twice. #finalize_region row-accurately erases the
+  # live region and zeroes its geometry so the closing commit lands as ONE clean
+  # frame — the same {LiveRegion#clear}/reset discipline #stop and Ctrl+L use.
+  describe "#finalize_region (#421)" do
+    it "erases the live region in place and zeroes the on-screen geometry" do
+      # Paint a live partial so a real on-screen geometry (rows_above) is recorded.
+      composer.set_partial("◆┄┄┄┄ thinking · 3s · enter to interrupt")
+      region = composer.instance_variable_get(:@region)
+      expect(region.rows_above).to be_positive # something is live above the prompt
+
+      output.truncate(0)
+      output.rewind
+      composer.finalize_region
+
+      # Geometry is reset to a clean blank top row: the partial dropped, the
+      # above-prompt row count zeroed (nothing stale left for the next commit).
+      expect(region.rows_above).to eq(0)
+      expect(composer.instance_variable_get(:@partial)).to eq("")
+      # The erase walked UP and cleared (the row-accurate \e[1A\e[2K), then the
+      # prompt was redrawn fresh.
+      expect(output.string).to include("\e[1A\e[2K")
+      expect(output.string).to end_with(PROMPT)
+    end
+
+    it "redraws subagent cards that are still live after the erase" do
+      composer.set_cards(["▸ sa_e488 · explore · running"])
+      output.truncate(0)
+      output.rewind
+      composer.finalize_region
+      # The card survives the reset (it is re-emitted), so finalize doesn't wipe
+      # legitimately-live above-prompt rows, only resets the geometry.
+      expect(output.string).to include("sa_e488")
+    end
+
+    it "is callable repeatedly without raising (idempotent clean state)" do
+      expect { 2.times { composer.finalize_region } }.not_to raise_error
+      expect(composer.instance_variable_get(:@region).rows_above).to eq(0)
+    end
+  end
+
   describe "reader teardown handoff (#80 — first keystroke must survive)" do
     # The #80 safety bug: when the approval menu opened, the composer's raw
     # reader was torn down with Thread#kill while blocked in a bare getc. A byte

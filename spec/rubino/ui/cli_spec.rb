@@ -386,6 +386,77 @@ RSpec.describe Rubino::UI::CLI do
       expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
     end
 
+    # #421: interrupt-during-thinking left a STALE thinking row + a ghost `❯`
+    # composer prompt above the `⎿ interrupted` marker (two prompts). The
+    # thinking-row + live-tail teardown (status_hide → clear_stream_region →
+    # status_stop) desyncs the composer's recorded row geometry from the physical
+    # rows, so the marker's #print_above walks one row short and commits the live
+    # prompt as a ghost. The fix resets the live-region geometry through the
+    # composer (BottomComposer#finalize_region) BEFORE the marker commits — the
+    # same reset_geometry! discipline Ctrl+L (#395) / resize (#401) use, on the
+    # finalize path. Assert the reset runs, and that it runs BEFORE the marker.
+    it "resets the live-region geometry before committing the marker on interrupt (#421)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      events = []
+      allow(composer).to receive(:finalize_region) { events << :finalize_region }
+      allow(composer).to receive(:print_above) { |s| events << [:print_above, s] }
+      allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      live_io = Object.new
+      live_io.define_singleton_method(:live) { |_s| self }
+      live_io.define_singleton_method(:puts) { |*a| composer.print_above(a.join) }
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.thinking_started
+        ui.turn_interrupted
+      ensure
+        $stdout = old
+      end
+
+      # The geometry reset ran, and it ran BEFORE the `⎿ interrupted` marker was
+      # committed (so the marker lands as one clean frame, no ghost prompt).
+      expect(events).to include(:finalize_region)
+      marker_idx = events.index { |e| e.is_a?(Array) && e[1].to_s.include?("interrupted") }
+      reset_idx  = events.index(:finalize_region)
+      expect(reset_idx).to be < marker_idx
+    end
+
+    # #421: even the QUIET (#111) interrupt path must reset the geometry — the
+    # thinking-row teardown desynced it, so the NEXT committed line would inherit
+    # the ghost otherwise. The marker is still swallowed; only the reset runs.
+    it "resets the geometry on the quiet (suppressed) interrupt path too (#421)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:finalize_region)
+      allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:print_above)
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      ui.suppress_interrupt_marker
+      out = capture_stdout { ui.turn_interrupted }
+
+      expect(out).not_to include("⎿ interrupted") # still swallowed (#111)
+      expect(composer).to have_received(:finalize_region)
+    end
+
+    # #421: with NO composer (plain TTY / pipe / between turns) the geometry
+    # reset is a quiet no-op — it must never raise and the marker still prints.
+    it "is a no-op reset with no composer, marker still prints (#421)" do
+      out = capture_stdout { ui.turn_interrupted }
+      expect(out).to include("⎿ interrupted")
+    end
+
     it "handles multi-line streamed text" do
       out = capture_stdout do
         ui.stream(type: :content, text: "first\nsecond\n")
