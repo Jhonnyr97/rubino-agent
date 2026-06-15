@@ -500,20 +500,39 @@ module Rubino
         # PESSIMISTIC-fabrication gate (#381): this forced summary ran AFTER real
         # tool calls this turn. If the model writes it pessimistically — "I did
         # nothing, read no files, made no edits" — while the ledger shows tools
-        # DID run, reconcile the text with a truthful harness note so the user
-        # isn't told work that happened did not. The ledger (@tool_count /
-        # @edit_count), not the narration, is the authority on side-effects. nil
-        # ⇒ the summary already truthful (or no tools ran) → surface it as-is.
-        final = @action_guard.reconcile_pessimistic_summary(
+        # DID run, the user must learn work that happened did not vanish. The
+        # ledger (@tool_count / @edit_count), not the narration, is the authority
+        # on side-effects.
+        #
+        # The truthful harness note is HARNESS DIAGNOSTIC, not model answer, so it
+        # is routed to STDERR (via #warning) — NOT appended into the returned text
+        # answer, which would pollute `--output-format text` stdout, the
+        # clean-stdout contract (#418, mirroring the #372 / created-skills
+        # routing). nil ⇒ summary already truthful (or no tools ran) → no note.
+        note = @action_guard.pessimistic_summary_note(
           content: response.content,
           tool_count: @tool_count,
           edit_count: @edit_count
-        ) || response.content
+        )
+        emit_harness_note(note) if note
 
+        final = response.content
         persist_final_text(response, final)
         finalize_stream_text(response, final)
         emit_turn_summary(turn_started_at, token_total)
         final
+      end
+
+      # Surface the #381 reconcile note as a HARNESS diagnostic off the answer
+      # stream: a #warning (stderr in the CLI; latched + echoed to stderr by the
+      # headless one-shot adapter, #260) plus an event-bus signal so the JSON /
+      # SSE consumers can carry it as metadata. Never written into the text
+      # answer that reaches `--output-format text` stdout (#418).
+      def emit_harness_note(note)
+        @ui.warning(note) if @ui.respond_to?(:warning)
+        @event_bus&.emit(Interaction::Events::HARNESS_NOTE, note: note)
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "loop.harness_note_failed", error: e.message)
       end
 
       # The fabricated-"done" gate for a TEXT-ONLY turn (#r5 F1 / MF-3 / B1).

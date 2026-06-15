@@ -101,6 +101,14 @@ module Rubino
       # (currently AttachFileTool). Payload: { path:, filename:,
       # content_type:, byte_size: }.
       ARTIFACT_CREATED = :artifact_created
+
+      # Harness diagnostic, not model answer (#418). Fired when the #381
+      # pessimistic-summary reconciliation detects the model claimed it did
+      # nothing while the tool-call ledger shows work ran. Routed here (and to
+      # stderr) — never into the text answer — so JSON/SSE consumers can carry
+      # it as metadata without polluting `--output-format text` stdout.
+      # Payload: { note: }.
+      HARNESS_NOTE = :harness_note
     end
   end
 end
