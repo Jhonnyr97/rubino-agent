@@ -164,14 +164,18 @@ module Rubino
         out
       end
 
-      # Line count of +str+ via a single allocation-free `count("\n")` pass
+      # Line count of +str+ via a single allocation-free newline-BYTE count
       # (#373): newlines, +1 for a final line with no trailing newline. Used by
       # both #preview and #truncate to decide over/under cap WITHOUT splitting a
-      # potentially huge buffer into a `.lines` array.
+      # potentially huge buffer into a `.lines` array. Counts on the byte view
+      # (`b`) so a raw, not-yet-scrubbed buffer (invalid UTF-8 / binary tool
+      # output) doesn't raise "invalid byte sequence" — the `\n` byte (0x0A) is
+      # unambiguous regardless of encoding, and `.b` shares the buffer (no copy).
       def self.line_count(str)
         return 0 if str.empty?
 
-        str.count("\n") + (str.end_with?("\n") ? 0 : 1)
+        bytes = str.b
+        bytes.count("\n") + (bytes.end_with?("\n") ? 0 : 1)
       end
 
       # Last +keep+ chomp'd lines of +str+, found by scanning backward from the
@@ -264,7 +268,7 @@ module Rubino
         # Re-derive the line check on whatever survived the byte pass (the byte
         # pass already cut to ~max_bytes, so this is now a bounded count).
         text = scrub_utf8(text) unless over_bytes
-        text = tail_bias_lines(text, max_lines, spill_path) if text.count("\n") + 1 > max_lines
+        text = tail_bias_lines(text, max_lines, spill_path) if line_count(text) > max_lines
         text
       end
 

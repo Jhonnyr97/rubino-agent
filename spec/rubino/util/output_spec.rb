@@ -111,12 +111,12 @@ RSpec.describe Rubino::Util::Output do
       expect(forbidden).to be(false)
     end
 
-    it "uses count(\"\\n\") for the line-count decision instead of .lines.size" do
-      text = "a\nb\nc\n"
-      expect(text).to receive(:count).with("\n").at_least(:once).and_call_original
+    it "makes the under-cap line decision without splitting the buffer into .lines" do
+      text = +"a\nb\nc\n" # unfrozen so we can spy on it
       allow(text).to receive(:lines).and_call_original
-      described_class.truncate(text, max_bytes: 10_000, max_lines: 100)
-      # Under cap: returns scrubbed text unchanged, no whole-buffer .lines split.
+      result = described_class.truncate(text, max_bytes: 10_000, max_lines: 100)
+      # Under cap: returns the (scrubbed) text unchanged, never splitting it.
+      expect(result).to eq("a\nb\nc\n")
       expect(text).not_to have_received(:lines)
     end
 

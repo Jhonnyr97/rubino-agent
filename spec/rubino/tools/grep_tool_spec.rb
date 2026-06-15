@@ -164,8 +164,13 @@ RSpec.describe Rubino::Tools::GrepTool do
       FileUtils.rm_rf(repo_dir)
     end
 
+    # The two paths format the leading path differently (rg relative, the Ruby
+    # fallback absolute) — an independent cosmetic difference. #375b is about
+    # the ignore-filtered SET being identical, so compare by basename.
     def matched_files(result)
-      payload(result).lines.grep(/needle/).map { |l| l.split(":").first.strip }.uniq.sort
+      payload(result).lines.grep(/needle/)
+                     .map { |l| File.basename(l.split(":").first.to_s.strip) }
+                     .uniq.sort
     end
 
     it "returns the same ignore-filtered file set for rg and the Ruby fallback" do
