@@ -154,6 +154,44 @@ RSpec.describe Rubino::Agent::Runner do
       # The two runners write to DISTINCT rows → no interleaved transcript.
       expect(first.session[:id]).not_to eq(second.session[:id])
     end
+
+    # #376 (residual #347): the owner-guard used to fire ONLY on status="active",
+    # so two concurrent explicit resumes of an ENDED session raced unguarded and
+    # interleaved writes into one malformed transcript (user,user …). A finished
+    # turn leaves status="ended"; the first resumer still claims owner_pid without
+    # flipping status back to active. This drives the Runner through the REAL,
+    # status-blind predicate (no stub on owned_by_other_live_process?): we only
+    # pin the liveness probe so the claimed pid reads as a live OTHER process. On
+    # pre-fix code the predicate returned false for the ended row, the second
+    # resumer latched onto the same row, and these forks expectations failed.
+    it "does not interleave concurrent explicit resumes of an ENDED session (#376)" do
+      parent = seed_session_with_history(owner_pid: nil)
+      repo.end_session!(parent[:id]) # status -> "ended", owner_pid -> nil
+
+      first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(first.session[:id]).to eq(parent[:id])
+      claimed = repo.find(parent[:id])
+      # Claimed by THIS live process, but the row is STILL "ended" (resume does
+      # not flip status); the pre-fix guard ignored it purely on that basis.
+      expect(claimed[:owner_pid]).to eq(Process.pid)
+      expect(claimed[:status]).to eq("ended")
+
+      # A second, DIFFERENT live process resumes the same ended row. Build a real
+      # repo on the test DB; pretend the claimed owner_pid belongs to a live
+      # process that ISN'T us by reporting OUR pid as a foreign live pid. The REAL
+      # status-blind predicate then returns true and the Runner must fork.
+      injected = Rubino::Session::Repository.new(db: db.db)
+      foreign_pid = Process.pid + 1
+      allow(injected).to receive(:process_alive?).and_call_original
+      allow(injected).to receive(:process_alive?).with(foreign_pid).and_return(true)
+      repo.update(parent[:id], owner_pid: foreign_pid) # someone else now holds it
+      allow(Rubino::Session::Repository).to receive(:new).and_return(injected)
+
+      second = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(second.session[:id]).not_to eq(parent[:id])
+      expect(second.session[:parent_session_id]).to eq(parent[:id])
+      expect(first.session[:id]).not_to eq(second.session[:id])
+    end
   end
 
   # -----------------------------------------------------------------------
