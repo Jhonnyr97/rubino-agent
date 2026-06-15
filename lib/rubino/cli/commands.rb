@@ -49,6 +49,13 @@ module Rubino
         end
 
         super
+      rescue Rubino::Database::BusyError => e
+        # Final backstop (#333/#359): a SUSTAINED concurrent-migration lock that
+        # outlived the connection retry budget must surface as a clean single
+        # line + non-zero exit at this one chokepoint — never a raw Sequel/
+        # SQLite backtrace from whichever command happened to touch the DB.
+        warn "rubino: #{e.message}"
+        exit(1)
       end
 
       # Wrap subcommand help so `chat --help` / `prompt --help` stay within 80
