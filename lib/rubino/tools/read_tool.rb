@@ -57,7 +57,7 @@ module Rubino
         # on the WRITE path: overwrite_guard / read_gate). Only a small secret
         # denylist (defense-in-depth, NOT a hard boundary) is refused, so the
         # model doesn't slurp credentials into context.
-        if (category = read_secret_block?(expanded))
+        if (category = read_secret_category(expanded))
           return read_secret_block_message(file_path, category)
         end
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)

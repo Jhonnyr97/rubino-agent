@@ -75,7 +75,7 @@ module Rubino
         # — the read allowlist was never the data-loss boundary (that's on the
         # WRITE path). Only refuse grepping a secret file directly (defense-in-
         # depth, NOT a hard boundary); directory searches proceed normally.
-        if File.file?(expanded_path) && (category = read_secret_block?(expanded_path))
+        if File.file?(expanded_path) && (category = read_secret_category(expanded_path))
           return read_secret_block_message(path, category)
         end
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)

@@ -223,7 +223,9 @@ module Rubino
         when "skill"
           # "<action> <name>" so the approval scope distinguishes a create from
           # a load and one skill name from another (granularity parity, #405).
-          [(args["action"] || args[:action] || "load"), (args["name"] || args[:name])].join(" ").strip
+          action = args["action"] || args[:action] || "load"
+          name   = args["name"] || args[:name]
+          [action, name].join(" ").strip
         else
           args.values.first.to_s
         end

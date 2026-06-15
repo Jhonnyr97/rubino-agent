@@ -262,24 +262,23 @@ module Rubino
       #     (pastes, attachments, sessions the agent points the model at) stay
       #     allowed.
       # Returns the matched-secret category string, or nil when the path is
-      # readable.
+      # readable. (Non-predicate: the truthy return carries the category that
+      # the denial message interpolates.)
       # Matches `.env`, `.env.<anything>` (.env.local/.production), and `.envrc`.
       ENV_SECRET_BASENAME_RE = /\A\.env(\..+)?\z|\A\.envrc\z/
-      def read_secret_block?(expanded)
+      def read_secret_category(expanded)
         base = File.basename(expanded.to_s)
         return "credential file (#{base})" if base.match?(ENV_SECRET_BASENAME_RE)
 
-        return nil unless under_agent_home?(expanded)
+        return unless under_agent_home?(expanded)
 
         target = canonical_path(expanded) || File.expand_path(expanded.to_s)
         lower  = target.downcase
-        if base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
-           lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
-           base.end_with?(".key") || base.end_with?(".pem")
-          return "agent-home secret (#{base})"
-        end
+        return unless base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
+                      lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
+                      base.end_with?(".key") || base.end_with?(".pem")
 
-        nil
+        "agent-home secret (#{base})"
       end
 
       def read_secret_block_message(path, category)
