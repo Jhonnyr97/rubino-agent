@@ -36,3 +36,9 @@ Thumbs.db
 :memory:
 
 :memory:*
+
+# Runtime agent state written into the cwd. Authored/distilled skills now go to
+# the agent HOME (RUBINO_HOME → ~/.rubino), never the project tree (SK-1), but
+# ignore .rubino/ defensively so a runtime-written skill can never be committed
+# into a user's repo again.
+/.rubino/

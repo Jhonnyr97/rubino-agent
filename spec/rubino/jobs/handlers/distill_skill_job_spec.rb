@@ -15,9 +15,14 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
   let(:db) { db_connection.db }
   let(:aux_client) { instance_double(Rubino::LLM::AuxiliaryClient) }
 
+  # SK-1: distilled skills are written under the agent HOME skills dir, NOT the
+  # cwd-relative skills.paths. @home is the resolved home; @skills_dir is its
+  # skills/ subdir — where distill writes and the registry discovers.
   around do |example|
-    Dir.mktmpdir do |dir|
-      @skills_dir = dir
+    Dir.mktmpdir do |home|
+      @home = home
+      @skills_dir = File.join(home, "skills")
+      FileUtils.mkdir_p(@skills_dir)
       Rubino::Metrics.reset!
       example.run
       Rubino::Metrics.reset!
@@ -26,9 +31,12 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
 
   before do
     allow(Rubino).to receive(:database).and_return(db_connection)
+    # skills.paths points elsewhere (the legacy cwd-relative default) to prove
+    # distill ignores it and writes to the home dir resolved below.
     allow(Rubino).to receive(:configuration).and_return(
-      test_configuration("skills" => { "paths" => [@skills_dir] })
+      test_configuration("skills" => { "paths" => ["~/.rubino/skills"] })
     )
+    allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
     allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
   end
 
@@ -92,6 +100,21 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
       expect(content).to include("# Add a Sinatra POST endpoint")
 
       expect(Rubino::Metrics.render).to match(/^skills_created_total(\{\})? 1$/)
+    end
+
+    # SK-1: a distill that fires while cwd is inside a repo must NOT drop a
+    # SKILL.md into the repo working tree — it writes to the agent HOME.
+    it "writes under the agent HOME, not the cwd repo, when distilling" do
+      sid = seed_session
+      seed_worthy_run(sid)
+      stub_distill(good_candidate_json)
+
+      Dir.mktmpdir do |repo|
+        Dir.chdir(repo) { job.perform(session_id: sid) }
+        expect(Dir.glob(File.join(repo, "**", "SKILL.md"))).to be_empty
+        expect(File).not_to exist(File.join(repo, ".rubino"))
+      end
+      expect(File).to exist(File.join(@skills_dir, "add-sinatra-post-endpoint", "SKILL.md"))
     end
 
     it "does NOT fire on a trivial run: no aux call, no skill written" do
