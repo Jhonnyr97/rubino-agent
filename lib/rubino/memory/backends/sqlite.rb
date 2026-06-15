@@ -224,12 +224,38 @@ module Rubino
         end
 
         def find(id)
-          row = @db[TABLE].where(Sequel.like(:id, "#{id}%")).first
+          row = resolve_row(id)
           row && present(row)
         end
 
         def delete(id)
-          @db[TABLE].where(Sequel.like(:id, "#{id}%")).delete.positive?
+          row = resolve_row(id)
+          return false unless row
+
+          @db[TABLE].where(id: row[:id]).delete.positive?
+        end
+
+        # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
+        # nothing (a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
+        # so `memory delete ""` wiped the whole store and reported success — data
+        # loss, #416). An EXACT id always wins; otherwise we accept a prefix ONLY
+        # when it is non-empty AND unambiguous (matches exactly one row), so a
+        # short id from `memory list` still works but a 1-char prefix can never
+        # mass-select. Returns the single row or nil.
+        def resolve_row(id)
+          key = id.to_s
+          return nil if key.strip.empty?
+
+          exact = @db[TABLE].where(id: key).first
+          return exact if exact
+
+          # Match `key` as a LITERAL prefix (id is a hyphenated hex UUID, never
+          # containing LIKE wildcards) and accept it ONLY when it is unambiguous
+          # — exactly one row. limit(2) is enough to tell "one" from "many", so a
+          # short prefix that spans multiple rows resolves to nil instead of
+          # selecting them all.
+          matches = @db[TABLE].where(Sequel.like(:id, "#{key}%")).limit(2).all
+          matches.size == 1 ? matches.first : nil
         end
 
         # Count only LIVE facts (valid_to IS NULL) — retired/superseded rows are

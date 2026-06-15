@@ -92,9 +92,26 @@ module Rubino
         find(id)
       end
 
-      # Finds a memory by ID (supports prefix matching)
+      # Finds a memory by ID (exact match, or an unambiguous prefix)
       def find(id)
-        @db[:memories].where(Sequel.like(:id, "#{id}%")).first
+        resolve_row(id)
+      end
+
+      # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
+      # nothing — a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
+      # so `memory delete ""` deleted the whole store and reported success (data
+      # loss, #416). An EXACT id always wins; a non-empty prefix is accepted ONLY
+      # when unambiguous (matches exactly one row), so a short id from
+      # `memory list` still resolves but a 1-char prefix can never mass-select.
+      def resolve_row(id)
+        key = id.to_s
+        return nil if key.strip.empty?
+
+        exact = @db[:memories].where(id: key).first
+        return exact if exact
+
+        matches = @db[:memories].where(Sequel.like(:id, "#{key}%")).limit(2).all
+        matches.size == 1 ? matches.first : nil
       end
 
       # Lists memories with optional filters
@@ -123,10 +140,14 @@ module Rubino
         @db[:memories].where(id: id).update(attrs)
       end
 
-      # Deletes a memory
+      # Deletes a memory — exact id, or an unambiguous prefix; a blank id deletes
+      # NOTHING (#416). Resolves to a single row first so a bare/short prefix can
+      # never mass-delete via a `%` LIKE.
       def delete(id)
-        count = @db[:memories].where(Sequel.like(:id, "#{id}%")).delete
-        count > 0
+        row = resolve_row(id)
+        return false unless row
+
+        @db[:memories].where(id: row[:id]).delete.positive?
       end
 
       # Returns memories of a specific kind

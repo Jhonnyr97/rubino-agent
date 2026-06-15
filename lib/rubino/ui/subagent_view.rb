@@ -196,6 +196,20 @@ module Rubino
         false
       end
 
+      # Whether this nested view can actually put an approval in front of a
+      # human and block for an answer. ONLY the card-mode background path with a
+      # wired @approve handler can (it parks the child on a per-entry gate and a
+      # /agents <id> decision resolves it). The foreground/legacy path (no
+      # @approve) cannot — there is no one to ask. Returning false there makes
+      # the child's ToolExecutor FAIL CLOSED with the honest "needs approval but
+      # no interactive session — use --yolo / allowlist it" block (#260) instead
+      # of routing through #confirm's auto-deny, which the model otherwise reads
+      # as "the user denied it" though no human ever decided (#419). With a
+      # handler we stay interactive so the gate path is reached as before.
+      def interactive?
+        !@approve.nil?
+      end
+
       # No interactive clarification mid-delegation either.
       def ask(_prompt)
         nil
