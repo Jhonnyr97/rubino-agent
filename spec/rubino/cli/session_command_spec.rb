@@ -37,6 +37,48 @@ RSpec.describe Rubino::CLI::SessionCommand do
       expect { described_class.new.show("zzz_nope") }
         .to raise_error(Thor::Error, /session not found/)
     end
+
+    # #382 — the Messages/Tokens lines must reflect the REAL cumulative state,
+    # not the drifting cached sessions.message_count column (which counts only
+    # top-level turns and hides every assistant(tool_use)/tool(result) row) nor a
+    # non-cumulative token count. Seed a session whose actual messages include
+    # tool rows and assert the count includes them (with a tool label) and the
+    # token total is the SUM over all messages.
+    describe "Messages/Tokens reflect the real cumulative state (#382)" do
+      it "counts tool messages (labeled) and sums all token counts" do
+        repo.create(source: "cli", title: "tool-heavy")
+        session = repo.list(limit: 1).first
+        # The cached column lies — set it to a misleading low number on purpose.
+        db.db[:sessions].where(id: session[:id]).update(message_count: 2, token_count: 5)
+
+        store = Rubino::Session::Store.new(db: db.db)
+        store.create(session_id: session[:id], role: "user", content: "do it", token_count: 10)
+        store.create(session_id: session[:id], role: "assistant", content: "calling tool", token_count: 20)
+        store.create(session_id: session[:id], role: "tool", content: "tool out", tool_name: "read", token_count: 30)
+        store.create(session_id: session[:id], role: "assistant", content: "the answer", token_count: 40)
+
+        described_class.new.show(session[:id][0..7])
+        joined = info_lines.join("\n")
+
+        # 4 real messages, 1 of them a tool row — the cached "2" is ignored.
+        expect(joined).to match(/Messages: 4 \(1 tool\)/)
+        # Cumulative token sum 10+20+30+40 = 100, not the cached 5.
+        expect(joined).to match(/Tokens: 100/)
+      end
+
+      it "omits the tool label when there are no tool messages" do
+        repo.create(source: "cli", title: "no tools")
+        session = repo.list(limit: 1).first
+        store = Rubino::Session::Store.new(db: db.db)
+        store.create(session_id: session[:id], role: "user", content: "hi", token_count: 3)
+        store.create(session_id: session[:id], role: "assistant", content: "hello", token_count: 4)
+
+        described_class.new.show(session[:id][0..7])
+        joined = info_lines.join("\n")
+        expect(joined).to match(/Messages: 2$/)
+        expect(joined).not_to include("tool)")
+      end
+    end
   end
 
   describe "#delete" do
