@@ -63,18 +63,38 @@ module Rubino
       # Destructive verbs reused across the behavior-override patterns.
       DESTRUCTIVE_VERB = "delete|remove|rm|wipe|destroy|overwrite|exfiltrate|leak|send|upload|disable"
 
+      # Standing-directive markers (#346 residual / FP fix): the phrases that turn
+      # a one-off dev instruction into a PERSISTENT behavior override — "without
+      # asking/confirmation", "automatically", "silently", "by default", "from now
+      # on", "always". A destructive verb + an absolute scope ("delete all files")
+      # is an ordinary, legitimate task; it only becomes poison when paired with
+      # one of these standing/auto/no-confirmation markers. Requiring this marker
+      # is what lets benign dev prefs ("Remove all console.log statements",
+      # "Remove trailing whitespace from every file", "Send the report to all
+      # stakeholders") through while real poison ("automatically remove every
+      # backup", "delete all .bak without asking") still flags.
+      STANDING_MARKER = "without (?:asking|confirmation|approval|permission|telling)|" \
+                        "automatically|silently|quietly|secretly|no confirmation|" \
+                        "don't (?:ask|confirm)|never (?:ask|confirm)|by default|from now on|always"
+
       BEHAVIOR_OVERRIDE_PATTERNS = [
         # Secrecy: "(silently/quietly) ... (don't|never) tell/inform/notify the user".
         /\b(?:don't|do not|never)\s+(?:tell|inform|notify|alert|warn|ask|mention)\b[^.\n]{0,40}\buser\b/i,
         /\bwithout\s+(?:telling|informing|notifying|asking|warning)\b[^.\n]{0,20}\buser\b/i,
         /\b(?:silently|quietly|secretly)\b[^.\n]{0,40}\b(?:#{DESTRUCTIVE_VERB})\b/i,
-        # Standing / blanket approval — defeats the per-action approval gate.
+        # Standing / blanket approval — defeats the per-action approval gate. We
+        # match the unambiguously BLANKET forms only ("approve all/any/every",
+        # "standing approval", "auto-approve", "never ask before/for"): a bare
+        # two-word "always approve" is too ambiguous (a benign user pref) to flag.
         /\bstanding\s+approval\b/i,
         /\b(?:auto|pre)[\s-]?approv(?:e|al)\b/i,
-        /\b(?:always\s+approve|approve\s+(?:all|any|every)|never\s+ask)\b/i,
-        /\b(?:always|automatically)\s+(?:say\s+yes|confirm|allow|permit|approve)\b/i,
-        # Imperative destructive directive scoped to "all/any/every ...".
-        /\b(?:#{DESTRUCTIVE_VERB})\b[^.\n]{0,30}\b(?:all|any|every)\b/i
+        /\b(?:approve\s+(?:all|any|every)\b|never\s+ask\s+(?:for|before|first)|always\s+say\s+yes)/i,
+        # Imperative destructive directive scoped to "all/any/every ..." — but ONLY
+        # when it carries a standing/automatic/no-confirmation marker (either side),
+        # so an ordinary "remove all X" task is not mistaken for a persistent
+        # behavior override.
+        /\b(?:#{DESTRUCTIVE_VERB})\b[^.\n]{0,30}\b(?:all|any|every)\b[^.\n]{0,40}\b(?:#{STANDING_MARKER})\b/i,
+        /\b(?:#{STANDING_MARKER})\b[^.\n]{0,40}\b(?:#{DESTRUCTIVE_VERB})\b[^.\n]{0,30}\b(?:all|any|every)\b/i
       ].freeze
 
       class << self
