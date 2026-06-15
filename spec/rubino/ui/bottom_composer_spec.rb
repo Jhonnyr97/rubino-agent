@@ -1618,6 +1618,45 @@ RSpec.describe Rubino::UI::BottomComposer do
       # The prompt is redrawn below it.
       expect(output.string).to end_with(PROMPT)
     end
+
+    # #401: typing a long line then resizing (the column count changes, so the
+    # terminal reflows the wrapped input into a DIFFERENT number of physical
+    # rows) re-echoed/duplicated the in-progress input ~20× into scrollback on
+    # each reflow. Root cause: the resize redraw walked the OLD on-screen row
+    # geometry (@input_above/@rows_above recorded at the previous width) with a
+    # relative \e[1A\e[2K walk-up — under-clearing left the stale copy and the
+    # fresh redraw appended BELOW it, stacking a copy per reflow. The fix forgets
+    # the row geometry before redrawing (the same {LiveRegion#reset_geometry!}
+    # seam Ctrl+L/#395 uses) so the next frame draws ONE clean copy.
+    it "forgets the stale row geometry before redrawing on resize (#401)" do
+      region = composer.instance_variable_get(:@region)
+      # Type a long line that wraps to several physical rows at the start width,
+      # so a real on-screen geometry (input_above) is recorded.
+      "x".ljust(120, "x").each_char { |ch| composer.handle_key(ch) }
+      expect(region.input_above).to be_positive # multi-row before resize
+
+      output.truncate(0)
+      output.rewind
+      # Resize: reset_geometry! must run BEFORE the redraw walks the stale rows.
+      expect(region).to receive(:reset_geometry!).and_call_original.ordered
+      expect(region).to receive(:clear_input_block).and_call_original.ordered
+      allow(output).to receive(:winsize).and_return([24, 200])
+      composer.resize
+
+      # And the reflowed input is emitted exactly ONCE, not duplicated: the
+      # buffer text appears a single time in the post-resize byte stream.
+      expect(output.string.scan("#{PROMPT}#{"x" * 120}").length).to eq(1)
+    end
+
+    # Guard the Ctrl+L (#395) and the plain redraw paths the #401 fix sits next
+    # to: reset_geometry! must NOT leak into a non-resize redraw (a stale-geometry
+    # reset there would desync the in-place clear), and Ctrl+L must still clear.
+    it "does NOT reset geometry on a normal (non-resize) redraw" do
+      composer.handle_key("a")
+      region = composer.instance_variable_get(:@region)
+      expect(region).not_to receive(:reset_geometry!)
+      composer.send(:redraw)
+    end
   end
 
   describe "reader teardown handoff (#80 — first keystroke must survive)" do
