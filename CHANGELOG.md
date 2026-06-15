@@ -32,6 +32,16 @@
   blocked tool still emits the result with `is_error:true` and a non-zero exit.
   The schema lives in a single shared serializer (`Rubino::Output::ResultSerializer`)
   so it never drifts. `text` (default) is unchanged.
+- **Higher tool-loop budget with an interactive extension prompt (#399).** The
+  `max_tool_iterations` default is raised from 8 to 25 so longer agent runs no
+  longer hit the cap mid-task. When the cap is reached interactively, the run
+  pauses with a budget-extension prompt — **Continue +N** (grant another batch),
+  **Summarize** (wrap up with what's done), or **Abort** — instead of failing
+  silently; headless runs keep the force-summarize behavior.
+- **TUI: Ctrl-L clear-screen and a resize-while-typing fix (#395 / #401).**
+  `Ctrl-L` now clears the screen from the composer. Fixed a bug where resizing
+  the terminal while typing reflowed and duplicated the in-progress input into
+  the scrollback.
 
 ### Security
 
