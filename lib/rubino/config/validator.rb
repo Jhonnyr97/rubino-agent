@@ -52,11 +52,19 @@ module Rubino
         "target_ratio" => (0.0..1.0)
       }.freeze
 
+      # Leaves that must be a POSITIVE integer when set: a turn/iteration cap of
+      # 0 or negative is nonsense (the turn could never run a single iteration)
+      # and used to persist with a green ✓ then silently degrade to "unbounded" /
+      # the default at runtime. Keyed by leaf name. A nil (clearing the key) is
+      # left to the type-unconstrained nil-default path.
+      POSITIVE_INT_LEAVES = %w[max_turns max_tool_iterations].freeze
+
       def validate!(key_path, keys, value)
         default = leaf_default(keys)
         reject_unknown_key!(key_path, keys) if default == :__absent__
         check_type!(key_path, keys, value, default) unless default == :__absent__
         check_range!(key_path, keys, value)
+        check_positive_int!(key_path, keys, value)
         check_url_format!(key_path, keys, value)
       end
 
@@ -154,6 +162,23 @@ module Rubino
         raise ConfigurationError,
               "invalid value for '#{key_path}': #{coerced} is out of range " \
               "(expected #{range.begin}..#{range.end})"
+      end
+
+      # A turn/iteration cap leaf must be a POSITIVE integer when set. A 0 or
+      # negative cap is nonsense (the turn could never run a single iteration);
+      # it used to persist with a green ✓ then silently degrade to unbounded /
+      # the default at runtime. A nil (clearing the key, "nil"/"null") is allowed
+      # — it means "use the built-in default".
+      def check_positive_int!(key_path, keys, value)
+        return unless POSITIVE_INT_LEAVES.include?(keys.last.to_s)
+
+        coerced = Writer.coerce_value(value)
+        return if coerced.nil?
+        return if coerced.is_a?(Numeric) && coerced.positive? && coerced == coerced.to_i
+
+        raise ConfigurationError,
+              "invalid value for '#{key_path}': #{value.inspect} — must be a positive " \
+              "integer (a 0 or negative cap would never let the turn run)"
       end
 
       # A *_url / base_url leaf must be a real http(s) URL when a non-empty value

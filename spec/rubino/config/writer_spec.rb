@@ -178,6 +178,34 @@ RSpec.describe Rubino::Config::Writer do
       writer.set("providers.minimax.base_url", "https://api.minimax.io/anthropic")
       expect(writer.get("providers.minimax.base_url")).to eq("https://api.minimax.io/anthropic")
     end
+
+    # #dx: a 0/negative turn cap is nonsense (the turn could never run a single
+    # iteration). It used to persist with a green ✓ then silently degrade to
+    # "unbounded"/the default at runtime; reject it at set time. A zero coerces
+    # to a number and is caught by the positive-integer check; a negative string
+    # doesn't coerce to a number (coerce_value only parses \d+) and is caught one
+    # step earlier by the type check — either way it is rejected with a clear,
+    # non-corrupting error, never persisted.
+    it "rejects a zero agent.max_turns (positive-integer leaf)" do
+      expect { writer.set("agent.max_turns", "0") }
+        .to raise_error(Rubino::ConfigurationError,
+                        /invalid value for 'agent\.max_turns'.*positive integer/)
+    end
+
+    it "rejects a zero agent.max_tool_iterations" do
+      expect { writer.set("agent.max_tool_iterations", "0") }
+        .to raise_error(Rubino::ConfigurationError, /positive integer/)
+    end
+
+    it "rejects a negative agent.max_tool_iterations (clear error, not persisted)" do
+      expect { writer.set("agent.max_tool_iterations", "-5") }
+        .to raise_error(Rubino::ConfigurationError, /invalid value for 'agent\.max_tool_iterations'/)
+    end
+
+    it "accepts a positive agent.max_turns" do
+      writer.set("agent.max_turns", "120")
+      expect(writer.get("agent.max_turns")).to eq(120)
+    end
   end
 
   # CFG-R2-5 (HIGH): `config set` read-modify-writes config.yml. Before the

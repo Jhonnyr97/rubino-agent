@@ -521,6 +521,42 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     end
   end
 
+  # #dx — an EMPTY base_url on an openai_compatible provider used to be passed
+  # through as an empty api_base, so the call hit a garbage endpoint and surfaced
+  # as a misleading AUTH/connection error. It is now detected and surfaced as a
+  # clear "base_url is empty/misconfigured" error — even when the key is present.
+  describe "empty base_url validation (#dx)" do
+    def compat_cfg(base_url)
+      test_configuration(
+        "model" => { "provider" => "ollama", "default" => "llama3", "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "ollama" => { "openai_compatible" => true, "api_key" => "sk-test", "base_url" => base_url } }
+      )
+    end
+
+    it "surfaces a base_url error (NOT an auth error) for an empty base_url with a key present" do
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("")) }
+        .to raise_error(Rubino::Error, %r{base_url is empty/misconfigured for provider 'ollama'})
+    end
+
+    it "treats a whitespace-only base_url as empty too" do
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("   ")) }
+        .to raise_error(Rubino::Error, %r{base_url is empty/misconfigured})
+    end
+
+    it "the base_url error is distinct from the missing-key error" do
+      # key present but base_url empty ⇒ base_url message, not 'Missing API key'.
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("")) }
+        .to raise_error(Rubino::Error, /base_url is empty/)
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("")) }
+        .not_to raise_error(Rubino::Error, /Missing API key/)
+    end
+
+    it "still accepts a present base_url" do
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("http://localhost:11434/v1")) }
+        .not_to raise_error
+    end
+  end
+
   # -----------------------------------------------------------------------
   # gateway provider — model name "auto" passthrough.
   # The /v1/* gateway rewrites the model upstream, so the agent

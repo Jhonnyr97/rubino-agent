@@ -81,12 +81,29 @@ RSpec.describe Rubino::Agent::IterationBudget do
       expect(budget.can_continue?(high + 1)).to be(false)
     end
 
-    it "falls back to the config default for nil / zero / negative overrides" do
+    it "falls back to the config default for nil / blank (unset) overrides" do
       default = config.agent_max_tool_iterations
-      [nil, 0, -5, ""].each do |bad|
-        budget = described_class.new(config: config, max_tool_iterations: bad)
-        expect(budget.can_continue?(default)).to be(true), "expected #{bad.inspect} to use config default"
+      [nil, ""].each do |unset|
+        budget = described_class.new(config: config, max_tool_iterations: unset)
+        expect(budget.can_continue?(default)).to be(true), "expected #{unset.inspect} to use config default"
         expect(budget.can_continue?(default + 1)).to be(false)
+      end
+    end
+
+    it "REJECTS a 0 / negative --max-turns override with a clear message (#dx)" do
+      [0, -5, 0.0, "-1"].each do |bad|
+        expect { described_class.new(config: config, max_tool_iterations: bad) }
+          .to raise_error(Rubino::ConfigurationError, /invalid --max-turns.*positive integer/),
+              "expected #{bad.inspect} to be rejected"
+      end
+    end
+
+    it "REJECTS a 0 / negative configured agent.max_turns with a clear message (#dx)" do
+      [0, -3].each do |bad|
+        cfg = test_configuration("agent" => { "max_turns" => bad, "max_tool_iterations" => 3 })
+        expect { described_class.new(config: cfg) }
+          .to raise_error(Rubino::ConfigurationError, /invalid agent\.max_turns.*positive integer/),
+              "expected agent.max_turns=#{bad.inspect} to be rejected"
       end
     end
   end
