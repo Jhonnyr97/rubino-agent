@@ -265,8 +265,24 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect { described_class.new("query" => "ping", "z" => true).execute }.to output("RESPONSE_TEXT\n").to_stdout
     end
 
-    it "passes Null UI to Runner" do
+    it "passes a Null-family (non-interactive) UI to Runner" do
       described_class.new("query" => "ping").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        # HeadlessTrace IS-A Null, so this asserts the headless one-shot never
+        # gets the interactive UI::CLI — while allowing the default trace adapter.
+        hash_including(ui: a_kind_of(Rubino::UI::Null))
+      )
+    end
+
+    it "defaults to the HeadlessTrace adapter (per-tool stderr trace on)" do
+      described_class.new("query" => "ping").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(ui: an_instance_of(Rubino::UI::HeadlessTrace))
+      )
+    end
+
+    it "uses a plain Null adapter under --quiet (trace silenced)" do
+      described_class.new("query" => "ping", "quiet" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(ui: an_instance_of(Rubino::UI::Null))
       )
