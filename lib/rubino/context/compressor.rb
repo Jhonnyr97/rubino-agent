@@ -227,9 +227,19 @@ module Rubino
         ids = lineage_session_ids
         return [] if ids.empty?
 
+        # +created_at+ is iso8601 truncated to SECONDS and the PK is a random
+        # UUID, so ordering by created_at ALONE is non-deterministic when 3+
+        # compactions land in the same wall-clock second (rapid /compact or a
+        # tight auto loop): #limit could then return the two OLD ineffective
+        # rows and MISS a newer EFFECTIVE one, leaving #thrashing? wrongly true
+        # and the back-off stuck on after a genuinely-effective compaction.
+        # SQLite's implicit rowid is insertion-monotonic (this is a rowid table:
+        # its PK is TEXT, not INTEGER), so it breaks same-second ties so the
+        # "most recent N" are unambiguous. Hermes avoids this with an in-memory
+        # ordered savings list — we get the same ordering guarantee from rowid.
         @db[:compactions]
           .where(source_session_id: ids)
-          .reverse(:created_at)
+          .reverse(:created_at, :rowid)
           .limit(limit)
           .all
       end
