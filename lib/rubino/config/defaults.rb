@@ -111,7 +111,22 @@ module Rubino
         },
         "agent" => {
           "max_turns" => 90,
-          "max_tool_iterations" => 8,
+          # Per-turn model↔tool round-trip cap. Raised 8→25 (#399): 8 was a
+          # rubino-only outlier (the Hermes reference uses 90; peer tools cluster
+          # 10–25 for "stop-and-ask"). 25 matches Cursor's tuned interactive cap —
+          # high enough that real multi-file tasks finish, low enough to still
+          # catch runaways. `max_turns`/`max_turn_seconds` stay as outer rails.
+          "max_tool_iterations" => 25,
+          # At the iteration cap, in INTERACTIVE mode, prompt the user to
+          # continue/summarize/abort instead of silently force-summarizing (#399).
+          # false forces the old always-summarize behaviour; headless/non-TTY
+          # runs ALWAYS force-summarize regardless of this flag (no human to ask).
+          "budget_extension_prompt" => true,
+          # The "+N" granted by one budget extension at the cap. nil ⇒ use
+          # max_tool_iterations (so one extension doubles the runway). Capped by
+          # the outer max_turns / max_turn_seconds rails, which extensions do NOT
+          # raise — repeated extensions can never bypass the time/turn ceiling.
+          "budget_extension_step" => nil,
           "max_turn_seconds" => 120,
           # 5 retries with exponential backoff = 1+2+4+8+16 = 31s total wait.
           # Sized to absorb common provider blips (MiniMax intl in particular

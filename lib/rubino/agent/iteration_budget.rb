@@ -21,6 +21,19 @@ module Rubino
         within_iteration_limit?(iteration) && within_time_limit?
       end
 
+      # Grants `by` more tool iterations so a turn that hit the cap can resume
+      # the SAME turn with full context (#399, the Cline/Roo "reset the counter,
+      # keep context" pattern). Only the iteration ceiling moves — the time/turn
+      # ceilings are untouched, so repeated extensions can never bypass the
+      # max_turn_seconds / max_turns rails (a runaway still stops on the clock).
+      # No-op on an unbounded (nil) cap. Returns the new ceiling.
+      def extend!(by)
+        amount = positive_int(by)
+        return @max_tool_iterations if amount.nil? || @max_tool_iterations.nil?
+
+        @max_tool_iterations += amount
+      end
+
       private
 
       # Coerce an override to a positive Integer, or nil if it's absent/garbage

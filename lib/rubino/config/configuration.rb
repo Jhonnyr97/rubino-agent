@@ -146,6 +146,25 @@ module Rubino
         dig("agent", "max_turn_seconds") || Defaults.dig("agent", "max_turn_seconds")
       end
 
+      # At the iteration cap, prompt to continue/summarize/abort (#399). Defaults
+      # to true; an explicit false forces the old always-summarize behaviour.
+      # Independent of TTY — the headless guarantee lives in @ui.select returning
+      # nil, not here.
+      def agent_budget_extension_prompt?
+        v = dig("agent", "budget_extension_prompt")
+        v.nil? ? Defaults.dig("agent", "budget_extension_prompt") : v == true
+      end
+
+      # The "+N" one budget extension grants. nil/blank ⇒ max_tool_iterations,
+      # so an extension doubles the per-turn runway (the Cline/Roo "reset the
+      # counter, keep context" amount). Coerced to a positive Integer; a bad
+      # value falls back to the iteration cap.
+      def agent_budget_extension_step
+        raw = dig("agent", "budget_extension_step")
+        n = Integer(raw, exception: false)
+        n&.positive? ? n : agent_max_tool_iterations
+      end
+
       def agent_api_max_retries
         dig("agent", "api_max_retries")
       end

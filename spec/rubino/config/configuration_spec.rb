@@ -133,7 +133,8 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
-      expect(config.agent_max_tool_iterations).to eq(8)
+      # Default raised 8→25 (#399).
+      expect(config.agent_max_tool_iterations).to eq(25)
       expect(config.agent_max_turn_seconds).to eq(120)
     end
 
@@ -145,8 +146,28 @@ RSpec.describe Rubino::Config::Configuration do
                                  "max_tool_iterations" => nil,
                                  "max_turn_seconds" => nil
                                })
-      expect(cfg.agent_max_tool_iterations).to eq(8)
+      expect(cfg.agent_max_tool_iterations).to eq(25)
       expect(cfg.agent_max_turn_seconds).to eq(120)
+    end
+  end
+
+  # #399: interactive budget-extension knobs.
+  describe "budget-extension accessors (#399)" do
+    it "defaults the prompt ON and the step to max_tool_iterations" do
+      expect(config.agent_budget_extension_prompt?).to be(true)
+      expect(config.agent_budget_extension_step).to eq(config.agent_max_tool_iterations)
+    end
+
+    it "honours an explicit prompt:false (force the old always-summarize)" do
+      cfg = test_configuration("agent" => { "budget_extension_prompt" => false })
+      expect(cfg.agent_budget_extension_prompt?).to be(false)
+    end
+
+    it "uses an explicit positive step and ignores a bad one" do
+      expect(test_configuration("agent" => { "budget_extension_step" => 10 })
+        .agent_budget_extension_step).to eq(10)
+      bad = test_configuration("agent" => { "budget_extension_step" => 0 })
+      expect(bad.agent_budget_extension_step).to eq(bad.agent_max_tool_iterations)
     end
   end
 

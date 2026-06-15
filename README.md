@@ -107,7 +107,7 @@ model:
 
 agent:
   max_turns: 90
-  max_tool_iterations: 8
+  max_tool_iterations: 25
 
 memory:
   enabled: true
