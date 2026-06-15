@@ -71,10 +71,13 @@ module Rubino
         after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
 
         expanded_path = expand_workspace_path(path)
-        # Searching outside the workspace is DENIED, not "path not found": a
-        # typed error keeps the model from treating an out-of-sandbox tree as
-        # absent (r5 MF-1).
-        return outside_workspace_message(path) if outside_workspace?(expanded_path)
+        # Search is BROAD (#406): grep resolves any path like Hermes/Claude/Codex
+        # — the read allowlist was never the data-loss boundary (that's on the
+        # WRITE path). Only refuse grepping a secret file directly (defense-in-
+        # depth, NOT a hard boundary); directory searches proceed normally.
+        if File.file?(expanded_path) && (category = read_secret_category(expanded_path))
+          return read_secret_block_message(path, category)
+        end
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?

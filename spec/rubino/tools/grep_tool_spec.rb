@@ -78,12 +78,33 @@ RSpec.describe Rubino::Tools::GrepTool do
     expect(result).to include("Path not found")
   end
 
-  it "reports an out-of-workspace path as outside the workspace, not missing (r5 MF-1)" do
+  # #406: reads are BROAD now (Hermes/Claude/Codex parity). grep resolves a
+  # path OUTSIDE the workspace and searches it; a genuinely missing path still
+  # reports "Path not found".
+  it "searches a directory OUTSIDE the workspace (reads broad, #406)" do
+    outside = Dir.mktmpdir("grep_outside")
+    File.write(File.join(outside, "ext.rb"), "def hello_external\nend\n")
+    result = payload(tool.call("pattern" => "hello_external", "path" => outside))
+    expect(result).to include("ext.rb")
+  ensure
+    FileUtils.rm_rf(outside)
+  end
+
+  it "still reports a genuinely missing path as not found" do
     result = tool.call("pattern" => "x", "path" => "/no/such/dir")
+    expect(payload(result)).to include("Path not found")
+  end
+
+  # #406 secret denylist (defense-in-depth, NOT a hard boundary).
+  it "refuses to grep a .env credential file directly" do
+    outside = Dir.mktmpdir("grep_secret")
+    File.write(File.join(outside, ".env"), "API_KEY=supersecret\n")
+    result = tool.call("pattern" => "KEY", "path" => File.join(outside, ".env"))
     expect(result).to be_a(Hash)
-    expect(result[:error_code]).to eq(:outside_workspace)
-    expect(result[:output]).to include("outside your workspace")
-    expect(result[:output]).not_to include("not found")
+    expect(result[:error_code]).to eq(:secret_denied)
+    expect(result[:output]).not_to include("supersecret")
+  ensure
+    FileUtils.rm_rf(outside)
   end
 
   describe "grepping a single file (Bug B)" do
