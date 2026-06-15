@@ -156,12 +156,16 @@ module Rubino
         %("#{one_line.gsub('"', '\\"')}")
       end
 
-      # First configured skills path (project-local .rubino/skills by
-      # default) — the same source the Registry discovers from, so a created
-      # skill is found on the immediate re-discover.
+      # The agent HOME skills dir — the SAME place Installer writes to and the
+      # Registry discovers via its "~/.rubino/skills" entry. Authored skills go
+      # to the user's home (RUBINO_HOME → else ~/.rubino), never the cwd, so a
+      # skill created/distilled while cd'd into a repo can't leak into that
+      # repo's working tree (SK-1). This also closes SK-2: the home dir is
+      # outside the workspace sandbox, so a plain `write` to a SKILL.md there is
+      # refused, leaving the #405-gated skill(create) helper as the only path
+      # in. Mirrors Hermes, which writes new skills under HERMES_HOME/skills.
       def skills_write_dir
-        dir = (Rubino.configuration.dig("skills", "paths") || [".rubino/skills"]).first
-        File.expand_path(dir.to_s)
+        File.join(Config::Loader.default_home_path, "skills")
       end
 
       def duplicate(skill_name)
