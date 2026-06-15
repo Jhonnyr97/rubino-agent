@@ -303,6 +303,12 @@ module Rubino
       # ensure_directories! just created.
       migrator.migrate!(lock_path: migration_lock_path)
       true
+    rescue Database::BusyError
+      # A sustained concurrent-migration lock that outlived the connection
+      # retry budget is NOT an "un-set-up" home — re-raise so the single CLI
+      # chokepoint surfaces the clean one-liner (#333/#359) instead of this
+      # method masking it as `false` → a misleading "run setup" message.
+      raise
     rescue StandardError => e
       logger.debug(event: "ensure_database_ready_failed", error: "#{e.class}: #{e.message}")
       false
