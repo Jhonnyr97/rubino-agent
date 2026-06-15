@@ -205,7 +205,20 @@ module Rubino
         # (attachment was REPL-only); automation, jobs and tests can now drive it.
         text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
 
-        headless_ui = UI::Null.new
+        # Default-on per-tool ACTIVITY TRACE for the one-shot TEXT path (#418
+        # follow-up): a plain UI::Null swallows every tool event, so a scripted
+        # `rubino prompt` showed only the final answer with no window onto what
+        # files were edited / commands run. UI::HeadlessTrace adds ONE concise
+        # line per tool completion ON STDERR (`· edit foo.rb`), keeping STDOUT a
+        # clean answer-only stream by construction. `--quiet`/-Q selects the
+        # silent machine path (plain UI::Null); `--verbose`/-v widens the hint.
+        # Mirrors the Codex/gemini-cli/Hermes stderr-trace norm (Hermes' `-q`
+        # default / `-Q` quiet). json/stream-json never reach here (run_oneshot_json).
+        headless_ui = if quiet?
+                        UI::Null.new
+                      else
+                        UI::HeadlessTrace.new(verbose: verbose?)
+                      end
         requested_session_id = session_resolver.resolve_session_id
         runner = build_runner(session_id: requested_session_id, ui: headless_ui)
         warn_if_resume_forked(requested_session_id, runner)
@@ -2218,6 +2231,20 @@ module Rubino
 
       def opt(key)
         @options[key] || @options[key.to_s]
+      end
+
+      # --quiet / -Q: silence the default-on stderr tool-activity trace in the
+      # one-shot TEXT path (answer-only on stdout, nothing on stderr) — the
+      # machine-silent path. NOTE: `-q` is `--query` (the prompt CONTENT), not
+      # quiet; the silencing flag is the CAPITAL -Q, mirroring Hermes' -q/-Q.
+      def quiet?
+        opt(:quiet) == true
+      end
+
+      # --verbose / -v: widen the per-tool trace hint (fuller args), mirroring
+      # Claude's --verbose. No effect under --quiet (the trace is off).
+      def verbose?
+        opt(:verbose) == true
       end
 
       # Reads the one-shot prompt from $stdin when it's piped/redirected (#329c).
