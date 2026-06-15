@@ -725,26 +725,28 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "ensure_setup! (first-run auto-init)" do
     it "auto-initializes an un-migrated database instead of crashing" do
       allow(db).to receive(:healthy?).and_return(false)
-      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      # up_to_date? is the side-effect-free fast-path probe (#race); false here
+      # so the boot path takes the lock and runs the real migrate.
+      migrator = instance_double(Rubino::Database::Migrator, up_to_date?: false)
       allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
       allow(Rubino).to receive(:ensure_directories!)
-      expect(migrator).to receive(:migrate!)
+      expect(migrator).to receive(:migrate!).with(lock_path: Rubino.migration_lock_path)
 
       expect { described_class.new("query" => "hi").execute }.not_to raise_error
     end
 
     it "runs pending migrations on a healthy-but-stale database" do
-      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      migrator = instance_double(Rubino::Database::Migrator, up_to_date?: false)
       allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
       allow(Rubino).to receive(:ensure_directories!)
-      expect(migrator).to receive(:migrate!)
+      expect(migrator).to receive(:migrate!).with(lock_path: Rubino.migration_lock_path)
 
       described_class.new("query" => "hi").execute
     end
 
     it "exits with a friendly message (not a backtrace) when auto-init fails" do
       allow(db).to receive(:healthy?).and_return(false)
-      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      migrator = instance_double(Rubino::Database::Migrator, up_to_date?: false)
       allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
       allow(Rubino).to receive(:ensure_directories!)
       allow(migrator).to receive(:migrate!).and_raise(StandardError, "disk full")
