@@ -475,13 +475,15 @@ module Rubino
         # endpoint (e.g. MiniMax's /anthropic), which avoids the OpenAI-endpoint
         # quirks (no-[DONE] stream close, string-shaped errors).
         if openai_compatible_provider?
-          c.openai_api_base = prov_cfg["base_url"] if prov_cfg["base_url"]
+          c.openai_api_base = required_base_url!(prov_cfg)
           c.openai_api_key  = openai_compatible_api_key!(prov_cfg)
         elsif anthropic_compatible_provider?
-          c.anthropic_api_base = prov_cfg["base_url"] if prov_cfg["base_url"]
+          base = present_base_url(prov_cfg)
+          c.anthropic_api_base = base if base
           c.anthropic_api_key  = anthropic_compatible_api_key!(prov_cfg)
-        elsif @provider == "openai" && prov_cfg["base_url"]
-          c.openai_api_base = prov_cfg["base_url"]
+        elsif @provider == "openai"
+          base = present_base_url(prov_cfg)
+          c.openai_api_base = base if base
         end
 
         # We OWN retry/backoff in Agent::ModelCallRunner (token-gated,
@@ -529,6 +531,31 @@ module Rubino
               "Missing API key for provider '#{@provider}'. " \
               "Set providers.#{@provider}.api_key in ~/.rubino/config.yml " \
               "(e.g. ${#{@provider.to_s.upcase}_API_KEY} with the value in .env)."
+      end
+
+      # The configured base_url, normalised to nil when blank/whitespace so a
+      # config like `base_url: ""` (or a stripped-to-empty env interpolation)
+      # is treated as "unset" instead of being passed through as an EMPTY api_base.
+      # An empty api_base used to make the request hit an empty/garbage endpoint
+      # and surface as a cryptic AUTH/connection error rather than the real cause.
+      def present_base_url(prov_cfg)
+        raw = prov_cfg["base_url"].to_s.strip
+        raw.empty? ? nil : raw
+      end
+
+      # An openai_compatible provider has NO native default endpoint — base_url is
+      # REQUIRED. A blank/empty base_url here is the actual misconfiguration, so
+      # raise a clear "base_url is empty/misconfigured" error instead of letting an
+      # empty api_base be sent and misattributed to a missing/invalid credential.
+      def required_base_url!(prov_cfg)
+        base = present_base_url(prov_cfg)
+        return base if base
+
+        raise Rubino::Error,
+              "base_url is empty/misconfigured for provider '#{@provider}'. " \
+              "An OpenAI-compatible provider needs a base_url — set " \
+              "providers.#{@provider}.base_url in ~/.rubino/config.yml to the " \
+              "endpoint (e.g. https://host/v1)."
       end
 
       # Resolution fallback for the direct-construction edge: AdapterFactory
