@@ -4,6 +4,16 @@
 
 ### Added
 
+- **One-shot tool-activity trace.** The non-interactive text path (`rubino
+  prompt` / `-q` / piped `chat`) now prints a concise per-tool activity trace
+  by default — one line per tool completion (`· edit foo.rb`, `· bash npm
+  test`) — routed to STDERR so the final answer on STDOUT stays clean
+  (`x=$(rubino prompt …)` captures only the answer). `--quiet`/`-Q` silences
+  the trace (machine-silent path); `--verbose`/`-v` widens each line's args.
+  `--output-format json`/`stream-json` (structured events on stdout) and the
+  interactive TUI tool-cards are unchanged. Mirrors the Codex/gemini-cli/Hermes
+  stderr-trace norm (Hermes `-q` default / `-Q` quiet).
+
 - **Prompt-cache breakpoints (`cache_control`).** The conversation now inserts
   cache breakpoints so the stable prefix (system + tool schemas + prior turns)
   is reused across round-trips, cutting input-token cost/latency.
