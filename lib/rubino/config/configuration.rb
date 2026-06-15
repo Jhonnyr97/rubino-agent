@@ -129,6 +129,20 @@ module Rubino
         dig("streaming", "enabled") == true
       end
 
+      # -- Doom-loop guard (#414) --
+      # Default WARN-not-block (hard_stop false): a tripped detector surfaces a
+      # warning to the model but does not deny the call.
+      def doom_loop_hard_stop?
+        dig("doom_loop", "hard_stop") == true
+      end
+
+      # Identical-consecutive-call threshold. Falls back to the detector default
+      # when absent/garbage so a bad config value can't disable the guard.
+      def doom_loop_threshold
+        n = Integer(dig("doom_loop", "threshold"), exception: false)
+        n && n >= 2 ? n : Security::DoomLoopDetector::DEFAULT_THRESHOLD
+      end
+
       # -- Agent section --
       def agent_max_turns
         dig("agent", "max_turns")
@@ -296,6 +310,13 @@ module Rubino
         dig("memory", "auto_extract") == true
       end
 
+      # Throttle interval (in turns) for memory.auto_extract (#412). Returns a
+      # positive Integer; nil/<=1 (or absent) ⇒ 1 = every turn. The lifecycle
+      # only enqueues ExtractMemoryJob when turns-since-last >= this.
+      def memory_auto_extract_interval
+        positive_interval(dig("memory", "auto_extract_interval"))
+      end
+
       def memory_char_limit
         dig("memory", "memory_char_limit")
       end
@@ -309,6 +330,12 @@ module Rubino
 
         value = dig("skills", "auto_distill")
         value.nil? || value == true
+      end
+
+      # Throttle interval (in turns) for skills.auto_distill (#414). Mirrors
+      # memory_auto_extract_interval. nil/<=1 ⇒ every eligible turn.
+      def skills_auto_distill_interval
+        positive_interval(dig("skills", "auto_distill_interval"))
       end
 
       def memory_user_char_limit
@@ -469,6 +496,14 @@ module Rubino
       end
 
       private
+
+      # Coerce a turn-interval setting to a positive Integer >= 1. Absent / nil /
+      # non-positive / garbage ⇒ 1 (every turn), so a throttle gate never divides
+      # by zero or silently disables the gated work.
+      def positive_interval(raw)
+        n = Integer(raw, exception: false)
+        n && n >= 1 ? n : 1
+      end
 
       # The home this config is bound to: the explicit home_path passed at
       # construction, else the same resolver the Loader uses (RUBINO_HOME →

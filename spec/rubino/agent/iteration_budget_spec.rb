@@ -28,9 +28,28 @@ RSpec.describe Rubino::Agent::IterationBudget do
       budget = described_class.new(config: config)
       budget.instance_variable_set(:@max_tool_iterations, nil)
       budget.instance_variable_set(:@max_turn_seconds, nil)
+      # max_turns is the OUTER rail (#414) — nil it too for a truly unbounded
+      # budget, else it would cap the iteration count at the default 90.
+      budget.instance_variable_set(:@max_turns, nil)
 
       expect { budget.can_continue?(10_000) }.not_to raise_error
       expect(budget.can_continue?(10_000)).to be true
+    end
+
+    # #414: max_turns is now wired as a real OUTER rail (was dead config), and
+    # extend! can never lift the count past it.
+    it "enforces max_turns as the outer iteration rail even past extensions" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 5, "max_tool_iterations" => 3, "max_turn_seconds" => 600
+                                                              }))
+      expect(budget.can_continue?(3)).to be(true)
+      budget.extend!(100) # lifts the soft iteration cap, NOT max_turns
+      expect(budget.can_continue?(5)).to be(true)
+      expect(budget.can_continue?(6)).to be(false)
+    end
+
+    it "ships a 600s pure-safety-net max_turn_seconds default (#408)" do
+      expect(Rubino::Config::Defaults.dig("agent", "max_turn_seconds")).to eq(600)
     end
   end
 
@@ -102,6 +121,8 @@ RSpec.describe Rubino::Agent::IterationBudget do
     it "is a no-op on an unbounded (nil) cap" do
       budget = described_class.new(config: config)
       budget.instance_variable_set(:@max_tool_iterations, nil)
+      # Nil the outer max_turns rail too (#414) so the cap is truly unbounded.
+      budget.instance_variable_set(:@max_turns, nil)
       expect(budget.extend!(5)).to be_nil
       expect(budget.can_continue?(10_000)).to be(true)
     end

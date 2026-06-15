@@ -19,29 +19,29 @@ module Rubino
       # Each provider: the model.provider to write, a default model id, the .env
       # key var, and any providers.<name> config block to persist. Ordered so the
       # recommended default comes first and matches the seeded config default
-      # (config/defaults.rb model.default => openai/gpt-4.1), keeping the from-zero
-      # experience consistent between the wizard and the non-interactive
-      # fail-fast guidance.
+      # (config/defaults.rb model.default => minimax/MiniMax-M3), keeping the
+      # from-zero experience consistent between the wizard and the non-interactive
+      # fail-fast guidance. Aligned to MiniMax (#414) — see the seeded default.
       PROVIDERS = [
         {
-          key: "openai",
-          label: "OpenAI (GPT) — recommended default",
-          provider: "openai",
-          model: "gpt-4.1",
-          env_var: "OPENAI_API_KEY",
-          config: {}
-        },
-        {
           key: "minimax",
-          label: "MiniMax (Anthropic-compatible)",
+          label: "MiniMax (Anthropic-compatible) — recommended default",
           provider: "minimax",
-          model: "MiniMax-M2.7",
+          model: "MiniMax-M3",
           env_var: "MINIMAX_API_KEY",
           config: {
             "anthropic_compatible" => true,
             "base_url" => "https://api.minimax.io/anthropic",
             "api_key" => "${MINIMAX_API_KEY}"
           }
+        },
+        {
+          key: "openai",
+          label: "OpenAI (GPT)",
+          provider: "openai",
+          model: "gpt-4.1",
+          env_var: "OPENAI_API_KEY",
+          config: {}
         },
         {
           key: "anthropic",
