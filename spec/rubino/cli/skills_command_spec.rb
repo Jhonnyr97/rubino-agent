@@ -58,8 +58,8 @@ RSpec.describe Rubino::CLI::SkillsCommand do
       described_class.new.list
 
       hint = messages(:warning).join("\n")
-      expect(hint).to match(/1 project-local skill hidden/)
-      expect(hint).to match(/not trusted/)
+      expect(hint).to include("1 project-local skill hidden")
+      expect(hint).to include("not trusted")
     ensure
       FileUtils.remove_entry(project) if project
     end

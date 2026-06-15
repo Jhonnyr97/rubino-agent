@@ -57,6 +57,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     err = capture_stderr { cmd.send(:announce_created_skills, names) }
 
-    expect(err.scan(/distilled new skill: dupe/).size).to eq(1)
+    expect(err.scan("distilled new skill: dupe").size).to eq(1)
   end
 end
