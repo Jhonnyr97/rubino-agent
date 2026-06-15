@@ -37,6 +37,20 @@ module Rubino
     #      so a plausible-looking but partly-invented diff can never stand as if
     #      real and get `git apply`-ed.
     #
+    #   4. the INVERSE (#381, PESSIMISTIC fabrication): a turn that ACTUALLY ran
+    #      tools (often a budget/rate-limit exhausted turn whose forced summary the
+    #      model writes pessimistically) ends with a confident claim that NOTHING
+    #      happened — "I have not read a single file, not run grep, not made any
+    #      edits" — even though the ledger shows N tool calls and real edits on
+    #      disk. Letting that stand makes a developer believe no work was done and
+    #      miss correct, uncommitted changes. The harness — not the narration — is
+    #      the authority on side-effects (the same principle as 1–3, mirrored): when
+    #      the final answer asserts no/zero actions yet the tool-call ledger shows
+    #      tools DID run, we RECONCILE it with a truthful harness note ("N tool
+    #      calls ran this turn (M edits — review uncommitted changes)"). This path
+    #      is the ONLY one that fires when tool_count > 0; it keys on the ledger, not
+    #      on exact wording, so it stays model-agnostic.
+    #
     # Deliberately conservative — it must never nag a legitimate text answer:
     #   * Only fires when the WHOLE turn ran zero tools AND zero denied tools.
     #     A turn that ran (or had denied) any tool is the model acting/recovering,
@@ -381,6 +395,44 @@ module Rubino
         Regexp::IGNORECASE
       )
 
+      # PESSIMISTIC "I did NOTHING" claim (#381) — the inverse of every claim
+      # above. The model asserts it took no action at all: "I have not read a
+      # single file", "no tools were run/called", "I made no edits", "nothing was
+      # done/changed", "I didn't run/use any tools", "I have done nothing". A small
+      # phrase set is enough as the TRIGGER condition — we only act after VERIFYING
+      # it against the harness tool-call ledger (tool_count > 0), so a false
+      # positive here is harmless: the ledger gate, not the wording, decides.
+      # Kept model-agnostic (negations of read/run/edit/write/grep/search/tool +
+      # "nothing"/"no … was done" shapes), not a single provider's phrasing.
+      NO_ACTION_CLAIM = Regexp.new(
+        '\b(?:have\s+not|haven\s?\'?t|did\s+not|didn\s?\'?t|have\s+no|having\s+not|' \
+        'was\s+not\s+able\s+to|were\s+not\s+able\s+to|not)\b' \
+        '[^.!?\n]{0,40}?' \
+        '\b(?:read|run|ran|execute[d]?|use[d]?|call(?:ed)?|invoke[d]?|grep(?:ped)?|' \
+        'search(?:ed)?|made|make|edit(?:ed)?|written|wrote|create[d]?|change[d]?|' \
+        'modif(?:y|ied)|touch(?:ed)?|appl(?:y|ied)|do|done|perform(?:ed)?|take|taken|took)\b' \
+        '|\b(?:made|make|did|do|ran|run|read|wrote|written|applied|performed|took|taken)\b' \
+        '\s+(?:any\s+)?\bno\b\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|' \
+        'actions?|commands?|modifications?)\b' \
+        '|\b(?:no|zero)\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|actions?|' \
+        'commands?|modifications?)\b\s*' \
+        '(?:were\s+|was\s+|have\s+been\s+|been\s+|are\s+)?' \
+        '(?:run|ran|made|called|executed|invoked|read|performed|taken|applied)?\b' \
+        '|\b(?:nothing|no\s+action|no\s+work|not\s+a\s+single\s+\w+)\s+' \
+        '(?:was|were|has\s+been|have\s+been|got)\s+' \
+        '(?:done|run|made|changed|read|executed|performed|taken|applied|edited|written)\b' \
+        '|\b(?:i|we)\s+(?:have\s+|had\s+)?(?:did|do|done|made|changed|read|run|' \
+        'executed|performed|accomplished)\s+(?:absolutely\s+|literally\s+)?nothing\b' \
+        '|\bnot\s+a\s+single\s+(?:file|tool|edit|command|change)\b',
+        Regexp::IGNORECASE
+      )
+
+      # The tools whose execution actually MUTATES disk state — an "I made no
+      # edits" claim is most misleading when these ran. Used only to label the
+      # truthful harness note ("M edits"); the reconciliation itself fires on ANY
+      # tool having run, since "I read nothing" is equally false when a read ran.
+      MUTATING_TOOLS = %w[edit multi_edit write patch].freeze
+
       # Build a guard for one turn. `exposed_tool_names` is the set of tool names
       # the model actually had this turn (Loop's @turn_tools) — we only reflect a
       # verb whose backing tool was on offer.
@@ -564,7 +616,66 @@ module Rubino
         [:reflect, claim]
       end
 
+      # PESSIMISTIC reconciliation (#381) — the INVERSE of #evaluate, and the only
+      # guard path that fires when tools DID run. A turn that genuinely executed
+      # tool calls (typically the budget/rate-limit-exhausted FORCED summary) can
+      # end with a confident "I did nothing — not a single file read, no edits"
+      # even though the harness ledger shows N tool calls and M real edits. Letting
+      # that stand makes the user believe no work happened and miss correct,
+      # uncommitted changes. The harness is the authority on side-effects, so we
+      # reconcile: append a truthful note naming what the ledger actually recorded.
+      #
+      #   content     — the final assistant text (the summary).
+      #   tool_count  — tools that actually RAN this turn (Loop's @tool_count).
+      #   edit_count  — of those, how many were MUTATING (Loop's @edit_count).
+      #
+      # Returns nil to leave the text untouched (the only-safe default), or the
+      # reconciled string when ALL hold:
+      #   * at least one tool ran (the ledger has something to contradict);
+      #   * the text actually CLAIMS no/zero action was taken (the small phrase set
+      #     above — the trigger), so a truthful "I ran X then Y" summary that names
+      #     its tools is left completely alone;
+      #   * the text does NOT already own up to the count (so we never double-note).
+      def reconcile_pessimistic_summary(content:, tool_count:, edit_count: 0)
+        text = content.to_s
+        ran  = tool_count.to_i
+        return nil unless ran.positive?
+        return nil unless NO_ACTION_CLAIM.match?(text)
+        # The summary already reports the real count truthfully — don't pile on.
+        return nil if already_acknowledges_ledger?(text, ran)
+
+        note = harness_ledger_note(ran, edit_count.to_i)
+        text.strip.empty? ? note : "#{text.rstrip}\n\n#{note}"
+      end
+
+      # The truthful, harness-authored line appended to (or standing in for) a
+      # pessimistic summary. Keyed entirely on the ledger counts, never on wording.
+      def harness_ledger_note(tool_count, edit_count)
+        edits =
+          if edit_count.positive?
+            " (#{edit_count} edit#{"s" unless edit_count == 1} — review uncommitted changes)"
+          else
+            ""
+          end
+        "[harness note] That summary is not accurate: #{tool_count} tool " \
+          "call#{"s" unless tool_count == 1} actually ran this turn#{edits}. The " \
+          "tool-call ledger — not the summary — is the record of what happened, so " \
+          "review the working tree for real, possibly uncommitted, changes before " \
+          "assuming nothing was done."
+      end
+
       private
+
+      # The summary already states, truthfully, that the tools ran (it cites the
+      # real count or owns the work) — so the pessimistic "I did nothing" trigger
+      # was a false positive (e.g. "I ran 5 tools but made no DB changes") and we
+      # must not append a contradicting note. We only suppress when the EXACT ran
+      # count appears next to a tool/call/ran word, which a genuine "I did nothing"
+      # confabulation never contains.
+      def already_acknowledges_ledger?(text, ran)
+        /\b#{ran}\b[^.!?\n]{0,30}?\b(?:tool|call|ran|executed|edit)/i.match?(text) ||
+          /\bharness\s+note\b/i.match?(text)
+      end
 
       # The latest user request asked for a NO-ACTION turn (plan / list / explain
       # / recall-from-memory / explicit "don't run|use tools"). nil/blank request

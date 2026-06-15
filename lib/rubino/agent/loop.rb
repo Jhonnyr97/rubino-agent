@@ -115,6 +115,11 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
+        # Of the tools that RAN, how many were MUTATING (edit/write/patch). Lets
+        # the pessimistic-summary reconciliation (#381) say "N tool calls (M edits
+        # — review uncommitted changes)" so a developer is pointed at real,
+        # possibly-uncommitted disk changes when the model claims it did nothing.
+        @edit_count     = 0
         # Round-trips ruby_llm ran INSIDE a single streaming ask() this turn
         # (#355a). ruby_llm drives the whole model↔tool loop within one
         # chat.ask, so the outer `iteration` counter above stays at 1 for the
@@ -398,10 +403,23 @@ module Rubino
                         has_tool_calls: response.has_tool_calls?)
         token_total += response.total_tokens.to_i
 
-        persist_assistant_message(response)
-        finalize_stream(response)
+        # PESSIMISTIC-fabrication gate (#381): this forced summary ran AFTER real
+        # tool calls this turn. If the model writes it pessimistically — "I did
+        # nothing, read no files, made no edits" — while the ledger shows tools
+        # DID run, reconcile the text with a truthful harness note so the user
+        # isn't told work that happened did not. The ledger (@tool_count /
+        # @edit_count), not the narration, is the authority on side-effects. nil
+        # ⇒ the summary already truthful (or no tools ran) → surface it as-is.
+        final = @action_guard.reconcile_pessimistic_summary(
+          content: response.content,
+          tool_count: @tool_count,
+          edit_count: @edit_count
+        ) || response.content
+
+        persist_final_text(response, final)
+        finalize_stream_text(response, final)
         emit_turn_summary(turn_started_at, token_total)
-        response.content
+        final
       end
 
       # The fabricated-"done" gate for a TEXT-ONLY turn (#r5 F1 / MF-3 / B1).
@@ -631,6 +649,9 @@ module Rubino
           @noninteractive_block = true if result.output.to_s.include?("no interactive session")
         else
           @tool_count += 1
+          # Track mutating tool calls separately so the pessimistic-summary
+          # reconciliation (#381) can point the user at uncommitted disk changes.
+          @edit_count += 1 if ActionClaimGuard::MUTATING_TOOLS.include?(name.to_s)
         end
         persist_tool_result(
           role: "tool",

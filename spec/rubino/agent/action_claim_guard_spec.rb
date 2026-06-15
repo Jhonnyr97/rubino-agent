@@ -391,4 +391,77 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       expect(described_class::DECAY_AFTER_REFLECTIONS).to be < described_class::MAX_REFLECTIONS
     end
   end
+
+  # #381 — PESSIMISTIC fabrication: a turn that ACTUALLY ran tools ends claiming
+  # nothing happened. The harness ledger (tool_count/edit_count), not the model's
+  # summary, is the authority on side-effects: reconcile the false "I did nothing"
+  # so the user isn't told work that happened did not. Inverse of every case
+  # above — and the only path that fires when tool_count > 0.
+  describe "pessimistic 'I did nothing' reconciliation (#381)" do
+    def reconcile(text, tool_count:, edit_count: 0)
+      guard.reconcile_pessimistic_summary(content: text, tool_count: tool_count,
+                                          edit_count: edit_count)
+    end
+
+    it "reconciles the verbatim '#381' summary against the ledger" do
+      text = "I have not read a single file, not run grep, not made any edits."
+      out = reconcile(text, tool_count: 50, edit_count: 4)
+      expect(out).not_to be_nil
+      # Truthful harness note appended, naming the real counts.
+      expect(out).to match(/50 tool calls actually ran/i)
+      expect(out).to match(/4 edits/i)
+      expect(out).to match(/uncommitted changes/i)
+      # The model's original (false) prose is preserved above the note.
+      expect(out).to include("I have not read a single file")
+    end
+
+    it "fires on assorted 'no action' phrasings when tools ran" do
+      [
+        "Unfortunately I did nothing this turn.",
+        "No tools were run and no edits were made.",
+        "I have done nothing — no files were changed.",
+        "Zero tool calls were made.",
+        "I didn't run any tools."
+      ].each do |claim|
+        expect(reconcile(claim, tool_count: 3, edit_count: 1)).not_to be_nil
+      end
+    end
+
+    it "labels edits only when mutating tools ran (read-only run → no edits clause)" do
+      out = reconcile("I made no edits and read nothing.", tool_count: 5, edit_count: 0)
+      expect(out).to match(/5 tool calls actually ran/i)
+      expect(out).not_to match(/\d+\s+edits?\b/)
+      expect(out).to match(/review the working tree/i)
+    end
+
+    it "singularises a single tool / single edit" do
+      out = reconcile("I did nothing at all.", tool_count: 1, edit_count: 1)
+      expect(out).to match(/1 tool call actually ran/i)
+      expect(out).to match(/1 edit\b/)
+      expect(out).not_to match(/1 edits/)
+    end
+
+    # --- it must NOT fire (preserve existing behaviour) ----------------------
+
+    it "leaves a turn that genuinely ran NO tools untouched" do
+      text = "I have not read any files — I answered from what I already know."
+      expect(reconcile(text, tool_count: 0, edit_count: 0)).to be_nil
+    end
+
+    it "leaves a truthful summary that NAMES its tool calls untouched" do
+      text = "I ran the test suite and edited two files; all tests pass now."
+      expect(reconcile(text, tool_count: 6, edit_count: 2)).to be_nil
+    end
+
+    it "does NOT double-note a summary that already cites the real count" do
+      text = "I ran 5 tool calls but made no database changes this turn."
+      expect(reconcile(text, tool_count: 5, edit_count: 0)).to be_nil
+    end
+
+    it "is idempotent — never reconciles an already-reconciled summary" do
+      first  = reconcile("I did nothing.", tool_count: 4, edit_count: 1)
+      second = reconcile(first, tool_count: 4, edit_count: 1)
+      expect(second).to be_nil
+    end
+  end
 end
