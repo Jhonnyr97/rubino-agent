@@ -174,6 +174,48 @@ RSpec.describe Rubino::Context::Compressor do
       expect(db[:compactions].count).to eq(0)
     end
 
+    # #415a anti-thrash back-off: a session hovering at the threshold re-pays a
+    # summary call every turn. After two compactions that each saved <10% of
+    # their original tokens, #thrashing? returns true so the auto path skips.
+    describe "#thrashing? (anti-thrash back-off)" do
+      def record_compaction(source:, original:, saved:)
+        db[:compactions].insert(
+          id: SecureRandom.uuid,
+          source_session_id: source, target_session_id: SecureRandom.uuid,
+          original_token_count: original, saved_token_count: saved,
+          created_at: Time.now.utc.iso8601
+        )
+      end
+
+      it "is false with no prior compactions" do
+        compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+        expect(compressor.thrashing?).to be false
+      end
+
+      it "is true when the last two compactions each saved <10%" do
+        record_compaction(source: parent[:id], original: 100_000, saved: 5_000) # 5%
+        record_compaction(source: parent[:id], original: 100_000, saved: 9_000) # 9%
+        compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+        expect(compressor.thrashing?).to be true
+      end
+
+      it "is false when a recent compaction was effective (>=10%)" do
+        record_compaction(source: parent[:id], original: 100_000, saved: 5_000)  # 5%
+        record_compaction(source: parent[:id], original: 100_000, saved: 40_000) # 40%
+        compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+        expect(compressor.thrashing?).to be false
+      end
+
+      it "follows the parent lineage chain across compaction children" do
+        child = repo.create(source: "compaction", model: "m", provider: "p",
+                            parent_session_id: parent[:id])
+        record_compaction(source: parent[:id], original: 100_000, saved: 1_000) # 1%
+        record_compaction(source: child[:id], original: 100_000, saved: 2_000)  # 2%
+        compressor = described_class.new(session_id: child[:id], config: config, db: db)
+        expect(compressor.thrashing?).to be true
+      end
+    end
+
     it "produces a child wire list with no orphan tool pairs" do
       assistant_with_call("call_head")
       store.create(session_id: parent[:id], role: "tool", content: "head out", tool_call_id: "call_head")
