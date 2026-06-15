@@ -44,6 +44,17 @@ module Rubino
         EXIT_REASON.fetch(stop_reason&.to_sym, "end_turn")
       end
 
+      # True when the loop terminated by EXHAUSTING its tool-iteration budget
+      # (--max-turns / agent.max_iterations), not by the model finishing. Such a
+      # run is TRUNCATED — the answer is a forced "here's what I got to" summary,
+      # not a real completion — so headless output must flag it is_error:true and
+      # exit non-zero (STRUCT-F1), matching Claude Code marking a turn-limit hit
+      # as an error rather than success. The Loop emits stop_reason: :max_iterations
+      # on the forced-summary MODEL_CALL_FINISHED; the recorder latches it.
+      def budget_exhausted?(stop_reason)
+        stop_reason&.to_sym == :max_iterations
+      end
+
       # The success result object. +recorder+ is a TurnRecorder (usage/turns/
       # stop_reason); +final_text+ the assistant's final answer; +session+ the
       # runner's session hash; +duration_ms+ the wall-clock turn time.

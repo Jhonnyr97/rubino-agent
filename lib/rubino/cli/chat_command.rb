@@ -172,6 +172,9 @@ module Rubino
 
       def run_oneshot(query)
         resolve_yolo!
+        # Clear the cross-adapter fail-closed latch (F1-subagents) so a reused
+        # embedder/test process never inherits a block from a prior run.
+        Output::HeadlessBlockLatch.reset!
 
         fmt = output_format
         return run_oneshot_json(query, fmt) if json_mode?(fmt)
@@ -286,9 +289,34 @@ module Rubino
         # detect that the action was refused — never silently treat a skipped
         # command as success. The answer on stdout stays clean. --yolo opts back
         # into auto-exec and never reaches this branch.
-        if headless_ui.approval_blocked?
-          headless_ui.blocked_messages.each { |m| warn m }
+        # End the session on one-shot completion (ONESHOT-ACTIVE) so it doesn't
+        # linger as status=active forever and confuse auto-resume / `sessions
+        # list` — the interactive REPL ends its session on teardown, the headless
+        # path skipped it entirely. Best-effort and bounded (end_session! rescues
+        # internally), and done BEFORE the fail-closed exits below so even a
+        # blocked/truncated run finalizes its row.
+        runner.end_session!
+
+        # Fail-closed exit (#260): if any tool was BLOCKED because it needed
+        # approval in this headless run — directly OR inside a `task` subagent
+        # (F1-subagents, via the process-global latch) — echo the single-line
+        # block notice(s) to stderr (the Null UI otherwise swallows them) and exit
+        # NON-ZERO so CI/automation/scripts detect that the action was refused.
+        # The answer on stdout stays clean. --yolo opts back into auto-exec.
+        if headless_ui.approval_blocked? || Output::HeadlessBlockLatch.blocked?
+          block_messages_for_exit(headless_ui).each { |m| warn m }
           exit(2)
+        end
+
+        # Budget-truncated run (STRUCT-F1): the loop hit --max-turns and forced a
+        # "here's what I got to" summary rather than the model finishing. That is
+        # NOT success — surface it to stderr and exit non-zero so automation sees
+        # the truncation, instead of the old silent exit 0. The forced summary is
+        # already on stdout (the truthful partial answer). Claude Code aligns:
+        # turn-limit ⇒ error + non-zero exit.
+        if Output::ResultSerializer.budget_exhausted?(recorder.stop_reason)
+          warn "rubino: turn budget exhausted (--max-turns); run truncated"
+          exit(1)
         end
       # A user interrupt (#335a) — the cooperative Rubino::Interrupted, or a bare
       # Interrupt/SIGINT that landed deep in a blocking read before the next
@@ -342,6 +370,8 @@ module Rubino
       # error result + exit 1.
       def run_oneshot_json(query, fmt)
         prev_log_io = redirect_logger_to_stderr
+        # Clear the cross-adapter fail-closed latch (F1-subagents), same as text.
+        Output::HeadlessBlockLatch.reset!
         # The unknown-model warning still helps automation debug a typo — it goes
         # to stderr, so the stdout JSON contract is untouched.
         warn_unknown_model if model_override_given?
@@ -394,18 +424,43 @@ module Rubino
 
         notify_oneshot_finished(duration_ms / 1000.0)
 
-        # Fail-closed (#260) preserved in JSON form: a blocked tool still emits a
-        # complete result, but flagged is_error with exit 2 so CI fails loudly.
-        if headless_ui.approval_blocked?
-          headless_ui.blocked_messages.each { |m| warn m }
+        # End the session on one-shot completion (ONESHOT-ACTIVE), same as text:
+        # leave no status=active row behind. Before the fail-closed exits so even
+        # a blocked/truncated run finalizes its row. Best-effort/bounded.
+        runner.end_session!
+
+        # Fail-closed (#260) preserved in JSON form: a blocked tool — directly OR
+        # inside a `task` subagent (F1-subagents, via the latch) — still emits a
+        # complete result, flagged is_error with exit 2 so CI fails loudly.
+        if headless_ui.approval_blocked? || Output::HeadlessBlockLatch.blocked?
+          block_msgs = block_messages_for_exit(headless_ui)
+          block_msgs.each { |m| warn m }
           emit_json(Output::ResultSerializer.error_result(
                       recorder: recorder, session: runner.session, duration_ms: duration_ms,
                       model: model_name,
                       error: { subtype: "error_tool_blocked", type: "tool_blocked",
                                result_text: response.to_s,
-                               message: headless_ui.blocked_messages.join("; ") }
+                               message: block_msgs.join("; ") }
                     ))
           exit(2)
+        end
+
+        # Budget-truncated run (STRUCT-F1): the loop hit --max-turns and forced a
+        # "here's what I got to" summary rather than finishing. That is NOT a
+        # success — emit an error envelope (is_error:true, subtype error_max_turns)
+        # and exit non-zero so CI/automation sees the truncation, instead of the
+        # old subtype:"success"/exit-0. The forced summary text is still carried in
+        # `result` so the caller keeps the partial answer. Claude Code aligns:
+        # turn-limit ⇒ is_error:true + non-zero exit.
+        if Output::ResultSerializer.budget_exhausted?(recorder.stop_reason)
+          emit_json(Output::ResultSerializer.error_result(
+                      recorder: recorder, session: runner.session, duration_ms: duration_ms,
+                      model: model_name,
+                      error: { subtype: "error_max_turns", type: "max_turns_exceeded",
+                               result_text: response.to_s,
+                               message: "turn budget exhausted (--max-turns); run truncated" }
+                    ))
+          exit(1)
         end
 
         emit_json(Output::ResultSerializer.result(
@@ -458,6 +513,16 @@ module Rubino
       ensure
         recorder&.detach!
         restore_logger(prev_log_io)
+      end
+
+      # The fail-closed block notices to echo on a headless exit (F1-subagents):
+      # the parent adapter's own blocks PLUS any a `task` subagent latched in the
+      # process-global HeadlessBlockLatch. Deduped/ordered (parent first), never
+      # empty when either source flagged a block, so the stderr is always
+      # informative even when only a subagent was refused.
+      def block_messages_for_exit(headless_ui)
+        msgs = headless_ui.blocked_messages + Output::HeadlessBlockLatch.messages
+        msgs.uniq
       end
 
       # Writes one JSON object as a single line to the REAL stdout and flushes.
@@ -2377,7 +2442,29 @@ module Rubino
         end
 
         warn LLM::CredentialCheck.missing_key_message
+        emit_preflight_error(LLM::CredentialCheck.missing_key_message)
         exit(1)
+      end
+
+      # Emits the #327 error envelope on stdout for a PREFLIGHT failure (missing
+      # credential) when running under --output-format json|stream-json
+      # (STRUCT-F2). The default path's preflight `exit(1)` wrote a good stderr
+      # message but ZERO bytes on stdout, breaking the json/stream-json contract
+      # that EVERY headless run yields a parseable result object on stdout (the
+      # -m/--provider override path already emits one via the run! error rescue —
+      # this just makes the credential preflight format-aware too). A text/no-TTY
+      # run keeps the stderr-only behaviour. For stream-json the result line is
+      # itself valid JSONL (a single object), so no system/init frame is needed.
+      def emit_preflight_error(message)
+        return unless json_mode?
+
+        emit_json(Output::ResultSerializer.arg_error(
+                    message: message, subtype: "error_missing_credential",
+                    model: model_name
+                  ))
+      rescue StandardError
+        # Never let the envelope emission mask the real exit(1) below.
+        nil
       end
 
       # Onboarding is only meaningful when we can actually prompt the user: both
