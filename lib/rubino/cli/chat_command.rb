@@ -205,6 +205,15 @@ module Rubino
         headless_ui = UI::Null.new
         runner = build_runner(session_id: session_resolver.resolve_session_id, ui: headless_ui)
 
+        # Capture skills distilled during this turn (#369b). SKILL_CREATED is
+        # emitted by an inline skill(create) call AND by the post-turn distill
+        # job (drained below) on the process-global bus the headless runner +
+        # polishing worker share — but the Null UI swallows it, so the user
+        # never learns distillation produced a skill. Collect the names here and
+        # surface them to STDERR after the answer (mirroring the #372 routing:
+        # post-turn notices stay off the clean stdout answer).
+        created_skills = subscribe_created_skills
+
         # Use run! (not run) so a model/credential failure PROPAGATES instead of
         # being swallowed into a nil and printed as an empty line with exit 0.
         # A brand-new user with no key would otherwise see ~80s of silent retries
@@ -253,6 +262,10 @@ module Rubino
         # headless runs). Join the worker the turn just kicked off so the
         # extraction completes at least once per headless session.
         drain_post_turn_jobs!(runner, headless_ui)
+
+        # Now that inline + post-turn distillation has run, surface any new skill
+        # to stderr (#369b) — concise, off the stdout answer.
+        announce_created_skills(created_skills)
 
         # Fire the turn-finished attention seam for headless runs (#215). A
         # scripted `rubino prompt`/-q run never goes through UI::CLI#turn_finished
@@ -506,6 +519,33 @@ module Rubino
       # PRIOR interrupted headless run orphaned, so a stuck queue self-heals on
       # the next headless turn. Best-effort: a drain detail must never fail the
       # run or contaminate stdout.
+      # Subscribe to SKILL_CREATED on the process-global bus and accumulate the
+      # distilled skill names (#369b). Thread-safe: the distill job emits from
+      # the polishing worker thread during the drain, so the collection is
+      # guarded by a mutex. Returns the shared array the listener appends to.
+      def subscribe_created_skills
+        names = []
+        lock  = Mutex.new
+        Rubino.event_bus.on(Rubino::Interaction::Events::SKILL_CREATED) do |payload|
+          name = payload[:name].to_s
+          lock.synchronize { names << name } unless name.empty?
+        end
+        names
+      rescue StandardError
+        []
+      end
+
+      # One concise stderr line per skill distilled this turn (#369b), so a
+      # scripted `rubino -q` user learns a skill was created without the notice
+      # polluting the clean stdout answer (the #372 routing discipline).
+      def announce_created_skills(names)
+        return if names.nil? || names.empty?
+
+        names.uniq.each { |name| warn "rubino: distilled new skill: #{name}" }
+      rescue StandardError
+        nil
+      end
+
       def drain_post_turn_jobs!(runner, headless_ui = nil)
         runner.polishing.wait if runner.respond_to?(:polishing) && runner.polishing
         # Route the inline orphan-reaper through the headless (Null) UI (#372).

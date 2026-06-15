@@ -38,6 +38,7 @@ module Rubino
         if skills.empty?
           Rubino.ui.info("No skills found.")
           Rubino.ui.info("Add .md files to .rubino/skills/ to create skills.")
+          warn_untrusted_hidden_skills(skills)
           return
         end
 
@@ -47,6 +48,7 @@ module Rubino
            skill.description.to_s]
         end
         Rubino.ui.table(headers: %w[Name Status Source Description], rows: rows)
+        warn_untrusted_hidden_skills(skills)
       end
 
       desc "show NAME", "Print a skill's SKILL.md body (review it before enabling)"
@@ -149,6 +151,30 @@ module Rubino
       end
 
       private
+
+      # Trust hint (#369a): the listing above uses the trust-gated registry, so
+      # in an UNtrusted cwd a project-local `.rubino/skills` catalogue is silently
+      # withheld and the user only sees built-ins/home skills — with no clue the
+      # repo's skills exist. Count how many extra skills a trust-inclusive scan
+      # would surface and, when there are any, note it with the trust command so
+      # the omission is visible and actionable rather than silent.
+      def warn_untrusted_hidden_skills(shown)
+        return if Skills::Registry.project_local_trusted?
+
+        all = Skills::Registry.new(include_project_local: true).all
+        hidden = all.map(&:name) - shown.map(&:name)
+        return if hidden.empty?
+
+        root = Rubino::Workspace.primary_root
+        Rubino.ui.warning(
+          "#{hidden.size} project-local skill#{"s" if hidden.size != 1} hidden — " \
+          "directory not trusted; start `rubino` here and accept the trust prompt for #{root} to load them"
+        )
+      rescue StandardError => e
+        # The hint must never break `skills list` itself.
+        Rubino.logger.warn(event: "skills.list_hint_failed", error: e.class.name, message: e.message)
+        nil
+      end
 
       # The Status cell: enabled/disabled from the StateRepository (the same
       # source the in-chat list's "(disabled)" marker reads), plus the active
