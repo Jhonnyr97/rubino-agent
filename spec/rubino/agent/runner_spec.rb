@@ -84,11 +84,13 @@ RSpec.describe Rubino::Agent::Runner do
     let(:store) { Rubino::Session::Store.new(db: db.db) }
 
     # The Runner builds its own Session::Repository internally. Inject a real
-    # repo (on the test DB) whose live-owner verdict we can pin per-example —
-    # cleaner than stubbing the private liveness probe on any instance.
+    # repo (on the test DB) whose atomic-claim verdict we can pin per-example —
+    # cleaner than stubbing the private liveness probe on any instance. Resume
+    # now claims ATOMICALLY (#390): the Runner forks iff claim_for_resume! loses
+    # the race (returns false), so pin THAT to drive the fork-vs-claim branch.
     def inject_repo(owned_by_other:)
       injected = Rubino::Session::Repository.new(db: db.db)
-      allow(injected).to receive(:owned_by_other_live_process?).and_return(owned_by_other)
+      allow(injected).to receive(:claim_for_resume!).and_return(!owned_by_other)
       allow(Rubino::Session::Repository).to receive(:new).and_return(injected)
       injected
     end
@@ -119,7 +121,8 @@ RSpec.describe Rubino::Agent::Runner do
 
     it "claims (does not fork) a session NOT owned by another live process" do
       parent = seed_session_with_history(owner_pid: nil)
-      inject_repo(owned_by_other: false)
+      # Drive the REAL atomic claim (no stub): an unowned row is claimed and the
+      # owner_pid stamped to THIS process in a single CAS.
 
       runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
       expect(runner.session[:id]).to eq(parent[:id])
@@ -139,12 +142,13 @@ RSpec.describe Rubino::Agent::Runner do
       claimed = repo.find(parent[:id])
       expect(claimed[:owner_pid]).to eq(Process.pid)
 
-      # Now the row is owned by a live process (us). A second resmuer is a
-      # DIFFERENT process; simulate that by making the predicate true for the
-      # claimed row, and assert it forks rather than latching onto the same row.
+      # Now the row is owned by a live process (us). A second resumer is a
+      # DIFFERENT process that LOSES the atomic claim; simulate that by making
+      # claim_for_resume! return false for the claimed row, and assert it forks
+      # rather than latching onto the same row.
       injected = Rubino::Session::Repository.new(db: db.db)
-      allow(injected).to receive(:owned_by_other_live_process?) do |row|
-        row[:id] == parent[:id] && !row[:owner_pid].nil?
+      allow(injected).to receive(:claim_for_resume!) do |row|
+        row[:id] != parent[:id] # loses the race for the already-claimed parent
       end
       allow(Rubino::Session::Repository).to receive(:new).and_return(injected)
 

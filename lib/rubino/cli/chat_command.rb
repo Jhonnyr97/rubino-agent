@@ -930,6 +930,17 @@ module Rubino
         rescue ArgumentError
           # SIGINT not supported on this platform — run without the trap.
         end
+        # Also arm the EXTERNAL teardown traps (#389/residual #378): the HUP/TERM
+        # handler was wired ONLY into the interactive REPL, so a SIGTERM during a
+        # HEADLESS one-shot fell through to a bare SignalException that
+        # oneshot_external_interrupt? treats as a user Ctrl-C — mislabeling a
+        # systemd/operator kill as "interrupted by user". Install the same
+        # external trap here so SIGTERM → cancel!(reason: :external) → the
+        # in-flight turn unwinds via Rubino::Interrupted(reason: :external) into
+        # the one-shot rescue and is labeled "interrupted by external signal" /
+        # subtype error_external_signal. SIGINT keeps flowing through the trap
+        # above (no reason) and stays a user interrupt.
+        prev_ext = install_oneshot_external_traps(runner)
         yield
       ensure
         if installed
@@ -938,6 +949,27 @@ module Rubino
           rescue ArgumentError
             nil
           end
+        end
+        restore_signal_traps(prev_ext)
+      end
+
+      # Arms the SIGHUP/SIGTERM external-teardown traps for the HEADLESS one-shot
+      # path (#389). Unlike the interactive install_session_end_traps, the
+      # handler does NOT exit(0): it flips the cancel token with reason :external
+      # (so the in-flight turn unwinds via Rubino::Interrupted and the existing
+      # one-shot rescue prints the persisted partial and the truthful external
+      # label) and best-effort ends the session. Trap-safe — cancel! only flips
+      # lock-free booleans; end_session! is a single synchronous DB update.
+      # Returns the previous handlers for restore_signal_traps.
+      def install_oneshot_external_traps(runner)
+        %w[HUP TERM].each_with_object({}) do |sig, prev|
+          next unless Signal.list.key?(sig)
+
+          prev[sig] = Signal.trap(sig) do
+            runner.cancel!(reason: :external)
+          end
+        rescue ArgumentError
+          nil # signal not supported on this platform
         end
       end
 

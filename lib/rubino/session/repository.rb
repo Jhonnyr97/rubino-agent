@@ -27,6 +27,39 @@ module Rubino
         live_owned_by_other?(row)
       end
 
+      # Atomically claims a resumable session for THIS process (#390/residual
+      # #376). The explicit-resume guard used to be a check-then-stamp:
+      # `owned_by_other_live_process?` read owner_pid, and a LATER `update(id,
+      # owner_pid:)` stamped it — a TOCTOU window where two concurrent
+      # `--resume <id>` both read the SAME dead owner_pid, both passed the
+      # guard, and both stamped+wrote the row, interleaving (user,user …) into
+      # one malformed transcript. This collapses the read and the stamp into a
+      # single compare-and-swap, mirroring Jobs::Queue#claim!: stamp owner_pid
+      # only WHILE the row still carries the owner we saw (nil or the dead pid),
+      # so exactly ONE racer's UPDATE matches and the loser sees rowcount 0 and
+      # forks. A LIVE foreign owner is rejected up front (returns false) so the
+      # second resumer still forks rather than stomping the live writer.
+      #
+      # Returns true iff THIS process won the claim. `seen_owner_pid` is the
+      # owner_pid the caller observed (passed so the CAS targets exactly that
+      # value); when nil/ours/dead the claim is attempted, when alive-and-foreign
+      # it is refused without touching the row.
+      def claim_for_resume!(row) # rubocop:disable Naming/PredicateMethod -- mutating CAS (bang); the boolean reports whether THIS caller won the claim
+        return false if live_owned_by_other?(row)
+
+        seen = row[:owner_pid]
+        now  = Time.now.utc.iso8601
+        # CAS: only stamp if the row STILL carries the owner we saw. `seen` is
+        # nil (unowned) or a dead pid; either way a concurrent winner has
+        # already changed owner_pid to its own live pid, so this WHERE misses.
+        cond = seen.nil? ? { owner_pid: nil } : { owner_pid: seen }
+        updated = @db[:sessions]
+                  .where(id: row[:id])
+                  .where(cond)
+                  .update(owner_pid: Process.pid, updated_at: now)
+        updated.positive?
+      end
+
       # LIKE-pattern escape char for the SAFE id-prefix match (#333a): `%` and
       # `_` are LIKE wildcards, so an unescaped `find("%")` matched EVERY
       # session. id_prefix_match escapes the metacharacters and declares this as
