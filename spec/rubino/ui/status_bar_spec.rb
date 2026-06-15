@@ -96,6 +96,48 @@ RSpec.describe Rubino::UI::StatusBar do
       # The token-count segment AFTER the red % still opens its own dim span.
       expect(line.split("95%").last).to include("\e[2m")
     end
+
+    # TUI-5: the percentage is a SATURATION gauge — it must never read past
+    # 100% even when the provider-reported prompt size (tokens) exceeds the
+    # window (a pinned context.max_tokens smaller than the real prompt, or the
+    # provider counting more than the chars/4 default assumes). An unclamped
+    # ratio printed an impossible "(245%)" / "(230%)".
+    it "clamps the percentage at 100% when tokens exceed the window" do
+      line = described_class.render(model: "m3", tokens: 26_600, window: 8_000, pastel: plain)
+      expect(line).to eq(" m3 · ctx ~26.6k/8k (100%)")
+    end
+
+    it "still shows the raw tokens/window pair when over budget" do
+      # The over-budget state stays visible (26.6k > 8k) — only the % is pinned.
+      line = described_class.render(model: "m3", tokens: 26_600, window: 8_000, pastel: plain)
+      expect(line).to include("~26.6k/8k")
+    end
+
+    it "colors a clamped over-budget percentage red (crit band)" do
+      line = described_class.render(model: "m", tokens: 46, window: 20, pastel: pastel)
+      expect(line).to include("\e[31m100%")
+    end
+
+    # The reported "ctx ~245/128k" was CORRECT (245 tokens is 0.2% of a 128k
+    # window) — sub-1% drops the percentage by design; it is not an impossible
+    # ratio. Pin that so the clamp fix doesn't accidentally start printing it.
+    it "leaves a tiny but legitimate ratio sub-1% (no percentage)" do
+      line = described_class.render(model: "m3", tokens: 245, window: 128_000, pastel: plain)
+      expect(line).to eq(" m3 · ctx ~245/128k")
+    end
+  end
+
+  describe ".context_pct" do
+    it "clamps to 0..100" do
+      expect(described_class.context_pct(46, 20)).to eq(100)
+      expect(described_class.context_pct(13, 100)).to eq(13)
+      expect(described_class.context_pct(0, 100)).to eq(0)
+    end
+
+    it "is 0 for a non-positive window" do
+      expect(described_class.context_pct(50, 0)).to eq(0)
+      expect(described_class.context_pct(50, nil)).to eq(0)
+    end
   end
 
   describe ".abbreviate" do
