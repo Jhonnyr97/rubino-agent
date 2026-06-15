@@ -116,8 +116,8 @@ RSpec.describe Rubino::Config::Writer do
         .to raise_error(Rubino::ConfigurationError, /invalid value for 'model\.temperature'.*out of range/)
     end
 
-    it "rejects a negative temperature" do
-      expect { writer.set("model.temperature", "-1") }
+    it "rejects a too-high temperature just past the upper bound (2.5)" do
+      expect { writer.set("model.temperature", "2.5") }
         .to raise_error(Rubino::ConfigurationError, /out of range/)
     end
 

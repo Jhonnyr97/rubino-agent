@@ -44,18 +44,20 @@ RSpec.describe Rubino::CLI::SkillsCommand do
       File.write(File.join(skill_dir, "SKILL.md"),
                  "---\nname: repo-skill\ndescription: project-only skill\n---\nbody")
 
-      # The cwd is untrusted, so the listing (trusted registry) hides repo-skill;
-      # a trust-inclusive scan rooted at the project surfaces it as "hidden".
+      # The cwd is untrusted, so the trust-gated listing drops the cwd-relative
+      # `.rubino/skills` (default config path) and hides repo-skill; a
+      # trust-inclusive scan rooted here surfaces it as "hidden".
       allow(Rubino::Skills::Registry).to receive(:project_local_trusted?).and_return(false)
       allow(Rubino::Workspace).to receive(:primary_root).and_return(project)
 
+      # Default cwd-relative skills.paths (the project-local mechanism), no
+      # built-ins, so only repo-skill is discoverable — and only when trusted.
       config_with_local = test_configuration(
-        "skills" => { "paths" => [fixtures_dir, File.join(project, ".rubino", "skills")],
-                      "include_builtin" => false }
+        "skills" => { "paths" => [".rubino/skills"], "include_builtin" => false }
       )
       allow(Rubino).to receive(:configuration).and_return(config_with_local)
 
-      described_class.new.list
+      Dir.chdir(project) { described_class.new.list }
 
       hint = messages(:warning).join("\n")
       expect(hint).to include("1 project-local skill hidden")
