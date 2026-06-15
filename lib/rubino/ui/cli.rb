@@ -540,9 +540,20 @@ module Rubino
         if @suppress_interrupt_marker
           @suppress_interrupt_marker = false
           @turn_interrupting = false
+          # Even the QUIET (#111) path reset the region: the thinking-row teardown
+          # above (status_hide/stop) desynced the geometry, so the NEXT committed
+          # line would otherwise inherit the ghost (#421).
+          reset_finalize_geometry
           return
         end
 
+        # Reset the live-region geometry through the composer BEFORE the final
+        # `⎿ interrupted` commit (#421): the thinking-row + live-tail teardown
+        # above left @rows_above out of step with the physical rows, so without
+        # this the marker's #print_above walks one row short, commits the live
+        # prompt as a ghost `❯` above the marker, and repaints the kept partial
+        # twice. The reset makes the marker land as ONE clean frame.
+        reset_finalize_geometry
         clear_line
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
@@ -1125,6 +1136,27 @@ module Rubino
           $stdout.print("\r\e[2K#{frame.to_s.split("\n").last}")
           $stdout.flush
         end
+      end
+
+      # Row-accurately erase the live region and reset its geometry to a clean
+      # blank top row BEFORE a finalize/interrupt/force-summary commit repaint
+      # (#421). The interrupt teardown (status_hide → clear_stream_region →
+      # status_stop) and the force-summary's stream_end leave the composer's
+      # recorded row geometry out of step with the physical rows — the status-row
+      # ticker painted a row #live_rows doesn't track — so the final #print_above
+      # walks one row short and commits the live prompt into scrollback as a ghost
+      # `❯`, and the kept partial / whole summary block repaints twice. Routing
+      # through {BottomComposer#finalize_region} (the same geometry-reset seam
+      # Ctrl+L #395 / resize #401 use) makes the next commit land as ONE clean
+      # frame. A no-op when no composer owns the screen (plain TTY / pipe / tests
+      # / between turns); only terminal IO errors are swallowed (cosmetic).
+      def reset_finalize_geometry
+        composer = BottomComposer.current
+        return unless composer
+
+        composer.finalize_region
+      rescue IOError, Errno::EIO
+        nil
       end
 
       # True when $stdout is a real terminal (guarded for IO doubles).
