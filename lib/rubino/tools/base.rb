@@ -219,25 +219,173 @@ module Rubino
           "Set tools.workspace_strict=false in config.yml to disable this check."
       end
 
-      # Typed "outside workspace" error for READ-side tools (read/glob/grep).
-      #
-      # The model must hear "outside your workspace — /add-dir it" and NEVER
-      # "doesn't exist / no files matched": the latter makes it propose
-      # CREATING or overwriting a real file it can't see, the near-data-loss
-      # path in r5 MF-1/MF-2. The error_code lets the UI/automation branch on
-      # the denial without parsing the string. A `path` is outside the
-      # workspace iff within_workspace? is false (strict mode on); when strict
-      # mode is off this never fires, matching the write-side behaviour.
+      # Typed "outside workspace" error gate, retained for the AUX-LLM read
+      # tools (summarize_file, vision) ONLY. Those route the raw file bytes
+      # through a third-party auxiliary model, so an out-of-workspace read would
+      # EXFILTRATE a sibling-repo secret / ~/.ssh file — a stronger threat than
+      # the in-process read/grep/glob, which were relaxed to broad in #406. A
+      # `path` is outside iff within_workspace? is false (strict mode on) and it
+      # isn't under the agent home; strict mode off never fires.
       def outside_workspace?(expanded)
         return false unless workspace_strict?
         return false if within_workspace?(expanded)
         # The agent's OWN home dir (~/.rubino) holds pastes, attachments and
-        # session files the agent explicitly points the model at ("read it with
-        # the read tool"). Those reads are legitimate even though the dir sits
-        # outside the project workspace — don't flag them as outside.
+        # session files the agent explicitly points the model at — legitimate
+        # reads even though they sit outside the project workspace.
         return false if under_agent_home?(expanded)
 
         true
+      end
+
+      def outside_workspace_message(path)
+        roots = workspace_roots
+        roots_list = roots.length == 1 ? roots.first : roots.join(", ")
+        { output: "Error: '#{path}' is outside your workspace roots (#{roots_list}) — " \
+                  "it is NOT missing, you are not allowed to access it here. " \
+                  "Run `/add-dir #{File.dirname(File.expand_path(path.to_s))}` to include its folder, " \
+                  "or relaunch in that directory. Do not try to create or overwrite it.",
+          error_code: :outside_workspace }
+      end
+
+      # READ-side secret DENYLIST (#406, defense-in-depth — NOT a security
+      # boundary). rubino reads broad like Hermes/Claude/Codex (write stays
+      # sandboxed); this denylist mirrors Hermes' file_safety.get_read_block_error
+      # so the model doesn't slurp credentials into context by accident. The
+      # shell tool can still `cat` anything — this is ergonomics, not enforcement.
+      #
+      # Refuses:
+      #   - project credential files by BASENAME, in any directory: .env,
+      #     .env.* (.env.local, .env.production, …), .envrc.
+      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
+      #     the home .env, the sqlite DB (encrypted OAuth tokens at rest), any
+      #     *oauth* file, and an mcp-tokens/ dir — while ordinary home reads
+      #     (pastes, attachments, sessions the agent points the model at) stay
+      #     allowed.
+      # Returns the matched-secret category string, or nil when the path is
+      # readable. (Non-predicate: the truthy return carries the category that
+      # the denial message interpolates.)
+      # Matches `.env`, `.env.<anything>` (.env.local/.production), and `.envrc`.
+      ENV_SECRET_BASENAME_RE = /\A\.env(\..+)?\z|\A\.envrc\z/
+      def read_secret_category(expanded)
+        base = File.basename(expanded.to_s)
+        return "credential file (#{base})" if base.match?(ENV_SECRET_BASENAME_RE)
+
+        return unless under_agent_home?(expanded)
+
+        target = canonical_path(expanded) || File.expand_path(expanded.to_s)
+        lower  = target.downcase
+        return unless base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
+                      lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
+                      base.end_with?(".key") || base.end_with?(".pem")
+
+        "agent-home secret (#{base})"
+      end
+
+      def read_secret_block_message(path, category)
+        { output: "Error: refusing to READ '#{path}' — it is a #{category}. " \
+                  "Reading secrets into the model context is blocked as a safeguard " \
+                  "(not a hard boundary). If you genuinely need a value from it, " \
+                  "ask the user rather than reading the file.",
+          error_code: :secret_denied }
+      end
+
+      # WRITE-side credential DENYLIST (#413, mirrors Hermes file_safety
+      # build_write_denied_paths/prefixes + is_write_denied). ALWAYS ON — it
+      # does NOT consult workspace_strict?, so it still refuses even when the
+      # workspace sandbox is disabled (tools.workspace_strict=false) AND even
+      # when the target sits INSIDE the workspace. This is a defense-in-depth
+      # FLOOR against a prompt-injected write/edit/multi_edit/apply_patch
+      # clobbering credentials or system files — NOT the security boundary
+      # (that remains the workspace sandbox + the approval flow). The shell
+      # tool can still touch anything; this only guards the structured write
+      # tools, where a single hallucinated file_path is the realistic risk.
+      #
+      # Refuses (by BASENAME, in any directory):
+      #   - project credential files: .env, .env.* (.env.local/.production), .envrc
+      #   - shell/credential dotfiles: .netrc, .pgpass, .npmrc, .pypirc,
+      #     .git-credentials, .bashrc, .zshrc, .profile, .bash_profile, .zprofile
+      # Refuses (by absolute PATH / PREFIX):
+      #   - ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.docker, ~/.azure,
+      #     ~/.config/gh, ~/.config/gcloud  (the whole tree)
+      #   - /etc/sudoers, /etc/sudoers.d/*, /etc/passwd, /etc/shadow,
+      #     /etc/systemd/*
+      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
+      #     the home .env, the sqlite DB, any *oauth* file, an mcp-tokens/ dir,
+      #     and *.key / *.pem material.
+      # Returns the matched category string (truthy) or nil when writable.
+      WRITE_SECRET_BASENAME_RE = /
+        \A\.env(\..+)?\z | \A\.envrc\z |
+        \A\.netrc\z | \A\.pgpass\z | \A\.npmrc\z | \A\.pypirc\z |
+        \A\.git-credentials\z |
+        \A\.bashrc\z | \A\.zshrc\z | \A\.profile\z | \A\.bash_profile\z | \A\.zprofile\z
+      /x
+
+      # Home-relative subtrees no write tool may touch (resolved against $HOME).
+      WRITE_DENIED_HOME_PREFIXES = [
+        ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure",
+        ".config/gh", ".config/gcloud"
+      ].freeze
+
+      # Absolute system paths/prefixes no write tool may touch.
+      WRITE_DENIED_SYSTEM_PATHS    = ["/etc/sudoers", "/etc/passwd", "/etc/shadow"].freeze
+      WRITE_DENIED_SYSTEM_PREFIXES = ["/etc/sudoers.d", "/etc/systemd"].freeze
+
+      def write_secret_category(expanded)
+        base   = File.basename(expanded.to_s)
+        target = canonical_path(expanded) || File.expand_path(expanded.to_s)
+
+        return "credential file (#{base})" if base.match?(WRITE_SECRET_BASENAME_RE)
+        if (cat = write_denied_path_category(target, base))
+          return cat
+        end
+
+        write_agent_home_secret_category(expanded, base, target)
+      end
+
+      # Absolute-path / prefix matches (SSH keys, cloud creds, /etc system
+      # files). Compared against the symlink-resolved target so an in-workspace
+      # link to ~/.ssh can't slip a key write past the basename check.
+      def write_denied_path_category(target, base)
+        home = File.expand_path("~")
+        WRITE_DENIED_HOME_PREFIXES.each do |rel|
+          root = File.join(home, rel)
+          return "credential directory (~/#{rel})" if under_path?(target, root)
+        end
+        return "system file (#{base})" if WRITE_DENIED_SYSTEM_PATHS.include?(target)
+
+        WRITE_DENIED_SYSTEM_PREFIXES.each do |prefix|
+          return "system path (#{prefix})" if under_path?(target, prefix)
+        end
+        nil
+      end
+
+      # Agent-home (~/.rubino) auth/secret material, mirroring the READ-side
+      # home rules so the write path can't overwrite the token store either.
+      def write_agent_home_secret_category(expanded, base, target)
+        return unless under_agent_home?(expanded)
+
+        lower = target.downcase
+        return unless base == ".env" || base.match?(WRITE_SECRET_BASENAME_RE) ||
+                      base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
+                      lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
+                      base.end_with?(".key") || base.end_with?(".pem")
+
+        "agent-home secret (#{base})"
+      end
+
+      # True when +target+ is +root+ itself or sits under it. Both are already
+      # absolute; root gets a trailing-separator guard so /etc/sudoers doesn't
+      # match /etc/sudoers-backup.
+      def under_path?(target, root)
+        target == root || target.start_with?("#{root}#{File::SEPARATOR}")
+      end
+
+      def write_secret_block_message(path, category)
+        { output: "Error: refusing to WRITE '#{path}' — it is a #{category}. " \
+                  "Writing to credential/system files is blocked as an always-on safeguard " \
+                  "(independent of the workspace sandbox; not the security boundary). " \
+                  "If the user genuinely needs this file changed, ask them to do it themselves.",
+          error_code: :write_secret_denied }
       end
 
       # True when +expanded+ resolves under the Rubino home directory. Symlinks
@@ -253,16 +401,6 @@ module Rubino
         target_real == home_real || target_real.start_with?("#{home_real}#{File::SEPARATOR}")
       rescue StandardError
         false
-      end
-
-      def outside_workspace_message(path)
-        roots = workspace_roots
-        roots_list = roots.length == 1 ? roots.first : roots.join(", ")
-        { output: "Error: '#{path}' is outside your workspace roots (#{roots_list}) — " \
-                  "it is NOT missing, you are not allowed to access it here. " \
-                  "Run `/add-dir #{File.dirname(File.expand_path(path.to_s))}` to include its folder, " \
-                  "or relaunch in that directory. Do not try to create or overwrite it.",
-          error_code: :outside_workspace }
       end
 
       # Reads a file and scrubs a stray non-UTF-8 byte (e.g. a Latin-1 `é` in a

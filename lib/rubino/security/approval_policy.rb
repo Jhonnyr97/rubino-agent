@@ -122,6 +122,16 @@ module Rubino
         #    validator cannot prove read-only falls through to the prompt.
         return :allow if readonly_auto_allowed?(tool, command_str)
 
+        # 6c. skill(action: "create") WRITES .rubino/skills/<name>/SKILL.md and
+        #    must not be a silent low-risk allow (#405): the skill tool stays
+        #    :low so a read_only agent keeps `skill load/list/show`, but the
+        #    create action is a write and routes to :ask here — like any write.
+        #    Below yolo (step 3), so a full-access --yolo agent still creates
+        #    skills inline; a headless read_only subagent's :ask becomes the
+        #    fail-closed block, closing the unapproved-write path. load is never
+        #    gated (only the create action matches).
+        return :ask if skill_create?(tool, arguments)
+
         # 7-8. confirm_policy gate for a shell command not otherwise resolved.
         #    NOT under runtime yolo (handled at step 3) — that is the explicit
         #    CLI operator override that means "stop prompting me".
@@ -177,6 +187,16 @@ module Rubino
         CommandAllowlist.new(config: @config).allowed?(command)
       end
 
+      # True when this is the WRITE action of the skill tool (action: "create").
+      # The skill tool is :low (so read_only keeps load/list/show), but its
+      # create action writes a SKILL.md and must be approval-gated (#405).
+      def skill_create?(tool, arguments)
+        return false unless tool.name == "skill"
+
+        args = arguments || {}
+        (args["action"] || args[:action]).to_s == "create"
+      end
+
       # True when the shell command is provably read-only and the
       # approvals.auto_allow_readonly gate (default ON) is open. Shell-only:
       # for every other tool the "command" is a path or argument fragment.
@@ -200,6 +220,12 @@ module Rubino
           (args["file_path"] || args[:file_path]).to_s
         when "shell_output", "shell_kill", "shell_input"
           (args["run_id"] || args[:run_id]).to_s
+        when "skill"
+          # "<action> <name>" so the approval scope distinguishes a create from
+          # a load and one skill name from another (granularity parity, #405).
+          action = args["action"] || args[:action] || "load"
+          name   = args["name"] || args[:name]
+          [action, name].join(" ").strip
         else
           args.values.first.to_s
         end

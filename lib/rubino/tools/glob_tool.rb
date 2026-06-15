@@ -50,10 +50,10 @@ module Rubino
         max_results = arguments["max_results"] || arguments[:max_results] || 100
         include_ignored = arguments["include_ignored"] || arguments[:include_ignored] || false
 
-        if (denied = workspace_denial(pattern, path))
-          return denied
-        end
-
+        # Glob is BROAD (#406): it resolves any path like Hermes/Claude/Codex.
+        # The read allowlist was never the data-loss boundary (that's on the
+        # WRITE path); glob only lists file PATHS (no content), so there is
+        # nothing to denylist here — secret protection lives on read/grep.
         expanded_path = File.expand_path(path, workspace_root)
         full_pattern  = resolve_pattern(pattern, path, expanded_path)
         return full_pattern if full_pattern.is_a?(String) && full_pattern.start_with?("Error:")
@@ -102,30 +102,6 @@ module Rubino
         return "Error: Directory not found: #{path}" unless File.directory?(expanded_path)
 
         File.join(expanded_path, pattern)
-      end
-
-      # If the search base (or an absolute pattern) resolves outside the
-      # workspace, DENY with a typed error rather than letting the glob return
-      # "no files matched" — otherwise the model concludes the file is missing
-      # and offers to create it over a real file it just can't see (r5
-      # MF-1/MF-2). Returns the typed error Hash, or nil to proceed.
-      def workspace_denial(pattern, path)
-        if pattern.to_s.start_with?(File::SEPARATOR)
-          base = File.expand_path(pattern.to_s)
-          return outside_workspace_message(base) if outside_workspace?(base)
-
-          return nil
-        end
-
-        # Relative pattern/base: resolve against the workspace primary root, the
-        # same anchor the glob itself now uses, so the guard and the search agree
-        # on what "outside" means.
-        expanded_path = File.expand_path(path.to_s, workspace_root)
-        base = File.join(expanded_path, pattern.to_s)
-        return outside_workspace_message(base) if outside_workspace?(File.expand_path(base))
-        return outside_workspace_message(path) if outside_workspace?(expanded_path)
-
-        nil
       end
     end
   end

@@ -41,6 +41,11 @@ module Rubino
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = expand_workspace_path(file_path)
+        # ALWAYS-ON write-side credential denylist (#413), checked BEFORE the
+        # workspace toggle so it refuses even when workspace_strict=false.
+        if (category = write_secret_category(expanded))
+          return write_secret_block_message(file_path, category)
+        end
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
         existed = File.exist?(expanded)
