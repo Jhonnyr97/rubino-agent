@@ -167,6 +167,18 @@ module Rubino
         @db[:messages].where(session_id: session_id).count
       end
 
+      # Message count for a session broken down by role (#382), so
+      # `sessions show` can report the REAL cumulative count and label how many
+      # rows are tool messages — the cached sessions.message_count column only
+      # tracks top-level turns and hides every assistant(tool_use)/tool(result)
+      # row. Returns a Hash role => count.
+      def count_by_role(session_id)
+        @db[:messages]
+          .where(session_id: session_id)
+          .group_and_count(:role)
+          .to_hash(:role, :count)
+      end
+
       # Returns estimated token sum for a session
       def token_sum(session_id)
         @db[:messages]

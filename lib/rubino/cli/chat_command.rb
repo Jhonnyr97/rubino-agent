@@ -211,6 +211,14 @@ module Rubino
         # then an empty prompt and a success exit (#93) — here we surface the
         # actionable error to stderr and exit non-zero so automation/the user can
         # actually tell it failed.
+        # Persist per-run usage on the headless path (#382). The interactive REPL
+        # never wrote a `runs` row from the CLI either, but headless is where the
+        # gap bites: automation has no other window onto a scripted turn's token
+        # spend. Attach a TurnRecorder around the turn (the SAME summed-usage seam
+        # the JSON path uses) and write one runs row with the real input/output
+        # token counts after run! returns.
+        recorder = Output::TurnRecorder.new.attach!
+
         announce_attachment_upload(image_paths)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         # SIGINT in a one-shot run (#335a): without a trap, Ctrl+C lands as a
@@ -223,8 +231,16 @@ module Rubino
         # Ctrl+C (or one that races in before the first chunk, deep in the
         # blocking read) still raises a bare Interrupt — also caught below.
         response = with_oneshot_int_trap(runner) do
-          runner.run!(text, image_paths: image_paths)
+          # Bind the headless flag for the duration of the turn so TaskTool runs
+          # `task` subagents FOREGROUND in one-shot (#380) — there is no
+          # IdleCardHost to fold a background child's result back in and the
+          # process exits the instant the answer is ready, so a background
+          # fan-out would be silently dropped.
+          Rubino.with_headless { runner.run!(text, image_paths: image_paths) }
         end
+
+        # Write the per-run usage row (#382) before printing/exiting.
+        persist_oneshot_run!(runner, text, recorder)
 
         print_oneshot_answer(response.to_s)
         $stdout.flush
@@ -236,7 +252,7 @@ module Rubino
         # and NEVER run (memory_facts stayed 0, the queue grew unbounded across
         # headless runs). Join the worker the turn just kicked off so the
         # extraction completes at least once per headless session.
-        drain_post_turn_jobs!(runner)
+        drain_post_turn_jobs!(runner, headless_ui)
 
         # Fire the turn-finished attention seam for headless runs (#215). A
         # scripted `rubino prompt`/-q run never goes through UI::CLI#turn_finished
@@ -277,10 +293,12 @@ module Rubino
           print_oneshot_answer(partial)
           $stdout.flush
         end
-        # Label truthfully (#361b): an EXTERNAL teardown (SIGTERM/SIGHUP) is not a
-        # user interrupt. Bare Interrupt/SignalException (not our cooperative
-        # Rubino::Interrupted) is a raw signal → external.
-        external = e.is_a?(Rubino::Interrupted) ? e.reason == :external : true
+        # Label truthfully (#361b, #378): only an EXTERNAL teardown
+        # (SIGTERM/SIGHUP, surfaced as a cooperative Rubino::Interrupted with
+        # reason :external) is "by external signal". A bare Interrupt/SIGINT — the
+        # user pressing Ctrl-C, which is NOT a Rubino::Interrupted — is a USER
+        # interrupt, not external; the prior `: true` default mislabeled it.
+        external = oneshot_external_interrupt?(e)
         warn "rubino: #{external ? "interrupted by external signal" : "interrupted"}"
         exit(130)
       rescue SystemExit
@@ -289,6 +307,7 @@ module Rubino
         warn "rubino: #{e.message}"
         exit(1)
       ensure
+        recorder&.detach!
         restore_logger(prev_log_io)
       end
 
@@ -336,14 +355,20 @@ module Rubino
         # token so the in-flight stream is cancelled at the next checkpoint
         # rather than letting a bare Interrupt escape as a raw backtrace.
         response = with_oneshot_int_trap(runner) do
-          runner.run!(text, image_paths: image_paths)
+          # Force `task` subagents foreground in one-shot (#380), same as the text
+          # path — no IdleCardHost here either to fold a background result back in.
+          Rubino.with_headless { runner.run!(text, image_paths: image_paths) }
         end
         duration_ms = ((monotonic_now - started_at) * 1000).round
+
+        # Persist the per-run usage row (#382) from the already-attached recorder,
+        # same as the text path.
+        persist_oneshot_run!(runner, text, recorder)
 
         # Drain the detached post-turn polishing before exit (#358), same as the
         # text path: a headless JSON/stream-json run also exits the instant run!
         # returns, so without joining the worker the post-turn jobs never run.
-        drain_post_turn_jobs!(runner)
+        drain_post_turn_jobs!(runner, headless_ui)
 
         if fmt == :stream_json
           new_messages = store.for_session(runner.session[:id]).drop(baseline)
@@ -376,11 +401,12 @@ module Rubino
       # persisted the partial (marked interrupted), so the session is truthful.
       # Interrupt is listed for doc value though SignalException already covers it.
       rescue Rubino::Interrupted, Interrupt, SignalException => e # rubocop:disable Lint/ShadowedException
-        # Label truthfully: an EXTERNAL teardown (SIGTERM/SIGHUP) is not a user
-        # interrupt, so don't claim "interrupted by user" when no user
-        # interrupted (#361b). Bare Interrupt/SignalException (not our
-        # cooperative Rubino::Interrupted) is a raw signal → external.
-        external = e.is_a?(Rubino::Interrupted) ? e.reason == :external : true
+        # Label truthfully (#361b, #378): only an EXTERNAL teardown
+        # (SIGTERM/SIGHUP, a cooperative Rubino::Interrupted with reason :external)
+        # is "by external signal". A bare Interrupt/SIGINT — the user pressing
+        # Ctrl-C, NOT a Rubino::Interrupted — is a USER interrupt; the prior
+        # `: true` default mislabeled it as external.
+        external = oneshot_external_interrupt?(e)
         message = external ? "interrupted by external signal" : "interrupted by user"
         subtype = external ? "error_external_signal" : "error_interrupted"
         warn "rubino: #{message}"
@@ -480,11 +506,50 @@ module Rubino
       # PRIOR interrupted headless run orphaned, so a stuck queue self-heals on
       # the next headless turn. Best-effort: a drain detail must never fail the
       # run or contaminate stdout.
-      def drain_post_turn_jobs!(runner)
+      def drain_post_turn_jobs!(runner, headless_ui = nil)
         runner.polishing.wait if runner.respond_to?(:polishing) && runner.polishing
-        Jobs::Queue.new.reap_inline_orphans
+        # Route the inline orphan-reaper through the headless (Null) UI (#372).
+        # The detached polishing worker already runs under the runner's Null UI,
+        # but #reap_inline_orphans runs on THIS main thread with no UI binding,
+        # so a job it sweeps (e.g. ExtractMemoryJob#confirm → Rubino.ui.note) would
+        # resolve to the GLOBAL stdout-backed UI::CLI and leak its
+        # "✓ saved to memory …" banner onto stdout — polluting
+        # `answer=$(rubino prompt …)`. Bind the Null UI so headless stdout stays
+        # exactly the model answer.
+        reap = -> { Jobs::Queue.new.reap_inline_orphans }
+        headless_ui ? Rubino.with_ui(headless_ui, &reap) : reap.call
       rescue StandardError => e
         Rubino.logger.warn(event: "oneshot.drain_failed", error: e.class.name, message: e.message)
+        nil
+      end
+
+      # True when the interrupt that unwound the one-shot run was an EXTERNAL
+      # teardown (SIGTERM/SIGHUP), not a user Ctrl-C (#378). Only our cooperative
+      # Rubino::Interrupted carries a reason — the session-end traps flip it to
+      # :external on SIGTERM/SIGHUP (#361b). A bare Interrupt/SignalException is a
+      # user SIGINT, so it is NOT external (the prior code defaulted those to
+      # external and mislabeled Ctrl-C as "interrupted by external signal").
+      def oneshot_external_interrupt?(error)
+        error.is_a?(Rubino::Interrupted) && error.reason == :external
+      end
+
+      # Persists one `runs` row for a completed headless turn (#382) with the real
+      # summed token counts from the turn's recorder. Best-effort: a persistence
+      # detail must never fail the run or contaminate the piped answer — a missing
+      # runs row is a telemetry gap, not a user-facing failure.
+      def persist_oneshot_run!(runner, input_text, recorder)
+        return unless runner&.session && recorder
+
+        repo = Run::Repository.new
+        run = repo.create(
+          session_id: runner.session[:id], input_text: input_text.to_s,
+          model: model_name, provider: opt(:provider)
+        )
+        repo.mark_completed!(run[:id],
+                             tokens_input: recorder.input_tokens,
+                             tokens_output: recorder.output_tokens)
+      rescue StandardError => e
+        Rubino.logger.warn(event: "oneshot.run_persist_failed", error: e.class.name, message: e.message)
         nil
       end
 

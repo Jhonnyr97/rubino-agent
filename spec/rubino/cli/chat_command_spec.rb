@@ -7,7 +7,13 @@ RSpec.describe Rubino::CLI::ChatCommand do
   let(:null_ui) { Rubino::UI::Null.new }
 
   let(:fake_runner) do
-    instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT")
+    # session/polishing are stubbed so the headless usage-persistence (#382) and
+    # post-turn drain (#358/#372) seams the one-shot path now runs don't raise on
+    # the verifying double (they're best-effort and would otherwise be rescued,
+    # but stubbing keeps the example output clean).
+    instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT",
+                                           session: { id: "sess-oneshot", model: "fake-model" },
+                                           polishing: nil)
   end
 
   before do
