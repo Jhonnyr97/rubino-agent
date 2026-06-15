@@ -2244,11 +2244,7 @@ module Rubino
       end
 
       def pick_hint(arguments)
-        %i[pattern file_path path command].each do |k|
-          v = arguments[k] || arguments[k.to_s]
-          return [k, v] if v && !v.to_s.empty?
-        end
-        nil
+        ToolLabel.pick_hint(arguments)
       end
 
       def color_for(role)

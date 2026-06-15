@@ -148,6 +148,16 @@ module Rubino
                              desc: "One-shot output: text | json | stream-json (default text)"
       option :json,          type: :boolean, desc: "Alias for --output-format json"
 
+      # One-shot TEXT trace control. By default a `rubino prompt`/-q text run
+      # prints a concise per-tool activity trace to STDERR (`· edit foo.rb`),
+      # answer-only on STDOUT. --quiet/-Q silences that trace (machine path);
+      # --verbose/-v widens each line's args. NOTE: -q is --query (the prompt
+      # content), so the QUIET flag is the CAPITAL -Q (mirrors Hermes -q/-Q).
+      option :quiet,         aliases: "-Q", type: :boolean,
+                             desc: "Silence the one-shot stderr tool-activity trace (answer-only)"
+      option :verbose,       aliases: "-v", type: :boolean,
+                             desc: "Expand the one-shot stderr tool-activity trace (fuller args)"
+
       # Add extra allowed workspace roots at launch (repeatable), like Claude
       # Code's --add-dir. Write/edit tools then accept files under any added
       # root; an added dir's project context/skills are gated by folder-trust.
@@ -178,6 +188,10 @@ module Rubino
       option :output_format,               type: :string, banner: "FORMAT",
                                            desc: "Output: text | json | stream-json (default text)"
       option :json,                        type: :boolean, desc: "Alias for --output-format json"
+      option :quiet,        aliases: "-Q", type: :boolean,
+                            desc: "Silence the stderr tool-activity trace (answer-only)"
+      option :verbose,      aliases: "-v", type: :boolean,
+                            desc: "Expand the stderr tool-activity trace (fuller args)"
       def prompt(*args)
         query = args.join(" ")
         opts = options.to_h.merge(query: query)
