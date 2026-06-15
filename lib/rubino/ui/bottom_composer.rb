@@ -824,6 +824,8 @@ module Rubino
         when "\x15" then kill_to_start           # Ctrl+U → delete to start of line
         when "\x0f" # Ctrl+O: reveal the last retained reasoning aside.
           request_reveal
+        when "\x0c" # Ctrl+L: clear the screen and redraw the prompt in place.
+          clear_screen
         when "\e"
           # ESC: start of a CSI/SS3 escape (arrows, Home/End, word-jump,
           # Shift+Tab, bracketed paste) OR a lone ESC that dismisses the menu.
@@ -1058,6 +1060,21 @@ module Rubino
       # same way the streamed partial and the subagent cards do.
       def redraw
         live_region? ? render_frame(committed: nil) : draw_input
+      end
+
+      # Ctrl+L: wipe the visible screen + scrollback and redraw the live region
+      # fresh at the top — the readline/terminal norm (Claude Code, Codex, bash).
+      # Erases the screen (\e[2J), the scrollback buffer (\e[3J), and homes the
+      # cursor (\e[H); the live region's row geometry is then forgotten (the
+      # screen is already blank, so the next frame's relative \e[1A\e[2K walk
+      # would be wrong — see {LiveRegion#reset_geometry!}) before redrawing the
+      # prompt from the now-blank top row. Public so the unit tests can drive it.
+      def clear_screen
+        @render.synchronize do
+          @output.print("\e[2J\e[3J\e[H")
+          @region.reset_geometry!
+          redraw
+        end
       end
 
       # True when ANYTHING lives above the prompt — rows already on screen from
