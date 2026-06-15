@@ -5,6 +5,14 @@ require "fileutils"
 
 module Rubino
   module Database
+    # Raised when a connection cannot be established because another process
+    # has held a write lock for longer than the bounded retry budget — a
+    # SUSTAINED (not transient) concurrent-migration contention. Carries a
+    # clean, single-line message so a command boot surfaces it without leaking
+    # a raw Sequel/SQLite backtrace (#333/#359), consistent with the
+    # corrupt/duplicate-row repair surfacing (#440).
+    class BusyError < StandardError; end
+
     # Manages the SQLite database connection via Sequel.
     # Handles connection creation, WAL mode setup, and provides
     # access to the underlying Sequel::Database instance.
@@ -14,6 +22,23 @@ module Rubino
       # (which would turn ":memory:" into a literal "./:memory:" file) and
       # FileUtils.mkdir_p on the parent directory.
       MEMORY_PATHS = [":memory:", "file::memory:"].freeze
+
+      # How long SQLite waits on a held lock before raising
+      # SQLite3::BusyException, in milliseconds. Set at OPEN time (Sequel's
+      # :timeout option) so it covers the very first statements — the
+      # `PRAGMA journal_mode=WAL` write itself — not just queries that run
+      # after the explicit `PRAGMA busy_timeout`. A concurrent first-boot
+      # serializes its migration under a file lock (#race / #440), and a
+      # losing racer that opens during the winner's migration must WAIT the
+      # write lock out here rather than surface a raw
+      # `SQLite3::BusyException: database is locked` backtrace (#333/#359).
+      BUSY_TIMEOUT_MS = 5_000
+
+      # Bounded wall-clock budget (seconds) for the open + WAL-setup retry
+      # backstop. If `:timeout` is somehow not honoured on the very first write
+      # pragma (driver/filesystem quirks), we still wait a concurrent migration
+      # out instead of leaking a backtrace, then give up cleanly.
+      CONNECT_RETRY_BUDGET = 10.0
 
       attr_reader :db_path
 
@@ -120,7 +145,14 @@ module Rubino
         existed = memory? || File.exist?(@db_path)
         FileUtils.mkdir_p(File.dirname(@db_path)) unless memory?
 
-        connection = Sequel.sqlite(@db_path)
+        # Register the busy handler at OPEN time (Sequel maps :timeout →
+        # sqlite3_busy_timeout) so it is already in effect for the first
+        # statements below — crucially the `PRAGMA journal_mode=WAL` write,
+        # which takes a reserved/exclusive lock and would otherwise raise
+        # `SQLite3::BusyException` INSTANTLY when a concurrent first-boot is
+        # mid-migration (#333/#359/#race). :memory: has no contention but the
+        # option is harmless there.
+        connection = with_busy_retry { Sequel.sqlite(@db_path, timeout: BUSY_TIMEOUT_MS) }
 
         # A freshly-created database holds session content — owner-only, like
         # the rest of the home's secrets (#65). Creation-only so an operator
@@ -129,13 +161,61 @@ module Rubino
 
         # WAL has no meaning for :memory: and triggers a warning; only apply on disk.
         unless memory?
-          connection.run("PRAGMA journal_mode=WAL")
+          with_busy_retry { connection.run("PRAGMA journal_mode=WAL") }
           connection.run("PRAGMA synchronous=NORMAL")
         end
         connection.run("PRAGMA foreign_keys=ON")
-        connection.run("PRAGMA busy_timeout=5000")
+        # Belt-and-suspenders: re-assert the busy timeout on the live handle in
+        # case the open-time option was not honoured by the loaded driver.
+        connection.run("PRAGMA busy_timeout=#{BUSY_TIMEOUT_MS}")
 
         connection
+      end
+
+      # Run +block+, retrying for a bounded budget when SQLite reports the file
+      # is locked by ANOTHER process (a concurrent first-boot migration). This
+      # is a backstop UNDER the :timeout busy handler: the handler already
+      # blocks inside SQLite, so in the normal case the block returns on the
+      # first try. We only loop here for the rare case where the very first
+      # write lands before the handler is in force, so a transient lock during
+      # a peer's migration is WAITED OUT rather than surfaced as a raw
+      # backtrace (#333/#359). A non-lock error (corruption, etc.) is re-raised
+      # immediately for the corrupt?/repair paths to classify.
+      def with_busy_retry
+        deadline = monotonic_now + CONNECT_RETRY_BUDGET
+        loop do
+          return yield
+        rescue Sequel::DatabaseError => e
+          raise unless busy_lock_error?(e)
+
+          # Final backstop (#333/#359): the lock outlived the retry budget.
+          # Convert the raw BusyException into a clean domain error so the
+          # command boot surfaces a single line, never a backtrace.
+          if monotonic_now >= deadline
+            raise BusyError, "database is locked by another rubino process — retry in a moment"
+          end
+
+          sleep(0.05)
+        end
+      end
+
+      # True when +error+ (or its cause chain) is a transient "database is
+      # locked"/BusyException — a peer holds the lock — as opposed to a corrupt
+      # image. Matches by class name and message so it does not hard-depend on
+      # the sqlite3 gem constants being loaded.
+      def busy_lock_error?(error)
+        e = error
+        while e
+          return true if e.class.name.to_s.include?("SQLite3::BusyException")
+          return true if e.message.to_s.include?("database is locked")
+
+          e = e.cause
+        end
+        false
+      end
+
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
     end
   end
