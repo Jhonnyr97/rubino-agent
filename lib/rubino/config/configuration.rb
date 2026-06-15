@@ -263,10 +263,6 @@ module Rubino
         dig("compression", "threshold")
       end
 
-      def compression_gateway_threshold
-        dig("compression", "gateway_threshold")
-      end
-
       def compression_target_ratio
         dig("compression", "target_ratio")
       end
