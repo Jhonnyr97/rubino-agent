@@ -74,7 +74,7 @@ RSpec.describe Rubino::Config::Loader do
   describe "#load" do
     it "returns defaults when no config file exists" do
       config = loader.load
-      expect(config["model"]["default"]).to eq("openai/gpt-4.1")
+      expect(config["model"]["default"]).to eq("minimax/MiniMax-M3")
       expect(config["compression"]["threshold"]).to eq(0.50)
     end
 
@@ -85,7 +85,7 @@ RSpec.describe Rubino::Config::Loader do
       )
       config = loader.load
       expect(config["model"]["temperature"]).to eq(0.7)
-      expect(config["model"]["default"]).to eq("openai/gpt-4.1") # default preserved
+      expect(config["model"]["default"]).to eq("minimax/MiniMax-M3") # default preserved
     end
 
     it "expands ${VAR} references against env (including .env-loaded vars)" do
@@ -163,7 +163,7 @@ RSpec.describe Rubino::Config::Loader do
       path = loader.create_default_config!
       expect(File.exist?(path)).to be true
       content = YAML.safe_load_file(path, permitted_classes: [Symbol])
-      expect(content["model"]["default"]).to eq("openai/gpt-4.1")
+      expect(content["model"]["default"]).to eq("minimax/MiniMax-M3")
     end
   end
 end

@@ -148,13 +148,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
     let(:null_ui)  { Rubino::UI::Null.new }
     let(:fake_llm) { FakeLLMAdapter.new }
 
-    # approvals.mode: manual + require_confirmation_for_shell so a bare shell
-    # command resolves to :ask — the exact production default this guards.
+    # approvals.mode: manual + confirm_policy: confirm_all so a bare shell
+    # command resolves to :ask — this guards the headless fail-closed floor
+    # (#260) independent of the default prompt policy (now dangerous_only, #409,
+    # under which `touch` would auto-allow). confirm_all is the hardening opt-in.
     let(:config) do
       mem      = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => false)
       skills   = Rubino::Config::Defaults.to_hash["skills"].merge("auto_distill" => false)
       approval = Rubino::Config::Defaults.to_hash["approvals"].merge("mode" => "manual")
-      test_configuration("memory" => mem, "skills" => skills, "approvals" => approval)
+      security = Rubino::Config::Defaults.to_hash["security"].merge("confirm_policy" => "confirm_all")
+      test_configuration("memory" => mem, "skills" => skills, "approvals" => approval, "security" => security)
     end
 
     let(:marker) { "/tmp/rubino-sec260-#{Process.pid}" }

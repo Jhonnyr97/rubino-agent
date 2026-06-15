@@ -137,9 +137,9 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
-      # Default raised 8→25 (#399).
+      # Default raised 8→25 (#399); max_turn_seconds raised to a 600s safety-net (#408).
       expect(config.agent_max_tool_iterations).to eq(25)
-      expect(config.agent_max_turn_seconds).to eq(120)
+      expect(config.agent_max_turn_seconds).to eq(600)
     end
 
     it "falls back to the built-in default when the value is nil" do
@@ -151,7 +151,7 @@ RSpec.describe Rubino::Config::Configuration do
                                  "max_turn_seconds" => nil
                                })
       expect(cfg.agent_max_tool_iterations).to eq(25)
-      expect(cfg.agent_max_turn_seconds).to eq(120)
+      expect(cfg.agent_max_turn_seconds).to eq(600)
     end
   end
 
@@ -202,12 +202,13 @@ RSpec.describe Rubino::Config::Configuration do
   end
 
   describe "human-in-the-loop accessors" do
-    it "keeps shell behind a confirmation prompt by default" do
-      expect(config.require_confirmation_for_shell?).to be true
+    it "runs safe shell unprompted by default (#409: dangerous_only)" do
+      # Aligned to Hermes — the legacy alias now defaults false.
+      expect(config.require_confirmation_for_shell?).to be false
     end
 
-    it "defaults confirm_policy to :confirm_all" do
-      expect(config.confirm_policy).to eq(:confirm_all)
+    it "defaults confirm_policy to :dangerous_only (#409 Hermes alignment)" do
+      expect(config.confirm_policy).to eq(:dangerous_only)
     end
 
     it "derives confirm_policy from require_confirmation_for_shell:false" do

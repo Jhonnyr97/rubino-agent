@@ -48,7 +48,15 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     context "in skip mode" do
-      let(:config) { test_configuration("approvals" => { "mode" => "skip" }) }
+      # Pin confirm_all (default is now dangerous_only, #409) so a not-otherwise-
+      # resolved shell command routes to :ask — this context tests that config
+      # "skip" is NOT a headless yolo, independent of the prompt policy.
+      let(:config) do
+        test_configuration(
+          "approvals" => { "mode" => "skip" },
+          "security" => { "confirm_policy" => "confirm_all" }
+        )
+      end
       let(:policy) { described_class.new(config: config) }
 
       # SEC-02: config approvals.mode: "skip" is NOT a headless yolo. It stays
@@ -374,8 +382,14 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => hardline })).to eq(:deny)
     end
 
-    it "leaves a normal (non-read-only) shell command unaffected (still :ask in manual)" do
-      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "manual" }))
+    it "leaves a normal (non-read-only) shell command unaffected (still :ask in manual under confirm_all)" do
+      # Pin confirm_all so the hardline floor is the only thing changing the
+      # outcome here (the default is now dangerous_only, under which make build
+      # would :allow — that path is covered in the confirm_policy describe).
+      pol = described_class.new(config: test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all" }
+      ))
       expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
     end
   end
@@ -464,10 +478,11 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "git status -s" })).to eq(:allow)
     end
 
-    # --- a normal (non-read-only) command under default config is unchanged ---
-    it "a normal shell command under default config still :asks" do
+    # --- a normal (non-read-only, non-dangerous) command runs under the new
+    #     dangerous_only default (#409) ---
+    it "a normal shell command runs unprompted under the default (dangerous_only)" do
       pol = described_class.new(config: test_configuration("approvals" => { "mode" => "manual" }))
-      expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
+      expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:allow)
     end
 
     # --- DangerousPatterns signal is available but NOT yet decisive ---
