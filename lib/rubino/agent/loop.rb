@@ -81,7 +81,7 @@ module Rubino
       end
 
       # Runs the agent loop, returning the final assistant response content.
-      def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity
+      def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity
         # Stash the resolved toolset so #streaming? can decide, per run, whether
         # this turn might block on a human (clarify/approval). When it might, we
         # run NON-STREAMING so the LLM HTTP request completes and CLOSES before
@@ -155,8 +155,15 @@ module Rubino
 
           unless @budget.can_continue?(iteration)
             @ui.warning("Iteration budget exhausted (#{iteration} turns)")
-            return summarize_on_budget_exhausted(messages, iteration,
-                                                 turn_started_at, token_total)
+            outcome = handle_budget_exhausted(messages, iteration,
+                                              turn_started_at, token_total)
+            # :continue → the user (interactively) granted more budget; the
+            # iteration cap was raised and we re-enter the SAME turn with full
+            # context (no re-summary, no truncation). Anything else is the final
+            # assistant text (force-summary / abort).
+            next if outcome == :continue
+
+            return outcome
           end
 
           @event_bus.emit(Interaction::Events::MODEL_CALL_STARTED, iteration: iteration)
@@ -203,8 +210,15 @@ module Rubino
           # summary the outer-loop cap uses. `iteration` is still 1 for a
           # streaming turn, so pass the round-trip count as the iteration reached.
           if response.halted?
-            return summarize_on_budget_exhausted(messages, @stream_round_trips,
-                                                 turn_started_at, token_total)
+            outcome = handle_budget_exhausted(messages, @stream_round_trips,
+                                              turn_started_at, token_total)
+            # :continue → budget extended; the next ask() picks up the
+            # well-formed post-Halt history (ruby_llm already appended the
+            # trailing tool message) and resumes the in-ask round-trip loop
+            # against the now-larger budget. No tool_bridge change needed.
+            next if outcome == :continue
+
+            return outcome
           end
 
           if response.interrupted?
@@ -380,6 +394,79 @@ module Rubino
         tool.respond_to?(:name) ? tool.name.to_s : tool.to_s
       end
 
+      # Budget exhausted (#399). In INTERACTIVE mode, ask the human what to do
+      # before ending the turn with a force-summary: continue (grant more
+      # budget), summarize now (today's behaviour), or abort. Returns:
+      #   :continue — the cap was raised via IterationBudget#extend!; the caller
+      #               re-enters the SAME turn with FULL context (no re-summary,
+      #               no truncation).
+      #   String    — the final assistant text (force-summary, or the honest
+      #               abort note).
+      #
+      # HEADLESS GUARANTEE: @ui.select returns nil on UI::Null / UI::Base /
+      # no-TTY (see UI::CLI#select's interactive_terminal? gate), and a nil/
+      # unrecognised choice falls straight through to force-summarize — so the
+      # API/headless path is byte-identical to before this change. The prompt is
+      # also skipped entirely when agent.budget_extension_prompt is false.
+      def handle_budget_exhausted(messages, iteration, turn_started_at, token_total)
+        case budget_extension_choice(iteration)
+        when :continue
+          step = @config.agent_budget_extension_step
+          new_cap = @budget.extend!(step)
+          @event_bus.emit(Interaction::Events::BUDGET_EXTENDED,
+                          iteration: iteration, granted: step, new_cap: new_cap)
+          @ui.note("Continuing — granted +#{step} tool iterations") if @ui.respond_to?(:note)
+          :continue
+        when :abort
+          abort_on_budget_exhausted(iteration, turn_started_at, token_total)
+        else
+          # :summarize, nil (headless / cancelled), or prompt disabled → today's
+          # force-summarize, unchanged.
+          force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
+        end
+      end
+
+      # Returns the user's choice at the cap, or nil to fall through to
+      # force-summarize. nil whenever the prompt is disabled by config OR the UI
+      # can't prompt a human (@ui.select → nil on Null/Base/no-TTY) — the latter
+      # is the headless guarantee, requiring zero special-casing here.
+      def budget_extension_choice(iteration)
+        return nil unless @config.agent_budget_extension_prompt?
+
+        step = @config.agent_budget_extension_step
+        @ui.select(
+          "Reached #{iteration} tool iterations",
+          [["Continue (+#{step})", :continue],
+           ["Summarize now", :summarize],
+           ["Abort", :abort]]
+        )
+      end
+
+      # :abort — the user asked to stop here. End the turn honestly with a short
+      # note rather than a force-summary (no extra model call). The ledger note
+      # keeps it truthful about how much ran.
+      def abort_on_budget_exhausted(iteration, turn_started_at, token_total)
+        note = "Stopped at user request after #{iteration} tool iteration" \
+               "#{"s" if iteration != 1} (#{tool_count_label})."
+        persist_user_message_note(note)
+        @ui.stream({ type: :content, text: note, message_id: 0 })
+        @ui.stream_end
+        emit_turn_summary(turn_started_at, token_total)
+        note
+      end
+
+      # Persists a harness-authored final assistant note (the abort message).
+      # A plain assistant row so --resume / audit keep the truthful ending.
+      def persist_user_message_note(note)
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: note
+          )
+        end
+      end
+
       # Budget exhausted: instead of ending the turn with nothing, issue ONE
       # final model call with the tools stripped, nudging the model to summarise
       # what it did and what remains. The summary still runs through the normal
@@ -387,7 +474,7 @@ module Rubino
       # becomes the turn's final assistant content. Because tools are empty AND
       # this is the loop's terminal action, the summary can never re-enter the
       # tool loop. Ports conversation_loop.py:4296 / handle_max_iterations.
-      def summarize_on_budget_exhausted(messages, iteration, turn_started_at, token_total)
+      def force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
         persist_user_message(MAX_ITERATIONS_SUMMARY_NUDGE)
         messages << { role: "user", content: MAX_ITERATIONS_SUMMARY_NUDGE }
 

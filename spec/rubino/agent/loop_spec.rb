@@ -596,6 +596,188 @@ RSpec.describe Rubino::Agent::Loop do
   end
 
   # ---------------------------------------------------------------------------
+  # Interactive budget-extension prompt at the cap (#399)
+  #
+  # At the iteration cap, in INTERACTIVE mode the loop offers continue / summarize
+  # / abort via @ui.select. These specs drive that with a scripted-select UI that
+  # returns a fixed choice, plus the FakeLLMAdapter that always returns a tool
+  # call so the cap is hit deterministically.
+  # ---------------------------------------------------------------------------
+
+  describe "interactive budget-extension at the cap (#399)" do
+    # A UI that scripts @ui.select to a fixed choice (mirrors a human picking a
+    # menu item) but otherwise behaves like UI::Null. Records the select prompt
+    # so we can assert the "Reached N tool iterations" wording.
+    let(:scripted_ui_class) do
+      Class.new(Rubino::UI::Null) do
+        attr_reader :select_prompts, :select_calls
+
+        def initialize(choice)
+          super()
+          @choice = choice
+          @select_prompts = []
+          @select_calls = 0
+        end
+
+        def select(prompt, _choices)
+          @select_prompts << prompt
+          @select_calls += 1
+          @choice
+        end
+      end
+    end
+
+    # A UI that returns a SCRIPTED SEQUENCE of select choices (one per cap hit),
+    # falling back to :summarize once the script is spent so the turn terminates.
+    let(:sequenced_ui_class) do
+      Class.new(Rubino::UI::Null) do
+        attr_reader :select_prompts
+
+        def initialize(choices)
+          super()
+          @choices = choices.dup
+          @select_prompts = []
+        end
+
+        def select(prompt, _choices)
+          @select_prompts << prompt
+          @choices.shift || :summarize
+        end
+      end
+    end
+
+    let(:tight_config) do
+      test_configuration("agent" => {
+                           "max_turns" => 90,
+                           "max_tool_iterations" => 2,
+                           # A generous "+N" so a single extension leaves room for
+                           # the remaining scripted tool calls + the closing text,
+                           # and the turn doesn't re-cap mid-script.
+                           "budget_extension_step" => 10,
+                           "max_turn_seconds" => 120,
+                           "api_max_retries" => 1,
+                           "budget_extension_prompt" => true,
+                           "disabled_toolsets" => [],
+                           "tool_use_enforcement" => "auto"
+                         })
+    end
+
+    let(:looping_tool) do
+      Class.new(Rubino::Tools::Base) do
+        def name        = "loop_tool"
+        def description = "Always triggers another iteration"
+        def input_schema = { type: "object", properties: {}, required: [] }
+        def risk_level  = :low
+        def call(_args) = "looped"
+      end.new
+    end
+
+    before { Rubino::Tools::Registry.register(looping_tool) }
+
+    def build_loop_with(ui:, budget:, config:, llm: fake_llm)
+      described_class.new(
+        session: session, llm_adapter: llm, tool_executor: tool_executor,
+        message_store: message_store, budget: budget, ui: ui,
+        event_bus: event_bus, config: config
+      )
+    end
+
+    # Spec 1: cap → continue resumes the SAME turn — extend! is called, the
+    # transcript is NOT truncated, and exactly one summary closes the turn at
+    # the (now-extended) cap.
+    it "continue: extends the budget and resumes the same turn with full context" do
+      # 2 iterations hit the cap → continue (+10) → the remaining 2 tool
+      # round-trips run on the SAME turn → the model emits its final text. The
+      # generous +10 means the turn never re-caps, so it finishes cleanly with
+      # no force-summary nudge — proving the resume kept full context.
+      ui = sequenced_ui_class.new([:continue])
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      4.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Final summary after the extension.")
+
+      extended = []
+      allow(budget).to receive(:extend!).and_wrap_original do |orig, by|
+        extended << by
+        orig.call(by)
+      end
+
+      loop_instance = build_loop_with(ui: ui, budget: budget, config: tight_config)
+      messages = user_messages
+      result = loop_instance.run(messages: messages, tools: [looping_tool])
+
+      # extend! was invoked exactly once with the configured step — the cap was
+      # raised live rather than the turn being force-summarized.
+      expect(extended).to eq([tight_config.agent_budget_extension_step])
+      # The turn RESUMED and ran to its natural final text (no force-summary
+      # truncation): all FOUR scripted tool round-trips ran post-extension and
+      # the model's own closing text — not a nudge-driven summary — is returned.
+      expect(result).to eq("Final summary after the extension.")
+      tool_results = messages.count { |m| m[:role] == "tool" }
+      expect(tool_results).to eq(4)
+      # Transcript NOT truncated and NOT re-summarized: the extension gave enough
+      # room to finish cleanly, so the force-summarize nudge was never injected.
+      nudges = messages.count { |m| m[:content] == Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE }
+      expect(nudges).to eq(0)
+    end
+
+    # Spec 2: cap → summarize is byte-identical to today's force-summarize — one
+    # toolless model call, the nudge appended as the last user message.
+    it "summarize: behaves exactly like the old force-summarize" do
+      ui = scripted_ui_class.new(:summarize)
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Here's what I accomplished.")
+
+      loop_instance = build_loop_with(ui: ui, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(result).to eq("Here's what I accomplished.")
+      # The closing call carried no tools and the nudge was the last user message.
+      expect(fake_llm.calls.last[:tools]).to eq([])
+      last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      # 2 tool iterations + 1 summary = 3 model calls, exactly like today.
+      expect(fake_llm.call_count).to eq(3)
+    end
+
+    # Spec 3: cap → abort ends honestly with NO extra model call.
+    it "abort: ends with an honest note and makes no further model call" do
+      ui = scripted_ui_class.new(:abort)
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      # A spare text response that must NOT be consumed (no summary call on abort).
+      fake_llm.enqueue_text("must never be reached")
+
+      loop_instance = build_loop_with(ui: ui, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(result).to match(/stopped at user request/i)
+      # Exactly 2 model calls (the 2 tool iterations); NO summary call.
+      expect(fake_llm.call_count).to eq(2)
+      # The select prompt named the iteration reached.
+      expect(ui.select_prompts.first).to match(/Reached \d+ tool iterations/)
+    end
+
+    # Spec 4: headless UI::Null (select → nil) falls straight through to the
+    # force-summarize, byte-identical to before the prompt existed.
+    it "headless (UI::Null select → nil): force-summarize unchanged" do
+      headless_ui = Rubino::UI::Null.new
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Summary on the headless path.")
+
+      loop_instance = build_loop_with(ui: headless_ui, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(result).to eq("Summary on the headless path.")
+      expect(fake_llm.calls.last[:tools]).to eq([])
+      last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(fake_llm.call_count).to eq(3)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Unknown tool
   # ---------------------------------------------------------------------------
 

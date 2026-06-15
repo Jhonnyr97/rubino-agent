@@ -102,8 +102,10 @@ auxiliary:
 ```yaml
 agent:
   max_turns: 90                              # Max turns per session
-  max_tool_iterations: 8                     # Max consecutive tool calls
-  max_turn_seconds: 120                      # Timeout per turn
+  max_tool_iterations: 25                    # Max per-turn model<->tool round-trips (cap)
+  budget_extension_prompt: true              # At the cap, prompt continue/summarize/abort (interactive only)
+  budget_extension_step: null                # "+N" per extension (null = max_tool_iterations)
+  max_turn_seconds: 120                      # Timeout per turn (outer rail; extensions never raise it)
   api_max_retries: 5                         # LLM API retry count (exp backoff)
   api_retry_backoff_cap_seconds: 16          # Max per-retry backoff draw
   api_retry_backoff_overload_cap_seconds: 60 # Higher cap used only for overload (529/503)

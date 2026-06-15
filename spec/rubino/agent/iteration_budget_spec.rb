@@ -71,4 +71,51 @@ RSpec.describe Rubino::Agent::IterationBudget do
       end
     end
   end
+
+  # Spec 6 (#399): #extend! raises the iteration ceiling so can_continue? is true
+  # again at the cap — the "grant more budget, keep the same turn" primitive.
+  describe "#extend!" do
+    it "raises the iteration ceiling so can_continue? passes again at the old cap" do
+      budget = described_class.new(config: config, max_tool_iterations: 3)
+      expect(budget.can_continue?(4)).to be(false)
+
+      budget.extend!(2)
+      # 3 + 2 = 5: the previously-blocked iteration 4 now continues, 6 stops.
+      expect(budget.can_continue?(4)).to be(true)
+      expect(budget.can_continue?(5)).to be(true)
+      expect(budget.can_continue?(6)).to be(false)
+    end
+
+    it "returns the new ceiling" do
+      budget = described_class.new(config: config, max_tool_iterations: 3)
+      expect(budget.extend!(7)).to eq(10)
+    end
+
+    it "ignores a non-positive amount (no-op) and returns the unchanged ceiling" do
+      budget = described_class.new(config: config, max_tool_iterations: 3)
+      [0, -5, nil, ""].each do |bad|
+        expect(budget.extend!(bad)).to eq(3)
+        expect(budget.can_continue?(4)).to be(false)
+      end
+    end
+
+    it "is a no-op on an unbounded (nil) cap" do
+      budget = described_class.new(config: config)
+      budget.instance_variable_set(:@max_tool_iterations, nil)
+      expect(budget.extend!(5)).to be_nil
+      expect(budget.can_continue?(10_000)).to be(true)
+    end
+
+    it "does NOT move the time ceiling, so extensions can't bypass max_turn_seconds" do
+      tight = test_configuration("agent" => {
+                                   "max_turns" => 90, "max_tool_iterations" => 1, "max_turn_seconds" => 120
+                                 })
+      budget = described_class.new(config: tight)
+      # Simulate the wall clock already past the per-turn time ceiling.
+      budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
+      budget.extend!(100)
+      # Iteration room exists now, but the time limit still stops the turn.
+      expect(budget.can_continue?(1)).to be(false)
+    end
+  end
 end
