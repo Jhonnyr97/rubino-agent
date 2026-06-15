@@ -1,9 +1,24 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-06-15
 
 ### Added
 
+- **Prompt-cache breakpoints (`cache_control`).** The conversation now inserts
+  cache breakpoints so the stable prefix (system + tool schemas + prior turns)
+  is reused across round-trips, cutting input-token cost/latency.
+- **Situational tool-schema gating.** Tool definitions sent to the model are
+  scoped to the situation instead of always shipping the full set, reducing
+  prompt size and accidental tool selection.
+- **Primary-agent switching.** Switch the active primary agent inline with
+  `/<name>`, the `/agent` command, or `Tab`; `@` remains reserved for file
+  references.
+- **Detached post-turn polishing.** A post-turn polishing pass runs detached and
+  is cancellable with `Esc`, so it never blocks the next prompt.
+- **Stdin pipe for one-shot.** Piped stdin is consumed as the prompt for
+  one-shot runs (`echo … | rubino prompt`), enabling unix-style composition.
+- **Per-round-trip loop accounting.** Round-trips are counted, usage is summed
+  across them, and `tool_calls` are persisted on the streaming path.
 - **Machine-readable headless output (`--output-format json | stream-json`, #312).**
   `rubino prompt` / `chat -q` can now emit Claude-Code-aligned JSON for
   CI/automation instead of prose. `--output-format json` (or the `--json` alias)
@@ -40,6 +55,28 @@
   An allowlist is a convenience layer, **not** a security boundary (per industry
   practice the OS sandbox is the real floor, tracked separately); this narrows
   it to close the above default-config and bare-`git` RCEs.
+
+### Hardening
+
+Four adversarial QA rounds fixed ~45 issues across the agent. Highlights:
+
+- **Security.** Hardline-floor canonicalization; OOXML zip-bomb total-archive
+  cap; CWE-150 argument sanitization; threat-scanner; tightened
+  command-allowlist (see above).
+- **Correctness.** UTF-8-safe edits; atomic compaction with auto-switch-to-child;
+  resume keeps the full tool history; cwd-scoped sessions; corrupt-DB recovery
+  (incl. `NotADatabaseException`); job-queue compare-and-swap; headless job drain
+  so memory works in automation.
+- **Interrupt.** True cancel — stream cancellation with the partial persisted;
+  clean one-shot `SIGINT`/`SIGTERM` labels.
+- **Performance.** Bounded huge-output memory; spill/paste eviction; streaming
+  grep with consistent ignore rules.
+- **UX.** Config validation; `doctor` checks; resilient timeouts and error
+  classification.
+
+Every fix was container-verified (non-root QA image, real MiniMax for live
+behavior, true 0 failures); a full pre-release functionality sweep confirmed all
+subsystems release-ready.
 
 ## [0.4.1] - 2026-06-13
 
