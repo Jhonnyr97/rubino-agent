@@ -46,9 +46,20 @@ module Rubino
         # the CLI printed a fake "compacted · saved 0 tok" success. Pin every
         # downstream lookup (messages, summaries, lineage) to the resolved id.
         @session_id = session[:id]
+        @session_model = session[:model]
 
         messages = @message_store.for_session(@session_id)
-        return no_op_result if messages.size < minimum_messages
+        return no_op_result(:too_few_messages) if messages.size < minimum_messages
+
+        # Below the token threshold a summary call COSTS more than it saves: the
+        # generated summary (budgeted up to compression.max_summary_tokens) is
+        # routinely larger than the handful of middle messages it replaces, so a
+        # forced compaction on a small session GROWS context instead of shrinking
+        # it (the QA "/compact on a 872-tok session → 2736 tok" bug). Both paths
+        # must clear the SAME gate the auto path uses (TokenBudget#needs_compaction?)
+        # — without it the manual path silently summarized, inflated, AND forked.
+        # Industry norm (Claude Code / Codex): /compact below threshold is a no-op.
+        return no_op_result(:below_threshold) unless needs_compaction?(messages)
 
         # 1. Flush memory before compaction
         flush_memory!
@@ -261,12 +272,29 @@ module Rubino
         @config.compression_protect_first_n + @config.compression_protect_last_n + 5
       end
 
+      # Shared compaction gate (single source of truth for BOTH paths): the
+      # automatic lifecycle check already calls TokenBudget#needs_compaction?
+      # before invoking compact!; routing the manual /compact through the SAME
+      # budget here closes the bypass that let a below-threshold /compact run a
+      # paid summary and grow context.
+      def needs_compaction?(messages)
+        TokenBudget.new(model_id: @session_model, config: @config)
+                   .needs_compaction?(messages.map { |m| { content: content_of(m) } })
+      end
+
+      def content_of(message)
+        message.respond_to?(:content) ? message.content : message[:content]
+      end
+
       # Carry the threshold (#420) so the CLI / in-chat "too few messages" notice
       # can state the concrete bar ("needs >= N messages") instead of a vague
       # "too few", which left the user guessing why a manual compact was a no-op.
-      def no_op_result
+      # +reason+ distinguishes the two no-op gates (:too_few_messages below the
+      # protected-window floor, :below_threshold under the token budget) so the
+      # CLI can phrase each precisely instead of one catch-all message.
+      def no_op_result(reason = :too_few_messages)
         { source_session_id: @session_id, saved_tokens: 0, skipped: true,
-          minimum_messages: minimum_messages }
+          reason: reason, minimum_messages: minimum_messages }
       end
     end
   end

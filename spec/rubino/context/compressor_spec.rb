@@ -51,6 +51,38 @@ RSpec.describe Rubino::Context::Compressor do
     end
   end
 
+  # The below-threshold NO-OP gate (#425): the manual /compact used to bypass
+  # the token-budget gate the auto path enforces, so a small session ran a paid
+  # summary whose inserted text was LARGER than the middle it replaced —
+  # growing context, reporting a false saving, and silently forking the session.
+  describe "#compact! below the token threshold" do
+    let(:db_connection) { test_database }
+    let(:db) { db_connection.db }
+    let(:store) { Rubino::Session::Store.new(db: db) }
+    let(:repo) { Rubino::Session::Repository.new(db: db) }
+    let(:parent) { repo.create(source: "test", model: "m", provider: "p") }
+
+    it "no-ops with reason :below_threshold — no summary call, no child fork" do
+      # 40 messages clears the minimum-messages floor (28), but the transcript is
+      # nowhere near the 64K compaction threshold (default window 128K).
+      40.times { |i| store.create(session_id: parent[:id], role: "user", content: "short #{i}") }
+
+      builder = instance_spy(Rubino::Context::SummaryBuilder)
+      allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(builder)
+      sessions_before = db[:sessions].count
+
+      result = described_class.new(session_id: parent[:id], config: config, db: db).compact!
+
+      expect(result[:skipped]).to be true
+      expect(result[:reason]).to eq(:below_threshold)
+      expect(result[:target_session_id]).to be_nil # no child forked
+      expect(result[:saved_tokens]).to eq(0)
+      expect(builder).not_to have_received(:build) # no paid summary call
+      expect(db[:sessions].count).to eq(sessions_before) # no child session row
+      expect(repo.find(parent[:id])[:status]).not_to eq("compacted")
+    end
+  end
+
   # Regression for the metadata-dropping compaction bug: create_child_session
   # used to copy only role/content/tool_name/tool_call_id, silently dropping
   # metadata[:tool_calls] (and token_count on the head). That orphaned the
@@ -132,6 +164,12 @@ RSpec.describe Rubino::Context::Compressor do
         "compression" => Rubino::Config::Defaults.to_hash["compression"]
                                                  .merge("protect_first_n" => 1, "protect_last_n" => 1)
       )
+      # These specs exercise the post-gate mechanics (lineage / short-id / atomic
+      # rollback) on a few short messages that fall under the 64K compaction
+      # floor, so force the budget gate true — the dedicated specs above cover
+      # the below-threshold NO-OP itself.
+      allow_any_instance_of(Rubino::Context::TokenBudget)
+        .to receive(:needs_compaction?).and_return(true)
 
       prior_id = Rubino::Session::SummaryStore.new(db: db)
                                               .insert(session_id: parent[:id], content: "PRIOR")
@@ -164,6 +202,12 @@ RSpec.describe Rubino::Context::Compressor do
         "compression" => Rubino::Config::Defaults.to_hash["compression"]
                                                  .merge("protect_first_n" => 1, "protect_last_n" => 1)
       )
+      # These specs exercise the post-gate mechanics (lineage / short-id / atomic
+      # rollback) on a few short messages that fall under the 64K compaction
+      # floor, so force the budget gate true — the dedicated specs above cover
+      # the below-threshold NO-OP itself.
+      allow_any_instance_of(Rubino::Context::TokenBudget)
+        .to receive(:needs_compaction?).and_return(true)
       15.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }
 
       allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(
@@ -262,6 +306,12 @@ RSpec.describe Rubino::Context::Compressor do
         "compression" => Rubino::Config::Defaults.to_hash["compression"]
                                                  .merge("protect_first_n" => 1, "protect_last_n" => 1)
       )
+      # These specs exercise the post-gate mechanics (lineage / short-id / atomic
+      # rollback) on a few short messages that fall under the 64K compaction
+      # floor, so force the budget gate true — the dedicated specs above cover
+      # the below-threshold NO-OP itself.
+      allow_any_instance_of(Rubino::Context::TokenBudget)
+        .to receive(:needs_compaction?).and_return(true)
       15.times { |i| store.create(session_id: parent[:id], role: "user", content: "m#{i}") }
 
       allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(
