@@ -825,13 +825,15 @@ RSpec.describe Rubino::Agent::Loop do
                                        })
       budget = Rubino::Agent::IterationBudget.new(config: time_config)
       # Pin the wall clock past max_turn_seconds so within_time_limit? is false
-      # while within_iteration_limit? stays true — i.e. extend! cannot help.
+      # from the very first iteration while within_iteration_limit? stays true —
+      # i.e. extend! cannot help. The loop force-summarizes on iteration 1.
       budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
 
-      fake_llm.enqueue_tool_call("loop_tool", {})
+      # Only the summary text is ever consumed: the time limit blocks BEFORE the
+      # first model call, so no tool round runs. The spare must NOT be reached —
+      # if the prompt looped (extend! no-op → re-exhaust → re-prompt), the loop
+      # would keep calling the model and drain it.
       fake_llm.enqueue_text("Summary after the time limit blew.")
-      # A spare that must NOT be consumed — proof the loop did not re-enter and
-      # re-prompt (which would burn more model calls).
       fake_llm.enqueue_text("must never be reached")
 
       loop_instance = build_loop_with(ui: ui, budget: budget, config: time_config)
@@ -844,9 +846,10 @@ RSpec.describe Rubino::Agent::Loop do
       expect(fake_llm.calls.last[:tools]).to eq([])
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
       expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
-      # …and exactly ONE summary closed the turn (1 tool round that hit the cap +
-      # 1 summary = 2 calls). If the prompt had looped, call_count would balloon.
-      expect(fake_llm.call_count).to eq(2)
+      # …and EXACTLY ONE model call ran — the summary. Time blew before any tool
+      # round, so there is just the one toolless summary. If the prompt had
+      # looped, call_count would balloon.
+      expect(fake_llm.call_count).to eq(1)
     end
 
     # Spec 3: a turn that extends on iteration-exhaustion and THEN blows the time
@@ -875,10 +878,12 @@ RSpec.describe Rubino::Agent::Loop do
         orig.call(by)
       end
 
-      # cap=2 → 2 tool rounds hit the cap → Continue (+1) extends to 3 → one more
-      # tool round, but the clock is now blown so the budget can no longer
-      # continue → time-driven exhaustion → force-summarize.
-      3.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      # cap=2 → 2 tool rounds run, then iteration 3 hits the cap → Continue (+1)
+      # extends AND trips the clock → re-enter the turn → the next iteration's
+      # exhaustion is now TIME-driven (not iteration) → extendable? is false →
+      # force-summarize. So exactly 2 tool calls + 1 summary are consumed; the
+      # spare proves the loop didn't re-prompt and keep calling the model.
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
       fake_llm.enqueue_text("Closed out after the clock ran out.")
       fake_llm.enqueue_text("must never be reached")
 
@@ -891,6 +896,8 @@ RSpec.describe Rubino::Agent::Loop do
       expect(ui.select_calls).to eq(1)
       expect(result).to eq("Closed out after the clock ran out.")
       expect(fake_llm.calls.last[:tools]).to eq([])
+      # 2 tool rounds + 1 summary = 3 calls. A re-prompt loop would keep going.
+      expect(fake_llm.call_count).to eq(3)
     end
   end
 
