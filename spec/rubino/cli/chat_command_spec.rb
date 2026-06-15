@@ -13,7 +13,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # but stubbing keeps the example output clean).
     instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT",
                                            session: { id: "sess-oneshot", model: "fake-model" },
-                                           polishing: nil)
+                                           polishing: nil, end_session!: nil)
   end
 
   before do
