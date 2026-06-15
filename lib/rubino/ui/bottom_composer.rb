@@ -805,12 +805,26 @@ module Rubino
         indent = "#{@rail}#{" " * @prompt_width}"
         texts = rows.map do |row|
           body = row[:chars].join
-          if row[:prompt]
-            "#{@rail}#{@prompt}#{single ? highlight_line(body) : body}"
-          else
-            # Hanging indent (P12): continuations align under the text start.
-            "#{indent}#{body}"
-          end
+          rendered =
+            if row[:prompt]
+              "#{@rail}#{@prompt}#{single ? highlight_line(body) : body}"
+            else
+              # Hanging indent (P12): continuations align under the text start.
+              "#{indent}#{body}"
+            end
+          # Fit each rendered row to one PHYSICAL terminal line (TUI-2): the
+          # wrap math in #layout_input already breaks on display width, but a
+          # wide CJK/emoji glyph at the wrap boundary — or a degenerate narrow
+          # width where the prefix alone is wider than the budget — can still
+          # leave a rendered row at @cols (or past it) display columns. Such a
+          # row arms the terminal's deferred auto-wrap and spills onto a SECOND
+          # physical line that the input-block clear (which walks the LOGICAL
+          # row count from #input_drawn) never erases, so each redraw stacked
+          # another ghost "❯ …" row that only Ctrl+L cleared. Clamping to one
+          # column short of the width keeps logical rows == physical rows so the
+          # clear math stays exact. ASCII never tripped this (every glyph is one
+          # column); wide-char narrow input did.
+          fit_row(rendered)
         end
         [texts, caret_row, caret_col]
       end
@@ -1000,6 +1014,20 @@ module Rubino
       # clamp uses, so the input-block model can never disagree with the renderer.
       def clamp(str, cols) = LiveRegion.clamp(str, cols)
       def display_width(str) = LiveRegion.display_width(str)
+
+      # Fit a rendered INPUT row to one physical terminal line: right-truncate
+      # (whole-glyph, ANSI-safe) to one column short of the width so the row
+      # never arms the terminal's deferred auto-wrap and spills onto a second
+      # physical line the logical-row clear can't reach (TUI-2). One column
+      # short matches LiveRegion#emit_row's rule. A non-positive width degrades
+      # to the raw row (winsize can briefly report 0 cols); the clear path
+      # guards that case separately.
+      def fit_row(str)
+        budget = @cols - 1
+        return str if budget < 1 || display_width(str) <= budget
+
+        LiveRegion.take_first_columns(str, budget)
+      end
 
       # Enter. Captures + clears the buffer, then routes per the interrupt-by-
       # default model:
