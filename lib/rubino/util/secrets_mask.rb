@@ -119,19 +119,18 @@ module Rubino
       # Each keeps the surrounding, non-secret context (scheme/user/host, the
       # flag, the username) so the trace stays useful while the secret is gone.
       def self.mask_glued_credentials(text)
-        text
-          .gsub(URL_USERINFO_RE) do
-            m = Regexp.last_match
-            "#{m[:scheme]}#{m[:user]}:#{MASK}@"
-          end
-          .gsub(U_FLAG_CRED_RE) do
-            m = Regexp.last_match
-            "#{m[:flag]}#{m[:sp]}#{m[:user]}:#{MASK}"
-          end
-          .gsub(MYSQL_PFLAG_RE) do
-            m = Regexp.last_match
-            "#{m[:client]}#{m[:flag]}#{MASK}"
-          end
+        out = text.gsub(URL_USERINFO_RE) do
+          m = Regexp.last_match
+          "#{m[:scheme]}#{m[:user]}:#{MASK}@"
+        end
+        out = out.gsub(U_FLAG_CRED_RE) do
+          m = Regexp.last_match
+          "#{m[:flag]}#{m[:sp]}#{m[:user]}:#{MASK}"
+        end
+        out.gsub(MYSQL_PFLAG_RE) do
+          m = Regexp.last_match
+          "#{m[:client]}#{m[:flag]}#{MASK}"
+        end
       end
 
       # Convenience for Hash arguments: returns a new Hash with sensitive
