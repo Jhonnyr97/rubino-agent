@@ -6,15 +6,6 @@ RSpec.describe Rubino::Agent::Runner do
   let(:db)      { test_database }
   let(:null_ui) { Rubino::UI::Null.new }
 
-  def capture_stderr
-    orig = $stderr
-    $stderr = StringIO.new
-    yield
-    $stderr.string
-  ensure
-    $stderr = orig
-  end
-
   let(:fake_lifecycle) do
     instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE")
   end
@@ -23,6 +14,15 @@ RSpec.describe Rubino::Agent::Runner do
   # session the Lifecycle was built on (a non-compacting turn changes nothing);
   # a test exercising the P3 F1 compaction swap sets this to the child.
   let(:lifecycle_active_session) { {} }
+
+  def capture_stderr
+    orig = $stderr
+    $stderr = StringIO.new
+    yield
+    $stderr.string
+  ensure
+    $stderr = orig
+  end
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
@@ -143,7 +143,7 @@ RSpec.describe Rubino::Agent::Runner do
                                      ui: null_ui, announce_session: false)
         expect(runner.session[:id]).not_to eq(parent[:id]) # it forked
       end
-      expect(out).to match(/is in use by another rubino — forked a copy/)
+      expect(out).to include("is in use by another rubino — forked a copy")
     end
 
     it "claims (does not fork) a session NOT owned by another live process" do
