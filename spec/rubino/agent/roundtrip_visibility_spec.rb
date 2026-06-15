@@ -228,10 +228,11 @@ RSpec.describe Rubino::Agent::Loop do
     # Capture the toolless summary call (the budget-exhausted nudge): the Loop
     # appends MAX_ITERATIONS_SUMMARY_NUDGE as a user message and re-calls the
     # model with NO tools. We assert that summary path runs exactly once by
-    # spying on summarize_on_budget_exhausted.
+    # spying on handle_budget_exhausted (the #399 routing entry point that, on
+    # the headless Null UI here, falls through to the force-summarize body).
     loop_runner = build_loop(adapter, executor, budget)
     summary_calls = 0
-    allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |*|
+    allow(loop_runner).to receive(:handle_budget_exhausted).and_wrap_original do |*|
       summary_calls += 1
       "summary"
     end
@@ -253,6 +254,72 @@ RSpec.describe Rubino::Agent::Loop do
       m.role == "assistant" && m.metadata.is_a?(Hash) && (m.metadata[:tool_calls] || m.metadata["tool_calls"])
     end
     expect(assistant_tooluse.size).to eq(2)
+  end
+
+  # ===========================================================================
+  # Spec 5 (#399) — streaming Halt → continue → a FRESH ask() resumes with the
+  # intact post-Halt history (no tool_bridge change). The user picks "Continue"
+  # at the cap; the loop extends the budget and re-enters, so the next ask()
+  # streams the second round-trip script against the now-larger budget.
+  # ===========================================================================
+  it "streaming Halt → continue resumes with a fresh ask() and intact history" do
+    # ask() #1: one tool round-trip, then RT2 Halts at the cap (max_tool: 1).
+    # ask() #2 (after the +N extension): one tool round-trip, then final text.
+    ask1 = [
+      tool_rt([stage_call("c1", "a")], input: 1, output: 1),
+      tool_rt([stage_call("c2", "b")], input: 1, output: 1)
+    ]
+    ask2 = [
+      tool_rt([stage_call("c3", "c")], input: 1, output: 1),
+      text_rt("resumed and finished", input: 1, output: 1)
+    ]
+    executor = tool_executor
+    budget = Rubino::Agent::IterationBudget.new(config: config, max_tool_iterations: 1)
+
+    # A scripted-select UI that returns :continue at the first cap, :summarize
+    # after (so the turn can terminate even if it caps again).
+    scripted_ui = Class.new(Rubino::UI::Null) do
+      def initialize(choices)
+        super()
+        @choices = choices.dup
+      end
+
+      def select(_prompt, _choices) = @choices.shift || :summarize
+    end.new([:continue])
+
+    # build_chat is invoked once per ask(); hand out the next staged script each
+    # time so the second ask() resumes a fresh round-trip loop (its budget is now
+    # larger thanks to extend!). The real ToolBridge/budget wiring is preserved.
+    scripts = [ask1, ask2]
+    adapter = Rubino::LLM::RubyLLMAdapter.new(model_id: "gpt-4o", config: config,
+                                              ui: scripted_ui, event_bus: event_bus,
+                                              tool_executor: executor)
+    allow(adapter).to receive(:build_chat).and_wrap_original do |_orig, **kw|
+      install_fake_chat(FakeReplayChat.new(scripts.shift || [text_rt("", input: 1, output: 1)]),
+                        executor, kw[:budget_exhausted])
+    end
+
+    loop_runner = described_class.new(
+      session: session, llm_adapter: adapter, tool_executor: executor,
+      message_store: message_store, budget: budget, ui: scripted_ui,
+      event_bus: event_bus, config: config
+    )
+    extended = []
+    allow(budget).to receive(:extend!).and_wrap_original do |orig, by|
+      extended << by
+      orig.call(by)
+    end
+
+    result = loop_runner.run(messages: [{ role: "user", content: "hi" }], tools: [agent_tool])
+
+    # The extension was granted once, then a SECOND ask() ran (build_chat scripts
+    # were both consumed) and produced the final text.
+    expect(extended.size).to eq(1)
+    expect(scripts).to be_empty
+    expect(result).to eq("resumed and finished")
+    # Both ask()s' tools ran across the turn → history stayed well-formed and
+    # the resume was a real continuation, not a restart.
+    expect(loop_runner.instance_variable_get(:@tool_count)).to eq(2)
   end
 
   it "halts when max_turn_seconds elapses mid-loop (clock stub)" do
@@ -282,7 +349,7 @@ RSpec.describe Rubino::Agent::Loop do
     adapter = adapter_with(stages, tool_executor: executor)
     loop_runner = build_loop(adapter, executor, budget)
     summary_calls = 0
-    allow(loop_runner).to receive(:summarize_on_budget_exhausted).and_wrap_original do |*|
+    allow(loop_runner).to receive(:handle_budget_exhausted).and_wrap_original do |*|
       summary_calls += 1
       "timed-summary"
     end

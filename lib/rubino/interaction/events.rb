@@ -31,6 +31,11 @@ module Rubino
       # Context events
       PROMPT_ASSEMBLED = :prompt_assembled
       CONTEXT_BUDGET_CHECKED = :context_budget_checked
+      # The per-turn tool-iteration budget was extended at the cap because the
+      # user chose "Continue (+N)" at the interactive budget-extension prompt
+      # (#399). The turn resumes with full context. Payload:
+      # { iteration:, granted:, new_cap: }.
+      BUDGET_EXTENDED = :budget_extended
 
       # Compression events
       COMPRESSION_STARTED = :compression_started
