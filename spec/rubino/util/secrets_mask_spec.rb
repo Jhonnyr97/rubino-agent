@@ -60,6 +60,44 @@ RSpec.describe Rubino::Util::SecretsMask do
       masked = described_class.mask_inline(input)
       expect(masked).to start_with("set TOKEN=*** && run")
     end
+
+    context "with glued / URL credential forms (#441)" do
+      it "masks the glued mysql/mariadb -p<password> flag" do
+        expect(described_class.mask_inline("mysql -pSUPERsecretPW")).to eq("mysql -p***")
+        expect(described_class.mask_inline("mysqldump -pHunter2 db")).to eq("mysqldump -p*** db")
+        expect(described_class.mask_inline("mariadb -pSEKRET")).to eq("mariadb -p***")
+      end
+
+      it "masks the -u user:pass basic-auth pair, keeping the username" do
+        masked = described_class.mask_inline("curl -u admin:hunter2 https://api")
+        expect(masked).to eq("curl -u admin:*** https://api")
+        expect(masked).not_to include("hunter2")
+      end
+
+      it "masks URL userinfo passwords, keeping scheme/user/host" do
+        expect(described_class.mask_inline("postgresql://user:PW@host/db"))
+          .to eq("postgresql://user:***@host/db")
+        expect(described_class.mask_inline("redis://user:PW@host:6379"))
+          .to eq("redis://user:***@host:6379")
+        expect(described_class.mask_inline("https://tok3n_user:p4ss@github.com/repo"))
+          .to eq("https://tok3n_user:***@github.com/repo")
+      end
+
+      it "preserves an IPv6 host after masking the userinfo password" do
+        expect(described_class.mask_inline("postgres://user:pass@[::1]:5432/db"))
+          .to eq("postgres://user:***@[::1]:5432/db")
+      end
+
+      it "leaves ambiguous non-secret -p/-u forms untouched" do
+        # -p as a PORT for non-DB tools, and a bare -u username (no pass), and a
+        # URL with NO userinfo (host:port only) must all pass through verbatim.
+        expect(described_class.mask_inline("ssh -p 22 host")).to eq("ssh -p 22 host")
+        expect(described_class.mask_inline("docker run -p 8080:80 img")).to eq("docker run -p 8080:80 img")
+        expect(described_class.mask_inline("kubectl get pods -p foo")).to eq("kubectl get pods -p foo")
+        expect(described_class.mask_inline("curl -u admin https://api")).to eq("curl -u admin https://api")
+        expect(described_class.mask_inline("https://host:8080/path?x=1")).to eq("https://host:8080/path?x=1")
+      end
+    end
   end
 
   describe ".mask_hash" do
