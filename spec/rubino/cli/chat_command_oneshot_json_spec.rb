@@ -148,10 +148,13 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
   describe "exit-code contract preserved" do
     let(:config) do
+      # confirm_all (default is now dangerous_only, #409) so the bare shell
+      # command routes to :ask and hits the headless fail-closed floor (#260).
       mem      = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => false)
       skills   = Rubino::Config::Defaults.to_hash["skills"].merge("auto_distill" => false)
       approval = Rubino::Config::Defaults.to_hash["approvals"].merge("mode" => "manual")
-      test_configuration("memory" => mem, "skills" => skills, "approvals" => approval)
+      security = Rubino::Config::Defaults.to_hash["security"].merge("confirm_policy" => "confirm_all")
+      test_configuration("memory" => mem, "skills" => skills, "approvals" => approval, "security" => security)
     end
 
     it "emits is_error + non-zero exit when a tool is fail-closed blocked" do

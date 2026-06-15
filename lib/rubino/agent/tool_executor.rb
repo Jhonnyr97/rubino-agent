@@ -115,6 +115,18 @@ module Rubino
           end
         end
 
+        # Warn-not-block doom-loop guard (#414): when the detector tripped but
+        # hard_stop is off (the default), the call is ALLOWED — surface a
+        # one-time warning so a stuck autopilot is visible without hard-denying a
+        # legitimate repeated/idempotent call.
+        if @approval_policy.respond_to?(:doom_loop_warning) &&
+           @approval_policy.doom_loop_warning && @ui.respond_to?(:warning)
+          @ui.warning(
+            "doom-loop guard: '#{name}' called with identical arguments repeatedly — " \
+            "proceeding (set doom_loop.hard_stop:true to block)"
+          )
+        end
+
         notify_yolo_if_applicable(tool, arguments)
         emit_started(name, arguments)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)

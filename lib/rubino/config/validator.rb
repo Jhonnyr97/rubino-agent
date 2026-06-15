@@ -56,7 +56,7 @@ module Rubino
       def validate!(key_path, keys, value)
         default = leaf_default(keys)
         reject_unknown_key!(key_path, keys) if default == :__absent__
-        check_type!(key_path, value, default) unless default == :__absent__
+        check_type!(key_path, keys, value, default) unless default == :__absent__
         check_range!(key_path, keys, value)
         check_url_format!(key_path, keys, value)
       end
@@ -98,11 +98,24 @@ module Rubino
           EXTRA_TOP_LEVEL_SECTIONS.include?(section)
       end
 
-      def check_type!(key_path, value, default)
-        # A nil default carries no type signal; leave it unconstrained.
+      def check_type!(key_path, keys, value, default)
+        coerced = Writer.coerce_value(value)
+
+        # A leaf with a declared RANGE is numeric by definition, so enforce its
+        # type even when the seeded default is nil (e.g. model.temperature is now
+        # nil to inherit the provider default, #414 — but `temperature banana`
+        # must still be rejected, not silently stored as a string). A nil clears
+        # the key and is allowed.
+        if RANGES.key?(keys.last.to_s)
+          return if coerced.nil? || coerced.is_a?(Numeric)
+
+          raise ConfigurationError,
+                "invalid value for '#{key_path}': expected number, got #{value.inspect}"
+        end
+
+        # Otherwise a nil default carries no type signal; leave it unconstrained.
         return if default.nil?
 
-        coerced  = Writer.coerce_value(value)
         expected = coarse_type(default)
         actual   = coarse_type(coerced)
         return if expected == actual

@@ -18,7 +18,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # drains synchronously when joined.
   describe "draining post-turn jobs before a headless exit (#358)" do
     let(:config) do
-      mem    = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => true)
+      # interval 1 = every turn, so this single-turn DRAIN test always enqueues
+      # the memory job (the throttle itself is covered in lifecycle_spec, #412).
+      mem    = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => true, "auto_extract_interval" => 1)
       skills = Rubino::Config::Defaults.to_hash["skills"].merge("auto_distill" => false)
       jobs   = { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 }
       test_configuration("memory" => mem, "skills" => skills, "jobs" => jobs)

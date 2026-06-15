@@ -280,7 +280,9 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1,
                     "retry_backoff_seconds" => 0 },
-        "memory" => { "enabled" => true, "auto_extract" => true },
+        # interval 1 = every turn, so this DETACHMENT test (not the throttle
+        # test below) always enqueues the memory row regardless of turn number.
+        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 1 },
         "skills" => { "auto_distill" => false }
       )
     end
@@ -329,6 +331,40 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       # the job synchronously exactly as before.
       expect(Rubino::Jobs::Runner).to receive(:new).at_least(:once).and_call_original
       no_worker.send(:enqueue_post_turn_jobs)
+    end
+
+    # #412: memory auto-extract is now THROTTLED to ~every N turns instead of
+    # every turn — a non-boundary turn must NOT enqueue the aux extract.
+    it "does NOT enqueue ExtractMemoryJob on a non-interval turn (#412 throttle)" do
+      throttled = test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
+        "skills" => { "auto_distill" => false }
+      )
+      lc = described_class.new(session: { id: "sess-9", model: "gpt-4o" },
+                               event_bus: event_bus, ui: null_ui, config: throttled,
+                               polishing: polishing)
+      stub_message_count(lc, 1)
+      # current_turn_index reads the persisted message_count; no session row =>
+      # turn 1, and 1 % 10 != 0 => not due.
+      lc.send(:enqueue_post_turn_jobs)
+      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).to be_nil
+    end
+
+    it "DOES enqueue ExtractMemoryJob on an interval-boundary turn (#412)" do
+      throttled = test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
+        "skills" => { "auto_distill" => false }
+      )
+      lc = described_class.new(session: { id: "sess-10", model: "gpt-4o" },
+                               event_bus: event_bus, ui: null_ui, config: throttled,
+                               polishing: polishing)
+      stub_message_count(lc, 1)
+      # Force turn index 10 (message_count 20 => 20/2 = 10, due: 10 % 10 == 0).
+      allow(lc).to receive(:current_turn_index).and_return(10)
+      lc.send(:enqueue_post_turn_jobs)
+      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
     end
   end
 end

@@ -28,9 +28,28 @@ RSpec.describe Rubino::Agent::IterationBudget do
       budget = described_class.new(config: config)
       budget.instance_variable_set(:@max_tool_iterations, nil)
       budget.instance_variable_set(:@max_turn_seconds, nil)
+      # max_turns is the OUTER rail (#414) — nil it too for a truly unbounded
+      # budget, else it would cap the iteration count at the default 90.
+      budget.instance_variable_set(:@max_turns, nil)
 
       expect { budget.can_continue?(10_000) }.not_to raise_error
       expect(budget.can_continue?(10_000)).to be true
+    end
+
+    # #414: max_turns is now wired as a real OUTER rail (was dead config), and
+    # extend! can never lift the count past it.
+    it "enforces max_turns as the outer iteration rail even past extensions" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 5, "max_tool_iterations" => 3, "max_turn_seconds" => 600
+                                                              }))
+      expect(budget.can_continue?(3)).to be(true)
+      budget.extend!(100) # lifts the soft iteration cap, NOT max_turns
+      expect(budget.can_continue?(5)).to be(true)
+      expect(budget.can_continue?(6)).to be(false)
+    end
+
+    it "ships a 600s pure-safety-net max_turn_seconds default (#408)" do
+      expect(Rubino::Config::Defaults.dig("agent", "max_turn_seconds")).to eq(600)
     end
   end
 
@@ -102,6 +121,8 @@ RSpec.describe Rubino::Agent::IterationBudget do
     it "is a no-op on an unbounded (nil) cap" do
       budget = described_class.new(config: config)
       budget.instance_variable_set(:@max_tool_iterations, nil)
+      # Nil the outer max_turns rail too (#414) so the cap is truly unbounded.
+      budget.instance_variable_set(:@max_turns, nil)
       expect(budget.extend!(5)).to be_nil
       expect(budget.can_continue?(10_000)).to be(true)
     end
@@ -156,6 +177,9 @@ RSpec.describe Rubino::Agent::IterationBudget do
     it "is false on an unbounded (nil) iteration cap — nothing to extend" do
       budget = described_class.new(config: tight)
       budget.instance_variable_set(:@max_tool_iterations, nil)
+      # Nil the outer max_turns rail too (#414), else within_iteration_limit?
+      # would still be false at 10_000 and extendable? could read true.
+      budget.instance_variable_set(:@max_turns, nil)
       expect(budget.extendable?(10_000)).to be(false)
     end
 
@@ -165,6 +189,33 @@ RSpec.describe Rubino::Agent::IterationBudget do
       # The same turn keeps running and now exceeds max_turn_seconds.
       budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
       expect(budget.extendable?(3)).to be(false)
+    end
+
+    # #403 (reintroduction guard): extend! lifts only the SOFT ceiling, never the
+    # max_turns OUTER rail. Once a user has extended the soft cap PAST max_turns,
+    # any iteration > max_turns must report extendable? = false so the Loop
+    # force-summarizes — otherwise the rail keeps blocking, extendable? stays
+    # true, and the Continue prompt loops forever (the live infinite-loop bug).
+    it "is false past max_turns even with the soft cap extended above it" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 90, "max_tool_iterations" => 25, "max_turn_seconds" => 600
+                                                              }))
+      # User extends the soft cap well past the max_turns outer rail.
+      budget.extend!(100) # 25 + 100 = 125 soft ceiling, still capped at 90 turns
+      # Iteration 91 is past max_turns: the OUTER rail (not the soft ceiling) is
+      # the blocker, and extend! is impotent against it — so NO re-prompt.
+      expect(budget.extendable?(91)).to be(false)
+      # And the outer rail still hard-stops the runaway.
+      expect(budget.can_continue?(91)).to be(false)
+    end
+
+    it "is true in the normal case: soft cap exhausted but still within max_turns" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 90, "max_tool_iterations" => 25, "max_turn_seconds" => 600
+                                                              }))
+      # Soft cap 25 exhausted at iteration 26, which is well within max_turns 90:
+      # the soft ceiling is the blocker, so extending genuinely helps.
+      expect(budget.extendable?(26)).to be(true)
     end
   end
 end
