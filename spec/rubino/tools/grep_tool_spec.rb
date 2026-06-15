@@ -154,7 +154,9 @@ RSpec.describe Rubino::Tools::GrepTool do
       allow(tool).to receive(:ripgrep_available?).and_return(true)
       allow(IO).to receive(:popen) do |_argv, **_kw, &blk|
         fake = StringIO.new(lines_yielded.join)
-        def fake.close = nil # the impl closes early; keep $? from our shell run
+        # The impl closes the pipe early; no-op the close so our shell run below
+        # (not StringIO#close) is what sets $?.
+        def fake.close = nil
         blk.call(fake)
         # Set `$?` to the requested exit status the way the broken-pipe close
         # would on the affected platform (rg killed mid-scan → exit 1).
