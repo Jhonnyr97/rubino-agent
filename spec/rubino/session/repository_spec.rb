@@ -520,4 +520,39 @@ RSpec.describe Rubino::Session::Repository do
       expect(described_class.derive_title("/mode y")).to be_nil
     end
   end
+
+  # #374 — destroying a session deleted only DB rows, leaving its on-disk
+  # spill (tool-results/<call_id>.txt) and paste (sessions/<id>/paste_N.txt)
+  # files orphaned forever.
+  describe "#destroy! removes spill/paste files (#374)" do
+    let(:home) { Dir.mktmpdir("repo_destroy_files") }
+
+    before { allow(Rubino).to receive(:home_path).and_return(home) }
+    after  { FileUtils.rm_rf(home) }
+
+    it "deletes the session's paste subtree and spill files keyed by its call ids" do
+      db = db_connection.db
+      session = repo.create(source: "cli")
+      db[:tool_calls].insert(id: "callX", session_id: session[:id], tool_name: "shell",
+                             status: "completed", started_at: "t", finished_at: "t")
+
+      paste_dir = File.join(home, "sessions", session[:id])
+      FileUtils.mkdir_p(paste_dir)
+      paste = File.join(paste_dir, "paste_1.txt")
+      File.write(paste, "big paste")
+      spill_dir = File.join(home, "tool-results")
+      FileUtils.mkdir_p(spill_dir)
+      spill = File.join(spill_dir, "callX.txt")
+      File.write(spill, "big output")
+
+      repo.destroy!(session[:id])
+
+      expect(File).not_to exist(paste)
+      expect(File).not_to exist(paste_dir)
+      expect(File).not_to exist(spill)
+      # And the DB rows are gone too (existing behavior intact).
+      expect(repo.find(session[:id])).to be_nil
+      expect(db[:tool_calls].where(session_id: session[:id]).count).to eq(0)
+    end
+  end
 end
