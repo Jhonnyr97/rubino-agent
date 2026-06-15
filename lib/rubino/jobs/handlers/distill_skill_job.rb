@@ -219,9 +219,13 @@ module Rubino
           %("#{text.gsub('"', '\\"')}")
         end
 
+        # The agent HOME skills dir (RUBINO_HOME → else ~/.rubino), the SAME
+        # place Installer writes and the Registry discovers via its
+        # "~/.rubino/skills" entry. A distilled skill must land here, NOT in the
+        # cwd, so a turn run inside a repo never leaks a SKILL.md into that
+        # repo's working tree (SK-1). Mirrors Hermes (HERMES_HOME/skills).
         def skills_write_dir
-          dir = (Rubino.configuration.dig("skills", "paths") || [".rubino/skills"]).first
-          File.expand_path(dir.to_s)
+          File.join(Config::Loader.default_home_path, "skills")
         end
 
         def registry

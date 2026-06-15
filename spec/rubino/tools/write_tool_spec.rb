@@ -112,6 +112,20 @@ RSpec.describe Rubino::Tools::WriteTool do
       FileUtils.rm_rf(File.dirname(outside))
     end
 
+    # SK-2: the #405 skill(create) gate is only a real boundary if the model
+    # can't sidestep it by writing the SKILL.md directly. Authored skills now
+    # live under the agent HOME (outside the cwd workspace), so a plain `write`
+    # to that path is refused — leaving the gated skill(create) helper as the
+    # only way in.
+    it "refuses to write a SKILL.md into the agent HOME skills dir" do
+      home_skill = File.join(
+        Rubino::Config::Loader.default_home_path, "skills", "sneaky", "SKILL.md"
+      )
+      out = tool.call("file_path" => home_skill, "content" => "---\nname: sneaky\n---\n")
+      expect(out).to include("refusing to access")
+      expect(File.exist?(home_skill)).to be false
+    end
+
     it "refuses to write through ../../ traversal" do
       out = tool.call("file_path" => File.join(tmp_dir, "..", "escape.txt"), "content" => "x")
       expect(out).to include("refusing to access")

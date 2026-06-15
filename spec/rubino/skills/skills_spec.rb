@@ -575,19 +575,32 @@ RSpec.describe "Skills (directory layout + disclosure)" do
     # Writes <name>/SKILL.md inline (0 extra LLM calls), validates the
     # frontmatter contract, and rejects bad input.
     describe %(action: "create") do
+      # SK-1: authored skills are written under the agent HOME skills dir
+      # (RUBINO_HOME → ~/.rubino/skills), NOT the cwd-relative skills.paths.
+      # @home stands in for that resolved home; @write_dir is its skills/ dir —
+      # the place create must write and the registry must discover.
       around do |example|
-        Dir.mktmpdir do |dir|
-          @write_dir = dir
+        Dir.mktmpdir do |home|
+          @home = home
+          @write_dir = File.join(home, "skills")
+          FileUtils.mkdir_p(@write_dir)
           Rubino::Metrics.reset!
           example.run
           Rubino::Metrics.reset!
         end
       end
 
-      let(:config) { test_configuration("skills" => { "paths" => [@write_dir] }) }
+      # skills.paths deliberately points somewhere ELSE (the legacy cwd-relative
+      # default) to prove create ignores it and uses the home dir instead.
+      let(:config) do
+        test_configuration("skills" => { "paths" => ["~/.rubino/skills"] })
+      end
       let(:registry) { Rubino::Skills::Registry.new(config: config) }
 
-      before { allow(Rubino).to receive(:configuration).and_return(config) }
+      before do
+        allow(Rubino).to receive(:configuration).and_return(config)
+        allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
+      end
 
       it "exposes action/description/body in the input schema with the load/create enum" do
         props = tool.input_schema[:properties]
@@ -616,6 +629,26 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         # The newly created skill is immediately discoverable (re-scan).
         expect(registry.find("gem-patch-release")).not_to be_nil
         expect(Rubino::Metrics.render).to match(/^skills_created_total(\{\})? 1$/)
+      end
+
+      # SK-1: with cwd inside a repo, a created skill must NOT land in the
+      # project tree — it goes to the agent HOME skills dir. Regression for the
+      # leak where skills_write_dir was the cwd-relative .rubino/skills.
+      it "writes under the agent HOME, not the cwd, even when cwd is a repo" do
+        Dir.mktmpdir do |repo|
+          Dir.chdir(repo) do
+            tool.call(
+              "action" => "create", "name" => "repo-leak-check",
+              "description" => "must not leak into the repo cwd", "body" => "# body\n"
+            )
+          end
+          # Nothing was written into the cwd repo tree...
+          expect(Dir.glob(File.join(repo, "**", "SKILL.md"))).to be_empty
+          expect(File).not_to exist(File.join(repo, ".rubino"))
+        end
+        # ...it landed in the agent HOME skills dir.
+        expect(File).to exist(File.join(@write_dir, "repo-leak-check", "SKILL.md"))
+        expect(registry.find("repo-leak-check")).not_to be_nil
       end
 
       it "quotes the description so a colon can't break the YAML frontmatter" do
