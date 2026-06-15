@@ -1,6 +1,90 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Database::Connection do
+  # Concurrent first-boot: a losing racer that connects while another process
+  # holds a write lock mid-migration must WAIT the lock out (busy handler +
+  # bounded retry around the WAL-pragma write), never surface a raw
+  # `SQLite3::BusyException: database is locked` backtrace (#333/#359), and —
+  # if the lock outlives the retry budget — raise a CLEAN domain BusyError, not
+  # the raw driver exception. flock-based migration serialization (#440) keeps
+  # the DB consistent; this is purely the no-backtrace-escapes contract.
+  describe "concurrent-boot write-lock resilience (#333/#359)" do
+    # Hold a write lock (BEGIN IMMEDIATE) on +path+ in a fork for +hold+ seconds,
+    # signalling the parent (via a pipe) the instant the lock is taken so the
+    # window is deterministic, not timing-dependent.
+    def with_held_write_lock(path, hold:, level: "IMMEDIATE")
+      rd, wr = IO.pipe
+      pid = fork do
+        rd.close
+        holder = Sequel.sqlite(path, timeout: 10_000)
+        holder.run("BEGIN #{level}")
+        holder.run("INSERT INTO t VALUES (1)")
+        wr.puts("locked")
+        wr.close
+        sleep(hold)
+        holder.run("COMMIT")
+        exit!(0)
+      end
+      wr.close
+      rd.gets # block until the child actually holds the lock
+      rd.close
+      yield
+    ensure
+      Process.wait(pid) if pid
+    end
+
+    # Seed a real on-disk DELETE-journal DB and yield its path. connect!'s
+    # `PRAGMA journal_mode=WAL` is then a real write that contends with a held
+    # lock — the exact race the fix must absorb.
+    def with_seeded_db
+      skip "fork unavailable on this platform" unless Process.respond_to?(:fork)
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        # Seed as a PLAIN delete-journal DB (NOT via described_class, which would
+        # already flip it to WAL) so connect!'s `PRAGMA journal_mode=WAL` is a
+        # genuine write that contends with a held lock — the real race.
+        seed = Sequel.sqlite(path)
+        seed.run("CREATE TABLE t (a integer)")
+        seed.disconnect
+        yield path
+      end
+    end
+
+    it "waits out a transient lock during connect instead of leaking a backtrace" do
+      with_seeded_db do |path|
+        with_held_write_lock(path, hold: 0.4) do
+          conn = described_class.new(path)
+          # connect! runs `PRAGMA journal_mode=WAL` (a write) under
+          # with_busy_retry; without it this raises SQLite3::BusyException
+          # INSTANTLY.
+          expect { conn.db.fetch("SELECT 1").first }.not_to raise_error
+        ensure
+          conn&.close
+        end
+      end
+    end
+
+    it "raises a clean BusyError (never a raw SQLite3 backtrace) when the lock outlives the retry budget" do
+      stub_const("#{described_class}::CONNECT_RETRY_BUDGET", 0.2)
+      stub_const("#{described_class}::BUSY_TIMEOUT_MS", 50)
+      with_seeded_db do |path|
+        with_held_write_lock(path, hold: 1.0, level: "EXCLUSIVE") do
+          conn = described_class.new(path)
+          expect { conn.db }.to raise_error(Rubino::Database::BusyError, /locked by another rubino process/)
+        ensure
+          conn&.close
+        end
+      end
+    end
+
+    it "classifies a lock error as busy (not corruption)" do
+      conn = described_class.new(":memory:")
+      busy = Sequel::DatabaseError.new("SQLite3::BusyException: database is locked")
+      expect(conn.send(:busy_lock_error?, busy)).to be true
+      expect(conn.corruption_error?(busy)).to be false
+    end
+  end
+
   describe "in-memory connection" do
     let(:connection) { described_class.new(":memory:") }
 
