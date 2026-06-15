@@ -4,14 +4,20 @@ module Rubino
   module Security
     # Hardline (unconditional) blocklist — a floor BELOW yolo.
     #
-    # SCOPE: this is a best-effort anti-ACCIDENT guard, NOT an anti-adversary
-    # boundary. It stops the agent (or a careless user) from fat-fingering an
-    # unrecoverable command via --yolo; it is NOT a sandbox and a determined
+    # SCOPE: this is a best-effort anti-INCIDENT circuit-breaker, NOT an anti-
+    # adversary boundary. It stops the agent (or a careless user) from running an
+    # unrecoverable command via --yolo, INCLUDING the accidental/model-emitted
+    # indirection forms that pad real commands — `echo $(rm -rf /)`, a backticked
+    # `rm -rf /`, a `{ rm -rf /; }` brace-group. It is NOT a sandbox: a determined
     # adversary with shell access can always evade a regex floor (base64, here-
-    # docs, indirection, a written-then-run script). The real containment
-    # boundary is the deferred OS-level sandbox (#290). Within that scope we
-    # still canonicalize aggressively so trivial-but-common evasions (quoting,
-    # trailing slashes, path-equivalents, ${HOME}) don't defeat the floor (#325).
+    # docs, an env-var/here-string built at runtime, a written-then-run script).
+    # The real containment boundary is the deferred OS-level sandbox (#290).
+    # Within that anti-incident scope we canonicalize aggressively — collapsing
+    # trivial evasions (quoting, trailing slashes, path-equivalents, ${HOME}) AND
+    # UNWRAPPING command substitution / backticks / brace-and-subshell groups so
+    # the floor patterns match the INNER command — rather than widening the
+    # blocklist patterns to chase each wrapper (whack-a-mole on a best-effort
+    # string blocklist buys little; the boundary is #290, not the regex) (#325).
     #
     # Commands so catastrophic they must NEVER run via the agent, regardless
     # of --yolo, skip-approvals mode, a permissions:allow rule, or a
@@ -79,11 +85,13 @@ module Rubino
       #
       # We match the patterns against TWO forms and OR the results: the raw
       # whitespace/case-normalized string, and a canonicalized form that strips
-      # quoting, expands $HOME and collapses path-equivalents (see #canonicalize).
+      # quoting, expands $HOME, collapses path-equivalents, and UNWRAPS command
+      # substitution / backticks / brace-and-subshell groups (see #canonicalize).
       # Canonicalization closes the trivial bypasses (rm -rf '/', /usr/, ${HOME},
-      # //, /./); matching the raw form too is fail-open insurance for the rare
-      # case where canonicalization rewrites a separator/redirect out of a match
-      # (an anti-accident guard should never become LESS strict than before).
+      # //, /./) and the indirection bypasses ($(rm -rf /), `rm -rf /`,
+      # { rm -rf /; }); matching the raw form too is fail-open insurance for the
+      # rare case where canonicalization rewrites a separator/redirect out of a
+      # match (an anti-incident guard should never become LESS strict than before).
       def detect(command)
         normalized = normalize(command)
         canonical = canonicalize(normalized)
@@ -154,11 +162,48 @@ module Rubino
         require "shellwords"
         require "pathname"
         normalized = expand_word_splits(normalized)
+        normalized = unwrap_substitutions(normalized)
         tokens = shell_split(normalized)
         return normalized if tokens.nil? # unbalanced quotes: fail open to raw
 
         cleaned = tokens.map { |tok| clean_token(tok) }
         "#{cleaned.join(" ")} "
+      end
+
+      # Unwrap command-substitution / backtick / brace-and-subshell indirection so
+      # the floor patterns see the INNER command at command position (#325 gap).
+      # A model or a careless user can pad a catastrophic command with a wrapper
+      # the rm/dd/mkfs patterns don't anchor on — `$(rm -rf /)`, `` `rm -rf /` ``,
+      # `{ rm -rf /; }`, `echo $(rm -rf /*)`. The wrapper merely RUNS the inner
+      # text, so unwrapping it to bare text is faithful to what the shell executes.
+      #
+      # We turn each wrapper delimiter into a space, which promotes the inner
+      # command to the top level of the canonical string. Crucially we DO NOT
+      # touch `${...}` PARAMETER expansion (handled by #expand_word_splits /
+      # #clean_token) — only the `$(` COMMAND-substitution opener — so `${HOME}`
+      # and `${IFS}` keep their meaning. Applied repeatedly (capped) so nested
+      # `$(echo $(rm -rf /))` flattens too. Fail-open: a runaway input just stops
+      # after the cap and matching proceeds on whatever it reached.
+      def unwrap_substitutions(text)
+        5.times do
+          before = text
+          # $(  ... )  command substitution. `$(` opener (NOT `${`), and bare
+          # `)`/`(` subshell parens -> spaces. The negative lookbehind keeps
+          # `${...}` intact while still splitting `$(`.
+          text = text.gsub("$(", " ").gsub(/(?<!\$)[()]/, " ")
+          # backtick command substitution -> spaces (open and close).
+          text = text.gsub("`", " ")
+          # `{ ... ; }` brace group: a brace GROUP delimiter is a `{` followed by
+          # whitespace and a closing `}` at word boundary, plus the command-
+          # terminating `;` — all separators, not part of the command. Map them to
+          # spaces so the inner `rm -rf /` lands at command position. We DELIBERATELY
+          # do NOT touch a `{`/`}` that is part of `${...}` parameter expansion
+          # (no surrounding space) so `${HOME}`/`${IFS}` keep their meaning.
+          text = text.gsub(/(?<=\s|\A){\s/, "  ").gsub(/(?<=\s)}/, " ")
+          text = text.gsub(";", " ")
+          break if text == before
+        end
+        text
       end
 
       # #348 follow-ups, applied BEFORE shell-splitting so the substituted text is
