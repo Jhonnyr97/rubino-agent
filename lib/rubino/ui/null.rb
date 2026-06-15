@@ -127,6 +127,14 @@ module Rubino
       def tool_blocked(message)
         @approval_blocked = true
         @messages << { level: :tool_blocked, message: message }
+        # F1-subagents: a `task` subagent runs on its OWN fresh Null adapter, so a
+        # block latched here is invisible to the PARENT Null the one-shot CLI
+        # inspects for the exit code. While a headless run is active, also record
+        # the block in the process-global latch the one-shot exit check consults,
+        # so a subagent-blocked headless run exits non-zero with the notice on
+        # stderr instead of false-success. Off the headless path (interactive
+        # subagents, API) this is a no-op — those surface the block their own way.
+        Rubino::Output::HeadlessBlockLatch.record(message) if Rubino.headless?
       end
 
       def approval_blocked?

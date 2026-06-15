@@ -116,4 +116,19 @@ RSpec.describe Rubino::Output::ResultSerializer do
                                              content: "file contents")
     end
   end
+
+  # STRUCT-F1: a budget-truncated run (loop hit --max-turns → forced summary,
+  # stop_reason :max_iterations) is NOT a success. The CLI uses this predicate to
+  # emit an error envelope + non-zero exit instead of subtype:"success"/exit-0.
+  describe ".budget_exhausted?" do
+    it "is true for the max-iterations stop reason" do
+      expect(described_class.budget_exhausted?(:max_iterations)).to be(true)
+    end
+
+    it "is false for a normal completion or unknown reason" do
+      expect(described_class.budget_exhausted?(:stop)).to be(false)
+      expect(described_class.budget_exhausted?(:end_turn)).to be(false)
+      expect(described_class.budget_exhausted?(nil)).to be(false)
+    end
+  end
 end
