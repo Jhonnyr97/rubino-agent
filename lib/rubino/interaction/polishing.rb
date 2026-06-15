@@ -81,6 +81,17 @@ module Rubino
         thread = @mutex.synchronize { @thread }
         thread&.join(timeout)
         nil
+      rescue Exception # rubocop:disable Lint/RescueException
+        # A stray Ctrl+C (Interrupt/SignalException) landing WHILE this join runs
+        # used to escape end_session!'s `ensure` as a raw backtrace — the
+        # surrounding `rescue StandardError` does not catch a SignalException, so
+        # a teardown-time interrupt dumped polishing.rb→runner.rb→chat_command.rb
+        # over a clean exit (TUI-1). Thread#join is the only interrupt-prone call
+        # on the teardown path; swallowing the signal here keeps the join
+        # bounded-and-best-effort (the polishing worker is detached and its
+        # partial work re-feeds next session anyway), so a teardown Ctrl+C exits
+        # cleanly via "Session ended." like Claude Code / Codex.
+        nil
       end
 
       private
