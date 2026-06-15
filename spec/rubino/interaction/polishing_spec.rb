@@ -111,6 +111,39 @@ RSpec.describe Rubino::Interaction::Polishing do
     end
   end
 
+  # TUI-1: a stray Ctrl+C (Interrupt/SignalException) landing while #wait's
+  # Thread#join runs used to ESCAPE end_session!'s `ensure` as a raw backtrace —
+  # the surrounding `rescue StandardError` does not catch a SignalException. #wait
+  # must swallow it so a teardown-time interrupt exits cleanly.
+  describe "#wait interrupt-safety (TUI-1)" do
+    let(:handler_class) { Class.new { define_method(:perform) { |_payload| sleep(0.2) } } }
+
+    it "swallows an Interrupt raised during the join instead of propagating it" do
+      queue.enqueue("PolishTestJob", {}, drain_inline: false)
+      polishing.start(ui: ui, event_bus: bus)
+
+      thread = polishing.instance_variable_get(:@thread)
+      # Simulate the Ctrl+C arriving exactly inside the join the teardown runs.
+      allow(thread).to receive(:join).and_raise(Interrupt)
+
+      expect { polishing.wait(3) }.not_to raise_error
+
+      thread.join(5) # let the real worker settle so we don't leak it
+    end
+
+    it "swallows a SignalException raised during the join" do
+      queue.enqueue("PolishTestJob", {}, drain_inline: false)
+      polishing.start(ui: ui, event_bus: bus)
+
+      thread = polishing.instance_variable_get(:@thread)
+      allow(thread).to receive(:join).and_raise(SignalException, "SIGINT")
+
+      expect { polishing.wait(3) }.not_to raise_error
+
+      thread.join(5)
+    end
+  end
+
   describe "#cancel! (Esc) keeping partial work" do
     let(:perform_log) { [] }
     let(:handler_class) { Class.new } # replaced per-example below
