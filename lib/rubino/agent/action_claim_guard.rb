@@ -409,7 +409,7 @@ module Rubino
         'was\s+not\s+able\s+to|were\s+not\s+able\s+to|not)\b' \
         '[^.!?\n]{0,40}?' \
         '\b(?:read|run|ran|execute[d]?|use[d]?|call(?:ed)?|invoke[d]?|grep(?:ped)?|' \
-        'search(?:ed)?|made|make|edit(?:ed)?|written|wrote|create[d]?|change[d]?|' \
+        "search(?:ed)?|made|make|edit(?:ed)?|written|wrote|create[d]?|change[d]?|" \
         'modif(?:y|ied)|touch(?:ed)?|appl(?:y|ied)|do|done|perform(?:ed)?|take|taken|took)\b' \
         '|\b(?:made|make|did|do|ran|run|read|wrote|written|applied|performed|took|taken)\b' \
         '\s+(?:any\s+)?\bno\b\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|' \

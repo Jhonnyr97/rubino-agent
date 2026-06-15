@@ -438,7 +438,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       out = reconcile("I did nothing at all.", tool_count: 1, edit_count: 1)
       expect(out).to match(/1 tool call actually ran/i)
       expect(out).to match(/1 edit\b/)
-      expect(out).not_to match(/1 edits/)
+      expect(out).not_to include("1 edits")
     end
 
     # --- it must NOT fire (preserve existing behaviour) ----------------------
