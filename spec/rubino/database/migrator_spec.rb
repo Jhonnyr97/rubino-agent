@@ -105,6 +105,61 @@ RSpec.describe Rubino::Database::Migrator do
         conn.close
       end
     end
+
+    # Regression (PR #440 repair! floored to min): the REAL race corruption on a
+    # POPULATED DB is a spurious version-0 row sitting ALONGSIDE the real, latest
+    # version row. Flooring to `min` (= 0) tells the migrator the DB is empty and
+    # re-runs 001_create_initial_schema OVER the existing tables → a raw
+    # `Sequel::DatabaseError: table "sessions" already exists`, exit 1, DB wedged
+    # at v0, user data unreachable. repair! must dedupe to the ACTUAL applied
+    # version (MAX), leaving every user table and its rows intact, and NOT reset.
+    it "repairs a populated DB to the LATEST applied version (not min/0) with data intact" do
+      Dir.mktmpdir("migrator-repair-populated") do |home|
+        db_path = File.join(home, "rubino.sqlite3")
+        conn = Rubino::Database::Connection.new(db_path)
+        mig = described_class.new(conn)
+
+        # 1. Build a fully-migrated, POPULATED database.
+        mig.migrate!
+        now = Time.now.utc.iso8601
+        conn.db[:sessions].insert(
+          id: "s-keepme", source: "cli", status: "active",
+          message_count: 0, token_count: 0, created_at: now, updated_at: now
+        )
+        conn.db[:jobs].insert(
+          id: "j-keepme", type: "demo", status: "queued", priority: 100,
+          payload_json: "{}", attempts: 0, max_attempts: 3,
+          run_at: now, created_at: now, updated_at: now
+        )
+
+        # 2. INJECT the race artifact: a duplicate version-0 row ALONGSIDE the
+        #    real latest-version row (what a concurrent IntegerMigrator insert
+        #    produces against an already-migrated table).
+        conn.db[:schema_info].insert(version: 0)
+        expect(conn.db[:schema_info].select_map(:version).sort)
+          .to eq([0, described_class.latest_version])
+        expect(mig.duplicate_version_rows?).to be(true)
+
+        # 3. Repair must NOT raise and must NOT reset to 0.
+        expect { mig.repair!(lock_path: File.join(home, ".migrate.lock")) }
+          .not_to raise_error
+
+        # AFTER: single schema_info row at the CORRECT (latest) version, no reset.
+        expect(conn.db[:schema_info].select_map(:version)).to eq([described_class.latest_version])
+        expect(mig.duplicate_version_rows?).to be(false)
+        expect(mig.up_to_date?).to be(true)
+
+        # User tables AND their data intact — nothing was dropped/re-created.
+        expect(conn.db[:sessions].where(id: "s-keepme").count).to eq(1)
+        expect(conn.db[:jobs].where(id: "j-keepme").count).to eq(1)
+
+        # Re-running repair/migrate is a clean no-op.
+        expect { mig.repair!(lock_path: File.join(home, ".migrate.lock")) }.not_to raise_error
+        expect(conn.db[:schema_info].select_map(:version)).to eq([described_class.latest_version])
+        expect(conn.db[:sessions].where(id: "s-keepme").count).to eq(1)
+        conn.close
+      end
+    end
   end
 
   # Reproduce the race artifact deterministically: a schema_info table with TWO
