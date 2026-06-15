@@ -127,7 +127,14 @@ module Rubino
                  "Valid subagents: #{available_subagent_names.join(", ")}."
         end
 
-        if background
+        # Force FOREGROUND in headless one-shot (#380): a `rubino prompt`/-q run
+        # has no IdleCardHost to fold a background child's result back in, and the
+        # process exits the instant the parent's answer is ready — so a background
+        # subagent's result would be silently dropped (its notice sink is nil and
+        # its thread is killed on exit). Running synchronously returns the child's
+        # final text as THIS tool's result, so it lands in the parent transcript
+        # and is factored into the one-shot answer, making `task` reliable headless.
+        if background && !Rubino.headless?
           run_background(definition, prompt)
         else
           run_subagent(definition, prompt)
