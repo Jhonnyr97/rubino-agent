@@ -32,6 +32,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
     allow(runner).to receive(:cancel!)
     allow(runner).to receive(:session).and_return({ id: "s1", model: "fake-model" })
+    # The headless one-shot now ends its session on completion (ONESHOT-ACTIVE);
+    # this spec's run! stub returns normally, so execute reaches end_session!.
+    # Stub it on the double so the post-run lifecycle doesn't raise here.
+    allow(runner).to receive(:end_session!)
 
     captured = {}
     allow(runner).to receive(:run!) do
