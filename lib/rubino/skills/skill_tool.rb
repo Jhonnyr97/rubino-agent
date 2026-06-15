@@ -160,10 +160,17 @@ module Rubino
       # Registry discovers via its "~/.rubino/skills" entry. Authored skills go
       # to the user's home (RUBINO_HOME → else ~/.rubino), never the cwd, so a
       # skill created/distilled while cd'd into a repo can't leak into that
-      # repo's working tree (SK-1). This also closes SK-2: the home dir is
-      # outside the workspace sandbox, so a plain `write` to a SKILL.md there is
-      # refused, leaving the #405-gated skill(create) helper as the only path
-      # in. Mirrors Hermes, which writes new skills under HERMES_HOME/skills.
+      # repo's working tree (SK-1). This also addresses SK-2 UNDER THE DEFAULT
+      # config: the home dir lives outside the workspace, so the workspace
+      # sandbox (`tools.workspace_strict`, default true) is the boundary that
+      # blocks a plain `write`/`edit` to a SKILL.md there, leaving the #405-gated
+      # skill(create) helper as the path in. This is SANDBOX-gated, NOT a
+      # credential-floor guarantee: the always-on #413 write-floor covers only
+      # credentials (.env/.sqlite3/oauth/.key/.pem), not skills (which aren't
+      # credentials — keep them out of the floor). Disabling the sandbox
+      # (workspace_strict=false) is an operator choice that removes this gate,
+      # so a plain write CAN then overwrite a home SKILL.md.
+      # Mirrors Hermes, which writes new skills under HERMES_HOME/skills.
       def skills_write_dir
         File.join(Config::Loader.default_home_path, "skills")
       end
