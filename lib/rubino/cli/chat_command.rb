@@ -203,7 +203,9 @@ module Rubino
         text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
 
         headless_ui = UI::Null.new
-        runner = build_runner(session_id: session_resolver.resolve_session_id, ui: headless_ui)
+        requested_session_id = session_resolver.resolve_session_id
+        runner = build_runner(session_id: requested_session_id, ui: headless_ui)
+        warn_if_resume_forked(requested_session_id, runner)
 
         # Capture skills distilled during this turn (#369b). SKILL_CREATED is
         # emitted by an inline skill(create) call AND by the post-turn distill
@@ -347,8 +349,10 @@ module Rubino
 
         text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
         headless_ui = UI::Null.new
-        runner = build_runner(session_id: session_resolver.resolve_session_id,
+        requested_session_id = session_resolver.resolve_session_id
+        runner = build_runner(session_id: requested_session_id,
                               ui: headless_ui, announce_session: false)
+        warn_if_resume_forked(requested_session_id, runner)
 
         recorder = Output::TurnRecorder.new.attach!
         store    = ::Rubino::Session::Store.new
@@ -2195,6 +2199,25 @@ module Rubino
 
         warn "rubino: warning: model '#{id}' is not in the known model catalog " \
              "(accepted unverified; a typo here will hit the provider as-is)."
+      end
+
+      # A headless `--resume <id>` that LOSES the concurrent-claim race is
+      # silently re-routed to a FORK (the Runner copies history into a fresh
+      # session so two writers never interleave). The Runner's status line for
+      # that fork is gated on @announce_session — OFF headless — so a pipeline
+      # had no way to tell its resume wrote to a DIFFERENT session than it asked
+      # for (#420). Detect the re-route here (a forked child carries
+      # parent_session_id and a new id) and emit a one-line STDERR notice — off
+      # the clean stdout answer, mirroring the other headless diagnostics.
+      def warn_if_resume_forked(requested_session_id, runner)
+        return if requested_session_id.nil?
+
+        session = runner.session
+        return unless session && session[:parent_session_id]
+        return if session[:id] == requested_session_id
+
+        warn "rubino: session #{requested_session_id.to_s[0, 8]} is in use by another " \
+             "rubino — resumed a forked copy: #{session[:id].to_s[0, 8]}"
       end
 
       # True when the model id resolves in ruby_llm's registry. A fake/* id (the

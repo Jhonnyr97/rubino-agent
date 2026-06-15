@@ -230,9 +230,7 @@ module Rubino
 
         def delete(id)
           row = resolve_row(id)
-          return false unless row
-
-          @db[TABLE].where(id: row[:id]).delete.positive?
+          row ? @db[TABLE].where(id: row[:id]).delete.positive? : false
         end
 
         # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
@@ -244,9 +242,7 @@ module Rubino
         def resolve_row(id)
           key = id.to_s
           return nil if key.strip.empty?
-
-          exact = @db[TABLE].where(id: key).first
-          return exact if exact
+          return @db[TABLE].where(id: key).first if @db[TABLE].where(id: key).get(:id)
 
           matches = @db[TABLE].where(Sequel.like(:id, "#{key}%")).limit(2).all
           matches.size == 1 ? matches.first : nil
