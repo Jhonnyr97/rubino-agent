@@ -1200,7 +1200,13 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     # the toolUse was persisted without its tool_calls array. Loop now
     # stashes them under metadata; load_history reconstructs RubyLLM::ToolCall
     # objects so the assistant block contains the toolUse block on resume.
-    it "rebuilds tool_calls on assistant messages so the toolUse block is intact" do
+    #
+    # #370: the reconstructed tool_calls MUST be a Hash keyed by tool_call id
+    # ({ id => RubyLLM::ToolCall }) — the shape every ruby_llm provider produces
+    # and the shape its Anthropic formatter consumes via `tool_calls.each_value`.
+    # An Array (the #367 regression) raised `undefined method 'each_value' for
+    # Array` on the next completion after a resume.
+    it "rebuilds tool_calls as a Hash keyed by id so the toolUse block is intact" do
       messages = [
         { role: "user", content: "list files" },
         {
@@ -1214,10 +1220,66 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
       adapter.send(:load_history, chat, messages)
       assistant = chat.messages.find { |m| m.role == :assistant }
-      expect(assistant.tool_calls).to be_an(Array)
-      expect(assistant.tool_calls.first).to be_a(RubyLLM::ToolCall)
-      expect(assistant.tool_calls.first.id).to eq("call_1")
-      expect(assistant.tool_calls.first.name).to eq("shell")
+      expect(assistant.tool_calls).to be_a(Hash)
+      expect(assistant.tool_calls.keys).to eq(["call_1"])
+      call = assistant.tool_calls["call_1"]
+      expect(call).to be_a(RubyLLM::ToolCall)
+      expect(call.id).to eq("call_1")
+      expect(call.name).to eq("shell")
+      # The exact shape the formatter walks (anthropic/chat.rb:176).
+      expect { assistant.tool_calls.each_value { |_| } }.not_to raise_error
+    end
+
+    # #370 part B: an assistant row with EMPTY text but live tool_calls (the
+    # model called a tool with no narration) must NOT be skipped — dropping it
+    # orphans the following tool result (tool_call_id with no matching tool_use)
+    # → provider 400 on the next completion.
+    it "keeps an empty-content assistant row that carries tool_calls (pair survives)" do
+      messages = [
+        { role: "user", content: "list files" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "call_9", name: "shell", arguments: { command: "ls" } }]
+        },
+        { role: "tool", content: "a.rb", tool_call_id: "call_9" },
+        { role: "user", content: "thanks" }
+      ]
+
+      adapter.send(:load_history, chat, messages)
+      assistant = chat.messages.find { |m| m.role == :assistant }
+      tool_msg  = chat.messages.find { |m| m.role == :tool }
+      expect(assistant).not_to be_nil # not dropped despite empty content
+      expect(assistant.tool_calls).to be_a(Hash)
+      expect(assistant.tool_calls.key?("call_9")).to be true
+      # The tool result is not orphaned: its id matches the assistant's toolUse.
+      expect(tool_msg.tool_call_id).to eq("call_9")
+    end
+
+    # #370: PARALLEL tool calls (multiple toolUse blocks in one assistant
+    # message) all survive the rehydration, each keyed by its own id.
+    it "rebuilds parallel tool_calls into a Hash with every id" do
+      messages = [
+        { role: "user", content: "do two things" },
+        {
+          role: "assistant",
+          content: "running both",
+          tool_calls: [
+            { id: "call_a", name: "shell",     arguments: { command: "ls" } },
+            { id: "call_b", name: "read_file", arguments: { path: "x" } }
+          ]
+        },
+        { role: "tool", content: "ok",  tool_call_id: "call_a" },
+        { role: "tool", content: "txt", tool_call_id: "call_b" },
+        { role: "user", content: "thanks" }
+      ]
+
+      adapter.send(:load_history, chat, messages)
+      assistant = chat.messages.find { |m| m.role == :assistant }
+      expect(assistant.tool_calls).to be_a(Hash)
+      expect(assistant.tool_calls.keys).to contain_exactly("call_a", "call_b")
+      expect(assistant.tool_calls["call_a"].name).to eq("shell")
+      expect(assistant.tool_calls["call_b"].name).to eq("read_file")
     end
 
     it "treats nil/empty tool_calls as a plain assistant turn" do
@@ -1229,6 +1291,19 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       adapter.send(:load_history, chat, messages)
       assistant = chat.messages.find { |m| m.role == :assistant }
       expect(assistant.tool_calls).to be_nil
+    end
+
+    # A plain assistant row with empty text AND no tool_calls is still skipped
+    # (a degenerate empty turn strict providers reject) — only the tool_call
+    # carrier is exempt from the empty-content skip.
+    it "still skips an empty-content assistant row with no tool_calls" do
+      messages = [
+        { role: "assistant", content: "", tool_calls: [] },
+        { role: "user", content: "next" }
+      ]
+
+      adapter.send(:load_history, chat, messages)
+      expect(chat.messages.any? { |m| m.role == :assistant }).to be false
     end
   end
 
