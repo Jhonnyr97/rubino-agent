@@ -214,17 +214,15 @@ module Rubino
 
       private
 
-      # Turn a corrupt/malformed on-disk DB into a clean, actionable diagnostic
-      # instead of leaking a raw Sequel/sqlite3 backtrace (HIGH-2). Without this
-      # the first DB touch (Repository.new → connect → `PRAGMA journal_mode=WAL`)
-      # throws SQLite3::CorruptException and dumps ~20 lines of trace. Thor prints
+      # Turn a PRESENT-but-UNUSABLE on-disk DB (corrupt image, or the duplicate
+      # `schema_info` rows a concurrent first-boot race leaves, #race) into a
+      # clean, actionable diagnostic instead of leaking a raw Sequel/sqlite3
+      # backtrace (HIGH-2 / #333 / #359). Without this the first DB touch
+      # (Repository.new → query) throws and dumps ~20 lines of trace. Thor prints
       # a Thor::Error's message to stderr and exits non-zero with no backtrace.
       def guard_corrupt_database!
-        return unless Rubino.database.corrupt?
-
-        raise Thor::Error,
-              "database is corrupt (malformed image): #{Rubino.database.db_path}\n" \
-              "Run `rubino setup` to quarantine it and recreate a fresh database."
+        message = Rubino.database_repair_message
+        raise Thor::Error, message if message
       end
     end
   end
