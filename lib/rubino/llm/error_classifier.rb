@@ -304,6 +304,16 @@ module Rubino
         when RubyLLM::ContextLengthExceededError
           result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error,
                      retryable: false, should_compress: true)
+        when RubyLLM::ModelNotFoundError
+          # A deterministic CONFIG error: ruby_llm raises ModelNotFoundError
+          # ("Unknown model: ...") BEFORE any HTTP call when the configured model
+          # id isn't registered — statusless, so it used to fall through to the
+          # unknown→retryable default and burn the full api_max_retries backoff
+          # (~73s) on a request that can NEVER succeed (#417). The model id is
+          # fixed for the run, so every retry re-fails identically: fail fast as a
+          # non-retryable config error with the actionable message.
+          result_for(FailoverReason::MODEL_NOT_FOUND, http_status(error), error,
+                     retryable: false, should_fallback: true)
         when RubyLLM::UnauthorizedError, RubyLLM::ForbiddenError
           result_for(FailoverReason::AUTH, http_status(error), error,
                      retryable: false, should_rotate_credential: true, should_fallback: true)
@@ -376,6 +386,14 @@ module Rubino
         end
         if TRANSIENT_TRANSPORT_PATTERNS.any? { |p| msg.include?(p) }
           return result_for(FailoverReason::TIMEOUT, nil, error, retryable: true)
+        end
+        # A statusless "unknown model" / "invalid model" (some providers, or
+        # ruby_llm's pre-flight, report it as an untyped error rather than a
+        # ModelNotFoundError) is a deterministic config error — fail fast instead
+        # of the unknown→retryable backoff storm (#417).
+        if model_not_found?(error)
+          return result_for(FailoverReason::MODEL_NOT_FOUND, nil, error,
+                            retryable: false, should_fallback: true)
         end
 
         nil

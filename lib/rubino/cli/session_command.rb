@@ -202,9 +202,11 @@ module Rubino
         # something was actually moved into a summary — renders the saved-tokens
         # line.
         if result[:skipped]
+          threshold = result[:minimum_messages]
+          bar = threshold ? " (needs >= #{threshold} messages)" : ""
           raise Thor::Error,
                 "nothing to compact in session #{session[:id][0..7]}: " \
-                "it has too few messages to summarize."
+                "it has too few messages to summarize#{bar}."
         end
 
         Rubino.ui.compression_finished(result)

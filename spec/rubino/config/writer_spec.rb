@@ -84,6 +84,26 @@ RSpec.describe Rubino::Config::Writer do
     end
   end
 
+  # #420: `config set` had no syntax for an ARRAY-typed key (e.g. an MCP stdio
+  # server's args, model.fallback_models) — a bare string was written and the
+  # schema rejected it, forcing a hand-edit of config.yml. A JSON array literal
+  # is now coerced to a real Array (unambiguous; a scalar string is untouched).
+  describe "array values (#420)" do
+    it "coerce_value parses a JSON array literal into an Array" do
+      expect(described_class.coerce_value('["run","server"]')).to eq(%w[run server])
+    end
+
+    it "coerce_value leaves a plain scalar string untouched" do
+      expect(described_class.coerce_value("openai/gpt-4.1")).to eq("openai/gpt-4.1")
+      expect(described_class.coerce_value("[not json")).to eq("[not json")
+    end
+
+    it "set writes an array to an array-typed key (no longer a silent no-op)" do
+      writer.set("model.fallback_models", '["openai/gpt-4.1","anthropic/claude-x"]')
+      expect(writer.get("model.fallback_models")).to eq(["openai/gpt-4.1", "anthropic/claude-x"])
+    end
+  end
+
   # #327(a): `config set` used to accept ANY key and ANY value with a green ✓,
   # so a typo'd key or a wrong-typed/garbage value persisted silently and only
   # surfaced later (a runtime crash, or a deterministic provider 4xx the agent

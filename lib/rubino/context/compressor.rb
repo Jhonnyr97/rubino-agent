@@ -261,8 +261,12 @@ module Rubino
         @config.compression_protect_first_n + @config.compression_protect_last_n + 5
       end
 
+      # Carry the threshold (#420) so the CLI / in-chat "too few messages" notice
+      # can state the concrete bar ("needs >= N messages") instead of a vague
+      # "too few", which left the user guessing why a manual compact was a no-op.
       def no_op_result
-        { source_session_id: @session_id, saved_tokens: 0, skipped: true }
+        { source_session_id: @session_id, saved_tokens: 0, skipped: true,
+          minimum_messages: minimum_messages }
       end
     end
   end
