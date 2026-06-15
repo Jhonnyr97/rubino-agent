@@ -79,6 +79,21 @@ RSpec.describe Rubino::Memory::Store do
     it "returns false for unknown ID" do
       expect(store.delete("unknown-id-00000000")).to be false
     end
+
+    # #416: delete("") used to LIKE-match the `%` wildcard → wiped every row and
+    # reported success. A blank id must delete NOTHING and report failure.
+    it "delete(\"\") deletes NOTHING and reports failure (no mass-wipe)" do
+      store.create(kind: "fact", content: "keep me 1")
+      store.create(kind: "fact", content: "keep me 2")
+      expect(store.count).to eq(2)
+      expect(store.delete("")).to be false
+      expect(store.count).to eq(2)
+    end
+
+    it "find(\"\") returns nil instead of an arbitrary first row" do
+      store.create(kind: "fact", content: "present")
+      expect(store.find("")).to be_nil
+    end
   end
 
   describe "#within_limit" do

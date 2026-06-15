@@ -2,6 +2,7 @@
 
 require "yaml"
 require "fileutils"
+require "json"
 
 module Rubino
   module Config
@@ -58,8 +59,26 @@ module Rubino
         when "nil", "null" then nil
         when /\A\d+\z/ then value.to_i
         when /\A\d+\.\d+\z/ then value.to_f
-        else value
+        else
+          coerce_array(value) || value
         end
+      end
+
+      # ARRAY support for `config set` (#420): an array-typed key (e.g. an MCP
+      # stdio server's `args`) previously had no CLI syntax — a bare string was
+      # written and the schema validator rejected it (expected array), forcing a
+      # hand-edit of config.yml. Accept an explicit JSON array literal
+      # (`config set …args '["run","server"]'`) — unambiguous, so a legitimate
+      # scalar string is never mis-coerced. Returns the parsed Array, or nil when
+      # the value isn't a JSON array (the caller falls back to the raw string).
+      def self.coerce_array(value)
+        str = value.to_s.strip
+        return nil unless str.start_with?("[") && str.end_with?("]")
+
+        parsed = JSON.parse(str)
+        parsed.is_a?(Array) ? parsed : nil
+      rescue JSON::ParserError
+        nil
       end
 
       # Returns the value at a dot-notation key path

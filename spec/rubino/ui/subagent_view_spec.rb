@@ -94,6 +94,46 @@ RSpec.describe Rubino::UI::SubagentView do
     end
   end
 
+  # #419: a headless mutating-subagent's write was auto-denied with "the user
+  # denied it" though there is no interactive user. Root cause: SubagentView
+  # inherited Base#interactive? => true, so the child's ToolExecutor took the
+  # #confirm (user) path instead of the headless fail-closed block. Without an
+  # approval handler the view CANNOT host an approval, so it reports
+  # NON-interactive — the executor then emits the honest "no interactive
+  # session — use --yolo / allowlist it" block, not a user-denial.
+  describe "#interactive? (#419)" do
+    it "is NOT interactive without an approval handler (foreground/headless path)" do
+      expect(described_class.new(agent_name: "explore", out: io).interactive?).to be(false)
+    end
+
+    it "IS interactive WITH an approval handler (card-mode gate path)" do
+      view = described_class.new(agent_name: "explore", out: io,
+                                 entry_id: "sa_1", approve: ->(*) { true })
+      expect(view.interactive?).to be(true)
+    end
+  end
+
+  # End-to-end: a child ToolExecutor wired with a handler-less SubagentView
+  # denies a mutating tool with the NO-INTERACTIVE-SESSION message (#260 form),
+  # not "denied by user" (#419).
+  describe "child ToolExecutor deny message under a handler-less SubagentView (#419)" do
+    it "reads as 'no interactive session', not 'denied by user'" do
+      view   = described_class.new(agent_name: "explore", out: io)
+      policy = instance_double(Rubino::Security::ApprovalPolicy, decide: :ask,
+                                                                 last_deny_reason: nil)
+      tool   = double("write_tool", name: "write")
+      registry = double("Registry", find: tool)
+      executor = Rubino::Agent::ToolExecutor.new(
+        registry: registry, approval_policy: policy, ui: view,
+        config: test_configuration, event_bus: Rubino::Interaction::EventBus.new
+      )
+      result = executor.execute(name: "write", arguments: { "file_path" => "/x" }, call_id: "c1")
+      expect(result.denied?).to be(true)
+      expect(result.output).to include("no interactive session")
+      expect(result.output).not_to include("denied by user")
+    end
+  end
+
   describe "deterministic per-subagent color" do
     it "maps the same name to the same color" do
       a = described_class.new(agent_name: "explore", out: io).color

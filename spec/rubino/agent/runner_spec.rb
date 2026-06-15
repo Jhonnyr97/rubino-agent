@@ -119,6 +119,21 @@ RSpec.describe Rubino::Agent::Runner do
       expect(repo.find(parent[:id])[:owner_pid]).to eq(999_999)
     end
 
+    # #420: a HEADLESS (announce_session:false) resume that loses the race still
+    # forks, and the forked child carries parent_session_id + a fresh id — the
+    # signal the CLI layer (ChatCommand#warn_if_resume_forked) uses to emit the
+    # STDERR re-route notice even headless (the Runner's status line is gated on
+    # @announce_session, off here).
+    it "a headless fork carries parent_session_id + a new id so the CLI can warn (#420)" do
+      parent = seed_session_with_history(owner_pid: 999_999)
+      inject_repo(owned_by_other: true)
+
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o",
+                                   ui: null_ui, announce_session: false)
+      expect(runner.session[:id]).not_to eq(parent[:id])
+      expect(runner.session[:parent_session_id]).to eq(parent[:id])
+    end
+
     it "claims (does not fork) a session NOT owned by another live process" do
       parent = seed_session_with_history(owner_pid: nil)
       # Drive the REAL atomic claim (no stub): an unowned row is claimed and the
