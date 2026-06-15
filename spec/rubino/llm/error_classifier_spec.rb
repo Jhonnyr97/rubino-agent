@@ -66,6 +66,23 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       expect(c.retryable).to be false
     end
 
+    # #417: ruby_llm raises a statusless ModelNotFoundError ("Unknown model: …")
+    # BEFORE any HTTP call when the configured model id isn't registered. It used
+    # to fall through to the unknown->retryable default and burn ~73s of backoff
+    # on a config error that can NEVER succeed. It must fail fast (non-retryable).
+    it "ModelNotFoundError (statusless config error) -> non-retryable, fails fast (#417)" do
+      c = described_class.classify(RubyLLM::ModelNotFoundError.new("Unknown model: gpt-bogus"))
+      expect(c.reason).to eq(FR::MODEL_NOT_FOUND)
+      expect(c.retryable).to be false
+      expect(described_class.retryable?(RubyLLM::ModelNotFoundError.new("Unknown model: x"))).to be false
+    end
+
+    it "a statusless 'unknown model' message -> non-retryable too (#417)" do
+      c = described_class.classify(RuntimeError.new("The model 'foo' is not a valid model id"))
+      expect(c.reason).to eq(FR::MODEL_NOT_FOUND)
+      expect(c.retryable).to be false
+    end
+
     it "400 with a context-overflow phrase -> context_overflow, should_compress" do
       c = described_class.classify(ruby_llm_error(RubyLLM::Error, 400, "prompt is too long for context window"))
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)

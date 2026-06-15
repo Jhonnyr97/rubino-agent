@@ -299,11 +299,18 @@ module Rubino
         store.seed_extraction_cursor(child[:id])
         @session_repo.update(child[:id], message_count: store.count(child[:id]))
 
+        notice = "Session #{parent[:id][0..7]} is in use by another rubino — " \
+                 "forked a copy: #{child[:id][0..7]}"
         if @announce_session
-          @ui.status(
-            "Session #{parent[:id][0..7]} is in use by another rubino — " \
-            "forked a copy: #{child[:id][0..7]}"
-          )
+          @ui.status(notice)
+        else
+          # Headless `--resume` that LOSES the race silently re-routed to a fork
+          # with no signal (the status line is gated on @announce_session, off
+          # headless) — so a pipeline couldn't tell its resume wrote to a DIFFERENT
+          # session than it asked for (#420). Emit a one-line STDERR notice even
+          # headless so automation can detect (and surface) the re-route. Off the
+          # clean stdout answer, like the other headless diagnostics.
+          warn "rubino: #{notice}"
         end
         child[:persisted] = true
         child

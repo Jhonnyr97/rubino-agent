@@ -280,12 +280,20 @@ RSpec.describe Rubino::Agent::Loop do
       Rubino::Tools::Result.success(name: "write", call_id: "c1", output: "wrote 12 bytes")
     end
 
-    it "reconciles the false summary with the real tool-call/edit counts" do
+    # #418: the truthful harness note is a DIAGNOSTIC routed to STDERR (#warning)
+    # + an event — NOT spliced into the returned text answer (which pollutes
+    # `--output-format text` stdout, the clean-stdout contract). The pessimistic
+    # claim itself still passes through cleanly as the answer; the note rides the
+    # side channel.
+    it "routes the harness note to stderr/event, NOT into the text answer (#381/#418)" do
       # Iteration 1: a REAL mutating tool call (counts as 1 tool, 1 edit).
       fake_llm.enqueue_tool_call("write", { "path" => "/work/a.rb", "content" => "x = 1" })
       # Budget now exhausted → the loop forces a summary. The model writes it
       # PESSIMISTICALLY, claiming nothing happened.
       fake_llm.enqueue_text("I have not read a single file, not run grep, not made any edits.")
+
+      events = []
+      event_bus.on(Rubino::Interaction::Events::HARNESS_NOTE) { |payload| events << payload }
 
       loop_obj = build_loop
       allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
@@ -296,16 +304,23 @@ RSpec.describe Rubino::Agent::Loop do
 
       result = loop_obj.run(messages: user_messages("refactor a.rb"), tools: tools)
 
-      # The false "no edits" claim is reconciled, not surfaced bare.
-      expect(result).to match(/harness note/i)
-      expect(result).to match(/1 tool call actually ran/i)
-      expect(result).to match(/1 edit\b/)
-      expect(result).to match(/uncommitted changes/i)
-      # The reconciled (truthful) text is what gets PERSISTED for the user.
+      # The TEXT ANSWER (stdout) stays CLEAN — no harness note pollution.
+      expect(result).not_to match(/harness note/i)
+      expect(result).to eq("I have not read a single file, not run grep, not made any edits.")
+
+      # The note went to the stderr-bound #warning channel + the event bus.
+      warnings = null_ui.messages.select { |m| m[:level] == :warning }.map { |m| m[:message] }
+      expect(warnings.join("\n")).to match(/harness note/i)
+      expect(warnings.join("\n")).to match(/1 tool call actually ran/i)
+      expect(warnings.join("\n")).to match(/1 edit\b/)
+      expect(events.size).to eq(1)
+      expect(events.first[:note]).to match(/uncommitted changes/i)
+
+      # The clean answer (not the note) is what gets persisted as the assistant turn.
       stored = message_store.for_session(session[:id])
                             .select { |m| m.role == "assistant" }
                             .map(&:content)
-      expect(stored.last).to match(/1 tool call actually ran/i)
+      expect(stored.last).not_to match(/harness note/i)
     end
 
     it "leaves a TRUTHFUL budget-exhausted summary that names its tools untouched" do

@@ -797,4 +797,33 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(count).to eq(1)
     end
   end
+
+  # #416: a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row, so
+  # `memory delete ""` wiped the whole store and reported success (data loss).
+  describe "#delete / #find id guard (#416)" do
+    def seed_two
+      backend.store(kind: "fact", content: "User lives in Lima, Peru.")
+      backend.store(kind: "fact", content: "User prefers concise answers.")[:id]
+    end
+
+    it "delete(\"\") deletes NOTHING and reports failure" do
+      seed_two
+      expect(backend.count).to eq(2)
+      expect(backend.delete("")).to be(false)
+      expect(backend.count).to eq(2)
+    end
+
+    it "find(\"\") returns nil instead of an arbitrary row" do
+      seed_two
+      expect(backend.find("")).to be_nil
+    end
+
+    it "delete(full_id) deletes exactly that one memory" do
+      id = seed_two
+      expect(backend.count).to eq(2)
+      expect(backend.delete(id)).to be(true)
+      expect(backend.count).to eq(1)
+      expect(backend.find(id)).to be_nil
+    end
+  end
 end

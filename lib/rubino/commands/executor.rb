@@ -508,7 +508,9 @@ module Rubino
         result = Context::Compressor.new(session_id: session[:id]).compact!
 
         if result[:skipped]
-          @ui.info("Nothing to compact yet — the session is still below the protected head/tail size.")
+          bar = result[:minimum_messages] ? " (needs >= #{result[:minimum_messages]} messages)" : ""
+          @ui.info("Nothing to compact yet — the session is still below the " \
+                   "protected head/tail size#{bar}.")
           return :handled
         end
 
