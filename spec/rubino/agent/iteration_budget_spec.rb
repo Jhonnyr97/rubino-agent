@@ -190,5 +190,32 @@ RSpec.describe Rubino::Agent::IterationBudget do
       budget.instance_variable_set(:@turn_started_at, Time.now - 1000)
       expect(budget.extendable?(3)).to be(false)
     end
+
+    # #403 (reintroduction guard): extend! lifts only the SOFT ceiling, never the
+    # max_turns OUTER rail. Once a user has extended the soft cap PAST max_turns,
+    # any iteration > max_turns must report extendable? = false so the Loop
+    # force-summarizes — otherwise the rail keeps blocking, extendable? stays
+    # true, and the Continue prompt loops forever (the live infinite-loop bug).
+    it "is false past max_turns even with the soft cap extended above it" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 90, "max_tool_iterations" => 25, "max_turn_seconds" => 600
+                                                              }))
+      # User extends the soft cap well past the max_turns outer rail.
+      budget.extend!(100) # 25 + 100 = 125 soft ceiling, still capped at 90 turns
+      # Iteration 91 is past max_turns: the OUTER rail (not the soft ceiling) is
+      # the blocker, and extend! is impotent against it — so NO re-prompt.
+      expect(budget.extendable?(91)).to be(false)
+      # And the outer rail still hard-stops the runaway.
+      expect(budget.can_continue?(91)).to be(false)
+    end
+
+    it "is true in the normal case: soft cap exhausted but still within max_turns" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 90, "max_tool_iterations" => 25, "max_turn_seconds" => 600
+                                                              }))
+      # Soft cap 25 exhausted at iteration 26, which is well within max_turns 90:
+      # the soft ceiling is the blocker, so extending genuinely helps.
+      expect(budget.extendable?(26)).to be(true)
+    end
   end
 end
