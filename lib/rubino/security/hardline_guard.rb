@@ -118,15 +118,18 @@ module Rubino
       # over-engineering for the hardline floor.
       #
       # Line-continuation strip (#348): a backslash immediately before a newline
-      # is a shell line-continuation — the two characters and any surrounding
-      # whitespace fold the next line onto the current one. Pre-fix, normalize
-      # kept the `\n` AND the trailing `\`, so `rm -rf \<newline>/` left `rm` and
-      # `/` on separate lines with a stray backslash between them, and the
-      # `\brm\s+...(?:/)` pattern (which needs rm adjacent to the target) missed
-      # it. We join continued lines into a single space-separated command BEFORE
-      # the rest of normalization so the patterns see `rm -rf /`.
+      # is a shell line-continuation — the two characters fold the next line onto
+      # the current one with NO intervening character. The shell deletes the
+      # `\<newline>` pair entirely; it does NOT insert a space. Pre-fix we replaced
+      # it with a SPACE, so `rm -r\<newline>f /` became `rm -r f /` — the `-r` and
+      # `f` split into two tokens and the `\brm\s+(?:-\S*\s+)*/` pattern (which
+      # needs the flags glued) MISSED it, letting an unrecoverable `rm -rf /` past
+      # the floor (#348 residual). Replace the continuation with the EMPTY string
+      # so `rm -r\<newline>f /` folds to `rm -rf /` exactly as the shell sees it.
+      # (Trailing whitespace after the backslash is NOT part of the continuation
+      # and is left for the space-collapse below.)
       def normalize(command)
-        joined = command.to_s.gsub(/\\\r?\n[ \t]*/, " ")
+        joined = command.to_s.gsub(/\\\r?\n/, "")
         joined.gsub(/[ \t]+/, " ").strip.downcase
       end
 
@@ -164,16 +167,24 @@ module Rubino
       #     real whitespace, so Shellwords sees ONE token `rm-rf/`. Replace any
       #     ${IFS} / $IFS occurrence with a space so the shell's own field-split
       #     is reproduced. (lowercased input -> ${ifs}/$ifs.)
-      #   * ${HOME:-/} / ${HOME:=/} param-default: the `:-`/`:=` default is `/`,
-      #     so a missing/empty HOME expands to the root filesystem. Collapse the
-      #     whole `${home:-/}`-family braces to the default value so the root /
-      #     home pattern fires.
+      #   * ${IFS:0:1} substring form (#348 residual): `${IFS:OFFSET:LENGTH}`
+      #     takes a slice of $IFS — `${IFS:0:1}` is its first char (a space). It is
+      #     the SAME field-split trick as ${IFS}; `rm${IFS:0:1}-rf${IFS:0:1}/` must
+      #     also collapse to spaces. Match the brace-with-offset form too.
+      #   * ${VAR:-/} / ${VAR:=/} param-default (#348 residual): the `:-`/`:=`
+      #     default is used when VAR is unset/empty. The pre-fix only handled the
+      #     literal name `home`; ANY unset varname works (`${X:-/}`, `${FOO:-/}`),
+      #     so an attacker just picks a name that is unset and the default `/`
+      #     expands to the root filesystem. Collapse `${<anyname>:-VALUE}` /
+      #     `${<anyname>:=VALUE}` to its default VALUE so the root/home pattern
+      #     fires regardless of the chosen variable name.
       def expand_word_splits(text)
-        out = text.gsub(/\$\{ifs\}|\$ifs\b/, " ")
-        # ${home:-VALUE} / ${home:=VALUE} -> VALUE (the default the shell uses
-        # when HOME is unset/empty). Captures the default path so `${home:-/}`
-        # becomes `/` and the root-filesystem pattern matches.
-        out.gsub(/\$\{home:[-=]([^}]*)\}/, '\1')
+        # ${ifs}, $ifs, and the ${ifs:OFFSET:LEN} substring form all -> a space.
+        out = text.gsub(/\$\{ifs(?::\d+(?::\d+)?)?\}|\$ifs\b/, " ")
+        # ${VAR:-VALUE} / ${VAR:=VALUE} -> VALUE (the default the shell uses when
+        # VAR is unset/empty), for ANY variable name. Captures the default path so
+        # `${x:-/}` becomes `/` and the root-filesystem pattern matches.
+        out.gsub(/\$\{[a-z_][a-z0-9_]*:[-=]([^}]*)\}/, '\1')
       end
 
       # Shell-word split, or nil on unbalanced quotes (caller falls back to raw).

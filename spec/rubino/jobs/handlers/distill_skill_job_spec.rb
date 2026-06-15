@@ -138,6 +138,64 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
     end
   end
 
+  # Regression for #368: already_covered? used to return true on ANY single
+  # 4+-char word shared with a built-in skill's name/description — so the word
+  # "rails" sitting in ruby-expert's description suppressed an unrelated
+  # deploy-workflow task. Coverage now requires MEANINGFUL overlap (a name-level
+  # match or multiple salient stopword-filtered tokens past a Jaccard floor), so
+  # a lone common word can no longer gate a distinct task off.
+  describe "coverage gate is not tripped by a single shared word (#368)" do
+    def fake_skill(name, description)
+      instance_double(Rubino::Skills::Skill, name: name, description: description)
+    end
+
+    def stub_registry(skills)
+      registry = instance_double(Rubino::Skills::Registry, all: skills)
+      allow(Rubino::Skills::Registry).to receive(:new).and_return(registry)
+      allow(registry).to receive(:find).and_return(nil)
+    end
+
+    def seed_task(session_id, task)
+      add_message(session_id, "user", task)
+      6.times { |i| add_message(session_id, "tool", "step #{i}", tool_name: "bash") }
+      add_message(session_id, "assistant", "Done.")
+    end
+
+    let(:ruby_expert) do
+      fake_skill("ruby-expert",
+                 "Expert in Ruby, Rails, RSpec, ActiveRecord and idiomatic Ruby code.")
+    end
+
+    it "does NOT suppress 'deploy workflow for Rails' just because ruby-expert mentions Rails" do
+      sid = seed_session
+      seed_task(sid, "Add a deploy workflow for Rails to staging via Capistrano")
+      stub_registry([ruby_expert])
+      stub_distill(good_candidate_json)
+
+      job.perform(session_id: sid)
+
+      # Gate PASSED: the aux call ran and a skill was written (not suppressed).
+      expect(aux_client).to have_received(:call).once
+      expect(Dir.children(@skills_dir)).not_to be_empty
+    end
+
+    it "DOES suppress a genuinely duplicate task (name-level match)" do
+      sid = seed_session
+      seed_task(sid, "Add a validated POST endpoint to my Sinatra app for write routes")
+      stub_registry([
+                      fake_skill("add-sinatra-post-endpoint",
+                                 "Add a validated POST endpoint to a Sinatra app — when adding write routes.")
+                    ])
+      allow(aux_client).to receive(:call)
+
+      job.perform(session_id: sid)
+
+      # Gate SUPPRESSED: no aux call, no skill written — the work is already covered.
+      expect(aux_client).not_to have_received(:call)
+      expect(Dir.children(@skills_dir)).to be_empty
+    end
+  end
+
   describe "robustness" do
     it "is a no-op without a session_id" do
       expect { job.perform({}) }.not_to raise_error
