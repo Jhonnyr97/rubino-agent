@@ -22,6 +22,17 @@ RSpec.describe Rubino::Commands::Executor do
     allow(Rubino).to receive(:database).and_return(db)
   end
 
+  # /compact now clears the SAME 64K compaction floor the auto path enforces, so
+  # the offline mechanics specs below must force the gate (they run on tiny
+  # transcripts). Stubs the class to build a REAL budget — so before/after token
+  # estimates stay truthful — then forces needs_compaction? true on it. Avoids
+  # allow_any_instance_of (banned by RSpec/AnyInstance in this file).
+  def force_compaction_gate
+    allow(Rubino::Context::TokenBudget).to receive(:new).and_wrap_original do |orig, **kw|
+      orig.call(**kw).tap { |b| allow(b).to receive(:needs_compaction?).and_return(true) }
+    end
+  end
+
   describe "/clear" do
     it "returns the same {new_session:} signal as /new" do
       expect(exec.try_execute("/clear")).to eq(new_session: true)
@@ -47,6 +58,11 @@ RSpec.describe Rubino::Commands::Executor do
 
     context "with a session past the protected head/tail size" do
       before do
+        # Force the token-budget gate so this offline transcript actually
+        # compacts: /compact now no-ops below the 64K floor (like the auto path),
+        # which the dedicated below-threshold spec covers. Here we test the
+        # post-gate report mechanics.
+        force_compaction_gate
         # minimum = protect_first_n(3) + protect_last_n(20) + 5
         30.times do |i|
           role = i.even? ? "user" : "assistant"
@@ -85,6 +101,50 @@ RSpec.describe Rubino::Commands::Executor do
       expect(exec.try_execute("/compact")).to eq(:handled)
       err = ui.messages.find { |m| m[:level] == :error }
       expect(err[:message]).to include("compaction failed: boom")
+    end
+
+    # Symptom 1 + 3 at the command boundary: a small session (enough messages,
+    # but well under the token threshold) must NO-OP — no compression UI, no
+    # paid summary, and crucially NO {compact_into:} signal so the REPL does NOT
+    # silently fork the session id out from under the user.
+    it "no-ops a below-threshold session: clear message, no UI events, no session fork" do
+      # 40 short messages clears the minimum-messages floor but is far below the
+      # default 64K token threshold.
+      40.times { |i| store.create(session_id: session[:id], role: "user", content: "short #{i}") }
+
+      result = exec.try_execute("/compact")
+
+      expect(result).to eq(:handled) # NOT a {compact_into:} fork
+      levels = ui.messages.map { |m| m[:level] }
+      expect(levels).not_to include(:compression_started, :compression_finished)
+      out = ui.messages.map { |m| m[:message].to_s }.join("\n")
+      expect(out).to include("under the compaction threshold")
+      expect(repo.find(session[:id])[:status]).not_to eq("compacted")
+    end
+
+    # Symptom 2: the reported delta must be TRUTHFUL. The old path reported the
+    # compressor's "removed middle" estimate, which ignored the inserted summary
+    # and so printed "saved N" even when context grew. Here we force a large
+    # summary on a just-over-threshold session and assert the report reflects the
+    # real before→after — never a false "saved" when the result is not smaller.
+    it "reports the real before→after delta, never a false saving when context grows" do
+      force_compaction_gate
+      30.times do |i|
+        role = i.even? ? "user" : "assistant"
+        store.create(session_id: session[:id], role: role, content: "turn #{i} #{"x" * 200}")
+      end
+      allow(Rubino::Memory::Flusher).to receive(:new)
+        .and_return(instance_double(Rubino::Memory::Flusher, flush_before_compaction!: nil))
+      # A summary far LARGER than the middle it replaces → the child is bigger.
+      allow(Rubino::Context::SummaryBuilder).to receive(:new)
+        .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "S" * 40_000))
+
+      exec.try_execute("/compact")
+
+      report = ui.messages.find { |m| m[:message].to_s.start_with?("Context: ~") }[:message].to_s
+      # The report states the honest direction (grew), and never lies "saved".
+      expect(report).to match(/grew ~\d+ tok/)
+      expect(report).not_to include("saved")
     end
   end
 
