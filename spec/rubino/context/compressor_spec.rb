@@ -235,12 +235,12 @@ RSpec.describe Rubino::Context::Compressor do
     # summary call every turn. After two compactions that each saved <10% of
     # their original tokens, #thrashing? returns true so the auto path skips.
     describe "#thrashing? (anti-thrash back-off)" do
-      def record_compaction(source:, original:, saved:)
+      def record_compaction(source:, original:, saved:, created_at: Time.now.utc.iso8601)
         db[:compactions].insert(
           id: SecureRandom.uuid,
           source_session_id: source, target_session_id: SecureRandom.uuid,
           original_token_count: original, saved_token_count: saved,
-          created_at: Time.now.utc.iso8601
+          created_at: created_at
         )
       end
 
@@ -260,6 +260,27 @@ RSpec.describe Rubino::Context::Compressor do
         record_compaction(source: parent[:id], original: 100_000, saved: 5_000)  # 5%
         record_compaction(source: parent[:id], original: 100_000, saved: 40_000) # 40%
         compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+        expect(compressor.thrashing?).to be false
+      end
+
+      # BUG-THRASH-TIEBREAK: created_at is iso8601 truncated to SECONDS and the
+      # PK is a random UUID, so when 3+ compactions land in the SAME wall-clock
+      # second `reverse(:created_at).limit(2)` is non-deterministic — it could
+      # return the two OLD ineffective rows and MISS the newest EFFECTIVE one,
+      # leaving #thrashing? wrongly true and the back-off stuck on. Ordering by
+      # the insertion-monotonic SQLite rowid as a tiebreaker makes "the 2 most
+      # recent" unambiguous: here the newest (effective 50%) row must be in the
+      # window, so #thrashing? is false.
+      it "is false when the NEWEST same-second compaction was effective (tiebreak)" do
+        same_second = "2026-06-15T12:00:00Z"
+        # Insert oldest-first so rowid order matches insertion order. The two
+        # OLD rows are ineffective; the NEWEST (last inserted) is effective.
+        record_compaction(source: parent[:id], original: 100_000, saved: 5_000,  created_at: same_second) # 5%
+        record_compaction(source: parent[:id], original: 100_000, saved: 4_000,  created_at: same_second) # 4%
+        record_compaction(source: parent[:id], original: 100_000, saved: 50_000, created_at: same_second) # 50% (newest)
+
+        compressor = described_class.new(session_id: parent[:id], config: config, db: db)
+        # The 2 most recent = the 50% row + its neighbor, NOT the 2 oldest.
         expect(compressor.thrashing?).to be false
       end
 
