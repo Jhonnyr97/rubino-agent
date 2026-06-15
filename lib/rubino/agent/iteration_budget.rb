@@ -21,6 +21,23 @@ module Rubino
         within_iteration_limit?(iteration) && within_time_limit?
       end
 
+      # True when offering the interactive Continue extension would actually
+      # help: the ITERATION ceiling is what's exhausted AND time is still within
+      # budget (#403). extend! raises only the iteration ceiling, so when the
+      # TIME limit is what's spent, extending is a no-op and re-prompting would
+      # loop forever — callers must force-summarize instead. False also on an
+      # unbounded iteration cap (nothing to extend).
+      def extendable?(iteration)
+        within_time_limit? && !within_iteration_limit?(iteration)
+      end
+
+      # True when the per-turn wall-clock budget (max_turn_seconds) is spent.
+      # extend! cannot move this ceiling, so a time-exhausted turn must end
+      # rather than re-prompt for more iterations (#403).
+      def time_exhausted?
+        !within_time_limit?
+      end
+
       # Grants `by` more tool iterations so a turn that hit the cap can resume
       # the SAME turn with full context (#399, the Cline/Roo "reset the counter,
       # keep context" pattern). Only the iteration ceiling moves — the time/turn
