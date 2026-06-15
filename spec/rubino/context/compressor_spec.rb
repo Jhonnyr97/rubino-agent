@@ -36,6 +36,19 @@ RSpec.describe Rubino::Context::Compressor do
       expect(result[:saved_tokens]).to eq(0)
       expect(result[:source_session_id]).to eq(session_id)
     end
+
+    # #420: a skipped (too-few-messages) compaction now carries the THRESHOLD so
+    # the CLI / in-chat notice can state "needs >= N messages" instead of a
+    # vague "too few", which left the user unable to tell when it would work.
+    it "a skipped result carries the minimum_messages threshold (#420)" do
+      allow(session_repo).to receive(:find).with(session_id).and_return({ id: session_id })
+      allow(message_store).to receive(:for_session).with(session_id).and_return([])
+
+      result = described_class.new(session_id: session_id, config: config, db: double).compact!
+
+      expected = config.compression_protect_first_n + config.compression_protect_last_n + 5
+      expect(result[:minimum_messages]).to eq(expected)
+    end
   end
 
   # Regression for the metadata-dropping compaction bug: create_child_session

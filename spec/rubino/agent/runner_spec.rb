@@ -1,8 +1,19 @@
 # frozen_string_literal: true
 
+require "stringio"
+
 RSpec.describe Rubino::Agent::Runner do
   let(:db)      { test_database }
   let(:null_ui) { Rubino::UI::Null.new }
+
+  def capture_stderr
+    orig = $stderr
+    $stderr = StringIO.new
+    yield
+    $stderr.string
+  ensure
+    $stderr = orig
+  end
 
   let(:fake_lifecycle) do
     instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE")
@@ -117,6 +128,22 @@ RSpec.describe Rubino::Agent::Runner do
       expect(store.count(child[:id])).to eq(2)
       # The live parent is left untouched (the other process still owns it).
       expect(repo.find(parent[:id])[:owner_pid]).to eq(999_999)
+    end
+
+    # #420: a HEADLESS `--resume` that LOSES the race silently re-routed to a
+    # fork with no signal (the status line is gated on @announce_session, off
+    # headless). Emit a one-line STDERR notice even headless so a pipeline can
+    # tell its resume was re-routed to a different session.
+    it "warns on STDERR when a headless (announce_session:false) resume forks (#420)" do
+      parent = seed_session_with_history(owner_pid: 999_999)
+      inject_repo(owned_by_other: true)
+
+      out = capture_stderr do
+        runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o",
+                                     ui: null_ui, announce_session: false)
+        expect(runner.session[:id]).not_to eq(parent[:id]) # it forked
+      end
+      expect(out).to match(/is in use by another rubino — forked a copy/)
     end
 
     it "claims (does not fork) a session NOT owned by another live process" do
