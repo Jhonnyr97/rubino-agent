@@ -134,8 +134,7 @@ module Rubino
         # to learn it fits — ~hundreds of MB of churn for a preview the caller
         # may not even trim. `count("\n")` is O(n) bytes with zero allocation.
         # total line count = newline count (+1 unless the buffer ends in \n).
-        nl    = s.count("\n")
-        total = s.empty? ? 0 : nl + (s.end_with?("\n") ? 0 : 1)
+        total = line_count(s)
         if total <= max
           # Fits: only NOW materialize, and only to chomp the trailing newlines
           # of the (already small) line set.
@@ -154,32 +153,42 @@ module Rubino
         (head_pt + [marker] + tail_pt).join("\n")
       end
 
-      # First +n+ chomp'd lines of +s+, without materializing the whole buffer
-      # into a lines array (#373). Stops scanning after +n+ lines.
-      def self.head_lines(s, n)
+      # First +keep+ chomp'd lines of +str+, without materializing the whole
+      # buffer into a lines array (#373). Stops scanning after +keep+ lines.
+      def self.head_lines(str, keep)
         out = []
-        s.each_line do |line|
+        str.each_line do |line|
           out << line.chomp
-          break if out.size >= n
+          break if out.size >= keep
         end
         out
       end
 
-      # Last +n+ chomp'd lines of +s+, found by scanning backward from the end
-      # rather than splitting the whole buffer (#373). Slices a bounded tail of
-      # the string by locating the n-th-from-last newline.
-      def self.tail_lines(s, n)
-        return [] if n <= 0
+      # Line count of +str+ via a single allocation-free `count("\n")` pass
+      # (#373): newlines, +1 for a final line with no trailing newline. Used by
+      # both #preview and #truncate to decide over/under cap WITHOUT splitting a
+      # potentially huge buffer into a `.lines` array.
+      def self.line_count(str)
+        return 0 if str.empty?
 
-        idx = s.length
-        n.times do
-          nl = s.rindex("\n", idx - 1)
+        str.count("\n") + (str.end_with?("\n") ? 0 : 1)
+      end
+
+      # Last +keep+ chomp'd lines of +str+, found by scanning backward from the
+      # end rather than splitting the whole buffer (#373). Slices a bounded tail
+      # of the string by locating the keep-th-from-last newline.
+      def self.tail_lines(str, keep)
+        return [] if keep <= 0
+
+        idx = str.length
+        keep.times do
+          nl = str.rindex("\n", idx - 1)
           break if nl.nil?
 
           idx = nl
         end
         # idx now sits ON the newline before the kept tail (or 0 if we ran out).
-        slice = s[idx, s.length - idx]
+        slice = str[idx, str.length - idx]
         slice = slice[1..] if slice.start_with?("\n")
         slice.to_s.lines.map(&:chomp)
       end
@@ -239,10 +248,7 @@ module Rubino
         # head+tail, never the full buffer. The model-facing cap + spill below
         # are unchanged; this only stops the materialization blow-up.
         over_bytes = text.bytesize > max_bytes
-        # newline count → line count (+1 for a final line with no trailing \n).
-        nl         = text.count("\n")
-        line_count = text.empty? ? 0 : nl + (text.end_with?("\n") ? 0 : 1)
-        over_lines = line_count > max_lines
+        over_lines = line_count(text) > max_lines
 
         # Under both caps: scrub the (already small) buffer and return. A stray
         # non-UTF-8 byte (printf '\xe9') OR a NUL (random binary) in SUB-cap

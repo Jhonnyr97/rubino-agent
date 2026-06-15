@@ -76,7 +76,7 @@ module Rubino
         files   = collect_files
         deleted = 0
 
-        if max_age_seconds && max_age_seconds.positive?
+        if max_age_seconds&.positive?
           cutoff = now - max_age_seconds
           files.reject! do |f|
             next false unless f[:mtime] < cutoff
@@ -87,7 +87,7 @@ module Rubino
           end
         end
 
-        if max_total_bytes && max_total_bytes.positive?
+        if max_total_bytes&.positive?
           total = files.sum { |f| f[:size] }
           if total > max_total_bytes
             # Oldest first until back under budget.
