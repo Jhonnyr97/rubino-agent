@@ -73,6 +73,12 @@ module Rubino
         # error can't bleed into the empty-retry count.
         error_attempts = 0
 
+        # Cumulative error-path backoff already spent on THIS call (seconds), the
+        # denominator of the TOTAL-wall-time cap (#dead-host). Reset per call! so
+        # a fresh turn gets the full retry budget. A fallback rotation also zeroes
+        # it (handle_error! → activate_fallback!) so the new adapter starts clean.
+        @error_retry_spent = 0.0
+
         # The degenerate-response recovery ladder (Slice 5). Fresh per call! so
         # its per-turn counters (prefill ≤2, empty ≤3) reset exactly where the
         # reference zeroes them on a successful content turn.
@@ -284,18 +290,65 @@ module Rubino
         classified = LLM::ErrorClassifier.classify(error)
 
         unless classified.retryable && attempts < api_max_retries
-          return 0 if activate_fallback!(iteration)
+          return reset_error_budget! if activate_fallback!(iteration)
 
           raise_with_auth_hint(error, classified)
         end
 
         attempts += 1
         wait = error_backoff(attempts, classified, error)
+
+        # TOTAL wall-time cap (#dead-host). A permanently-unreachable host fails
+        # with a RETRYABLE connection timeout every attempt, so the count budget
+        # alone lets backoff stack to ~75-110s before giving up. Once the backoff
+        # already spent PLUS this next planned wait would cross the budget, stop
+        # retrying: try a fallback first (resets the budget for the new adapter),
+        # otherwise fail fast with a clear "gave up after ~Ns" message. This
+        # bounds the dead-host wall WITHOUT cutting genuine recovery inside the
+        # window — a transient blip that clears before the budget still retries.
+        if exceeds_total_budget?(wait)
+          return reset_error_budget! if activate_fallback!(iteration)
+
+          raise_retry_budget_exhausted!(error, attempts)
+        end
+
+        @error_retry_spent += wait
         @event_bus.emit(Interaction::Events::MODEL_CALL_STARTED,
                         iteration: iteration, error_retry: attempts)
         log_safely(event: "llm.retry", attempt: attempts, sleep: wait, error: error.message)
         backoff.sleep(wait)
         attempts
+      end
+
+      # A fallback rotation gives the NEW adapter a fresh count budget AND a fresh
+      # wall-time budget — the time spent on the dead primary shouldn't penalise a
+      # healthy fallback. Zero the spent-clock and return 0 (the loop's reset
+      # sentinel for error_attempts).
+      def reset_error_budget!
+        @error_retry_spent = 0.0
+        0
+      end
+
+      # True when the cumulative error-path backoff already spent plus the next
+      # planned wait would cross the total wall-time budget. nil budget ⇒ no total
+      # cap (count-based retries only — the pre-cap behaviour).
+      def exceeds_total_budget?(next_wait)
+        budget = retry_total_timeout
+        return false if budget.nil?
+
+        (@error_retry_spent + next_wait) > budget
+      end
+
+      # Fail fast on the dead-host path: the host keeps timing out and the
+      # wall-time budget is spent, so surface a clear, actionable message instead
+      # of stalling for another full backoff. Preserves the original error and
+      # the auth-hint upgrade for the (rare) auth-shaped retryable case.
+      def raise_retry_budget_exhausted!(error, attempts)
+        spent = @error_retry_spent.round(1)
+        raise Rubino::Error,
+              "Gave up after ~#{spent}s and #{attempts - 1} retries: the provider host is " \
+              "unreachable or persistently failing (#{error.message}). Check the model's " \
+              "base_url / network, or configure a fallback model."
       end
 
       # Jittered backoff for an invalid/empty response — 5s base, 120s cap,
@@ -314,9 +367,14 @@ module Rubino
                                       retry_after: retry_after_for(classified, error))
       end
 
+      # The per-retry backoff CEILING for this error. The non-overload path now
+      # honours the (previously dead) api_retry_backoff_cap_seconds knob (16s)
+      # instead of the hardcoded 60s ERROR_PATH ceiling — capping the worst
+      # single wait to ~24s. Overload/unknown still ride the higher overload cap
+      # so a 529 backs off long enough to clear the hot window.
       def error_backoff_cap(classified)
         overload = [LLM::FailoverReason::OVERLOADED, LLM::FailoverReason::UNKNOWN]
-        base = BackoffPolicy::ERROR_PATH[:max]
+        base = backoff_cap
         overload.include?(classified.reason) ? [base, overload_backoff_cap].max : base
       end
 
@@ -374,6 +432,23 @@ module Rubino
 
       def overload_backoff_cap
         @config.dig("agent", "api_retry_backoff_overload_cap_seconds") || 60
+      end
+
+      # Per-retry backoff ceiling for the ordinary error path (non-overload). The
+      # ERROR_PATH preset max is the fallback when the knob is unset.
+      def backoff_cap
+        @config.dig("agent", "api_retry_backoff_cap_seconds") || BackoffPolicy::ERROR_PATH[:max]
+      end
+
+      # Total error-path retry wall-time budget (seconds), or nil for no total
+      # cap. A non-positive value is treated as nil (no cap) rather than an
+      # instant give-up — a 0 here is almost certainly a misconfig.
+      def retry_total_timeout
+        raw = @config.dig("agent", "api_retry_total_timeout_seconds")
+        return nil if raw.nil?
+
+        n = Float(raw, exception: false)
+        n if n&.positive?
       end
 
       def log_safely(**fields)

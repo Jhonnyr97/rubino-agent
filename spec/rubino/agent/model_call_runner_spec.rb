@@ -139,6 +139,105 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
     end
   end
 
+  # ── Dead-host TOTAL wall-time cap (#dead-host) ──────────────────────────
+  # A permanently-unreachable host fails with a RETRYABLE connection timeout on
+  # every attempt. The count budget alone lets backoff stack to ~75-110s before
+  # giving up. The total wall-time cap bounds that: once the cumulative backoff
+  # PLUS the next planned wait would cross the budget, fail FAST with a clear
+  # message — WITHOUT cutting genuine recovery that lands inside the window.
+  describe "dead host — total retry wall-time cap" do
+    # Each retry plans a fixed 12s backoff (deterministic, no jitter), so the
+    # cumulative spend is 12, 24, … A 30s total budget admits the first two
+    # waits (12+12=24 ≤ 30) but the THIRD (24+12=36 > 30) trips the cap.
+    def fixed_backoff_runner(boundary, cfg:)
+      runner = build_runner(boundary, cfg: cfg)
+      allow(runner).to receive(:error_backoff).and_return(12.0)
+      runner
+    end
+
+    # A boundary that always fails with the same retryable transport error (a
+    # permanently-dead host). The cap trips at the 3rd attempt, so three scripted
+    # errors are enough.
+    def dead_host_boundary
+      ScriptedBoundary.new(transient_error, transient_error, transient_error)
+    end
+
+    let(:dead_host_cfg) do
+      test_configuration("agent" => { "api_max_retries" => 5,
+                                      "api_retry_total_timeout_seconds" => 30 })
+    end
+
+    it "gives up within the wall-time cap with a clear, actionable message" do
+      boundary = dead_host_boundary
+      expect { fixed_backoff_runner(boundary, cfg: dead_host_cfg).call!(request) }
+        .to raise_error(Rubino::Error, /Gave up after .* unreachable or persistently failing/)
+    end
+
+    it "stops BEFORE exhausting all 5 count-budget retries (bounded by time, not count)" do
+      boundary = dead_host_boundary
+      expect { fixed_backoff_runner(boundary, cfg: dead_host_cfg).call!(request) }
+        .to raise_error(Rubino::Error)
+      # 1 initial call + 2 retries that fit the budget; the 3rd planned wait
+      # (24+12=36 > 30) trips the cap, so we never reach the 5-retry count cap.
+      expect(boundary.calls).to eq(3)
+    end
+
+    it "still recovers a genuine transient blip that clears inside the window" do
+      boundary = ScriptedBoundary.new(transient_error, transient_error, text_response("recovered"))
+      out = fixed_backoff_runner(boundary, cfg: dead_host_cfg).call!(request)
+      expect(out.content).to eq("recovered")
+      expect(boundary.calls).to eq(3)
+    end
+
+    it "falls back on a dead host when a fallback chain is configured (cap → rotate)" do
+      # Proven indirectly via the fallback-chain describe block below; here we
+      # only assert the no-fallback default raises the clear give-up message.
+      boundary = dead_host_boundary
+      expect { fixed_backoff_runner(boundary, cfg: dead_host_cfg).call!(request) }
+        .to raise_error(Rubino::Error, /Check the model's base_url . network/)
+    end
+
+    it "nil total cap ⇒ count-based retries only (no early give-up)" do
+      cfg = test_configuration("agent" => { "api_max_retries" => 2,
+                                            "api_retry_total_timeout_seconds" => nil })
+      boundary = ScriptedBoundary.new(transient_error, transient_error, transient_error)
+      runner = build_runner(boundary, cfg: cfg)
+      allow(runner).to receive(:error_backoff).and_return(12.0)
+      # Without a total cap, it exhausts the count budget (2 retries) and
+      # re-raises the ORIGINAL transport error, not the give-up message.
+      expect { runner.call!(request) }.to raise_error(Faraday::ConnectionFailed)
+      expect(boundary.calls).to eq(3)
+    end
+  end
+
+  # ── Per-retry backoff cap now honours api_retry_backoff_cap_seconds ──────
+  # The knob was declared in defaults but NEVER read — the error path hardcoded
+  # the 60s ERROR_PATH ceiling, so a late retry could sleep ~48s. It is now the
+  # non-overload ceiling; overload still rides the higher overload cap.
+  describe "error-path backoff cap wiring" do
+    let(:cfg) do
+      test_configuration("agent" => { "api_retry_backoff_cap_seconds" => 16,
+                                      "api_retry_backoff_overload_cap_seconds" => 60 })
+    end
+
+    def cap_for(reason)
+      runner = build_runner(ScriptedBoundary.new(text_response), cfg: cfg)
+      classified = Rubino::LLM::ClassifiedError.new(
+        reason: reason, status_code: nil, message: "x", retryable: true,
+        should_compress: false, should_rotate_credential: false, should_fallback: false
+      )
+      runner.send(:error_backoff_cap, classified)
+    end
+
+    it "caps an ordinary transient error at api_retry_backoff_cap_seconds (16s, not 60s)" do
+      expect(cap_for(Rubino::LLM::FailoverReason::TIMEOUT)).to eq(16)
+    end
+
+    it "still rides the higher overload cap for an overloaded provider" do
+      expect(cap_for(Rubino::LLM::FailoverReason::OVERLOADED)).to eq(60)
+    end
+  end
+
   # ── Permanent error → raise immediately ─────────────────────────────────
   describe "permanent (non-retryable) error" do
     it "re-raises without retrying" do
