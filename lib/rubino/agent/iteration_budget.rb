@@ -21,14 +21,18 @@ module Rubino
         within_iteration_limit?(iteration) && within_time_limit?
       end
 
-      # True when offering the interactive Continue extension would actually
-      # help: the ITERATION ceiling is what's exhausted AND time is still within
-      # budget (#403). extend! raises only the iteration ceiling, so when the
-      # TIME limit is what's spent, extending is a no-op and re-prompting would
-      # loop forever — callers must force-summarize instead. False also on an
-      # unbounded iteration cap (nothing to extend).
+      # True ONLY when offering the interactive Continue extension would actually
+      # help: the SOFT iteration ceiling (@max_tool_iterations) is what's
+      # exhausted, and neither non-extendable rail is the blocker (#403).
+      # extend! raises only the soft ceiling, so it is impotent against the TIME
+      # limit AND the max_turns OUTER rail. When either of those is what's spent,
+      # extending is a no-op and re-prompting would loop forever — callers must
+      # force-summarize instead. Hence extendable? is FALSE when the time limit
+      # OR the max_turns outer rail is the blocker, and only TRUE when the soft
+      # iteration ceiling is what's exhausted. Also false on an unbounded soft
+      # cap (nothing to extend).
       def extendable?(iteration)
-        within_time_limit? && !within_iteration_limit?(iteration)
+        within_time_limit? && within_turns_rail?(iteration) && !within_soft_iteration_limit?(iteration)
       end
 
       # True when the per-turn wall-clock budget (max_turn_seconds) is spent.
@@ -65,13 +69,24 @@ module Rubino
       end
 
       # A nil cap means "unbounded": never stop on that dimension rather than
-      # crashing the turn comparing a number with nil (#139). max_turns is the
-      # OUTER rail (#414) — even after extend! lifts the soft @max_tool_iterations
-      # ceiling, the iteration count may never exceed max_turns, so a runaway
-      # that keeps extending still terminates at the hard outer bound.
+      # crashing the turn comparing a number with nil (#139). The full iteration
+      # limit is the conjunction of the OUTER max_turns rail (#414) and the SOFT
+      # @max_tool_iterations ceiling — even after extend! lifts the soft ceiling,
+      # the iteration count may never exceed max_turns, so a runaway that keeps
+      # extending still terminates at the hard outer bound.
       def within_iteration_limit?(iteration)
-        return false unless @max_turns.nil? || iteration <= @max_turns
+        within_turns_rail?(iteration) && within_soft_iteration_limit?(iteration)
+      end
 
+      # The OUTER max_turns rail (#414): a hard ceiling extend! cannot move. A
+      # nil max_turns means this rail is unbounded.
+      def within_turns_rail?(iteration)
+        @max_turns.nil? || iteration <= @max_turns
+      end
+
+      # The SOFT @max_tool_iterations ceiling: the only dimension extend! can
+      # lift. A nil ceiling means it is unbounded (nothing to extend).
+      def within_soft_iteration_limit?(iteration)
         @max_tool_iterations.nil? || iteration <= @max_tool_iterations
       end
 
