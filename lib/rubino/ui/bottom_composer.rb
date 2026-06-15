@@ -416,6 +416,33 @@ module Rubino
         end
       end
 
+      # Row-accurately ERASE the whole live region in place and reset its
+      # on-screen geometry to a clean blank top row — used by the stream
+      # FINALIZE / INTERRUPT / force-summary paths right before they commit
+      # their last line (#421). The interrupt/force-summary repaints run after
+      # the status-row ticker and a flurry of intermediate transient frames
+      # (status_hide → clear_stream_region → status_stop, each a paint_live(""))
+      # have left the region's recorded geometry out of step with the physical
+      # rows — the ticker paints a status row that #live_rows does NOT include,
+      # so @rows_above under-counts and the next #print_above's relative
+      # \e[1A\e[2K walk-up clears one row short: the live prompt is left on
+      # screen and gets COMMITTED into scrollback as the ghost `❯` above the
+      # `⎿ interrupted` marker, and the kept partial / whole summary block
+      # repaints a second time below it (the duplicated block). {LiveRegion#clear}
+      # walks UP exactly the rows it last painted and zeroes the counters, so the
+      # subsequent commit lands as ONE clean frame from a known-blank top row —
+      # the same geometry-reset discipline Ctrl+L (#395) / resize (#401) use,
+      # applied to the finalize path. Drops the partial too so a stale tail can't
+      # repaint. A no-op-safe single frame: nothing is committed here, only the
+      # transient rows are erased and the prompt redrawn fresh.
+      def finalize_region
+        @render.synchronize do
+          @partial = +""
+          @region.clear
+          redraw
+        end
+      end
+
       # Renders a LIVE, un-committed streamed line on the row directly above the
       # prompt, redrawn in place as it grows (it does NOT scroll). Used by the
       # StdoutProxy for partial stream tokens that have no newline yet, so the

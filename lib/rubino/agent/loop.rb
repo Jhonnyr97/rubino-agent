@@ -511,6 +511,15 @@ module Rubino
         ) || response.content
 
         persist_final_text(response, final)
+        # Reset the live-region geometry before the force-summary's final commit
+        # repaint (#421): this terminal summary runs after a fresh thinking-row
+        # phase (#thinking_started above) and a streamed block, which leave the
+        # composer's recorded row geometry out of step with the physical rows.
+        # Without the reset the closing #stream_end walks a stale row count and
+        # the WHOLE summary block repaints twice. Same geometry-reset seam the
+        # interrupt finalize (#421) / Ctrl+L (#395) / resize (#401) use; guarded
+        # so non-CLI UIs (Null/API/Base) are untouched.
+        @ui.reset_finalize_geometry if @ui.respond_to?(:reset_finalize_geometry)
         finalize_stream_text(response, final)
         emit_turn_summary(turn_started_at, token_total)
         final
