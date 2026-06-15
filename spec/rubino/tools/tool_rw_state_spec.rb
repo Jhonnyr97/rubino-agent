@@ -11,7 +11,13 @@
 #         its wrong mental model. Fixed: a pending edit-failure bypasses dedup.
 #   MF-1 — an out-of-workspace path was reported as "doesn't exist / no files
 #         matched", leading the model to propose creating/overwriting a real
-#         file it just couldn't see. Fixed: a typed :outside_workspace error.
+#         file it just couldn't see. #406 resolves this differently: reads are
+#         now BROAD (Hermes/Claude/Codex parity) so an outside path is READ, not
+#         denied or reported missing — there is no false "not found". The
+#         MF-1/MF-2 data-loss class stays protected on the WRITE path (the
+#         overwrite_guard / read_gate), and writes outside the workspace are
+#         still refused (write_tool_spec). A small secret DENYLIST keeps the
+#         model from slurping credentials (.env / ~/.rubino tokens) into context.
 RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeClass
   let(:tmp_dir) { Dir.mktmpdir("rw-state") }
   let(:tracker) { Rubino::Tools::ReadTracker.new }
@@ -121,43 +127,55 @@ RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeCla
     end
   end
 
-  describe "MF-1 — out-of-workspace paths report 'outside workspace', not 'missing'" do
+  describe "#406 — reads are BROAD (writes stay sandboxed); MF-1/MF-2 on the write path" do
     let(:outside) { Dir.mktmpdir("outside-ws") }
 
     after { FileUtils.rm_rf(outside) }
 
-    it "read of an existing file outside the workspace is denied as outside, not missing" do
+    it "reads an existing file OUTSIDE the workspace (broad reads, no false 'missing')" do
       target = File.join(outside, "app.js")
       File.write(target, "console.log('web app booting');\n")
       out = reader.call("file_path" => target)
-      expect(out).to be_a(Hash)
-      expect(out[:error_code]).to eq(:outside_workspace)
-      expect(out[:output]).to include("outside your workspace")
-      expect(out[:output]).not_to include("File not found")
+      expect(text(out)).to include("console.log('web app booting')")
+      expect(text(out)).not_to include("outside your workspace")
+      expect(text(out)).not_to include("File not found")
     end
 
-    it "glob into an outside folder is denied, not 'no files matched'" do
+    it "globs an OUTSIDE folder and returns matches (broad reads)" do
       File.write(File.join(outside, "app.js"), "x")
       out = Rubino::Tools::GlobTool.new.call("pattern" => "*.js", "path" => outside)
-      expect(out).to be_a(Hash)
-      expect(out[:error_code]).to eq(:outside_workspace)
-      expect(out[:output]).to include("outside your workspace")
-      expect(out[:output]).not_to include("No files matched")
+      expect(text(out)).to include("app.js")
+      expect(text(out)).not_to include("outside your workspace")
     end
 
-    it "glob with an absolute out-of-workspace pattern is denied" do
+    it "globs with an absolute OUTSIDE pattern and returns matches (broad reads)" do
       File.write(File.join(outside, "app.js"), "x")
       out = Rubino::Tools::GlobTool.new.call("pattern" => File.join(outside, "*.js"))
-      expect(out).to be_a(Hash)
-      expect(out[:error_code]).to eq(:outside_workspace)
+      expect(text(out)).to include("app.js")
+      expect(text(out)).not_to include("outside your workspace")
     end
 
-    it "grep into an outside folder is denied, not 'path not found'" do
+    it "greps an OUTSIDE folder and returns matches (broad reads)" do
       File.write(File.join(outside, "app.js"), "needle\n")
       out = Rubino::Tools::GrepTool.new.call("pattern" => "needle", "path" => outside)
+      expect(text(out)).to include("app.js")
+      expect(text(out)).not_to include("outside your workspace")
+    end
+
+    it "still refuses to WRITE outside the workspace (writes stay sandboxed)" do
+      target = File.join(outside, "evil.txt")
+      out = writer.call("file_path" => target, "content" => "x")
+      expect(text(out)).to include("refusing to access")
+      expect(File).not_to exist(target)
+    end
+
+    it "refuses to READ a .env credential file directly (secret denylist, #406)" do
+      target = File.join(outside, ".env")
+      File.write(target, "API_KEY=supersecret\n")
+      out = reader.call("file_path" => target)
       expect(out).to be_a(Hash)
-      expect(out[:error_code]).to eq(:outside_workspace)
-      expect(out[:output]).not_to include("Path not found")
+      expect(out[:error_code]).to eq(:secret_denied)
+      expect(text(out)).not_to include("supersecret")
     end
 
     it "still allows reading agent-internal files under the Rubino home dir" do
@@ -175,7 +193,7 @@ RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeCla
       FileUtils.rm_f(home_file)
     end
 
-    it "becomes reachable once the folder is added via /add-dir (no false 'missing')" do
+    it "reads a file under an /add-dir'd root (write-eligible too)" do
       target = File.join(outside, "app.js")
       File.write(target, "console.log('web app booting');\n")
       Rubino::Workspace.add(outside)
