@@ -476,6 +476,67 @@ RSpec.describe Rubino::Session::Repository do
     end
   end
 
+  # #390 (residual #376) — the explicit-resume owner-claim must be ATOMIC. The
+  # old runner did a check-then-stamp: owned_by_other_live_process? READ
+  # owner_pid, then a LATER update(id, owner_pid:) STAMPED it. Two concurrent
+  # `chat --resume <id>` both read the SAME dead owner_pid, both passed the
+  # check, and both stamped+wrote the row → user,user interleave. claim_for_resume!
+  # folds the read and the stamp into one compare-and-swap (Jobs::Queue#claim!
+  # idiom): exactly one racer wins, the loser gets false and forks.
+  describe "#claim_for_resume! (atomic owner-claim)" do
+    it "exactly ONE of two racers on the SAME dead-owner row wins the claim" do
+      s = repo.create(source: "cli")
+      dead = 999_999
+      repo.update(s[:id], status: "ended", owner_pid: dead) # owner gone (process dead)
+
+      # Both racers observe the same dead owner_pid (process_alive?(dead) == false
+      # so live_owned_by_other? is false → both are eligible to attempt the CAS).
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(dead).and_return(false)
+
+      row_a = repo.find(s[:id]) # racer A's view (owner_pid: dead)
+      row_b = repo.find(s[:id]) # racer B's view (owner_pid: dead, the SAME stale read)
+
+      won_a = repo.claim_for_resume!(row_a)
+      won_b = repo.claim_for_resume!(row_b)
+
+      # ATOMIC: the first CAS rewrites owner_pid to our live pid; the second's
+      # WHERE owner_pid = <dead> no longer matches → rowcount 0 → loses the race.
+      expect([won_a, won_b]).to contain_exactly(true, false)
+      # The winner left the row stamped to THIS process — never the dead owner.
+      expect(repo.find(s[:id])[:owner_pid]).to eq(Process.pid)
+    end
+
+    it "claims an UNOWNED (nil owner_pid) row and rejects a duplicate racer" do
+      s = repo.create(source: "cli")
+      repo.update(s[:id], status: "ended", owner_pid: nil)
+
+      row_a = repo.find(s[:id])
+      row_b = repo.find(s[:id])
+      expect(repo.claim_for_resume!(row_a)).to be true
+      # Second racer still reads owner_pid: nil but the CAS on `owner_pid IS NULL`
+      # now misses (we stamped our pid), so it loses and the caller forks.
+      expect(repo.claim_for_resume!(row_b)).to be false
+    end
+
+    it "refuses (forks) when a DIFFERENT live process owns the row — never stomps" do
+      s = repo.create(source: "cli")
+      repo.update(s[:id], status: "active", owner_pid: 999_999)
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(999_999).and_return(true)
+
+      expect(repo.claim_for_resume!(repo.find(s[:id]))).to be false
+      # The live foreign owner is left untouched (no stamp), so the resumer forks.
+      expect(repo.find(s[:id])[:owner_pid]).to eq(999_999)
+    end
+
+    it "is a no-op-success for a row we ALREADY own (our own pid)" do
+      ours = repo.create(source: "cli") # owner_pid = our pid
+      expect(repo.claim_for_resume!(repo.find(ours[:id]))).to be true
+      expect(repo.find(ours[:id])[:owner_pid]).to eq(Process.pid)
+    end
+  end
+
   describe ".derive_title" do
     it "derives a clean one-line title from the first user message" do
       expect(described_class.derive_title("Add a modulo operation")).to eq("Add a modulo operation")

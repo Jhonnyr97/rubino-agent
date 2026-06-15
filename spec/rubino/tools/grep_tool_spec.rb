@@ -138,6 +138,52 @@ RSpec.describe Rubino::Tools::GrepTool do
     end
   end
 
+  # #391 (regression of #375) — on a large match-heavy file, the streaming early
+  # `io.close` (SIGPIPE after the cap) makes rg exit status 1 (broken pipe) on
+  # some platforms. The recovery `status = 0 if lines.any? && status != 1`
+  # EXCLUDED status 1, so the deliberate early-close fell into the `status == 1 →
+  # "No matches"` branch and DROPPED the matches already collected. The fix
+  # treats a cap-hit-with-matches (more_exist) as success regardless of rg's exit
+  # code, while a genuine no-match (0 lines, real exit 1) still reports correctly.
+  describe "ripgrep early-close exit-status (#391)" do
+    # Drives search_with_ripgrep with a stubbed pipe that delivers MORE than
+    # max_results lines (so the impl deliberately closes early / sets more_exist)
+    # and forces `$?` to exit status 1 (the broken-pipe code that aliases the
+    # genuine no-match code on the affected platform).
+    def grep_with_stubbed_pipe(lines_yielded, exit_status:)
+      allow(tool).to receive(:ripgrep_available?).and_return(true)
+      allow(IO).to receive(:popen) do |_argv, **_kw, &blk|
+        fake = StringIO.new(lines_yielded.join)
+        def fake.close = nil # the impl closes early; keep $? from our shell run
+        blk.call(fake)
+        # Set `$?` to the requested exit status the way the broken-pipe close
+        # would on the affected platform (rg killed mid-scan → exit 1).
+        system("exit #{exit_status}")
+      end
+      tool.call("pattern" => "match", "path" => tmp_dir, "max_results" => 50)
+    end
+
+    it "returns the collected matches + 'more' on an early-close exit 1, NOT 'No matches'" do
+      # 60 collected match lines > max_results(50) → the impl hits the cap,
+      # sets more_exist, and closes early; rg then exits 1 (broken pipe).
+      lines  = Array.new(60) { |i| "many.txt:#{i + 1}:match #{i}\n" }
+      result = grep_with_stubbed_pipe(lines, exit_status: 1)
+      out    = payload(result)
+
+      expect(out).not_to include("No matches")
+      # The 50 already-collected matches are returned, with the overflow flag.
+      expect(out.lines.grep(/many\.txt:/).size).to eq(50)
+      expect(out).to include("more")
+      expect(result[:metrics]).to include("+")
+    end
+
+    it "still reports a GENUINE no-match (0 lines, real exit 1) correctly" do
+      result = grep_with_stubbed_pipe([], exit_status: 1)
+      expect(result).to be_a(String)
+      expect(result).to include("No matches")
+    end
+  end
+
   # #375b — the rg path honors .gitignore but the Ruby fallback used a bare
   # Dir.glob("**/*"), so the two returned DIFFERENT sets depending on whether rg
   # was installed (non-deterministic; leaked ignored content). Both must apply

@@ -127,9 +127,17 @@ module Rubino
           io.close # close early → rg gets SIGPIPE and stops scanning
         end
         status = $?.exitstatus
-        # A broken-pipe close makes rg exit non-zero (141/SIGPIPE) even though
-        # it found matches; treat "we already collected lines" as success.
-        status = 0 if lines.any? && status != 1
+        # When WE deliberately close the pipe early after hitting the cap
+        # (#391/regression #375), rg is killed mid-scan and exits non-zero —
+        # and on some platforms the broken-pipe exit is reported as 1, the SAME
+        # code rg uses for a genuine "no matches". The old `status != 1` guard
+        # therefore EXCLUDED that case and fell through to the `status == 1`
+        # branch, dropping the 50 matches we already collected and reporting
+        # "No matches". Whenever we collected matches AND closed early (more_exist),
+        # it is unambiguously a success regardless of rg's exit code; a real
+        # "no matches" is 0 collected lines and we never closed early, so it
+        # still reaches the status==1 branch and reports correctly.
+        status = 0 if lines.any? && (more_exist || status != 1)
 
         if status == 0
           # We can't cheaply know the exact remaining count once we stop early,

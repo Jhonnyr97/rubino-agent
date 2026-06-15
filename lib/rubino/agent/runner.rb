@@ -245,13 +245,20 @@ module Rubino
           # fresh child that inherits the full history instead of stomping the
           # live session; the user keeps their context and the two writers never
           # interleave.
-          return fork_busy_session(session) if @session_repo.owned_by_other_live_process?(session)
+          # ATOMICALLY claim the row for THIS process (#390/residual #376).
+          # The old code checked `owned_by_other_live_process?` then later
+          # stamped owner_pid — a TOCTOU window where two concurrent
+          # `--resume <id>` both read the same dead owner_pid, both passed the
+          # check, and both stamped+wrote the live row (user,user … interleave).
+          # claim_for_resume! folds the check and stamp into one compare-and-swap
+          # (same idiom as Jobs::Queue#claim!): exactly one racer wins, the
+          # loser gets false and forks a fresh child off the busy parent.
+          return fork_busy_session(session) unless @session_repo.claim_for_resume!(session)
 
           # An existing row is already in the DB; mark it so the lazy-persist
-          # path (#144) treats it as persisted and never re-inserts. Claim
-          # ownership for THIS process so a later concurrent resume sees us as
-          # the live owner and forks rather than interleaving.
-          @session_repo.update(session[:id], owner_pid: Process.pid)
+          # path (#144) treats it as persisted and never re-inserts. We now own
+          # owner_pid (stamped atomically above) so a later concurrent resume
+          # sees us as the live owner and forks rather than interleaving.
           session[:persisted] = true
           session[:owner_pid] = Process.pid
           @ui.status("Resuming session: #{session[:id][0..7]}...") if @announce_session
