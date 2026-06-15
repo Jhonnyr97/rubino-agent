@@ -73,4 +73,38 @@ RSpec.describe Rubino::Tools::GlobTool do
     expect(result[:output]).to include("outside your workspace")
     expect(result[:output]).not_to include("not found")
   end
+
+  # #375c — glob ignored .gitignore entirely, surfacing node_modules / build
+  # artifacts / ignored files that grep's rg path never would. It now honors
+  # .gitignore by default, with an explicit include_ignored escape hatch.
+  describe "honors .gitignore (#375c)" do
+    let(:repo_dir) { Dir.mktmpdir("glob_ignore") }
+
+    before do
+      skip "git not installed" unless system("which git > /dev/null 2>&1")
+      Dir.chdir(repo_dir) do
+        system("git", "init", "-q", out: File::NULL, err: File::NULL)
+        system("git", "config", "user.email", "t@t", out: File::NULL, err: File::NULL)
+        system("git", "config", "user.name", "t", out: File::NULL, err: File::NULL)
+      end
+      File.write(File.join(repo_dir, ".gitignore"), "build.rb\n")
+      File.write(File.join(repo_dir, "keep.rb"), "")
+      File.write(File.join(repo_dir, "build.rb"), "")
+      Rubino.configuration.set("terminal", "cwd", repo_dir)
+    end
+
+    after { FileUtils.rm_rf(repo_dir) }
+
+    it "excludes git-ignored files by default" do
+      result = payload(tool.call("pattern" => "*.rb", "path" => repo_dir))
+      expect(result).to include("keep.rb")
+      expect(result).not_to include("build.rb")
+    end
+
+    it "includes ignored files when include_ignored is set" do
+      result = payload(tool.call("pattern" => "*.rb", "path" => repo_dir, "include_ignored" => true))
+      expect(result).to include("keep.rb")
+      expect(result).to include("build.rb")
+    end
+  end
 end

@@ -91,6 +91,68 @@ RSpec.describe Rubino::Util::Output do
     end
   end
 
+  # #373 — a huge tool output (e.g. 128MB single line) was materialized into
+  # multi-million-element `.lines` arrays MULTIPLE times just to decide it was
+  # over-cap, spiking RSS into the hundreds of MB. The over/under decision must
+  # use allocation-free passes (bytesize / count("\n")), and the full buffer
+  # must never be split with `.lines`.
+  describe ".truncate peak-memory bounds (#373)" do
+    it "decides over/under-cap without materializing .lines on the full buffer" do
+      big = "x" * 2_000_000 # one ~2MB line: .lines would be a giant array
+      # Spy: a `.lines` call on the FULL buffer is the regression. The bounded
+      # head/tail slices (<= max_bytes) may still call .lines — only the whole
+      # 2MB string is forbidden.
+      forbidden = false
+      allow(big).to receive(:lines).and_wrap_original do |orig, *args|
+        forbidden = true
+        orig.call(*args)
+      end
+      described_class.truncate(big, max_bytes: 1_000, max_lines: 100)
+      expect(forbidden).to be(false)
+    end
+
+    it "uses count(\"\\n\") for the line-count decision instead of .lines.size" do
+      text = "a\nb\nc\n"
+      expect(text).to receive(:count).with("\n").at_least(:once).and_call_original
+      allow(text).to receive(:lines).and_call_original
+      described_class.truncate(text, max_bytes: 10_000, max_lines: 100)
+      # Under cap: returns scrubbed text unchanged, no whole-buffer .lines split.
+      expect(text).not_to have_received(:lines)
+    end
+
+    it "still produces a tail-biased, byte-capped result for a huge over-cap buffer" do
+      big = "HEAD#{"x" * 1_000_000}TAIL"
+      result = described_class.truncate(big, max_bytes: 1_000, max_lines: 10_000)
+      expect(result.bytesize).to be <= 1_200 # ~max_bytes + marker, not 1MB
+      expect(result).to include("HEAD").and include("TAIL").and include("bytes elided")
+    end
+  end
+
+  # #373 — preview() did `text.lines.map(&:chomp)` unconditionally: a ~1KB value
+  # that happens to be one 2M-char line allocated a 2M-element array just to
+  # learn it fit. The under-cap fits-check must be allocation-free, and trimming
+  # must slice head/tail rather than split the whole buffer.
+  describe ".preview peak-memory bounds (#373)" do
+    it "does not split the full buffer into .lines when trimming a huge buffer" do
+      big = (1..100).map { |i| "line#{i}#{"y" * 50_000}" }.join("\n")
+      forbidden = false
+      allow(big).to receive(:lines).and_wrap_original do |orig, *args|
+        forbidden = true
+        orig.call(*args)
+      end
+      described_class.preview(big, max: 30, head: 5, tail: 10)
+      expect(forbidden).to be(false)
+    end
+
+    it "trims a large multi-line buffer to head + marker + tail correctly" do
+      text = (1..50).map { |i| "line #{i}" }.join("\n")
+      result = described_class.preview(text)
+      head = (1..5).map { |i| "line #{i}" }
+      tail = (41..50).map { |i| "line #{i}" }
+      expect(result).to eq((head + ["… [35 more lines · full in DB] …"] + tail).join("\n"))
+    end
+  end
+
   # STRM-R2-1 — binary/non-UTF-8 tool output must become a valid UTF-8 string
   # at the capture seam so JSON.generate (the LLM request) and the SQLite
   # driver never choke and the tool row persists.

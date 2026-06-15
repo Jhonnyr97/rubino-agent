@@ -313,8 +313,16 @@ module Rubino
         "#{truncated}…"
       end
 
-      # Deletes a session and all related records
+      # Deletes a session and all related records. Also removes the session's
+      # on-disk spill/paste artifacts (#374), which the DB cascade alone left
+      # ORPHANED: oversized pastes live under <home>/sessions/<id>/ and full
+      # tool-output spills under <home>/tool-results/<call_id>.txt. The
+      # tool_calls' call_ids are captured BEFORE their rows are deleted so the
+      # matching spill files can be removed; the paste subtree is keyed by the
+      # session id directly. File removal runs AFTER the transaction commits so
+      # a rolled-back delete never strands the DB rows against deleted files.
       def destroy!(id)
+        call_ids = @db[:tool_calls].where(session_id: id).select_map(:id)
         @db.transaction do
           @db[:events].where(session_id: id).delete
           @db[:tool_calls].where(session_id: id).delete
@@ -323,6 +331,7 @@ module Rubino
           @db[:runs].where(session_id: id).delete
           @db[:sessions].where(id: id).delete
         end
+        Util::SpillStore.destroy_session_files(id, call_ids: call_ids)
       end
 
       private

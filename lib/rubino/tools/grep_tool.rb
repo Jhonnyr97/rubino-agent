@@ -108,24 +108,44 @@ module Rubino
         argv += ["-A", after.to_s]  if after.positive?
         argv += [pattern, path]
 
-        output = IO.popen(argv, err: %i[child out], &:read)
+        # STREAM rg's output line-by-line and STOP after max_results (#375a).
+        # `IO.popen(argv).read` buffered the ENTIRE rg output — a pattern that
+        # matches a huge file produced +100MB in memory just to `.first(50)` it.
+        # Read until we have max_results+1 lines (the +1 detects "there are
+        # more"), then close the pipe (SIGPIPE stops rg) so neither memory nor
+        # CPU scale with the match count.
+        lines = []
+        more_exist = false
+        IO.popen(argv, err: %i[child out]) do |io|
+          io.each_line do |line|
+            if lines.size >= max_results
+              more_exist = true
+              break
+            end
+            lines << line
+          end
+          io.close # close early → rg gets SIGPIPE and stops scanning
+        end
         status = $?.exitstatus
+        # A broken-pipe close makes rg exit non-zero (141/SIGPIPE) even though
+        # it found matches; treat "we already collected lines" as success.
+        status = 0 if lines.any? && status != 1
 
         if status == 0
-          all_lines = output.lines
-          lines     = all_lines.first(max_results)
-          more      = all_lines.size - lines.size
+          # We can't cheaply know the exact remaining count once we stop early,
+          # so report "more" without an exact number when the cap was hit.
+          more      = more_exist
           header    = "#{lines.size} match(es) shown" \
-                      "#{" (#{more} more — raise max_results or narrow the pattern)" if more.positive?}"
+                      "#{" (more — raise max_results or narrow the pattern)" if more}"
           full      = "#{header}:\n\n#{lines.join}"
           { output: full,
-            metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more.positive?}",
+            metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more}",
             body: Util::Output.preview(full),
             body_kind: :plain }
         elsif status == 1
           "No matches found for pattern: #{pattern}"
         else
-          "Error executing search: #{output}"
+          "Error executing search: #{lines.join}"
         end
       end
 
@@ -146,8 +166,17 @@ module Rubino
         # `path` is a file we search it directly (include_pattern is moot).
         files = File.file?(path) ? [path] : Dir.glob(File.join(path, "**", include_pattern || "*"))
 
+        # Honor .gitignore the SAME way the rg path does (#375b): without this
+        # the fallback returned a different, larger set (build artifacts,
+        # node_modules, ignored secrets) than rg — non-deterministic on whether
+        # rg is installed. A single FILE path the model targeted directly is
+        # always searched (mirrors rg searching an explicit file argument).
+        ignore = Util::IgnoreRules.new
+        searching_file = File.file?(path)
+
         files.each do |file|
           next unless File.file?(file)
+          next if !searching_file && ignore.ignored?(file, path)
           next if binary_file?(file)
 
           begin

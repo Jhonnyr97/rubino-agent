@@ -127,15 +127,61 @@ module Rubino
       def self.preview(text, max: DEFAULT_MAX, head: DEFAULT_HEAD, tail: DEFAULT_TAIL)
         return "" if text.nil? || text.to_s.empty?
 
-        lines = text.to_s.lines.map(&:chomp)
-        return lines.join("\n") if lines.size <= max
+        s = text.to_s
+        # Count newlines instead of materializing `s.lines` (#373): a ~1KB
+        # value with a 2-million-element single-line buffer used to allocate a
+        # 2M-element array (+ another 2M chomp'd copy via `.map(&:chomp)`) just
+        # to learn it fits — ~hundreds of MB of churn for a preview the caller
+        # may not even trim. `count("\n")` is O(n) bytes with zero allocation.
+        # total line count = newline count (+1 unless the buffer ends in \n).
+        nl    = s.count("\n")
+        total = s.empty? ? 0 : nl + (s.end_with?("\n") ? 0 : 1)
+        if total <= max
+          # Fits: only NOW materialize, and only to chomp the trailing newlines
+          # of the (already small) line set.
+          return s.lines.map(&:chomp).join("\n")
+        end
 
-        omitted  = lines.size - head - tail
-        head_pt  = lines.first(head)
-        tail_pt  = lines.last(tail)
-        marker   = "… [#{omitted} more lines · full in DB] …"
+        # Trimming: we only need the FIRST `head` and LAST `tail` lines, so
+        # take them off the head/tail SLICES of the buffer rather than splitting
+        # the whole thing into a (potentially huge) lines array. each_line with
+        # a bounded take avoids walking past what we keep on the head side.
+        head_pt = head_lines(s, head)
+        tail_pt = tail_lines(s, tail)
+        omitted = total - head_pt.size - tail_pt.size
+        marker  = "… [#{omitted} more lines · full in DB] …"
 
         (head_pt + [marker] + tail_pt).join("\n")
+      end
+
+      # First +n+ chomp'd lines of +s+, without materializing the whole buffer
+      # into a lines array (#373). Stops scanning after +n+ lines.
+      def self.head_lines(s, n)
+        out = []
+        s.each_line do |line|
+          out << line.chomp
+          break if out.size >= n
+        end
+        out
+      end
+
+      # Last +n+ chomp'd lines of +s+, found by scanning backward from the end
+      # rather than splitting the whole buffer (#373). Slices a bounded tail of
+      # the string by locating the n-th-from-last newline.
+      def self.tail_lines(s, n)
+        return [] if n <= 0
+
+        idx = s.length
+        n.times do
+          nl = s.rindex("\n", idx - 1)
+          break if nl.nil?
+
+          idx = nl
+        end
+        # idx now sits ON the newline before the kept tail (or 0 if we ran out).
+        slice = s[idx, s.length - idx]
+        slice = slice[1..] if slice.start_with?("\n")
+        slice.to_s.lines.map(&:chomp)
       end
 
       # Single-line elision to +max+ characters with a trailing ellipsis.
@@ -184,24 +230,46 @@ module Rubino
       # the file with offset/limit to recover any part. (Claude-Code-style
       # spill.) Pure aside from that injected callback.
       def self.truncate(text, max_bytes:, max_lines:, spill: nil)
-        # Scrub UNCONDITIONALLY at the tool→executor boundary. A stray
-        # non-UTF-8 byte (printf '\xe9', xxd/grep over a latin-1 or binary
-        # file) OR a NUL (random binary, `head -c … /dev/urandom`) in SUB-cap
-        # output would otherwise pass straight through to JSON.generate and the
-        # SQLite driver — raising "illegal/malformed utf-8" / "unrecognized
-        # token", crashing the LLM request and leaving the tool row UNPERSISTED
-        # so the model loses the record on --resume. scrub_utf8 fixes both
-        # (invalid bytes + NUL). The truncation branches below only slice the
-        # already-clean string, so cleaning once here covers every path.
-        text = scrub_utf8(text)
+        text = text.to_s
+        # Bound PEAK cost BEFORE any whole-buffer work (#373). A 128MB tool
+        # output used to be scrubbed in full (a 128MB copy), then walked twice
+        # by `text.lines` (each a multi-million-element array) just to decide it
+        # was over-cap. Decide over/under with allocation-free passes —
+        # `bytesize` and `count("\n")` — and only ever scrub/slice a BOUNDED
+        # head+tail, never the full buffer. The model-facing cap + spill below
+        # are unchanged; this only stops the materialization blow-up.
         over_bytes = text.bytesize > max_bytes
-        over_lines = text.lines.size > max_lines
-        return text unless over_bytes || over_lines
+        # newline count → line count (+1 for a final line with no trailing \n).
+        nl         = text.count("\n")
+        line_count = text.empty? ? 0 : nl + (text.end_with?("\n") ? 0 : 1)
+        over_lines = line_count > max_lines
 
+        # Under both caps: scrub the (already small) buffer and return. A stray
+        # non-UTF-8 byte (printf '\xe9') OR a NUL (random binary) in SUB-cap
+        # output must still be cleaned, or it crashes JSON.generate / the SQLite
+        # driver and the tool row never persists (lost on --resume).
+        return scrub_utf8(text) unless over_bytes || over_lines
+
+        # Over cap: spill the FULL (raw) output first so nothing is lost, then
+        # shape from bounded head/tail slices. Each slice path scrubs only the
+        # bytes it keeps, so the 128MB buffer is never scrubbed whole.
         spill_path = spill&.call(text)
         text = tail_bias_bytes(text, max_bytes, spill_path) if over_bytes
-        text = tail_bias_lines(text, max_lines, spill_path) if text.lines.size > max_lines
+        # Re-derive the line check on whatever survived the byte pass (the byte
+        # pass already cut to ~max_bytes, so this is now a bounded count).
+        text = scrub_utf8(text) unless over_bytes
+        text = tail_bias_lines(text, max_lines, spill_path) if text.count("\n") + 1 > max_lines
         text
+      end
+
+      # Encoding-scrub + NUL-strip a BOUNDED byteslice (#373). The head/tail
+      # byte path slices BEFORE scrubbing (so the 128MB buffer is never scrubbed
+      # whole); each kept slice still has to be cleaned exactly like scrub_utf8
+      # (invalid bytes dropped, NUL deleted) so JSON/SQLite don't choke.
+      def self.clean_slice(bytes, encoding)
+        s = bytes.to_s.force_encoding(encoding).scrub("")
+        s = s.encode(Encoding::UTF_8) unless s.encoding == Encoding::UTF_8
+        s.include?(NUL) ? s.delete(NUL) : s
       end
 
       def self.tail_bias_bytes(text, max_bytes, spill_path = nil)
@@ -216,13 +284,13 @@ module Rubino
         # to a simple head truncation (old behavior). Realistic caps go
         # through the head+tail path.
         if tail_budget <= 0
-          truncated = text.byteslice(0, max_bytes).to_s.force_encoding(encoding).scrub("")
+          truncated = clean_slice(text.byteslice(0, max_bytes), encoding)
           tail_note = spill_path ? " · full output: #{spill_path}" : ""
           return "#{truncated}\n... [truncated at #{max_bytes} bytes#{tail_note}]"
         end
 
-        head   = text.byteslice(0, head_budget).to_s.force_encoding(encoding).scrub("")
-        tail   = text.byteslice(-tail_budget, tail_budget).to_s.force_encoding(encoding).scrub("")
+        head   = clean_slice(text.byteslice(0, head_budget), encoding)
+        tail   = clean_slice(text.byteslice(-tail_budget, tail_budget), encoding)
         elided = text.bytesize - head.bytesize - tail.bytesize
         "#{head}#{format(marker_template, elided)}#{tail}"
       end

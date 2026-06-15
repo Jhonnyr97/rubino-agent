@@ -29,6 +29,11 @@ module Rubino
             max_results: {
               type: "integer",
               description: "Maximum number of results (default: 100)"
+            },
+            include_ignored: {
+              type: "boolean",
+              description: "Include files git ignores (.gitignore, build artifacts). " \
+                           "Default false — results honor .gitignore like grep does."
             }
           },
           required: %w[pattern]
@@ -43,6 +48,7 @@ module Rubino
         pattern     = arguments["pattern"] || arguments[:pattern]
         path        = arguments["path"]    || arguments[:path] || "."
         max_results = arguments["max_results"] || arguments[:max_results] || 100
+        include_ignored = arguments["include_ignored"] || arguments[:include_ignored] || false
 
         if (denied = workspace_denial(pattern, path))
           return denied
@@ -52,8 +58,14 @@ module Rubino
         full_pattern  = resolve_pattern(pattern, path, expanded_path)
         return full_pattern if full_pattern.is_a?(String) && full_pattern.start_with?("Error:")
 
+        # Honor .gitignore by default so glob agrees with grep's rg path
+        # (#375c): without this glob surfaced node_modules / build artifacts /
+        # ignored secrets that grep never would, an inconsistency the model
+        # tripped over. Pass include_ignored: true to opt back into the raw set.
+        ignore = include_ignored ? nil : Util::IgnoreRules.new
         files = Dir.glob(full_pattern)
                    .select { |f| File.file?(f) }
+                   .reject { |f| ignore&.ignored?(f, expanded_path) }
                    .sort_by { |f| -File.mtime(f).to_i }
                    .first(max_results)
 
