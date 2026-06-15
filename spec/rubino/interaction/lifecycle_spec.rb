@@ -116,6 +116,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     before do
       allow(Rubino::Context::TokenBudget).to receive(:new).and_return(budget)
       allow(Rubino::Context::Compressor).to receive(:new).and_return(compressor)
+      allow(compressor).to receive(:thrashing?).and_return(false)
       allow(Rubino::Context::PromptAssembler).to receive(:new).and_return(assembler)
       lifecycle.instance_variable_set(:@session_repo, session_repo)
       allow(session_repo).to receive(:find).with("child-9").and_return(child_session)
@@ -148,6 +149,20 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       # runs on the compacted context — not the dead parent.
       expect(Rubino::Context::PromptAssembler).to have_received(:new)
         .with(hash_including(session: child_session))
+    end
+
+    # #415a anti-thrash back-off: even when the token budget says compact, a
+    # session that has thrashed (last 2 passes each saved <10%) must skip the
+    # paid summary call and leave the active session untouched.
+    it "skips compaction when the compressor reports thrashing" do
+      allow(budget).to receive(:needs_compaction?).and_return(true)
+      allow(compressor).to receive(:thrashing?).and_return(true)
+      expect(compressor).not_to receive(:compact!)
+
+      result = lifecycle.send(:check_and_compact, long_messages)
+
+      expect(result).to eq(long_messages)
+      expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
     end
 
     it "leaves the active session untouched when no compaction is needed" do
