@@ -1446,9 +1446,28 @@ module Rubino
               # The runner commits the standardized dim "⎿ interrupted" marker
               # once it unwinds the cancelled turn; here we only add the
               # actionable double-tap hint so the two don't restate the same
-              # "interrupted" wording (L10). Single ASCII write —
-              # async-signal-safe enough for a trap.
-              $stderr.write("\n(press Ctrl+C again to exit)\n")
+              # "interrupted" wording (L10).
+              #
+              # Route the hint through the composer's TRAP-SAFE transient
+              # announce (#426): a raw "\n…\n" $stderr write here scrolled the
+              # live region by two rows OUTSIDE LiveRegion's @rows_above
+              # accounting, so on a very-early interrupt (the answer's first line
+              # still a raw live-tail preview) the finalize commit's \e[1A
+              # walk-up fell one row short — the raw preview survived above the
+              # rendered line and the prompt committed as a ghost `❯` (Bug B,
+              # the #265/#421 desync family). #announce_pending only assigns an
+              # ivar (no mutex, no output — trap-safe); the interrupt's finalize
+              # redraw paints it in place, leaving the geometry intact. With NO
+              # composer owning the screen (plain TTY / pipe / headless) there is
+              # no live region to desync, so fall back to the raw single $stderr
+              # write — async-signal-safe enough for a trap — so the hint still
+              # reaches the user on those paths exactly as before.
+              hint = "(press Ctrl+C again to exit)"
+              if (composer = UI::BottomComposer.current)
+                composer.announce_pending(hint)
+              else
+                $stderr.write("\n#{hint}\n")
+              end
             ensure
               in_trap = false
             end

@@ -168,6 +168,37 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "flattens embedded newlines to spaces" do
       expect(composer.send(:clamp, "a\nb", 40)).to eq("a b")
     end
+
+    # #426 (Bug A): the status ticker frame is coloured (dim ┄ track + red ◆ +
+    # dim label, all wrapped in \e[…m SGR escapes). On a mid-stream resize its
+    # STALE wide @partial was re-clamped at the new, narrower width; the
+    # per-CHAR left-truncation walk measured each escape byte as a visible
+    # column and could stop INSIDE a \e[2m run, dropping the leading \e and
+    # leaking the literal "[2m" right after the "…" marker (the "…[2m" artifact
+    # seen on screen). Clamp must treat each SGR escape as one atomic,
+    # zero-width token so a left-truncation can never split one.
+    it "never splits an ANSI escape on left-truncation (#426)" do
+      e = "\e"
+      track = (0...5).map { |c| c == 2 ? "#{e}[31m◆#{e}[0m" : "#{e}[2m┄#{e}[0m" }.join
+      frame = "#{track} #{e}[2mthinking · 5s · ~7 tok · enter to interrupt#{e}[0m"
+      # Clamp across every width that forces a left-truncation: not one of them
+      # may leak a "[…m" literal whose leading \e was dropped.
+      (1..composer.send(:display_width, frame)).each do |cols|
+        clamped = composer.send(:clamp, frame, cols)
+        # Every "[…m" present must still carry its leading ESC (a bare "[2m"
+        # means the \e was cut off — the exact on-screen artifact).
+        expect(clamped).not_to(match(/(?<!\e)\[[0-9;]+m/),
+                               "cols=#{cols} leaked an orphaned SGR escape: #{clamped.inspect}")
+      end
+    end
+
+    # ANSI SGR escapes occupy NO display columns, so a coloured frame measures
+    # by its VISIBLE width — counting the escape bytes (each \e[2m is 4 chars)
+    # made it measure ~2× wider and clamp a frame that actually fit (#426).
+    it "measures display width ignoring zero-width ANSI escapes (#426)" do
+      e = "\e"
+      expect(composer.send(:display_width, "#{e}[2mhi#{e}[0m")).to eq(2)
+    end
   end
 
   describe "buffer editing" do
@@ -1286,6 +1317,56 @@ RSpec.describe Rubino::UI::BottomComposer do
       # The final frame carries no committed banner line for any mode.
       last_frame = output.string.split("\r\e[2K").last
       %w[plan yolo default].each { |m| expect(last_frame).not_to include("mode · #{m}") }
+    end
+  end
+
+  # #426 (Bug B): the during-turn Ctrl+C double-tap hint. The chat loop's SIGINT
+  # trap used to write "\n(press Ctrl+C again to exit)\n" RAW to the terminal,
+  # scrolling the live region by two rows OUTSIDE LiveRegion's @rows_above
+  # accounting. On a very-early interrupt — the answer's first line still a raw
+  # live-tail preview — that desynced the geometry, so the finalize commit's
+  # \e[1A walk-up fell one row short: the raw preview SURVIVED above the rendered
+  # (curly) line and the prompt committed as a ghost `❯`, duplicating the
+  # preamble. #announce_pending is the TRAP-SAFE fix: it only ASSIGNS @announce
+  # (no render mutex — forbidden in trap context — and no output), and the next
+  # mutex-held frame paints the hint as an IN-PLACE transient row that never
+  # scrolls, so the geometry stays in step and the finalize erases the preview.
+  describe "#announce_pending (trap-safe during-turn hint, #426 Bug B)" do
+    it "sets the transient @announce WITHOUT taking the render mutex or emitting" do
+      # Trap-safe contract: a SIGINT trap can call this, so it must NOT lock the
+      # render mutex (Mutex#lock raises in trap context) and must NOT write any
+      # bytes (a raw scrolling write is what desynced the geometry — Bug B).
+      mutex = composer.instance_variable_get(:@render)
+      expect(mutex).not_to receive(:synchronize)
+      output.truncate(0)
+      output.rewind
+
+      composer.announce_pending("(press Ctrl+C again to exit)")
+
+      expect(composer.instance_variable_get(:@announce)).to eq("(press Ctrl+C again to exit)")
+      expect(output.string).to eq("") # zero bytes — the next frame paints it
+    end
+
+    it "renders the pending hint as an IN-PLACE live row on the next frame, never a raw scroll" do
+      # The interrupt's finalize redraw is the next mutex-held frame; it must
+      # paint the hint as a transient live row (\r\e[2K…\r\n above the prompt) —
+      # NOT as a raw "\n…\n" that scrolls the region (the desync that stranded
+      # the raw preview above the rendered line as the duplicated preamble).
+      composer.announce_pending("(press Ctrl+C again to exit)")
+      output.truncate(0)
+      output.rewind
+
+      composer.send(:redraw) # stand-in for the interrupt's finalize repaint
+
+      expect(output.string).to include("\r\e[2K(press Ctrl+C again to exit)")
+      expect(output.string).not_to include("\r\n(press Ctrl+C again to exit)\r\n")
+      expect(output.string).to end_with(PROMPT)
+    end
+
+    it "leaves the hint cleared on the next keystroke (one-shot toast, no scrollback)" do
+      composer.announce_pending("(press Ctrl+C again to exit)")
+      composer.handle_key("a") # any keystroke dismisses the toast
+      expect(composer.instance_variable_get(:@announce)).to eq("")
     end
   end
 

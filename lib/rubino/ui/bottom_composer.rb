@@ -565,6 +565,24 @@ module Rubino
         end
       end
 
+      # TRAP-SAFE announce for the during-turn Ctrl+C double-tap hint (#426).
+      # A SIGINT trap MUST NOT take the render mutex (Mutex#lock is forbidden in
+      # trap context) and MUST NOT do a raw scrolling $stderr write either: the
+      # old trap wrote "\n(press Ctrl+C again to exit)\n" straight to the
+      # terminal, scrolling the live region by two rows OUTSIDE LiveRegion's row
+      # accounting. On a very-early interrupt — while the answer's first line is
+      # still a RAW live-tail preview — that desynced @rows_above so the
+      # finalize commit's \e[1A walk-up landed one row short: the raw preview
+      # survived in scrollback above the rendered (curly) line and the prompt
+      # committed as a ghost `❯` (Bug B, same #265/#421 geometry-desync family).
+      # Here we only ASSIGN @announce (one atomic reference store, no mutex, no
+      # output) and let the NEXT mutex-held frame — the interrupt's finalize
+      # redraw — paint it as an in-place transient row that never scrolls. The
+      # hint is cleared on the next keystroke like any other announce.
+      def announce_pending(text)
+        @announce = (text || "").to_s
+      end
+
       # Updates the status bar pinned below the input (model + context
       # saturation — see {StatusBar}) and repaints in place. Called at TURN
       # BOUNDARIES only (after the footer / on session resume), never per
