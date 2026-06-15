@@ -44,6 +44,18 @@ module Rubino
         @rows_above.positive?
       end
 
+      # Forget all on-screen geometry WITHOUT emitting any erase sequences. Used
+      # after a full-screen clear (Ctrl+L: \e[2J\e[H) has already blanked the
+      # terminal and homed the cursor — the per-row \e[1A\e[2K walk #clear would
+      # do is now wrong (it would march UP over scrollback from the home row), so
+      # the counters must simply be zeroed and the next frame drawn fresh from the
+      # top.
+      def reset_geometry!
+        @rows_above = 0
+        @input_above = 0
+        @input_below = 0
+      end
+
       # Record the input block's geometry for the frame just drawn (see
       # ivar docs above). Called by the composer at the end of #draw_input.
       def input_drawn(above:, below:)

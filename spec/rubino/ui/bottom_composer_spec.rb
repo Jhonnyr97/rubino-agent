@@ -214,6 +214,21 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("")
     end
 
+    # #395: Ctrl+L (\x0c) clears the screen + scrollback, homes the cursor, and
+    # redraws the prompt in place — the readline/terminal norm. It must NOT
+    # disturb the typed buffer (only the painted screen).
+    it "Ctrl+L clears the screen and redraws the prompt, keeping the buffer" do
+      "hello".each_char { |c| composer.handle_key(c) }
+      output.truncate(0)
+      output.rewind
+      composer.handle_key("\x0c") # Ctrl+L
+      # Emits the clear-screen + scrollback + home sequence...
+      expect(output.string).to include("\e[2J\e[3J\e[H")
+      # ...then redraws the prompt with the preserved buffer, untouched.
+      expect(output.string).to end_with("#{PROMPT}hello")
+      expect(composer.buffer).to eq("hello")
+    end
+
     it "ignores stray control bytes" do
       composer.handle_key("a")
       composer.handle_key("") # Ctrl+A
