@@ -606,9 +606,9 @@ RSpec.describe Rubino::Agent::Loop do
       fake_llm.enqueue_text("Here's what I accomplished and what remains.")
 
       # null_ui doesn't define the seam by default — give it the CLI's method so
-      # the respond_to? guard fires, and spy on it.
-      def null_ui.reset_finalize_geometry = (@reset_calls = (@reset_calls || 0) + 1)
-      def null_ui.reset_calls = @reset_calls || 0
+      # the respond_to? guard fires, and count calls through a local closure.
+      reset_calls = []
+      null_ui.define_singleton_method(:reset_finalize_geometry) { reset_calls << :reset }
 
       loop_instance = described_class.new(
         session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
@@ -617,7 +617,7 @@ RSpec.describe Rubino::Agent::Loop do
       )
 
       loop_instance.run(messages: user_messages, tools: [looping_tool])
-      expect(null_ui.reset_calls).to eq(1)
+      expect(reset_calls.size).to eq(1)
     end
 
     # #421 guard: a UI WITHOUT the seam (the default Null) must not break the
