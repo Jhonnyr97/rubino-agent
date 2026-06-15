@@ -850,6 +850,18 @@ module Rubino
       def resize
         @render.synchronize do
           @cols = compute_cols
+          # Forget the on-screen row geometry BEFORE redrawing (#401). The
+          # @rows_above / @input_above / @input_below counts were recorded at the
+          # OLD column count; on a resize the terminal reflows the wrapped input
+          # (and partial) into a DIFFERENT number of physical rows, so the next
+          # frame's relative \e[1A\e[2K walk-up would clear the wrong row count —
+          # under-clearing leaves the stale copy on screen and the fresh redraw
+          # appends BELOW it, so every reflow stacked another copy of the input
+          # into scrollback (~20× on a 200→70 drag). The terminal already
+          # reflows the bottom rows itself, so zeroing the counters (the same
+          # seam Ctrl+L uses, {LiveRegion#reset_geometry!}) lets the redraw draw
+          # ONE fresh frame over the reflowed copy instead of walking stale rows.
+          @region.reset_geometry!
           # Repaint the FULL live region (cards + menu + partial + prompt) when
           # anything above the prompt is live, reusing the same atomic frame the
           # streaming writer uses; a bare draw_input would repaint only the
