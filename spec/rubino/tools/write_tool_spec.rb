@@ -145,6 +145,35 @@ RSpec.describe Rubino::Tools::WriteTool do
     end
   end
 
+  # Regression (#441): a traversal `file_path` that resolves to a denylisted
+  # credential file must return the CLEAN write-secret refusal — never the
+  # opaque "no implicit conversion of Hash into String" that a malformed
+  # terminal.cwd (a YAML mapping instead of a path string) used to surface from
+  # File.expand_path deep inside #call. The boundary already held (file not
+  # written); only the rendered error was broken.
+  describe "write-denylist refusal under a malformed terminal.cwd" do
+    around do |example|
+      Rubino.configuration.set("terminal", "cwd", { "nested" => "mapping" })
+      example.run
+    ensure
+      Rubino.configuration.set("terminal", "cwd", tmp_dir)
+    end
+
+    it "returns the clean :write_secret_denied message for a traversal-to-.env" do
+      out = tool.call("file_path" => "../../.env", "content" => "X=1")
+      expect(out).to be_a(Hash)
+      expect(out[:error_code]).to eq(:write_secret_denied)
+      expect(out[:output]).to include("refusing to WRITE")
+      expect(out[:output]).not_to include("no implicit conversion")
+    end
+
+    it "does not raise the Hash-into-String error for other denylisted traversals" do
+      out = tool.call("file_path" => "../.netrc", "content" => "machine x")
+      expect(out).to be_a(Hash)
+      expect(out[:error_code]).to eq(:write_secret_denied)
+    end
+  end
+
   # HIGH-1: a SIGINT/crash mid-write must not corrupt the user's file. The fix
   # routes the final write through AtomicFile.write_atomic (temp-in-same-dir +
   # fsync + atomic rename), so an interrupt leaves the ORIGINAL intact rather
