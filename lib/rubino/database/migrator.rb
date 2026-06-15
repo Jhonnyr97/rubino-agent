@@ -102,18 +102,31 @@ module Rubino
       end
 
       # Repairs the migrator bookkeeping after a concurrent-race corruption,
-      # WITHOUT touching user tables (no data loss on a populated DB): collapse a
-      # duplicate-`schema_info` table down to a single row at the LOWEST recorded
-      # version (the conservative floor — anything the racers half-applied is
-      # then re-checked and finished by `migrate!`), then run any remaining
-      # migrations under the lock. Idempotent: a healthy single-row table just
-      # migrates (a no-op when current). Returns the final version.
+      # WITHOUT touching user tables and WITHOUT destructively re-running already-
+      # applied migrations (no data loss, no crash on a populated DB).
+      #
+      # The race (#race) leaves a SPURIOUS version-0 row sitting ALONGSIDE the
+      # real, latest version row: a second process merely *constructing* an
+      # IntegerMigrator runs `INSERT INTO schema_info VALUES (0)` against a table
+      # that already records the true applied version. So the duplicate is the
+      # version-0 artifact, and the row reflecting the ACTUAL on-disk schema (the
+      # last migration that really ran) is the MAX recorded version. Dedupe to
+      # that single MAX-version row — NOT the min/0 floor, which would tell the
+      # migrator the DB is empty and re-run `001_create_initial_schema` (and
+      # every migration after) OVER the existing tables → a raw
+      # `Sequel::DatabaseError: table "sessions" already exists`, exit 1, DB
+      # wedged at v0 (the regression this method now fixes).
+      #
+      # After deduping, `migrate!` runs ONLY genuinely-pending migrations under
+      # the lock — a no-op when the recovered version is already current.
+      # Idempotent: a healthy single-row table just migrates. Returns the final
+      # version.
       def repair!(lock_path: nil)
         if duplicate_version_rows?
           versions = @connection.db[:schema_info].select_map(:version)
-          floor = versions.compact.min || 0
+          applied = versions.compact.max || 0
           @connection.db[:schema_info].delete
-          @connection.db[:schema_info].insert(version: floor)
+          @connection.db[:schema_info].insert(version: applied)
         end
         migrate!(lock_path: lock_path)
         current_version
