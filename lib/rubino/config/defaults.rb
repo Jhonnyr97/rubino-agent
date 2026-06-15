@@ -288,7 +288,6 @@ module Rubino
         "compression" => {
           "enabled" => true,
           "threshold" => 0.50,
-          "gateway_threshold" => 0.85,
           "target_ratio" => 0.20,
           "protect_first_n" => 3,
           "protect_last_n" => 20,

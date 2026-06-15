@@ -10,6 +10,14 @@ module Rubino
       # before the real provider limit would be hit.
       DEFAULT_CONTEXT_WINDOW = 128_000
 
+      # Floor for the auto-compaction trigger (#410). Ported from Hermes
+      # `context_compressor.py` (MINIMUM_CONTEXT_LENGTH, model_metadata.py):
+      # never auto-compact below this many estimated tokens even when the
+      # percentage threshold would suggest a lower value. Without it a 32K
+      # model auto-compacts at 16K — half the window spent on a summary —
+      # while a large-window model still compacts at the configured ratio.
+      MINIMUM_CONTEXT_LENGTH = 64_000
+
       def initialize(model_id:, config:)
         @model_id = model_id
         @config = config
@@ -32,22 +40,20 @@ module Rubino
         (total_chars.to_f / CHARS_PER_TOKEN).ceil
       end
 
-      # Returns true if the messages exceed the compaction threshold
+      # Returns true if the messages exceed the compaction threshold.
+      # The threshold is floored at MINIMUM_CONTEXT_LENGTH (#410) so the
+      # percentage never drives premature compaction on small/mid windows.
       def needs_compaction?(messages)
         return false unless @config.compression_enabled?
 
         estimated = estimate_tokens(messages)
-        threshold = (available_tokens * @config.compression_threshold).to_i
-        estimated > threshold
+        estimated > compaction_threshold
       end
 
-      # Returns true if critically close to context limit
-      def critical?(messages)
-        return false unless @config.compression_enabled?
-
-        estimated = estimate_tokens(messages)
-        gateway = (available_tokens * @config.compression_gateway_threshold).to_i
-        estimated > gateway
+      # The token count above which auto-compaction fires: the configured
+      # ratio of the window, floored at MINIMUM_CONTEXT_LENGTH (#410).
+      def compaction_threshold
+        [(available_tokens * @config.compression_threshold).to_i, MINIMUM_CONTEXT_LENGTH].max
       end
 
       # Returns the target token count after compaction

@@ -49,7 +49,6 @@ module Rubino
       RANGES = {
         "temperature" => (0.0..2.0),
         "threshold" => (0.0..1.0),
-        "gateway_threshold" => (0.0..1.0),
         "target_ratio" => (0.0..1.0)
       }.freeze
 

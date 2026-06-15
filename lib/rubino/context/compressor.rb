@@ -16,6 +16,24 @@ module Rubino
         @summary_store = Session::SummaryStore.new(db: @db)
       end
 
+      # Anti-thrashing back-off (#415a, ported from Hermes
+      # context_compressor.py should_compress). A session hovering right at
+      # the threshold re-pays a summary call every turn even though each pass
+      # only shaves a message or two. If the two most recent compactions in
+      # this session's lineage each saved less than INEFFECTIVE_SAVINGS_PCT of
+      # their original tokens, skip auto-compaction until genuinely new work
+      # pushes savings back up (the user can still force /compact). Returns
+      # true when compaction should be SKIPPED.
+      INEFFECTIVE_SAVINGS_PCT = 0.10
+      INEFFECTIVE_STREAK = 2
+
+      def thrashing?
+        rows = recent_lineage_compactions(INEFFECTIVE_STREAK)
+        return false if rows.size < INEFFECTIVE_STREAK
+
+        rows.all? { |r| ineffective?(r) }
+      end
+
       # Performs full compaction and returns metadata
       def compact!
         session = @session_repo.find(@session_id)
@@ -49,6 +67,17 @@ module Rubino
           middle = sanitizer.sanitize(middle)
         end
 
+        # saved_tokens reports what leaves the LIVE transcript, so measure it
+        # on the pre-prune middle (the pruned copy feeds only the summarizer).
+        middle_tokens = estimate_tokens(middle)
+
+        # 3b. Cheap LLM-free pre-pass (#415d): dedupe + summarize old tool
+        # results in the middle BEFORE the paid summary call, so raw tool
+        # noise (file reads, terminal dumps) doesn't inflate the summarizer
+        # prompt. The middle is summarized then discarded, so a lossy
+        # representation here is safe.
+        middle = ToolResultPruner.new.prune(middle)
+
         # 4. Load previous summary (capture id now, before the insert below
         #    overwrites "latest" — the lineage link must point at the prior row)
         previous = @summary_store.latest(@session_id)
@@ -73,7 +102,7 @@ module Rubino
           target_session_id: child_session[:id],
           original_messages: messages.size,
           compacted_messages: head.size + tail.size + 1, # +1 for summary
-          saved_tokens: estimate_tokens(middle),
+          saved_tokens: middle_tokens,
           summary_id: summary_id
         }
       end
@@ -132,11 +161,13 @@ module Rubino
         # block and orphans the matching tool result (400 on resume).
         @message_store.copy_into(child[:id], head)
 
-        # Insert summary as system message
+        # Insert summary as system message. The summary already carries the
+        # SUMMARY_PREFIX handoff banner from SummaryBuilder (#415c anti-replay)
+        # — insert verbatim so the next window treats it as reference-only.
         @message_store.create(
           session_id: child[:id],
           role: "system",
-          content: "[Compacted Summary]\n#{summary}"
+          content: summary
         )
 
         # Copy tail messages (same faithful copy as head)
@@ -175,6 +206,47 @@ module Rubino
           saved_token_count: original_tokens - compacted_tokens,
           created_at: Time.now.utc.iso8601
         )
+      end
+
+      # The N most recent compaction rows along this session's lineage,
+      # newest first. Each compaction created a child session, so the current
+      # @session_id may be the LATEST child; walk the parent chain to collect
+      # the compactions that produced this conversation.
+      def recent_lineage_compactions(limit)
+        ids = lineage_session_ids
+        return [] if ids.empty?
+
+        @db[:compactions]
+          .where(source_session_id: ids)
+          .reverse(:created_at)
+          .limit(limit)
+          .all
+      end
+
+      # Session ids in this conversation's compaction lineage: the current
+      # session plus its ancestors (parent_session_id chain). Bounded to avoid
+      # an unbounded walk on a corrupt cycle.
+      def lineage_session_ids
+        ids = []
+        cursor = @session_repo.find(@session_id)
+        50.times do
+          break unless cursor
+
+          ids << cursor[:id]
+          parent_id = cursor[:parent_session_id]
+          break unless parent_id
+
+          cursor = @session_repo.find(parent_id)
+        end
+        ids
+      end
+
+      def ineffective?(row)
+        original = row[:original_token_count].to_i
+        return false if original <= 0
+
+        saved = row[:saved_token_count].to_i
+        (saved.to_f / original) < INEFFECTIVE_SAVINGS_PCT
       end
 
       def estimate_tokens(messages)
