@@ -14,7 +14,7 @@ require "stringio"
 # headless run is active, consulted by the one-shot exit check in addition to the
 # parent adapter. These specs pin (1) the child→latch wiring and (2) that the
 # one-shot exit propagates a latch-only block to exit 2 + a stderr notice.
-RSpec.describe "F1-subagents headless fail-closed propagation" do
+RSpec.describe "F1-subagents headless fail-closed propagation" do # rubocop:disable RSpec/DescribeClass -- a cross-cutting finding spanning HeadlessBlockLatch, UI::Null and ChatCommand
   describe Rubino::Output::HeadlessBlockLatch do
     before { described_class.reset! }
     after  { described_class.reset! }
