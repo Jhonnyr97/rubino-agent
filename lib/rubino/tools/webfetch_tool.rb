@@ -58,15 +58,16 @@ module Rubino
       def fetch_url(url, format:, redirects: 5)
         return "Error: Too many redirects" if redirects <= 0
 
-        uri = URI.parse(url)
-        uri = URI.parse("https://#{url}") unless uri.scheme
+        # Default a bare host to https:// (previous behaviour) before
+        # validating, so the SSRF guard sees a complete URL with a scheme.
+        url = "https://#{url}" unless URI.parse(url).scheme
+        safe = Rubino::Security::UrlSafety.validate!(url)
+        uri = safe[:uri]
 
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = (uri.scheme == "https")
-        http.open_timeout = TIMEOUT
-        http.read_timeout = TIMEOUT
+        http = build_http(uri, safe[:addresses].first)
 
         request = Net::HTTP::Get.new(uri.request_uri)
+        request["Host"] = uri.host
         request["User-Agent"] = "Rubino/#{Rubino::VERSION}"
         request["Accept"] = "text/html,text/plain,application/json"
 
@@ -74,7 +75,10 @@ module Rubino
 
         case response
         when Net::HTTPRedirection
-          fetch_url(response["location"], format: format, redirects: redirects - 1)
+          # Re-validate the redirect target from scratch (resolve + IP check);
+          # never trust the Location header to point somewhere safe (SSRF).
+          next_url = absolute_redirect(uri, response["location"])
+          fetch_url(next_url, format: format, redirects: redirects - 1)
         when Net::HTTPSuccess
           content_type = response["content-type"].to_s
           return binary_refusal(url, content_type) if binary_content_type?(content_type)
@@ -97,8 +101,36 @@ module Rubino
         else
           "Error: HTTP #{response.code} - #{response.message}"
         end
+      rescue Rubino::Security::UrlSafety::BlockedURLError => e
+        "Refused for safety: #{e.message}"
       rescue StandardError => e
         "Error fetching URL: #{e.message}"
+      end
+
+      # Build a Net::HTTP pinned to a validated IP so a DNS-rebinding server
+      # can't swap in a private address between our check and connect(). The
+      # Host header (set by the caller) and TLS SNI/verification still use the
+      # original hostname.
+      def build_http(uri, connect_ip)
+        http = Net::HTTP.new(connect_ip, uri.port)
+        http.use_ssl = (uri.scheme == "https")
+        if http.use_ssl?
+          http.ipaddr = connect_ip
+          # Net::HTTP derives SNI and certificate verification from #address;
+          # restore it to the hostname so TLS validates against the cert.
+          http.instance_variable_set(:@address, uri.host)
+        end
+        http.open_timeout = TIMEOUT
+        http.read_timeout = TIMEOUT
+        http
+      end
+
+      # Resolve a (possibly relative) Location header against the current URL,
+      # so the per-hop SSRF re-validation always runs on an absolute URL.
+      def absolute_redirect(current_uri, location)
+        URI.join(current_uri.to_s, location.to_s).to_s
+      rescue StandardError
+        location.to_s
       end
 
       BINARY_TYPE_PATTERNS = [
