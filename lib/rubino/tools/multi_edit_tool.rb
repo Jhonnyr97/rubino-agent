@@ -58,6 +58,11 @@ module Rubino
         return "Error: edits must be a non-empty array" if !edits.is_a?(Array) || edits.empty?
 
         expanded = expand_workspace_path(file_path)
+        # ALWAYS-ON write-side credential denylist (#413), checked BEFORE the
+        # workspace toggle so it refuses even when workspace_strict=false.
+        if (category = write_secret_category(expanded))
+          return write_secret_block_message(file_path, category)
+        end
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
 
