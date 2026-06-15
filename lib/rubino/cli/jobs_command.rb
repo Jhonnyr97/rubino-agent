@@ -21,6 +21,14 @@ module Rubino
       option :status, type: :string, desc: "Filter by status (queued, running, completed, failed)"
       option :limit, type: :numeric, default: 20, desc: "Max results"
       def list
+        # A present-but-unusable DB (corrupt image, or the duplicate
+        # `schema_info` rows a concurrent first-boot race leaves, #race) must
+        # surface a clean error, not a raw `no such table: jobs` backtrace —
+        # same guard the sessions/memory read CLIs use (#333/#race).
+        if (message = Rubino.database_repair_message)
+          raise Thor::Error, message
+        end
+
         Rubino.ensure_database_ready!
         queue = Jobs::Queue.new
         jobs = queue.list(status: options[:status], limit: options[:limit])
