@@ -236,13 +236,20 @@ RSpec.describe Rubino::Jobs::Queue do
       id
     end
 
-    it "runs each seeded orphan EXACTLY once across concurrent reaps" do
-      orphans = Array.new(8) { seed_orphan }
+    # #371 (residual of #346): the inline reap path used to read-then-run with no
+    # atomic claim, so concurrent reapers double-executed the same queued rows.
+    # FOUR reapers now race over the SAME N seeded orphans; the CAS claim in
+    # reap_inline_orphans (queued -> running for exactly one caller) plus the
+    # terminal-status re-check in run_job mean each job runs EXACTLY once — N
+    # job_runs total, never 4N.
+    it "runs each seeded orphan EXACTLY once across 4 concurrent reaps (#371)" do
+      n = 12
+      orphans = Array.new(n) { seed_orphan }
 
-      # Two reapers race over the SAME seeded orphans, exactly as two processes
+      # Four reapers race over the SAME seeded orphans, exactly as four processes
       # sharing one RUBINO_HOME would. Each run_job execution inserts one
       # job_runs row, so the count of job_runs per job_id is the execution count.
-      threads = Array.new(2) do
+      threads = Array.new(4) do
         Thread.new { described_class.new(db: db_connection.db, config: config).reap_inline_orphans }
       end
       threads.each(&:join)
@@ -252,6 +259,8 @@ RSpec.describe Rubino::Jobs::Queue do
         expect(runs_per_job[id]).to eq(1), "job #{id} ran #{runs_per_job[id].inspect} times, expected exactly 1"
         expect(db_connection.db[:jobs].where(id: id).first[:status]).to eq("completed")
       end
+      # Total executions == N, NOT 4N — the once-only proof at the aggregate level.
+      expect(db_connection.db[:job_runs].count).to eq(n)
     end
 
     it "lets #claim! succeed for exactly one of two concurrent claimers" do

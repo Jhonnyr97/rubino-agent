@@ -835,12 +835,21 @@ module Rubino
         return if history.empty?
 
         history.each do |msg|
-          role    = (msg[:role] || msg["role"]).to_sym
-          content = msg[:content] || msg["content"]
+          role         = (msg[:role] || msg["role"]).to_sym
+          content      = msg[:content] || msg["content"]
+          tool_calls   = rebuild_tool_calls(msg[:tool_calls] || msg["tool_calls"]) if role == :assistant
           # A Content::Raw (the #311 prompt-cache system block) is a structured
           # provider payload, not a String — it has no #empty?. Treat it as
           # always-present; only String/nil content is empty-checked.
-          next if content.nil? || (content.respond_to?(:empty?) && content.empty?)
+          #
+          # An assistant row that carries tool_calls MUST NOT be skipped even
+          # when its text content is empty — MiniMax/Anthropic narrate-then-call
+          # (or call with no preamble), persisting an assistant row with empty
+          # text but live tool_calls. Dropping it orphans the following tool
+          # result row (tool_call_id with no matching tool_use) → provider 400
+          # on the next completion (#370).
+          empty_content = content.nil? || (content.respond_to?(:empty?) && content.empty?)
+          next if empty_content && !(role == :assistant && tool_calls && !tool_calls.empty?)
 
           case role
           when :system
@@ -851,7 +860,7 @@ module Rubino
             chat_instance.messages << RubyLLM::Message.new(
               role: role,
               content: content,
-              tool_calls: rebuild_tool_calls(msg[:tool_calls] || msg["tool_calls"])
+              tool_calls: tool_calls
             )
           when :tool
             chat_instance.messages << RubyLLM::Message.new(
@@ -883,17 +892,24 @@ module Rubino
       # Reconstructs RubyLLM::ToolCall objects from the hashes persisted under
       # assistant message metadata. Returns nil for empty/missing input so
       # RubyLLM::Message treats it as a plain assistant turn.
+      #
+      # MUST return a Hash keyed by tool_call id ({ id => RubyLLM::ToolCall }),
+      # NOT an Array — that is the shape every ruby_llm provider produces
+      # (see anthropic/tools.rb#parse_tool_calls) and the shape its formatter
+      # consumes via `msg.tool_calls.each_value` (anthropic/chat.rb:176). An
+      # Array here raises `undefined method 'each_value' for Array` on the next
+      # completion after a resume (#370).
       def rebuild_tool_calls(raw)
         return nil if raw.nil? || (raw.respond_to?(:empty?) && raw.empty?)
 
-        Array(raw).map do |tc|
-          h = tc.transform_keys(&:to_sym) if tc.is_a?(Hash)
-          h ||= tc
-          RubyLLM::ToolCall.new(
+        Array(raw).each_with_object({}) do |tc, acc|
+          h = tc.is_a?(Hash) ? tc.transform_keys(&:to_sym) : tc
+          call = RubyLLM::ToolCall.new(
             id: h[:id],
             name: h[:name],
             arguments: h[:arguments] || {}
           )
+          acc[call.id] = call
         end
       end
 

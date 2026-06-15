@@ -451,7 +451,7 @@ RSpec.describe Rubino::Session::Repository do
       expect(repo.owned_by_other_live_process?(repo.find(s[:id]))).to be true
     end
 
-    it "is false for our OWN pid, a dead owner, no pid, or a non-active status" do
+    it "is false for our OWN pid, a dead owner, or no pid" do
       ours = repo.create(source: "cli") # owner_pid = our pid
       expect(repo.owned_by_other_live_process?(repo.find(ours[:id]))).to be false
 
@@ -460,10 +460,19 @@ RSpec.describe Rubino::Session::Repository do
       allow(repo).to receive(:process_alive?).and_call_original
       allow(repo).to receive(:process_alive?).with(999_999).and_return(false)
       expect(repo.owned_by_other_live_process?(repo.find(dead[:id]))).to be false
+    end
 
+    # #376 (residual #347): the owner-guard must fire on an ENDED session a
+    # DIFFERENT live process is re-writing, not just on status="active". A
+    # finished turn leaves status="ended" while the resuming process still claims
+    # owner_pid; two concurrent explicit resumes of that row would otherwise race
+    # unguarded and interleave writes into one malformed transcript.
+    it "is true for an ENDED session a DIFFERENT live process still owns (#376)" do
       ended = repo.create(source: "cli")
       repo.update(ended[:id], status: "ended", owner_pid: 999_999)
-      expect(repo.owned_by_other_live_process?(repo.find(ended[:id]))).to be false
+      allow(repo).to receive(:process_alive?).and_call_original
+      allow(repo).to receive(:process_alive?).with(999_999).and_return(true)
+      expect(repo.owned_by_other_live_process?(repo.find(ended[:id]))).to be true
     end
   end
 
