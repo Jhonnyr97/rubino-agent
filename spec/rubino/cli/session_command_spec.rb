@@ -61,9 +61,9 @@ RSpec.describe Rubino::CLI::SessionCommand do
         joined = info_lines.join("\n")
 
         # 4 real messages, 1 of them a tool row — the cached "2" is ignored.
-        expect(joined).to match(/Messages: 4 \(1 tool\)/)
+        expect(joined).to include("Messages: 4 (1 tool)")
         # Cumulative token sum 10+20+30+40 = 100, not the cached 5.
-        expect(joined).to match(/Tokens: 100/)
+        expect(joined).to include("Tokens: 100")
       end
 
       it "omits the tool label when there are no tool messages" do

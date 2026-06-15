@@ -48,20 +48,20 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "labels a bare Interrupt (Ctrl-C) as a USER interrupt, not external" do
       err, status = run_interrupted(Interrupt)
       expect(err).to match(/rubino: interrupted$/)
-      expect(err).not_to match(/external/)
+      expect(err).not_to include("external")
       expect(status).to eq(130)
     end
 
     it "labels a cooperative user Rubino::Interrupted as a USER interrupt" do
       err, status = run_interrupted(Rubino::Interrupted.new(reason: :user))
       expect(err).to match(/rubino: interrupted$/)
-      expect(err).not_to match(/external/)
+      expect(err).not_to include("external")
       expect(status).to eq(130)
     end
 
     it "labels an EXTERNAL-reason Rubino::Interrupted as external" do
       err, status = run_interrupted(Rubino::Interrupted.new(reason: :external))
-      expect(err).to match(/interrupted by external signal/)
+      expect(err).to include("interrupted by external signal")
       expect(status).to eq(130)
     end
   end
@@ -69,14 +69,14 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "--json mode" do
     it "labels a bare Interrupt (Ctrl-C) as a USER interrupt, not external" do
       err, status = run_interrupted(Interrupt, json: true)
-      expect(err).to match(/rubino: interrupted by user/)
-      expect(err).not_to match(/external/)
+      expect(err).to include("rubino: interrupted by user")
+      expect(err).not_to include("external")
       expect(status).to eq(130)
     end
 
     it "labels an EXTERNAL-reason Rubino::Interrupted as external" do
       err, status = run_interrupted(Rubino::Interrupted.new(reason: :external), json: true)
-      expect(err).to match(/interrupted by external signal/)
+      expect(err).to include("interrupted by external signal")
       expect(status).to eq(130)
     end
   end

@@ -12,8 +12,10 @@
 # UI, so headless stdout stays exactly the model answer.
 RSpec.describe Rubino::CLI::ChatCommand do
   let(:db)     { test_database }
-  let(:config) { test_configuration("jobs" => { "mode" => "inline", "max_attempts" => 3,
-                                                "poll_interval" => 1, "retry_backoff_seconds" => 0 }) }
+  let(:config) do
+    test_configuration("jobs" => { "mode" => "inline", "max_attempts" => 3,
+                                   "poll_interval" => 1, "retry_backoff_seconds" => 0 })
+  end
 
   let(:backend) do
     bk = instance_double(Rubino::Memory::Backends::Sqlite)

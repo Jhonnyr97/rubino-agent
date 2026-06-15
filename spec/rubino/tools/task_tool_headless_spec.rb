@@ -27,7 +27,7 @@ RSpec.describe Rubino::Tools::TaskTool do
         seen << input
         final
       end
-      define_method(:cancel!) {}
+      define_method(:cancel!) { nil }
     end.new
   end
 
@@ -55,7 +55,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch  = Queue.new
       runner = Class.new do
         define_method(:run!) { |_i, **_o| latch.pop }
-        define_method(:cancel!) {}
+        define_method(:cancel!) { nil }
       end.new
       tool = described_class.new(runner_factory: ->(_d) { runner })
 
