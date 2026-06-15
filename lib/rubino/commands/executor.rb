@@ -504,24 +504,43 @@ module Rubino
         store  = Session::Store.new
         before = estimate_session_tokens(store, session[:id], model_id: session[:model])
 
-        @ui.compression_started
+        # Don't print compression_started before the gate. The compressor now
+        # clears the same token-budget gate the auto path uses, so a small
+        # session no-ops (no summary, NO child fork) instead of inflating
+        # context + silently swapping the session id (#425).
         result = Context::Compressor.new(session_id: session[:id]).compact!
 
         if result[:skipped]
-          bar = result[:minimum_messages] ? " (needs >= #{result[:minimum_messages]} messages)" : ""
-          @ui.info("Nothing to compact yet — the session is still below the " \
-                   "protected head/tail size#{bar}.")
-          return :handled
+          @ui.info(compact_skip_message(result))
+          return :handled # no compact_into → no session fork on a no-op
         end
 
-        @ui.compression_finished(result)
+        @ui.compression_started
         after = estimate_session_tokens(store, result[:target_session_id], model_id: session[:model])
-        @ui.info("Context: ~#{before} → ~#{after} tokens (#{result[:original_messages]} → " \
+        # Report the TRUTHFUL before→after delta, never the compressor's
+        # "removed middle" estimate (which ignored the inserted summary and so
+        # claimed a saving even when context GREW).
+        delta = before - after
+        @ui.compression_finished(result.merge(saved_tokens: delta))
+        change = delta >= 0 ? "saved ~#{delta} tok" : "grew ~#{-delta} tok"
+        @ui.info("Context: ~#{before} → ~#{after} tokens (#{change}; #{result[:original_messages]} → " \
                  "#{result[:compacted_messages]} messages).")
         { compact_into: result[:target_session_id] }
       rescue StandardError => e
         @ui.error("compaction failed: #{e.message}")
         :handled
+      end
+
+      # The no-op notice, phrased per the gate that fired: under the token budget
+      # vs below the protected head/tail floor (the latter names the bar, #420).
+      def compact_skip_message(result)
+        if result[:reason] == :below_threshold
+          return "Nothing to compact — the session is under the compaction threshold; " \
+                 "compacting now would grow context, not shrink it."
+        end
+
+        bar = result[:minimum_messages] ? " (needs >= #{result[:minimum_messages]} messages)" : ""
+        "Nothing to compact yet — the session is still below the protected head/tail size#{bar}."
       end
 
       # The same chars/4 estimate the compaction thresholds and the status bar
