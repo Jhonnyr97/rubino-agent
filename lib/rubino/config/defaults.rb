@@ -151,9 +151,22 @@ module Rubino
           # for ~15-25 seconds before recovering) without timing out the user.
           "api_max_retries" => 5,
           # Hard ceiling (seconds) on a single full-jitter backoff draw between
-          # retries: sleep = max(0.2, rand * min(2^(n-1), cap)). Caps worst-case
-          # per-retry wait so a flapping backend can't stall a turn for minutes.
+          # retries on the ERROR path: delay = min(base*2^(n-1), cap) + jitter.
+          # Caps worst-case per-retry wait so a flapping backend can't stall a
+          # turn on one sleep. 16 keeps the worst single wait to ~24s (16 +
+          # 0.5*16 jitter) instead of the 60s ERROR_PATH ceiling. (Previously
+          # declared but NEVER read — the error path hardcoded the 60s cap.)
           "api_retry_backoff_cap_seconds" => 16,
+          # Hard TOTAL wall-time budget (seconds) across all error-path retries
+          # for one model call. A permanently-unreachable host (resolves but the
+          # port is dead → retryable connection timeout) used to burn ~75-110s
+          # across 5 retries before giving up. This is a Codex-style "total
+          # elapsed" cap: keep retrying genuinely-transient errors, but once the
+          # cumulative backoff already spent PLUS the next planned wait would
+          # cross this budget, fail fast with a clear "gave up after ~Ns" message
+          # instead of stalling the user. Does NOT shorten legitimate recovery
+          # inside the window. nil ⇒ no total cap (count-based only).
+          "api_retry_total_timeout_seconds" => 30,
           # Higher ceiling used ONLY for overload (529/503) and MiniMax "unknown
           # error" blips: those backends stay overloaded for tens of seconds, so
           # the 16s cap retries too eagerly back into a still-hot endpoint. 60s

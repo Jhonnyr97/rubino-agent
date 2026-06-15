@@ -6,12 +6,19 @@ module Rubino
     class IterationBudget
       def initialize(config: nil, max_tool_iterations: nil)
         @config = config || Rubino.configuration
-        @max_turns = positive_int(@config.agent_max_turns)
+        # A 0/negative cap is nonsense (the turn could never run a single
+        # iteration), so REJECT it with a clear message at both entry points —
+        # the configured `agent.max_turns` and the CLI `--max-turns N` override —
+        # rather than silently coercing it to "unbounded" / the default and
+        # surprising the user. nil/absent stays meaningful (unbounded rail /
+        # config default).
+        @max_turns = require_positive_cap!(@config.agent_max_turns, "agent.max_turns")
         # An explicit override (the CLI `--max-turns N` flag, threaded through
         # Runner → Lifecycle) wins over the config default so the documented
         # control knob actually caps tool iterations (#141). A nil/blank
         # override falls back to the configured budget, unchanged.
-        @max_tool_iterations = positive_int(max_tool_iterations) || @config.agent_max_tool_iterations
+        override = require_positive_cap!(max_tool_iterations, "--max-turns")
+        @max_tool_iterations = override || @config.agent_max_tool_iterations
         @max_turn_seconds = @config.agent_max_turn_seconds
         @turn_started_at = Time.now
       end
@@ -66,6 +73,37 @@ module Rubino
 
         n = Integer(value, exception: false) || Float(value, exception: false)&.to_i
         n if n && n.positive?
+      end
+
+      # A turn/iteration cap must be a POSITIVE integer when a NUMBER is given.
+      # nil/absent or non-numeric garbage (e.g. an empty Thor option) is treated
+      # as "unset" → use the default / unbounded rail, preserving the lenient
+      # prior behaviour. A genuinely-numeric 0 or NEGATIVE value, however, is an
+      # unambiguous misconfiguration (the turn could never run a single
+      # iteration) → reject it with a clear, actionable error naming the knob,
+      # instead of silently degrading to "unbounded" / the default.
+      def require_positive_cap!(value, label)
+        n = numeric_cap(value)
+        return positive_int(value) if n.nil? # nil/non-numeric ⇒ unset
+        return n if n.positive?
+
+        raise Rubino::ConfigurationError,
+              "invalid #{label}: #{value.inspect} — must be a positive integer " \
+              "(a 0 or negative cap would never let the turn run). " \
+              "Set it to 1 or more, or leave it unset for the default."
+      end
+
+      # The value as a number iff it IS one (Integer/Float, or a numeric string
+      # like "0"/"-5"); nil for nil or non-numeric garbage. Used to tell a
+      # genuine 0/negative cap (reject) from "unset" (lenient default).
+      def numeric_cap(value)
+        return value if value.is_a?(Numeric)
+        return nil if value.nil?
+
+        s = value.to_s.strip
+        return nil if s.empty?
+
+        Integer(s, exception: false) || Float(s, exception: false)
       end
 
       # A nil cap means "unbounded": never stop on that dimension rather than
