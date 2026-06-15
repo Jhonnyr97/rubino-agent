@@ -116,31 +116,29 @@ RSpec.describe Rubino::Interaction::Polishing do
   # the surrounding `rescue StandardError` does not catch a SignalException. #wait
   # must swallow it so a teardown-time interrupt exits cleanly.
   describe "#wait interrupt-safety (TUI-1)" do
-    let(:handler_class) { Class.new { define_method(:perform) { |_payload| sleep(0.2) } } }
+    let(:handler_class) { Class.new { define_method(:perform) { |_payload| nil } } }
 
+    # The teardown does `@polishing&.wait(3)` (a Thread#join). A stray Ctrl+C
+    # landing in that join raises Interrupt/SignalException, which end_session!'s
+    # `rescue StandardError` does NOT catch — pre-fix it escaped as a raw
+    # backtrace over a clean exit. #wait must swallow it. We drive the
+    # raise-during-join through a stubbed thread so the example never depends on
+    # signal timing (and never delivers a real SIGINT to the test process).
     it "swallows an Interrupt raised during the join instead of propagating it" do
-      queue.enqueue("PolishTestJob", {}, drain_inline: false)
-      polishing.start(ui: ui, event_bus: bus)
-
-      thread = polishing.instance_variable_get(:@thread)
-      # Simulate the Ctrl+C arriving exactly inside the join the teardown runs.
+      thread = instance_double(Thread)
       allow(thread).to receive(:join).and_raise(Interrupt)
+      polishing.instance_variable_set(:@thread, thread)
 
       expect { polishing.wait(3) }.not_to raise_error
-
-      thread.join(5) # let the real worker settle so we don't leak it
+      expect(thread).to have_received(:join).with(3)
     end
 
     it "swallows a SignalException raised during the join" do
-      queue.enqueue("PolishTestJob", {}, drain_inline: false)
-      polishing.start(ui: ui, event_bus: bus)
-
-      thread = polishing.instance_variable_get(:@thread)
-      allow(thread).to receive(:join).and_raise(SignalException, "SIGINT")
+      thread = instance_double(Thread)
+      allow(thread).to receive(:join).and_raise(SignalException.new("SIGINT"))
+      polishing.instance_variable_set(:@thread, thread)
 
       expect { polishing.wait(3) }.not_to raise_error
-
-      thread.join(5)
     end
   end
 
