@@ -189,11 +189,18 @@ module Rubino
         )
 
         if budget.needs_compaction?(messages)
+          compressor = Context::Compressor.new(session_id: @session[:id])
+
+          # Anti-thrash back-off (#415a): if the last two compactions in this
+          # lineage each saved <10%, skip the paid summary call this turn —
+          # the session is hovering at the threshold and re-compacting would
+          # only shave a message or two. The user can still force /compact.
+          return messages if compressor.thrashing?
+
           @state.transition_to!(:compressing_context, event_bus: @event_bus)
           @ui.compression_started
           @event_bus.emit(Events::COMPRESSION_STARTED, session_id: @session[:id])
 
-          compressor = Context::Compressor.new(session_id: @session[:id])
           result = compressor.compact!
 
           @event_bus.emit(Events::COMPRESSION_FINISHED, **result)

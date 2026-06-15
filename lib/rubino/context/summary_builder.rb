@@ -5,7 +5,29 @@ module Rubino
     # Builds structured summaries from compressible message segments.
     # Uses the LLM to generate a comprehensive summary following the template.
     class SummaryBuilder
+      # Anti-replay handoff banner prepended to every compaction summary
+      # (#415c, ported from Hermes context_compressor.py SUMMARY_PREFIX).
+      # Without it a weak model reads the summarized older turns as live
+      # instructions and re-does already-finished work (the #10896/#11475
+      # task-loss/replay class). It also points the model at the
+      # "## Active Task" field for continuation.
+      SUMMARY_PREFIX = <<~PREFIX.strip
+        [CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. Your persistent memory in the system prompt is ALWAYS authoritative — never deprioritize it due to this note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may already reflect work described here — avoid repeating it.
+      PREFIX
+
+      # Legacy prefix that earlier rubino versions wrote ("[Compacted
+      # Summary]"). Recognized so iterative re-compaction strips it instead
+      # of stacking a second banner onto an already-prefixed summary.
+      LEGACY_SUMMARY_PREFIX = "[Compacted Summary]"
+
       SUMMARY_TEMPLATE = <<~TEMPLATE
+        ## Active Task
+        The SINGLE most important field. Copy the user's most recent
+        unfulfilled request verbatim — the exact words they used. If several
+        tasks were requested and only some are done, list only the ones NOT
+        yet completed. Continuation picks up exactly here. If nothing is
+        outstanding, write "None".
+
         ## Goal
         Current user objective.
 
@@ -47,8 +69,13 @@ module Rubino
         @config = config || Rubino.configuration
       end
 
-      # Builds a summary from messages, optionally incorporating a previous summary
+      # Builds a summary from messages, optionally incorporating a previous
+      # summary. The returned text always carries SUMMARY_PREFIX so the next
+      # context window treats it as reference-only (#415c anti-replay).
       def build(messages:, previous_summary: nil)
+        # Strip any banner already on the incoming previous summary so
+        # iterative re-compaction never stacks prefixes (anti-replay guard).
+        previous_summary = strip_summary_prefix(previous_summary)
         content = format_messages_for_summary(messages)
 
         prompt = build_summary_prompt(content, previous_summary)
@@ -63,10 +90,27 @@ module Rubino
                                   { role: "user", content: prompt }
                                 ])
 
-        response&.content || fallback_summary(messages, previous_summary)
+        body = response&.content || fallback_summary(messages, previous_summary)
+        with_summary_prefix(body)
       rescue StandardError
         # If LLM fails, produce a basic extractive summary
-        fallback_summary(messages, previous_summary)
+        with_summary_prefix(fallback_summary(messages, previous_summary))
+      end
+
+      # Normalizes summary text to the current handoff format, stripping any
+      # current/legacy banner first so it is never duplicated (#415c).
+      def with_summary_prefix(summary)
+        body = strip_summary_prefix(summary)
+        body.empty? ? SUMMARY_PREFIX : "#{SUMMARY_PREFIX}\n#{body}"
+      end
+
+      # Returns the summary body without the current or legacy handoff banner.
+      def strip_summary_prefix(summary)
+        text = summary.to_s.strip
+        [SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX].each do |prefix|
+          return text[prefix.length..].to_s.lstrip if text.start_with?(prefix)
+        end
+        text
       end
 
       # Builds and saves the summary to the database
@@ -90,7 +134,10 @@ module Rubino
           #{SUMMARY_TEMPLATE}
 
           Be concise but comprehensive. Do not lose critical technical details,
-          file paths, decisions, or error states.
+          file paths, decisions, or error states. CRITICAL: fill the
+          "## Active Task" field with the user's most recent unfulfilled
+          request, verbatim — it is the most important field for task
+          continuity after compaction.
         PROMPT
       end
 
