@@ -148,7 +148,11 @@ module Rubino
       # caught but a real flag in any spelling is accepted.
       def self.known_flag_tokens(command)
         opts = commands[command]&.options || {}
-        tokens = HELP_FLAGS.dup # --help/-h are always valid
+        # --help/-h and the global --version/-v are always valid spellings; the
+        # latter is handled at the top of #start when LEADING, but a non-leading
+        # `chat --version` must still fall through to Thor (not be rejected as
+        # "unknown"), preserving the pre-F7 dispatch behaviour.
+        tokens = HELP_FLAGS + %w[--version -v]
         opts.each_value do |o|
           tokens << "--#{o.name.tr("_", "-")}"
           tokens << "--no-#{o.name.tr("_", "-")}" if o.type == :boolean
