@@ -1785,15 +1785,13 @@ module Rubino
 
       # The status-bar line for the CURRENT session (see UI::StatusBar):
       # mode (+ branch/skill when set) · resolved model id · context
-      # saturation. Saturation prefers the REAL
-      # usage the provider reported for the session's last response (the
-      # input_tokens the agent loop records in the assistant message metadata
-      # — the whole assembled prompt incl. the system prompt) and falls back
-      # to the SAME estimate the compaction logic runs on —
-      # Context::TokenBudget#estimate_tokens (chars/4) over the stored
-      # messages. The window comes from `model.context_length` /
-      # `context.max_tokens` (TokenBudget's default otherwise), so the
-      # percentage tracks the compaction thresholds. nil (no bar) when
+      # saturation. Saturation derives from the SAME estimate the compaction
+      # logic runs on — Context::TokenBudget#estimate_tokens (chars/4) over the
+      # live message set — so the footer percentage and `needs_compaction?`
+      # read one source and agree (no provider-usage override, which would make
+      # the gauge disagree with what compaction decides). The window comes from
+      # `model.context_length` / `context.max_tokens` (TokenBudget's default
+      # otherwise), so the percentage tracks the compaction thresholds. nil (no bar) when
       # disabled via display.statusbar or on any failure: a cosmetic line
       # must never break the prompt.
       def build_status_line(runner)
@@ -1824,13 +1822,16 @@ module Rubino
         current if current && current != default
       end
 
-      # Estimated tokens in the session's context: the last recorded REAL
-      # context size (input + output of the newest assistant response that
-      # carries usage) when available, else TokenBudget's chars/4 estimate.
+      # Estimated tokens in the session's context — the SAME measure the
+      # compaction trigger uses (Context::TokenBudget#estimate_tokens, chars/4
+      # over the live message set), so the footer percentage and
+      # `needs_compaction?` read from one source and AGREE. Previously the
+      # footer preferred the provider's last per-turn `input_tokens` while
+      # compaction estimated chars/4 over stored messages — two different
+      # measures, so the gauge didn't reflect what compaction would decide.
+      # The budget is the single token-count authority; we don't re-add the
+      # provider usage on top (that would double-count against this estimate).
       def context_tokens(messages, budget)
-        last = messages.reverse_each.find { |m| m.metadata&.dig(:input_tokens).to_i.positive? }
-        return last.metadata[:input_tokens].to_i + last.token_count.to_i if last
-
         budget.estimate_tokens(messages.map { |m| { content: m.content } })
       end
 
