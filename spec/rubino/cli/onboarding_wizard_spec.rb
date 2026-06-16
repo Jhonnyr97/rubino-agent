@@ -111,6 +111,66 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     end
   end
 
+  # F3: when EXACTLY ONE provider key is in the env, the wizard CONFIRMS that
+  # pick (visible) before the menu — a bare Enter accepts it (fast path), and the
+  # detected key is reused without a second "use the detected key?" prompt.
+  describe "env-key auto-detect confirm (F3)" do
+    it "confirms the detected provider and Enter accepts it (no menu, no double-prompt)" do
+      ENV["MINIMAX_API_KEY"] = "sk-mm-env"
+      begin
+        # A single bare Enter = accept the detected provider AND its env key.
+        ok = wizard("\n").run
+        expect(ok).to be true
+
+        expect(output.string).to include("Detected MINIMAX_API_KEY — use minimax/MiniMax-M3?")
+        # The cold provider menu was NOT shown (confirm short-circuited it).
+        expect(output.string).not_to include("Choose a provider")
+        # No redundant second key-reuse prompt.
+        expect(output.string).not_to include("use it? [Y/n]")
+
+        loader = Rubino::Config::Loader.new(home_path: home)
+        raw    = YAML.safe_load_file(loader.config_path)
+        expect(raw.dig("model", "provider")).to eq("minimax")
+        expect(File.read(loader.env_path)).to include("MINIMAX_API_KEY=sk-mm-env")
+      ensure
+        ENV.delete("MINIMAX_API_KEY")
+      end
+    end
+
+    it "lets the user decline the detected provider and pick from the menu" do
+      ENV["MINIMAX_API_KEY"] = "sk-mm-env"
+      begin
+        # "n" declines the detected MiniMax → menu → "1" picks OpenAI → paste key.
+        ok = wizard("n\n1\nsk-openai-test\n").run
+        expect(ok).to be true
+
+        expect(output.string).to include("Detected MINIMAX_API_KEY")
+        expect(output.string).to include("Choose a provider")
+
+        loader = Rubino::Config::Loader.new(home_path: home)
+        raw    = YAML.safe_load_file(loader.config_path)
+        expect(raw.dig("model", "provider")).to eq("openai")
+      ensure
+        ENV.delete("MINIMAX_API_KEY")
+      end
+    end
+
+    it "does NOT confirm (shows the menu) when MORE THAN ONE key is present" do
+      ENV["MINIMAX_API_KEY"] = "sk-mm"
+      ENV["OPENAI_API_KEY"]  = "sk-oai"
+      begin
+        # Ambiguous → straight to the menu; "1" + Enter (reuse OpenAI env key).
+        ok = wizard("1\n\n").run
+        expect(ok).to be true
+        expect(output.string).not_to include("Detected MINIMAX_API_KEY — use")
+        expect(output.string).to include("Choose a provider")
+      ensure
+        ENV.delete("MINIMAX_API_KEY")
+        ENV.delete("OPENAI_API_KEY")
+      end
+    end
+  end
+
   it "returns false (and writes nothing) when the user skips at the provider prompt" do
     ok = wizard("\n").run
     expect(ok).to be false
