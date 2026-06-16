@@ -5,12 +5,12 @@
 # ask_parent/task tool" — which is FALSE (the general subagent is tools: :all).
 # The build persona's [Delegation] section must assert plainly that subagents DO
 # have those tools so the model stops declining on a fabricated limitation.
-RSpec.describe "build persona delegation guidance (#subagent-delegation)" do
+RSpec.describe "build persona delegation guidance (#subagent-delegation)" do # rubocop:disable RSpec/DescribeClass
   subject(:prompt) { Rubino::Agent::AgentRegistry.new.find("build").system_prompt }
 
   it "states that subagents have the task and ask_parent tools available" do
     expect(prompt).to include("ask_parent")
-    expect(prompt).to match(/subagent.*lacks `task`\/`ask_parent`.*false/im)
+    expect(prompt).to match(%r{subagent.*lacks `task`/`ask_parent`.*false}im)
   end
 
   it "confirms the general subagent has every tool (so delegation is never refused)" do

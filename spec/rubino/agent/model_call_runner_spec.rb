@@ -1,5 +1,12 @@
 # frozen_string_literal: true
 
+# This spec references Faraday::ConnectionFailed directly (transient-error
+# scripting). Faraday is a transitive runtime dep (ruby_llm), but nothing in the
+# product eager-loads it, so the constant is only defined IN ISOLATION when we
+# require it here — otherwise the file is green only when an earlier spec loaded
+# Faraday first (an order-dependency the dry==real gate misses).
+require "faraday"
+
 RSpec.describe Rubino::Agent::ModelCallRunner do
   # ── Scripted boundary ───────────────────────────────────────────────────
   # A minimal stand-in for the LLM boundary (#call(request) { |chunk| }). Each

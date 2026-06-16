@@ -19,7 +19,7 @@ module Rubino
                      interrupted: false, thinking: nil, stop_reason: nil, raw: nil,
                      cache_read_tokens: 0, cache_creation_tokens: 0, halted: false,
                      final_text_block: nil)
-        @content       = content
+        @content = content
         # The LAST assistant text block of the turn, in isolation — the answer text
         # the model emitted AFTER its final tool call, with no earlier pre-tool
         # narration glued on (#core-F1). `content` keeps EVERY text block of the
