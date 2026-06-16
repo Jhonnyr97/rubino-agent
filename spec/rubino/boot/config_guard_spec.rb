@@ -127,4 +127,22 @@ RSpec.describe Rubino::Boot::ConfigGuard do
       expect(stderr.string).to be_empty
     end
   end
+
+  # F8: a hand-edited config with a load-time issue emits a non-fatal WARNING
+  # at boot. The hint text had a typo — "for detail)" — fixed to "for details)".
+  context "with a config carrying a hand-edit warning (the removed key)" do
+    before do
+      File.write(config_path, { "security" => { "require_confirmation_for_shell" => true } }.to_yaml)
+    end
+
+    it "warns at boot pointing at `rubino doctor` for details (no typo), without exiting" do
+      expect do
+        described_class.load!(loader: loader, stderr: stderr)
+      end.not_to raise_error
+
+      out = stderr.string
+      expect(out).to include("run `rubino doctor` for details)")
+      expect(out).not_to include("for detail)")
+    end
+  end
 end

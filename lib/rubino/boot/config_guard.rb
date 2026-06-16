@@ -50,7 +50,7 @@ module Rubino
         return if issues.empty?
 
         stderr.puts "rubino: warning: #{loader.config_path} has #{issues.size} " \
-                    "config issue#{"s" if issues.size != 1} (run `rubino doctor` for detail):"
+                    "config issue#{"s" if issues.size != 1} (run `rubino doctor` for details):"
         issues.first(5).each { |msg| stderr.puts "rubino:   - #{msg}" }
       rescue StandardError
         nil

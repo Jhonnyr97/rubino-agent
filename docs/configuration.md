@@ -289,7 +289,7 @@ tools:
   workspace_strict: true  # Sandbox write/edit/delete to workspace_root; false = any reachable path
   git: true
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
-                          # every command is still gated by security.require_confirmation_for_shell
+                          # dangerous commands are still gated by security.confirm_policy
   ruby: true
   web: false              # Gates BOTH the webfetch and websearch tools
   memory: true
@@ -374,8 +374,8 @@ attachments:
 
 ```yaml
 security:
-  # confirm_policy: "confirm_all"      # confirm_all (default) | dangerous_only; derived from the alias below when absent
-  require_confirmation_for_shell: true  # legacy alias for confirm_policy; true => confirm_all
+  confirm_policy: "dangerous_only"      # dangerous_only (default) | confirm_all
+                                        # (the old require_confirmation_for_shell key was removed)
   command_allowlist:                    # pre-approved commands (read-only intent only; empty = approve nothing)
     - "git status"
     - "git diff"

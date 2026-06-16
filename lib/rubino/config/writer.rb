@@ -49,6 +49,32 @@ module Rubino
         end
       end
 
+      # Removes a single key (dot-notation) from config.yml so a user can DROP a
+      # setting and fall back to the built-in default (F2). Same locked,
+      # atomic-rename write as #set. Returns true when the key existed and was
+      # removed, false when it was already absent (a no-op — never an error, and
+      # the file is left untouched). A scalar intermediate on the path (e.g.
+      # `unset foo.bar` where `foo` is a scalar) is "not present" → false, not a
+      # crash.
+      def unset(key_path)
+        removed = false
+        Util::AtomicFile.update(@config_path) do |current|
+          raw = parse_raw(current)
+          keys = key_path.split(".")
+          parent = keys[0..-2].reduce(raw) do |node, k|
+            node.is_a?(Hash) && node[k].is_a?(Hash) ? node[k] : (break nil)
+          end
+          if parent.is_a?(Hash) && parent.key?(keys.last)
+            parent.delete(keys.last)
+            removed = true
+            raw.to_yaml
+          end
+          # Key absent / unreachable path: the if returns nil, so AtomicFile
+          # skips the write entirely — a true no-op, file untouched.
+        end
+        removed
+      end
+
       # The string→typed coercion `config set` applies to a CLI-supplied value,
       # exposed as a class method so set-time validation (Config::Validator)
       # compares the SAME coerced type the file will actually store.

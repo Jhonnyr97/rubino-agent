@@ -4,7 +4,7 @@ rubino runs real tools — shell, file writes, Ruby, git. The safety model is la
 
 ## Is it safe to enable shell?
 
-Yes. `tools.shell` is **on by default** because the agent ships to run inside an isolated VM where running commands is the whole point. Every command is still gated: by default `security.require_confirmation_for_shell` is `true`, so each shell command goes through an approval prompt, and a hardline floor blocks catastrophic commands regardless of any setting.
+Yes. `tools.shell` is **on by default** because the agent ships to run inside an isolated VM where running commands is the whole point. Every command is still gated: by default `security.confirm_policy` is `dangerous_only`, so a command matching a dangerous pattern goes through an approval prompt (set it to `confirm_all` to prompt on every command), and a hardline floor blocks catastrophic commands regardless of any setting.
 
 ## The approval decision order
 
@@ -51,10 +51,12 @@ Actions: `allow`, `ask`, `deny`. A `deny` rule is a deny-class check and beats e
 
 ## Shell confirmation policy
 
-`security.confirm_policy` (with `security.require_confirmation_for_shell` as a legacy alias):
+`security.confirm_policy`:
 
-- **`confirm_all`** (default; alias `true`) — every shell command not otherwise allowed/denied prompts for approval.
-- **`dangerous_only`** (alias `false`) — safe commands run unprompted; only commands matching a dangerous pattern prompt. The hardline floor and `permissions: deny` still run first, so this never weakens the floor.
+- **`dangerous_only`** (default) — safe commands run unprompted; only commands matching a dangerous pattern prompt. The hardline floor and `permissions: deny` still run first, so this never weakens the floor.
+- **`confirm_all`** — every shell command not otherwise allowed/denied prompts for approval.
+
+(The old `security.require_confirmation_for_shell` key was **removed** — it is no longer honored. Use `security.confirm_policy`.)
 
 ## Command allowlist
 
