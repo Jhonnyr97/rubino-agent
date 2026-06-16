@@ -138,6 +138,40 @@ RSpec.describe Rubino::Security::HardlineGuard do
       blocked, = described_class.detect("sudo -S whoami")
       expect(blocked).to be(false)
     end
+
+    # MED audit fix: the guard must catch the stdin-password forms (-S, --stdin)
+    # and NOT the unrelated `-s` (start a $SHELL). The guard is case-SENSITIVE;
+    # the previous regex relied on the lowercasing normalizer, which collapsed
+    # `-S` and `-s` together and missed `--stdin` entirely.
+    context "with SUDO_PASSWORD unset" do
+      before { stub_const("ENV", ENV.to_h.tap { |h| h.delete("SUDO_PASSWORD") }) }
+
+      it "blocks the GNU long form sudo --stdin" do
+        blocked, description = described_class.detect("sudo --stdin whoami")
+        expect(blocked).to be(true)
+        expect(description).to include("sudo -S")
+      end
+
+      it "blocks -S combined in a short-flag cluster (sudo -kS)" do
+        blocked, = described_class.detect("sudo -kS whoami")
+        expect(blocked).to be(true)
+      end
+
+      it "blocks sudo -S even after a command separator" do
+        blocked, = described_class.detect("echo hi && sudo -S whoami")
+        expect(blocked).to be(true)
+      end
+
+      it "does NOT flag sudo -s (start a shell, not the stdin-password flag)" do
+        blocked, = described_class.detect("sudo -s")
+        expect(blocked).to be(false)
+      end
+
+      it "does NOT flag a lowercase -s cluster (sudo -ks)" do
+        blocked, = described_class.detect("sudo -ks")
+        expect(blocked).to be(false)
+      end
+    end
   end
 
   describe ".block_reason" do
