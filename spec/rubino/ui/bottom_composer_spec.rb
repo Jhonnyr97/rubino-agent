@@ -2457,15 +2457,15 @@ RSpec.describe Rubino::UI::BottomComposer do
     # "(esc to interrupt)" hint so the user knows Esc cancels the turn (Enter
     # now queues). It appears on #begin_turn and clears on #end_turn.
     context "type-ahead affordance (#421)" do
-      # A SHORT bar so the bar + "  (esc to interrupt)" hint both fit the test's
-      # 40-col terminal (a long bar legitimately drops the cosmetic hint — its
-      # own example below).
-      let(:status) { "m3" }
-
       subject(:composer) do
         described_class.new(input_queue: queue, input: input, output: output,
                             status_line: status, on_interrupt: -> {})
       end
+
+      # A SHORT bar so the bar + "  (esc to interrupt)" hint both fit the test's
+      # 40-col terminal (a long bar legitimately drops the cosmetic hint — its
+      # own example below).
+      let(:status) { "m3" }
 
       it "shows '(esc to interrupt)' in the status row while a turn is active" do
         composer.handle_key("x")
@@ -2476,10 +2476,11 @@ RSpec.describe Rubino::UI::BottomComposer do
       it "clears the hint once the turn ends" do
         composer.handle_key("x")
         composer.begin_turn
+        output.truncate(0) # only inspect the post-end_turn repaint
+        output.rewind
         composer.end_turn
-        # The final committed frame after end_turn no longer carries the hint.
-        last_frame = output.string.split("\r\e[2K").last(6).join
-        expect(last_frame).not_to include("(esc to interrupt)")
+        expect(output.string).not_to include("(esc to interrupt)")
+        expect(output.string).to include("m3") # the bare bar is still drawn
       end
 
       it "does not show the hint at the idle prompt (no active turn)" do
@@ -2500,7 +2501,7 @@ RSpec.describe Rubino::UI::BottomComposer do
                                 status_line: "s" * 30, on_interrupt: -> {}) # 30 + hint > 40
         c.handle_key("x")
         c.begin_turn
-        expect(output.string).to include("s" * 30)          # bar kept
+        expect(output.string).to include("s" * 30) # bar kept
         expect(output.string).not_to include("(esc to interrupt)") # hint dropped
       end
     end
