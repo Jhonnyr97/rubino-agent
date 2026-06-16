@@ -482,6 +482,46 @@ module Rubino
         descendants_of(id).each { |e| e.ask_gate&.cancel! }
       end
 
+      # The ONE per-entry stop body, shared by every stop path (the human
+      # /agents <id> --stop, the model-callable task_stop, and the
+      # parent-teardown #cancel_all below). Marks the stop so the unwind records
+      # as :stopped (not ✗ failed) and the list shows ◌ stopping, then wakes the
+      # entry no matter HOW it is blocked: a child parked on its OWN approval or
+      # ask gate (cancel those → Interrupted → clean unwind), any descendant
+      # parked on a blocking ask (the stop-cascade), and the runner's CancelToken
+      # for a child between checkpoints. Idempotent and safe on an already-stopped
+      # or never-blocked entry (each cancel! is one-shot; request_stop no-ops on a
+      # non-live status), so #cancel_all can call it across the whole registry.
+      def stop_entry(entry)
+        return unless entry
+
+        request_stop(entry.id)
+        entry.approval_gate&.cancel!
+        entry.ask_gate&.cancel!
+        cancel_descendant_ask_gates(entry.id)
+        entry.runner&.cancel!
+      end
+
+      # Structured-concurrency teardown seam: cancel EVERY live subagent so the
+      # process never leaves a child parked. The required fix for the parent-death
+      # deadlock (#XXX) — when the PARENT dies/interrupts (REPL break, HUP/TERM,
+      # clean quit, an aborted turn) a child blocked on ask_parent(blocking:true)
+      # otherwise stays parked on its gate for the full ask_parent_timeout (~900s)
+      # because nothing cancels its gate; the per-id stop paths only fire on an
+      # explicit /agents --stop or task_stop. Calling this from each parent-death
+      # edge wakes every blocked child SYNCHRONOUSLY (cancel! pushes its sentinel;
+      # the gate's await observes it within one WAKE_TICK) so each unwinds via the
+      # existing `rescue Rubino::Interrupted` with the clean "parent question was
+      # cancelled" message instead of hanging to the bound. No-op when there are no
+      # live children, and idempotent (#stop_entry is), so it is safe to invoke
+      # from a teardown `ensure` and from a signal trap. Snapshots #running first
+      # (outside the per-entry work) so we don't hold the registry mutex across the
+      # gate/runner cancels.
+      def cancel_all
+        running.each { |entry| stop_entry(entry) }
+      end
+      alias shutdown! cancel_all
+
       # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
       # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
       def owned_by?(parent_id, child_id)

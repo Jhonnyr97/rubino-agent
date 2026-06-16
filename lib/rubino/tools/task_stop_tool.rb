@@ -56,22 +56,16 @@ module Rubino
 
         return "[#{task_id}] already #{entry.status} — nothing to stop." unless STOPPABLE.include?(entry.status)
 
-        # Mark the stop first so the list/cards immediately show ◌ stopping and
-        # the unwind records as :stopped, not failed (#108/#13).
-        registry.request_stop(task_id)
-        # Flip the runner's CancelToken BEFORE waking any gate, so a child woken
-        # from a parked wait observes the flipped token at its very next
-        # checkpoint and unwinds immediately.
-        entry.runner&.cancel!
-        # A child parked on its OWN approval or ask gate is blocked inside the
-        # gate's wait; cancel the gates so it wakes (Interrupted → deny/cancel)
-        # and unwinds NOW instead of holding its thread + slot until the bound
-        # elapses (#197) — exactly what the human /agents <id> --stop path does.
-        entry.approval_gate&.cancel!
-        entry.ask_gate&.cancel!
-        # Stop-cascade (S5a): wake any descendant parked on a blocking ask_parent
-        # so the whole subtree unwinds at once (no orphaned blocked grandchild).
-        registry.cancel_descendant_ask_gates(task_id)
+        # The shared per-entry stop body (the SAME one the human /agents <id>
+        # --stop path and the parent-teardown #cancel_all use): mark the stop so
+        # the list/cards show ◌ stopping and the unwind records as :stopped, not
+        # failed (#108/#13); cancel the child's OWN approval/ask gates so a parked
+        # wait wakes (Interrupted → deny/cancel) and unwinds NOW instead of holding
+        # its thread + slot until the bound elapses (#197); run the stop-cascade so
+        # any descendant parked on a blocking ask_parent unwinds too (S5a — no
+        # orphaned blocked grandchild); and flip the runner's CancelToken so a
+        # child between checkpoints observes it at its next one.
+        registry.stop_entry(entry)
         "[#{task_id}] stop requested (subagent '#{entry.subagent}'). " \
           "It will unwind at its next checkpoint; check task_result(\"#{task_id}\")."
       end

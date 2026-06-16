@@ -988,6 +988,15 @@ module Rubino
           # A double-tap Ctrl+C inside run_turn re-raises to break out of the
           # REPL — exit cleanly instead of dumping a signal backtrace.
         ensure
+          # Structured-concurrency teardown: the parent REPL is leaving (clean quit
+          # OR the double-tap Ctrl+C break above), so cancel every live subagent
+          # before we return. Without this a child blocked on ask_parent(blocking)
+          # stays parked on its gate for the full ask_parent_timeout (~900s) — the
+          # parent that owed it an answer is gone, but nothing wakes its gate.
+          # #cancel_all wakes each within one WAKE_TICK so it unwinds via its
+          # `rescue Rubino::Interrupted` with the clean "cancelled" message. No-op
+          # when there are no children.
+          Tools::BackgroundTasks.instance.cancel_all
           restore_signal_traps(prev_signal_traps)
           restore_logger(prev_log_io)
         end
@@ -1018,6 +1027,15 @@ module Rubino
             # truthfully ("interrupted by external signal"), not "by user"
             # (#361b). Trap-safe — cancel! only flips lock-free booleans.
             runner.cancel!(reason: :external)
+            # The process is about to exit(0): cancel every live subagent so a
+            # child blocked on ask_parent(blocking) wakes and unwinds NOW instead
+            # of dying with its thread mid-park (and so its terminal :stopped
+            # ensure can run). #cancel_all only flips one-shot cancel tokens and
+            # pushes the gate's queue sentinel under the registry/gate mutexes —
+            # the same short, non-self-reentrant locking the adjacent
+            # end_session! DB update already does in this trap; no I/O. No-op when
+            # there are no children.
+            Tools::BackgroundTasks.instance.cancel_all
             runner.end_session!
             exit(0)
           end
@@ -1602,6 +1620,15 @@ module Rubino
         # escaped the cooperative path. Cancel and re-raise so run_interactive's
         # loop breaks and the session ends cleanly.
         runner.cancel!
+        # This Ctrl-C-aborted turn may have orphaned a subagent blocked on
+        # ask_parent(blocking:true): the parent turn that owed it an answer is
+        # gone, so without this the child stays parked on its gate for the full
+        # ask_parent_timeout (~900s). Cancel every live child so each unwinds NOW
+        # via its `rescue Rubino::Interrupted` (clean "cancelled" message). The
+        # re-raise also reaches run_interactive's teardown #cancel_all, but doing
+        # it here keeps the unwind local to the edge that orphaned the child and
+        # is idempotent, so the second call is a no-op.
+        Tools::BackgroundTasks.instance.cancel_all
         ui.blank_line
         ui.warning("turn cancelled")
         raise
@@ -2107,8 +2134,32 @@ module Rubino
         Rubino::ActiveAgent.set(name)
         runner.agent_definition = Rubino::ActiveAgent.definition if runner.respond_to?(:agent_definition=)
         ui.success("agent: #{previous} → #{Rubino::ActiveAgent.current}")
+        # A /agent switch is NON-destructive: the REPL, the session, and the
+        # subagent registry all stay alive, so we must NOT cancel running
+        # children (that would kill useful in-flight work). But a child blocked on
+        # ask_parent is now waiting on a parent the human just re-pinned, which is
+        # easy to forget — so SURFACE any blocked child (the safe behavior here)
+        # rather than leave it stuck invisibly. The human can still /reply it.
+        warn_blocked_children_after_switch(ui)
       rescue ArgumentError => e
         ui.error(e.message)
+      end
+
+      # After a /agent switch, remind the human of any subagent still blocked on
+      # an ask_parent question (waiting on the human OR on its agent-parent) so
+      # the switch never silently strands a parked child at the idle prompt. Pure
+      # surfacing — nothing is cancelled; the children keep running and stay
+      # answerable via /reply <id>. Best-effort and quiet when nothing is blocked.
+      def warn_blocked_children_after_switch(ui)
+        blocked = Tools::BackgroundTasks.instance.running.select do |e|
+          %i[blocked_on_human blocked_on_parent].include?(e.status)
+        end
+        return if blocked.empty?
+
+        ui.warning("#{blocked.size} subagent(s) still waiting on an answer — /reply <id> to answer:")
+        blocked.each { |e| ui.info("  #{e.id} · #{e.subagent}") }
+      rescue StandardError
+        nil
       end
 
       # Resolves a one-shot `/<agent> <message>` route to its Definition, or nil
