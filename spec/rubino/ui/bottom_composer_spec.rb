@@ -508,13 +508,15 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(quiet_values).to eq([false]) # interrupt fired exactly once, loud
       end
 
-      it "fires on_interrupt during the THINKING phase too" do
+      it "fires during the THINKING phase and does NOT arm the idle rewind chord" do
         fired = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> { fired += 1 })
         c.begin_turn # thinking, not streaming
         press_esc(c)
         expect(fired).to eq(1)
+        # Mid-turn Esc interrupts; it never arms the Esc-Esc rewind chord.
+        expect(c.instance_variable_get(:@last_esc_at)).to be_nil
       end
 
       it "interrupts and then the queue HEAD is what #shift returns (run next)" do
@@ -2455,6 +2457,11 @@ RSpec.describe Rubino::UI::BottomComposer do
     # "(esc to interrupt)" hint so the user knows Esc cancels the turn (Enter
     # now queues). It appears on #begin_turn and clears on #end_turn.
     context "type-ahead affordance (#421)" do
+      # A SHORT bar so the bar + "  (esc to interrupt)" hint both fit the test's
+      # 40-col terminal (a long bar legitimately drops the cosmetic hint — its
+      # own example below).
+      let(:status) { "m3" }
+
       subject(:composer) do
         described_class.new(input_queue: queue, input: input, output: output,
                             status_line: status, on_interrupt: -> {})
@@ -2486,6 +2493,15 @@ RSpec.describe Rubino::UI::BottomComposer do
         c.handle_key("x")
         c.begin_turn
         expect(output.string).not_to include("(esc to interrupt)")
+      end
+
+      it "drops the cosmetic hint (keeps the bar) when the combined row overflows" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                status_line: "s" * 30, on_interrupt: -> {}) # 30 + hint > 40
+        c.handle_key("x")
+        c.begin_turn
+        expect(output.string).to include("s" * 30)          # bar kept
+        expect(output.string).not_to include("(esc to interrupt)") # hint dropped
       end
     end
 
