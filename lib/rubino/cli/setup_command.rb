@@ -47,15 +47,12 @@ module Rubino
         ui.status("Initializing database...")
         connection = recover_corrupt_database(ui)
         migrator = Database::Migrator.new(connection)
-        # `setup` is the documented repair path. A concurrent first-boot race
-        # (#race) can leave the migrator table with a DUPLICATE version row or a
-        # partial schema; `repair!` dedupes the bookkeeping (no user-table data
-        # loss) and finishes the migration under the cross-process lock so a
-        # raced install heals here without a manual `rm rubino.sqlite3*`.
-        if migrator.duplicate_version_rows?
-          ui.warning("Migrator table had duplicate version rows (interrupted/raced migration) — repairing.")
-        end
-        migrator.repair!(lock_path: Rubino.migration_lock_path)
+        # `setup` is the documented repair path. The schema is a single,
+        # fully-idempotent baseline migration (`create_table?` / `IF NOT EXISTS`
+        # throughout) applied under the cross-process flock, so this is safe to
+        # run on a fresh, partial, or already-migrated home alike — a healthy DB
+        # just no-ops, a partial one finishes, and a re-run never collides.
+        migrator.migrate!(lock_path: Rubino.migration_lock_path)
         ui.success("Database initialized: #{connection.db_path}")
 
         # First-run onboarding: if no usable key is configured yet AND we're on
