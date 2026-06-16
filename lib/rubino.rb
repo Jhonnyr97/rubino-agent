@@ -368,12 +368,12 @@ module Rubino
     end
 
     # A clean, actionable message when the on-disk DB is PRESENT but UNUSABLE,
-    # else nil. Covers two un-setup-able states a user command must never crash
-    # on with a raw backtrace (#333/#359/#race):
-    #   * corrupt/malformed image → quarantine + recreate via setup.
-    #   * duplicate `schema_info` version rows, the concurrent first-boot race
-    #     artifact → without this guard `sessions list` hits the partial schema
-    #     and dumps a raw `Sequel::DatabaseError: no such table: sessions`.
+    # else nil. Covers the un-setup-able state a user command must never crash
+    # on with a raw backtrace (#333/#359): a corrupt/malformed image →
+    # quarantine + recreate via setup. (The concurrent first-boot race that used
+    # to leave duplicate `schema_info` rows is now prevented at the source by the
+    # flock + side-effect-free `up_to_date?` fast path in the migrator, so there
+    # is no post-hoc duplicate-row state left to message about.)
     # Read-only: never creates the file (matches doctor's #68 contract).
     def database_repair_message
       db = database
@@ -383,9 +383,6 @@ module Rubino
         "database is corrupt (malformed image): #{db.db_path}\n" \
           "Run `rubino doctor` to diagnose, then `rubino setup` to quarantine it " \
           "and recreate a fresh database."
-      elsif Database::Migrator.new(db).duplicate_version_rows?
-        "database needs repair (interrupted/raced migration left duplicate version rows): #{db.db_path}\n" \
-          "Run `rubino setup` to repair it."
       end
     rescue StandardError
       # Detection itself must never crash a command; treat an unexpected probe
