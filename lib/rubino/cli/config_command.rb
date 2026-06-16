@@ -72,6 +72,21 @@ module Rubino
         exit(1)
       end
 
+      desc "unset KEY", "Remove a configuration key (drop a setting; reverts to the default)"
+      def unset(key)
+        writer = Config::Writer.new(config_path: config_path)
+        if writer.unset(key)
+          Rubino.ui.success("unset #{key}")
+        else
+          # Not present is a no-op, not a failure: exit 0 with a clear notice so
+          # `config unset` is idempotent (re-running it never errors).
+          Rubino.ui.info("#{key} was not set (nothing to remove)")
+        end
+      rescue ConfigurationError => e
+        Rubino.ui.error(e.message)
+        exit(1)
+      end
+
       desc "show", "Show full configuration (secrets masked)"
       def show
         self.class.render_show(ui: Rubino.ui)

@@ -17,6 +17,36 @@ module Rubino
         true
       end
 
+      # One-line description of what rubino IS, surfaced as a top-line tagline in
+      # `rubino --help` / `rubino help` — Thor's stock command list opens cold
+      # with "Commands:" and never says what the tool does or where to start
+      # (F-help). Wrap Thor's #help to print a tagline above the listing and a
+      # "Getting started: run `rubino setup`" hint below it, so a brand-new user
+      # lands on the first action instead of a bare verb table.
+      TAGLINE = "rubino — an AI coding agent that reads, edits, and runs code."
+      GETTING_STARTED = "Getting started: run `rubino setup` to configure a model, " \
+                        "then `rubino chat` (or `rubino \"your prompt\"`)."
+
+      # rubocop:disable Style/OptionalBooleanParameter -- overrides Thor's own
+      # `def help(shell, subcommand = false)`; the positional boolean is Thor's
+      # public signature (instance #help calls it positionally), not ours to change.
+      def self.help(shell, subcommand = false)
+        # Only decorate the TOP-LEVEL command listing (`rubino --help`), not a
+        # per-command help page (`rubino help chat`) — those are dispatched with
+        # the command name and handled by super unchanged.
+        if subcommand
+          super
+          return
+        end
+
+        shell.say(TAGLINE)
+        shell.say
+        super
+        shell.say(GETTING_STARTED)
+        shell.say
+      end
+      # rubocop:enable Style/OptionalBooleanParameter
+
       # Allow passing prompt directly as default task:
       # rubino "my prompt"
       def self.default_command

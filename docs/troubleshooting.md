@@ -48,7 +48,7 @@ The sqlite backend ranks by direct content relevance (FTS5/BM25) first; graph/re
 
 ## The agent keeps asking to approve every shell command
 
-That's `security.require_confirmation_for_shell: true` (the default `confirm_all` policy). Options: approve for the session at the prompt, add prefixes to `security.command_allowlist`, switch to `dangerous_only` (`security.confirm_policy: dangerous_only`), or use `/mode yolo` / `--yolo` to skip prompts (the hardline floor and `permissions: deny` still apply). See [security.md](security.md).
+That's the `confirm_all` policy (`security.confirm_policy: confirm_all`). The default is `dangerous_only` (only dangerous-pattern commands prompt). Options: switch back with `rubino config set security.confirm_policy dangerous_only`, approve for the session at the prompt, add prefixes to `security.command_allowlist`, or use `/mode yolo` / `--yolo` to skip prompts (the hardline floor and `permissions: deny` still apply). See [security.md](security.md).
 
 ## A command was denied even with `--yolo`
 

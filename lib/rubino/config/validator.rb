@@ -65,6 +65,35 @@ module Rubino
       # left to the type-unconstrained nil-default path.
       POSITIVE_INT_LEAVES = %w[max_turns max_tool_iterations].freeze
 
+      # Leaves whose value must be one of a fixed, known SET of strings (#392b
+      # follow-up). A garbage value used to persist with a green ✓ then have the
+      # runtime fail SAFE to a default (e.g. confirm_policy → :dangerous_only),
+      # so the ✓ LIED about what was stored. Reject an unknown value at set time
+      # with a clear message naming the valid choices, mirroring the
+      # model.temperature range check. Keyed by leaf name so the same set
+      # applies wherever the key appears. A nil (clearing the key) is allowed —
+      # it restores the built-in default.
+      # The other enum-ish leaves with a SMALL, FIXED, statically-known value
+      # set where garbage silently degraded at runtime, swept in alongside
+      # confirm_policy:
+      #   * approvals.mode — ApprovalPolicy::MODES (manual|auto|skip); an
+      #     unknown mode fell through to the manual fallback.
+      #   * thinking.effort — ReasoningPrefs::EFFORTS (off|low|medium|high); an
+      #     unknown effort resolved to nil → the medium default.
+      # NOT swept (avoid false positives): memory.backend (pluggable — its set
+      # is registered at runtime and already rejected with an actionable error
+      # at use time) and jobs.mode (treated as inline vs "anything else", not a
+      # closed set).
+      #
+      # Keyed by FULL dotted path when the leaf name is ambiguous (approvals.mode
+      # vs the unconstrained jobs.mode), else by leaf name. #check_enum! tries
+      # the full path first, then the leaf.
+      ENUMS = {
+        "security.confirm_policy" => %w[dangerous_only confirm_all],
+        "approvals.mode" => %w[manual auto skip],
+        "thinking.effort" => %w[off low medium high]
+      }.freeze
+
       # Config keys that were REMOVED and are no longer honored (item 7). A
       # config.yml that still carries one isn't an "unknown key" (its top-level
       # section is real) and isn't a type error, so the generic checks miss it —
@@ -84,6 +113,7 @@ module Rubino
         check_type!(key_path, keys, value, default) unless default == :__absent__
         check_range!(key_path, keys, value)
         check_positive_int!(key_path, keys, value)
+        check_enum!(key_path, keys, value)
         check_url_format!(key_path, keys, value)
       end
 
@@ -264,6 +294,24 @@ module Rubino
         raise ConfigurationError,
               "invalid value for '#{key_path}': #{value.inspect} — must be a positive " \
               "integer (a 0 or negative cap would never let the turn run)"
+      end
+
+      # An ENUM leaf must be one of its known values when set. A garbage value
+      # used to persist with a green ✓ then have the runtime quietly fall back
+      # to a (often SAFE-but-different) default — so the ✓ misrepresented what
+      # took effect. Reject it with a clear message naming the valid choices. A
+      # nil (clearing the key) is allowed: it restores the built-in default.
+      def check_enum!(key_path, keys, value)
+        allowed = ENUMS[keys.join(".")] || ENUMS[keys.last.to_s]
+        return unless allowed
+
+        coerced = Writer.coerce_value(value)
+        return if coerced.nil?
+        return if allowed.include?(coerced.to_s)
+
+        raise ConfigurationError,
+              "invalid value for '#{key_path}': #{value.inspect} — must be one of " \
+              "#{allowed.map(&:inspect).join(", ")}"
       end
 
       # A *_url / base_url leaf must be a real http(s) URL when a non-empty value

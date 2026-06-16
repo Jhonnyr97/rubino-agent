@@ -69,6 +69,38 @@ RSpec.describe Rubino::Config::Writer do
     end
   end
 
+  # F2: `config unset` lets a user DROP a setting and fall back to the built-in
+  # default. It's idempotent — unsetting an absent key is a no-op, never an error.
+  describe "#unset (F2)" do
+    it "removes an existing key and reports it was removed" do
+      writer.set("model.provider", "anthropic")
+      expect(writer.unset("model.provider")).to be(true)
+      expect(writer.get("model.provider")).to be_nil
+    end
+
+    it "returns false (no-op) when the key was never set" do
+      expect(writer.unset("model.provider")).to be(false)
+    end
+
+    it "returns false for an unreachable path through a scalar intermediate" do
+      # model.default is a scalar; descending into it can't remove anything.
+      expect(writer.unset("model.default.foo")).to be(false)
+    end
+
+    it "leaves sibling keys untouched when removing one" do
+      writer.set("model.provider", "anthropic")
+      writer.unset("model.provider")
+      raw = YAML.safe_load_file(config_path)
+      expect(raw.fetch("model")).to eq("default" => "openai/gpt-4.1")
+    end
+
+    it "does not write the file at all for an absent-key no-op" do
+      before_mtime = File.mtime(config_path)
+      expect(writer.unset("memory.enabled")).to be(false)
+      expect(File.mtime(config_path)).to eq(before_mtime)
+    end
+  end
+
   describe "normal operation still works" do
     it "sets and reads back a nested value" do
       writer.set("model.provider", "auto")
@@ -205,6 +237,53 @@ RSpec.describe Rubino::Config::Writer do
     it "accepts a positive agent.max_turns" do
       writer.set("agent.max_turns", "120")
       expect(writer.get("agent.max_turns")).to eq(120)
+    end
+
+    # Enum-ish leaves: a garbage value used to persist with a green ✓ and then
+    # the runtime fell back SAFE to a default (confirm_policy → dangerous_only,
+    # mode → manual, effort → medium), so the ✓ LIED about what took effect.
+    # Reject an unknown value at set time naming the valid choices.
+    describe "enum value validation (security.confirm_policy + swept siblings)" do
+      it "rejects a garbage security.confirm_policy with the valid choices" do
+        expect { writer.set("security.confirm_policy", "yolo") }
+          .to raise_error(Rubino::ConfigurationError,
+                          /invalid value for 'security\.confirm_policy'.*dangerous_only.*confirm_all/)
+      end
+
+      it "accepts the known confirm_policy values" do
+        writer.set("security.confirm_policy", "confirm_all")
+        expect(writer.get("security.confirm_policy")).to eq("confirm_all")
+        writer.set("security.confirm_policy", "dangerous_only")
+        expect(writer.get("security.confirm_policy")).to eq("dangerous_only")
+      end
+
+      it "does not corrupt the file when it refuses a garbage confirm_policy" do
+        writer.set("security.confirm_policy", "nonsense")
+      rescue Rubino::ConfigurationError
+        raw = YAML.safe_load_file(config_path)
+        expect(raw.dig("security", "confirm_policy")).to be_nil
+      end
+
+      it "rejects a garbage approvals.mode but accepts a known one" do
+        expect { writer.set("approvals.mode", "bogus") }
+          .to raise_error(Rubino::ConfigurationError, /invalid value for 'approvals\.mode'.*manual.*auto.*skip/)
+        writer.set("approvals.mode", "auto")
+        expect(writer.get("approvals.mode")).to eq("auto")
+      end
+
+      it "rejects a garbage thinking.effort but accepts a known one" do
+        expect { writer.set("thinking.effort", "ultra") }
+          .to raise_error(Rubino::ConfigurationError, /invalid value for 'thinking\.effort'.*off.*low.*medium.*high/)
+        writer.set("thinking.effort", "high")
+        expect(writer.get("thinking.effort")).to eq("high")
+      end
+
+      it "does NOT constrain the unconstrained jobs.mode (leaf-name collision with approvals.mode)" do
+        # jobs.mode is inline-vs-anything-else, not a closed enum — the
+        # full-path-keyed ENUMS must not mis-apply approvals.mode's set to it.
+        writer.set("jobs.mode", "worker")
+        expect(writer.get("jobs.mode")).to eq("worker")
+      end
     end
   end
 

@@ -76,12 +76,13 @@ module Rubino
       def missing_key_message(config = Rubino.configuration)
         provider = resolved_provider(config)
         env_var  = provider_env_var_name(provider)
+        loader = Config::Loader.new
         <<~MSG.strip
           No API key configured for provider '#{provider}' (model #{config.model_default}).
           Set it up one of these ways:
-            • run `rubino setup` for a guided first-run setup, or
-            • add #{env_var}=<your-key> to #{Config::Loader.new.env_path}, or
-            • set providers.#{provider}.api_key in #{Config::Loader.new.config_path}.
+            • run `rubino setup` for a guided first-run setup (creates the files below), or
+            • add #{env_var}=<your-key> to #{loader.env_path} (or run `rubino setup` to create it), or
+            • set providers.#{provider}.api_key in #{loader.config_path} (or run `rubino setup` to create it).
         MSG
       end
 

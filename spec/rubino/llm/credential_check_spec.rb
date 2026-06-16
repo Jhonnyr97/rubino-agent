@@ -62,5 +62,21 @@ RSpec.describe Rubino::LLM::CredentialCheck do
       expect(msg).to include("openai/gpt-4.1")
       expect(msg).to include("rubino setup")
     end
+
+    # The file-edit options name config.yml / .env, which don't exist until
+    # setup runs — so `rubino setup` must be the clear PRIMARY action and each
+    # file option must say it can be created via setup, not point at a path the
+    # fresh user has no file at.
+    it "makes `rubino setup` the primary action and qualifies the file options" do
+      c = config("model" => { "default" => "openai/gpt-4.1", "provider" => "auto" })
+      msg = described_class.missing_key_message(c)
+      lines = msg.lines.map(&:strip)
+      first_option = lines.find { |l| l.start_with?("•") }
+      expect(first_option).to include("rubino setup")
+      # The .env and providers.<name> file options each note the setup escape.
+      file_options = lines.select { |l| l.include?(".env") || l.include?("providers.openai.api_key") }
+      expect(file_options).not_to be_empty
+      expect(file_options).to all(include("rubino setup"))
+    end
   end
 end
