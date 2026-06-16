@@ -39,7 +39,6 @@ RSpec.describe Rubino::Agent::FallbackChain do
 
     it "starts on the primary" do
       expect(chain.current_adapter).to be(primary)
-      expect(chain.active?).to be(false)
     end
 
     it "activate_next! is false and changes nothing" do
@@ -61,7 +60,6 @@ RSpec.describe Rubino::Agent::FallbackChain do
       expect(chain.activate_next!).to be(true)
       expect(chain.current_adapter.provider).to eq("anthropic")
       expect(chain.current_adapter.model_id).to eq("claude-x")
-      expect(chain.active?).to be(true)
       expect(builder.builds.first).to include(model_id: "claude-x", provider: "anthropic")
     end
 
@@ -128,7 +126,6 @@ RSpec.describe Rubino::Agent::FallbackChain do
 
       chain.restore_primary!
       expect(chain.current_adapter).to be(primary)
-      expect(chain.active?).to be(false)
     end
 
     it "re-enables the chain so the next turn can fall back again" do

@@ -9,8 +9,6 @@ module Rubino
                   :permissions, :tools, :hidden
 
       # Types: :primary (user-switchable), :subagent (invokable), :utility (hidden)
-      TYPES = %i[primary subagent utility].freeze
-
       def initialize(attrs = {})
         @name = attrs[:name]
         @type = attrs[:type] || :primary
@@ -30,10 +28,6 @@ module Rubino
 
       def subagent?
         @type == :subagent
-      end
-
-      def utility?
-        @type == :utility
       end
 
       def hidden?
@@ -72,9 +66,7 @@ module Rubino
       # its companions `task_result`/`task_stop`) so it can spawn its own
       # subagents. Runaway recursion / fan-out is no longer prevented by hiding
       # the tool here — it is bounded in ONE place, Tools::BackgroundTasks#reserve,
-      # by the depth / per-owner / global caps. (DELEGATION_TOOLS is kept as a
-      # named set for any reader that still wants to reason about the group.)
-      DELEGATION_TOOLS = %w[task task_result task_stop].freeze
+      # by the depth / per-owner / global caps.
 
       # Tools that ONLY make sense for a subagent and must be hidden from a
       # primary/top-level agent. ask_parent escalates a question to the PARENT — a

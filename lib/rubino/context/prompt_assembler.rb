@@ -8,7 +8,8 @@ module Rubino
     # Returns the message array (system + summary + history) for LLM submission.
     class PromptAssembler
       # Process-wide cache of the memory snapshot keyed by session id.
-      # Captured the first time build_system_prompt runs for a session and
+      # Captured the first time the system prompt is assembled for a session
+      # (via #stable_prefix) and
       # reused on every subsequent assembly in that session — even if the
       # agent calls Tools::MemoryTool mid-session. Rationale: without
       # freezing, an injected memory written this turn would land in the
@@ -189,15 +190,6 @@ module Rubino
         # a tail the system block is just the one cached prefix block.
         blocks << { type: "text", text: tail } unless tail.empty?
         ::RubyLLM::Content::Raw.new(blocks)
-      end
-
-      # Back-compat shim: the full system prompt as a single String (prefix +
-      # tail), the pre-#311 shape. Retained for any caller/spec that wants the
-      # rendered text regardless of the cache wire-shape.
-      def build_system_prompt
-        prefix = stable_prefix
-        tail   = volatile_tail
-        tail.empty? ? prefix : "#{prefix}\n\n#{tail}"
       end
 
       # The STABLE region of the system prompt — the bytes BEFORE the cache

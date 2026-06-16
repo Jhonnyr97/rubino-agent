@@ -19,14 +19,6 @@ RSpec.describe Rubino::Context::SummaryBuilder do
       expect(twice).to eq(once)
       expect(twice.scan("CONTEXT COMPACTION").size).to eq(1)
     end
-
-    it "strips and re-normalizes the legacy [Compacted Summary] prefix" do
-      legacy = "#{described_class::LEGACY_SUMMARY_PREFIX}\nold body"
-      out = builder.with_summary_prefix(legacy)
-      expect(out).to start_with(described_class::SUMMARY_PREFIX)
-      expect(out).not_to include(described_class::LEGACY_SUMMARY_PREFIX)
-      expect(out).to include("old body")
-    end
   end
 
   describe "#strip_summary_prefix" do

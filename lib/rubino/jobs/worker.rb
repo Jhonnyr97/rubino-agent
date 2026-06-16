@@ -28,10 +28,6 @@ module Rubino
         @running = false
       end
 
-      def running?
-        @running
-      end
-
       private
 
       def process_batch

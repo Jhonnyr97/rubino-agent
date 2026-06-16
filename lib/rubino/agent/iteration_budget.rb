@@ -51,13 +51,6 @@ module Rubino
         within_time_limit? && within_turns_rail?(iteration) && !within_soft_iteration_limit?(iteration)
       end
 
-      # True when the per-turn wall-clock budget (max_turn_seconds) is spent.
-      # extend! cannot move this ceiling, so a time-exhausted turn must end
-      # rather than re-prompt for more iterations (#403).
-      def time_exhausted?
-        !within_time_limit?
-      end
-
       # Grants `by` more tool iterations so a turn that hit the cap can resume
       # the SAME turn with full context (#399, the Cline/Roo "reset the counter,
       # keep context" pattern). Only the soft iteration ceiling moves — the
