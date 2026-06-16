@@ -53,13 +53,10 @@ module Rubino
 
         expanded = expand_workspace_path(file_path)
         # Reads are BROAD (#406): like Hermes/Claude/Codex, read resolves any
-        # path — the read allowlist was never the data-loss boundary (that lives
-        # on the WRITE path: overwrite_guard / read_gate). Only a small secret
-        # denylist (defense-in-depth, NOT a hard boundary) is refused, so the
-        # model doesn't slurp credentials into context.
-        if (category = read_secret_category(expanded))
-          return read_secret_block_message(file_path, category)
-        end
+        # NON-secret path with no prompt (clone-and-inspect). A SECRET/credential
+        # path (#446) is NOT refused here anymore — it is gated UPSTREAM by
+        # Security::ApprovalPolicy#decide (→ :ask), so an APPROVED read returns
+        # the real bytes while a denied/headless read never reaches #call.
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
