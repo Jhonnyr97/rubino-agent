@@ -141,9 +141,13 @@ module Rubino
 
         n = count.to_i
         return "0k" if n.zero?
+        # A count of 1k or more already abbreviates to a `k` figure
+        # (#abbreviate trims a trailing `.0`, e.g. 1000 → "1k", 8000 → "8k").
+        return abbreviate(n) if n >= 1000
 
-        k = [n / 1000.0, 0.1].max
-        k >= 100 ? "#{k.round}k" : format("%.1fk", k)
+        # Sub-1k: force into `k`, flooring to 0.1k so a tiny non-zero session
+        # doesn't collapse to a misleading "0k".
+        format("%.1fk", [n / 1000.0, 0.1].max)
       end
     end
   end
