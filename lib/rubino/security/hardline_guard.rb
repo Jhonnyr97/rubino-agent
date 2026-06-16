@@ -73,10 +73,20 @@ module Rubino
         [/#{CMDPOS}telinit\s+[06]\b/, "telinit 0/6 (shutdown/reboot)"]
       ].freeze
 
-      # sudo -S without a configured SUDO_PASSWORD is the model piping a
-      # *guessed* password via stdin — a brute-force vector. Unconditional
-      # block. Mirrors approval.py:_check_sudo_stdin_guard (:255).
-      SUDO_STDIN_RE = /(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-s\b/
+      # sudo -S / sudo --stdin without a configured SUDO_PASSWORD is the model
+      # piping a *guessed* password via stdin — a brute-force vector.
+      # Unconditional block. Mirrors approval.py:_check_sudo_stdin_guard (:255).
+      #
+      # CASE-SENSITIVE on purpose: `-S` (capital — read the password from STDIN)
+      # is the dangerous form this guard owns; `-s` (lowercase — run $SHELL) is a
+      # DIFFERENT flag and must NOT be flagged here (sudo's own privilege-flag
+      # handling lives in DangerousPatterns, not the hardline floor). The
+      # previous `-s\b` regex relied on #normalize lowercasing the command, which
+      # both over-matched `sudo -s` AND failed to anchor on the real intent — and
+      # it missed the `--stdin` long form entirely. We now match against a
+      # case-PRESERVED form (#sudo_stdin?): `-S` and combined short clusters
+      # ending in S (`-kS`, `-nS`), plus the GNU `--stdin` long form.
+      SUDO_STDIN_RE = /(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+(?:-[a-zA-Z]*S(?![a-zA-Z])|--stdin\b)/
 
       module_function
 
@@ -98,7 +108,10 @@ module Rubino
         HARDLINE_PATTERNS.each do |regex, description|
           return [true, description] if normalized.match?(regex) || canonical.match?(regex)
         end
-        sudo_hit = sudo_stdin?(normalized) || sudo_stdin?(canonical)
+        # The sudo-stdin guard is CASE-SENSITIVE (`-S` ≠ `-s`), so it must NOT see
+        # the lowercased normalized/canonical forms. Match it against a
+        # whitespace-normalized but case-PRESERVED form of the raw command.
+        sudo_hit = sudo_stdin?(normalize_case_preserving(command))
         return [true, "sudo password guessing via stdin (sudo -S)"] if sudo_hit
 
         [false, nil]
@@ -111,12 +124,14 @@ module Rubino
         blocked ? description : nil
       end
 
-      # sudo -S only fires the guard when no SUDO_PASSWORD is configured —
-      # with one set, an internal transform legitimately injects -S elsewhere.
-      def sudo_stdin?(normalized)
+      # sudo -S / --stdin only fires the guard when no SUDO_PASSWORD is
+      # configured — with one set, an internal transform legitimately injects
+      # -S elsewhere. The input MUST be case-preserved (see #detect): the regex
+      # discriminates `-S` from `-s` on case.
+      def sudo_stdin?(case_preserved)
         return false if ENV.key?("SUDO_PASSWORD")
 
-        normalized.match?(SUDO_STDIN_RE)
+        case_preserved.match?(SUDO_STDIN_RE)
       end
 
       # Minimal normalization: strip shell line-continuations, collapse runs of
@@ -137,8 +152,16 @@ module Rubino
       # (Trailing whitespace after the backslash is NOT part of the continuation
       # and is left for the space-collapse below.)
       def normalize(command)
+        normalize_case_preserving(command).downcase
+      end
+
+      # Same whitespace normalization as #normalize (line-continuation strip,
+      # space/tab collapse, trim) but WITHOUT lowercasing. Used only by the
+      # case-sensitive sudo-stdin guard so `-S` (stdin password) stays
+      # distinguishable from `-s` (start shell).
+      def normalize_case_preserving(command)
         joined = command.to_s.gsub(/\\\r?\n/, "")
-        joined.gsub(/[ \t]+/, " ").strip.downcase
+        joined.gsub(/[ \t]+/, " ").strip
       end
 
       # Canonicalize the (already normalized) command so common, trivial
