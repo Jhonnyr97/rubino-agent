@@ -121,7 +121,7 @@ RSpec.describe Rubino::CLI::Commands do
     end
 
     it "does NOT inject the tagline into a per-command help page (`help chat`)" do
-      out = capture_top_help(["help", "chat"])
+      out = capture_top_help(%w[help chat])
       expect(out).not_to include("an AI coding agent that reads")
       expect(out).to match(/Usage:.*chat \[PROMPT\]/m)
     end

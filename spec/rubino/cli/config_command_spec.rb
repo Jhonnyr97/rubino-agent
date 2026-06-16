@@ -91,7 +91,6 @@ RSpec.describe Rubino::CLI::ConfigCommand do
       err = ui.messages.find { |m| m[:level] == :error }
       expect(err[:message]).to include("invalid value for 'model.temperature'")
     end
-  end
 
     it "exits 1 on a garbage enum value (security.confirm_policy)" do
       expect { described_class.new.set("security.confirm_policy", "yolo") }

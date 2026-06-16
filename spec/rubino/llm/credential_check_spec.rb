@@ -76,7 +76,7 @@ RSpec.describe Rubino::LLM::CredentialCheck do
       # The .env and providers.<name> file options each note the setup escape.
       file_options = lines.select { |l| l.include?(".env") || l.include?("providers.openai.api_key") }
       expect(file_options).not_to be_empty
-      file_options.each { |l| expect(l).to include("rubino setup") }
+      expect(file_options).to all(include("rubino setup"))
     end
   end
 end
