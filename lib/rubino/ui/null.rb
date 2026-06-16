@@ -102,6 +102,13 @@ module Rubino
         nil
       end
 
+      # The unified arrow-key subagent approval (TUI-6) has no terminal to draw
+      # on headless: return nil ("no decision"), which the /agents handler reads
+      # as "re-prompt / leave parked" — never an auto-approve or auto-deny.
+      def subagent_approval_choice
+        nil
+      end
+
       # Headless: there is no human to ask, so FAIL CLOSED (#260). The Null
       # adapter drives the one-shot / scripted `rubino prompt` / `-q` path; it
       # used to return true here, silently auto-approving every write and every
