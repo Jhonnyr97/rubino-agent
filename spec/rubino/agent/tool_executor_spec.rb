@@ -332,7 +332,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     # P7: the common one-short-arg case inlines onto the header.
     it "inlines a single short argument onto the 'wants:' header (P7)" do
       question = executor.send(:approval_question, tool, { "command" => "touch hello.txt" })
-      expect(question).to eq("#{tool.name} wants:  touch hello.txt")
+      expect(question).to eq("#{tool.name} wants: touch hello.txt")
     end
 
     it "lays each argument on its own line" do
@@ -379,7 +379,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
                                      { "old_string" => "def median(nums):\n  s = sorted(nums)",
                                        "new_string" => "def median(nums):\n  s = sorted(nums)\n  n = len(s)" }
                                    ] })
-        expect(question).to include("multi_edit wants:  stats.py (1 edit)")
+        expect(question).to include("multi_edit wants: stats.py (1 edit)")
         expect(question).to include("  - def median(nums):")
         expect(question).to include("  + def median(nums):")
         expect(question).to include("+   n = len(s)")

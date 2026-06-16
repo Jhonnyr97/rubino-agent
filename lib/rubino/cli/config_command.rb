@@ -49,16 +49,37 @@ module Rubino
       # returns found?; it isn't a pure predicate, and the name is the documented
       # shared-renderer seam (#187) referenced by the in-chat handler.
       def self.render_get(key, ui:)
+        path = key.split(".")
         value =
           begin
-            Rubino.configuration.dig(*key.split("."))
+            Rubino.configuration.dig(*path)
           rescue TypeError
             nil
           end
         return false if value.nil?
 
-        ui.info("#{key} = #{redact(value, key: key.split(".").last)}")
+        # F4: annotate a value that comes from the built-in DEFAULTS rather than
+        # the user's config.yml, so "I unset it but `config get` still shows a
+        # value" reads correctly — the default is what's in effect, not a stale
+        # setting. A key whose resolved value is NOT present in the raw (un-merged)
+        # user file is default-sourced.
+        suffix = from_defaults?(path) ? " (default)" : ""
+        ui.info("#{key} = #{redact(value, key: path.last)}#{suffix}")
         true
+      end
+
+      # True when +path+ has no value in the user's config.yml as written on disk
+      # (so the merged value is coming from the built-in defaults). Best-effort:
+      # any read hiccup reports false (no annotation) rather than a false
+      # "(default)". A nil at the path in the raw file counts as "not set".
+      def self.from_defaults?(path)
+        raw =
+          begin
+            Config::Loader.new.raw_config
+          rescue StandardError
+            {}
+          end
+        raw.is_a?(Hash) && raw.dig(*path).nil?
       end
       # rubocop:enable Naming/PredicateMethod
 

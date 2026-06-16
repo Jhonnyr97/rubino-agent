@@ -450,12 +450,12 @@ module Rubino
         end
 
         # The common case — ONE short single-line argument (a shell command, a
-        # file path) — inlines onto the header: `shell wants:  touch hello.txt`
+        # file path) — inlines onto the header: `shell wants: touch hello.txt`
         # (P7). Multi-arg / multi-line calls keep the per-key layout below.
         if pairs.size == 1
           key, value = pairs.first
           text = Util::SecretsMask.mask_value(value, key: key).to_s
-          return "#{tool.name} wants:  #{text}" if !text.include?("\n") && text.length <= 120
+          return "#{tool.name} wants: #{text}" if !text.include?("\n") && text.length <= 120
         end
 
         lines = ["#{tool.name} wants:"]
@@ -492,7 +492,7 @@ module Rubino
         return nil unless edits.is_a?(Array) && !edits.empty?
 
         path  = arguments["file_path"] || arguments[:file_path]
-        lines = ["multi_edit wants:  #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
+        lines = ["multi_edit wants: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
         body  = []
         edits.each_with_index do |edit, idx|
           old_s = edit["old_string"] || edit[:old_string]

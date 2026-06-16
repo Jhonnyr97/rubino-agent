@@ -123,7 +123,51 @@ module Rubino
         # prior behaviour left stdout EMPTY for Thor errors, or leaked a raw Errno
         # backtrace for the home error); otherwise the clean one-line stderr Thor
         # itself would have printed. Never a raw backtrace; exit non-zero.
-        report_early_error(given_args, e.message)
+        report_early_error(given_args, clean_thor_message(e, given_args))
+      end
+
+      # Normalizes a Thor dispatch/argument error message into rubino's own
+      # voice, so every pre-run failure reads as one clean `rubino: <msg>` line
+      # instead of mixing Thor's raw `ERROR: …`/`Usage: …` text with our
+      # hand-crafted unknown-command/unknown-flag voice (copy-consistency).
+      #   * An unknown command (Thor::UndefinedCommandError) becomes
+      #     "unknown command 'X'. Did you mean `setup`? Run `rubino --help`."
+      #     — the closest-match did-you-mean mirrors the in-REPL slash hint (F2),
+      #     replacing Thor's terser "Could not find command … Did you mean? …".
+      #   * An argument/usage error (Thor::InvocationError, e.g. a command called
+      #     with stray args/flags) has its internal `ERROR: ` prefix and trailing
+      #     `Usage: …` line stripped, leaving just the plain sentence.
+      # Any other Thor/Configuration error passes through unchanged.
+      def self.clean_thor_message(error, given_args)
+        name = Array(given_args).first.to_s
+        # Only the TOP-LEVEL unknown command gets rubino's did-you-mean voice. A
+        # nested miss (`rubino sessions frobnicate`) also surfaces as an
+        # UndefinedCommandError, but `given_args.first` there is the VALID parent
+        # ("sessions") — suggesting against the top-level roster would be wrong, so
+        # those fall through to Thor's own (cleaned) "Could not find command …".
+        if error.is_a?(Thor::UndefinedCommandError) && !commands.key?(name.tr("-", "_"))
+          msg = "unknown command '#{name}'."
+          if (suggestion = closest_command(name))
+            msg += " Did you mean `#{suggestion}`?"
+          end
+          return "#{msg} Run `rubino --help`."
+        end
+
+        # Drop Thor's `ERROR: ` lead and its `Usage: "…"` continuation line(s),
+        # keeping the first clean sentence (e.g. the "was called with arguments"
+        # line) — never the raw two-line `ERROR:/Usage:` block.
+        error.message.to_s.sub(/\AERROR: /, "").split("\nUsage:", 2).first.strip
+      end
+
+      # The closest known top-level command/subcommand to a mistyped +name+, for
+      # the unknown-command did-you-mean (F2). Uses the same stdlib DidYouMean
+      # SpellChecker the in-REPL slash hint uses; best-effort (nil on any hiccup).
+      def self.closest_command(name)
+        require "did_you_mean"
+        dict = commands.keys.map(&:to_s)
+        DidYouMean::SpellChecker.new(dictionary: dict).correct(name.to_s).first
+      rescue StandardError
+        nil
       end
 
       # The chat-like command an arg list dispatches to (`chat` or `prompt`), or
