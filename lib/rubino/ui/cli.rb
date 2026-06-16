@@ -373,6 +373,25 @@ module Rubino
         approved
       end
 
+      # The subagent shell-approval choice, rendered with the SAME arrow-key
+      # component as the main-agent menu (TUI-6 — replaces the old flat
+      # `[o]nce/[a]lways/[n]o deny` line a non-decision keystroke silently
+      # denied). PUBLIC: the /agents handler (Handlers::Agents) calls it to
+      # present a parked child's approval through the unified menu. Four named
+      # options matching the maintainer decision; returns one of :once,
+      # :always_command, :no, :deny_explain (or nil on an aborted read, which
+      # the caller treats as "re-prompt", never a deny). The "Deny & tell the
+      # agent why" path lets the human hand the child a reason instead of a
+      # bare deny. The security semantics are unchanged — only the UI unifies.
+      def subagent_approval_choice
+        approval_menu("approve?", [
+                        ["Approve once", :once],
+                        ["Approve always (this command)", :always_command],
+                        ["Deny", :no],
+                        ["Deny & tell the agent why", :deny_explain]
+                      ])
+      end
+
       # A destructive yes/No confirm — NOT the tool-approval menu (#218).
       # Deleting a session or forgetting a fact is not a tool/command the model
       # proposed, so the "Approve once / this command / this tool" vocabulary is
@@ -502,12 +521,34 @@ module Rubino
         inline = metric ? truncate_inline(safe(metric), 120) : nil
         if failed
           suffix = inline && !inline.empty? ? " · #{inline}" : ""
-          $stdout.puts @pastel.red("  └ ✗ failed · #{name}#{suffix}")
+          put_card_row("  └ ✗ failed · #{name}#{suffix}") { |line| @pastel.red(line) }
         else
           suffix = inline && !inline.empty? ? " #{inline}" : ""
-          $stdout.puts @pastel.dim("  └ ✓#{suffix}")
+          put_card_row("  └ ✓#{suffix}") { |line| @pastel.dim(line) }
         end
         @last_block = :tool
+      end
+
+      # Prints a single-line tool-card row (the `└ ✓ <preview>` / `└ ✗ …` close
+      # row), WRAPPING it to the terminal width and HANG-INDENTING continuation
+      # rows under the row's text column instead of letting a long one-line
+      # preview hard-wrap to column 0 at a narrow terminal (TUI-2). The hang
+      # column is the leading whitespace + glyph run (`  └ ✓ ` / `  └ ✗ `), so
+      # the wrapped tail lines up under the preview rather than under the `└`.
+      # +text+ is already sanitized/safe; the block styles each rendered line.
+      def put_card_row(text)
+        hang = text[/\A\s*└ \S+ /] || text[/\A\s*/]
+        body = text[hang.length..] || ""
+        # Wrap the BODY at the width left after the hang column, then prefix the
+        # hang to EVERY row so the first and the continuations occupy the same
+        # left margin (the hang's own glyphs only show on the first row, blanks
+        # on the rest). A minimum body budget keeps a very narrow terminal from
+        # looping on a 1-col field.
+        budget = [terminal_cols - 1 - display_width(hang), 4].max
+        rows   = wrap_tail_row(body, budget)
+        indent = " " * hang.length
+        $stdout.puts(yield("#{hang}#{rows.first}"))
+        rows[1..].each { |row| $stdout.puts(yield("#{indent}#{row}")) }
       end
 
       # Approval requested: renders as `◆ summary`
@@ -884,8 +925,17 @@ module Rubino
       # blank: the turn footer attaches directly under the answer. Shared by
       # the non-streamed (#assistant_text) and streamed (#stream) paths so
       # both turns read identically.
+      #
+      # TUI-4 (the LIVE-render seam): the separator must commit through the
+      # SAME atomic composer seam the block content uses (#commit_block_atomic),
+      # NOT a bare `$stdout.puts`. On the streamed path the post-tool segment
+      # paints its first live tail row via the composer's transient row; a bare
+      # buffered `$stdout.puts` for the gap could be reordered/overwritten by
+      # that repaint, gluing the pre- and post-tool text ("…command.Output:
+      # HELLO") with no separator. Committing the blank as a one-line atomic
+      # block lands it in scrollback AHEAD of the live tail, so the gap is real.
       def answer_gap
-        $stdout.puts unless @last_block == :gap
+        commit_block_atomic([""]) unless @last_block == :gap
         @last_block = :answer
       end
 
@@ -1672,21 +1722,33 @@ module Rubino
         # shows file_path/old_string, not a command), so non-shell tools get
         # "this exact call" instead (#222). Shell keeps "command".
         narrow = scope_noun(tool)
-        # Pause the bottom composer for the duration of the select so the menu
-        # reads the real $stdin (no reader-thread race) and tty-screen sizes the
-        # real $stdout (no NoMethodError on the StdoutProxy). No-op off-turn.
+        # Labels are grammatically parallel (#87): every line is an
+        # "<Approve|Deny> — <scope>" verb phrase, so the affirmatives and
+        # denies read symmetrically instead of mixing "yes, once" with
+        # "no — deny this once".
+        choices = [["Approve once", :once]]
+        choices << ["Approve — `#{prefix}` commands (always)", :always_prefix] if prefix
+        choices << ["Approve — #{narrow} (always)", :always_command]
+        choices << ["Approve — #{session_scope_noun(tool)} (this session)", :always_tool]
+        choices << ["Deny once", :no]
+        choices << ["Deny — #{narrow} (always)", :deny_always]
+        approval_menu("approve?", choices)
+      end
+
+      # The UNIFIED arrow-key approval menu (TUI-6): the ONE select component
+      # every approval surface renders — main-agent tool approvals
+      # (#approval_choice), MCP, and the subagent shell approval
+      # (#subagent_approval_choice). +choices+ is an ordered [label, value]
+      # list; returns the chosen value (a decision symbol). ↑↓ to move, Enter to
+      # choose; cycle off so the ends don't wrap.
+      #
+      # The bottom composer is paused for the duration of the select so the menu
+      # reads the real $stdin (no reader-thread race) and tty-screen sizes the
+      # real $stdout (no NoMethodError on the StdoutProxy). No-op off-turn.
+      def approval_menu(prompt, choices)
         BottomComposer.run_in_terminal do
-          # Labels are grammatically parallel (#87): every line is an
-          # "<Approve|Deny> — <scope>" verb phrase, so the affirmatives and
-          # denies read symmetrically instead of mixing "yes, once" with
-          # "no — deny this once".
-          approval_prompt.select("approve?", cycle: false) do |menu|
-            menu.choice "Approve once", :once
-            menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
-            menu.choice "Approve — #{narrow} (always)", :always_command
-            menu.choice "Approve — #{session_scope_noun(tool)} (this session)", :always_tool
-            menu.choice "Deny once",                            :no
-            menu.choice "Deny — #{narrow} (always)",            :deny_always
+          approval_prompt.select(prompt, cycle: false) do |menu|
+            choices.each { |label, value| menu.choice label, value }
           end
         end
       end

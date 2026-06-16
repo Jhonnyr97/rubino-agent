@@ -140,6 +140,57 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("stray tail flushed")
     end
 
+    # TUI-4 (the LIVE-render seam): a post-tool answer segment streaming after a
+    # pre-tool narration segment must be separated by a real committed blank
+    # line. The pre-tool block and the gap both commit through the composer's
+    # atomic #print_above seam, so the gap lands in scrollback AHEAD of the
+    # post-tool live tail — never a bare buffered puts that the tail repaint can
+    # reorder/overwrite into "…command.Output: HELLO".
+    it "commits the inter-segment gap atomically so pre/post-tool text can't glue (TUI-4)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      commits  = []
+      allow(composer).to receive(:print_above) { |s| commits << s }
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      allow(ui).to receive(:show_live_tail)
+
+      live_io = Object.new
+      live_io.define_singleton_method(:live) { |_s| self }
+      live_io.define_singleton_method(:puts) { |*| nil }
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "I'll run the command.")
+        ui.stream_block_end(1)
+        ui.tool_started("shell", arguments: { command: "echo HELLO" })
+        ui.tool_finished("shell", result: nil)
+        ui.stream(type: :content, text: "Output: HELLO")
+        ui.stream_end
+      ensure
+        $stdout = old
+      end
+
+      # A blank line was committed atomically (the gap), and it lands BEFORE the
+      # post-tool "Output:" block in the committed-frame order — proof the two
+      # segments can't glue.
+      blank_idx  = commits.index { |s| s.to_s.strip.empty? }
+      output_idx = commits.index { |s| s.to_s.include?("Output: HELLO") }
+      expect(blank_idx).not_to be_nil
+      expect(output_idx).not_to be_nil
+      expect(blank_idx).to be < output_idx
+      # The pre- and post-tool texts never share one committed frame.
+      glued = commits.any? { |s| s.to_s.include?("command.") && s.to_s.include?("Output:") }
+      expect(glued).to be(false)
+    end
+
     it "buffers thinking text instead of raw-printing it (bug #2)" do
       out = capture_stdout do
         ui.stream(type: :thinking, text: "musing")
@@ -825,6 +876,44 @@ RSpec.describe Rubino::UI::CLI do
       end
       expect(out).to include("✗ failed · read")
       expect(out).not_to include("✓ done · read")
+    end
+  end
+
+  # TUI-2: at a narrow terminal the single-line tool-card close row (`└ ✓ …`)
+  # used to hard-wrap to column 0; the long preview must HANG-INDENT under the
+  # row's text column (after `  └ ✓ `) instead.
+  describe "#tool_finished narrow-terminal hang-indent (TUI-2)" do
+    it "hang-indents the wrapped close-row preview under the └ ✓ text column" do
+      allow(ui).to receive(:terminal_cols).and_return(30)
+      metric = "alpha beta gamma delta epsilon zeta eta"
+      result = double("Result", truncated_preview: nil, success?: true, metrics: metric)
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_finished("shell", result: result)
+      end
+      close = out.lines.map(&:chomp).reject(&:empty?)
+      # The first close-row line carries the glyph; nothing wraps to column 0.
+      first = close.find { |l| l.include?("└ ✓") }
+      expect(first).not_to be_nil
+      continuations = close[(close.index(first) + 1)..]
+      expect(continuations).not_to be_empty
+      # Continuations hang-indent to the "  └ ✓ " column (6 spaces), never col 0.
+      continuations.each do |line|
+        next if line.empty?
+
+        expect(line).to start_with("      ") # 6-space hang ("  └ ✓ ")
+      end
+    end
+
+    it "leaves a short close row on one line (no wrap) at a wide terminal" do
+      allow(ui).to receive(:terminal_cols).and_return(120)
+      result = double("Result", truncated_preview: "11 lines", success?: true, metrics: "11 lines")
+      out = capture_stdout do
+        ui.tool_started("read", arguments: nil)
+        ui.tool_finished("read", result: result)
+      end
+      expect(out.lines.count { |l| l.include?("└ ✓") }).to eq(1)
+      expect(out).to include("└ ✓ 11 lines")
     end
   end
 
@@ -1904,6 +1993,52 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("◆ Apply changes?")
       expect(out).to include("[y] apply")
       expect(out).to include("[n] cancel")
+    end
+  end
+
+  # TUI-6: ONE arrow-key approval component (#approval_menu) backs every
+  # approval surface — main-agent tool approvals, MCP, and the subagent shell
+  # approval (#subagent_approval_choice). No flat single-line letter prompt.
+  describe "unified approval menu (TUI-6)" do
+    def stub_select(symbol)
+      prompt = instance_double(TTY::Prompt)
+      offered = nil
+      allow(prompt).to receive(:select) do |_q, **_opts, &blk|
+        menu = double("menu")
+        offered = []
+        allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        blk&.call(menu)
+        symbol
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      [prompt, -> { offered }]
+    end
+
+    it "renders the subagent approval through the SAME TTY::Prompt select component" do
+      prompt, = stub_select(:once)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      expect(ui.subagent_approval_choice).to eq(:once)
+      expect(prompt).to have_received(:select)
+    end
+
+    it "offers the four named subagent options (no double-negative flat line)" do
+      _prompt, offered = stub_select(:no)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      ui.subagent_approval_choice
+      expect(offered.call).to eq([
+                                   ["Approve once", :once],
+                                   ["Approve always (this command)", :always_command],
+                                   ["Deny", :no],
+                                   ["Deny & tell the agent why", :deny_explain]
+                                 ])
+    end
+
+    it "main-agent #approval_choice routes through the same #approval_menu" do
+      _prompt, offered = stub_select(:once)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      expect(ui.send(:approval_choice, nil, tool: "shell")).to eq(:once)
+      # The shared select rendered the main-agent option set.
+      expect(offered.call.map(&:last)).to include(:once, :always_command, :no, :deny_always)
     end
   end
 

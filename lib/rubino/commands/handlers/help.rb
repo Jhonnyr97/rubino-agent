@@ -58,7 +58,7 @@ module Rubino
           rows  = help_builtin_rows
           width = rows.map { |name, _| name.length }.max
           rows.each do |name, desc|
-            @ui.info("  #{name.ljust(width)}  - #{desc}")
+            help_line("  #{name.ljust(width)}  - #{desc}")
           end
           @ui.blank_line
 
@@ -68,25 +68,25 @@ module Rubino
           # so they're NOT repeated here — this section is image/file INPUT only,
           # no command rows (#87 de-dup).
           @ui.info("Input:")
-          @ui.info("  ! <command>   - run a shell command yourself, no approval; output joins the context")
-          @ui.info("  @<path>       - autocomplete a workspace file into the prompt")
-          @ui.info("  @<image>      - attach an image (png/jpg/jpeg/gif/webp/bmp) to the turn")
-          @ui.info("  <image path>  - drop or paste an image file path to attach it")
+          help_line("  ! <command>   - run a shell command yourself, no approval; output joins the context")
+          help_line("  @<path>       - autocomplete a workspace file into the prompt")
+          help_line("  @<image>      - attach an image (png/jpg/jpeg/gif/webp/bmp) to the turn")
+          help_line("  <image path>  - drop or paste an image file path to attach it")
           @ui.blank_line
 
           # The keystroke vocabulary was invisible in /help (#87): a newcomer
           # couldn't learn how to cancel a turn, drive the approval menu, or that
           # Tab completes. One compact reference line covers it.
           @ui.info("Keys:")
-          @ui.info("  ↑/↓ + Enter   - choose in the approval menu")
-          @ui.info("  Enter         - send; during a turn, interrupt it and run this next")
-          @ui.info("  Alt-Enter     - queue this to run after the current turn (or /queued <msg>)")
-          @ui.info("  Shift-Tab     - cycle mode (default → plan → yolo)")
-          @ui.info("  Tab           - complete the highlighted /command or @file (empty input: cycle agent)")
-          @ui.info("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
-          @ui.info("  Ctrl-C        - cancel the turn (twice to exit)")
-          @ui.info("  Esc Esc       - rewind to an earlier message (fork + edit & resend)")
-          @ui.info("  /             - start a command;  @  attach a file/image")
+          help_line("  ↑/↓ + Enter   - choose in the approval menu")
+          help_line("  Enter         - send; during a turn, interrupt it and run this next")
+          help_line("  Alt-Enter     - queue this to run after the current turn (or /queued <msg>)")
+          help_line("  Shift-Tab     - cycle mode (default → plan → yolo)")
+          help_line("  Tab           - complete the highlighted /command or @file (empty input: cycle agent)")
+          help_line("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
+          help_line("  Ctrl-C        - cancel the turn (twice to exit)")
+          help_line("  Esc Esc       - rewind to an earlier message (fork + edit & resend)")
+          help_line("  /             - start a command;  @  attach a file/image")
           @ui.blank_line
 
           show_agents_help
@@ -125,10 +125,10 @@ module Rubino
           @ui.info("Agents  (switch with /agent <name>, a bare /<name>, or Tab; current marked ▸):")
           registry.primary_agents.each do |a|
             marker = a.name == current ? "▸" : " "
-            @ui.info("  #{marker} /#{a.name.ljust(8)} - #{a.description}")
+            help_line("  #{marker} /#{a.name.ljust(8)} - #{a.description}")
           end
           registry.subagents.each do |a|
-            @ui.info("    /#{a.name.ljust(8)} - #{a.description} (one-shot: /#{a.name} <message>)")
+            help_line("    /#{a.name.ljust(8)} - #{a.description} (one-shot: /#{a.name} <message>)")
           end
         rescue StandardError
           nil
@@ -189,6 +189,57 @@ module Rubino
         def custom_desc(cmd)
           desc = cmd.description.to_s.strip
           desc.empty? ? "" : "  - #{desc}"
+        end
+
+        # Emits one help row, wrapping the DESCRIPTION at the terminal width so
+        # the longest rows (~88ch — the `! <command>` / Alt-Enter lines) no
+        # longer get hard-cut at a standard 80-col terminal (F-help-wrap). The
+        # row is split at the FIRST " - " separator: the label column (left of
+        # it, plus the "- " gutter) is preserved on the first line, and every
+        # continuation line HANG-INDENTS under the description so the wrapped
+        # text reads as one aligned column rather than spilling to column 0.
+        # A row with no " - " (free-form copy) is emitted verbatim.
+        def help_line(row)
+          label, desc = row.split(" - ", 2)
+          return @ui.info(row) if desc.nil?
+
+          indent = " " * "#{label} - ".length
+          width  = terminal_width
+          wrap_help_desc(desc, width - indent.length).each_with_index do |seg, i|
+            @ui.info(i.zero? ? "#{label} - #{seg}" : "#{indent}#{seg}")
+          end
+        end
+
+        # Word-wraps a description into lines no wider than +width+ columns,
+        # breaking on spaces; an over-long single word (a long path/flag) is
+        # left intact rather than split mid-token. Width is floored so a very
+        # narrow terminal still makes progress instead of looping.
+        def wrap_help_desc(desc, width)
+          width = [width, 8].max
+          words = desc.split
+          lines = []
+          line  = +""
+          words.each do |word|
+            if line.empty?
+              line << word
+            elsif line.length + 1 + word.length <= width
+              line << " " << word
+            else
+              lines << line
+              line = +word
+            end
+          end
+          lines << line unless line.empty?
+          lines.empty? ? [""] : lines
+        end
+
+        # The current terminal width (columns), defaulting to 80 off a tty or on
+        # any console hiccup — matching the other handlers' helper (#mcp/#skills).
+        def terminal_width
+          cols = IO.console&.winsize&.last
+          cols&.positive? ? cols : 80
+        rescue StandardError
+          80
         end
       end
     end
