@@ -57,11 +57,10 @@ module Rubino
         end
 
         expanded = expand_workspace_path(file_path)
-        # ALWAYS-ON write-side credential denylist (#413), checked BEFORE the
-        # workspace toggle so it refuses even when workspace_strict=false.
-        if (category = write_secret_category(expanded))
-          return write_secret_block_message(file_path, category)
-        end
+        # SECRET/credential edits (#446) are no longer HARD-refused here — they
+        # are gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask): an
+        # APPROVED edit of your .env actually applies, a denied/headless one
+        # never reaches #call. The workspace sandbox below is unchanged.
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)

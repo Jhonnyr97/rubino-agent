@@ -95,16 +95,28 @@ RSpec.describe Rubino::Tools::GrepTool do
     expect(payload(result)).to include("Path not found")
   end
 
-  # #406 secret denylist (defense-in-depth, NOT a hard boundary).
-  it "refuses to grep a .env credential file directly" do
+  # #446: grepping a secret file DIRECTLY is gated UPSTREAM by ApprovalPolicy
+  # (→ :ask). At the tool level an APPROVED direct grep returns its lines.
+  it "greps an APPROVED .env credential file directly (gate is upstream, #446)" do
     outside = Dir.mktmpdir("grep_secret")
     File.write(File.join(outside, ".env"), "API_KEY=supersecret\n")
-    result = tool.call("pattern" => "KEY", "path" => File.join(outside, ".env"))
-    expect(result).to be_a(Hash)
-    expect(result[:error_code]).to eq(:secret_denied)
-    expect(result[:output]).not_to include("supersecret")
+    result = payload(tool.call("pattern" => "KEY", "path" => File.join(outside, ".env")))
+    expect(result).to include("API_KEY=supersecret")
   ensure
     FileUtils.rm_rf(outside)
+  end
+
+  # F2 (#446): a DIRECTORY grep with include:"*.env" must NOT leak the .env
+  # contents — rg's --glob overrides hidden-exclusion, so the secret hit is
+  # post-filtered out of the result set.
+  it "does NOT leak a .env via an include-glob over a directory (F2)" do
+    dir = Dir.mktmpdir("grep_include_leak")
+    File.write(File.join(dir, ".env"), "API_KEY=supersecret\n")
+    File.write(File.join(dir, "app.rb"), "API_KEY = 'used'\n")
+    result = payload(tool.call("pattern" => "API_KEY", "path" => dir, "include" => "*.env"))
+    expect(result).not_to include("supersecret")
+  ensure
+    FileUtils.rm_rf(dir)
   end
 
   describe "grepping a single file (Bug B)" do

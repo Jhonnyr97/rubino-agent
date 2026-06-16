@@ -247,145 +247,65 @@ module Rubino
           error_code: :outside_workspace }
       end
 
-      # READ-side secret DENYLIST (#406, defense-in-depth — NOT a security
-      # boundary). rubino reads broad like Hermes/Claude/Codex (write stays
-      # sandboxed); this denylist mirrors Hermes' file_safety.get_read_block_error
-      # so the model doesn't slurp credentials into context by accident. The
-      # shell tool can still `cat` anything — this is ergonomics, not enforcement.
+      # UNIFIED SECRET-PATH PREDICATE (#446). One "is this a secret/credential
+      # path?" question used by BOTH the read side (read/grep/glob) and the
+      # write side (write/edit/multi_edit/apply_patch). Previously the read
+      # denylist (#406) was a NARROW subset (.env*/.envrc + agent-home) and the
+      # write denylist (#413) the SUPERSET; the maintainer decision is that
+      # reading OR writing a secret both require EXPLICIT user approval, applied
+      # to the SAME set. So there is now ONE set — the (wider) write set — and
+      # ONE predicate: #secret_path_category. The approval gate lives in
+      # Security::ApprovalPolicy#decide (returns :ask for a secret target), which
+      # gives us the existing flow for free: interactive → approval dropdown
+      # auto-opens; approved → the tool proceeds; denied → refused; headless (no
+      # human) → fails CLOSED via ToolExecutor's :noninteractive floor. The tools
+      # therefore NO LONGER self-refuse a secret in #call — an approved read of
+      # your .env must actually return its bytes, and an approved write must
+      # actually write. The predicate is still consulted directly in ONE place:
+      # GrepTool post-filters its RESULTS through it so an include-glob
+      # (`include: "*.env"`) over a directory can't leak a secret the per-target
+      # gate never saw (F2).
       #
-      # Refuses:
-      #   - project credential files by BASENAME, in any directory: .env,
-      #     .env.* (.env.local, .env.production, …), .envrc.
-      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
-      #     the home .env, the sqlite DB (encrypted OAuth tokens at rest), any
-      #     *oauth* file, and an mcp-tokens/ dir — while ordinary home reads
-      #     (pastes, attachments, sessions the agent points the model at) stay
-      #     allowed.
-      # Returns the matched-secret category string, or nil when the path is
-      # readable. (Non-predicate: the truthy return carries the category that
-      # the denial message interpolates.)
-      # Matches `.env`, `.env.<anything>` (.env.local/.production), and `.envrc`.
-      ENV_SECRET_BASENAME_RE = /\A\.env(\..+)?\z|\A\.envrc\z/
-      def read_secret_category(expanded)
-        base = File.basename(expanded.to_s)
-        return "credential file (#{base})" if base.match?(ENV_SECRET_BASENAME_RE)
-
-        return unless under_agent_home?(expanded)
-
-        target = canonical_path(expanded) || File.expand_path(expanded.to_s)
-        lower  = target.downcase
-        return unless base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
-                      lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
-                      base.end_with?(".key") || base.end_with?(".pem")
-
-        "agent-home secret (#{base})"
-      end
-
-      def read_secret_block_message(path, category)
-        { output: "Error: refusing to READ '#{path}' — it is a #{category}. " \
-                  "Reading secrets into the model context is blocked as a safeguard " \
-                  "(not a hard boundary). If you genuinely need a value from it, " \
-                  "ask the user rather than reading the file.",
-          error_code: :secret_denied }
-      end
-
-      # WRITE-side credential DENYLIST (#413, mirrors Hermes file_safety
-      # build_write_denied_paths/prefixes + is_write_denied). ALWAYS ON — it
-      # does NOT consult workspace_strict?, so it still refuses even when the
-      # workspace sandbox is disabled (tools.workspace_strict=false) AND even
-      # when the target sits INSIDE the workspace. This is a defense-in-depth
-      # FLOOR against a prompt-injected write/edit/multi_edit/apply_patch
-      # clobbering credentials or system files — NOT the security boundary
-      # (that remains the workspace sandbox + the approval flow). The shell
-      # tool can still touch anything; this only guards the structured write
-      # tools, where a single hallucinated file_path is the realistic risk.
+      # DELIBERATE DIVERGENCE FROM HERMES: Hermes' file_safety.get_read_block_error
+      # FLAT-DENIES reading project .env* (model-facing deny, no human in the
+      # loop, defense-in-depth only). rubino instead routes the read through an
+      # explicit user APPROVAL gate (ask, not deny) so the agent CAN read/update
+      # your .env when you say yes — stricter than Claude Code's default
+      # (ungated reads) and aider, more content-aware than Codex's OS-sandbox.
       #
-      # Refuses (by BASENAME, in any directory):
+      # Matches (by BASENAME, in any directory):
       #   - project credential files: .env, .env.* (.env.local/.production), .envrc
       #   - shell/credential dotfiles: .netrc, .pgpass, .npmrc, .pypirc,
       #     .git-credentials, .bashrc, .zshrc, .profile, .bash_profile, .zprofile
-      # Refuses (by absolute PATH / PREFIX):
+      # Matches (by absolute PATH / PREFIX):
       #   - ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.docker, ~/.azure,
       #     ~/.config/gh, ~/.config/gcloud  (the whole tree)
-      #   - /etc/sudoers, /etc/sudoers.d/*, /etc/passwd, /etc/shadow,
-      #     /etc/systemd/*
+      #   - /etc/sudoers, /etc/sudoers.d/*, /etc/passwd, /etc/shadow, /etc/systemd/*
       #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
       #     the home .env, the sqlite DB, any *oauth* file, an mcp-tokens/ dir,
       #     and *.key / *.pem material.
-      # Returns the matched category string (truthy) or nil when writable.
-      WRITE_SECRET_BASENAME_RE = /
-        \A\.env(\..+)?\z | \A\.envrc\z |
-        \A\.netrc\z | \A\.pgpass\z | \A\.npmrc\z | \A\.pypirc\z |
-        \A\.git-credentials\z |
-        \A\.bashrc\z | \A\.zshrc\z | \A\.profile\z | \A\.bash_profile\z | \A\.zprofile\z
-      /x
-
-      # Home-relative subtrees no write tool may touch (resolved against $HOME).
-      WRITE_DENIED_HOME_PREFIXES = [
-        ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure",
-        ".config/gh", ".config/gcloud"
-      ].freeze
-
-      # Absolute system paths/prefixes no write tool may touch.
-      WRITE_DENIED_SYSTEM_PATHS    = ["/etc/sudoers", "/etc/passwd", "/etc/shadow"].freeze
-      WRITE_DENIED_SYSTEM_PREFIXES = ["/etc/sudoers.d", "/etc/systemd"].freeze
-
-      def write_secret_category(expanded)
-        base   = File.basename(expanded.to_s)
-        target = canonical_path(expanded) || File.expand_path(expanded.to_s)
-
-        return "credential file (#{base})" if base.match?(WRITE_SECRET_BASENAME_RE)
-        if (cat = write_denied_path_category(target, base))
-          return cat
-        end
-
-        write_agent_home_secret_category(expanded, base, target)
+      # Returns the matched category string (truthy) or nil when the path is not
+      # a secret. (Non-predicate: the truthy return carries the category string
+      # the approval question / block message interpolates.)
+      #
+      # The UNIFIED predicate (delegates to the single source of truth,
+      # Security::SecretPath.category). Returns the matched-secret category
+      # string (truthy) for a secret/credential path, or nil for a normal file.
+      def secret_path_category(expanded)
+        Security::SecretPath.category(expanded)
       end
 
-      # Absolute-path / prefix matches (SSH keys, cloud creds, /etc system
-      # files). Compared against the symlink-resolved target so an in-workspace
-      # link to ~/.ssh can't slip a key write past the basename check.
-      def write_denied_path_category(target, base)
-        home = File.expand_path("~")
-        WRITE_DENIED_HOME_PREFIXES.each do |rel|
-          root = File.join(home, rel)
-          return "credential directory (~/#{rel})" if under_path?(target, root)
-        end
-        return "system file (#{base})" if WRITE_DENIED_SYSTEM_PATHS.include?(target)
-
-        WRITE_DENIED_SYSTEM_PREFIXES.each do |prefix|
-          return "system path (#{prefix})" if under_path?(target, prefix)
-        end
-        nil
-      end
-
-      # Agent-home (~/.rubino) auth/secret material, mirroring the READ-side
-      # home rules so the write path can't overwrite the token store either.
-      def write_agent_home_secret_category(expanded, base, target)
-        return unless under_agent_home?(expanded)
-
-        lower = target.downcase
-        return unless base == ".env" || base.match?(WRITE_SECRET_BASENAME_RE) ||
-                      base == "rubino.sqlite3" || base.end_with?(".sqlite3") ||
-                      lower.include?("oauth") || lower.include?("/mcp-tokens/") ||
-                      base.end_with?(".key") || base.end_with?(".pem")
-
-        "agent-home secret (#{base})"
-      end
-
-      # True when +target+ is +root+ itself or sits under it. Both are already
-      # absolute; root gets a trailing-separator guard so /etc/sudoers doesn't
-      # match /etc/sudoers-backup.
-      def under_path?(target, root)
-        target == root || target.start_with?("#{root}#{File::SEPARATOR}")
-      end
-
-      def write_secret_block_message(path, category)
-        { output: "Error: refusing to WRITE '#{path}' — it is a #{category}. " \
-                  "Writing to credential/system files is blocked as an always-on safeguard " \
-                  "(independent of the workspace sandbox; not the security boundary). " \
-                  "If the user genuinely needs this file changed, ask them to do it themselves.",
-          error_code: :write_secret_denied }
+      # Denial body for a secret hit that the GrepTool post-filter strips out of
+      # an include-glob result set (F2): the directory grep wasn't itself a
+      # secret target, so the per-call approval gate never saw it — we refuse the
+      # leaking RESULTS here instead. error_code stays :secret_denied for parity
+      # with the read side.
+      def secret_filtered_block_message(path, category)
+        { output: "Error: refusing to return secret content from '#{path}' — it is a #{category}. " \
+                  "The search matched a credential file via an include-glob; secrets are not " \
+                  "returned without explicit user approval. Ask the user, or read the file " \
+                  "directly (which prompts for approval).",
+          error_code: :secret_denied }
       end
 
       # True when +expanded+ resolves under the Rubino home directory. Symlinks
