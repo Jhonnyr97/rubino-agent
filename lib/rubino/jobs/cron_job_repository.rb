@@ -8,15 +8,12 @@ module Rubino
     # Repository for cron job definitions. Plain CRUD on the +cron_jobs+
     # table; execution is orchestrated by Jobs::Scheduler.
     #
-    # The +DELIVERS+ constant documents the accepted values for the
-    # +deliver+ column, but it is NOT enforced here: validation of the
-    # +local+/+webhook+ enum lives in the dry-schema at the HTTP boundary
-    # (see Api::Schemas). Callers that bypass the HTTP layer can insert any
-    # string; Scheduler#deliver_if_needed only acts on the exact match
-    # +"webhook"+, treating anything else as no-op delivery.
+    # The accepted +deliver+ values (+local+/+webhook+) are NOT enforced here:
+    # validation of the enum lives in the dry-schema at the HTTP boundary (see
+    # Api::Schemas). Callers that bypass the HTTP layer can insert any string;
+    # Scheduler#deliver_if_needed only acts on the exact match +"webhook"+,
+    # treating anything else as no-op delivery.
     class CronJobRepository
-      DELIVERS = %w[local webhook].freeze
-
       def initialize(db: nil)
         @db = db || Rubino.database.db
       end

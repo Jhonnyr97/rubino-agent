@@ -397,22 +397,20 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
   # summary, is the authority on side-effects: reconcile the false "I did nothing"
   # so the user isn't told work that happened did not. Inverse of every case
   # above — and the only path that fires when tool_count > 0.
-  describe "pessimistic 'I did nothing' reconciliation (#381)" do
+  describe "pessimistic 'I did nothing' note (#381)" do
     def reconcile(text, tool_count:, edit_count: 0)
-      guard.reconcile_pessimistic_summary(content: text, tool_count: tool_count,
-                                          edit_count: edit_count)
+      guard.pessimistic_summary_note(content: text, tool_count: tool_count,
+                                     edit_count: edit_count)
     end
 
-    it "reconciles the verbatim '#381' summary against the ledger" do
+    it "notes the verbatim '#381' summary against the ledger" do
       text = "I have not read a single file, not run grep, not made any edits."
       out = reconcile(text, tool_count: 50, edit_count: 4)
       expect(out).not_to be_nil
-      # Truthful harness note appended, naming the real counts.
+      # Truthful harness note, naming the real counts.
       expect(out).to match(/50 tool calls actually ran/i)
       expect(out).to match(/4 edits/i)
       expect(out).to match(/uncommitted changes/i)
-      # The model's original (false) prose is preserved above the note.
-      expect(out).to include("I have not read a single file")
     end
 
     it "fires on assorted 'no action' phrasings when tools ran" do
