@@ -4,12 +4,11 @@ require "spec_helper"
 require "sequel"
 require "sequel/extensions/migration"
 
-# Migration 007 wires FTS5 over the messages table. It must:
+# The squashed baseline wires FTS5 over the messages table. It must:
 # 1. Create the messages_fts virtual table after running migrations.
-# 2. Backfill any rows that already existed when the migration runs (this is
-#    what makes the migration safe on an upgraded install).
-# 3. Auto-sync via triggers on subsequent inserts.
-RSpec.describe "messages_fts migration (007)" do
+# 2. Auto-sync via triggers on subsequent inserts (so a row inserted after
+#    migrating is immediately searchable).
+RSpec.describe "messages_fts (squashed baseline)" do
   let(:connection) { Rubino::Database::Connection.new(":memory:") }
 
   it "creates the messages_fts virtual table after migrating" do
@@ -39,11 +38,9 @@ RSpec.describe "messages_fts migration (007)" do
     expect(rows.first[:s]).to include("<b>quick</b>")
   end
 
-  it "backfills rows that existed before migration 007 ran" do
-    # Run up through migration 006 only — leaves the messages table populated
-    # without the FTS index, mimicking an upgrade on an existing install.
+  it "keeps the index in sync via triggers on insert" do
+    Rubino::Database::Migrator.new(connection).migrate!
     db = connection.db
-    Sequel::Migrator.run(db, Rubino::Database::Migrator::MIGRATIONS_PATH, target: 6)
 
     db[:sessions].insert(
       id: "s1", source: "test", status: "active",
@@ -52,10 +49,8 @@ RSpec.describe "messages_fts migration (007)" do
     )
     db[:messages].insert(
       id: "m1", session_id: "s1", role: "user",
-      content: "preexisting needle in the haystack", created_at: Time.now.utc.iso8601
+      content: "needle in the haystack", created_at: Time.now.utc.iso8601
     )
-
-    Sequel::Migrator.run(db, Rubino::Database::Migrator::MIGRATIONS_PATH, target: 7)
 
     matches = db.fetch(
       "SELECT m.id FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid " \

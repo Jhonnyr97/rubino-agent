@@ -58,43 +58,12 @@ RSpec.describe "Fresh-home DB read commands (#35)" do
     expect(info_messages.join("\n")).to include("No jobs found")
   end
 
-  # A concurrent first-boot migration race (#race) can leave the DB with a
-  # DUPLICATE schema_info version row and NO user tables. Hitting `sessions
-  # list` on that state used to hard-crash with a raw
-  # `Sequel::DatabaseError: no such table: sessions` backtrace (violating the
-  # #333/#359 "no backtrace escapes" hardening). The read CLIs must instead
-  # raise a clean Thor::Error pointing at the repair path, never a backtrace.
-  context "when a raced migration left a duplicate schema_info row (#race)" do
-    # The base #35 examples run against :memory: (test_configuration forces it),
-    # but this case needs a REAL on-disk file so the duplicate-schema_info state
-    # actually persists and the read path hits it. Point the config at db_path.
-    let(:config) do
-      raw = Rubino::Config::Defaults.to_hash
-      raw["database"] = { "path" => db_path }
-      raw["paths"] = { "home" => home, "memory" => "#{home}/memories", "logs" => "#{home}/logs" }
-      Rubino::Config::Configuration.new(raw: raw, home_path: home)
-    end
-
-    before do
-      db = Sequel.sqlite(db_path)
-      db.create_table?(:schema_info) { Integer :version, default: 0, null: false }
-      db[:schema_info].multi_insert([{ version: 0 }, { version: 0 }])
-      db.disconnect
-      Rubino.reset_database!
-    end
-
-    it "`sessions list` raises a clean repair error, not a raw DB backtrace" do
-      expect { Rubino::CLI::SessionCommand.new([], { "limit" => 20 }).list }
-        .to raise_error(Thor::Error) { |e|
-          expect(e.message).to include("needs repair").and include("rubino setup")
-          expect(e.message).not_to include("no such table")
-          expect(e).not_to be_a(Sequel::DatabaseError)
-        }
-    end
-
-    it "`memory list` raises a clean repair error, not a raw DB backtrace" do
-      expect { Rubino::CLI::MemoryCommand.new([], { "limit" => 20 }).list }
-        .to raise_error(Thor::Error, /needs repair/)
-    end
-  end
+  # NOTE: the old "raced migration left a duplicate schema_info row" context was
+  # removed with the migrator squash. That post-hoc recovery path
+  # (database_repair_message's duplicate-row branch + Migrator#repair!) only
+  # existed to heal an ALREADY-corrupt DB; the single idempotent baseline applied
+  # under the flock + the side-effect-free up_to_date? fast path PREVENTS the
+  # duplicate-schema_info race from forming in the first place, so there is no
+  # such state left to message about. The #35 fresh-home empty-state behaviour
+  # above is unchanged.
 end

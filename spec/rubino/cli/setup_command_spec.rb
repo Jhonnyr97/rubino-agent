@@ -68,28 +68,13 @@ RSpec.describe Rubino::CLI::SetupCommand do
   # can leave the DB with DUPLICATE schema_info version rows (and a partial
   # schema); `setup` must REPAIR that without a manual `rm` — dedupe the
   # migrator table to a single row and finish the migrations — never crash.
-  describe "repairs a raced/duplicate schema_info DB (#race)" do
-    before { allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true) }
-
-    it "dedupes the migrator table to one row at the final version" do
-      db_path = File.join(home, "rubino.sqlite3")
-      seed = Sequel.sqlite(db_path)
-      seed.create_table?(:schema_info) { Integer :version, default: 0, null: false }
-      seed[:schema_info].multi_insert([{ version: 0 }, { version: 0 }])
-      seed.disconnect
-      Rubino.reset_database!
-
-      expect { described_class.new.execute }.not_to raise_error
-
-      check = Sequel.sqlite(db_path)
-      versions = check[:schema_info].select_map(:version)
-      expect(versions).to eq([Rubino::Database::Migrator.latest_version])
-      expect(check.table_exists?(:sessions)).to be(true)
-      check.disconnect
-
-      expect(ui.messages).to include([:warning, a_string_matching(/duplicate version rows/i)])
-    end
-  end
+  # NOTE: the old "repairs a raced/duplicate schema_info DB" example was removed
+  # with the migrator squash. setup now simply migrate!s under the cross-process
+  # flock; the single idempotent baseline + the side-effect-free up_to_date? fast
+  # path PREVENT the duplicate-schema_info race from forming, so there is no
+  # duplicate-row bookkeeping left for setup to dedupe (Migrator#repair! /
+  # duplicate_version_rows? were removed). A normal fresh-home `setup` still
+  # initializes the schema; that is covered by the examples above.
 
   # #392a: a non-interactive `setup` can't prompt, so the seeded default
   # (openai/gpt-4.1 → OPENAI_API_KEY) is a dead end when the only key in the
