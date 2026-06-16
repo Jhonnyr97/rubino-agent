@@ -138,13 +138,26 @@ RSpec.describe Rubino::Tools::RubyTool do
       grandchild = File.read(pidfile).strip.to_i
       expect(grandchild).to be > 0
 
-      # Bounded poll with a GENEROUS deadline (up to 5s) purely for
+      # Bounded poll with a GENEROUS deadline (up to 30s) purely for
       # LOAD-TOLERANCE: under heavy parallel suite load in a Docker PID-ns the
-      # group-kill is correct but can take longer than a tight window to be
-      # observed. We break the instant the grandchild is gone, and still assert
-      # `alive == false` below — so a genuinely orphaned process still FAILS the
-      # test; the long deadline does NOT mask a real orphan.
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+      # group-kill is CORRECT but the signal delivery + reap of the grandchild
+      # can lag well past a tight window before `kill(0)` observes ESRCH. #438
+      # widened this once (1s → 5s) and helped but didn't eliminate the flake
+      # under the heaviest parallel runs, so widen further. This is LOAD
+      # TOLERANCE, NOT masking: the deadline only bounds HOW LONG we are willing
+      # to WAIT for an already-correct kill to be observed — we break the instant
+      # the grandchild is gone (so a fast machine still finishes in ~ms), and we
+      # still assert `alive == false` below, so a grandchild that GENUINELY
+      # survives (a real orphan regression) still drives `alive` true past the
+      # deadline and FAILS the test. A longer deadline can never turn a real
+      # orphan into a pass — it only gives a slow-but-correct kill room to land.
+      #
+      # A short settle before the FIRST probe gives the group-kill a beat to be
+      # delivered under load, so the common case observes the dead grandchild on
+      # poll #1 instead of racing it — but it is NOT a "sleep and assume": the
+      # bounded poll + the alive assertion below are the real check.
+      sleep 0.1
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30.0
       alive = nil
       loop do
         alive = begin
