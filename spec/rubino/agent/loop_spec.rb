@@ -225,6 +225,30 @@ RSpec.describe Rubino::Agent::Loop do
       expect(fake_llm.call_count).to eq(1)
     end
 
+    # #core-F1: a streaming turn that ended with a tool call yields a text_only
+    # response whose #content is the WHOLE turn buffer (pre-tool narration +
+    # answer), but #final_text_block isolates only the post-tool answer. The
+    # value the Loop HANDS BACK (what a headless one-shot captures) must be the
+    # final block alone, never the run-on concatenation.
+    describe "final turn used a tool: answer is the last block only (#core-F1)" do
+      it "returns final_text_block, not the concatenated pre-tool narration" do
+        fake_llm.enqueue_text_with_final_block(
+          "I'll create the file now.PROBEDONE", "PROBEDONE"
+        )
+        result = build_loop.run(messages: user_messages, tools: [])
+        expect(result).to eq("PROBEDONE")
+      end
+
+      it "still persists the FULL buffer to the transcript (narration kept, #261)" do
+        fake_llm.enqueue_text_with_final_block(
+          "I'll create the file now.PROBEDONE", "PROBEDONE"
+        )
+        build_loop.run(messages: user_messages, tools: [])
+        stored = message_store.for_session(session[:id])
+        expect(stored.last.content).to eq("I'll create the file now.PROBEDONE")
+      end
+    end
+
     it "emits MODEL_CALL_STARTED and MODEL_CALL_FINISHED events" do
       started  = []
       finished = []

@@ -44,6 +44,22 @@ class FakeLLMAdapter
     self
   end
 
+  # Enqueue a text_only response whose +content+ is the WHOLE turn buffer
+  # (pre-tool narration + answer concatenated) but whose +final_text_block+
+  # isolates only the post-last-tool answer — the shape the real streaming
+  # adapter produces on a text → tool → text turn (#core-F1).
+  def enqueue_text_with_final_block(content, final_text_block, input_tokens: 10, output_tokens: 20)
+    @queue << Rubino::LLM::AdapterResponse.new(
+      content: content,
+      tool_calls: [],
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      model_id: "fake-model",
+      final_text_block: final_text_block
+    )
+    self
+  end
+
   # Enqueue an assistant message that contains a single tool call.
   def enqueue_tool_call(tool_name, arguments, call_id: nil, content: nil,
                         input_tokens: 10, output_tokens: 15)

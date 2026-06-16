@@ -258,7 +258,18 @@ module Rubino
             persist_final_text(response, final)
             finalize_stream_text(response, final)
             emit_turn_summary(turn_started_at, token_total)
-            return final
+
+            # The ANSWER returned to the caller is the LAST text block only
+            # (#core-F1): on a streaming turn whose final round-trip used a tool,
+            # `response.content` is every text block of the turn concatenated
+            # (pre-tool narration + post-tool answer, no delimiter), which a
+            # headless `OUT=$(rubino prompt …)` would capture as one run-on string.
+            # The full text was already streamed live and persisted via #final
+            # above (transcript/render keep the narration, #261); the value we
+            # HAND BACK is the post-final-tool answer in isolation. A guard
+            # replacement is a synthesized string with no narration to strip, so it
+            # passes through unchanged.
+            return guard.is_a?(String) ? guard : response.final_text_block
           end
 
           if response.has_tool_calls?
