@@ -470,7 +470,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         c.handle_key("\r")
         "typed".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        expect(queue.drain).to eq(["parked", "typed"]) # parked stays first
+        expect(queue.drain).to eq(%w[parked typed]) # parked stays first
       end
 
       # end_turn is a quiet no-op for scrollback (no deferred echoes), but it
