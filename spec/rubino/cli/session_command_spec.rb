@@ -279,11 +279,14 @@ RSpec.describe Rubino::CLI::SessionCommand do
   # listing is the common intent. Thor's default_command makes the bare
   # invocation route to #list.
   describe "bare invocation lists (item 3)" do
-    it "maps the default command to :list" do
-      expect(described_class.default_command).to eq(:list)
+    it "rewrites only the no-subcommand invocation to list" do
+      expect(described_class.no_subcommand?([])).to be(true)
+      expect(described_class.no_subcommand?(["--all"])).to be(true)
+      expect(described_class.no_subcommand?(%w[show abc])).to be(false)
+      expect(described_class.no_subcommand?(%w[frobnicate])).to be(false)
     end
 
-    it "renders the session table when invoked bare (default_command → list)" do
+    it "renders the session table when invoked bare (routes to list)" do
       repo.create(source: "cli", title: "listed-by-default")
       # Unscope the cwd filter so the seeded session lists regardless of test cwd.
       allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
