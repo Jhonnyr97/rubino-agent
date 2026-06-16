@@ -230,11 +230,11 @@ module Rubino
         delta = before - after
         Rubino.ui.compression_finished(result.merge(saved_tokens: delta))
         change = delta >= 0 ? "saved ~#{delta} tok" : "grew ~#{-delta} tok"
-        msgs  = if result[:original_messages] && result[:compacted_messages]
-                  "; #{result[:original_messages]} → #{result[:compacted_messages]} messages"
-                else
-                  ""
-                end
+        msgs = if result[:original_messages] && result[:compacted_messages]
+                 "; #{result[:original_messages]} → #{result[:compacted_messages]} messages"
+               else
+                 ""
+               end
         Rubino.ui.info("Context: ~#{before} → ~#{after} tokens (#{change}#{msgs}).")
       end
 

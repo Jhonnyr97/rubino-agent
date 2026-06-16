@@ -218,9 +218,11 @@ RSpec.describe Rubino::Session::Repository do
     # hidden from the user-facing list/picker by default — but stay reachable by
     # explicit id (#find / #find_by_id_or_title never filter).
     describe "subagent session filtering (item 2)" do
+      let(:sub) { repo.create(source: "subagent", title: "Use the shell tool to run exactly this") }
+
       before do
         repo.create(source: "cli", title: "mine")
-        @sub = repo.create(source: "subagent", title: "Use the shell tool to run exactly this")
+        sub # force-create the subagent session
       end
 
       it "excludes source=subagent sessions from the default list" do
@@ -233,8 +235,8 @@ RSpec.describe Rubino::Session::Repository do
       end
 
       it "keeps a subagent session resumable by explicit id (#find)" do
-        expect(repo.find(@sub[:id])).not_to be_nil
-        expect(repo.find_by_id_or_title(@sub[:id][0..7])).not_to be_nil
+        expect(repo.find(sub[:id])).not_to be_nil
+        expect(repo.find_by_id_or_title(sub[:id][0..7])).not_to be_nil
       end
     end
 
