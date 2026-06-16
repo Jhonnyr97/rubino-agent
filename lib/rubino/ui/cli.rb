@@ -1804,11 +1804,27 @@ module Rubino
       # control/escape bytes (and normalizes bare CR) BEFORE the style wrapper
       # runs, so rubino's own @pastel ANSI — applied per-line below — stays the
       # only trusted styling that reaches the terminal.
+      # The 2-space left margin every output-body line is printed behind, shared
+      # by the first row and the hang-indented continuation rows of a hard-wrapped
+      # long line (TUI-2 follow-up).
+      BODY_MARGIN = "  "
+
       def write_body_lines(text, &style)
+        # Width left for body text after the 2-space margin; a small floor keeps
+        # a very narrow terminal from looping on a 1-col field.
+        budget = [terminal_cols - 1 - BODY_MARGIN.length, 4].max
         Util::Output.sanitize_terminal(text).each_line do |line|
           chomped = line.chomp
-          rendered = style ? style.call(chomped) : chomped
-          $stdout.puts "  #{rendered}"
+          # HARD-WRAP a long no-break token inside the output body instead of
+          # letting the terminal wrap it to column 0 (TUI-2): the card-row fix
+          # (#put_card_row) covered the `└` close rows, but a long unbroken token
+          # in the captured body still hugged the left edge on continuation. Wrap
+          # at the body budget and prefix the SAME margin to every row so the
+          # continuation lines hang-indent under the first.
+          wrap_tail_row(chomped, budget).each do |row|
+            rendered = style ? style.call(row) : row
+            $stdout.puts "#{BODY_MARGIN}#{rendered}"
+          end
         end
       end
 
