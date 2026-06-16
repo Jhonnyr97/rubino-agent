@@ -446,19 +446,15 @@ module Rubino
           end
 
           # A child parked on a human approval or an ask_parent is blocked in its
-          # gate's wait; cancel the gates so it wakes (Interrupted → deny/cancel) and
-          # unwinds instead of holding its thread until the bound. The stop-cascade
-          # then wakes every DESCENDANT parked on a blocking ask too, so the whole
-          # subtree unwinds at once (S5a — no orphaned blocked grandchild).
-          # Mark the stop FIRST so the very next /agents list shows ◌ stopping
-          # instead of a stale ● running (#108), and so the worker's terminal
-          # write records the unwind as :stopped, not ✗ failed (#13) — then wake
-          # the gates/runner.
-          registry.request_stop(id)
-          entry.approval_gate&.cancel!
-          entry.ask_gate&.cancel!
-          registry.cancel_descendant_ask_gates(id)
-          entry.runner&.cancel!
+          # gate's wait; the shared #stop_entry cancels the gates so it wakes
+          # (Interrupted → deny/cancel) and unwinds instead of holding its thread
+          # until the bound, runs the stop-cascade so every DESCENDANT parked on a
+          # blocking ask unwinds too (S5a — no orphaned blocked grandchild), marks
+          # the stop FIRST so the very next /agents list shows ◌ stopping instead
+          # of a stale ● running (#108) and the worker's terminal write records the
+          # unwind as :stopped, not ✗ failed (#13), then flips the runner token. The
+          # SAME body the parent-teardown #cancel_all uses — one implementation.
+          registry.stop_entry(entry)
           @ui.success("Stop requested for #{id} (#{entry.subagent}); it unwinds at its next checkpoint.")
         end
 
