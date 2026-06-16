@@ -444,36 +444,56 @@ module Rubino
           @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
           @ui.info("needs approval to run:")
           @ui.info("  #{entry.approval_command.to_s.empty? ? entry.approval_question : entry.approval_command}")
-          answer = ask_approval_answer(entry)
-          return if answer.nil?
+          choice = ask_approval_answer(entry)
+          return if choice.nil?
 
           decision =
-            case answer
-            when "a", "always"      then persist_agent_always(entry)
-                                         true
-            when "o", "once", "y"   then true
-            else                         false
+            case choice
+            when :always_command then persist_agent_always(entry)
+                                      true
+            when :once           then true
+            when :deny_explain   then deny_with_explanation(entry)
+            else                      false
             end
           gate.decide(entry.approval_id, decision)
           @ui.info(decision ? "Approved #{entry.id}." : "Denied #{entry.id}.")
         end
 
-        # Reads the approval answer, re-rendering the prompt on an EMPTY read.
+        # Renders the UNIFIED arrow-key approval menu (TUI-6) for a parked
+        # subagent: the SAME component the main-agent/MCP approval uses
+        # (UI::CLI#subagent_approval_choice → #approval_menu), replacing the old
+        # flat `[o]nce/[a]lways/[n]o deny` line where any non-decision keystroke
+        # — including a slash command typed to inspect first — was silently
+        # treated as a DENY. The menu can only return a real decision symbol, so
+        # a stray keystroke can never resolve the gate by accident.
+        #
         # A background event (another child's completion fold-in) landing while
-        # the prompt is open can abort the underlying TTY read, which used to
-        # surface as an empty answer and silently resolve the gate to DENIED
-        # (#144). An empty/aborted read is therefore never an answer: re-ask,
-        # and after APPROVAL_ASK_ATTEMPTS empty reads return nil WITHOUT
-        # touching the gate — the child stays parked and `/agents <id>`
-        # re-opens the prompt. Denying requires an explicit keypress ("n", or
-        # any other non-approving answer).
+        # the prompt is open can abort the underlying TTY read; the menu then
+        # returns nil, which is NOT a decision — re-render up to
+        # APPROVAL_ASK_ATTEMPTS times, and on a persistent abort leave the child
+        # parked (never auto-deny, #144) so `/agents <id>` re-opens the prompt.
+        # A UI without the unified menu (legacy/scripted) falls back to nil.
         def ask_approval_answer(entry)
+          return nil unless @ui.respond_to?(:subagent_approval_choice)
+
           APPROVAL_ASK_ATTEMPTS.times do
-            answer = @ui.ask("Approve? [o]nce / [a]lways / [n]o deny: ").to_s.strip.downcase
-            return answer unless answer.empty?
+            choice = @ui.subagent_approval_choice
+            return choice if choice
           end
           @ui.info("no answer read — #{entry.id} is still waiting; /agents #{entry.id} to decide.")
           nil
+        end
+
+        # The "Deny & tell the agent why" path: collect a one-line reason and
+        # hand it to the child as a steer note (best-effort) so the subagent
+        # learns WHY its action was refused instead of a bare deny. Always
+        # returns false — the gate is denied either way; the reason is advisory.
+        def deny_with_explanation(entry)
+          reason = @ui.respond_to?(:ask) ? @ui.ask("why deny? (sent to the agent): ").to_s.strip : ""
+          Tools::BackgroundTasks.instance.steer(entry.id, "[approval denied by human] #{reason}") unless reason.empty?
+          false
+        rescue StandardError
+          false
         end
 
         # Persists an "approve always" for a parked subagent's command via the same

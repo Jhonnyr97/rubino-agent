@@ -19,15 +19,17 @@
 RSpec.describe Rubino::CLI::ChatCommand do
   subject(:cmd) { described_class.new(provider: "fake", model: "fake/test") }
 
-  # A scripted UI mirroring the handler spec: records lines and answers #ask
-  # from a queue, so the auto-open path is driven deterministically, no TTY.
+  # A scripted UI mirroring the handler spec: records lines, answers #ask from
+  # +answers+ and the unified arrow-key approval menu (TUI-6) from +decisions+,
+  # so the auto-open path is driven deterministically, no TTY.
   let(:ui) do
     Class.new do
       attr_reader :lines
 
-      def initialize(answers)
-        @answers = answers
-        @lines   = []
+      def initialize(answers, decisions)
+        @answers   = answers
+        @decisions = decisions
+        @lines     = []
       end
 
       def info(msg = "")    = @lines << msg.to_s
@@ -35,12 +37,14 @@ RSpec.describe Rubino::CLI::ChatCommand do
       def error(msg = "")   = @lines << msg.to_s
       def separator         = nil
       def ask(_prompt)      = @answers.shift
+      def subagent_approval_choice = @decisions.shift
       def respond_to_missing?(_name, _priv = false) = true
       def method_missing(_name, *_args) = nil
-    end.new(answers)
+    end.new(answers, decisions)
   end
 
-  let(:answers)  { [] }
+  let(:answers)   { [] }
+  let(:decisions) { [] }
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
   before do
@@ -89,7 +93,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       _, gate = stage_approval
       decided = nil
       allow(gate).to receive(:decide) { |_id, v| decided = v }
-      answers << "o" # the existing [o]nce/[a]lways/[n]o prompt — "once" approves
+      decisions << :once # the unified arrow-key menu — "Approve once" approves
 
       # On the bug this returned false (NameError swallowed); on the fix it
       # surfaces the request and resolves the SAME gate the manual path resolves.
