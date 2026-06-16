@@ -26,28 +26,17 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(tool.risk_level).to eq(:low)
   end
 
-  # #406 secret DENYLIST (defense-in-depth, NOT a hard boundary): refuses to
-  # read project credential files by basename in any directory.
-  it "refuses to read a .env credential file (secret denylist)" do
+  # #446: reading a secret is now gated UPSTREAM by Security::ApprovalPolicy
+  # (→ :ask / approval dropdown), NOT self-refused inside ReadTool. So at the
+  # tool level an APPROVED read returns the real bytes — the per-tool refusal
+  # is gone. The gate/approve/deny/headless matrix is covered end-to-end in
+  # spec/rubino/security/secret_file_gate_spec.rb.
+  it "reads an APPROVED .env credential file (gate is upstream, #446)" do
     outside = Dir.mktmpdir("read_secret")
     path = File.join(outside, ".env")
     File.write(path, "API_KEY=supersecret\n")
-    result = tool.call("file_path" => path)
-    expect(result).to be_a(Hash)
-    expect(result[:error_code]).to eq(:secret_denied)
-    expect(result[:output]).not_to include("supersecret")
-  ensure
-    FileUtils.rm_rf(outside)
-  end
-
-  it "refuses .env.local / .envrc variants too" do
-    outside = Dir.mktmpdir("read_secret2")
-    %w[.env.local .env.production .envrc].each do |name|
-      File.write(File.join(outside, name), "TOKEN=zzz\n")
-      result = tool.call("file_path" => File.join(outside, name))
-      expect(result).to be_a(Hash), "#{name} should be denied"
-      expect(result[:error_code]).to eq(:secret_denied)
-    end
+    out = payload(tool.call("file_path" => path))
+    expect(out).to include("API_KEY=supersecret")
   ensure
     FileUtils.rm_rf(outside)
   end
