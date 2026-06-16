@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "io/console"
+require "pastel"
 
 module Rubino
   module UI
@@ -80,6 +81,11 @@ module Rubino
       # fallback for Alt+Enter (which some terminals don't deliver).
       QUEUED_PREFIX = "/queued "
 
+      # The type-ahead AFFORDANCE shown in the status row while a turn is active
+      # (#421): Esc cancels the current turn (Enter now QUEUES). Kept dim and
+      # parenthetical so it reads as a hint, not a chrome label.
+      ESC_INTERRUPT_HINT = "(esc to interrupt)"
+
       # Double-Esc window (seconds): two LONE Esc presses within this at the
       # IDLE prompt fire the +on_double_esc+ hook (the Esc-Esc rewind picker —
       # the Claude Code muscle-memory chord). Tight enough that a deliberate
@@ -127,17 +133,17 @@ module Rubino
       #   status change (e.g. the yolo arm toast). The composer holds no mode
       #   knowledge itself. nil = Shift+Tab is a no-op.
       # @param echo [Symbol] how a submitted line is echoed into scrollback:
-      #   :queued (default) is the IN-TURN composer — Enter INTERRUPTS the active
-      #   turn and sends the line as the next turn (the default), so it never
-      #   commits an echo here (the next turn's prompt echo is committed by the
-      #   chat loop when it runs); :prompt prints the prompt + the line (e.g.
-      #   "default ❯ <line>") — the idle case, where the line IS the user's
-      #   message and should read back like a normal shell submit.
-      # @param on_interrupt [#call, nil] invoked when the user presses Enter to
-      #   submit a line WHILE a turn is active. The chat loop wires this to the
-      #   active turn's cancel so the current turn is interrupted and the
-      #   just-submitted line runs as the next turn immediately. nil ⇒ no
-      #   interrupt (the line is simply queued, as before).
+      #   :queued (default) is the IN-TURN composer — Enter QUEUES the line (the
+      #   Claude-Code type-ahead default, #421): the active turn keeps running
+      #   and the line shows a live "⏳ queued:" indicator, committed by the chat
+      #   loop when its turn runs, so it never commits an echo here; :prompt
+      #   prints the prompt + the line (e.g. "default ❯ <line>") — the idle case,
+      #   where the line IS the user's message and reads back like a shell submit.
+      # @param on_interrupt [#call, nil] invoked when the user presses ESC while
+      #   a turn is active (#421 — Esc is the interrupt; Enter queues). The chat
+      #   loop wires this to the active turn's cancel (runner.cancel!) so the
+      #   current turn is interrupted and the head of the queue runs next. nil ⇒
+      #   Esc is a no-op mid-turn (the composer just queues on Enter).
       # @param pending_queued [Array<String>, nil] shared stack of messages the
       #   user EXPLICITLY queued (Alt+Enter / "/queued <msg>") while a turn is
       #   active. Rendered as "⏳ queued: <msg>" rows ABOVE the input (live region,
@@ -545,6 +551,10 @@ module Rubino
       # streams (D7e). Idempotent.
       def begin_turn
         @turn_active = true
+        # Repaint so the "(esc to interrupt)" affordance (#421) appears in the
+        # status row for the whole turn. Guarded: dropped while suspended, like
+        # every other live repaint.
+        @render.synchronize { redraw } unless @suspended
       end
 
       # Marks the END of a turn — the chat loop's run_turn `ensure` calls this
@@ -555,6 +565,9 @@ module Rubino
       # "⏳ queued:" indicator instead of a post-footer echo.)
       def end_turn
         @turn_active = false
+        # Repaint so the "(esc to interrupt)" affordance (#421) clears from the
+        # status row once the turn ends. Guarded like every other live repaint.
+        @render.synchronize { redraw } unless @suspended
       end
 
       # Sets the TRANSIENT announcement row (the Shift+Tab mode confirmation).
@@ -838,11 +851,37 @@ module Rubino
       # styled line wouldn't fit the row (omit whole rather than truncate
       # mid-ANSI — a cut escape sequence would leak attributes into the
       # terminal).
+      #
+      # While a turn is active (thinking OR streaming) the row also carries the
+      # type-ahead AFFORDANCE — a dim "(esc to interrupt)" hint (#421) — so the
+      # user can see that Esc cancels the current turn (Enter now QUEUES). The
+      # hint is appended only when the styled status line is present and the
+      # combined plain width still fits; it never replaces the bar.
       def status_row
-        return nil if @status.empty? || @cols < MIN_STATUS_COLS
+        return nil if @cols < MIN_STATUS_COLS
+
+        if (@turn_active || @content_streaming) && @on_interrupt
+          return interrupt_hint if @status.empty?
+
+          combined = "#{@status}  #{interrupt_hint}"
+          return combined if display_width(combined.gsub(ANSI_RE, "")) <= @cols - 1
+          # The combined line overflows — keep the bar, drop the (cosmetic) hint.
+        end
+
+        return nil if @status.empty?
         return nil if display_width(@status.gsub(ANSI_RE, "")) > @cols - 1
 
         @status
+      end
+
+      # The dim "(esc to interrupt)" type-ahead affordance shown in the status
+      # row while a turn is active (#421). Memoized — it never changes.
+      def interrupt_hint
+        @interrupt_hint ||= pastel.dim(ESC_INTERRUPT_HINT)
+      end
+
+      def pastel
+        @pastel ||= Pastel.new
       end
 
       # Feeds a single character through the edit logic. Public so the PTY/unit
@@ -1033,17 +1072,21 @@ module Rubino
         LiveRegion.take_first_columns(str, budget)
       end
 
-      # Enter. Captures + clears the buffer, then routes per the interrupt-by-
-      # default model:
+      # Enter. Captures + clears the buffer, then routes per the QUEUE-BY-DEFAULT
+      # (Claude-Code type-ahead) model — Enter while a turn is active QUEUES, it
+      # does NOT interrupt; Esc interrupts (see #handle_lone_esc):
       #   * empty                  → nothing.
-      #   * "/queued <msg>"        → QUEUE the rest (no interrupt), like Alt+Enter.
+      #   * "/queued <msg>"        → QUEUE the rest (the explicit alias, unchanged).
       #   * :prompt (idle)         → immediate "<prompt><line>" echo (unchanged).
-      #   * :queued + turn active  → INTERRUPT the current turn and run the line
-      #                              next (default). The line is pushed; the next
-      #                              turn's prompt echo is committed by the chat
-      #                              loop when it runs, so nothing is echoed here.
+      #   * :queued + turn active  → QUEUE the line behind any earlier-parked
+      #                              items (FIFO) and show its live "⏳ queued:"
+      #                              indicator above the input. The current turn
+      #                              KEEPS RUNNING; the chat loop commits the
+      #                              line as a normal "<prompt><line>" message
+      #                              (and clears the indicator) when its turn
+      #                              runs, so nothing is echoed here.
       #   * :queued + idle         → immediate "queued ▸ <line>" (standalone/tests
-      #                              with no turn and no interrupt hook).
+      #                              with no turn).
       def submit_line
         line = take_buffer
         return if line.strip.empty?
@@ -1059,53 +1102,45 @@ module Rubino
         if @echo == :prompt
           @input_queue&.push(line)
           print_above("#{@prompt}#{echo_safe(line)}")
-        elsif (@turn_active || @content_streaming) && @on_interrupt
-          # Interrupt-by-default: send the line as the NEXT turn immediately and
-          # interrupt the current one. Push to the FRONT so it runs ahead of any
-          # items the user explicitly parked (Alt+Enter / "/queued") earlier in
-          # this turn, THEN fire the interrupt. No echo here — run_turn commits
-          # the next turn's "<prompt><line>" when it runs — but the line DOES get
-          # a live "⏳ queued:" indicator while parked (#129): if the interrupted
-          # turn doesn't unwind instantly (e.g. it is deep in post-turn work),
-          # the submit must never be invisible. The indicator is removed at
-          # dequeue time like any other queued item.
-          queue_message(line, front: true)
-          fire_interrupt(line)
+        elsif @turn_active || @content_streaming
+          # Queue-by-default (type-ahead): a line typed while a turn is active is
+          # PARKED behind any items already queued (FIFO via #push) and shown as
+          # a live "⏳ queued:" indicator above the input — it does NOT interrupt.
+          # The current turn keeps running; #commit_queued_prompt commits this
+          # line as a normal "<prompt><line>" message (and removes the indicator)
+          # when its turn actually runs. Esc is the interrupt now (#421).
+          queue_message(line)
         else
-          # No active turn (or no interrupt hook wired): a plain queued submit,
-          # echoed immediately as before.
+          # No active turn: a plain queued submit, echoed immediately as before.
           @input_queue&.push(line)
           print_above("queued ▸ #{echo_safe(line)}")
         end
       end
 
-      # Fire the on_interrupt hook for a mid-turn submit. A SLASH COMMAND
-      # entered while nothing is visibly in flight (no content stream, no live
-      # partial row — e.g. the turn is only repainting a subagent card) is a
-      # QUIET interrupt (#111): the hook receives quiet=true so the chat loop
-      # can suppress the `⎿ interrupted` marker, which would otherwise strand
-      # a stray artifact above the command's own output even though the turn
-      # LOOKED idle. A hook that takes no parameter (tests/embedders) keeps
-      # the old no-arg contract.
-      def fire_interrupt(line)
+      # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
+      # a DELIBERATE, visible cancel, so it is never quiet: the chat loop should
+      # commit the standardized `⎿ interrupted` marker. The +line+ parameter is
+      # retained for the quiet-slash heuristic (#111) — a future quiet-interrupt
+      # caller can pass the submitted line — but Esc passes nil, which reads as a
+      # plain (non-quiet) interrupt. A hook that takes no parameter
+      # (tests/embedders) keeps the old no-arg contract.
+      def fire_interrupt(line = nil)
         if @on_interrupt.arity.zero?
           @on_interrupt.call
         else
-          quiet = line.start_with?("/") && !@content_streaming && @partial.empty?
+          quiet = !line.nil? && line.start_with?("/") && !@content_streaming && @partial.empty?
           @on_interrupt.call(quiet)
         end
       end
 
-      # Alt+Enter (\e\r / \e\n) — or the "/queued" alias — QUEUES the current
-      # buffer WITHOUT interrupting the active turn: push it to the input queue
-      # and add a live "⏳ queued: <msg>" row above the input. The current turn
-      # keeps running; the queued item is committed as a normal message + the
-      # indicator removed when its turn actually runs (the chat loop drives that
-      # via #commit_queued at dequeue time).
-      #
-      # With NO turn active there is nothing to queue behind: Alt+Enter behaves
-      # exactly like plain Enter (#130), so an idle chord can never park the
-      # message under a "⏳ queued:" indicator that no turn boundary will drain.
+      # Alt+Enter (\e\r / \e\n) — kept as an ALIAS for plain Enter now that QUEUE
+      # is the default (#421): in the type-ahead model plain Enter already parks
+      # a mid-turn line under a "⏳ queued:" indicator without interrupting, so
+      # Alt+Enter no longer needs its own binding. It is retained as a no-surprise
+      # synonym (and for the "/queued" doc that references it). With a turn active
+      # it queues the buffer (FIFO) exactly like Enter; with NO turn active it
+      # behaves like plain Enter (#130) so an idle chord can never park a message
+      # under an indicator that no turn boundary will drain.
       def queue_alt_enter
         return submit_line unless @turn_active || @content_streaming
 
@@ -1593,6 +1628,17 @@ module Rubino
             @menu.dismiss!
             redraw # repaint to CLEAR the now-closed menu rows above the prompt
           end
+        # Esc = INTERRUPT (Claude-Code type-ahead model, #421): with a turn
+        # active (thinking OR streaming) and no menu to dismiss, a lone Esc
+        # cancels the current turn through the SAME cancel-token machinery Ctrl+C
+        # uses (the @on_interrupt hook flips runner.cancel!). The chat loop then
+        # runs the HEAD of the queue immediately (FIFO #next_input); an empty
+        # queue unwinds to a clean idle prompt. Esc-mashing mid-turn no longer
+        # arms the idle rewind chord — it interrupts.
+        elsif (@turn_active || @content_streaming) && @on_interrupt
+          @last_esc_at = nil
+          fire_interrupt(nil)
+          return
         else
           # A lone Esc at the idle prompt with no menu open: if the
           # post-turn polishing is in flight, ONE Esc cancels it (#319) — the

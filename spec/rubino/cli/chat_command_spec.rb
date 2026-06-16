@@ -1356,7 +1356,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # the queue), then each queued item in submission order, each as its own
     # visible turn (echo + indicator removed at commit). Nothing parks
     # invisibly behind a later send.
-    describe "Enter-interrupt with explicitly queued items (#129)" do
+    describe "Enter-queue (type-ahead) FIFO ordering (#421)" do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
       let(:runner) do
         instance_double(Rubino::Agent::Runner, cancel!: nil,
@@ -1373,33 +1373,31 @@ RSpec.describe Rubino::CLI::ChatCommand do
         end
       end
 
-      it "drains the queue in order across the boundaries after the interrupt" do
+      it "queues each Enter line in FIFO order and drains them after the turn" do
         runs = []
         allow(runner).to receive(:run) do |prompt, **|
           runs << prompt
           if runs.length == 1
-            # Mid-turn: the user Alt+Enters AAA and BBB, then Enter-interrupts
-            # with CHERRY (front of the queue + cancel).
+            # Mid-turn: queue-by-default (#421). The user types A, B, C and hits
+            # Enter for each — all PARKED (no interrupt), the turn keeps running.
             composer = Rubino::UI::BottomComposer.current
             "AAA".each_char { |ch| composer.handle_key(ch) }
-            composer.instance_variable_set(:@input, StringIO.new("\r"))
-            composer.handle_key("\e") # Alt+Enter
+            composer.handle_key("\r") # Enter → queue
             "BBB".each_char { |ch| composer.handle_key(ch) }
-            composer.instance_variable_set(:@input, StringIO.new("\r"))
-            composer.handle_key("\e") # Alt+Enter
+            composer.handle_key("\r") # Enter → queue
             "CHERRY".each_char { |ch| composer.handle_key(ch) }
-            composer.handle_key("\r") # Enter-interrupt
-            nil # the interrupted turn yields no answer
-          else
-            "ok"
+            composer.handle_key("\r") # Enter → queue
           end
+          "ok"
         end
 
         cmd.send(:run_turn, runner, "long essay", ui, input_queue)
 
-        # Every parked line is VISIBLE while pending (#129): the interrupting
-        # line and the queued items all carry a "⏳ queued:" indicator.
-        expect(cmd.send(:pending_queued)).to eq(%w[CHERRY AAA BBB])
+        # The turn was NOT interrupted: it ran to completion ("ok").
+        expect(runner).not_to have_received(:cancel!)
+        # Every parked line is VISIBLE while pending, in FIFO submission order —
+        # no front-jump (the old interrupt-by-default push_front is gone).
+        expect(cmd.send(:pending_queued)).to eq(%w[AAA BBB CHERRY])
 
         # The boundaries that follow consume everything, in order, with no
         # fresh read in between — and each commit clears its indicator.
@@ -1408,7 +1406,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
           cmd.send(:run_turn, runner, line, ui, input_queue)
         end
 
-        expect(runs).to eq(["long essay", "CHERRY", "AAA", "BBB"])
+        expect(runs).to eq(["long essay", "AAA", "BBB", "CHERRY"])
         expect(cmd.send(:pending_queued)).to eq([])    # all indicators cleared
         expect(input_queue.pending?).to be(false)      # nothing left parked
       end
@@ -1444,18 +1442,19 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     # BH-1 (the crash that shipped): the in-turn composer's on_interrupt lambda
     # is wired by the REAL #start_composer, where `runner` was NOT in scope (a
-    # parameter of #run_turn, no @runner ivar). So the instant the user pressed
-    # Enter during a turn — the documented interrupt gesture — the lambda raised
-    # `NameError: undefined local variable or method 'runner'`, dumping a
-    # backtrace into the chat, NOT cancelling the turn, and killing the reader.
+    # parameter of #run_turn, no @runner ivar). So the instant the user fired the
+    # interrupt gesture during a turn, the lambda raised `NameError: undefined
+    # local variable or method 'runner'`, dumping a backtrace into the chat, NOT
+    # cancelling the turn, and killing the reader.
     #
+    # Under the type-ahead model (#421) the interrupt gesture is ESC, not Enter.
     # The existing bottom_composer specs inject their OWN on_interrupt stub, so
     # they never exercised this wiring — which is why it shipped broken. This
     # drives the REAL ChatCommand seam: build the composer via #start_composer
-    # (the production wiring), then submit a line via the composer's keystroke
+    # (the production wiring), then press ESC via the composer's keystroke
     # handler while a turn is active, and assert the interrupt resolves `runner`
     # and calls #cancel! with NO NameError.
-    describe "interrupt-by-default wiring (BH-1)" do
+    describe "Esc-interrupt wiring (BH-1, #421)" do
       let(:runner) do
         instance_double(Rubino::Agent::Runner, run: "ok",
                                                session: { id: "sess-x", model: "m" })
@@ -1476,20 +1475,22 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       # Drive the WHOLE production seam: #run_turn builds the composer via the
       # real #start_composer and runs the runner. We stand in for the reader by
-      # pressing Enter (the documented interrupt gesture) mid-turn on the SAME
-      # composer #start_composer wired — so the real on_interrupt lambda fires.
-      # Against the buggy code this raised `NameError: undefined local variable
-      # or method 'runner'` (BH-1); after the fix it resolves `runner` and
-      # cancels. NO hand-built on_interrupt stub anywhere — that is the whole
-      # point (the prior specs stubbed it and never caught the crash).
-      it "an Enter-during-turn submit resolves `runner` and calls cancel! (no NameError)" do
+      # pressing ESC (the interrupt gesture, #421) mid-turn on the SAME composer
+      # #start_composer wired — so the real on_interrupt lambda fires. Against
+      # the buggy code this raised `NameError` (BH-1); after the fix it resolves
+      # `runner` and cancels. A type-ahead line queued first must run next. NO
+      # hand-built on_interrupt stub anywhere — that is the whole point.
+      it "an Esc-during-turn press resolves `runner` and calls cancel! (no NameError)" do
         raised = nil
         allow(runner).to receive(:run) do
           composer = Rubino::UI::BottomComposer.current
           composer.begin_turn
-          "interrupt me".each_char { |ch| composer.handle_key(ch) }
+          # Type-ahead a line (Enter → queue), then ESC to interrupt.
+          "run me next".each_char { |ch| composer.handle_key(ch) }
+          composer.handle_key("\r")
           begin
-            composer.handle_key("\r") # fires the REAL on_interrupt lambda
+            composer.instance_variable_set(:@input, StringIO.new("")) # lone ESC
+            composer.handle_key("\e") # fires the REAL on_interrupt lambda
           rescue NameError => e
             raised = e # capture so the turn still unwinds and we can assert
           end
@@ -1500,7 +1501,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         expect(raised).to be_nil, "on_interrupt raised: #{raised&.message}" # BH-1
         expect(runner).to have_received(:cancel!)        # the turn was cancelled
-        expect(input_queue.shift).to eq("interrupt me")  # line parked to run next
+        expect(input_queue.shift).to eq("run me next")   # queued line runs next
       end
     end
 
