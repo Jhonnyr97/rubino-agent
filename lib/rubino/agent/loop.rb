@@ -974,9 +974,7 @@ module Rubino
         # keys; the replay path then infers the outcome from the output text.
         if (res = result[:result])
           metadata[:status] = res.status.to_s if res.respond_to?(:status) && res.status
-          if res.respond_to?(:error_code) && res.error_code
-            metadata[:error_code] = res.error_code.to_s
-          end
+          metadata[:error_code] = res.error_code.to_s if res.respond_to?(:error_code) && res.error_code
         end
 
         with_db_retries do

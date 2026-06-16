@@ -936,7 +936,7 @@ RSpec.describe Rubino::UI::CLI do
         expect(line.length).to be <= 20
       end
       # The full token survives across the wrapped rows.
-      expect(lines.map { |l| l.strip }.join).to eq(long)
+      expect(lines.map(&:strip).join).to eq(long)
     end
 
     it "keeps a short body line on one row (no spurious wrap) at a wide terminal" do
