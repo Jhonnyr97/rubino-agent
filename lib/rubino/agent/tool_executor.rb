@@ -66,7 +66,7 @@ module Rubino
         # the thinking phase) wouldn't be observed until the model resumed
         # streaming, letting the next tool fire after the user already hit
         # interrupt. Raising here halts the in-flight turn at the next tool
-        # boundary, the soonest safe checkpoint, so "enter to interrupt" actually
+        # boundary, the soonest safe checkpoint, so "esc to interrupt" actually
         # stops the agent instead of letting it run one more tool.
         @cancel_token&.check!
 

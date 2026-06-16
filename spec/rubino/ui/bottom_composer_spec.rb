@@ -180,7 +180,7 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "never splits an ANSI escape on left-truncation (#426)" do
       e = "\e"
       track = (0...5).map { |c| c == 2 ? "#{e}[31m◆#{e}[0m" : "#{e}[2m┄#{e}[0m" }.join
-      frame = "#{track} #{e}[2mthinking · 5s · ~7 tok · enter to interrupt#{e}[0m"
+      frame = "#{track} #{e}[2mthinking · 5s · ~7 tok · esc to interrupt#{e}[0m"
       # Clamp across every width that forces a left-truncation: not one of them
       # may leak a "[…m" literal whose leading \e was dropped.
       (1..composer.send(:display_width, frame)).each do |cols|
@@ -404,15 +404,14 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
-    # NEW MODEL: Enter while a turn is active INTERRUPTS the current turn and
-    # sends the line as the NEXT turn immediately (the default). The line is
-    # pushed to the queue AND the on_interrupt hook fires; no committed echo
-    # here (the next turn's prompt echo is committed by the chat loop when it
-    # runs) — but the line shows a live "⏳ queued:" indicator while parked
-    # (#129), so a submit that doesn't run instantly is never invisible. The
-    # OLD "queued ▸" deferred echo is retired.
-    context "interrupt-by-default (Enter during an active turn)" do
-      it "fires on_interrupt and queues the line with a live indicator, during streaming" do
+    # NEW MODEL (#421, Claude-Code type-ahead): Enter while a turn is active
+    # QUEUES the line — it does NOT interrupt. The line is pushed to the queue
+    # (FIFO) and shows a live "⏳ queued:" indicator above the input; the current
+    # turn KEEPS RUNNING. No on_interrupt fires (Esc is the interrupt now). The
+    # chat loop commits the line as a normal "<prompt><line>" message when its
+    # turn runs (#commit_queued). The OLD "queued ▸" deferred echo stays retired.
+    context "queue-by-default (Enter during an active turn)" do
+      it "queues the line with a live indicator and does NOT interrupt, during streaming" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> { interrupts += 1 })
@@ -420,93 +419,132 @@ RSpec.describe Rubino::UI::BottomComposer do
         c.begin_content_stream
         "ping".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        expect(interrupts).to eq(1)            # interrupt fired exactly once
-        expect(queue.drain).to eq(["ping"])    # line queued for the immediate next run
+        expect(interrupts).to eq(0)            # the turn is NOT interrupted
+        expect(queue.drain).to eq(["ping"])    # line parked for after the turn
         expect(output.string).not_to include("queued ▸") # old deferred echo retired
-        # Visible while parked (#129): the interrupt line renders the same live
+        # Visible while parked: the type-ahead line renders the same live
         # "⏳ queued:" row an explicit queue gets, removed at dequeue time.
         expect(output.string).to include("⏳ queued: ping")
         expect(c.commit_queued("ping")).to be(true) # dequeue clears it
       end
 
-      it "fires on_interrupt during the THINKING phase too (turn active, not streaming)" do
+      it "queues during the THINKING phase too (turn active, not streaming)" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> { interrupts += 1 })
         c.begin_turn # NO begin_content_stream yet (thinking)
         "while-thinking".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        expect(interrupts).to eq(1)
+        expect(interrupts).to eq(0)
         expect(queue.drain).to eq(["while-thinking"])
+        expect(output.string).to include("⏳ queued: while-thinking")
         expect(output.string).not_to include("queued ▸")
       end
 
-      # #111: the hook's optional quiet flag classifies the interrupt. A SLASH
-      # COMMAND submitted while nothing is visibly in flight (no content
-      # stream, no live partial — e.g. only a subagent card animating) is
-      # QUIET: the chat loop then swallows the `⎿ interrupted` marker that
-      # would otherwise strand a stray artifact above the command's output.
-      context "quiet-interrupt classification (#111)" do
-        def composer_with_quiet_probe
-          quiet_values = []
-          c = described_class.new(input_queue: queue, input: input, output: output,
-                                  on_interrupt: ->(quiet) { quiet_values << quiet })
-          c.begin_turn
-          [c, quiet_values]
-        end
-
-        it "marks a slash command with nothing visibly in flight as quiet" do
-          c, quiet_values = composer_with_quiet_probe
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([true])
-          expect(queue.drain).to eq(["/agents"])
-        end
-
-        it "keeps a plain message loud even when nothing is in flight" do
-          c, quiet_values = composer_with_quiet_probe
-          "hello".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([false])
-        end
-
-        it "keeps a slash command loud while a live partial row is showing" do
-          c, quiet_values = composer_with_quiet_probe
-          c.set_partial("✻ thinking…  2s")
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([false])
-        end
-
-        it "keeps a slash command loud while content is streaming" do
-          c, quiet_values = composer_with_quiet_probe
-          c.begin_content_stream
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([false])
-        end
-
-        it "still supports a no-arg hook (old contract)" do
-          fired = 0
-          c = described_class.new(input_queue: queue, input: input, output: output,
-                                  on_interrupt: -> { fired += 1 })
-          c.begin_turn
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(fired).to eq(1)
-        end
+      # FIFO order: two lines typed during one turn stay in submission order, so
+      # they run as their OWN turns A-then-B after the current one (no front-jump
+      # — the old interrupt-by-default push_front is gone).
+      it "stacks multiple Enter-queued lines in FIFO order" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        "msg A".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        "msg B".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(queue.drain).to eq(["msg A", "msg B"]) # FIFO, A first
+        idx_a = output.string.index("⏳ queued: msg A")
+        idx_b = output.string.index("⏳ queued: msg B")
+        expect(idx_a).to be < idx_b
       end
 
-      # end_turn is now a quiet no-op (no deferred echoes to flush).
-      it "emits nothing at turn end (deferred-echo machinery retired)" do
+      # A queued Enter line never front-jumps an explicitly-parked item: an
+      # Alt+Enter / "/queued" earlier in the turn keeps its place; the later
+      # plain Enter lands BEHIND it.
+      it "does not jump ahead of an earlier explicitly-queued item" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        "/queued parked".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        "typed".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(queue.drain).to eq(["parked", "typed"]) # parked stays first
+      end
+
+      # end_turn is a quiet no-op for scrollback (no deferred echoes), but it
+      # repaints to clear the affordance — assert it commits nothing new.
+      it "commits nothing to scrollback at turn end (no deferred echoes)" do
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> {})
         c.begin_turn
         "x".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        before = output.string.dup
         c.end_turn
-        expect(output.string).to eq(before) # nothing flushed at turn end
+        expect(output.string).not_to include("queued ▸ x")
+      end
+    end
+
+    # Esc = INTERRUPT (#421): with a turn active, a lone Esc cancels the current
+    # turn through the SAME on_interrupt hook (runner.cancel!). The chat loop
+    # then runs the head of the queue; here we assert the composer FIRES the
+    # interrupt (non-quiet) and does not arm the idle rewind chord.
+    context "Esc interrupts the active turn (#421)" do
+      def press_esc(c)
+        # A lone ESC with no escape-sequence tail: feed an empty input so the
+        # EscapeReader resolves :esc and routes to #handle_lone_esc.
+        c.instance_variable_set(:@input, StringIO.new(""))
+        c.handle_key("\e")
+      end
+
+      it "fires on_interrupt (non-quiet) while streaming" do
+        quiet_values = []
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: ->(quiet = false) { quiet_values << quiet })
+        c.begin_turn
+        c.begin_content_stream
+        press_esc(c)
+        expect(quiet_values).to eq([false]) # interrupt fired exactly once, loud
+      end
+
+      it "fires on_interrupt during the THINKING phase too" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn # thinking, not streaming
+        press_esc(c)
+        expect(fired).to eq(1)
+      end
+
+      it "interrupts and then the queue HEAD is what #shift returns (run next)" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        # Queue a line first (type-ahead), then interrupt with Esc.
+        "msg B".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        press_esc(c)
+        expect(queue.shift).to eq("msg B") # the head runs immediately next
+      end
+
+      it "is a no-op (no interrupt) when idle (no turn active)" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        # NO begin_turn: idle. Esc must NOT interrupt.
+        press_esc(c)
+        expect(fired).to eq(0)
+      end
+
+      it "still supports a no-arg interrupt hook (old contract)" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn
+        press_esc(c)
+        expect(fired).to eq(1)
       end
     end
 
@@ -587,11 +625,12 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
-    # EXPLICIT QUEUE (the exception): Alt+Enter (\e\r) or "/queued <msg>" queues
-    # WITHOUT interrupting — the current turn keeps running. The queued message
-    # shows a live "⏳ queued: <msg>" row above the input while pending; it's
-    # removed and committed as a normal message when its turn runs (#commit_queued).
-    context "explicit queue (Alt+Enter / /queued)" do
+    # EXPLICIT QUEUE: Alt+Enter (\e\r) is now an ALIAS for plain Enter (queue is
+    # the default, #421), and "/queued <msg>" the explicit prefix — both queue
+    # WITHOUT interrupting (Esc interrupts). The queued message shows a live
+    # "⏳ queued: <msg>" row above the input while pending; it's removed and
+    # committed as a normal message when its turn runs (#commit_queued).
+    context "explicit queue (Alt+Enter alias / /queued)" do
       it "Alt+Enter (\\e\\r) queues the buffer without firing on_interrupt" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
@@ -1897,7 +1936,7 @@ RSpec.describe Rubino::UI::BottomComposer do
   describe "#finalize_region (#421)" do
     it "erases the live region in place and zeroes the on-screen geometry" do
       # Paint a live partial so a real on-screen geometry (rows_above) is recorded.
-      composer.set_partial("◆┄┄┄┄ thinking · 3s · enter to interrupt")
+      composer.set_partial("◆┄┄┄┄ thinking · 3s · esc to interrupt")
       region = composer.instance_variable_get(:@region)
       expect(region.rows_above).to be_positive # something is live above the prompt
 
@@ -2410,6 +2449,44 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.handle_key("x")
       region = composer.instance_variable_get(:@region)
       expect(region.input_below).to eq(1)
+    end
+
+    # #421 affordance: while a turn is active the status row carries a dim
+    # "(esc to interrupt)" hint so the user knows Esc cancels the turn (Enter
+    # now queues). It appears on #begin_turn and clears on #end_turn.
+    context "type-ahead affordance (#421)" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output,
+                            status_line: status, on_interrupt: -> {})
+      end
+
+      it "shows '(esc to interrupt)' in the status row while a turn is active" do
+        composer.handle_key("x")
+        composer.begin_turn
+        expect(output.string).to include("(esc to interrupt)")
+      end
+
+      it "clears the hint once the turn ends" do
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.end_turn
+        # The final committed frame after end_turn no longer carries the hint.
+        last_frame = output.string.split("\r\e[2K").last(6).join
+        expect(last_frame).not_to include("(esc to interrupt)")
+      end
+
+      it "does not show the hint at the idle prompt (no active turn)" do
+        composer.handle_key("x")
+        expect(output.string).not_to include("(esc to interrupt)")
+      end
+
+      it "does not show the hint without an interrupt hook wired" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                status_line: status) # no on_interrupt
+        c.handle_key("x")
+        c.begin_turn
+        expect(output.string).not_to include("(esc to interrupt)")
+      end
     end
 
     it "teardown clears the bar row along with the input block" do

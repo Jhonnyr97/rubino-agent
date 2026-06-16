@@ -1820,12 +1820,13 @@ module Rubino
         [nil, nil]
       end
 
-      # The composer's Enter-during-turn hook: cancel the runner so the just-
-      # submitted line runs as the next turn. +quiet+ marks a slash-command
-      # submit at an idle-LOOKING moment — nothing visibly streaming, only the
-      # live cards animating (#111) — so the UI is told to swallow the
-      # upcoming `⎿ interrupted` marker instead of stranding it above the
-      # command's own output.
+      # The composer's ESC-during-turn hook (#421 — Esc is the interrupt now,
+      # Enter queues): cancel the runner so the current turn unwinds (committing
+      # `⎿ interrupted`) and the chat loop runs the HEAD of the queue next
+      # (#next_input FIFO). Reuses the SAME runner.cancel! cancel-token machinery
+      # Ctrl+C uses. +quiet+ (retained for a future quiet caller, #111) tells the
+      # UI to swallow the `⎿ interrupted` marker; Esc passes false (a deliberate,
+      # visible interrupt), so the marker is shown.
       def interrupt_handler(runner)
         lambda { |quiet = false|
           ui = Rubino.ui

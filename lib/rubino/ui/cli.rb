@@ -1002,7 +1002,7 @@ module Rubino
       # dwells one extra beat at each end of the sweep.
       FACET_TRACK_CELLS = 5
       FACET_FRAMES = [0, 0, 0, 1, 2, 3, 4, 4, 4, 3, 2, 1].freeze
-      # Don't nag fast turns: the "enter to interrupt" hint appears only after
+      # Don't nag fast turns: the "esc to interrupt" hint appears only after
       # the wait has visibly dragged.
       INTERRUPT_HINT_AFTER = 1.5
 
@@ -2034,7 +2034,7 @@ module Rubino
           parts << "#{(now - (@turn_started_at || s[:phase_started_at])).to_i}s"
           parts << "#{@turn_tool_count} tool#{"s" if @turn_tool_count != 1}" if @turn_tool_count.positive?
           parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
-          parts << "enter to interrupt" if interrupt_hint?(s, now)
+          parts << "esc to interrupt" if interrupt_hint?(s, now)
         else
           parts << "#{(now - s[:phase_started_at]).to_i}s"
         end
@@ -2049,8 +2049,9 @@ module Rubino
         count >= 1000 ? "#{(count / 1000.0).round(1)}k" : count.to_s
       end
 
-      # The hint only appears where Enter actually interrupts (a composer owns
-      # the keyboard) and only once the wait has dragged past the threshold.
+      # The hint only appears where Esc actually interrupts (a composer owns
+      # the keyboard, #421) and only once the wait has dragged past the
+      # threshold.
       def interrupt_hint?(state, now)
         @turn_active &&
           (now - state[:phase_started_at]) >= INTERRUPT_HINT_AFTER &&
