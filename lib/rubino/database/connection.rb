@@ -5,13 +5,19 @@ require "fileutils"
 
 module Rubino
   module Database
-    # Raised when a connection cannot be established because another process
-    # has held a write lock for longer than the bounded retry budget — a
-    # SUSTAINED (not transient) concurrent-migration contention. Carries a
-    # clean, single-line message so a command boot surfaces it without leaking
-    # a raw Sequel/SQLite backtrace (#333/#359), consistent with the
-    # corrupt/duplicate-row repair surfacing (#440).
-    class BusyError < StandardError; end
+    # NOTE: Rubino::Database::BusyError — raised below when a connection can't be
+    # established because a peer held the write lock past the bounded retry budget
+    # (a SUSTAINED concurrent-migration contention, #333/#359) — is DEFINED in the
+    # always-`require`d lib/rubino/errors.rb, NOT here. It used to live in this
+    # file, but this file is LAZILY autoloaded (only once `Rubino.database` is
+    # touched), and `CLI::Commands.start`'s boot-lock rescue (#445) names the
+    # constant as its final backstop. Any error reaching that rescue BEFORE the DB
+    # was opened made Ruby evaluate the rescue's class against an unloaded constant
+    # → `NameError: uninitialized constant Rubino::Database::BusyError`, masking
+    # the real (often clean Thor) error with a ~60-line backtrace. Defining it in
+    # the eagerly-loaded errors.rb keeps the rescue inert for non-DB errors while
+    # still catching a genuine concurrent-boot BusyError. The code here just
+    # raises/rescues it as before.
 
     # Manages the SQLite database connection via Sequel.
     # Handles connection creation, WAL mode setup, and provides

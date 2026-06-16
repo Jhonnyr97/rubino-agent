@@ -149,4 +149,55 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     ok = wizard("\n").run
     expect(ok).to be false
   end
+
+  # H2: a Ctrl-C MID-wizard (after picking a provider, before pasting the key)
+  # used to escape as a raw `Interrupt` backtrace out of gets/noecho. It must
+  # abort CLEANLY — "Setup cancelled." + exit 130 — and leave NO half-written
+  # provider config (re-running setup must work).
+  describe "Ctrl-C mid-wizard (H2)" do
+    # An input that yields the provider choice on the FIRST `gets`, then raises
+    # Interrupt on the next read (the hidden key prompt) — i.e. the user pressed
+    # Ctrl-C after choosing a provider, before typing the key.
+    def interrupting_input(first)
+      calls = 0
+      input = double("interrupting-input")
+      allow(input).to receive(:gets) do
+        calls += 1
+        calls == 1 ? first : raise(Interrupt)
+      end
+      input
+    end
+
+    def cancelling_wizard
+      described_class.new(ui: ui, input: interrupting_input("1\n"), output: output)
+    end
+
+    it "exits 130 with a clean 'Setup cancelled.' and no backtrace" do
+      status = nil
+      expect do
+        cancelling_wizard.run
+      rescue SystemExit => e
+        status = e.status
+      end.not_to raise_error
+
+      expect(status).to eq(130)
+      expect(output.string).not_to include(".rb:")
+    end
+
+    it "writes NO provider config on abort, so re-running setup works" do
+      begin
+        cancelling_wizard.run
+      rescue SystemExit
+        nil
+      end
+
+      loader = Rubino::Config::Loader.new(home_path: home)
+      # No config.yml was persisted by the wizard (persist! runs only after a
+      # non-empty key), and a fresh wizard run after the abort completes.
+      ok = wizard("1\nsk-openai-after-abort\n").run
+      expect(ok).to be true
+      raw = YAML.safe_load_file(loader.config_path)
+      expect(raw.dig("model", "provider")).to eq("openai")
+    end
+  end
 end
