@@ -8,6 +8,12 @@
 # order-dependency the dry==real gate misses).
 require "faraday"
 require "ruby_llm"
+# Rubino::LLM::FailoverReason is nested inside error_classifier.rb, so Zeitwerk
+# can only resolve the constant once that file is loaded. The lib references it
+# lazily (inside method bodies), so under a seed where no earlier example drives
+# the classify path the cap_for helper hits an uninitialized-constant NameError.
+# Touch ErrorClassifier here to force the autoload so the file is order-independent.
+Rubino::LLM::ErrorClassifier
 
 RSpec.describe Rubino::Agent::ModelCallRunner do
   # ── Scripted boundary ───────────────────────────────────────────────────
