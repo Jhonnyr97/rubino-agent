@@ -50,10 +50,27 @@ module Rubino
         estimated > compaction_threshold
       end
 
-      # The token count above which auto-compaction fires: the configured
-      # ratio of the window, floored at MINIMUM_CONTEXT_LENGTH (#410).
+      # Fraction of the window the auto-compaction threshold may never exceed
+      # (#410 follow-up). The bare MINIMUM_CONTEXT_LENGTH floor made compaction
+      # UNREACHABLE on sub-128k windows: a 64k window floored the threshold to
+      # 64k — the WHOLE window — so auto-compact only fired at ~100% (too late),
+      # and a window below the floor NEVER compacted at all. Capping the
+      # threshold at this fraction of the ACTUAL window guarantees it always
+      # fires BEFORE the window fills, at any size.
+      MAX_WINDOW_FRACTION = 0.85
+
+      # The token count above which auto-compaction fires: the configured ratio
+      # of the window, floored at MINIMUM_CONTEXT_LENGTH (#410) to stay
+      # anti-over-eager on LARGE windows, but CLAMPED so it never exceeds
+      # MAX_WINDOW_FRACTION of the actual window — otherwise the floor pushes the
+      # trigger past the end of a small window and auto-compaction never fires.
+      #   threshold = min( max(window·ratio, FLOOR), window·0.85 )
+      # On a 128k+ window the floor/ratio still governs (0.85·window is larger);
+      # on an 8k window the 0.85 cap governs (~6.8k) so compaction stays reachable.
       def compaction_threshold
-        [(available_tokens * @config.compression_threshold).to_i, MINIMUM_CONTEXT_LENGTH].max
+        floored = [(available_tokens * @config.compression_threshold).to_i, MINIMUM_CONTEXT_LENGTH].max
+        ceiling = (available_tokens * MAX_WINDOW_FRACTION).to_i
+        [floored, ceiling].min
       end
 
       # Returns the target token count after compaction

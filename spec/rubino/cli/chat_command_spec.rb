@@ -114,16 +114,32 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(line).to start_with(" default · branch:ab12cd · ")
     end
 
-    it "prefers the last response's REAL recorded usage over the estimate" do
-      # The newest assistant message carries the provider-reported context
-      # (input_tokens, persisted by the agent loop) — that wins over chars/4.
+    it "uses the chars/4 estimate, IGNORING the provider's recorded input_tokens" do
+      # The footer must read the SAME measure compaction does (estimate_tokens),
+      # NOT the provider-reported input_tokens — otherwise the gauge and the
+      # compaction trigger disagree. 4000 chars / 4 = ~1000 tok, regardless of
+      # the 7800 input_tokens persisted on the last response.
       stub_store_with([
-                        { content: "hi" },
+                        { content: "x" * 4_000 },
                         { content: "ok", metadata: { input_tokens: 7_800 }, token_count: 200 }
                       ])
       line = cmd.send(:build_status_line, status_runner)
-      expect(line).to include("ctx ~8k/128k") # 7800 + 200
-      expect(line).to include("(6%)")
+      expect(line).to include("ctx ~1k/128k") # chars/4, not 7800+200
+      expect(line).to include("(1%)")
+    end
+
+    it "footer 'used' and needs_compaction? read the SAME token source" do
+      # The footer's token figure (context_tokens) and the compaction decision
+      # (needs_compaction?) must both come from TokenBudget#estimate_tokens over
+      # the live message set, so the gauge reflects what compaction will decide.
+      msgs = [
+        instance_double(Rubino::Session::Message, content: "x" * 4_000, metadata: {}, token_count: 0)
+      ]
+      budget = Rubino::Context::TokenBudget.new(model_id: "minimax-m3", config: Rubino.configuration)
+      from_footer = cmd.send(:context_tokens, msgs, budget)
+      from_budget = budget.estimate_tokens(msgs.map { |m| { content: m.content } })
+      expect(from_footer).to eq(from_budget)
+      expect(from_footer).to eq(1_000)
     end
 
     it "honours model.context_length as the window" do
