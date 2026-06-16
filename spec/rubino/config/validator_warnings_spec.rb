@@ -36,5 +36,17 @@ RSpec.describe Rubino::Config::Validator do
       expect(described_class.warnings("nonsense")).to eq([])
       expect(described_class.warnings(nil)).to eq([])
     end
+
+    # item 7: the removed security.require_confirmation_for_shell key is no
+    # longer honored, so a config that still carries it gets a clear migration
+    # warning naming the replacement (whatever value it was set to).
+    it "warns on the removed security.require_confirmation_for_shell key" do
+      [true, false].each do |val|
+        issues = described_class.warnings({ "security" => { "require_confirmation_for_shell" => val } })
+        expect(issues).to include(
+          a_string_matching(/security\.require_confirmation_for_shell.*removed.*confirm_policy/i)
+        )
+      end
+    end
   end
 end

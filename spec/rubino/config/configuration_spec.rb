@@ -108,8 +108,8 @@ RSpec.describe Rubino::Config::Configuration do
     it "returns tool enabled status" do
       expect(config.tool_enabled?("git")).to be true
       # shell ships ON by default: the agent runs in an isolated per-customer
-      # VM where running commands is the whole point. It stays gated behind the
-      # approval prompt via security.require_confirmation_for_shell.
+      # VM where running commands is the whole point. Dangerous commands stay
+      # gated behind the approval prompt via security.confirm_policy.
       expect(config.tool_enabled?("shell")).to be true
       expect(config.tool_enabled?("browser")).to be false
     end
@@ -202,34 +202,34 @@ RSpec.describe Rubino::Config::Configuration do
   end
 
   describe "human-in-the-loop accessors" do
-    it "runs safe shell unprompted by default (#409: dangerous_only)" do
-      # Aligned to Hermes — the legacy alias now defaults false.
-      expect(config.require_confirmation_for_shell?).to be false
-    end
-
+    # item 7: confirm_policy is the SOLE source of truth — the legacy
+    # security.require_confirmation_for_shell alias was removed (no back-compat
+    # mapping, no derivation).
     it "defaults confirm_policy to :dangerous_only (#409 Hermes alignment)" do
       expect(config.confirm_policy).to eq(:dangerous_only)
     end
 
-    it "derives confirm_policy from require_confirmation_for_shell:false" do
-      cfg = test_configuration("security" => { "require_confirmation_for_shell" => false })
+    it "honors an explicit confirm_all" do
+      cfg = test_configuration("security" => { "confirm_policy" => "confirm_all" })
+      expect(cfg.confirm_policy).to eq(:confirm_all)
+    end
+
+    it "honors an explicit dangerous_only" do
+      cfg = test_configuration("security" => { "confirm_policy" => "dangerous_only" })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
     end
 
-    it "honors an explicit confirm_policy and lets it win over the alias" do
-      cfg = test_configuration("security" => {
-                                 "confirm_policy" => "dangerous_only",
-                                 "require_confirmation_for_shell" => true
-                               })
+    it "falls back to the :dangerous_only default on an unrecognized confirm_policy" do
+      cfg = test_configuration("security" => { "confirm_policy" => "bogus" })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
     end
 
-    it "falls back to the alias on an unrecognized confirm_policy" do
-      cfg = test_configuration("security" => {
-                                 "confirm_policy" => "bogus",
-                                 "require_confirmation_for_shell" => false
-                               })
+    it "IGNORES the removed require_confirmation_for_shell key (no silent honor)" do
+      # Even set to true (which the legacy alias mapped to confirm_all), the
+      # removed key has zero effect: confirm_policy stays the seeded default.
+      cfg = test_configuration("security" => { "require_confirmation_for_shell" => true })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
+      expect(cfg).not_to respond_to(:require_confirmation_for_shell?)
     end
 
     it "waits a sane, bounded time for a human decision by default" do
