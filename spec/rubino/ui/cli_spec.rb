@@ -917,6 +917,36 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # TUI-2 follow-up: a long UNBROKEN token in the captured tool OUTPUT-BODY used
+  # to hard-wrap to column 0 (the card-row fix only covered the `└` close rows).
+  # #write_body_lines now hard-wraps the body at the terminal width and prefixes
+  # the 2-space body margin to every continuation row.
+  describe "#tool_body narrow-terminal output-body hang-indent (TUI-2)" do
+    it "wraps a long no-break token inside the body and hang-indents continuations" do
+      allow(ui).to receive(:terminal_cols).and_return(20)
+      long = "x" * 80 # no break opportunity, far past a 20-col terminal
+      out = capture_stdout { ui.tool_body(long, kind: :plain) }
+      lines = out.lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "").chomp }.reject(&:empty?)
+      expect(lines.length).to be > 1 # it actually wrapped
+      lines.each do |line|
+        # Every row sits behind the 2-space body margin — none hugs column 0.
+        expect(line).to start_with("  ")
+        expect(line).not_to start_with("x") # never wrapped flush-left
+        # Each visible row fits the terminal width (margin + body ≤ cols).
+        expect(line.length).to be <= 20
+      end
+      # The full token survives across the wrapped rows.
+      expect(lines.map(&:strip).join).to eq(long)
+    end
+
+    it "keeps a short body line on one row (no spurious wrap) at a wide terminal" do
+      allow(ui).to receive(:terminal_cols).and_return(120)
+      out = capture_stdout { ui.tool_body("short line", kind: :plain) }
+      lines = out.lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "").chomp }.reject(&:empty?)
+      expect(lines).to eq(["  short line"])
+    end
+  end
+
   # #123: the `task` (delegation) card is the B7 family on the delegation row.
   # The task tool reports failures by RETURNING an error STRING ("Error: …",
   # "At capacity: …"), which the executor wraps in a SUCCESS-status Result, so

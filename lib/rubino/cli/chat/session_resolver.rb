@@ -146,14 +146,7 @@ module Rubino
               name      = msg.tool_name || "tool"
               arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
               ui.tool_started(name, arguments: arguments, at: at)
-              ui.tool_finished(
-                name,
-                result: ::Rubino::Tools::Result.success(
-                  name: name,
-                  call_id: msg.tool_call_id,
-                  output: msg.content.to_s
-                )
-              )
+              ui.tool_finished(name, result: replay_tool_result(msg, name))
             end
           end
 
@@ -161,6 +154,53 @@ module Rubino
         end
 
         private
+
+        # Rebuilds the stored tool message as a Tools::Result carrying its
+        # ORIGINAL outcome, so #tool_finished replays the SAME glyph the live
+        # session showed — a denied/failed tool replays with the red ✗
+        # ("✗ … denied — not executed"), not a blanket green ✓ (the replay path
+        # used to wrap every row as Result.success). The outcome comes from the
+        # persisted metadata (status / error_code, written by Loop#persist_tool_result);
+        # rows that pre-date that field fall back to inferring a failure from the
+        # output text (a "denied"/"Error:" body), so old sessions also replay
+        # correctly rather than always green.
+        def replay_tool_result(msg, name)
+          meta    = msg.metadata.is_a?(Hash) ? msg.metadata : {}
+          status  = (meta[:status] || meta["status"]).to_s
+          code    = meta[:error_code] || meta["error_code"]
+          output  = msg.content.to_s
+          call_id = msg.tool_call_id
+
+          case status
+          when "denied"
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: output, status: :denied)
+          when "error", "failed"
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: output,
+                                        status: :error, error_code: code&.to_sym)
+          when "success", "completed"
+            ::Rubino::Tools::Result.success(name: name, call_id: call_id, output: output,
+                                            error_code: code&.to_sym)
+          else
+            # Legacy rows (no persisted status): infer from the output text so a
+            # denied/errored tool still replays as ✗ instead of a false ✓.
+            replay_result_from_text(name, call_id, output)
+          end
+        end
+
+        # Best-effort outcome inference for tool rows persisted before the
+        # status/error_code metadata existed: a "denied"/"blocked …not run"
+        # body → :denied; an "Error:"-prefixed body → :error; everything else
+        # is treated as a successful run (the common case).
+        def replay_result_from_text(name, call_id, output)
+          text = output.to_s
+          if text.start_with?("Tool execution denied", "Tool execution blocked")
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: text, status: :denied)
+          elsif text.start_with?("Error:")
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: text, status: :error)
+          else
+            ::Rubino::Tools::Result.success(name: name, call_id: call_id, output: text)
+          end
+        end
 
         def opt(key)
           @options[key] || @options[key.to_s]

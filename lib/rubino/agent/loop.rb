@@ -792,7 +792,8 @@ module Rubino
           content: result.output,
           tool_call_id: call_id,
           name: name,
-          arguments: arguments
+          arguments: arguments,
+          result: result
         )
       end
 
@@ -966,6 +967,15 @@ module Rubino
         # Old rows that pre-date this field hydrate with empty metadata; the
         # replay path falls back to printing just the name.
         metadata = result[:arguments] ? { arguments: result[:arguments] } : {}
+        # Persist the OUTCOME (status + error_code) so --resume replay renders
+        # the SAME glyph the live session showed — a denied/failed tool replays
+        # with the red ✗, not a blanket green ✓ (the replay path used to wrap
+        # every stored row as Result.success). Old rows hydrate without these
+        # keys; the replay path then infers the outcome from the output text.
+        if (res = result[:result])
+          metadata[:status] = res.status.to_s if res.respond_to?(:status) && res.status
+          metadata[:error_code] = res.error_code.to_s if res.respond_to?(:error_code) && res.error_code
+        end
 
         with_db_retries do
           @message_store.create(
