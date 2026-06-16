@@ -18,10 +18,9 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     before { allow(Rubino).to receive(:database).and_return(db) }
 
-    def migrator_double(pending:, duplicate: false)
+    def migrator_double(pending:)
       instance_double(Rubino::Database::Migrator).tap do |m|
         allow(Rubino::Database::Migrator).to receive(:new).with(db).and_return(m)
-        allow(m).to receive(:duplicate_version_rows?).and_return(duplicate)
         allow(m).to receive(:pending?).and_return(pending)
       end
     end
@@ -50,28 +49,12 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     it "reports :fail when the migration check raises" do
       m = instance_double(Rubino::Database::Migrator)
       allow(Rubino::Database::Migrator).to receive(:new).with(db).and_return(m)
-      allow(m).to receive(:duplicate_version_rows?).and_return(false)
       allow(m).to receive(:pending?).and_raise(Sequel::DatabaseError, "no such table")
 
       result = doctor.send(:check_migrations)
 
       expect(result).to eq(name: "migrations", status: :fail)
       expect(ui.messages.last).to include(level: :error)
-    end
-
-    # The concurrent first-boot race (#race) leaves a duplicate version row in
-    # the migrator table. doctor must report a CLEAN, actionable diagnostic
-    # (point at `rubino setup`, which repairs it) — never the raw "More than 1
-    # row in migrator table" backtrace that Sequel's own `pending?` would throw.
-    it "reports :fail with a repair hint on duplicate migrator-table rows" do
-      migrator_double(pending: false, duplicate: true)
-
-      result = doctor.send(:check_migrations)
-
-      expect(result).to eq(name: "migrations", status: :fail)
-      msg = ui.messages.last
-      expect(msg).to include(level: :error)
-      expect(msg[:message]).to include("duplicate version rows").and include("rubino setup")
     end
   end
 

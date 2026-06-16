@@ -184,18 +184,6 @@ module Rubino
 
         migrator = Database::Migrator.new(Rubino.database)
 
-        # A concurrent first-boot race (#race) can leave a DUPLICATE version row
-        # in the migrator table. In that state Sequel's `pending?` itself raises
-        # "More than 1 row in migrator table" — detect it FIRST and report a
-        # clean, actionable diagnostic (point at `rubino setup`, which repairs
-        # the bookkeeping under the cross-process lock) instead of letting that
-        # raw error fall into the rescue below as an opaque failure.
-        if migrator.duplicate_version_rows?
-          ui.error("migrator table has duplicate version rows (interrupted/raced migration). " \
-                   "Run 'rubino setup' to repair it")
-          return { name: "migrations", status: :fail }
-        end
-
         if migrator.pending?
           ui.warning("Pending migrations exist")
           { name: "migrations", status: :warn }
