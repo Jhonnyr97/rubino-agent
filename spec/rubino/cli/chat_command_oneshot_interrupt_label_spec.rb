@@ -16,6 +16,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
     allow(runner).to receive(:cancel!)
     allow(runner).to receive(:run!).and_raise(error)
     allow(runner).to receive(:session).and_return({ id: "s1", model: "fake-model" })
+    # item 6: the one-shot ensure now finalizes the session on every exit path
+    # (incl. interrupt), so the runner double must accept end_session!.
+    allow(runner).to receive(:end_session!)
 
     opts = { "query" => "hi" }
     opts["json"] = true if json
