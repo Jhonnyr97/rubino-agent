@@ -24,6 +24,12 @@ module Rubino
       # auto-edit / aider).
       STRUCTURED_EDIT_TOOLS = %w[edit write multi_edit apply_patch].freeze
 
+      # File tools whose TARGET path is run through the unified secret-file gate
+      # (#446). READ side resolves the path from `file_path`/`path`; WRITE side
+      # from `file_path` (apply_patch from its patch text, see #secret_file_access?).
+      SECRET_GATED_READ_TOOLS  = %w[read grep glob].freeze
+      SECRET_GATED_WRITE_TOOLS = STRUCTURED_EDIT_TOOLS
+
       # Why the most recent #decide returned :deny — :hardline (the
       # non-bypassable floor), :permission_rule (an explicit permissions deny
       # rule), or :doom_loop (the repeated-identical-call guard). nil when the
@@ -130,8 +136,24 @@ module Rubino
         return deny_with(:doom_loop) if doom_loop_blocks?(tool, arguments)
 
         # 5. Remaining explicit pattern rules (allow / ask). deny was already
-        #    handled in step 2.
+        #    handled in step 2. An explicit user permissions rule (allow/ask)
+        #    wins over the secret gate below, so a user who wrote
+        #    `read /path/.env: allow` is honored.
         return pattern_result if pattern_result
+
+        # 5b. UNIFIED SECRET-FILE GATE (#446). Reading (read/grep/glob) OR
+        #     writing/editing (write/edit/multi_edit/apply_patch) a SECRET path
+        #     requires EXPLICIT user approval — the maintainer decision: not a
+        #     silent allow, not a silent hard-block. Returns :ask, which the
+        #     ToolExecutor turns into the approval dropdown when interactive
+        #     (approved → the tool runs and reads/writes the secret; denied →
+        #     refused) and into a FAIL-CLOSED block when headless (:noninteractive).
+        #     Runs ABOVE the broad read/allow fast-paths (steps 6/6b/9) so a
+        #     secret read isn't silently auto-allowed, and BELOW yolo (step 3) so
+        #     a --yolo operator who opted into full file trust isn't re-prompted.
+        #     NON-secret reads stay broad (clone-and-inspect, #406) — only the
+        #     secret set is gated.
+        return :ask if secret_file_access?(tool, arguments)
 
         # 6. Config allowlist of pre-approved commands. Checked AFTER deny
         #    patterns (deny always wins) but BEFORE mode-based decision so a
@@ -189,16 +211,7 @@ module Rubino
         #      where detect_dangerous_command is the sole prompt trigger.
         #      The hardline floor (step 1) and permissions:deny (step 2) already
         #      ran, so dangerous_only NEVER weakens the non-bypassable floor.
-        if tool.name == "shell"
-          case @confirm_policy
-          when :dangerous_only
-            return :ask if dangerous?(command_str)
-
-            return :allow
-          else # :confirm_all
-            return :ask
-          end
-        end
+        return shell_confirm_decision(command_str) if tool.name == "shell"
 
         # 8b. Structured in-workspace edit symmetry (#427). Under dangerous_only,
         #    a safe `shell sed -i …` / `echo > file` runs UNPROMPTED (step 7-8),
@@ -248,6 +261,68 @@ module Rubino
         (args["action"] || args[:action]).to_s == "create"
       end
 
+      # The confirm_policy shell gate (steps 7-8), extracted so #decide stays
+      # under the complexity limit. confirm_all → always :ask; dangerous_only →
+      # :ask only for a DangerousPattern, else :allow.
+      def shell_confirm_decision(command_str)
+        return :ask unless @confirm_policy == :dangerous_only
+
+        dangerous?(command_str) ? :ask : :allow
+      end
+
+      # True when this call READS or WRITES a secret/credential path and so must
+      # be approval-gated (#446). For the path-arg tools (read/grep/glob/write/
+      # edit/multi_edit) the single target is resolved from file_path/path; for
+      # apply_patch every target file in the patch is checked, because one call
+      # can touch many files. Resolution is relative to the workspace primary
+      # root so a relative `.env` resolves to the same file the tool will open.
+      def secret_file_access?(tool, arguments)
+        return false unless SECRET_GATED_READ_TOOLS.include?(tool.name) ||
+                            SECRET_GATED_WRITE_TOOLS.include?(tool.name)
+
+        secret_targets(tool, arguments).any? { |p| SecretPath.secret?(p) }
+      end
+
+      # The absolute path(s) a file tool will touch. apply_patch yields one per
+      # hunk target; every other gated tool yields its single file_path/path.
+      def secret_targets(tool, arguments)
+        args = arguments || {}
+        if tool.name == "apply_patch"
+          base = (args["base_path"] || args[:base_path]).to_s
+          base = Tools::Base.workspace_root if base.empty?
+          return patch_target_paths(args["patch"] || args[:patch], base)
+        end
+
+        raw = self.class.command_string(tool, arguments)
+        return [] if raw.to_s.empty?
+
+        [resolve_workspace_path(raw)]
+      end
+
+      # Extracts every destination file from a unified diff (`+++ b/<file>`, and
+      # `--- a/<file>` so a delete of a secret is gated too), absolutised against
+      # base_path. A `/dev/null` side carries no file and is skipped.
+      def patch_target_paths(patch, base_path)
+        return [] if patch.nil?
+
+        patch.to_s.each_line.filter_map do |line|
+          m = line.match(%r{^[-+]{3} [ab]/(.+)\s*$})
+          next if m.nil?
+
+          File.expand_path(m[1].strip, base_path)
+        end.uniq
+      end
+
+      # Anchors a relative path at the workspace primary root (matching
+      # Tools::Base#expand_workspace_path) so the gate sees the same target the
+      # tool will. Absolute/~ paths pass through.
+      def resolve_workspace_path(path)
+        str = path.to_s
+        return File.expand_path(str) if str.start_with?(File::SEPARATOR, "~")
+
+        File.expand_path(str, Tools::Base.workspace_root)
+      end
+
       # True when the shell command is provably read-only and the
       # approvals.auto_allow_readonly gate (default ON) is open. Shell-only:
       # for every other tool the "command" is a path or argument fragment.
@@ -269,6 +344,10 @@ module Rubino
           (args["command"] || args[:command]).to_s
         when "read", "write", "edit", "multi_edit", "attach_file"
           (args["file_path"] || args[:file_path]).to_s
+        when "grep", "glob"
+          # The SEARCH ROOT (a dir or a file) is what the secret gate resolves —
+          # `pattern` is the regex/glob, not a path. (Default "." like the tools.)
+          (args["path"] || args[:path] || ".").to_s
         when "shell_output", "shell_kill", "shell_input"
           (args["run_id"] || args[:run_id]).to_s
         when "skill"

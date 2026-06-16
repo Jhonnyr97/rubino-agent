@@ -1,66 +1,34 @@
 # frozen_string_literal: true
 
-# Always-on write-side credential denylist (#413, mirrors Hermes
-# file_safety.is_write_denied). The denylist is INDEPENDENT of the workspace
-# sandbox: write/edit/multi_edit/apply_patch must refuse credential & system
-# paths even when tools.workspace_strict=false AND even when the target sits
-# inside the workspace. A normal file in the same workspace stays writable.
-# rubocop:disable RSpec/DescribeClass -- spans all four write tools by design
-RSpec.describe "write-side credential denylist (#413)" do
+# #446: the always-on write-side credential DENYLIST (#413) was replaced by a
+# unified APPROVAL GATE in Security::ApprovalPolicy#decide. The per-tool
+# self-refusal is GONE — a write/edit/multi_edit/apply_patch that reaches the
+# tool's #call has already been approved, so it actually writes the secret.
+# These examples pin the new TOOL-LEVEL behavior (an approved secret write
+# proceeds, a normal file is unaffected). The gate itself — when :ask fires,
+# approve/deny/headless — is covered end-to-end in
+# spec/rubino/security/secret_file_gate_spec.rb.
+# rubocop:disable RSpec/DescribeClass -- spans the write tools by design
+RSpec.describe "secret writes proceed at the tool level (gate moved upstream, #446)" do
   def payload(result) = result.is_a?(Hash) ? result[:output] : result
 
-  let(:tmp_dir) { Dir.mktmpdir("write_denylist_spec") }
+  let(:tmp_dir) { Dir.mktmpdir("write_secret_gate_spec") }
 
-  # workspace_strict OFF for the whole suite — proves the denylist is a floor
-  # that does NOT depend on the sandbox toggle. terminal.cwd is still pointed at
-  # tmp_dir so the .env / .ssh fixtures land INSIDE the workspace.
-  before do
-    Rubino.configuration.set("terminal", "cwd", tmp_dir)
-    Rubino.configuration.set("tools", "workspace_strict", false)
-  end
+  before { Rubino.configuration.set("terminal", "cwd", tmp_dir) }
 
   after do
     Rubino.configuration.set("terminal", "cwd", nil)
-    Rubino.configuration.set("tools", "workspace_strict", nil)
     FileUtils.rm_rf(tmp_dir)
   end
 
   describe Rubino::Tools::WriteTool do
     subject(:tool) { described_class.new }
 
-    it "refuses to write a .env file inside the workspace (strict off)" do
+    it "writes an APPROVED .env inside the workspace (no per-tool refusal)" do
       path = File.join(tmp_dir, ".env")
-      result = tool.call("file_path" => path, "content" => "API_KEY=leak")
-      expect(result).to be_a(Hash)
-      expect(result[:error_code]).to eq(:write_secret_denied)
-      expect(File.exist?(path)).to be false
-    end
-
-    it "refuses to write .env.production / .envrc / .git-credentials too" do
-      %w[.env.production .envrc .git-credentials .netrc .npmrc].each do |name|
-        path = File.join(tmp_dir, name)
-        result = tool.call("file_path" => path, "content" => "x")
-        expect(result).to be_a(Hash), "#{name} should be denied"
-        expect(result[:error_code]).to eq(:write_secret_denied)
-        expect(File.exist?(path)).to be false
-      end
-    end
-
-    it "refuses to write into ~/.ssh (e.g. id_rsa / authorized_keys)" do
-      %w[id_rsa authorized_keys config].each do |name|
-        path = File.join(Dir.home, ".ssh", name)
-        result = tool.call("file_path" => path, "content" => "x")
-        expect(result).to be_a(Hash), "~/.ssh/#{name} should be denied"
-        expect(result[:error_code]).to eq(:write_secret_denied)
-      end
-    end
-
-    it "refuses to write /etc/sudoers and /etc/passwd" do
-      ["/etc/sudoers", "/etc/passwd"].each do |path|
-        result = tool.call("file_path" => path, "content" => "x")
-        expect(result).to be_a(Hash), "#{path} should be denied"
-        expect(result[:error_code]).to eq(:write_secret_denied)
-      end
+      out  = payload(tool.call("file_path" => path, "content" => "API_KEY=set"))
+      expect(File.read(path)).to eq("API_KEY=set")
+      expect(out).to include("created")
     end
 
     it "still writes a normal file in the same workspace" do
@@ -72,52 +40,45 @@ RSpec.describe "write-side credential denylist (#413)" do
   end
 
   describe Rubino::Tools::EditTool do
-    # A read tracker so the read-gate doesn't pre-empt the denylist — the
-    # denylist must fire FIRST regardless. The fixture file is created on disk
-    # so "File not found" can't pre-empt it either.
     subject(:tool) { described_class.new.tap { |t| t.read_tracker = Rubino::Tools::ReadTracker.new } }
 
-    it "refuses to edit a .env file (denylist before read-gate)" do
+    it "edits an APPROVED .env (no per-tool refusal, read-gate still applies)" do
       path = File.join(tmp_dir, ".env")
       File.write(path, "API_KEY=old\n")
+      tool.read_tracker.register(path, File.mtime(path), nil)
       result = tool.call("file_path" => path, "old_string" => "old", "new_string" => "new")
-      expect(result).to be_a(Hash)
-      expect(result[:error_code]).to eq(:write_secret_denied)
-      expect(File.read(path)).to eq("API_KEY=old\n")
-    end
-
-    it "refuses to edit /etc/sudoers" do
-      result = tool.call("file_path" => "/etc/sudoers", "old_string" => "a", "new_string" => "b")
-      expect(result).to be_a(Hash)
-      expect(result[:error_code]).to eq(:write_secret_denied)
+      expect(payload(result)).to include("Edit applied")
+      expect(File.read(path)).to eq("API_KEY=new\n")
     end
   end
 
   describe Rubino::Tools::MultiEditTool do
     subject(:tool) { described_class.new.tap { |t| t.read_tracker = Rubino::Tools::ReadTracker.new } }
 
-    it "refuses to multi_edit a .ssh/id_rsa path" do
-      path = File.join(Dir.home, ".ssh", "id_rsa")
+    it "multi_edits an APPROVED .env in the workspace" do
+      path = File.join(tmp_dir, ".env")
+      File.write(path, "A=1\nB=2\n")
+      tool.read_tracker.register(path, File.mtime(path), nil)
       result = tool.call("file_path" => path,
-                         "edits" => [{ "old_string" => "a", "new_string" => "b" }])
-      expect(result).to be_a(Hash)
-      expect(result[:error_code]).to eq(:write_secret_denied)
+                         "edits" => [{ "old_string" => "A=1", "new_string" => "A=9" }])
+      expect(payload(result)).to include("Applied")
+      expect(File.read(path)).to eq("A=9\nB=2\n")
     end
   end
 
   describe Rubino::Tools::PatchTool do
     subject(:tool) { described_class.new }
 
-    it "refuses an apply_patch that creates a .env file" do
+    it "applies an APPROVED patch that creates a .env file" do
       patch = <<~PATCH
         --- /dev/null
         +++ b/.env
         @@ -0,0 +1,1 @@
-        +API_KEY=leak
+        +API_KEY=set
       PATCH
-      result = tool.call("patch" => patch, "base_path" => tmp_dir)
-      expect(result).to include("refusing to WRITE")
-      expect(File.exist?(File.join(tmp_dir, ".env"))).to be false
+      result = payload(tool.call("patch" => patch, "base_path" => tmp_dir))
+      expect(result).to include("Created")
+      expect(File.read(File.join(tmp_dir, ".env"))).to eq("API_KEY=set\n")
     end
   end
 end
