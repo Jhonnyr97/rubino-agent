@@ -89,4 +89,41 @@ RSpec.describe Rubino::CLI::Commands do
         .to output(/sessions/).to_stdout
     end
   end
+
+  # F-help: the top-level command listing opened cold with "Commands:" and never
+  # said what rubino is or where to start. `rubino --help` now leads with a
+  # one-line tagline and closes with a "Getting started: run `rubino setup`"
+  # hint, so a brand-new user lands on the first action.
+  describe "top-level help tagline + getting-started (F-help)" do
+    def capture_top_help(args)
+      original = $stdout
+      buffer   = StringIO.new
+      $stdout  = buffer
+      begin
+        described_class.start(args)
+      rescue SystemExit
+        nil
+      ensure
+        $stdout = original
+      end
+      buffer.string
+    end
+
+    it "prints the tagline above the command list for `--help`" do
+      out = capture_top_help(["--help"])
+      expect(out).to include("an AI coding agent that reads, edits, and runs code")
+      expect(out).to match(/reads, edits, and runs code.*Commands:/m)
+    end
+
+    it "prints a `rubino setup` getting-started hint for `help`" do
+      out = capture_top_help(["help"])
+      expect(out).to include("Getting started: run `rubino setup`")
+    end
+
+    it "does NOT inject the tagline into a per-command help page (`help chat`)" do
+      out = capture_top_help(["help", "chat"])
+      expect(out).not_to include("an AI coding agent that reads")
+      expect(out).to match(/Usage:.*chat \[PROMPT\]/m)
+    end
+  end
 end

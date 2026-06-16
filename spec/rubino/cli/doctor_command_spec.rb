@@ -430,4 +430,51 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
     end
   end
+
+  # F8: when `tools.web` is on, doctor reports WHICH search backend a query
+  # would use (Tavily / SearXNG / keyless DDG) and whether it looks usable, so a
+  # user knows websearch will actually work. It is informational — never scored,
+  # never a :fail — like the MCP / doc-converter sections.
+  describe "#check_websearch_backend (F8)" do
+    around do |example|
+      saved = ENV.to_hash.slice("TAVILY_API_KEY", "SEARXNG_URL")
+      ENV.delete("TAVILY_API_KEY")
+      ENV.delete("SEARXNG_URL")
+      example.run
+    ensure
+      ENV.delete("TAVILY_API_KEY")
+      ENV.delete("SEARXNG_URL")
+      saved.each { |k, v| ENV[k] = v }
+    end
+
+    it "reports Tavily when TAVILY_API_KEY is set" do
+      ENV["TAVILY_API_KEY"] = "tvly-xxx"
+      doctor.send(:check_websearch_backend)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("Tavily")
+      expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
+    end
+
+    it "reports SearXNG when only SEARXNG_URL is set" do
+      ENV["SEARXNG_URL"] = "https://searx.example/search"
+      doctor.send(:check_websearch_backend)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("SearXNG")
+    end
+
+    it "reports keyless DuckDuckGo when reachable and no key is set" do
+      allow(doctor).to receive(:ddg_resolvable?).and_return(true)
+      doctor.send(:check_websearch_backend)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("DuckDuckGo")
+    end
+
+    it "warns (never fails) when no backend looks usable" do
+      allow(doctor).to receive(:ddg_resolvable?).and_return(false)
+      doctor.send(:check_websearch_backend)
+      warning = ui.messages.find { |m| m[:level] == :warning }
+      expect(warning[:message]).to include("Web search may not work")
+      expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
+    end
+  end
 end

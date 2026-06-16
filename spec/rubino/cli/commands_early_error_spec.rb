@@ -142,6 +142,37 @@ RSpec.describe Rubino::CLI::Commands do
     end
   end
 
+  describe "F13 — RUBINO_HOME is an EXISTING read-only directory (chmod Errno::EPERM/EACCES)" do
+    # The existing F13 guard normalized mkdir failures, but the unguarded
+    # File.chmod(0o700, home) on an already-present, non-owner-writable home
+    # raised a raw Errno::EPERM/EACCES backtrace from `rubino setup`. The chmod
+    # (and the subdir mkdir) are now inside the rescue, so a non-writable home
+    # yields the SAME clean one-line domain error + exit 1, no trace.
+    around do |example|
+      Dir.mktmpdir do |dir|
+        home = File.join(dir, "ro-home")
+        FileUtils.mkdir_p(home)
+        File.chmod(0o500, home) # readable+executable, NOT writable
+        prev = ENV.fetch("RUBINO_HOME", nil)
+        ENV["RUBINO_HOME"] = home
+        Rubino.reset!
+        example.run
+      ensure
+        File.chmod(0o700, home) if File.directory?(home) # let mktmpdir clean up
+        ENV["RUBINO_HOME"] = prev
+        Rubino.reset!
+      end
+    end
+
+    it "surfaces a clean one-line error + exit 1, no Errno backtrace (text)", skip: (Process.uid.zero? ? "root bypasses dir perms" : false) do
+      r = run_cli(["setup"])
+      expect(r[:status]).to eq(1)
+      expect(r[:stderr]).to include("RUBINO_HOME is not a writable directory")
+      expect(backtrace?(r[:stderr])).to be(false)
+      expect(r[:stderr]).not_to match(/Errno::E(PERM|ACCES)/)
+    end
+  end
+
   describe "json_output_requested? (raw-argv format detection)" do
     it "detects --json, --output-format json|stream-json (hyphen/underscore, =/space)" do
       [
