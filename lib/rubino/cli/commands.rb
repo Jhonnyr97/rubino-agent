@@ -27,6 +27,9 @@ module Rubino
       GETTING_STARTED = "Getting started: run `rubino setup` to configure a model, " \
                         "then `rubino chat` (or `rubino \"your prompt\"`)."
 
+      # rubocop:disable Style/OptionalBooleanParameter -- overrides Thor's own
+      # `def help(shell, subcommand = false)`; the positional boolean is Thor's
+      # public signature (instance #help calls it positionally), not ours to change.
       def self.help(shell, subcommand = false)
         # Only decorate the TOP-LEVEL command listing (`rubino --help`), not a
         # per-command help page (`rubino help chat`) — those are dispatched with
@@ -42,6 +45,7 @@ module Rubino
         shell.say(GETTING_STARTED)
         shell.say
       end
+      # rubocop:enable Style/OptionalBooleanParameter
 
       # Allow passing prompt directly as default task:
       # rubino "my prompt"

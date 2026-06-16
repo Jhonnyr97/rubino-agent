@@ -142,29 +142,35 @@ RSpec.describe Rubino::CLI::Commands do
     end
   end
 
-  describe "F13 — RUBINO_HOME is an EXISTING read-only directory (chmod Errno::EPERM/EACCES)" do
+  describe "F13 — chmod on an EXISTING non-writable RUBINO_HOME (Errno::EPERM)" do
     # The existing F13 guard normalized mkdir failures, but the unguarded
-    # File.chmod(0o700, home) on an already-present, non-owner-writable home
-    # raised a raw Errno::EPERM/EACCES backtrace from `rubino setup`. The chmod
-    # (and the subdir mkdir) are now inside the rescue, so a non-writable home
-    # yields the SAME clean one-line domain error + exit 1, no trace.
+    # File.chmod(0o700, home) on an already-present home the process can't chmod
+    # (root-owned, a read-only mount, restrictive ACLs) raised a raw Errno::EPERM
+    # backtrace from `rubino setup`. A non-root owner can always re-chmod its own
+    # dir, so the failure can't be staged with plain mode bits — drive the exact
+    # syscall failure by stubbing File.chmod to raise EPERM, and assert the chmod
+    # is now inside the rescue: the SAME clean one-line domain error + exit 1, no
+    # trace, as the mkdir-fail path.
     around do |example|
       Dir.mktmpdir do |dir|
         home = File.join(dir, "ro-home")
         FileUtils.mkdir_p(home)
-        File.chmod(0o500, home) # readable+executable, NOT writable
         prev = ENV.fetch("RUBINO_HOME", nil)
         ENV["RUBINO_HOME"] = home
         Rubino.reset!
         example.run
       ensure
-        File.chmod(0o700, home) if File.directory?(home) # let mktmpdir clean up
         ENV["RUBINO_HOME"] = prev
         Rubino.reset!
       end
     end
 
-    it "surfaces a clean one-line error + exit 1, no Errno backtrace (text)", skip: (Process.uid.zero? ? "root bypasses dir perms" : false) do
+    it "surfaces a clean one-line error + exit 1, no Errno backtrace (text)" do
+      home = ENV.fetch("RUBINO_HOME")
+      # Only the home-dir chmod raises; subdir FileUtils calls are untouched.
+      allow(File).to receive(:chmod).and_call_original
+      allow(File).to receive(:chmod).with(0o700, home).and_raise(Errno::EPERM.new(home))
+
       r = run_cli(["setup"])
       expect(r[:status]).to eq(1)
       expect(r[:stderr]).to include("RUBINO_HOME is not a writable directory")
