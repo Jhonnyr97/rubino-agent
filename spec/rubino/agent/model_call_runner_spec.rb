@@ -12,8 +12,8 @@ require "ruby_llm"
 # can only resolve the constant once that file is loaded. The lib references it
 # lazily (inside method bodies), so under a seed where no earlier example drives
 # the classify path the cap_for helper hits an uninitialized-constant NameError.
-# Touch ErrorClassifier here to force the autoload so the file is order-independent.
-Rubino::LLM::ErrorClassifier
+# Load error_classifier here so the constant resolves and the file is order-independent.
+require "rubino/llm/error_classifier"
 
 RSpec.describe Rubino::Agent::ModelCallRunner do
   # ── Scripted boundary ───────────────────────────────────────────────────
