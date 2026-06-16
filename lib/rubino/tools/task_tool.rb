@@ -268,12 +268,20 @@ module Rubino
       # Records the terminal :completed state and notifies the parent.
       # Deliver-or-report for /agents steer (#140): a parked note the child
       # never got another turn to fold in would otherwise vanish silently —
-      # the user believes the child was steered when it wasn't. Drain what's
-      # left NOW (the child is done; nothing can consume it anymore) and say
-      # so, on the parent UI and in the completion notice.
+      # the user believes the child was steered when it wasn't. Say so, on the
+      # parent UI and in the completion notice.
+      #
+      # H5 — the final drain now happens INSIDE #complete, under the SAME
+      # registry mutex that flips the status to terminal (and that #steer checks
+      # before pushing). The previous shape drained the queue HERE (InputQueue
+      # lock) and THEN called #complete (registry lock): a steer/answer arriving
+      # in that gap landed on an already-drained queue — dropped, missing from
+      # `undelivered`, yet reported delivered. Taking the drained notes from
+      # #complete's return closes that gap: a note is either drained here (and
+      # reported undelivered) or rejected by #steer (and reported not-delivered
+      # to its caller) — never silently lost.
       def record_completion(entry, text, sink, parent_ui)
-        undelivered = entry.steer_queue&.drain || []
-        BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+        undelivered = BackgroundTasks.instance.complete(entry, status: :completed, result: text)
         notify(sink, completion_notice(entry, text, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,

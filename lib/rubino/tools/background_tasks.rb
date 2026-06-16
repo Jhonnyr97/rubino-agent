@@ -200,6 +200,19 @@ module Rubino
       # see a consistent snapshot. A failure landing on a :stopping entry is a
       # USER-REQUESTED stop unwinding (Interrupted at the next checkpoint), so
       # it is recorded as :stopped — distinct from a genuine :failed (#108/#13).
+      #
+      # H5 — closes the drain↔complete race. The final drain of the child's
+      # steer_queue happens HERE, under the SAME registry mutex that flips the
+      # status to terminal, and #steer refuses to push onto a terminal entry
+      # under that SAME mutex. So a steer/answer arriving concurrently is
+      # serialised against this finalize: it is EITHER pushed before the status
+      # flips (and drained right here into the returned `undelivered` notes) OR
+      # rejected by #steer (which then honestly reports not-delivered). The
+      # earlier shape — drain (InputQueue lock) then complete (registry lock),
+      # two locks with a gap — let an answer land on a now-dead queue: dropped,
+      # omitted from `undelivered`, yet reported delivered. Returns the notes
+      # that were still queued at finalize time (never delivered to the child),
+      # so the caller can surface them as undelivered.
       def complete(entry, status:, result: nil, error: nil)
         @mutex.synchronize do
           status            = :stopped if entry.status == :stopping && status == :failed
@@ -207,6 +220,10 @@ module Rubino
           entry.result      = result
           entry.error       = error
           entry.finished_at = Time.now
+          # Drain UNDER the mutex: anything still here is undelivered (the child
+          # has no further turn to fold it in), and once status is terminal no
+          # new note can arrive — #steer rejects it.
+          entry.steer_queue&.drain || []
         end
       end
 
@@ -298,17 +315,28 @@ module Rubino
       # affordance). Pushes the text onto the child's steering queue, which the
       # child Loop drains at its next iteration boundary (Loop#inject_steered_input)
       # — between turns, never between a tool_use and its results. Best-effort:
-      # returns false (and pushes nothing) when the entry is gone or has no queue
-      # (e.g. a finished child), true when the note was queued.
+      # returns false (and pushes nothing) when the entry is gone, has no queue,
+      # or has ALREADY reached a terminal state (the child finished — there is no
+      # more turn to fold the note into); true when the note was queued.
+      #
+      # H5 — the push happens UNDER the registry mutex, gated on a non-terminal
+      # status, so it is serialised against #complete (which flips the status to
+      # terminal AND drains the queue under that SAME mutex). Either this push
+      # wins the lock first (the note is queued and will be drained — by the
+      # child at its next turn, or by #complete into the undelivered report) or
+      # #complete wins first (status is terminal and this returns false). There
+      # is no window in which a note is pushed onto a queue nobody will drain yet
+      # reported delivered. Pushing inside the mutex is safe: InputQueue#push has
+      # its own lock and never calls back into the registry, so no lock cycle.
       def steer(id, text)
-        queue = @mutex.synchronize do
+        @mutex.synchronize do
           entry = @entries[id]
-          entry&.steer_queue
-        end
-        return false unless queue
+          return false unless entry&.steer_queue
+          return false if terminal_status?(entry.status)
 
-        queue.push(text)
-        true
+          entry.steer_queue.push(text)
+          true
+        end
       end
 
       # Records a BILLED live probe against a child (S3): bumps probe_count and
@@ -383,8 +411,22 @@ module Rubino
         entry = find(id)
         return false unless entry&.ask_gate
 
+        # H5 — #steer is the SINGLE race-free liveness oracle here: it pushes the
+        # answer onto the steer_queue under the registry mutex IFF the child is
+        # still non-terminal, returning false the instant the child has finished
+        # (atomic against #complete, which flips the status and drains the queue
+        # under that same mutex). So we steer FIRST and let its honest result
+        # decide everything:
+        #   false ⇒ the child already finished; neither path can reach it. Do NOT
+        #           decide the gate (a no-op for a child that will never await
+        #           it) and do NOT clear the ask — report not-delivered.
+        #   true  ⇒ the child is live and the answer is queued; a BLOCKING ask
+        #           additionally needs its gate decided so the parked child wakes
+        #           with the answer as its tool result. Then clear the blocked
+        #           state and report delivered.
+        return false unless steer(entry.id, "[parent answer] #{answer}")
+
         entry.ask_gate.decide(entry.ask_id, answer)
-        steer(entry.id, "[parent answer] #{answer}")
         end_ask(entry.id)
         true
       end
@@ -577,6 +619,16 @@ module Rubino
       # thread, so all count as live.
       def live_status?(status)
         %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(status)
+      end
+
+      # A child has reached a TERMINAL state once #complete has run: its worker
+      # thread is done, its steer_queue has been drained, and it has no further
+      # turn to fold a steer note into. #steer rejects pushes onto a terminal
+      # entry (H5) so an answer arriving after finalize is reported undelivered
+      # rather than dropped-but-reported-delivered. :cancelled is included for
+      # the API surface, which records cancellation via #complete too.
+      def terminal_status?(status)
+        %i[completed failed stopped cancelled].include?(status)
       end
 
       def running_count
