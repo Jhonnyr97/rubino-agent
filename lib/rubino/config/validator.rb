@@ -68,6 +68,64 @@ module Rubino
         check_url_format!(key_path, keys, value)
       end
 
+      # NON-raising counterpart of #validate!, run at LOAD time over a HAND-EDITED
+      # config (F8). #validate! only fires at `config set`, so a config.yml edited
+      # by hand with an unknown key or a wrong-typed value loaded SILENTLY and
+      # only blew up later (a runtime crash, or a provider 4xx the agent retries
+      # for ~85s). This walks every leaf of the RAW on-disk hash and returns a
+      # list of human-readable WARNING strings (the same checks #validate! makes)
+      # — surfaced at boot and by `rubino doctor`, never a crash. +raw+ is the
+      # user's config.yml as loaded (Loader#raw_config), NOT merged with defaults
+      # (defaults are valid by construction).
+      def warnings(raw)
+        return [] unless raw.is_a?(Hash)
+
+        out = []
+        each_leaf(raw) do |keys, value|
+          # Skip a leaf still at its seeded default: `setup` writes the FULL
+          # default config to disk, so every default value is present in the raw
+          # hash. Those are valid by construction (and a leaf-name RANGES
+          # collision — e.g. doom_loop.threshold's count 5 vs a 0..1 ratio —
+          # would otherwise mis-flag a value the user never touched). Only a leaf
+          # the user CHANGED can be a hand-edit mistake.
+          next if seeded_default?(keys, value)
+
+          key_path = keys.join(".")
+          validate!(key_path, keys, value)
+        rescue ConfigurationError => e
+          out << e.message
+        rescue StandardError
+          # A surprising shape must never crash a load — skip that leaf.
+          nil
+        end
+        out
+      end
+
+      # True when +value+ at +keys+ equals the schema's seeded default — i.e. an
+      # untouched leaf, not a user edit. :__absent__ (no such default) is never a
+      # match, so an unknown key is still flagged.
+      def seeded_default?(keys, value)
+        default = leaf_default(keys)
+        return false if default == :__absent__
+
+        default == value
+      end
+
+      # Yields [keys_array, leaf_value] for every scalar/array leaf in a nested
+      # config hash. Open-map sections (providers.<name>, quick_commands, …) are
+      # walked the same way; the unknown-key check is intentionally shallow
+      # (top-level only) so their arbitrary child keys are not flagged.
+      def each_leaf(node, prefix = [], &block)
+        node.each do |k, v|
+          keys = prefix + [k.to_s]
+          if v.is_a?(Hash)
+            each_leaf(v, keys, &block)
+          else
+            block.call(keys, v)
+          end
+        end
+      end
+
       # The seeded default at this exact path, or the sentinel :__absent__ when
       # the schema has no such leaf. providers.<name>.<leaf> resolves against the
       # openai template so a custom provider's known leaves still type-check.

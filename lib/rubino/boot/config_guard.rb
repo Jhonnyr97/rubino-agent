@@ -27,11 +27,33 @@ module Rubino
       # rather than a double backtrace on every command (CFG-R2).
       def self.load!(loader: Config::Loader.new, stderr: $stderr)
         loader.load
+        # LOAD-time schema validation (F8): a HAND-EDITED config.yml with an
+        # unknown key or a wrong-typed value used to load SILENTLY (the validator
+        # only ran at `config set` time) and only blow up later. Surface those as
+        # a clear, NON-FATAL warning here — the boot chokepoint every command
+        # already passes through — so the user is told at startup instead of
+        # discovering it as a runtime crash / provider 4xx. Never fatal: a
+        # warning must not block a usable config, and a probe hiccup is ignored.
+        warn_config_issues(loader, stderr)
         nil
       rescue Config::ConfigError, Psych::Exception, SystemCallError, IOError => e
         stderr.puts "rubino: config error — #{e.message}"
         stderr.puts "rubino: fix #{loader.config_path}, restore a backup, or re-run 'rubino setup'."
         exit 1
+      end
+
+      # Emits a one-line-per-issue config WARNING to stderr (F8), or nothing when
+      # the config is clean. Best-effort — any failure here is swallowed so a
+      # validation hiccup can never break boot.
+      def self.warn_config_issues(loader, stderr)
+        issues = Config::Validator.warnings(loader.raw_config)
+        return if issues.empty?
+
+        stderr.puts "rubino: warning: #{loader.config_path} has #{issues.size} " \
+                    "config issue#{"s" if issues.size != 1} (run `rubino doctor` for detail):"
+        issues.first(5).each { |msg| stderr.puts "rubino:   - #{msg}" }
+      rescue StandardError
+        nil
       end
     end
   end

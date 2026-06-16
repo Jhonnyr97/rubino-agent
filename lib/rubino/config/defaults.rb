@@ -263,6 +263,10 @@ module Rubino
           # (chars/4) is written to <home>/sessions/<id>/paste_N.txt instead
           # and the sent message carries a read-tool pointer to it.
           "collapse_lines" => 5,
+          # A paste longer than this many CHARS also collapses to the chip, even
+          # on a single line — a big one-line paste (long URL/token/minified
+          # JSON) would otherwise flood the composer.
+          "collapse_chars" => 400,
           "file_threshold_tokens" => 8000
         },
         "notifications" => {

@@ -144,6 +144,28 @@ RSpec.describe Rubino::CLI::SetupCommand do
       _provider, model = configured
       expect(model).to eq("openai/gpt-4.1")
     end
+
+    # F9: a re-run of `setup` over an EXISTING config must never silently
+    # overwrite a model the user deliberately picked. With a custom
+    # model.default/provider already on disk, auto-detect PRESERVES it (the
+    # headless path can't prompt) and tells the user how to switch.
+    it "PRESERVES a user's custom model on re-run instead of clobbering it (F9)" do
+      loader = Rubino::Config::Loader.new
+      loader.create_default_config!
+      writer = Rubino::Config::Writer.new(config_path: loader.config_path)
+      writer.set("model.default", "claude-sonnet-4-5")
+      writer.set("model.provider", "anthropic")
+      Rubino.reload_configuration!
+
+      ENV["MINIMAX_API_KEY"] = "mm-test"
+
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("anthropic")
+      expect(model).to eq("claude-sonnet-4-5")
+      expect(ui.messages).to include([:status, a_string_matching(/keeping your configured model/i)])
+    end
   end
 
   # HIGH-2: `setup` is the documented remedy for a broken install, so it must

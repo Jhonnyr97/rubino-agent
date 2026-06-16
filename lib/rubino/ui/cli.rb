@@ -103,15 +103,60 @@ module Rubino
         # every cell to caret notation HERE — the single chokepoint both the
         # grid and the card paths flow through — before any width measurement.
         # Headers are rubino's own fixed labels but cost nothing to clean too.
-        rows = rows.map { |row| Array(row).map { |cell| safe(cell.to_s) } }
+        #
+        # Keep TRUSTED SGR colour escapes in the cell (FRICTION-3): a status
+        # cell like the /agents "● approval" is rubino's OWN pastel styling, and
+        # the plain caret-notation sanitizer turned its `\e[33m…\e[0m` into a
+        # visible `^[[33m●^[[0m` inside the grid. sanitize_terminal_keep_sgr
+        # preserves the (inert, zero-width) colour while still neutralizing
+        # every cursor-move / clear-screen / OSC byte. Width math below measures
+        # on the SGR-STRIPPED text so the columns line up.
+        rows = rows.map { |row| Array(row).map { |cell| Util::Output.sanitize_terminal_keep_sgr(cell.to_s) } }
         if grid_overflows?(headers, rows)
           render_cards(headers, rows)
+        elsif rows.any? { |row| row.any? { |cell| cell.match?(Util::Output::SGR_RE) } }
+          # TTY::Table measures column width on the RAW string and counts SGR
+          # escape bytes as visible columns, so a colored cell padded the grid
+          # crooked. When any cell carries colour, draw the unicode grid
+          # ourselves on the display (SGR-stripped) width so colour renders AND
+          # the box stays aligned.
+          render_unicode_grid(headers, rows)
         else
           tbl = TTY::Table.new(header: headers, rows: rows)
           # Pin the width explicitly: TTY::Table otherwise probes the terminal
           # via ioctl, which blows up when $stdout is a StringIO (tests/pipes).
           $stdout.puts tbl.render(:unicode, padding: [0, 1], width: terminal_cols, resize: false)
         end
+      end
+
+      # Draws a unicode box grid measuring each column on the DISPLAY width
+      # (#display_width strips SGR), so colored cells stay aligned where
+      # TTY::Table — which counts escape bytes as columns — would not. One left
+      # border + 1 space padding each side, matching TTY::Table's `:unicode`
+      # padding: [0, 1] so the colorless path and this one look identical.
+      def render_unicode_grid(headers, rows)
+        cols    = headers.size
+        widths  = Array.new(cols, 0)
+        ([headers] + rows).each do |row|
+          row.each_with_index { |cell, i| widths[i] = [widths[i], display_width(cell.to_s)].max }
+        end
+        $stdout.puts grid_border(widths, "┌", "┬", "┐")
+        $stdout.puts grid_row(headers, widths)
+        $stdout.puts grid_border(widths, "├", "┼", "┤")
+        rows.each { |row| $stdout.puts grid_row(row, widths) }
+        $stdout.puts grid_border(widths, "└", "┴", "┘")
+      end
+
+      def grid_border(widths, left, mid, right)
+        left + widths.map { |w| "─" * (w + 2) }.join(mid) + right
+      end
+
+      def grid_row(cells, widths)
+        padded = widths.each_index.map do |i|
+          cell = cells[i].to_s
+          " #{cell}#{" " * (widths[i] - display_width(cell))} "
+        end
+        "│#{padded.join("│")}│"
       end
 
       # True when the natural grid width (column maxima + unicode borders +
@@ -152,8 +197,12 @@ module Rubino
         cols&.positive? ? cols : 80
       end
 
+      # Terminal columns a string occupies. SGR colour escapes (`\e[…m`) take
+      # ZERO columns, so they're stripped before measuring — otherwise a colored
+      # /agents status cell measured far wider than it draws and padded the grid
+      # crooked (FRICTION-3). Wide glyphs still count as 2.
       def display_width(str)
-        Unicode::DisplayWidth.of(str.to_s)
+        Unicode::DisplayWidth.of(str.to_s.gsub(Util::Output::SGR_RE, ""))
       end
 
       def ask(prompt)

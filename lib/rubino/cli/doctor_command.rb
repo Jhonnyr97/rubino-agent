@@ -87,7 +87,25 @@ module Rubino
         end
 
         ui.success("Config file exists: #{loader.config_path}")
+
+        # LOAD-time schema validation (F8): a hand-edited config.yml with an
+        # unknown key or a wrong-typed value is structurally fine (loads, digs)
+        # but semantically wrong — the validator only ran at `config set` time,
+        # so doctor used to show a flat green "✓ Config file exists" while a typo
+        # silently degraded behaviour at runtime. Surface each issue as a WARNING
+        # here (non-fatal — config still loads); the check stays :ok so existing
+        # gates aren't tripped by a soft warning.
+        config_issues(loader).each { |msg| ui.warning("config: #{msg}") }
+
         { name: "config", status: :ok }
+      end
+
+      # Load-time config-validation warnings (unknown key / wrong type), or [].
+      # Best-effort: a probe hiccup must never crash doctor.
+      def config_issues(loader)
+        Config::Validator.warnings(loader.raw_config)
+      rescue StandardError
+        []
       end
 
       # Returns a human-readable reason the config is unusable, or nil when it

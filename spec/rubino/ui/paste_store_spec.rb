@@ -6,6 +6,7 @@ RSpec.describe Rubino::UI::PasteStore do
   let(:config) do
     instance_double(Rubino::Config::Configuration,
                     paste_collapse_lines: 5,
+                    paste_collapse_chars: 10_000, # high: these exercise the LINE boundary
                     paste_file_threshold_tokens: 8000)
   end
   let(:session_id) { "spec-session-#{SecureRandom.hex(4)}" }
@@ -27,7 +28,8 @@ RSpec.describe Rubino::UI::PasteStore do
     it "honors a configured threshold" do
       tight = described_class.new(
         config: instance_double(Rubino::Config::Configuration,
-                                paste_collapse_lines: 2, paste_file_threshold_tokens: 8000),
+                                paste_collapse_lines: 2, paste_collapse_chars: 10_000,
+                                paste_file_threshold_tokens: 8000),
         session_source: session_id
       )
       expect(tight.collapse?(lines(3))).to be(true)
