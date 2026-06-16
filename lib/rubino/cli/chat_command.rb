@@ -136,6 +136,33 @@ module Rubino
         false
       end
 
+      # Idle completion affordance (item 5): when a BACKGROUND subagent finishes
+      # while the parent is sitting at the idle prompt, surface a non-blocking
+      # one-liner — `✓ sa_… finished — /agents <id> for the result` — so the
+      # parent stays free (no blocking, no polling, no narrating "waiting"). The
+      # maintainer's decision: a background subagent runs async and the human is
+      # NOTIFIED when it finishes, rather than the parent pretending to wait.
+      #
+      # Announced ONCE per entry (tracked in @announced_finished_subagents) so the
+      # ~50ms poll doesn't repeat the line, and only for entries that finished
+      # cleanly (:completed) — a :failed / :stopped child already gets its own
+      # worker-surfaced notice, so re-announcing here would double-report. The
+      # line commits ABOVE the pinned composer through the StdoutProxy already
+      # swapped in for the idle read, exactly like a background-task note. Best
+      # effort: a hiccup must never break the idle prompt.
+      def surface_finished_subagents
+        announced = (@announced_finished_subagents ||= {})
+        Tools::BackgroundTasks.instance.list.each do |entry|
+          next unless entry.status == :completed
+          next if announced[entry.id]
+
+          announced[entry.id] = true
+          Rubino.ui.note("✓ #{entry.id} (#{entry.subagent}) finished — /agents #{entry.id} for the result")
+        end
+      rescue StandardError
+        nil # the idle completion affordance is cosmetic — never break the prompt.
+      end
+
       # Emits a single warn for each distinct swallowed auto-resolve error so a
       # programming bug (NameError on every idle tick) is visible without spamming
       # the log once per 50ms poll. Transient runtime errors still degrade quietly.
@@ -1439,6 +1466,11 @@ module Rubino
             idle_cards.paint
             next
           end
+
+          # Non-blocking idle completion affordance (item 5): announce any
+          # background subagent that finished while we've been idle, then carry on
+          # reading input — the parent never blocks or polls for a child.
+          surface_finished_subagents
 
           # Take ONE parked line (FIFO) so several items queued at idle each run
           # as their OWN turn (B4), in submission order — never coalesced. The

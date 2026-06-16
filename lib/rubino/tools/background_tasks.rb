@@ -104,6 +104,19 @@ module Rubino
       OUTPUT_TAIL_MAX      = 6
       OUTPUT_TAIL_LINE_MAX = 200
 
+      # Prefix #deliver_answer stamps on the steer-queue COPY of an answer it has
+      # ALREADY delivered to the child via its ask gate (the dual-path delivery:
+      # gate for a blocking ask, steer-queue for a non-blocking one). When the
+      # child resumes via the gate and finishes WITHOUT another turn boundary, the
+      # still-queued copy is drained by #complete and would surface as an
+      # "undelivered steer note" — but the answer WAS delivered via the gate, so
+      # reporting it undelivered is a false alarm (the /reply happy-path
+      # regression from the H5 fix #457). The completion-notice paths filter notes
+      # carrying this prefix OUT of the undelivered report for exactly that
+      # reason; a genuine `/agents <id> steer "..."` note never carries it, so the
+      # deliver-or-report-undelivered invariant for real steer notes is intact.
+      ANSWER_NOTE_PREFIX = "[parent answer] "
+
       class << self
         def instance
           @instance ||= new
@@ -424,7 +437,7 @@ module Rubino
         #           additionally needs its gate decided so the parked child wakes
         #           with the answer as its tool result. Then clear the blocked
         #           state and report delivered.
-        return false unless steer(entry.id, "[parent answer] #{answer}")
+        return false unless steer(entry.id, "#{ANSWER_NOTE_PREFIX}#{answer}")
 
         entry.ask_gate.decide(entry.ask_id, answer)
         end_ask(entry.id)

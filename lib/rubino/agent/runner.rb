@@ -13,7 +13,7 @@ module Rubino
 
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
-                     event_bus: nil, announce_session: true)
+                     event_bus: nil, announce_session: true, session_source: "cli")
         @ui = ui || Rubino.ui
         # An in-chat rewind/fork builds a runner on the child session but has its
         # own purpose-built "┄ rewound to message N — editing ┄" marker, so the
@@ -33,6 +33,13 @@ module Rubino
         @max_turns = max_turns
         @ignore_rules = ignore_rules
         @agent_definition = agent_definition
+        # The `source` stamped on a freshly-created session row. Defaults to
+        # "cli" (a user-driven REPL/one-shot session); the `task` tool passes
+        # "subagent" so internal subagent prompt-sessions can be filtered out of
+        # the user-facing /sessions picker + `sessions list` (they're machinery,
+        # not the user's own conversations) while staying resumable by explicit
+        # id. Like Claude Code hiding its Task subagent sessions from the picker.
+        @session_source = session_source
         # Pre-instantiate so cancel! is meaningful between turns and during the
         # window between Signal.trap install and run() — a too-early Ctrl+C
         # used to land on a nil token and silently no-op, then the next run
@@ -270,7 +277,7 @@ module Rubino
           # record carries a real id so the whole turn pipeline works unchanged;
           # Lifecycle#persist_user_message flips it to a real row on demand.
           session = @session_repo.build(
-            source: "cli",
+            source: @session_source,
             model: @model_id,
             provider: @provider_override || LLM::ProviderResolver.resolve(@model_id)
           )
