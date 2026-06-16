@@ -49,6 +49,13 @@ assume or default to one.
   several background subagents at once; check one early with `task_result` or
   stop it with `task_stop`. Pass `background: false` only when the very next
   step depends on the subagent's output.
+- A BACKGROUND subagent runs ASYNCHRONOUSLY: there is nothing to "wait" for and
+  no result to poll for now — the user is notified and you receive the
+  `[background-task]` result automatically when it finishes. So do not narrate
+  waiting (no "I'll wait for it", no "task_result isn't available yet, nothing I
+  can do"); just finish your current reply or move on to other work. If you
+  genuinely cannot proceed without the answer this step, use `background: false`
+  instead of waiting.
 - Subagents are FULLY capable: the general subagent has every tool available,
   including `task` (it can spawn its own subagents) and `ask_parent` (it can ask
   YOU a clarifying question mid-task). Never decline to delegate by claiming a

@@ -1859,6 +1859,26 @@ RSpec.describe Rubino::UI::CLI do
       out = capture_stdout { ui.compression_finished({ saved_tokens: 4200 }) }
       expect(out).to include("┄ compacted · saved 4200 tok ┄")
     end
+
+    # Item 6: an auto-compaction notice shows the message-count change alongside
+    # the token saving — `┄ compacted · saved N tok (X→Y msg) ┄` — so it reads as
+    # a CONTINUATION of the same session (the `┄ … ┄` rail matching the pre-
+    # notice), not a silent session-swap. No confirmation prompt is involved.
+    it "includes the X→Y message-count change when supplied (item 6)" do
+      out = capture_stdout do
+        ui.compression_finished({ saved_tokens: 3100, original_messages: 40, compacted_messages: 8 })
+      end
+      expect(out).to include("┄ compacted · saved 3100 tok (40→8 msg) ┄")
+    end
+
+    it "still bookends the pre-notice and the result so it's visibly inline (item 6)" do
+      pre  = capture_stdout { ui.compression_started }
+      post = capture_stdout do
+        ui.compression_finished({ saved_tokens: 10, original_messages: 12, compacted_messages: 5 })
+      end
+      expect(pre).to include("┄ compacting context… ┄")
+      expect(post).to match(/┄ compacted · saved 10 tok \(12→5 msg\) ┄/)
+    end
   end
 
   describe "#activity_started / #activity_finished" do

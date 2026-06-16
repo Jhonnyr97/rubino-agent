@@ -1393,7 +1393,16 @@ module Rubino
 
       def compression_finished(metadata, at: nil)
         saved = metadata[:saved_tokens] || metadata["saved_tokens"] || 0
-        $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok ┄")
+        before = metadata[:original_messages] || metadata["original_messages"]
+        after  = metadata[:compacted_messages] || metadata["compacted_messages"]
+        # Show the message-count change alongside the token saving so the notice
+        # reads as a CONTINUATION of the same session, not a silent session-swap
+        # (item 6): `┄ compacted · saved N tok (X→Y msg) ┄`. The `┄ … ┄` rail
+        # (matching the `┄ compacting context… ┄` pre-notice) keeps it visibly
+        # inline in the SAME transcript. Falls back to the bare token line when
+        # the counts aren't supplied (e.g. the API-shaped metadata).
+        msg = before && after ? " (#{before}→#{after} msg)" : ""
+        $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok#{msg} ┄")
       end
 
       # Ctrl+O reveal: re-render the LAST retained reasoning buffer as the

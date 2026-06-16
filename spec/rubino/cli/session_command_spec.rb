@@ -251,6 +251,51 @@ RSpec.describe Rubino::CLI::SessionCommand do
       expect(captured).to eq(session[:id])
     end
 
+    # Item 4: `sessions compact` reports the before→after token savings (and the
+    # message-count change), consistent with the interactive `/compact`.
+    it "reports the before→after token savings and message counts (item 4)" do
+      repo.create(source: "cli", title: "savings")
+      session = repo.list(limit: 1).first
+
+      fake = instance_double(
+        Rubino::Context::Compressor,
+        compact!: { source_session_id: session[:id], saved_tokens: 99,
+                    target_session_id: session[:id], original_messages: 20,
+                    compacted_messages: 6 }
+      )
+      allow(Rubino::Context::Compressor).to receive(:new).and_return(fake)
+
+      described_class.new.compact(session[:id][0, 8])
+      line = info_lines.find { |l| l.include?("Context:") }
+      expect(line).to match(/Context: ~\d+ → ~\d+ tokens \(.*tok; 20 → 6 messages\)\./)
+      # The compression_finished metadata carries the TRUTHFUL before→after delta
+      # (saved_tokens), not the compressor's removed-middle estimate.
+      finished = ui.messages.find { |m| m[:level] == :compression_finished }
+      expect(finished[:message][:saved_tokens]).to be_a(Integer)
+    end
+  end
+
+  # Item 3: bare `rubino sessions` LISTS rather than printing subcommand help —
+  # listing is the common intent. Thor's default_command makes the bare
+  # invocation route to #list.
+  describe "bare invocation lists (item 3)" do
+    it "maps the default command to :list" do
+      expect(described_class.default_command).to eq(:list)
+    end
+
+    it "renders the session table when invoked bare (default_command → list)" do
+      repo.create(source: "cli", title: "listed-by-default")
+      # Unscope the cwd filter so the seeded session lists regardless of test cwd.
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
+
+      described_class.start([])
+
+      table = ui.messages.find { |m| m[:level] == :table }
+      expect(table).not_to be_nil
+      titles = table[:message][:rows].map { |r| r[1].to_s }
+      expect(titles).to include("listed-by-default")
+    end
+
     it "errors clearly on a no-op instead of a fake 'saved 0 tok' success" do
       repo.create(source: "cli", title: "too short")
       session = repo.list(limit: 1).first
