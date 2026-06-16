@@ -15,11 +15,6 @@ module Rubino
         [CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. Your persistent memory in the system prompt is ALWAYS authoritative — never deprioritize it due to this note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may already reflect work described here — avoid repeating it.
       PREFIX
 
-      # Legacy prefix that earlier rubino versions wrote ("[Compacted
-      # Summary]"). Recognized so iterative re-compaction strips it instead
-      # of stacking a second banner onto an already-prefixed summary.
-      LEGACY_SUMMARY_PREFIX = "[Compacted Summary]"
-
       SUMMARY_TEMPLATE = <<~TEMPLATE
         ## Active Task
         The SINGLE most important field. Copy the user's most recent
@@ -98,18 +93,17 @@ module Rubino
       end
 
       # Normalizes summary text to the current handoff format, stripping any
-      # current/legacy banner first so it is never duplicated (#415c).
+      # banner first so it is never duplicated (#415c).
       def with_summary_prefix(summary)
         body = strip_summary_prefix(summary)
         body.empty? ? SUMMARY_PREFIX : "#{SUMMARY_PREFIX}\n#{body}"
       end
 
-      # Returns the summary body without the current or legacy handoff banner.
+      # Returns the summary body without the handoff banner.
       def strip_summary_prefix(summary)
         text = summary.to_s.strip
-        [SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX].each do |prefix|
-          return text[prefix.length..].to_s.lstrip if text.start_with?(prefix)
-        end
+        return text[SUMMARY_PREFIX.length..].to_s.lstrip if text.start_with?(SUMMARY_PREFIX)
+
         text
       end
 

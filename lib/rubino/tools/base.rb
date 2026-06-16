@@ -399,7 +399,12 @@ module Rubino
         return false unless target_real
 
         target_real == home_real || target_real.start_with?("#{home_real}#{File::SEPARATOR}")
-      rescue StandardError
+      rescue StandardError => e
+        # Fail closed (treat as NOT under home) on any resolution error — but log
+        # it: this predicate gates a security-relevant decision, so a swallowed
+        # error that mis-resolves home-ness must at least leave a trace.
+        Rubino.logger&.warn(event: "tools.under_agent_home_failed",
+                            error: e.message, error_class: e.class.name)
         false
       end
 

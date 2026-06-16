@@ -629,27 +629,16 @@ module Rubino
       #   tool_count  — tools that actually RAN this turn (Loop's @tool_count).
       #   edit_count  — of those, how many were MUTATING (Loop's @edit_count).
       #
-      # Returns nil to leave the text untouched (the only-safe default), or the
-      # reconciled string when ALL hold:
+      # Returns the harness diagnostic note ALONE (or nil), without splicing it
+      # into the answer text. The Loop routes this to STDERR / an event instead
+      # of appending it to the returned answer, so the note never pollutes
+      # `--output-format text` stdout (#418). Returns nil to leave the summary
+      # alone (the only-safe default) unless ALL hold:
       #   * at least one tool ran (the ledger has something to contradict);
       #   * the text actually CLAIMS no/zero action was taken (the small phrase set
       #     above — the trigger), so a truthful "I ran X then Y" summary that names
       #     its tools is left completely alone;
       #   * the text does NOT already own up to the count (so we never double-note).
-      def reconcile_pessimistic_summary(content:, tool_count:, edit_count: 0)
-        note = pessimistic_summary_note(content: content, tool_count: tool_count, edit_count: edit_count)
-        return nil unless note
-
-        text = content.to_s
-        text.strip.empty? ? note : "#{text.rstrip}\n\n#{note}"
-      end
-
-      # The harness diagnostic note ALONE (or nil), without splicing it into the
-      # answer text. The Loop routes this to STDERR / an event instead of
-      # appending it to the returned answer, so the note never pollutes
-      # `--output-format text` stdout (#418). Same trigger contract as
-      # #reconcile_pessimistic_summary: returns nil unless at least one tool ran,
-      # the text CLAIMS no action, and it doesn't already own the count.
       def pessimistic_summary_note(content:, tool_count:, edit_count: 0)
         text = content.to_s
         ran  = tool_count.to_i
