@@ -17,9 +17,11 @@ module Rubino
     # `model.context_length` / `context.max_tokens` with the TokenBudget
     # default). The caller passes the values; this module only formats. ONE
     # encoding of the saturation (P9): the used/window pair, with the
-    # percentage in parentheses — omitted entirely below 1% so a fresh
-    # session doesn't carry a "(0%)". With no usable window the bar degrades
-    # to `~8.4k tok`.
+    # percentage ALWAYS in parentheses when the window is known (clamped
+    # 0..100) and the used figure rendered in the SAME unit as the window
+    # (`~0.1k/128k`, never `~129/128k`) so the pair can't read as over-budget
+    # at a glance (TUI-1). With no usable window the bar degrades to
+    # `~8.4k tok`.
     #
     # Color: everything dim, except the mode token when it carries risk
     # (plan yellow, yolo red — subtle, no bold) and the percentage when high
@@ -48,8 +50,17 @@ module Rubino
         segments << pastel.dim(model.to_s)
         if window.to_i.positive?
           pct = context_pct(tokens, window)
-          ctx = pastel.dim("ctx ~#{abbreviate(tokens)}/#{abbreviate(window)}")
-          ctx += " #{pastel.dim("(")}#{percent_segment(pct, pastel)}#{pastel.dim(")")}" if pct >= 1
+          # Render the used figure in the SAME unit as the window so the pair
+          # never reads as over-budget at a glance (TUI-1): with a `128k` window
+          # a 129-token session showed `~129/128k` — the bare `129` next to
+          # `128k` scans as "129 ≈ 128k, over budget". `abbreviate_to(tokens,
+          # window)` forces the `k` unit when the window is in `k` (`~0.1k/128k`),
+          # so the magnitudes are unambiguous. The percentage is ALWAYS shown
+          # when the window is known (clamped 0..100), so even a near-empty
+          # session reads `(0%)` rather than dropping the one signal that says
+          # how full it is.
+          ctx = pastel.dim("ctx ~#{abbreviate_to(tokens, window)}/#{abbreviate(window)}")
+          ctx += " #{pastel.dim("(")}#{percent_segment(pct, pastel)}#{pastel.dim(")")}"
           segments << ctx
         else
           segments << pastel.dim("~#{abbreviate(tokens)} tok")
@@ -116,6 +127,23 @@ module Rubino
 
         k = n / 1000.0
         k >= 100 ? "#{k.round}k" : format("%.1fk", k).sub(".0k", "k")
+      end
+
+      # The USED figure, rendered in the same unit as +window+ so the
+      # `used/window` pair never reads as over-budget (TUI-1). When the window
+      # is in `k` (≥ 1000), the count is forced into `k` too — `~0.1k/128k`
+      # rather than `~129/128k` — flooring to `0.1k` for any non-zero count so a
+      # tiny session doesn't collapse to a misleading `0k`. Below a `k` window
+      # (rare; a tiny user-pinned `context.max_tokens`) both fall back to the
+      # plain #abbreviate so the units already match.
+      def abbreviate_to(count, window)
+        return abbreviate(count) if window.to_i < 1000
+
+        n = count.to_i
+        return "0k" if n.zero?
+
+        k = [n / 1000.0, 0.1].max
+        k >= 100 ? "#{k.round}k" : format("%.1fk", k)
       end
     end
   end

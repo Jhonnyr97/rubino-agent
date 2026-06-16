@@ -11,15 +11,18 @@
 # manual slash fallback still works, and the security gate semantics (what
 # requires approval) are untouched — only WHEN the prompt appears changes.
 RSpec.describe Rubino::Commands::Handlers::Agents do
-  # A scripted UI: records info/success/error lines and answers #ask from a
-  # queue, so the auto-open path is driven deterministically with no real TTY.
+  # A scripted UI: records info/success/error lines, answers #ask (free-form
+  # reply + the "why deny?" prompt) from +answers+, and the UNIFIED arrow-key
+  # approval menu (TUI-6) from +decisions+ (decision symbols), so the auto-open
+  # path is driven deterministically with no real TTY.
   let(:ui) do
     Class.new do
       attr_reader :lines
 
-      def initialize(answers)
-        @answers = answers
-        @lines   = []
+      def initialize(answers, decisions)
+        @answers   = answers
+        @decisions = decisions
+        @lines     = []
       end
 
       def info(msg = "")    = @lines << msg.to_s
@@ -27,12 +30,16 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       def error(msg = "")   = @lines << msg.to_s
       def separator         = nil
       def ask(_prompt)      = @answers.shift
+      # The shared arrow-key approval component, scripted: pop the next queued
+      # decision symbol (:once/:always_command/:no/:deny_explain) or nil.
+      def subagent_approval_choice = @decisions.shift
       def respond_to_missing?(_name, _priv = false) = true
       def method_missing(_name, *_args) = nil
-    end.new(answers)
+    end.new(answers, decisions)
   end
 
-  let(:answers) { [] }
+  let(:answers)   { [] }
+  let(:decisions) { [] }
   let(:handler) { described_class.new(ui: ui) }
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
@@ -66,7 +73,7 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       _, gate = stage_approval
       decided = nil
       allow(gate).to receive(:decide) { |_id, v| decided = v }
-      answers << "o" # the existing [o]nce/[a]lways/[n]o prompt — "once" approves
+      decisions << :once # the unified arrow-key menu — "Approve once" approves
 
       expect(handler.auto_resolve_pending).to be(true)
       expect(decided).to be(true) # the SAME gate the manual /agents <id> resolves
@@ -78,10 +85,35 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       _, gate = stage_approval
       decided = nil
       allow(gate).to receive(:decide) { |_id, v| decided = v }
-      answers << "n"
+      decisions << :no
 
       expect(handler.auto_resolve_pending).to be(true)
       expect(decided).to be(false)
+    end
+
+    # TUI-5: a NON-decision at the approval prompt (an aborted read / a stray
+    # keystroke the menu can't resolve — formerly the silent-deny trap) RE-
+    # PROMPTS instead of denying, and on a persistent non-answer leaves the
+    # child PARKED (gate never decided) so /agents <id> re-opens it.
+    it "re-prompts on a non-decision and never auto-denies (TUI-5)" do
+      entry, gate = stage_approval
+      allow(gate).to receive(:decide)
+      decisions.push(nil, nil, nil) # three aborted reads in a row
+
+      expect(handler.auto_resolve_pending).to be(true) # surfaced
+      expect(gate).not_to have_received(:decide)       # NOT denied
+      expect(registry.find(entry.id).status).to eq(:needs_approval) # still parked
+      expect(ui.lines.join("\n")).to include("still waiting")
+    end
+
+    it "re-prompts then resolves when a decision finally arrives (TUI-5)" do
+      _, gate = stage_approval
+      decided = nil
+      allow(gate).to receive(:decide) { |_id, v| decided = v }
+      decisions.push(nil, :once) # one abort, then a real choice
+
+      expect(handler.auto_resolve_pending).to be(true)
+      expect(decided).to be(true)
     end
 
     it "auto-opens the EXISTING reply prompt and delivers the answer down the SAME wire" do
@@ -98,7 +130,7 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       _appr, appr_gate = stage_approval
       _ask,  _ask_gate = stage_ask
       allow(appr_gate).to receive(:decide)
-      answers << "o"
+      decisions << :once
 
       handler.auto_resolve_pending
       # Approval body shown, reply body not yet (one request per call).
