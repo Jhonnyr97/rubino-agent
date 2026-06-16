@@ -81,8 +81,8 @@ module Rubino
           No API key configured for provider '#{provider}' (model #{config.model_default}).
           Set it up one of these ways:
             • run `rubino setup` for a guided first-run setup (creates the files below), or
-            • add #{env_var}=<your-key> to #{loader.env_path} (or run `rubino setup` to create it), or
-            • set providers.#{provider}.api_key in #{loader.config_path} (or run `rubino setup` to create it).
+            • add #{env_var}=<your-key> to #{loader.env_path} (or run `rubino setup` to create them), or
+            • set providers.#{provider}.api_key in #{loader.config_path} (or run `rubino setup` to create them).
         MSG
       end
 

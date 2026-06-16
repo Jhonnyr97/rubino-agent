@@ -332,8 +332,10 @@ module Rubino
       # correctly. Raise the ACCURATE diagnosis (matching the F13 home-error
       # phrasing) so the single CLI chokepoint surfaces it instead of "not
       # set up". Everything else still degrades to false.
-      raise ConfigurationError, "rubino home / database is not writable: #{home_path} (#{e.message})" \
-        if not_writable_error?(e)
+      if not_writable_error?(e)
+        raise ConfigurationError,
+              "rubino home / database is not writable: #{home_path} (#{clean_errno_message(e.message)})"
+      end
 
       false
     end
@@ -359,6 +361,16 @@ module Rubino
       error.message.to_s.downcase.include?("readonly") ||
         error.message.to_s.downcase.include?("read-only") ||
         error.message.to_s.downcase.include?("read only")
+    end
+
+    # A clean, user-facing form of an Errno message. Ruby appends an internal
+    # ` @ <syscall> - <path>` artifact to SystemCallError messages
+    # (e.g. "Operation not permitted @ apply2files - /home/x",
+    # "Permission denied @ dir_s_mkdir - /home/x") — the C function name and a
+    # path we already name elsewhere in the sentence. Strip that tail so the
+    # surfaced message is just the plain reason ("Operation not permitted").
+    def clean_errno_message(message)
+      message.to_s.sub(/ @ \S+ - .*\z/, "")
     end
 
     # Path to the inter-process migration lockfile in the rubino home. A single
@@ -471,7 +483,7 @@ module Rubino
           FileUtils.mkdir_p(dir) unless File.directory?(dir)
         end
       rescue SystemCallError => e
-        raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} (#{e.message})"
+        raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} (#{clean_errno_message(e.message)})"
       end
     end
   end

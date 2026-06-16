@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "json"
+require "tmpdir"
+require "fileutils"
 
 # F1 (the #445-regression NameError) and the early-error-path family.
 #
@@ -50,20 +52,21 @@ RSpec.describe Rubino::CLI::Commands do
   end
 
   describe "unknown subcommand (`rubino bogus`)" do
-    it "prints Thor's clean message, exits 1, and leaks NO backtrace (text)" do
+    it "prints rubino's clean voice, exits 1, and leaks NO backtrace (text)" do
       r = run_cli(["bogus"])
       expect(r[:status]).to eq(1)
-      expect(r[:stderr]).to include('Could not find command "bogus"')
+      expect(r[:stderr]).to include("unknown command 'bogus'.")
+      expect(r[:stderr]).to include("Run `rubino --help`.")
+      expect(r[:stderr]).not_to include("ERROR:")
       expect(r[:stderr]).not_to include("uninitialized constant")
       expect(backtrace?(r[:stderr])).to be(false)
       expect(backtrace?(r[:stdout])).to be(false)
     end
 
-    it "PRESERVES Thor's \"Did you mean?\" suggestion for a typo (`chta`)" do
+    it "gives a closest-match \"Did you mean?\" suggestion for a typo (`chta`) (F2)" do
       r = run_cli(["chta"])
       expect(r[:status]).to eq(1)
-      expect(r[:stderr]).to include('Could not find command "chta"')
-      expect(r[:stderr]).to match(/Did you mean\?\s+"chat"/)
+      expect(r[:stderr]).to include("unknown command 'chta'. Did you mean `chat`?")
       expect(backtrace?(r[:stderr])).to be(false)
     end
 
@@ -73,7 +76,7 @@ RSpec.describe Rubino::CLI::Commands do
       env = JSON.parse(r[:stdout])
       expect(env["type"]).to eq("result")
       expect(env["is_error"]).to be(true)
-      expect(env.dig("error", "message")).to include('Could not find command "bogus"')
+      expect(env.dig("error", "message")).to include("unknown command 'bogus'.")
       expect(backtrace?(r[:stdout])).to be(false)
     end
 
@@ -176,6 +179,43 @@ RSpec.describe Rubino::CLI::Commands do
       expect(r[:stderr]).to include("RUBINO_HOME is not a writable directory")
       expect(backtrace?(r[:stderr])).to be(false)
       expect(r[:stderr]).not_to match(/Errno::E(PERM|ACCES)/)
+    end
+
+    # Copy-nit: Ruby appends an internal ` @ <syscall> - <path>` artifact to a
+    # real SystemCallError message (`Operation not permitted @ apply2files -
+    # /home`). Drive the actual mkdir/chmod failure (read-only parent) and assert
+    # the surfaced one-liner carries NO `@ <syscall>` C-function tail.
+    it "strips Ruby's internal ` @ <syscall> - <path>` errno artifact" do
+      ro = File.join(Dir.mktmpdir, "ro")
+      FileUtils.mkdir_p(ro)
+      File.chmod(0o555, ro)
+      child = File.join(ro, "sub")
+
+      prev = ENV.fetch("RUBINO_HOME", nil)
+      ENV["RUBINO_HOME"] = child
+      Rubino.reset!
+      begin
+        r = run_cli(["setup"])
+        expect(r[:stderr]).to include("RUBINO_HOME is not a writable directory")
+        expect(r[:stderr]).not_to match(/ @ \S+ - /)
+      ensure
+        ENV["RUBINO_HOME"] = prev
+        Rubino.reset!
+        File.chmod(0o755, ro)
+      end
+    end
+  end
+
+  describe "Rubino.clean_errno_message" do
+    it "drops the ` @ <syscall> - <path>` tail and keeps the plain reason" do
+      expect(Rubino.clean_errno_message("Operation not permitted @ apply2files - /home/x"))
+        .to eq("Operation not permitted")
+      expect(Rubino.clean_errno_message("Permission denied @ dir_s_mkdir - /a/b"))
+        .to eq("Permission denied")
+    end
+
+    it "leaves a message without the artifact untouched" do
+      expect(Rubino.clean_errno_message("plain message")).to eq("plain message")
     end
   end
 
