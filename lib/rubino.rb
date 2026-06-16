@@ -292,7 +292,18 @@ module Rubino
       # we MUST NOT call `migrator.pending?` off the lock: merely constructing
       # Sequel's IntegerMigrator inserts the version-0 row, and two concurrent
       # boots both inserting it is exactly the duplicate-row corruption (#race).
-      return true if connection.healthy? && migrator.up_to_date?
+      if connection.healthy? && migrator.up_to_date?
+        # A fully-migrated home can still be MOUNTED read-only (F14): the schema
+        # reads fine, but the very next write (the session row) would crash with
+        # a raw `SQLite3::ReadOnlyException` past this guard. Catch it HERE — a
+        # cheap dir-writability probe, no DB write — and raise the accurate
+        # "not writable" diagnosis instead, matching the migrate-path branch
+        # below. A real (writable) home passes through untouched.
+        raise ConfigurationError, "rubino home / database is not writable: #{home_path}" \
+          unless home_writable?
+
+        return true
+      end
 
       ensure_directories!
       # Serialize the migration across concurrent boots (#race): N fresh
@@ -312,7 +323,42 @@ module Rubino
       raise
     rescue StandardError => e
       logger.debug(event: "ensure_database_ready_failed", error: "#{e.class}: #{e.message}")
+      # A read-only / not-writable home (F14) is NOT an un-set-up install: the
+      # files may be perfectly present, the directory is just mounted read-only
+      # or owned by another user, so migrate! can't open the lock/journal
+      # (Errno::EACCES/EROFS) or SQLite reports "attempt to write a readonly
+      # database". Masking that as `false` produced the misleading
+      # "isn't set up yet — run `rubino setup`" — doctor already diagnoses it
+      # correctly. Raise the ACCURATE diagnosis (matching the F13 home-error
+      # phrasing) so the single CLI chokepoint surfaces it instead of "not
+      # set up". Everything else still degrades to false.
+      raise ConfigurationError, "rubino home / database is not writable: #{home_path} (#{e.message})" \
+        if not_writable_error?(e)
+
       false
+    end
+
+    # Cheap, side-effect-free check that the home directory accepts writes — the
+    # F14 read-only-mount guard. Falls back to assuming writable on any probe
+    # hiccup (the migrate path will still catch a real failure with the same
+    # accurate message), so this never wrongly blocks a usable home.
+    def home_writable?
+      File.writable?(home_path)
+    rescue StandardError
+      true
+    end
+
+    # True when +error+ is a write-permission / read-only-filesystem failure
+    # (vs. a genuinely un-set-up or transiently-busy home): a directory mounted
+    # read-only, owned by another user, or a SQLite "readonly database" report.
+    # Used by ensure_database_ready! to give an ACCURATE message instead of the
+    # misleading "not set up" (F14).
+    def not_writable_error?(error)
+      return true if error.is_a?(Errno::EACCES) || error.is_a?(Errno::EROFS) || error.is_a?(Errno::EPERM)
+
+      error.message.to_s.downcase.include?("readonly") ||
+        error.message.to_s.downcase.include?("read-only") ||
+        error.message.to_s.downcase.include?("read only")
     end
 
     # Path to the inter-process migration lockfile in the rubino home. A single

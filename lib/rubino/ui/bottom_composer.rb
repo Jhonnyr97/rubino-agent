@@ -331,6 +331,7 @@ module Rubino
         @running = true
         self.class.current = self
         install_winch_trap
+        install_cont_trap
         @render.synchronize do
           # Leave a blank row above the first prompt so the first above-output
           # doesn't glue onto whatever the REPL just printed.
@@ -352,6 +353,7 @@ module Rubino
         self.class.current = nil if self.class.current.equal?(self)
         stop_reader
         restore_winch_trap
+        restore_cont_trap
         # Raw mode must never leak past the turn, even if the block-form restore
         # was interrupted. Best-effort.
         @input.cooked! if tty?
@@ -375,6 +377,7 @@ module Rubino
         $stdout = @output
         stop_reader
         restore_winch_trap
+        restore_cont_trap
         @input.cooked! if tty?
         @render.synchronize { clear_live_region_to_clean_line }
       rescue IOError, Errno::ENOTTY, Errno::EIO
@@ -390,6 +393,7 @@ module Rubino
         $stdout = @saved_stdout if @saved_stdout
         @saved_stdout = nil
         install_winch_trap
+        install_cont_trap
         @render.synchronize do
           @output.print(PASTE_ON)
           draw_input
@@ -1801,6 +1805,37 @@ module Rubino
         return unless Signal.list.key?("WINCH")
 
         Signal.trap("WINCH", @prev_winch || "DEFAULT")
+      rescue ArgumentError
+        nil
+      end
+
+      # SIGCONT redraw insurance. When the process is suspended with ^Z (SIGTSTP)
+      # and resumed via `fg`, the kernel resumes the blocked raw read but the
+      # terminal still shows the STALE pre-suspend screen until the next
+      # keystroke — and the input may have dropped out of raw mode. Trap CONT to
+      # force a full re-entry: #resize recomputes the width, resets the on-screen
+      # geometry, and repaints the whole live region (cards + partial + prompt),
+      # exactly the SIGWINCH redraw path — so resume re-enters cleanly. Inert on
+      # the current MRI build (SIGTSTP is ignored, so CONT never fires) but
+      # harmless and correct where ^Z actually suspends. Trap-safe (resize only
+      # takes the render mutex, never re-entrant here) and a no-op when no
+      # composer owns the screen (not running, or suspended for a sub-prompt).
+      def install_cont_trap
+        return unless Signal.list.key?("CONT")
+
+        @prev_cont = Signal.trap("CONT") do
+          resize if @running && !@suspended
+        rescue StandardError
+          nil
+        end
+      rescue ArgumentError
+        @prev_cont = nil
+      end
+
+      def restore_cont_trap
+        return unless Signal.list.key?("CONT")
+
+        Signal.trap("CONT", @prev_cont || "DEFAULT")
       rescue ArgumentError
         nil
       end

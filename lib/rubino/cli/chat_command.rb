@@ -2338,10 +2338,30 @@ module Rubino
 
         Array(opt(:add_dir)).each do |dir|
           real = Rubino::Workspace.add(dir)
-          ui.status("added workspace #{collapse_home(real)}") if ui.respond_to?(:status)
+          # In one-shot/headless mode the stdout answer must stay pipe-clean
+          # (#418): a `--add-dir` status/error notice belongs on STDERR there, so
+          # `x=$(rubino prompt …)` doesn't capture "added workspace …" or
+          # "--add-dir <missing>: …" alongside the answer. Interactive keeps the
+          # styled ui notice. F6.
+          dir_notice(ui, "added workspace #{collapse_home(real)}", interactive: interactive)
           gate.ensure_trust(real)
         rescue ArgumentError => e
-          ui.error("--add-dir #{dir}: #{e.message}") if ui.respond_to?(:error)
+          dir_notice(ui, "--add-dir #{dir}: #{e.message}", interactive: interactive, error: true)
+        end
+      end
+
+      # Emits a --add-dir status/error notice on the right stream: the styled ui
+      # method when interactive, plain STDERR when headless (#418/F6) so the
+      # piped stdout answer stays clean.
+      def dir_notice(ui, message, interactive:, error: false)
+        if interactive
+          if error
+            ui.error(message) if ui.respond_to?(:error)
+          elsif ui.respond_to?(:status)
+            ui.status(message)
+          end
+        else
+          warn(error ? "rubino: #{message}" : message)
         end
       end
 

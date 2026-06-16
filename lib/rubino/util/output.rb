@@ -105,6 +105,40 @@ module Rubino
         s.gsub(/[#{C1_RANGE}]/o) { |c| "<#{format("%02X", c.ord)}>" }
       end
 
+      # SGR colour/style escapes (`\e[…m`) — the ONE escape class that is SAFE
+      # to keep through the sanitizer: it changes only colour/weight and cannot
+      # move the cursor, clear the screen, set the title, or write the
+      # clipboard. Matched so #sanitize_terminal_keep_sgr can preserve rubino's
+      # OWN styling (e.g. the colored /agents status glyph) while still
+      # neutralizing every dangerous control byte.
+      SGR_RE = /\e\[[0-9;]*m/
+
+      # Like #sanitize_terminal, but PRESERVES SGR colour escapes.
+      #
+      # Some sinks interpolate TRUSTED rubino styling (a pastel-colored cell,
+      # e.g. the /agents table's "● approval" status) THROUGH the same cell
+      # sanitizer that guards untrusted text. Plain #sanitize_terminal rendered
+      # those SGR bytes as visible caret notation (`^[[33m●^[[0m approval`) —
+      # the FRICTION-3 leak. Keep the (inert) SGR sequences, neutralize
+      # everything else exactly as #sanitize_terminal does, so colour survives
+      # but `\e[2J` / `\e]0;…` / cursor moves still can't reach the terminal.
+      # Callers that measure width must strip SGR first (see SGR_RE / the
+      # display-width helpers) since SGR occupies zero columns. Pure.
+      def self.sanitize_terminal_keep_sgr(text)
+        s = scrub_encoding(text)
+        # Carve out the SGR runs, sanitize the gaps, splice the SGR back in.
+        parts = []
+        last  = 0
+        s.to_enum(:scan, SGR_RE).each do
+          m = Regexp.last_match
+          parts << sanitize_terminal(s[last...m.begin(0)])
+          parts << m[0]
+          last = m.end(0)
+        end
+        parts << sanitize_terminal(s[last..]) if last < s.length
+        parts.join
+      end
+
       # Visible, unambiguous stand-in for a stripped control byte: ESC → "^[",
       # NUL → "^@", DEL → "^?" — the classic `cat -v` caret notation, so the
       # user can tell exactly what the tool tried to emit.

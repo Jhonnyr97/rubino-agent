@@ -23,6 +23,7 @@ module Rubino
         "/agents" => "List background subagents; steer/probe a running one, or view output",
         "/tasks" => "Alias for /agents",
         "/reply" => "Answer a subagent that is blocked waiting on you (ask_parent)",
+        "/stop" => "Stop a running subagent (/stop <id>; alias for /agents <id> --stop)",
         "/jobs" => "List the background job queue (status counts); /jobs <id> for detail",
         "/skills" => "List skills; activate one ('none' clears), or enable/disable NAME",
         "/mcp" => "List MCP servers and their tools; restart or disable one",

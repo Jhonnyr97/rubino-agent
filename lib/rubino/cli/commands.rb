@@ -49,6 +49,19 @@ module Rubino
           return super(["help", cmd], config)
         end
 
+        # Reject an unknown LEADING flag before it is swallowed into the prompt
+        # (F7). `chat` is the default command, so `rubino --frobnicate …` (or
+        # `rubino prompt --frobnicate`) routes to chat/prompt and a TYPO'D flag
+        # silently became part of the message text (or an empty-prompt run)
+        # instead of erroring. Validate the leading `--flags` of a chat/prompt
+        # invocation against that command's declared options here and surface a
+        # clean "unknown flag" instead. A legitimate prompt that merely CONTAINS
+        # `--` text (`rubino "run git log --oneline"`) is untouched: only a flag
+        # in the LEADING run (before the first positional word) is checked.
+        if (bad = unknown_leading_flag(given_args))
+          report_early_error(given_args, "unknown flag '#{bad}'. Run `rubino #{chat_like_command(given_args)} --help` for valid flags")
+        end
+
         # Force Thor's own `start` to RE-RAISE a Thor::Error (unknown command,
         # bad/malformed flag, ambiguous command, a subcommand's `raise
         # Thor::Error`) instead of swallowing it into a bare stderr line + exit
@@ -81,6 +94,82 @@ module Rubino
         # backtrace for the home error); otherwise the clean one-line stderr Thor
         # itself would have printed. Never a raw backtrace; exit non-zero.
         report_early_error(given_args, e.message)
+      end
+
+      # The chat-like command an arg list dispatches to (`chat` or `prompt`), or
+      # nil when it isn't one. A bare invocation (`rubino "hi"`, `rubino
+      # --frobnicate`) falls to the default command (chat); an explicit
+      # `rubino prompt …` / `rubino chat …` is named outright. Subcommands and
+      # other top-level commands return nil — Thor already rejects unknown flags
+      # for those, and only chat/prompt have a positional that swallows a typo.
+      def self.chat_like_command(given_args)
+        first = Array(given_args).first.to_s
+        return first if %w[chat prompt].include?(first)
+        # A leading flag / quoted prompt (not a known command) → default command.
+        return "chat" if first.start_with?("-") || !commands.key?(first.tr("-", "_"))
+
+        nil
+      end
+
+      # The first LEADING `--flag` of a chat/prompt invocation that isn't a
+      # declared option, or nil (F7). "Leading" = appears before the first
+      # POSITIONAL word, so a `--`-containing prompt is never misread: once a
+      # non-flag token is seen, the rest is the prompt and is not inspected.
+      # Value-taking flags consume their following token so `--model foo` doesn't
+      # treat `foo` as a positional. Only inspects chat/prompt; other commands
+      # return nil (Thor handles their flags).
+      def self.unknown_leading_flag(given_args)
+        command = chat_like_command(given_args)
+        return nil unless command
+
+        args = Array(given_args).map(&:to_s)
+        # Drop the explicit command word when present; for the default-command
+        # path the whole list is the chat args.
+        args = args.drop(1) if %w[chat prompt].include?(args.first)
+        known = known_flag_tokens(command)
+
+        i = 0
+        while i < args.size
+          tok = args[i]
+          break unless tok.start_with?("-") && tok != "-" # first positional ⇒ stop
+
+          flag = tok.split("=", 2).first
+          return flag unless known.include?(flag)
+
+          # A known value-flag with a space-separated value consumes the next
+          # token so it isn't mistaken for the first positional.
+          i += value_flag?(command, flag) && !tok.include?("=") ? 2 : 1
+        end
+        nil
+      end
+
+      # The set of accepted flag spellings for a command — every declared
+      # `--long`, `--no-long` (booleans), and short `-x` alias — so a typo is
+      # caught but a real flag in any spelling is accepted.
+      def self.known_flag_tokens(command)
+        opts = commands[command]&.options || {}
+        # --help/-h and the global --version/-v are always valid spellings; the
+        # latter is handled at the top of #start when LEADING, but a non-leading
+        # `chat --version` must still fall through to Thor (not be rejected as
+        # "unknown"), preserving the pre-F7 dispatch behaviour.
+        tokens = HELP_FLAGS + %w[--version -v]
+        opts.each_value do |o|
+          tokens << "--#{o.name.tr("_", "-")}"
+          tokens << "--no-#{o.name.tr("_", "-")}" if o.type == :boolean
+          Array(o.aliases).each { |a| tokens << a }
+        end
+        tokens.uniq
+      end
+
+      # True when a flag carries a value (so its next token is the value, not a
+      # positional). Booleans don't; everything else does.
+      def self.value_flag?(command, flag)
+        opts = commands[command]&.options || {}
+        opt = opts.values.find do |o|
+          long = "--#{o.name.tr("_", "-")}"
+          long == flag || Array(o.aliases).include?(flag)
+        end
+        opt && opt.type != :boolean
       end
 
       # Surfaces a pre-run error (a Thor dispatch/argument error caught in #start,

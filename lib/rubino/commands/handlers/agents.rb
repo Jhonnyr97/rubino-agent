@@ -56,6 +56,20 @@ module Rubino
           end
         end
 
+        # `/stop <id>` is the discoverable alias for the unguessable `/agents
+        # <id> --stop` cancel syntax (FRICTION-4). A bare `/stop` teaches the
+        # syntax and lists running subagents rather than erroring.
+        def handle_stop_alias(arguments)
+          id = arguments.to_s.strip.split(/\s+/).first
+          if id.nil? || id.empty?
+            @ui.info("Stop a running subagent: /stop <id> (same as /agents <id> --stop).")
+            handle_agents("")
+          else
+            handle_agents("#{id} --stop")
+          end
+          :handled
+        end
+
         # child->parent ASK_PARENT answer: /reply <id> <answer>. Resolves the
         # child's ask gate (Run::ApprovalGate#decide) so a BLOCKING ask unwinds with
         # the answer as its tool result, and ALSO pushes the answer onto the child's

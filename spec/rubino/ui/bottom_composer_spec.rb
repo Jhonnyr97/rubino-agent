@@ -1591,6 +1591,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       Rubino::UI::PasteStore.new(
         config: instance_double(Rubino::Config::Configuration,
                                 paste_collapse_lines: 5,
+                                paste_collapse_chars: 10_000, # high: this exercises the LINE boundary
                                 paste_file_threshold_tokens: 8000),
         session_source: "composer-spec"
       )
