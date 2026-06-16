@@ -44,6 +44,11 @@ module Rubino
 
       # Built-in fallbacks when config is missing/garbage.
       DEFAULT_COLLAPSE_LINES   = 5
+      # A paste longer than this many CHARS collapses to the chip even on a
+      # single line. ~80 cols × 5 rows ≈ the line-count trigger's footprint, so
+      # a big one-line paste (a long URL/token/minified JSON) collapses just like
+      # a multi-line one instead of flooding the composer.
+      DEFAULT_COLLAPSE_CHARS   = 400
       DEFAULT_THRESHOLD_TOKENS = 8000
 
       # @param config [Config::Configuration, nil] resolved lazily from
@@ -65,9 +70,14 @@ module Rubino
       attr_writer :session_source
 
       # True when +body+ should collapse to a placeholder instead of inlining:
-      # strictly more lines than paste.collapse_lines.
+      # strictly more LINES than paste.collapse_lines, OR more CHARACTERS than
+      # paste.collapse_chars. The char trigger makes the chip fire CONSISTENTLY —
+      # a big one-line paste (a long URL, token, or minified JSON) has few/no
+      # newlines, so the line-count rule alone never collapsed it and it flooded
+      # the composer (#437 chip should trigger for any large paste).
       def collapse?(body)
-        body.to_s.lines.length > collapse_lines
+        s = body.to_s
+        s.lines.length > collapse_lines || s.length > collapse_chars
       end
 
       # Registers a pasted +body+ and returns the placeholder token to insert
@@ -130,6 +140,10 @@ module Rubino
 
       def collapse_lines
         positive(config&.paste_collapse_lines) || DEFAULT_COLLAPSE_LINES
+      end
+
+      def collapse_chars
+        positive(config&.paste_collapse_chars) || DEFAULT_COLLAPSE_CHARS
       end
 
       def threshold_tokens

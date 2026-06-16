@@ -130,6 +130,20 @@ module Rubino
         # to rewrite, and don't churn the file or its line on every re-run.
         return if Rubino.configuration.model_provider == choice[:provider]
 
+        # Non-destructive re-run (F9): a re-run of `setup` over an EXISTING
+        # config must never silently clobber a model the user deliberately
+        # picked. Auto-detect only fills the SEEDED default — if model.default
+        # or model.provider has already been customized away from the seed, the
+        # headless path can't prompt "change X → Y?", so it PRESERVES the pick
+        # and just tells the user how to switch. (Industry: idempotent setup
+        # fills missing fields, never overwrites a set one.)
+        if model_customized?
+          ui.status("Detected #{choice[:env_var]}, but keeping your configured model " \
+                    "#{Rubino.configuration.model_default} (#{Rubino.configuration.model_provider}). " \
+                    "Run `rubino config set model.provider #{choice[:provider]}` to switch.")
+          return
+        end
+
         persist_autodetected!(choice)
         Rubino.reload_configuration!
         ui.success("Detected #{choice[:env_var]} — defaulting to #{choice[:provider]}/#{choice[:model]}.")
@@ -137,6 +151,18 @@ module Rubino
         # Auto-detect is a convenience; a write hiccup must never fail setup.
         Rubino.logger.warn(event: "setup.autodetect_failed", error: e.class.name, message: e.message)
         nil
+      end
+
+      # True when the user has moved model.default / model.provider OFF the
+      # seeded defaults (openai/gpt-4.1, provider "auto") — i.e. there is a
+      # deliberate pick the headless auto-detect must not silently overwrite.
+      def model_customized?
+        cfg = Rubino.configuration
+        seed = Config::Defaults::MODULE_DEFAULTS["model"] || {}
+        cfg.model_default != seed["default"] || cfg.model_provider != seed["provider"]
+      rescue StandardError
+        # If we can't tell, err on the side of PRESERVING the user's config.
+        true
       end
 
       # The one provider catalog entry whose env key is present in ENV, or nil

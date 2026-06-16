@@ -27,4 +27,51 @@ RSpec.describe Rubino::CLI::Commands do
       expect(status).to eq(1)
     end
   end
+
+  # F7: `chat` is the default command, so an unknown LEADING flag used to be
+  # swallowed into the prompt text (or run with an empty prompt) instead of
+  # erroring. A typo'd flag must surface a clean "unknown flag" + non-zero exit,
+  # WITHOUT breaking a legitimate prompt that merely contains `--` text.
+  describe "unknown leading flag rejection (F7)" do
+    def run_and_capture(args)
+      status = nil
+      old = $stderr
+      $stderr = StringIO.new
+      begin
+        described_class.start(args)
+      rescue SystemExit => e
+        status = e.status
+      end
+      out = $stderr.string
+      [status, out]
+    ensure
+      $stderr = old
+    end
+
+    it "rejects `prompt --frobnicate` with a clear unknown-flag error + exit 1" do
+      status, err = run_and_capture(%w[prompt --frobnicate])
+      expect(err).to include("unknown flag '--frobnicate'")
+      expect(status).to eq(1)
+    end
+
+    it "rejects a leading unknown flag on the DEFAULT command" do
+      status, err = run_and_capture(%w[--frobnicate hello])
+      expect(err).to include("unknown flag '--frobnicate'")
+      expect(status).to eq(1)
+    end
+
+    it "ACCEPTS a known flag (does not reject `--yolo` / `-m`)" do
+      expect(described_class.unknown_leading_flag(%w[prompt --yolo hi])).to be_nil
+      expect(described_class.unknown_leading_flag(%w[prompt -m gpt-4.1 hi])).to be_nil
+    end
+
+    it "does NOT flag a legitimate prompt that merely CONTAINS -- text" do
+      expect(described_class.unknown_leading_flag(["prompt", "run git log --oneline"])).to be_nil
+      expect(described_class.unknown_leading_flag(["just a normal prompt"])).to be_nil
+    end
+
+    it "consumes a known value-flag's argument so it isn't read as a positional" do
+      expect(described_class.unknown_leading_flag(%w[prompt --model gpt-4.1 hello])).to be_nil
+    end
+  end
 end

@@ -95,6 +95,15 @@ module Rubino
         value.positive? ? value : UI::PasteStore::DEFAULT_COLLAPSE_LINES
       end
 
+      # A paste with MORE than this many CHARACTERS also collapses to a
+      # placeholder, even on a single line — a big one-line paste (a long token,
+      # URL, minified JSON) would otherwise flood the composer because the
+      # line-count trigger never fired. Falls back for nil/zero/garbage.
+      def paste_collapse_chars
+        value = dig("paste", "collapse_chars").to_i
+        value.positive? ? value : UI::PasteStore::DEFAULT_COLLAPSE_CHARS
+      end
+
       # A paste estimated above this many tokens (chars/4, the same rule
       # compaction uses) overflows to <home>/sessions/<id>/paste_N.txt and the
       # message carries a read-tool pointer instead of the content.
