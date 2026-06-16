@@ -1054,7 +1054,7 @@ module Rubino
 
         if @echo == :prompt
           @input_queue&.push(line)
-          print_above("#{@prompt}#{line}")
+          print_above("#{@prompt}#{echo_safe(line)}")
         elsif (@turn_active || @content_streaming) && @on_interrupt
           # Interrupt-by-default: send the line as the NEXT turn immediately and
           # interrupt the current one. Push to the FRONT so it runs ahead of any
@@ -1071,7 +1071,7 @@ module Rubino
           # No active turn (or no interrupt hook wired): a plain queued submit,
           # echoed immediately as before.
           @input_queue&.push(line)
-          print_above("queued ▸ #{line}")
+          print_above("queued ▸ #{echo_safe(line)}")
         end
       end
 
@@ -1383,6 +1383,21 @@ module Rubino
         @completion.highlight_line(line.to_s)
       end
 
+      # Neutralize terminal control/escape sequences in USER-SUPPLIED text before
+      # it is echoed/committed to the terminal (CWE-150 — H1). A typed or pasted
+      # line containing OSC (`\e]0;…\a` set title, `\e]52;…` clipboard) or CSI
+      # (`\e[2J` clear screen, cursor moves) would otherwise EXECUTE against the
+      # emulator when this composer prints the "<prompt><line>" / "queued ▸
+      # <line>" echo on submit — the same injection the approval card already
+      # neutralizes for tool hints. Reuse the SAME render-boundary sanitizer
+      # (Util::Output.sanitize_terminal): control bytes render as visible caret
+      # notation, inert. RENDER-ONLY — the raw line is what we push to
+      # @input_queue (the model still receives the literal text); only the
+      # terminal echo is neutralized.
+      def echo_safe(text)
+        Util::Output.sanitize_terminal(text.to_s)
+      end
+
       # --- /command + @file completion menu ------------------------------------
       # The dropdown itself — open/refine/accept/dismiss state, candidate
       # resolution and row rendering — lives in the {CompletionMenu}; here is
@@ -1495,7 +1510,20 @@ module Rubino
       def submit_paste(text)
         return if text.nil? || text.empty?
 
-        body = normalize_paste_newlines(text)
+        # Neutralize terminal control/escape bytes in the PASTED body before it
+        # enters the editable buffer (CWE-150 — H1). A bracketed paste delivers
+        # bytes verbatim, so a payload with OSC (`\e]0;…\a` set title) or CSI
+        # (`\e[2J` clear screen) escapes would EXECUTE the moment the input block
+        # redraws the buffer (#draw_input prints each row's chars raw). Routing
+        # the paste through the SAME render-boundary sanitizer the approval card
+        # and the submit echo use turns those bytes into visible, inert caret
+        # notation; \t and \n are preserved so legitimate multi-line/indented
+        # pastes keep their layout. The buffer now matches what is rendered AND
+        # what is submitted, so the caret math (keyed on buffer char indices)
+        # stays exact — raw control bytes are never legitimate visible prompt
+        # content, which is exactly what terminals/CLIs strip from untrusted
+        # bracketed paste.
+        body = Util::Output.sanitize_terminal(normalize_paste_newlines(text))
         return if body.empty?
 
         if @paste_store&.collapse?(body)
