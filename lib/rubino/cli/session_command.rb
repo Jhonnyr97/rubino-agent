@@ -15,11 +15,26 @@ module Rubino
 
       # Bare `rubino sessions` LISTS rather than printing the subcommand help
       # (item 3): listing is the overwhelmingly common intent, and the help was
-      # a dead end that hid the very thing the user came for. The subcommands
-      # (show/delete/compact) and `sessions help` are still available; Thor maps
-      # a leading `--help`/`-h` to its own help task before this default fires.
-      def self.default_command
-        :list
+      # a dead end that hid the very thing the user came for. We rewrite ONLY the
+      # empty-args invocation to `list` and otherwise defer to normal Thor
+      # dispatch — so `sessions show|delete|compact`, `sessions help`, and the
+      # unknown-subcommand error (#67: `sessions frobnicate` must still exit
+      # non-zero) all behave exactly as before. A leading `--help`/`-h`/`--all`
+      # is NOT empty, so it routes normally too.
+      def self.start(given_args = ARGV, config = {})
+        given_args = ["list", *given_args] if no_subcommand?(given_args)
+        super
+      end
+
+      # True when the args carry no leading SUBCOMMAND token — either empty, or
+      # starting with an option flag (`--all`, `-h`). Such an invocation is the
+      # bare-`sessions` intent, so we route it to `list` (item 3). A first
+      # positional token (`show`, `compact`, or even a typo like `frobnicate`)
+      # is left for normal Thor dispatch so the unknown-subcommand error (#67)
+      # and the real subcommands are untouched.
+      def self.no_subcommand?(args)
+        first = args.find { |a| !a.to_s.empty? }
+        first.nil? || first.to_s.start_with?("-")
       end
 
       # Drop Thor's inherited `tree` so its banner doesn't render the doubled
