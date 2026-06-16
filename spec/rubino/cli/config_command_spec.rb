@@ -112,7 +112,8 @@ RSpec.describe Rubino::CLI::ConfigCommand do
     it "removes a set key and reports success" do
       described_class.new.set("model.provider", "anthropic")
       described_class.new.unset("model.provider")
-      msg = ui.messages.find { |m| m[:level] == :success }
+      # The `set` above also logs a success line; assert on the LAST success.
+      msg = ui.messages.select { |m| m[:level] == :success }.last
       expect(msg[:message]).to include("unset model.provider")
       expect(Rubino::Config::Writer.new(config_path: config_path).get("model.provider")).to be_nil
     end
