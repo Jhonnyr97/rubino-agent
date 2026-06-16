@@ -210,10 +210,25 @@ module Rubino
         # block, before the tool fires) and emits the block boundary.
         message_block_id = 0
 
+        # The text of the CURRENT content block only (#core-F1). `buffered` keeps
+        # every block of the turn concatenated for the transcript/render; this
+        # resets at each new block so that, when the stream finishes, it holds just
+        # the LAST block — the post-final-tool answer with no pre-tool narration
+        # glued on. The headless one-shot `result` surfaces this, not `buffered`.
+        last_block      = +""
+        last_block_seen = message_block_id
+
         emit = lambda do |type, text|
           next if text.nil? || text.empty?
 
-          buffered << text if type == :content
+          if type == :content
+            buffered << text
+            # New content block since the last content delta ⇒ start fresh, so
+            # only the final block survives to the end of the stream.
+            last_block.clear if message_block_id != last_block_seen
+            last_block_seen = message_block_id
+            last_block << text
+          end
 
           begin
             block.call({ type: type, text: text, message_id: message_block_id })
@@ -333,7 +348,7 @@ module Rubino
         # Guard flush in the same way as the per-chunk emit so a final UI error
         # doesn't lose the response. (issue #21)
         flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        build_response(response, buffered, usage: usage)
+        build_response(response, buffered, usage: usage, final_text_block: last_block)
       end
 
       # Wires the per-round-trip ruby_llm callbacks (#355 #351) and returns a
@@ -955,7 +970,7 @@ module Rubino
       # the final response's own usage when no accumulator was wired (the
       # accumulator is only zero when ruby_llm surfaced no per-message usage, in
       # which case the final-message usage is the best we have).
-      def build_response(response, buffered = nil, usage: nil)
+      def build_response(response, buffered = nil, usage: nil, final_text_block: nil)
         return nil unless response
 
         # Budget Halt (#355a): when ToolBridge returned RubyLLM::Tool::Halt to
@@ -990,8 +1005,28 @@ module Rubino
           thinking: extract_thinking(response),
           cache_read_tokens: cache_token(response, :cache_read_tokens),
           cache_creation_tokens: cache_token(response, :cache_creation_tokens),
+          # The isolated final text block (#core-F1). Only meaningful when it
+          # differs from the full buffer (a multi-block turn that ended after a
+          # tool call); nil ⇒ AdapterResponse#final_text_block falls back to
+          # content, so single-block and non-streaming turns are unchanged.
+          final_text_block: final_block_for(final_text_block, buffered),
           raw: response
         )
+      end
+
+      # Returns the final-block text to carry on the response, or nil when it adds
+      # nothing over the full buffer (single block, or no boundary tracked) so the
+      # response falls back to +content+. Guards against a falsely-narrow answer:
+      # only narrows when the captured last block is a non-empty STRICT suffix of
+      # the buffer (i.e. earlier blocks really were dropped).
+      def final_block_for(last_block, buffered)
+        return nil if last_block.nil? || buffered.nil?
+
+        lb = last_block.to_s
+        return nil if lb.empty? || lb == buffered
+        return nil unless buffered.end_with?(lb)
+
+        lb
       end
 
       # Resolves the [input, output] token pair build_response reports. Prefers
