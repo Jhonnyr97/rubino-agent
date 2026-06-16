@@ -4,6 +4,15 @@ module Rubino
   module Agent
     # Manages turn and iteration budgets to prevent runaway loops.
     class IterationBudget
+      # Upper bound on a turn/iteration cap (F2). A 0/negative cap is rejected as
+      # "would never run"; a value this large is just as nonsensical the other way
+      # — `--max-turns 99999999999999` was silently accepted, defeating the whole
+      # point of a runaway guard. Reject anything above this sane ceiling with the
+      # same clear message rather than letting an effectively-unbounded cap
+      # through. 10_000 is far past any legitimate agentic turn yet small enough
+      # to keep the comparison meaningful.
+      MAX_CAP = 10_000
+
       def initialize(config: nil, max_tool_iterations: nil)
         @config = config || Rubino.configuration
         # A 0/negative cap is nonsense (the turn could never run a single
@@ -85,12 +94,27 @@ module Rubino
       def require_positive_cap!(value, label)
         n = numeric_cap(value)
         return positive_int(value) if n.nil? # nil/non-numeric ⇒ unset
-        return n if n.positive?
 
-        raise Rubino::ConfigurationError,
-              "invalid #{label}: #{value.inspect} — must be a positive integer " \
-              "(a 0 or negative cap would never let the turn run). " \
-              "Set it to 1 or more, or leave it unset for the default."
+        # A 0/negative cap (the turn could never run a single iteration).
+        unless n.positive?
+          raise Rubino::ConfigurationError,
+                "invalid #{label}: #{value.inspect} — must be a positive integer " \
+                "(a 0 or negative cap would never let the turn run). " \
+                "Set it to 1 or more, or leave it unset for the default."
+        end
+
+        # An absurdly large cap (F2) is as nonsensical the OTHER way — e.g.
+        # `--max-turns 99999999999999` was silently accepted, making the runaway
+        # guard a no-op. Reject anything above the sane ceiling with an equally
+        # clear, actionable message naming the knob and the accepted range.
+        if n > MAX_CAP
+          raise Rubino::ConfigurationError,
+                "invalid #{label}: #{value.inspect} — must be a positive integer no greater than " \
+                "#{MAX_CAP} (a larger cap effectively removes the runaway guard). " \
+                "Leave it unset for the default."
+        end
+
+        positive_int(value)
       end
 
       # The value as a number iff it IS one (Integer/Float, or a numeric string

@@ -106,6 +106,34 @@ RSpec.describe Rubino::Agent::IterationBudget do
               "expected agent.max_turns=#{bad.inspect} to be rejected"
       end
     end
+
+    # F2: a 0/negative cap was already rejected, but an absurdly large
+    # `--max-turns 99999999999999` was silently ACCEPTED — making the runaway
+    # guard a no-op. Reject anything above the sane ceiling too, with the same
+    # clear ConfigurationError (caught at the CLI boundary as a one-line error,
+    # never a backtrace).
+    it "REJECTS an absurdly large --max-turns override above the ceiling (F2)" do
+      [described_class::MAX_CAP + 1, 99_999_999_999_999, 1e12].each do |huge|
+        expect { described_class.new(config: config, max_tool_iterations: huge) }
+          .to raise_error(Rubino::ConfigurationError, /invalid --max-turns.*no greater than/),
+              "expected #{huge.inspect} to be rejected"
+      end
+    end
+
+    it "ACCEPTS a cap right at the ceiling (F2 boundary)" do
+      # At the ceiling is valid (no raise); above it is rejected.
+      expect { described_class.new(config: config, max_tool_iterations: described_class::MAX_CAP) }
+        .not_to raise_error
+      expect { described_class.new(config: config, max_tool_iterations: described_class::MAX_CAP + 1) }
+        .to raise_error(Rubino::ConfigurationError)
+    end
+
+    it "REJECTS an absurdly large configured agent.max_turns above the ceiling (F2)" do
+      cfg = test_configuration("agent" => { "max_turns" => described_class::MAX_CAP + 1,
+                                            "max_tool_iterations" => 3 })
+      expect { described_class.new(config: cfg) }
+        .to raise_error(Rubino::ConfigurationError, /invalid agent\.max_turns.*no greater than/)
+    end
   end
 
   # Spec 6 (#399): #extend! raises the iteration ceiling so can_continue? is true

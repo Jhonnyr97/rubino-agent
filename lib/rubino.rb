@@ -303,11 +303,12 @@ module Rubino
       # ensure_directories! just created.
       migrator.migrate!(lock_path: migration_lock_path)
       true
-    rescue Database::BusyError
+    rescue Database::BusyError, ConfigurationError
       # A sustained concurrent-migration lock that outlived the connection
-      # retry budget is NOT an "un-set-up" home — re-raise so the single CLI
-      # chokepoint surfaces the clean one-liner (#333/#359) instead of this
-      # method masking it as `false` → a misleading "run setup" message.
+      # retry budget (#333/#359), or a careless RUBINO_HOME that points at a file
+      # / a read-only parent (F13), is NOT an "un-set-up" home — re-raise so the
+      # single CLI chokepoint surfaces the clean one-liner instead of this method
+      # masking it as `false` → a misleading "run setup" message.
       raise
     rescue StandardError => e
       logger.debug(event: "ensure_database_ready_failed", error: "#{e.class}: #{e.message}")
@@ -401,7 +402,23 @@ module Rubino
     # (#65): an auto-created home used to be left at the umask's 0755.
     def ensure_directories!
       home = home_path
-      FileUtils.mkdir_p(home)
+      # A careless RUBINO_HOME (the value points at an EXISTING FILE, or its
+      # parent is read-only) made FileUtils.mkdir_p raise a raw Errno::EEXIST /
+      # Errno::EACCES backtrace from deep in fileutils.rb — masking the actual,
+      # trivially-fixable mistake (F13). Normalize both into a clean, actionable
+      # domain error AT THE SOURCE so the single CLI chokepoint surfaces one line
+      # ("RUBINO_HOME is not a writable directory: <path>") + exit 1, in any
+      # output format, with no trace. A directory that already exists is fine.
+      if File.exist?(home) && !File.directory?(home)
+        raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} " \
+                                  "(it points at an existing file — set RUBINO_HOME to a directory path)"
+      end
+
+      begin
+        FileUtils.mkdir_p(home)
+      rescue SystemCallError => e
+        raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} (#{e.message})"
+      end
       File.chmod(0o700, home)
       %w[memories sessions logs skills commands tools plugins].each do |subdir|
         dir = File.join(home, subdir)
