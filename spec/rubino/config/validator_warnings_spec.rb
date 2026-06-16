@@ -25,6 +25,19 @@ RSpec.describe Rubino::Config::Validator do
       expect(described_class.warnings(Rubino::Config::Defaults.to_hash)).to eq([])
     end
 
+    # item 2: the SHIPPED config (what `rubino setup` writes via
+    # Loader#create_default_config! == Defaults.to_yaml) must NOT carry the
+    # removed security.require_confirmation_for_shell key — otherwise a FRESH
+    # install would print the deprecation warning on every command. We ship
+    # confirm_policy instead; the validator warning is reserved for OLD
+    # hand-carried user configs.
+    it "does not SHIP the removed key in the default config (no warn on fresh install)" do
+      shipped = YAML.safe_load(Rubino::Config::Defaults.to_yaml)
+      expect(shipped.fetch("security")).not_to have_key("require_confirmation_for_shell")
+      expect(shipped.dig("security", "confirm_policy")).to eq("dangerous_only")
+      expect(described_class.warnings(shipped)).to eq([])
+    end
+
     it "skips a leaf still at its seeded default even with a colliding leaf-name range" do
       # doom_loop.threshold's seeded default is a COUNT (5), not a 0..1 ratio —
       # it must NOT be flagged when untouched.

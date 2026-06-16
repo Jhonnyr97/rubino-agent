@@ -459,13 +459,19 @@ module Rubino
 
       begin
         FileUtils.mkdir_p(home)
+        # chmod/mkdir on an EXISTING read-only RUBINO_HOME (its parent let
+        # mkdir_p no-op, but the dir itself is not owner-writable) raises a raw
+        # Errno::EPERM/EACCES from deep in fileutils — the same unguarded
+        # backtrace F13 normalized for mkdir. Keep the perm ops inside the
+        # rescue so a non-writable home yields the SAME clean one-line domain
+        # error + exit 1, no trace.
+        File.chmod(0o700, home)
+        %w[memories sessions logs skills commands tools plugins].each do |subdir|
+          dir = File.join(home, subdir)
+          FileUtils.mkdir_p(dir) unless File.directory?(dir)
+        end
       rescue SystemCallError => e
         raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} (#{e.message})"
-      end
-      File.chmod(0o700, home)
-      %w[memories sessions logs skills commands tools plugins].each do |subdir|
-        dir = File.join(home, subdir)
-        FileUtils.mkdir_p(dir) unless File.directory?(dir)
       end
     end
   end

@@ -91,6 +91,38 @@ RSpec.describe Rubino::CLI::ConfigCommand do
       err = ui.messages.find { |m| m[:level] == :error }
       expect(err[:message]).to include("invalid value for 'model.temperature'")
     end
+
+    it "exits 1 on a garbage enum value (security.confirm_policy)" do
+      expect { described_class.new.set("security.confirm_policy", "yolo") }
+        .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "names the valid choices in the enum error" do
+      described_class.new.set("security.confirm_policy", "yolo")
+    rescue SystemExit
+      err = ui.messages.find { |m| m[:level] == :error }
+      expect(err[:message]).to include("invalid value for 'security.confirm_policy'")
+      expect(err[:message]).to match(/dangerous_only.*confirm_all/)
+    end
+  end
+
+  # F2: `config unset KEY` drops a setting (reverts to the built-in default).
+  # Idempotent — unsetting an absent key is a clean no-op (exit 0), not an error.
+  describe "#unset" do
+    it "removes a set key and reports success" do
+      described_class.new.set("model.provider", "anthropic")
+      described_class.new.unset("model.provider")
+      # The `set` above also logs a success line; assert on the LAST success.
+      msg = ui.messages.select { |m| m[:level] == :success }.last
+      expect(msg[:message]).to include("unset model.provider")
+      expect(Rubino::Config::Writer.new(config_path: config_path).get("model.provider")).to be_nil
+    end
+
+    it "is a clean no-op (no error, no exit) for an absent key" do
+      expect { described_class.new.unset("memory.enabled") }.not_to raise_error
+      info = ui.messages.find { |m| m[:level] == :info }
+      expect(info[:message]).to include("was not set")
+    end
   end
 
   # P2-H1/H2: `config get` of a missing key is a FAILURE on the automation

@@ -41,6 +41,13 @@ module Rubino
         # always work and missing extraction gems only narrow the supported set.
         check_document_converters
 
+        # Web search backend (F8): only relevant when `tools.web` is on. Report
+        # which backend a search would actually use (keyless DDG / Tavily /
+        # SearXNG) and whether it looks usable, so a user who enabled web knows
+        # search will work — never a required check (it's informational and must
+        # not flip the exit status).
+        check_websearch_backend if Rubino.configuration.tool_enabled?(:web)
+
         # MCP servers are optional integrations (#90): report each configured
         # server's reachability best-effort, but never let a down MCP server
         # fail doctor — it is informational, not a required check, so non-MCP
@@ -364,6 +371,51 @@ module Rubino
         manager.stop_all!
       rescue StandardError => e
         ui.warning("MCP check failed: #{e.message}")
+      end
+
+      # Non-scoring report of the web-search backend (F8). With `tools.web` on,
+      # the websearch tool picks a backend by env, in this priority: Tavily
+      # (TAVILY_API_KEY) → SearXNG (SEARXNG_URL) → keyless DuckDuckGo Instant
+      # Answer. Tell the user WHICH one a search will use and whether it looks
+      # reachable, so an enabled-but-unusable backend is visible here instead of
+      # surfacing as an empty "search unavailable" mid-conversation. Mirrors the
+      # MCP/doc-converter "Optional (…)" sections: informational, never scored,
+      # and any hiccup degrades to a warning so it can't break doctor.
+      def check_websearch_backend
+        ui = Rubino.ui
+        ui.blank_line
+        ui.info("Optional (web search backend, tools.web is on):")
+
+        if present_env?("TAVILY_API_KEY")
+          ui.success("Web search backend: Tavily (TAVILY_API_KEY configured)")
+        elsif present_env?("SEARXNG_URL")
+          ui.success("Web search backend: SearXNG (SEARXNG_URL=#{ENV.fetch("SEARXNG_URL", nil)})")
+        elsif ddg_resolvable?
+          ui.success("Web search backend: DuckDuckGo (keyless; reachable). " \
+                     "Set TAVILY_API_KEY or SEARXNG_URL for full web-index results")
+        else
+          ui.warning("Web search may not work: no TAVILY_API_KEY / SEARXNG_URL and " \
+                     "DuckDuckGo (api.duckduckgo.com) is unreachable. Set TAVILY_API_KEY " \
+                     "or SEARXNG_URL, or disable with `rubino config set tools.web false`")
+        end
+      rescue StandardError => e
+        ui.warning("Web search backend check failed: #{e.message}")
+      end
+
+      def present_env?(var)
+        val = ENV.fetch(var, nil)
+        !val.nil? && !val.to_s.strip.empty?
+      end
+
+      # Best-effort DNS resolution of the keyless DDG Instant-Answer host — the
+      # same cheap reachability probe the tool registry uses to gate the tool,
+      # so doctor's verdict matches whether the tool is actually exposed. Any
+      # resolver error means "not reachable" (the caller then warns).
+      def ddg_resolvable?
+        require "resolv"
+        !Resolv.getaddress("api.duckduckgo.com").nil?
+      rescue StandardError
+        false
       end
 
       # Non-scoring report of the in-process document-conversion capability
