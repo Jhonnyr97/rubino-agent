@@ -242,9 +242,17 @@ module Rubino
           # The ONE shared answer wire (also used by the model-callable
           # answer_child tool): decide the gate + push the steer note + clear the
           # blocked state, all in BackgroundTasks#deliver_answer.
-          Tools::BackgroundTasks.instance.deliver_answer(entry.id, answer)
-          @ui.info("↳ answered #{entry.id}: #{truncate(answer, 80)}")
-          @ui.info("✓ tree unblocked · #{entry.id} resumes at its next turn")
+          # H5 — deliver_answer reports HONESTLY now: false when the child has
+          # already finished and neither delivery path landed. Say so instead of
+          # the false "resumes at its next turn" — there is no next turn.
+          delivered = Tools::BackgroundTasks.instance.deliver_answer(entry.id, answer)
+          if delivered
+            @ui.info("↳ answered #{entry.id}: #{truncate(answer, 80)}")
+            @ui.info("✓ tree unblocked · #{entry.id} resumes at its next turn")
+          else
+            @ui.info("↳ answer to #{entry.id}: #{truncate(answer, 80)}")
+            @ui.error("⚠ not delivered — #{entry.id} already finished; it never saw your answer.")
+          end
           @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
         end
 
