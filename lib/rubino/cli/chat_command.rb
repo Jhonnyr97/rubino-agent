@@ -125,12 +125,39 @@ module Rubino
       # and the manual slash paths still work.
       def auto_resolve_pending_subagent_request(_runner = nil)
         agents_request_handler.auto_resolve_pending
-      rescue StandardError
+      rescue StandardError => e
+        # Resilience floor: a hiccup in the auto-open must never crash the idle
+        # prompt, so we still fall back to "nothing pending". But a coding error
+        # (NameError/NoMethodError) would fire on EVERY ~50ms tick and used to be
+        # invisible forever — exactly how the #450 constant-scope bug shipped dead.
+        # Log the swallowed error ONCE (deduped by class+message) at warn level so
+        # a future programming error surfaces in dev/logs instead of hiding.
+        warn_swallowed_auto_resolve_error(e)
         false
       end
 
+      # Emits a single warn for each distinct swallowed auto-resolve error so a
+      # programming bug (NameError on every idle tick) is visible without spamming
+      # the log once per 50ms poll. Transient runtime errors still degrade quietly.
+      def warn_swallowed_auto_resolve_error(error)
+        key = "#{error.class}:#{error.message}"
+        @warned_auto_resolve_errors ||= {}
+        return if @warned_auto_resolve_errors[key]
+
+        @warned_auto_resolve_errors[key] = true
+        Rubino.logger&.warn(
+          event: "chat.auto_resolve_pending.swallowed",
+          error: error.class.to_s, message: error.message
+        )
+      end
+
       def agents_request_handler
-        @agents_request_handler ||= Commands::Handlers::Agents.new(ui: Rubino.ui)
+        # Fully qualified: lexically inside Rubino::CLI, a bare `Commands` resolves
+        # to Rubino::CLI::Commands (the Thor class, which has no Handlers child),
+        # raising NameError. Every other Commands::* ref in this file is already
+        # fully qualified as Rubino::Commands::* — this one was the oversight (#450)
+        # that left the auto-open dead because the NameError was swallowed below.
+        @agents_request_handler ||= Rubino::Commands::Handlers::Agents.new(ui: Rubino.ui)
       end
 
       def bang_shell
