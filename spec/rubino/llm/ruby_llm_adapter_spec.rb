@@ -152,6 +152,32 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(full.text_only?).to be true
       end
     end
+
+    # --- final_text_block (#core-F1) ------------------
+    context "final_text_block (the post-last-tool answer in isolation)" do
+      it "falls back to content when not supplied (single-block / non-streaming)" do
+        r = described_class.new(content: "PROBEDONE", tool_calls: [],
+                                input_tokens: 1, output_tokens: 1, model_id: "m")
+        expect(r.final_text_block).to eq("PROBEDONE")
+      end
+
+      it "returns ONLY the final block when supplied, not the full buffer" do
+        r = described_class.new(
+          content: "I'll create the file now.PROBEDONE", tool_calls: [],
+          input_tokens: 1, output_tokens: 1, model_id: "m",
+          final_text_block: "PROBEDONE"
+        )
+        expect(r.content).to eq("I'll create the file now.PROBEDONE")
+        expect(r.final_text_block).to eq("PROBEDONE")
+      end
+
+      it "falls back to content when the supplied block is nil" do
+        r = described_class.new(content: "answer", tool_calls: [],
+                                input_tokens: 1, output_tokens: 1, model_id: "m",
+                                final_text_block: nil)
+        expect(r.final_text_block).to eq("answer")
+      end
+    end
   end
 
   # -----------------------------------------------------------------------
@@ -874,6 +900,65 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       expect do
         adapter.stream(messages: [{ role: "user", content: "hi" }]) { |_| }
       end.not_to raise_error
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # final_text_block across a multi-block streaming turn (#core-F1)
+  #
+  # ruby_llm runs the whole model↔tool loop inside ONE ask(): on a turn that
+  # narrates, calls a tool, then answers, it streams two text blocks
+  # (text → tool_use → text) separated by a before_message boundary. The full
+  # buffer concatenates BOTH (kept for the transcript/render), but the response's
+  # #final_text_block must isolate only the LAST block — the post-tool answer —
+  # so a headless `OUT=$(rubino prompt …)` returns "PROBEDONE", not
+  # "I'll create the file now.PROBEDONE".
+  # -----------------------------------------------------------------------
+  describe "#stream final_text_block on a text → tool → text turn (#core-F1)" do
+    # A chat double that streams two content blocks with a before_message
+    # boundary between them (the boundary ruby_llm fires when it starts the
+    # post-tool assistant message), exactly as a real multi-step ask does.
+    let(:two_block_chat) do
+      c = double("Chat")
+      allow(c).to receive(:with_tool).and_return(c)
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      before_cb = nil
+      after_cb  = nil
+      allow(c).to receive(:before_message) { |&blk| before_cb = blk }
+      allow(c).to receive(:after_message) { |&blk| after_cb = blk }
+      resp = double("Response", content: "PROBEDONE", input_tokens: 1,
+                                output_tokens: 1, tool_calls: nil)
+      allow(c).to receive(:ask) do |_, &blk|
+        # Block 1: the pre-tool narration.
+        blk.call(double("Chunk", content: "I'll create the file now.", thinking: nil))
+        # ruby_llm ENDS block 1 (flushes its think-filter tail under block 1) then
+        # STARTS the post-tool assistant message → block boundary fires. This
+        # after→before ordering is exactly how a real multi-step ask sequences the
+        # callbacks, and is what keeps the block-1 tail on block 1.
+        after_cb&.call
+        before_cb&.call
+        # Block 2: the real answer, after the tool ran.
+        blk.call(double("Chunk", content: "PROBEDONE", thinking: nil))
+        resp
+      end
+      c
+    end
+
+    let(:adapter) do
+      cfg = test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o",
+                     "temperature" => 0.3, "context_length" => nil }
+      )
+      a = described_class.new(model_id: "gpt-4o", config: cfg)
+      allow(a).to receive(:build_chat).and_return(two_block_chat)
+      a
+    end
+
+    it "keeps the FULL buffer in content (transcript/render) but isolates the last block as the answer" do
+      result = adapter.stream(messages: [{ role: "user", content: "make a file" }]) { |_| }
+      expect(result.content).to eq("I'll create the file now.PROBEDONE")
+      expect(result.final_text_block).to eq("PROBEDONE")
     end
   end
 

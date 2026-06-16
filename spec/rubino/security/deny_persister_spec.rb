@@ -2,6 +2,10 @@
 
 require "spec_helper"
 require "tmpdir"
+# Hash#to_yaml / YAML.safe_load_file are used directly in this spec's setup; load
+# yaml explicitly so the file passes IN ISOLATION (not only when an earlier spec
+# happens to require it first — an order-dependency the dry==real gate misses).
+require "yaml"
 
 RSpec.describe Rubino::Security::DenyPersister do
   around do |example|

@@ -17,8 +17,19 @@ module Rubino
 
       def initialize(content:, tool_calls:, input_tokens:, output_tokens:, model_id:,
                      interrupted: false, thinking: nil, stop_reason: nil, raw: nil,
-                     cache_read_tokens: 0, cache_creation_tokens: 0, halted: false)
+                     cache_read_tokens: 0, cache_creation_tokens: 0, halted: false,
+                     final_text_block: nil)
         @content       = content
+        # The LAST assistant text block of the turn, in isolation — the answer text
+        # the model emitted AFTER its final tool call, with no earlier pre-tool
+        # narration glued on (#core-F1). `content` keeps EVERY text block of the
+        # turn concatenated (needed for the transcript and on-screen render); this
+        # field is what a headless one-shot `result` should surface, so
+        # `OUT=$(rubino prompt …)` returns just the answer and not
+        # "I'll do X now.<answer>". Falls back to `content` when the adapter did not
+        # track block boundaries (non-streaming / Halt / test doubles), where the
+        # response already carries only the final block.
+        @final_text_block = final_text_block
         @tool_calls    = tool_calls || []
         @input_tokens  = input_tokens || 0
         @output_tokens = output_tokens || 0
@@ -79,6 +90,14 @@ module Rubino
 
       def text_only?
         !has_tool_calls? && !@content.nil? && !@content.empty?
+      end
+
+      # The final assistant text block in isolation (see #initialize). Used by the
+      # headless one-shot answer path so a turn that ended with a tool call returns
+      # only the post-tool answer, not the pre-tool narration concatenated in
+      # +content+. Falls back to +content+ when no per-block boundary was tracked.
+      def final_text_block
+        @final_text_block.nil? ? @content : @final_text_block
       end
 
       def total_tokens
