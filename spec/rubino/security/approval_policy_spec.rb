@@ -115,9 +115,13 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "still :asks for a command NOT on the allowlist (and not read-only)" do
+      # confirm_all so a non-allowlisted, non-read-only command resolves to :ask
+      # — this asserts the allowlist gates correctly, independent of the default
+      # prompt policy (item 7: confirm_policy is the sole source of truth, and a
+      # security override here drops the seeded default).
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => ["git status"] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => ["git status"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "bundle exec rake release" })).to eq(:ask)
@@ -134,9 +138,11 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "an empty allowlist auto-approves nothing" do
+      # confirm_all so the unlisted command would prompt — proving the empty
+      # allowlist pre-approves nothing (item 7: explicit policy, no legacy alias).
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => [] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => [] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "anything not listed" })).to eq(:ask)
@@ -507,9 +513,12 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     # history-rewriting `git push --force` — that falls back to the shell gate
     # (:ask), where the headless floor can block it.
     it "does NOT auto-allow a dangerous command even if its head is allowlisted (SEC-01)" do
+      # confirm_all so a non-allowlisted form falls to :ask (the headless floor
+      # then blocks it) rather than auto-allowing under dangerous_only — the
+      # SEC-01 intent is that an allowlisted head can't launder a write form.
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => ["git diff"] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => ["git diff"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.dangerous?("git diff --output /tmp/PWN")).to be(true).or be(false)
@@ -520,9 +529,11 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "does NOT auto-allow a dangerous git verb even when its head is allowlisted (SEC-R2-1)" do
+      # confirm_all so a non-allowlisted form falls to :ask — proving the
+      # mutating `git push` verb is never auto-approved by an allowlisted head.
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => ["git push"] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => ["git push"] }
       )
       pol = described_class.new(config: cfg)
       # push is a mutating verb; the convenience layer never auto-approves it.
@@ -677,37 +688,20 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       end
     end
 
-    context "back-compat alias coercion" do
-      it "require_confirmation_for_shell:false coerces to dangerous_only" do
-        cfg = test_configuration(
-          "approvals" => { "mode" => "manual" },
-          "security" => { "require_confirmation_for_shell" => false }
-        )
-        pol = described_class.new(config: cfg)
-        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
-        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
-      end
-
-      it "require_confirmation_for_shell:true keeps confirm_all" do
+    # item 7: confirm_policy is the SOLE source of truth — the legacy
+    # require_confirmation_for_shell alias was removed and is no longer honored.
+    context "removed require_confirmation_for_shell alias" do
+      it "IGNORES require_confirmation_for_shell:true (no silent confirm_all)" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
           "security" => { "require_confirmation_for_shell" => true }
         )
         pol = described_class.new(config: cfg)
-        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:ask)
-      end
-
-      it "confirm_policy wins over the alias when BOTH are set" do
-        cfg = test_configuration(
-          "approvals" => { "mode" => "manual" },
-          "security" => {
-            "confirm_policy" => "dangerous_only",
-            "require_confirmation_for_shell" => true
-          }
-        )
-        pol = described_class.new(config: cfg)
-        # alias says confirm_all, but confirm_policy=dangerous_only wins
+        # The removed key has no effect: the seeded dangerous_only default holds,
+        # so a SAFE command still runs unprompted (it would be :ask under the old
+        # alias mapping).
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
+        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
       end
     end
   end
@@ -726,7 +720,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "ALLOWS memory ops without a prompt in manual mode + shell confirmation" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "require_confirmation_for_shell" => true }
+        "security" => { "confirm_policy" => "confirm_all" }
       )
       policy = described_class.new(config: cfg)
 

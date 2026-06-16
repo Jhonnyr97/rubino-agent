@@ -27,6 +27,15 @@ module Rubino
         # empty/aborted read (#144) before giving up and leaving the child parked.
         APPROVAL_ASK_ATTEMPTS = 3
 
+        # Appended to every "no such subagent id" error (item 5). Subagent ids
+        # (sa_*) live ONLY in the current process — the BackgroundTasks registry
+        # is in-memory, never persisted — so a prior session's id is genuinely
+        # gone after a REPL restart. The bare "no such id" left the user thinking
+        # they'd mistyped; this names the real reason so they don't hunt for a
+        # typo. Surfaced from EVERY not-found path (/agents <id>, /reply <id>,
+        # /stop <id>, steer, probe).
+        RESET_HINT = "(subagents reset when rubino restarts)"
+
         def initialize(ui:)
           @ui = ui
         end
@@ -134,7 +143,11 @@ module Rubino
           # waiting on its agent-parent (:blocked_on_parent), if the human chooses
           # to step in.
           entry = Tools::BackgroundTasks.instance.find(id)
-          if entry.nil? || !%i[blocked_on_human blocked_on_parent].include?(entry.status)
+          if entry.nil?
+            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
+            return
+          end
+          unless %i[blocked_on_human blocked_on_parent].include?(entry.status)
             @ui.error("#{id} is not waiting on you.")
             return
           end
@@ -166,7 +179,7 @@ module Rubino
             @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}  (parked · enters child context next turn)")
             @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
           else
-            @ui.error("cannot steer #{id} — no such running subagent.")
+            @ui.error("cannot steer #{id} — no such running subagent. #{RESET_HINT}")
           end
         end
 
@@ -184,7 +197,7 @@ module Rubino
 
           entry = Tools::BackgroundTasks.instance.find(id)
           unless entry
-            @ui.error("cannot probe #{id} — no such subagent.")
+            @ui.error("cannot probe #{id} — no such subagent. #{RESET_HINT}")
             return
           end
 
@@ -280,7 +293,7 @@ module Rubino
         def show_agent_detail(id)
           entry = Tools::BackgroundTasks.instance.find(id)
           unless entry
-            @ui.error("no background subagent with id #{id}.")
+            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
             return
           end
 
@@ -494,7 +507,7 @@ module Rubino
           registry = Tools::BackgroundTasks.instance
           entry    = registry.find(id)
           unless entry
-            @ui.error("no background subagent with id #{id}.")
+            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
             return
           end
 

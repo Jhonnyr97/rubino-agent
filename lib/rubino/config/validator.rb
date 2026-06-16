@@ -59,6 +59,19 @@ module Rubino
       # left to the type-unconstrained nil-default path.
       POSITIVE_INT_LEAVES = %w[max_turns max_tool_iterations].freeze
 
+      # Config keys that were REMOVED and are no longer honored (item 7). A
+      # config.yml that still carries one isn't an "unknown key" (its top-level
+      # section is real) and isn't a type error, so the generic checks miss it —
+      # and the old key would be silently ignored. Map the FULL dotted path to a
+      # bespoke warning that names the removed key and its replacement, surfaced
+      # at load + in `rubino doctor` so the user migrates instead of believing a
+      # stale setting still takes effect.
+      REMOVED_KEYS = {
+        "security.require_confirmation_for_shell" =>
+          "`security.require_confirmation_for_shell` is removed — use " \
+          "`security.confirm_policy` (dangerous_only|confirm_all)"
+      }.freeze
+
       def validate!(key_path, keys, value)
         default = leaf_default(keys)
         reject_unknown_key!(key_path, keys) if default == :__absent__
@@ -82,6 +95,14 @@ module Rubino
 
         out = []
         each_leaf(raw) do |keys, value|
+          # A REMOVED key (item 7) is flagged regardless of its value — it is no
+          # longer honored, so we warn the moment it is PRESENT, before the
+          # seeded-default skip (a removed key has no seeded default anyway).
+          if (msg = REMOVED_KEYS[keys.join(".")])
+            out << msg
+            next
+          end
+
           # Skip a leaf still at its seeded default: `setup` writes the FULL
           # default config to disk, so every default value is present in the raw
           # hash. Those are valid by construction (and a leaf-name RANGES

@@ -41,12 +41,13 @@ module Rubino
       def initialize(config: nil, agent_overrides: nil)
         @config = config || Rubino.configuration
         @mode = @config.approvals_mode
-        # Effective shell prompt policy (:confirm_all | :dangerous_only).
-        # Derived from security.confirm_policy, with security.require_confirmation_for_shell
-        # as a back-compat alias (see Configuration#confirm_policy). Older config
-        # objects that predate the accessor fall back to :confirm_all.
+        # Effective shell prompt policy (:confirm_all | :dangerous_only), the
+        # SOLE source of truth (item 7): security.confirm_policy only — the legacy
+        # security.require_confirmation_for_shell alias was removed (see
+        # Configuration#confirm_policy). Older config objects that predate the
+        # accessor fall back to the reference-faithful :dangerous_only default.
         @confirm_policy =
-          @config.respond_to?(:confirm_policy) ? @config.confirm_policy : :confirm_all
+          @config.respond_to?(:confirm_policy) ? @config.confirm_policy : :dangerous_only
         @pattern_matcher = PatternMatcher.new(
           rules: load_permission_rules(agent_overrides)
         )
@@ -200,11 +201,11 @@ module Rubino
         #    already auto-allowed by step 6b / mode_based_decision, so this
         #    only constrains the write/shell side.)
         #
-        #    confirm_all (DEFAULT, == legacy require_confirmation_for_shell:true)
+        #    confirm_all (opt-in hardening)
         #      every such shell command -> :ask. shell is :high risk so manual
         #      mode would ask anyway; this also keeps it gated under auto mode.
         #
-        #    dangerous_only (reference-faithful, == legacy alias:false)
+        #    dangerous_only (DEFAULT, reference-faithful)
         #      prompt ONLY when the command matches a DangerousPattern
         #      (git push --force, curl|sh, recursive rm of a non-root path,
         #      ...). Safe commands run unprompted. Mirrors approval.py:475

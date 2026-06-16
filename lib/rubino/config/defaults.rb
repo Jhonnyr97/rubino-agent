@@ -512,11 +512,6 @@ module Rubino
           # dangerous_only never weakens the non-bypassable floor. Set
           # confirm_policy: "confirm_all" to restore prompt-on-everything.
           "confirm_policy" => "dangerous_only",
-          # Legacy alias for confirm_policy. Kept working for existing readers;
-          # confirm_policy (set above) wins when both are present. Flipped to
-          # false so a config that only ever set this alias also gets the new
-          # dangerous_only default (#409).
-          "require_confirmation_for_shell" => false,
           # EMPTY by default (#409), aligning to Hermes' empty allowlist: once
           # the prompt policy is dangerous_only, safe commands (incl. git status
           # / git diff) already run unprompted via the policy + read-only
