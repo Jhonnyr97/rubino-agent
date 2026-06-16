@@ -157,16 +157,16 @@ module Rubino
       # create_table?) are safe to re-run and so need no anchor. `:table` =>
       # table_exists?; [:column, table, col] => the table has that column.
       MIGRATION_ANCHORS = {
-        1  => [:table, :sessions],
-        2  => [:table, :runs],
-        3  => [:table, :skill_states],
-        4  => [:table, :cron_jobs],
-        5  => [:table, :oauth_connections],
-        6  => [:table, :webhook_deliveries],
-        7  => [:table, :messages_fts],
-        10 => [:column, :sessions, :owner_pid],
-        11 => [:column, :sessions, :memory_extracted_msg_id],
-        12 => [:column, :sessions, :cwd]
+        1 => %i[table sessions],
+        2 => %i[table runs],
+        3 => %i[table skill_states],
+        4 => %i[table cron_jobs],
+        5 => %i[table oauth_connections],
+        6 => %i[table webhook_deliveries],
+        7 => %i[table messages_fts],
+        10 => %i[column sessions owner_pid],
+        11 => %i[column sessions memory_extracted_msg_id],
+        12 => %i[column sessions cwd]
       }.freeze
 
       # The highest migration version whose distinctive object is already present
