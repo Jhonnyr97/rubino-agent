@@ -213,6 +213,31 @@ RSpec.describe Rubino::Session::Repository do
       expect(repo.list(status: "ended").size).to eq(1)
     end
 
+    # Item 2: internal subagent prompt-sessions (source="subagent", created by
+    # the `task` tool) are machinery, not the user's conversations, so they are
+    # hidden from the user-facing list/picker by default — but stay reachable by
+    # explicit id (#find / #find_by_id_or_title never filter).
+    describe "subagent session filtering (item 2)" do
+      before do
+        repo.create(source: "cli", title: "mine")
+        @sub = repo.create(source: "subagent", title: "Use the shell tool to run exactly this")
+      end
+
+      it "excludes source=subagent sessions from the default list" do
+        expect(repo.list.map { |s| s[:title] }).to eq(["mine"])
+      end
+
+      it "includes them when include_subagents: true (explicit opt-in)" do
+        expect(repo.list(include_subagents: true).map { |s| s[:title] })
+          .to contain_exactly("mine", "Use the shell tool to run exactly this")
+      end
+
+      it "keeps a subagent session resumable by explicit id (#find)" do
+        expect(repo.find(@sub[:id])).not_to be_nil
+        expect(repo.find_by_id_or_title(@sub[:id][0..7])).not_to be_nil
+      end
+    end
+
     # #334: a bare `sessions list` should default to THIS dir's sessions, so a
     # multi-folder user never sees another project's history. cwd: nil (--all)
     # restores the global listing.

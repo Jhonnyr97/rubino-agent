@@ -281,7 +281,15 @@ module Rubino
       # reported undelivered) or rejected by #steer (and reported not-delivered
       # to its caller) — never silently lost.
       def record_completion(entry, text, sink, parent_ui)
-        undelivered = BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+        drained = BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+        # Drop the gate-delivered answer COPIES (#457 regression): a /reply
+        # answer is delivered to the child via its ask gate AND mirrored onto the
+        # steer queue; when the child resumes via the gate and finishes without
+        # another turn, that mirror is drained here. It was NOT undelivered — the
+        # gate delivered it — so reporting it would surface a false "steer note
+        # not delivered" alarm on the happy path. GENUINE steer notes (no
+        # ANSWER_NOTE_PREFIX) still report undelivered, preserving #457's invariant.
+        undelivered = drained.reject { |n| n.to_s.start_with?(BackgroundTasks::ANSWER_NOTE_PREFIX) }
         notify(sink, completion_notice(entry, text, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,
@@ -443,7 +451,10 @@ module Rubino
             max_turns: definition.max_turns,
             ui: child_ui,
             agent_definition: definition,
-            event_bus: Interaction::EventBus.new
+            event_bus: Interaction::EventBus.new,
+            # Tag the child's fresh session as subagent machinery so it's hidden
+            # from the user-facing /sessions picker + `sessions list` (item 2).
+            session_source: "subagent"
           )
         end
       end
@@ -587,7 +598,9 @@ module Rubino
             model_override: definition.resolved_model,
             max_turns: definition.max_turns,
             ui: nested_ui(definition),
-            agent_definition: definition
+            agent_definition: definition,
+            # Hidden from the user-facing /sessions list/picker (item 2).
+            session_source: "subagent"
           )
         end
       end

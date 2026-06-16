@@ -726,6 +726,19 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         expect(index.render).to include("you MUST load it with skill(name)")
       end
 
+      # Item 7: the auto-trigger phrasing, adapted from peer agents (Hermes'
+      # scan-before-reply block, Anthropic's "know WHEN each skill should be
+      # used" pre-load framing, Codex's "initial list … so it can choose"),
+      # instructs the model to CONSULT the catalogue FIRST and load a matching
+      # skill BEFORE answering. Auto-triggering remains model-dependent.
+      it "instructs the model to consult the catalogue first and load before answering (item 7)" do
+        out = index.render
+        expect(out).to include("FIRST thing to consult on every task")
+        expect(out).to include("BEFORE answering")
+        # The escape hatch survives so a genuinely irrelevant task isn't forced.
+        expect(out).to include("Proceed without loading only if genuinely no skill is relevant")
+      end
+
       it "lists each skill as `- name: description` inside <available_skills>" do
         out = index.render
         expect(out).to include("<available_skills>")
