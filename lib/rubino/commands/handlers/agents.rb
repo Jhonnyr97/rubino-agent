@@ -31,6 +31,50 @@ module Rubino
           @ui = ui
         end
 
+        # Auto-open the EXISTING interactive prompt for ONE pending subagent
+        # request the human must act on — the REPL idle loop calls this at every
+        # idle tick so the affordance presents ITSELF instead of forcing the user
+        # to guess `/agents <id>` or `/reply <id>` (the maintainer's "auto-open
+        # the existing dropdown" ask). A request that arrives mid-turn, or
+        # survives a turn that is interrupted/aborted, is re-detected here the
+        # next time the REPL returns to idle, so it is never lost.
+        #
+        # Reuses the SAME primitives the manual slash paths use:
+        #   :needs_approval   → #resolve_agent_approval  (the approve/deny/always
+        #                       prompt, identical to /agents <id>)
+        #   :blocked_on_human → #prompt_reply_answer + #deliver_reply (the ◆ ask
+        #                       takeover, identical to /reply <id> with no inline
+        #                       answer)
+        # The manual slash commands stay as a fallback; this is just the primary,
+        # zero-typing surface. Approval is offered FIRST (a parked tool holds a
+        # concurrency slot and a possibly dangerous side effect, so it is the more
+        # urgent gate). Resolves at most ONE request per call so the loop repaints
+        # and re-checks between each. Returns true when it presented a request
+        # (the caller re-polls), false when nothing was pending.
+        #
+        # SECURITY: this changes WHEN the existing approval prompt appears (now it
+        # auto-presents), never WHAT requires approval — the gate semantics, the
+        # policy that flips a child to :needs_approval, and the approve/deny/always
+        # persistence are untouched. The human still makes the same explicit
+        # decision through the same gate.
+        def auto_resolve_pending # rubocop:disable Naming/PredicateMethod -- a prompt-presenting mutator that reports whether it surfaced a request, not a pure query
+          registry = Tools::BackgroundTasks.instance
+          if (entry = registry.awaiting_approval.first)
+            resolve_agent_approval(entry)
+            return true
+          end
+          if (entry = registry.awaiting_human.first)
+            answer = prompt_reply_answer(entry)
+            if answer.to_s.strip.empty?
+              @ui.info("No answer given — #{entry.id} is still waiting.")
+            else
+              deliver_reply(entry, answer)
+            end
+            return true
+          end
+          false
+        end
+
         def handle_agents(arguments)
           args = arguments.to_s.strip
 
