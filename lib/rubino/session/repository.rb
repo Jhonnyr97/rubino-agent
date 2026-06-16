@@ -201,9 +201,18 @@ module Rubino
       # canonical (realpath) paths so a symlinked launch dir still matches the
       # stored root, which means the cwd filter runs in Ruby (not SQL) AFTER the
       # status/search predicates — the limit is therefore applied post-filter.
-      def list(limit: 20, status: nil, search: nil, cwd: nil)
+      # Sessions created by the `task` tool's subagent runs are tagged
+      # source="subagent" (Agent::Runner session_source). They are internal
+      # machinery — "Use the shell tool to run exactly this…" prompt-sessions —
+      # not the user's own conversations, so they are EXCLUDED from the
+      # user-facing list/picker by default (item 2), the way Claude Code hides
+      # its Task subagent sessions. They remain reachable by explicit id via
+      # #find / #find_by_id_or_title (which never apply this filter), so a
+      # subagent session is still resumable when the id is known.
+      def list(limit: 20, status: nil, search: nil, cwd: nil, include_subagents: false)
         dataset = @db[:sessions].order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
         dataset = dataset.where(status: status) if status
+        dataset = dataset.exclude(source: "subagent") unless include_subagents
         dataset = dataset.where(Sequel.like(:title, "%#{search}%")) if search && !search.empty?
 
         return dataset.limit(limit).all if cwd.nil?

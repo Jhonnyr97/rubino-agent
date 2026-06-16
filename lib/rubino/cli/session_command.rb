@@ -13,6 +13,30 @@ module Rubino
         true
       end
 
+      # Bare `rubino sessions` LISTS rather than printing the subcommand help
+      # (item 3): listing is the overwhelmingly common intent, and the help was
+      # a dead end that hid the very thing the user came for. We rewrite ONLY the
+      # empty-args invocation to `list` and otherwise defer to normal Thor
+      # dispatch — so `sessions show|delete|compact`, `sessions help`, and the
+      # unknown-subcommand error (#67: `sessions frobnicate` must still exit
+      # non-zero) all behave exactly as before. A leading `--help`/`-h`/`--all`
+      # is NOT empty, so it routes normally too.
+      def self.start(given_args = ARGV, config = {})
+        given_args = ["list", *given_args] if no_subcommand?(given_args)
+        super
+      end
+
+      # True when the args carry no leading SUBCOMMAND token — either empty, or
+      # starting with an option flag (`--all`, `-h`). Such an invocation is the
+      # bare-`sessions` intent, so we route it to `list` (item 3). A first
+      # positional token (`show`, `compact`, or even a typo like `frobnicate`)
+      # is left for normal Thor dispatch so the unknown-subcommand error (#67)
+      # and the real subcommands are untouched.
+      def self.no_subcommand?(args)
+        first = args.find { |a| !a.to_s.empty? }
+        first.nil? || first.to_s.start_with?("-")
+      end
+
       # Drop Thor's inherited `tree` so its banner doesn't render the doubled
       # "rubino rubino sessions tree" (#327); the top-level `rubino tree` covers it.
       remove_command :tree
@@ -190,6 +214,14 @@ module Rubino
         raise Thor::Error, "session not found: #{id}" if session.nil?
 
         Rubino.ui.info("Compacting session #{session[:id][0..7]}...")
+        # Measure BEFORE so the savings line reports the TRUTHFUL before→after
+        # delta (item 4) — consistent with the interactive `/compact`, which
+        # reports `~X → ~Y tokens (saved ~N; A → B messages)`. The compressor's
+        # own `saved_tokens` is only the removed-middle estimate (it ignores the
+        # inserted summary), so we compute the delta over the persisted rows.
+        store  = Session::Store.new
+        before = estimate_session_tokens(store, session[:id], model_id: session[:model])
+
         # Pass the RESOLVED full id, not the user's short id (#352): the
         # Compressor now re-resolves internally too, but feeding it the full id
         # keeps the contract explicit and the not-found path honest.
@@ -209,10 +241,28 @@ module Rubino
                 "it has too few messages to summarize#{bar}."
         end
 
-        Rubino.ui.compression_finished(result)
+        after = estimate_session_tokens(store, result[:target_session_id], model_id: session[:model])
+        delta = before - after
+        Rubino.ui.compression_finished(result.merge(saved_tokens: delta))
+        change = delta >= 0 ? "saved ~#{delta} tok" : "grew ~#{-delta} tok"
+        msgs = if result[:original_messages] && result[:compacted_messages]
+                 "; #{result[:original_messages]} → #{result[:compacted_messages]} messages"
+               else
+                 ""
+               end
+        Rubino.ui.info("Context: ~#{before} → ~#{after} tokens (#{change}#{msgs}).")
       end
 
       private
+
+      # The same chars/4 estimate the compaction thresholds and the interactive
+      # `/compact` (Commands::Executor) run on, over a session's stored messages
+      # — so the CLI `sessions compact` reports the SAME truthful before→after
+      # delta (item 4). Private so Thor never exposes it as a `sessions` verb.
+      def estimate_session_tokens(store, session_id, model_id:)
+        budget = Context::TokenBudget.new(model_id: model_id, config: Rubino.configuration)
+        budget.estimate_tokens(store.for_session(session_id).map { |m| { content: m.content } })
+      end
 
       # Turn a PRESENT-but-UNUSABLE on-disk DB (corrupt image, or the duplicate
       # `schema_info` rows a concurrent first-boot race leaves, #race) into a
