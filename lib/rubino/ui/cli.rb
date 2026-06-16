@@ -735,7 +735,11 @@ module Rubino
         return if text.nil? || text.to_s.empty?
 
         clear_line
-        $stdout.puts @pastel.dim("queued ▸ #{text}")
+        # USER-SUPPLIED steered text: neutralize terminal escapes before the
+        # echo (CWE-150 — H1), the same render-boundary defense the approval
+        # card and the submit echo use. Render-only — the literal text is what
+        # runs next turn; only this echo is sanitized.
+        $stdout.puts @pastel.dim("queued ▸ #{Util::Output.sanitize_terminal(text.to_s)}")
         $stdout.flush
       end
 
@@ -1191,10 +1195,16 @@ module Rubino
         (monotonic_now - @thinking_started_at).to_i
       end
 
-      # Replay user input in compact form
+      # Replay user input in compact form. The text is USER-SUPPLIED (a freshly
+      # submitted line, a resumed session message, a `!` shell echo), so it is
+      # routed through Util::Output.sanitize_terminal before it is colored and
+      # printed (CWE-150 — H1): an embedded OSC/CSI escape (`\e]0;…\a` set title,
+      # `\e[2J` clear screen) would otherwise EXECUTE against the terminal when
+      # the transcript echoes it. Render-only — the literal text reached the
+      # model already; only this echo is neutralized.
       def replay_user_input(text, at: nil)
         $stdout.puts
-        $stdout.puts @pastel.green("#{text}")
+        $stdout.puts @pastel.green(Util::Output.sanitize_terminal(text.to_s))
         $stdout.puts
         @last_block = :gap
       end

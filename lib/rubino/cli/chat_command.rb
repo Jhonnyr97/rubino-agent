@@ -1693,7 +1693,11 @@ module Rubino
           # Drop the live "⏳ queued:" row first (explicit-queue items), then
           # commit the normal echo above the input.
           composer.commit_queued(line) if composer.respond_to?(:commit_queued)
-          composer.print_above("#{build_prompt}#{line}")
+          # USER-SUPPLIED line: neutralize terminal escapes before the echo
+          # (CWE-150 — H1), the same render-boundary defense the approval card
+          # and the composer's idle echo use. The raw line already went to the
+          # model via the input queue; only this scrollback echo is sanitized.
+          composer.print_above("#{build_prompt}#{Rubino::Util::Output.sanitize_terminal(line.to_s)}")
         end
       end
 
@@ -1714,7 +1718,10 @@ module Rubino
         lines.each do |line|
           idx = pending_queued.index(line)
           pending_queued.delete_at(idx) if idx
-          $stdout.puts("#{build_prompt}#{line}")
+          # USER-SUPPLIED line: neutralize terminal escapes before the echo
+          # (CWE-150 — H1), like #commit_queued_prompt — the literal text already
+          # reached the model; only this scrollback echo is sanitized.
+          $stdout.puts("#{build_prompt}#{Rubino::Util::Output.sanitize_terminal(line.to_s)}")
         end
       end
 

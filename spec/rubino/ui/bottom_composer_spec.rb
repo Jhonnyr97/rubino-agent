@@ -510,6 +510,83 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
+    # H1 (CWE-150): a typed/pasted line carrying terminal control/escape
+    # sequences must be NEUTRALIZED at the echo/commit render boundary — the
+    # same defense the approval card already applies — so an OSC title-set
+    # (\e]0;…\a) or CSI clear-screen (\e[2J) is rendered as inert caret notation
+    # instead of EXECUTING against the terminal. Render-only: the model still
+    # receives the literal text (it's pushed to the InputQueue raw).
+    context "terminal-escape injection on submit/echo (CWE-150, H1)" do
+      # Bytes only inserted via #insert reach the buffer; a typed lone ESC is
+      # consumed as an escape sequence, so we drive the payload in as a paste —
+      # exactly the real attack vector (pasting an untrusted string).
+      def paste_into(c, text)
+        c.send(:submit_paste, text)
+      end
+
+      it "neutralizes OSC/CSI escapes in the idle (:prompt) committed echo" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                echo: :prompt)
+        paste_into(c, "\e]0;HIJACKED\ahi\e[2J")
+        c.handle_key("\r")
+        out = output.string
+        expect(out).not_to include("\e]0;HIJACKED\a") # raw OSC title-set gone
+        expect(out).not_to include("\e[2J")           # raw clear-screen gone
+        expect(out).to include("^[]0;HIJACKED^G")     # shown inertly (caret)
+        expect(out).to include("hi")                  # the real text survives
+      end
+
+      it "neutralizes escapes in the steering 'queued ▸' echo" do
+        c = described_class.new(input_queue: queue, input: input, output: output)
+        paste_into(c, "ping\e]0;PWN\a")
+        c.handle_key("\r")
+        out = output.string
+        expect(out).to include("queued ▸ ping^[]0;PWN^G")
+        expect(out).not_to include("\e]0;PWN\a")
+      end
+
+      it "still sends the LITERAL text to the model (sanitization is render-only)" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                echo: :prompt)
+        paste_into(c, "\e]0;X\arun")
+        c.handle_key("\r")
+        # The pasted body is normalized at the buffer seam, so the queue carries
+        # the neutralized-but-LOSSLESS rendering of the user's content (caret
+        # notation), never the raw control bytes that would hijack the terminal.
+        line = queue.drain.first
+        expect(line).not_to include("\e") # no raw ESC reaches downstream
+        expect(line).to include("run")
+      end
+
+      it "leaves plain / unicode / emoji echo unaffected" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                echo: :prompt)
+        paste_into(c, "ciao 世界 🚀")
+        c.handle_key("\r")
+        expect(output.string).to include("❯ ciao 世界 🚀\r\n")
+        expect(queue.drain).to eq(["ciao 世界 🚀"])
+      end
+
+      it "neutralizes escapes in the live input-block render (paste seam)" do
+        c = described_class.new(input_queue: queue, input: input, output: output)
+        paste_into(c, "\e]0;LIVE\a")
+        # The buffer (what #draw_input renders AND what submit pushes) holds the
+        # inert caret form, never the raw OSC bytes that would hijack the title.
+        expect(c.buffer).to eq("^[]0;LIVE^G")
+        expect(output.string).not_to include("\e]0;LIVE\a")
+      end
+
+      it "neutralizes escapes in the live '⏳ queued:' indicator row" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        paste_into(c, "ping\e]0;PWN\a")
+        c.handle_key("\r") # interrupt-by-default → live "⏳ queued:" indicator
+        expect(output.string).to include("⏳ queued: ping^[]0;PWN^G")
+        expect(output.string).not_to include("\e]0;PWN\a")
+      end
+    end
+
     # EXPLICIT QUEUE (the exception): Alt+Enter (\e\r) or "/queued <msg>" queues
     # WITHOUT interrupting — the current turn keeps running. The queued message
     # shows a live "⏳ queued: <msg>" row above the input while pending; it's
