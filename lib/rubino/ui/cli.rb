@@ -945,6 +945,11 @@ module Rubino
       # under indented committed output read as a jarring seam.
       MD_MARGIN = "  "
 
+      # The 2-space left margin every tool OUTPUT-BODY line is printed behind,
+      # shared by the first row and the hang-indented continuation rows of a
+      # hard-wrapped long line (#write_body_lines, TUI-2 follow-up).
+      BODY_MARGIN = "  "
+
       # Renders a markdown string to committed, styled lines above the composer
       # (each line as `$stdout.puts "#{MD_MARGIN}#{line}"`). Shared by
       # #assistant_text and the per-block streaming path so both apply the
@@ -1804,11 +1809,6 @@ module Rubino
       # control/escape bytes (and normalizes bare CR) BEFORE the style wrapper
       # runs, so rubino's own @pastel ANSI — applied per-line below — stays the
       # only trusted styling that reaches the terminal.
-      # The 2-space left margin every output-body line is printed behind, shared
-      # by the first row and the hang-indented continuation rows of a hard-wrapped
-      # long line (TUI-2 follow-up).
-      BODY_MARGIN = "  "
-
       def write_body_lines(text, &style)
         # Width left for body text after the 2-space margin; a small floor keeps
         # a very narrow terminal from looping on a 1-col field.
