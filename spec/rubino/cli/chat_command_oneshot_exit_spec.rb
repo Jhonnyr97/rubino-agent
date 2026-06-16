@@ -55,6 +55,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       runner = instance_double(Rubino::Agent::Runner)
       allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
       allow(runner).to receive(:run!).and_raise(RuntimeError, "simulated provider failure")
+      # item 6: the failure-path ensure now finalizes the session.
+      allow(runner).to receive(:session).and_return({ id: "s1" })
+      allow(runner).to receive(:end_session!)
 
       status = nil
       expect do
@@ -78,6 +81,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
         allow(runner).to receive(:cancel!)
         allow(runner).to receive(:run!).and_raise(klass)
         allow(runner).to receive(:session).and_return({ id: "s1" })
+        allow(runner).to receive(:end_session!)
 
         status = nil
         expect do
@@ -97,6 +101,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(runner).to receive(:cancel!)
       allow(runner).to receive(:run!).and_raise(Rubino::Interrupted)
       allow(runner).to receive(:session).and_return({ id: "s1", model: "fake-model" })
+      allow(runner).to receive(:end_session!)
 
       status = nil
       # The interrupted result is a well-formed {type:"result", …} object whose

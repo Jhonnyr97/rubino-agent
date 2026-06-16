@@ -101,6 +101,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(runner).to receive(:cancel!)
       allow(runner).to receive(:session).and_return(session)
       allow(runner).to receive(:run!).and_raise(Rubino::Interrupted)
+      # item 6: the interrupt-path ensure now finalizes the session.
+      allow(runner).to receive(:end_session!)
     end
 
     it "prints the persisted partial to stdout then exits 130 (text mode)" do
