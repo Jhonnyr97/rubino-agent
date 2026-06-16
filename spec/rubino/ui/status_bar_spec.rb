@@ -15,10 +15,17 @@ RSpec.describe Rubino::UI::StatusBar do
       expect(line).to eq(" minimax-m3 · ctx ~8.4k/64k (13%)")
     end
 
-    # P9: a fresh session must not carry a permanent "(0%)".
-    it "drops the percentage entirely below 1%" do
+    # TUI-1: a sub-1k session must render the USED figure in the same `k` unit
+    # as the window AND always show the percentage, so `~129/128k` can never
+    # scan as "over budget". A near-empty session reads `~0.1k/128k (0%)`.
+    it "renders the used figure in the window's k unit below 1k (never over-budget)" do
       line = described_class.render(model: "minimax-m3", tokens: 105, window: 128_000, pastel: plain)
-      expect(line).to eq(" minimax-m3 · ctx ~105/128k")
+      expect(line).to eq(" minimax-m3 · ctx ~0.1k/128k (0%)")
+    end
+
+    it "always shows the percentage when the window is known" do
+      line = described_class.render(model: "m3", tokens: 105, window: 128_000, pastel: plain)
+      expect(line).to include("(0%)")
     end
 
     it "drops the percentage when the window is unknown (nil)" do
@@ -118,12 +125,33 @@ RSpec.describe Rubino::UI::StatusBar do
       expect(line).to include("\e[31m100%")
     end
 
-    # The reported "ctx ~245/128k" was CORRECT (245 tokens is 0.2% of a 128k
-    # window) — sub-1% drops the percentage by design; it is not an impossible
-    # ratio. Pin that so the clamp fix doesn't accidentally start printing it.
-    it "leaves a tiny but legitimate ratio sub-1% (no percentage)" do
+    # TUI-1: the reported "ctx ~245/128k" was the over-budget-LOOKING bug —
+    # 245 tokens IS 0.2% of a 128k window, but the bare `245` next to `128k`
+    # scanned as full. The fix renders the used figure in the window's `k` unit
+    # and always shows the (clamped) percentage, so the tiny ratio reads
+    # unambiguously as `~0.2k/128k (0%)`.
+    it "renders a tiny legitimate ratio in matched units with a 0% gauge" do
       line = described_class.render(model: "m3", tokens: 245, window: 128_000, pastel: plain)
-      expect(line).to eq(" m3 · ctx ~245/128k")
+      expect(line).to eq(" m3 · ctx ~0.2k/128k (0%)")
+    end
+  end
+
+  describe ".abbreviate_to" do
+    it "forces the used figure into k when the window is in k" do
+      expect(described_class.abbreviate_to(129, 128_000)).to eq("0.1k")
+      expect(described_class.abbreviate_to(8_421, 64_000)).to eq("8.4k")
+    end
+
+    it "floors a non-zero sub-100 count to 0.1k (never a misleading 0k)" do
+      expect(described_class.abbreviate_to(5, 128_000)).to eq("0.1k")
+    end
+
+    it "renders a zero count as 0k" do
+      expect(described_class.abbreviate_to(0, 128_000)).to eq("0k")
+    end
+
+    it "falls back to the plain abbreviation for a sub-1k window (units already match)" do
+      expect(described_class.abbreviate_to(50, 500)).to eq("50")
     end
   end
 
