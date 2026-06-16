@@ -1065,7 +1065,12 @@ module Rubino
       def prefill(text)
         @render.synchronize do
           @menu.close!
-          @input_line.replace(text.to_s)
+          # The pre-filled text is a USER-SUPPLIED prior message (the Esc-Esc
+          # rewind picks it from session history); neutralize terminal escapes
+          # before it becomes the live buffer so a stored `\e]0;…\a` / `\e[2J`
+          # renders inertly instead of hijacking the terminal on redraw (H1) —
+          # the same buffer invariant the paste and history-recall seams keep.
+          @input_line.replace(Util::Output.sanitize_terminal(text.to_s))
           @history.reset!
           # Remember what we injected so #pristine_prefill? can flag an
           # untouched rewind prefill and keep the REPL from capturing it as a
@@ -2171,7 +2176,12 @@ module Rubino
           entry = @history.up(buffer)
           next if entry.nil?
 
-          @input_line.replace(entry)
+          # A recalled history entry is USER-SUPPLIED text that could carry the
+          # SAME terminal escapes as a fresh paste (CWE-150 — H1); neutralize it
+          # before it becomes the live, rendered buffer so a recalled `\e[2J` /
+          # `\e]0;…\a` can't hijack the terminal on redraw. Keeps the
+          # buffer-has-no-raw-control-bytes invariant the paste seam establishes.
+          @input_line.replace(Util::Output.sanitize_terminal(entry))
           redraw
         end
       end
@@ -2202,7 +2212,9 @@ module Rubino
           entry = @history.down(buffer)
           next if entry.nil?
 
-          @input_line.replace(entry)
+          # See #history_up: a recalled entry is sanitized before it becomes the
+          # live buffer so embedded escapes render inertly, not execute (H1).
+          @input_line.replace(Util::Output.sanitize_terminal(entry))
           redraw
         end
       end

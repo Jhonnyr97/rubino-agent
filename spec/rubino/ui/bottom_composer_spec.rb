@@ -1049,6 +1049,17 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.handle_key("\r")
       expect(store).to eq(%w[first second]) # not [first second second]
     end
+
+    # H1 (CWE-150): a recalled history entry is USER-SUPPLIED text that could
+    # carry terminal escapes; it must be neutralized before it becomes the live,
+    # rendered buffer so a recalled `\e]0;…\a` / `\e[2J` can't hijack the
+    # terminal on redraw.
+    it "neutralizes terminal escapes in a recalled history entry" do
+      store.replace(["run \e]0;PWN\a job"]) # a prior entry with an OSC escape
+      arrow(composer, "A")
+      expect(composer.buffer).to eq("run ^[]0;PWN^G job")
+      expect(composer.buffer).not_to include("\e")
+    end
   end
 
   describe "/command + @file completion menu" do
