@@ -114,6 +114,25 @@ module Rubino
         @idle_cards ||= Chat::IdleCardHost.new
       end
 
+      # Auto-opens the EXISTING approval / reply prompt for ONE pending subagent
+      # request the human must act on, from the idle poll loop (#421). Delegates
+      # to the SAME Handlers::Agents the /agents and /reply slash commands use, so
+      # there is no second prompt or new verb — the affordance simply opens itself
+      # at idle instead of waiting for the user to type a slash command. Returns
+      # true when it presented a request (the poll loop repaints + re-checks),
+      # false when nothing was pending. Best-effort: a hiccup in the auto-open
+      # must never break the idle prompt, so it falls back to "nothing pending"
+      # and the manual slash paths still work.
+      def auto_resolve_pending_subagent_request(_runner = nil)
+        agents_request_handler.auto_resolve_pending
+      rescue StandardError
+        false
+      end
+
+      def agents_request_handler
+        @agents_request_handler ||= Commands::Handlers::Agents.new(ui: Rubino.ui)
+      end
+
       def bang_shell
         @bang_shell ||= Chat::BangShell.new
       end
@@ -1348,6 +1367,23 @@ module Rubino
           if int_pending
             int_pending = false
             break if composer.idle_interrupt(window: DOUBLE_TAP_SECONDS) == :exit
+          end
+
+          # Auto-open the EXISTING approval / reply prompt for a pending subagent
+          # request (#421): a parked child needs a human decision, so the
+          # affordance presents ITSELF here at idle instead of leaving a passive
+          # card the user must answer by guessing `/agents <id>` / `/reply <id>`.
+          # This is the SAME prompt those slash commands open — just auto-opened.
+          # Because the REPL re-enters this idle loop at EVERY turn boundary
+          # (including after an interrupted/aborted turn), a request that arrived
+          # mid-turn or survived an abort is re-detected here and never lost. The
+          # prompt runs under run_in_terminal (the @ui.ask/@ui.select primitives
+          # suspend THIS composer and restore it after), so it does not race the
+          # reader. Resolves one request, then `next` so the cards repaint and the
+          # loop re-checks for the next pending request before reading input.
+          if auto_resolve_pending_subagent_request(runner)
+            idle_cards.paint
+            next
           end
 
           # Take ONE parked line (FIFO) so several items queued at idle each run
