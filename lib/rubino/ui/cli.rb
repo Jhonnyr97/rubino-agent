@@ -1754,9 +1754,18 @@ module Rubino
       # The bottom composer is paused for the duration of the select so the menu
       # reads the real $stdin (no reader-thread race) and tty-screen sizes the
       # real $stdout (no NoMethodError on the StdoutProxy). No-op off-turn.
+      # +filter: true+ closes the "stray slash silently approves" hole (LOW): the
+      # menu used to be a plain `select`, so typing `/status` (a user reaching to
+      # "inspect first") was swallowed with no echo, and the NEXT Enter selected
+      # the highlighted default — Approve once — authorizing a call the user never
+      # meant to. With filtering on, typed characters narrow the list; a slash (or
+      # any token matching no "Approve …/Deny …" label) filters it to EMPTY, and
+      # tty-prompt's `keyenter` is a no-op on an empty list — so an accidental
+      # keystroke + Enter can no longer approve. Arrow-key ↑/↓ + Enter on a real
+      # option is unaffected; backspace clears the filter and restores the rows.
       def approval_menu(prompt, choices)
         BottomComposer.run_in_terminal do
-          approval_prompt.select(prompt, cycle: false) do |menu|
+          approval_prompt.select(prompt, cycle: false, filter: true) do |menu|
             choices.each { |label, value| menu.choice label, value }
           end
         end

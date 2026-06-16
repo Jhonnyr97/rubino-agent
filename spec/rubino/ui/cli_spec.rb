@@ -2060,6 +2060,50 @@ RSpec.describe Rubino::UI::CLI do
       # The shared select rendered the main-agent option set.
       expect(offered.call.map(&:last)).to include(:once, :always_command, :no, :deny_always)
     end
+
+    # Item 1 (LOW): the main approval menu used to be a plain `select` with NO
+    # filter, so typing `/status` was swallowed and the next Enter selected the
+    # highlighted default (Approve once) — an accidental approve. The menu now
+    # runs with `filter: true` so a stray keystroke narrows the list instead of
+    # silently riding on the default.
+    it "drives the select with filter: true so stray slash input can't approve" do
+      captured_opts = nil
+      prompt = instance_double(TTY::Prompt)
+      allow(prompt).to receive(:select) do |_q, **opts, &blk|
+        captured_opts = opts
+        blk&.call(double("menu").tap { |m| allow(m).to receive(:choice) })
+        :once
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+
+      ui.send(:approval_menu, "approve?", [["Approve once", :once], ["Deny once", :no]])
+      expect(captured_opts).to include(filter: true)
+    end
+
+    # Behavioral guard at the tty-prompt boundary: a `/status` filter matches NO
+    # "Approve …/Deny …" label, so the filtered choice list is EMPTY — and
+    # tty-prompt's keyenter is a no-op on an empty list. Pressing Enter therefore
+    # cannot complete the menu (cannot approve) while a stray slash is typed.
+    it "leaves an empty (un-enterable) list when a slash is typed (no accidental approve)" do
+      list = TTY::Prompt::List.new(TTY::Prompt.new, filter: true)
+      list.choice "Approve once", :once
+      list.choice "Approve always (this command)", :always_command
+      list.choice "Deny", :no
+
+      # Sanity: with no filter typed yet, Enter WOULD complete (approve).
+      expect(list.choices).not_to be_empty
+
+      # Simulate the user typing "/status" — each printable char feeds the filter.
+      "/status".each_char do |c|
+        list.send(:keypress, double("ev", value: c, key: double(name: nil)))
+      end
+      expect(list.choices).to be_empty
+
+      # Enter on the empty filtered list does NOT mark the menu done → no approve.
+      list.send(:keyenter)
+      expect(list.instance_variable_get(:@done)).to be_falsey
+    end
   end
 
   # #83: the danger annotation must be prominent (red+bold, not dim), and a

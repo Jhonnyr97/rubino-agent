@@ -78,5 +78,15 @@ RSpec.describe Rubino::LLM::CredentialCheck do
       expect(file_options).not_to be_empty
       expect(file_options).to all(include("rubino setup"))
     end
+
+    # F1 wording: `rubino setup` creates BOTH the .env and config.yml, so the
+    # "(or run `rubino setup` to create …)" parenthetical reads "them", never the
+    # singular "it".
+    it "uses the plural \"create them\" (setup creates both files)" do
+      c = config("model" => { "default" => "openai/gpt-4.1", "provider" => "auto" })
+      msg = described_class.missing_key_message(c)
+      expect(msg).to include("to create them")
+      expect(msg).not_to include("to create it")
+    end
   end
 end
