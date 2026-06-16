@@ -359,7 +359,7 @@ module Rubino
       # parks) AND the toolset contains a tool that can trigger the gate:
       #   - `question`  → @ui.ask (clarify) — always blocks when called.
       #   - any risky tool under manual approvals → @ui.confirm — blocks.
-      #   - `shell` when require_confirmation_for_shell is on → confirm.
+      #   - `shell` under confirm_policy: confirm_all → confirm.
       # Memoised per run; the toolset is fixed for the turn.
       def interactive_turn?
         return @interactive_turn unless @interactive_turn.nil?

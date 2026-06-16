@@ -677,37 +677,20 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       end
     end
 
-    context "back-compat alias coercion" do
-      it "require_confirmation_for_shell:false coerces to dangerous_only" do
-        cfg = test_configuration(
-          "approvals" => { "mode" => "manual" },
-          "security" => { "require_confirmation_for_shell" => false }
-        )
-        pol = described_class.new(config: cfg)
-        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
-        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
-      end
-
-      it "require_confirmation_for_shell:true keeps confirm_all" do
+    # item 7: confirm_policy is the SOLE source of truth — the legacy
+    # require_confirmation_for_shell alias was removed and is no longer honored.
+    context "removed require_confirmation_for_shell alias" do
+      it "IGNORES require_confirmation_for_shell:true (no silent confirm_all)" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
           "security" => { "require_confirmation_for_shell" => true }
         )
         pol = described_class.new(config: cfg)
-        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:ask)
-      end
-
-      it "confirm_policy wins over the alias when BOTH are set" do
-        cfg = test_configuration(
-          "approvals" => { "mode" => "manual" },
-          "security" => {
-            "confirm_policy" => "dangerous_only",
-            "require_confirmation_for_shell" => true
-          }
-        )
-        pol = described_class.new(config: cfg)
-        # alias says confirm_all, but confirm_policy=dangerous_only wins
+        # The removed key has no effect: the seeded dangerous_only default holds,
+        # so a SAFE command still runs unprompted (it would be :ask under the old
+        # alias mapping).
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
+        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
       end
     end
   end
@@ -726,7 +709,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "ALLOWS memory ops without a prompt in manual mode + shell confirmation" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "require_confirmation_for_shell" => true }
+        "security" => { "confirm_policy" => "confirm_all" }
       )
       policy = described_class.new(config: cfg)
 

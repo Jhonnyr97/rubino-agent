@@ -409,29 +409,19 @@ module Rubino
         dig("approvals", "readonly_commands") || []
       end
 
-      # When true, a `shell` tool call must always be confirmed in manual mode
-      # even if the tool's own risk level wouldn't otherwise require it. Default
-      # true (key absent = on) so shell-by-default stays gated behind a human.
-      def require_confirmation_for_shell?
-        dig("security", "require_confirmation_for_shell") != false
-      end
-
-      # Effective shell prompt policy: :confirm_all (every not-otherwise-allowed
-      # shell command prompts — today's default) or :dangerous_only (safe shell
-      # commands run unprompted; only DangerousPatterns matches prompt).
-      #
-      # Resolution / coercion (documented in defaults.rb):
-      #   - if security.confirm_policy is set explicitly, it WINS (over the
-      #     legacy alias);
-      #   - otherwise it is DERIVED from require_confirmation_for_shell
-      #     (true -> :confirm_all, false -> :dangerous_only),
-      # so any deployment that only ever set the old alias keeps its behavior.
-      # An unrecognized value falls back to the derived alias result.
+      # Effective shell prompt policy and SOLE source of truth (item 7): the
+      # legacy security.require_confirmation_for_shell alias was REMOVED — no
+      # back-compat mapping. :dangerous_only (DEFAULT — safe shell commands run
+      # unprompted; only DangerousPatterns matches prompt) or :confirm_all (every
+      # not-otherwise-allowed shell command prompts). An unset or unrecognized
+      # value falls back to the seeded :dangerous_only default. A config that
+      # still carries the removed key is NOT silently honored — Validator.warnings
+      # flags it at load + in `rubino doctor`.
       def confirm_policy
         raw = dig("security", "confirm_policy")
         return raw.to_sym if %w[confirm_all dangerous_only].include?(raw.to_s)
 
-        require_confirmation_for_shell? ? :confirm_all : :dangerous_only
+        :dangerous_only
       end
 
       # The pre-approved command allowlist, always returned as an Array.

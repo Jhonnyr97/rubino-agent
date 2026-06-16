@@ -389,8 +389,30 @@ module Rubino
         warn "rubino: #{e.message}"
         exit(1)
       ensure
+        # ONESHOT-ACTIVE on the FAILURE path (item 6): a TERMINAL exception
+        # (provider unreachable / unknown model / any uncaught error) raises out
+        # AFTER the session row was created but BEFORE the success-path
+        # end_session! above, so the row used to linger status=active with a
+        # stale owner_pid until a future `sessions list` reaped it. Finalize it
+        # to `ended` here in the ensure — the single chokepoint every exit path
+        # (success, interrupt, error, SystemExit re-raise) runs through — so the
+        # row is correct IMMEDIATELY, not eventually. Idempotent and best-effort
+        # (end_session! rescues internally, no-ops an unpersisted/already-ended
+        # row), so re-running it after the success-path call is harmless.
+        finalize_oneshot_session!(runner)
         recorder&.detach!
         restore_logger(prev_log_io)
+      end
+
+      # Best-effort finalize of the one-shot session row to `ended`, called from
+      # the ensure of BOTH one-shot paths (text + json) so a terminal exception
+      # never leaves a status=active row behind (item 6). `runner` may be nil if
+      # the failure happened before it was built (e.g. in setup); guard for that.
+      # end_session! is itself fully rescued, so this can never break the exit.
+      def finalize_oneshot_session!(runner)
+        runner&.end_session!
+      rescue StandardError
+        nil
       end
 
       # Machine-readable headless one-shot (0.5.0, #312). Emits Claude-Code-aligned
@@ -550,6 +572,11 @@ module Rubino
                   ))
         exit(1)
       ensure
+        # ONESHOT-ACTIVE on the JSON failure path (item 6): same as the text path
+        # — a terminal exception must finalize the session row to `ended` here so
+        # it never lingers status=active with a stale owner_pid. Idempotent and
+        # best-effort.
+        finalize_oneshot_session!(runner)
         recorder&.detach!
         restore_logger(prev_log_io)
       end
