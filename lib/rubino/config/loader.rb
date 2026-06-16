@@ -52,6 +52,16 @@ module Rubino
         deep_merge(Defaults.to_hash, expand_env_vars(raw))
       end
 
+      # The RAW user config.yml as a Hash (NOT merged with defaults), or {} when
+      # no file exists. Public so the boot guard / doctor can run LOAD-time
+      # schema validation (F8) over exactly what the user hand-edited — defaults
+      # are valid by construction, so merging them in would hide the user's
+      # mistakes. Same normalization as #load (a malformed shape raises
+      # ConfigError), so callers get a clean error, never a raw Psych backtrace.
+      def raw_config
+        load_raw_config
+      end
+
       # Returns true if a config file exists
       def config_exists?
         File.exist?(@config_path)

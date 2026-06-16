@@ -43,8 +43,10 @@ module Rubino
         command = @loader.find(name)
         unless command
           @ui.error("unknown command: /#{name}")
-          @ui.info("Available: #{help_handler.available_commands.join(", ")}")
-          return :handled # Signal that it was handled (even if failed)
+          # "Did you mean /X?" on the closest known command before the full
+          # roster (FRICTION-4) — the affordance Thor/git/bundler ship for typos.
+          # Returns :handled so try_execute reports it handled (even if failed).
+          return help_handler.suggest_and_list(name)
         end
 
         run_custom_command(command, name, arguments)
@@ -160,11 +162,12 @@ module Rubino
           # signal the REPL applies to the live runner + Rubino::ActiveAgent.
           agent_switch_handler.handle_picker(arguments)
         when "agents", "tasks"
+          # handle_agents returns nil (puts-based UI); the explicit :handled
+          # stops try_execute falling through to unknown-command (#34).
           agents_handler.handle_agents(arguments)
-          # handle_agents delegates to the puts-based UI (info/table), whose
-          # methods return nil; without an explicit :handled the falsy result
-          # makes try_execute fall through to the unknown-command path (#34).
           :handled
+        when "stop" # `/stop <id>` → `/agents <id> --stop` alias (FRICTION-4)
+          agents_handler.handle_stop_alias(arguments) # returns :handled
         when "reply"
           agents_handler.handle_reply(arguments)
           :handled

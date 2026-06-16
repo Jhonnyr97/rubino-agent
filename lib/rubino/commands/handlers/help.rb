@@ -25,6 +25,32 @@ module Rubino
           (BuiltIns::NAMES + custom).uniq
         end
 
+        # Closest known slash command to a mistyped +name+ (no leading slash),
+        # rendered WITH its slash for the "Did you mean /X?" hint, or nil when
+        # none is close enough (FRICTION-4). Uses Ruby's stdlib SpellChecker
+        # (DidYouMean) — the same Levenshtein matcher Thor/Bundler use — so the
+        # distance threshold scales with command length. Best-effort: any
+        # matcher hiccup just yields no suggestion.
+        def closest_command(name)
+          require "did_you_mean"
+          bare  = name.to_s.delete_prefix("/")
+          names = available_commands.map { |c| c.to_s.delete_prefix("/") }
+          match = DidYouMean::SpellChecker.new(dictionary: names).correct(bare).first
+          match && "/#{match}"
+        rescue StandardError
+          nil
+        end
+
+        # The unknown-command tail (FRICTION-4): a "Did you mean /X?" line for the
+        # closest match (when one is close enough) followed by the full Available
+        # roster. Lives here next to the command list it reads.
+        def suggest_and_list(name)
+          suggestion = closest_command(name)
+          @ui.info("Did you mean #{suggestion}?") if suggestion
+          @ui.info("Available: #{available_commands.join(", ")}")
+          :handled
+        end
+
         def show_help
           @ui.info("Slash commands run actions or reusable prompts. Type /<name>; /help is this list.")
           @ui.blank_line
