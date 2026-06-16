@@ -125,15 +125,22 @@ module Rubino
       # value fails fast with a clear stderr message + non-zero exit BEFORE any
       # model work, so a typo never silently degrades to prose. Default :text.
       def output_format
-        return :json if opt(:json) == true
-
+        # Validate an EXPLICIT --output-format value FIRST, even when --json is
+        # also passed (F10). Returning :json early on --json used to skip this
+        # check, so `--json --output-format xml` silently ignored the bogus `xml`
+        # and exited 0 — a typo that should have been rejected. An invalid value
+        # is always an error; --json then only aliases a *valid-or-absent* format.
         raw = (opt(:output_format) || opt(:"output-format")).to_s.strip
+        unless raw.empty?
+          fmt = raw.tr("-", "_").to_sym
+          unless OUTPUT_FORMATS.include?(fmt)
+            fail_arg!("invalid --output-format '#{raw}' (expected: text, json, stream-json)", exit_code: 2)
+          end
+        end
+
+        return :json if opt(:json) == true
         return :text if raw.empty?
 
-        fmt = raw.tr("-", "_").to_sym
-        unless OUTPUT_FORMATS.include?(fmt)
-          fail_arg!("invalid --output-format '#{raw}' (expected: text, json, stream-json)", exit_code: 2)
-        end
         fmt
       end
 

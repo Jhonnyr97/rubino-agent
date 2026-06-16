@@ -19,6 +19,24 @@ module Rubino
   # Domain errors (ConfigurationError, DatabaseError, SessionError, ToolError,
   # CompactionError, JobError) also subclass Error and live in lib/rubino.rb.
 
+  module Database
+    # Raised when a DB connection can't be established because a peer held the
+    # write lock past the bounded retry budget — a SUSTAINED concurrent-migration
+    # contention (#333/#359). Reopened with its full rationale in
+    # database/connection.rb, but DEFINED here, in the always-`require`d
+    # errors.rb, on purpose: `CLI::Commands.start` rescues this constant as its
+    # final boot-lock backstop (#445), and database/connection.rb is LAZILY
+    # autoloaded (only once `Rubino.database` is first touched). For any error
+    # that reaches that rescue BEFORE the DB is opened — an unknown subcommand, a
+    # bad flag, an empty prompt, a config-set validation error — Ruby would
+    # otherwise evaluate the rescue's class expression against an UNLOADED
+    # constant and raise `NameError: uninitialized constant
+    # Rubino::Database::BusyError`, masking the real (often clean Thor) error
+    # with a ~60-line backtrace. Defining it eagerly here keeps the rescue inert
+    # for non-DB errors while still catching a genuine concurrent-boot BusyError.
+    class BusyError < StandardError; end
+  end
+
   # Resource not found. Maps to 404.
   #
   # @param resource [String, Symbol] resource type (e.g. "Session", :run)

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "thor"
+require "json"
 
 module Rubino
   module CLI
@@ -48,14 +49,83 @@ module Rubino
           return super(["help", cmd], config)
         end
 
-        super
+        # Force Thor's own `start` to RE-RAISE a Thor::Error (unknown command,
+        # bad/malformed flag, ambiguous command, a subcommand's `raise
+        # Thor::Error`) instead of swallowing it into a bare stderr line + exit
+        # (its default). We catch it below so EVERY dispatch/argument error is
+        # surfaced format-aware (#327): a clean stderr line under text, a
+        # well-formed JSON error envelope on STDOUT under --output-format
+        # json|stream-json — never an empty stdout, and never a raw backtrace.
+        super(given_args, config.merge(debug: true))
       rescue Rubino::Database::BusyError => e
         # Final backstop (#333/#359): a SUSTAINED concurrent-migration lock that
         # outlived the connection retry budget must surface as a clean single
         # line + non-zero exit at this one chokepoint — never a raw Sequel/
         # SQLite backtrace from whichever command happened to touch the DB.
+        # (Rubino::Database::BusyError is DEFINED in the always-loaded errors.rb
+        # so naming it here can never NameError before the DB is autoloaded —
+        # #445-regression fix.)
         warn "rubino: #{e.message}"
         exit(1)
+      rescue Thor::Error, Rubino::ConfigurationError => e
+        # A pre-run error that reached the boot chokepoint:
+        #   * Thor::Error — a dispatch/argument failure (Thor::UndefinedCommandError
+        #     carrying its own "Did you mean?" suggestion, MalformattedArgumentError
+        #     for a bad `--max-turns abc`, a subcommand's `raise Thor::Error`).
+        #   * Rubino::ConfigurationError — a source-raised config error, today a
+        #     careless RUBINO_HOME pointing at a file / read-only parent (F13,
+        #     raised by Rubino.ensure_directories!).
+        # Surface it in the format the invocation asked for: under json/stream-json
+        # emit the #327 envelope on stdout so automation can parse the failure (the
+        # prior behaviour left stdout EMPTY for Thor errors, or leaked a raw Errno
+        # backtrace for the home error); otherwise the clean one-line stderr Thor
+        # itself would have printed. Never a raw backtrace; exit non-zero.
+        report_early_error(given_args, e.message)
+      end
+
+      # Surfaces a pre-run error (a Thor dispatch/argument error caught in #start,
+      # or any other boot-time failure that escapes a command body) in the
+      # invocation's chosen output format, then exits non-zero (#327). Under
+      # --output-format json|stream-json the message becomes the same
+      # {type:"result", is_error:true, …} envelope ChatCommand#fail_arg! emits for
+      # an empty prompt / invalid --output-format, so a json consumer ALWAYS gets
+      # a parseable object on stdout; under text it is the clean `rubino: <msg>`
+      # stderr line. The JSON path is wholly best-effort: an envelope hiccup must
+      # never mask the underlying failure, so it falls back to the stderr line.
+      def self.report_early_error(given_args, message, exit_code: 1)
+        if json_output_requested?(given_args)
+          begin
+            $stdout.puts JSON.generate(Output::ResultSerializer.arg_error(message: message))
+            $stdout.flush
+          rescue StandardError
+            warn "rubino: #{message}"
+          end
+        else
+          warn "rubino: #{message}"
+        end
+        exit(exit_code)
+      end
+
+      # True when the raw CLI args ask for a machine-readable one-shot mode —
+      # `--json`, or `--output-format json|stream-json` (hyphen or underscore,
+      # `=`-joined or space-separated). Decided from the raw argv (NOT Thor's
+      # parsed options) because the error we're reporting can be the very failure
+      # that aborted option parsing, so parsed options may be unavailable. Mirrors
+      # ChatCommand#json_requested? so the early-error envelope matches the
+      # in-command one.
+      def self.json_output_requested?(given_args)
+        args = Array(given_args).map(&:to_s)
+        return true if args.include?("--json")
+
+        args.each_with_index do |a, i|
+          if ["--output-format", "--output_format"].include?(a)
+            val = args[i + 1].to_s.tr("-", "_")
+            return true if %w[json stream_json].include?(val)
+          elsif (m = a.match(/\A--output[-_]format=(.+)\z/))
+            return true if %w[json stream_json].include?(m[1].tr("-", "_"))
+          end
+        end
+        false
       end
 
       # Wrap subcommand help so `chat --help` / `prompt --help` stay within 80

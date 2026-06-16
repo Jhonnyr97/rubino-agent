@@ -85,6 +85,16 @@ module Rubino
 
       # Drives the wizard. Returns true when a provider was configured, false
       # when the user skipped (empty/`s`/`skip` at the provider prompt).
+      #
+      # A Ctrl-C MID-wizard — after picking a provider, before pasting the key —
+      # used to escape as a raw `Interrupt` backtrace out of `gets`/`noecho`
+      # (H2). Catch it here and abort CLEANLY: print "Setup cancelled." and exit
+      # 130 (the conventional SIGINT code). Nothing is half-written — #persist!
+      # (the only writer of the provider's model.* / .env key) runs ONLY after a
+      # non-empty key is obtained, several lines below the interrupt point, so an
+      # abort leaves the config at the seeded defaults and re-running `setup`
+      # works. The base config.yml/.env `setup` materialized before onboarding
+      # are the intended seed files, not partial wizard state.
       def run
         @ui.blank_line
         @ui.info("Welcome to rubino — let's get you connected to a model.")
@@ -107,6 +117,10 @@ module Rubino
         @ui.status("Saved to #{config_loader.config_path} and #{config_loader.env_path}.")
         @ui.blank_line
         true
+      rescue Interrupt
+        @output.puts
+        @ui.warning("Setup cancelled.")
+        exit(130)
       end
 
       private
