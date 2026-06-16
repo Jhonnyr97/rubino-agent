@@ -1877,7 +1877,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.compression_finished({ saved_tokens: 10, original_messages: 12, compacted_messages: 5 })
       end
       expect(pre).to include("┄ compacting context… ┄")
-      expect(post).to match(/┄ compacted · saved 10 tok \(12→5 msg\) ┄/)
+      expect(post).to include("┄ compacted · saved 10 tok (12→5 msg) ┄")
     end
   end
 
