@@ -45,6 +45,14 @@ module Rubino
         input.strip.start_with?("/")
       end
 
+      # A bare `/` (or slash + only whitespace) is a misfire, not a prompt and
+      # not a command: it parses to the built-in `commands` listing so it shows
+      # the roster instead of burning an LLM turn (bare `/`, which would parse to
+      # a nil name) or reporting "unknown command: /" (`/ foo`, which would parse
+      # to an empty command name). Keeps the misfire handled in one place so the
+      # REPL dispatcher needs no special case.
+      BARE_SLASH_COMMAND = "commands"
+
       # Parses a slash command input into [command_name, arguments]
       def parse(input)
         stripped = input.strip
@@ -53,6 +61,10 @@ module Rubino
         parts = stripped[1..].split(/\s+/, 2)
         command_name = parts[0]
         arguments = parts[1] || ""
+        # `/` alone, or `/` followed by only whitespace, has no command name —
+        # show the roster rather than dispatch a real turn / "unknown command".
+        return [BARE_SLASH_COMMAND, ""] if command_name.nil? || command_name.empty?
+
         [command_name, arguments]
       end
 

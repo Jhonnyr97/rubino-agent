@@ -49,4 +49,29 @@ RSpec.describe Rubino::Config::Validator do
       end
     end
   end
+
+  # H3: read-but-unseeded top-level sections (read at point-of-use with a
+  # fallback, never seeded in Defaults) must be accepted, not rejected as the
+  # misleading "not a config section" typo error. oauth.providers.* is read by
+  # OAuth::Registry; sessions.list_limit by Commands::Handlers::Sessions.
+  describe "#validate! known top-level sections" do
+    it "accepts oauth.* (read by OAuth::Registry, not seeded)" do
+      expect do
+        described_class.validate!("oauth.providers.github.client_id",
+                                  %w[oauth providers github client_id], "abc123")
+      end.not_to raise_error
+    end
+
+    it "accepts sessions.* (read by Sessions handler, not seeded)" do
+      expect do
+        described_class.validate!("sessions.list_limit", %w[sessions list_limit], "20")
+      end.not_to raise_error
+    end
+
+    it "still rejects a genuinely unknown top-level section" do
+      expect do
+        described_class.validate!("frobnicate.enabled", %w[frobnicate enabled], "true")
+      end.to raise_error(Rubino::ConfigurationError, /not a config section/)
+    end
+  end
 end

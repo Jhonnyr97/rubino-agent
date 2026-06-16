@@ -68,12 +68,6 @@ module Rubino
         @active
       end
 
-      # True once a fallback has been activated this turn — lets callers emit the
-      # "switched to fallback" status only when something actually changed.
-      def active?
-        @index.positive?
-      end
-
       # Advance to the next usable, non-duplicate fallback and rebuild the
       # adapter. Returns true if it actually switched, false when the chain is
       # exhausted (or empty). Mirrors try_activate_fallback (helpers.py:1020):

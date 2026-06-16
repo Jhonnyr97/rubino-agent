@@ -308,9 +308,12 @@ module Rubino
           masked = Util::SecretsMask.mask_value(value, key: key)
           memo[key.to_s] = truncate_for_event(masked.to_s)
         end
-      rescue StandardError
+      rescue StandardError => e
         # Never block the run because of a serialisation hiccup — drop the
-        # arguments rather than crash the tool emission path.
+        # arguments rather than crash the tool emission path. Log it so a coding
+        # bug here doesn't silently blank every tool event's arguments.
+        Rubino.logger&.warn(event: "tool_executor.sanitize_arguments_failed",
+                            error: e.message, error_class: e.class.name)
         nil
       end
 
@@ -338,8 +341,11 @@ module Rubino
           status: "denied",
           error: reason
         )
-      rescue StandardError
-        # Don't fail the user's request just because the audit write failed.
+      rescue StandardError => e
+        # Don't fail the user's request just because the audit write failed —
+        # but log it, so a silently dropped denial-audit row is traceable.
+        Rubino.logger&.warn(event: "tool_executor.record_denied_failed",
+                            error: e.message, error_class: e.class.name)
       end
 
       # Stamps the executor's session id onto the Result (built deep in the tool
@@ -501,7 +507,12 @@ module Rubino
           body << "  [… #{dropped} more line(s)]"
         end
         (lines + body).join("\n")
-      rescue StandardError
+      rescue StandardError => e
+        # A preview is cosmetic — fall back to the generic per-key formatter
+        # rather than crash the approval prompt. Log it so a malformed-shape
+        # coding bug here doesn't silently disable the multi_edit diff preview.
+        Rubino.logger&.warn(event: "tool_executor.multi_edit_preview_failed",
+                            error: e.message, error_class: e.class.name)
         nil
       end
 

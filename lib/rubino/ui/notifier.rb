@@ -28,8 +28,6 @@ module Rubino
     # emitted one are dropped, so a burst (several children blocking at once)
     # rings at most once.
     class Notifier
-      # Event names the command hook sees via RUBINO_EVENT.
-      EVENTS = %i[turn_finished needs_approval blocked].freeze
       # Burst window: events within this many seconds of the last emitted
       # notification coalesce (are dropped).
       COALESCE_SECONDS = 1.0

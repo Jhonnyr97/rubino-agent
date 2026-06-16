@@ -38,7 +38,13 @@ module Rubino
       # intentionally incomplete (model.api_key, display.reasoning, …), so a
       # deeper check would reject legitimate-but-unseeded keys. Type/format
       # checks still apply to every known leaf regardless.
-      EXTRA_TOP_LEVEL_SECTIONS = %w[sessions].freeze
+      #   * sessions — read at point-of-use (Commands::Handlers::Sessions reads
+      #                sessions.list_limit) with a fallback, not seeded.
+      #   * oauth    — read at boot (OAuth::Registry reads oauth.providers.*)
+      #                with a fallback, not seeded; without it `config set
+      #                oauth.providers.github.client_id …` was rejected with the
+      #                misleading "not a config section" typo error (H3).
+      EXTRA_TOP_LEVEL_SECTIONS = %w[sessions oauth].freeze
 
       # Closed numeric ranges for the obvious bounded keys (#392b). A value that
       # type-checks as a number but falls outside its range used to be persisted

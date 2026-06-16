@@ -56,6 +56,21 @@ RSpec.describe Rubino::Commands::Loader do
     it "returns nil for non-slash input" do
       expect(loader.parse("hello")).to be_nil
     end
+
+    # H4: a bare `/` used to parse to [nil, ""] and fall through to a real LLM
+    # turn; `/ foo` parsed to ["", "foo"] and reported "unknown command: /".
+    # Both now map to the built-in `commands` listing so neither misfires.
+    it "maps a bare slash to the commands listing (not a real turn)" do
+      expect(loader.parse("/")).to eq(["commands", ""])
+    end
+
+    it "maps a slash followed by only whitespace to the commands listing" do
+      expect(loader.parse("/   ")).to eq(["commands", ""])
+    end
+
+    it "maps a slash + space + args to the commands listing (not 'unknown command')" do
+      expect(loader.parse("/ foo")).to eq(["commands", ""])
+    end
   end
 
   # -----------------------------------------------------------------------
