@@ -189,6 +189,18 @@ module Rubino
         )
 
         if budget.needs_compaction?(messages)
+          # Structural no-op back-off (#484): a session OVER the token budget but
+          # with too few messages to compact (count < the protected head/tail
+          # floor) makes compact! a no-op every turn — saved 0 tok, no child, so
+          # the budget check stays true forever and the session busy-loops
+          # "compacting… saved 0 tok" while the gauge stays pinned at 100%. The
+          # two gates disagree (token budget here vs message-count floor in
+          # compact!) and the no-op writes no lineage row, so thrashing? never
+          # engages. Once a structural no-op fires, suppress further attempts
+          # until the input (message count) actually changes — the user can
+          # still force /compact, and a real compaction clears the marker.
+          return messages if structural_noop_pending?(messages)
+
           compressor = Context::Compressor.new(session_id: @session[:id])
 
           # Anti-thrash back-off (#415a): if the last two compactions in this
@@ -198,11 +210,24 @@ module Rubino
           return messages if compressor.thrashing?
 
           @state.transition_to!(:compressing_context, event_bus: @event_bus)
-          @ui.compression_started
-          @event_bus.emit(Events::COMPRESSION_STARTED, session_id: @session[:id])
 
           result = compressor.compact!
 
+          # A structural no-op (too few messages / empty middle) creates no
+          # child and saves nothing. Don't announce it — emitting
+          # compression_started/finished here is what printed the misleading
+          # "compacting… saved 0 tok" on EVERY turn (#484). Record the no-op so
+          # the back-off above skips the re-attempt until the input changes, and
+          # leave the parent untouched (mirrors the manual /compact path, which
+          # already returns silently on result[:skipped]).
+          if result[:skipped]
+            @noop_compaction_fingerprint = messages.size
+            return messages
+          end
+          @noop_compaction_fingerprint = nil
+
+          @ui.compression_started
+          @event_bus.emit(Events::COMPRESSION_STARTED, session_id: @session[:id])
           @event_bus.emit(Events::COMPRESSION_FINISHED, **result)
           @ui.compression_finished(result)
 
@@ -237,6 +262,14 @@ module Rubino
         else
           messages
         end
+      end
+
+      # True when the previous turn's compaction was a structural no-op for THIS
+      # same message count: re-attempting would no-op again (saved 0 tok, no
+      # child), so skip the whole compaction block until the count changes
+      # (#484). Cleared on any real compaction or when the count moves.
+      def structural_noop_pending?(messages)
+        @noop_compaction_fingerprint == messages.size
       end
 
       def run_agent_loop(messages, tools, image_paths: [], input_queue: nil)

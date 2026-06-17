@@ -187,6 +187,72 @@ RSpec.describe Rubino::Interaction::Lifecycle do
 
       expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
     end
+
+    # #484 (MED-HIGH): a session OVER the token budget but BELOW the message-count
+    # floor makes compact! a structural no-op (saved 0 tok, no child). The token
+    # gate stays true forever, so the pre-fix lifecycle re-attempted compaction —
+    # and emitted compression_started/finished — on EVERY turn: the user saw
+    # "compacting… saved 0 tok" each turn while the ctx gauge stayed pinned at
+    # 100%, never recovering. The no-op writes no lineage row, so thrashing?
+    # never engaged. These specs pin the back-off + the silenced UI noise.
+    context "when over budget but too few messages to compact (#484)" do
+      before do
+        allow(budget).to receive(:needs_compaction?).and_return(true)
+        allow(compressor).to receive(:compact!).and_return(
+          source_session_id: "parent-1", saved_tokens: 0, skipped: true,
+          reason: :too_few_messages, minimum_messages: 28
+        )
+      end
+
+      it "does not busy-loop: re-attempts compaction only once for an unchanged transcript" do
+        # Three turns on the SAME message count: the first attempt no-ops, the
+        # next two must back off (no re-attempt) until the input changes.
+        expect(compressor).to receive(:compact!).once
+
+        3.times { lifecycle.send(:check_and_compact, long_messages) }
+
+        expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
+      end
+
+      it "does not emit 'compacting… saved 0 tok' UI/events on a structural no-op" do
+        events = []
+        event_bus.on(Rubino::Interaction::Events::COMPRESSION_STARTED) { events << :started }
+        event_bus.on(Rubino::Interaction::Events::COMPRESSION_FINISHED) { events << :finished }
+
+        lifecycle.send(:check_and_compact, long_messages)
+
+        ui_levels = null_ui.messages.map { |m| m[:level] }
+        expect(ui_levels).not_to include(:compression_started)
+        expect(ui_levels).not_to include(:compression_finished)
+        expect(events).to be_empty
+      end
+
+      it "re-attempts once the transcript grows (input changed)" do
+        expect(compressor).to receive(:compact!).twice
+
+        lifecycle.send(:check_and_compact, long_messages)
+        lifecycle.send(:check_and_compact, long_messages + [{ role: "user", content: "y" }])
+      end
+    end
+
+    # The legitimate path (enough messages → real compaction) must STILL announce
+    # progress and swap the session — the #484 back-off only silences no-ops.
+    it "still emits compression UI/events and swaps on a real compaction" do
+      allow(budget).to receive(:needs_compaction?).and_return(true)
+      allow(compressor).to receive(:compact!).and_return(
+        source_session_id: "parent-1", target_session_id: "child-9",
+        original_messages: 30, compacted_messages: 5, saved_tokens: 4200, summary_id: "sum-1"
+      )
+      events = []
+      event_bus.on(Rubino::Interaction::Events::COMPRESSION_FINISHED) { events << :finished }
+
+      lifecycle.send(:check_and_compact, long_messages)
+
+      ui_levels = null_ui.messages.map { |m| m[:level] }
+      expect(ui_levels).to include(:compression_started, :compression_finished)
+      expect(events).to eq([:finished])
+      expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("child-9")
+    end
   end
 
   describe "#load_memory" do
