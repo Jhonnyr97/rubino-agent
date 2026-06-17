@@ -90,7 +90,7 @@ module Rubino
       end
 
       def tool_body(text, kind: :plain) = emit_event(:tool_body, text: text, kind: kind)
-      def tool_chunk(name, chunk) = emit_event(:tool_chunk, name: name, chunk: chunk)
+      def tool_chunk(name, chunk, kind: :plain) = emit_event(:tool_chunk, name: name, chunk: chunk, kind: kind)
       def tool_finished(name, result: nil) = emit_event(:tool_finished, name: name)
       def compression_started(at: nil) = emit_event(:compression_started, at: at)
 

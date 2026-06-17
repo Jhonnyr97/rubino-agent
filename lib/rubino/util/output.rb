@@ -19,6 +19,136 @@ module Rubino
       DEFAULT_HEAD = 5
       DEFAULT_TAIL = 10
 
+      # The NUL byte (U+0000) is the one control char that is VALID UTF-8 yet
+      # still breaks the persistence layer: the SQLite3 driver treats it as a
+      # C-string terminator and raises "unrecognized token" (the tool row never
+      # persists), and JSON re-tags the value as BINARY. String#scrub leaves it
+      # alone (it only repairs INVALID bytes), so scrub-to-UTF-8 is necessary
+      # but not sufficient — NUL has to go too.
+      NUL = "\x00"
+
+      # Coerces +text+ to a clean, persistable UTF-8 string: valid encoding AND
+      # free of NUL bytes.
+      #
+      # Tool output is captured raw from a subprocess pipe / file read / MCP
+      # response and can be binary or latin-1 (`head -c 1500 /dev/urandom`,
+      # `cat some.png`). Such bytes are tagged UTF-8 (the pipe's external
+      # encoding) but are NOT valid UTF-8, so the moment they reach
+      # JSON.generate (the LLM request, the run-event store) or the SQLite
+      # driver they raise "source sequence is illegal/malformed utf-8" /
+      # "UTF-8 passed as BINARY" / "unrecognized token" and the tool row never
+      # persists — the model loses the record on --resume. Random binary ALSO
+      # carries NUL bytes, which survive String#scrub (NUL is valid UTF-8) yet
+      # still wedge SQLite, so we strip them here too. Cleaning at the CAPTURE
+      # seam (before the bytes are ever copied into the result) means every
+      # downstream consumer sees a safe string. Idempotent on already-clean
+      # input. Pure.
+      def self.scrub_utf8(text)
+        s = scrub_encoding(text)
+        s.include?(NUL) ? s.delete(NUL) : s
+      end
+
+      # Encoding-only repair: returns a valid-UTF-8 string, leaving control
+      # bytes (incl. NUL) in place. Split out from #scrub_utf8 because the two
+      # consumers want different things downstream of "make it valid UTF-8":
+      # the PERSIST seam (#scrub_utf8) deletes NUL outright (SQLite-fatal), but
+      # the TERMINAL render seam (#sanitize_terminal) wants every control byte
+      # turned into VISIBLE caret notation — so it scrubs encoding here, then
+      # does its own C0/C1 pass instead of pre-deleting NUL. Pure.
+      def self.scrub_encoding(text)
+        s = text.to_s
+        return s if s.encoding == Encoding::UTF_8 && s.valid_encoding?
+
+        s.dup.force_encoding(Encoding::UTF_8).scrub
+      end
+
+      # ESC (0x1B): the introducer for ALL the dangerous sequences — CSI
+      # (cursor move, screen clear, scroll region), OSC (set window title,
+      # hyperlinks, clipboard write), DCS, etc.
+      ESC = "\e"
+      # U+009B is the single-byte CSI introducer: a terminal treats it exactly
+      # like `ESC [`, so stripping ESC alone would leave a working injection
+      # vector. It only exists AFTER UTF-8 decoding (the byte 0x9B on its own
+      # is invalid UTF-8 and scrubbed; U+0085/U+0080–U+009F arrive via valid
+      # 2-byte forms), so we strip the C1 block on the decoded string.
+      C1_RANGE = "-"
+
+      # Neutralizes terminal-control bytes in UNTRUSTED tool output before it
+      # is printed to a real terminal.
+      #
+      # Threat (CWE-150): raw `\e[2J` (clear screen), `\e[41m…\e[0m` (color),
+      # `\e]0;…\a` (set title), `\e]52;…` (clipboard write) embedded in
+      # shell/file/MCP output reach the emulator and EXECUTE — the live tool
+      # tail printed it verbatim. Following git's `core.fsmonitor`-style and
+      # dgl.cx's "sanitize at the render chokepoint" guidance, we strip every
+      # control byte that can move the cursor, repaint, or drive the terminal,
+      # and render what we removed as visible caret/<XX> notation so the user
+      # SEES that bytes were there (silent deletion hides the attack).
+      #
+      # Kept: \t (0x09) and \n (0x0A) — legitimate layout. \r is normalized to
+      # \n (a bare CR rewinds the line and lets later text overwrite what was
+      # already shown — another spoofing vector). Stripped: C0 0x00–0x1F
+      # (except \t/\n), DEL 0x7F, ESC 0x1B, and the C1 block 0x80–0x9F.
+      #
+      # rubino's OWN styling (the @pastel.dim/green wrapper applied AROUND this
+      # content) is a separate, trusted path and is never passed through here.
+      # Pure.
+      def self.sanitize_terminal(text)
+        # Encoding-scrub ONLY (keep NUL et al.) so the C0 pass below can turn
+        # every control byte into visible caret notation — silent deletion
+        # would hide that the tool tried to emit them.
+        s = scrub_encoding(text)
+        # Bare CR (not part of CRLF) → newline, so overwrite-spoofing can't
+        # rewind the rendered line. CRLF collapses to a single LF.
+        s = s.gsub(/\r\n?/, "\n")
+        s = s.gsub(/[\x00-\x08\x0B-\x1F\x7F]/) { |c| caret(c) }
+        s.gsub(/[#{C1_RANGE}]/o) { |c| "<#{format("%02X", c.ord)}>" }
+      end
+
+      # SGR colour/style escapes (`\e[…m`) — the ONE escape class that is SAFE
+      # to keep through the sanitizer: it changes only colour/weight and cannot
+      # move the cursor, clear the screen, set the title, or write the
+      # clipboard. Matched so #sanitize_terminal_keep_sgr can preserve rubino's
+      # OWN styling (e.g. the colored /agents status glyph) while still
+      # neutralizing every dangerous control byte.
+      SGR_RE = /\e\[[0-9;]*m/
+
+      # Like #sanitize_terminal, but PRESERVES SGR colour escapes.
+      #
+      # Some sinks interpolate TRUSTED rubino styling (a pastel-colored cell,
+      # e.g. the /agents table's "● approval" status) THROUGH the same cell
+      # sanitizer that guards untrusted text. Plain #sanitize_terminal rendered
+      # those SGR bytes as visible caret notation (`^[[33m●^[[0m approval`) —
+      # the FRICTION-3 leak. Keep the (inert) SGR sequences, neutralize
+      # everything else exactly as #sanitize_terminal does, so colour survives
+      # but `\e[2J` / `\e]0;…` / cursor moves still can't reach the terminal.
+      # Callers that measure width must strip SGR first (see SGR_RE / the
+      # display-width helpers) since SGR occupies zero columns. Pure.
+      def self.sanitize_terminal_keep_sgr(text)
+        s = scrub_encoding(text)
+        # Carve out the SGR runs, sanitize the gaps, splice the SGR back in.
+        parts = []
+        last  = 0
+        s.to_enum(:scan, SGR_RE).each do
+          m = Regexp.last_match
+          parts << sanitize_terminal(s[last...m.begin(0)])
+          parts << m[0]
+          last = m.end(0)
+        end
+        parts << sanitize_terminal(s[last..]) if last < s.length
+        parts.join
+      end
+
+      # Visible, unambiguous stand-in for a stripped control byte: ESC → "^[",
+      # NUL → "^@", DEL → "^?" — the classic `cat -v` caret notation, so the
+      # user can tell exactly what the tool tried to emit.
+      def self.caret(byte)
+        code = byte.ord
+        return "^?" if code == 0x7F
+
+        "^#{(code ^ 0x40).chr}"
+      end
+
       # Returns either the full text (when total lines <= max) or a
       # head + marker + tail preview. Pure function — no side effects,
       # no IO. Caller decides where to render the result.
@@ -31,15 +161,74 @@ module Rubino
       def self.preview(text, max: DEFAULT_MAX, head: DEFAULT_HEAD, tail: DEFAULT_TAIL)
         return "" if text.nil? || text.to_s.empty?
 
-        lines = text.to_s.lines.map(&:chomp)
-        return lines.join("\n") if lines.size <= max
+        s = text.to_s
+        # Count newlines instead of materializing `s.lines` (#373): a ~1KB
+        # value with a 2-million-element single-line buffer used to allocate a
+        # 2M-element array (+ another 2M chomp'd copy via `.map(&:chomp)`) just
+        # to learn it fits — ~hundreds of MB of churn for a preview the caller
+        # may not even trim. `count("\n")` is O(n) bytes with zero allocation.
+        # total line count = newline count (+1 unless the buffer ends in \n).
+        total = line_count(s)
+        if total <= max
+          # Fits: only NOW materialize, and only to chomp the trailing newlines
+          # of the (already small) line set.
+          return s.lines.map(&:chomp).join("\n")
+        end
 
-        omitted  = lines.size - head - tail
-        head_pt  = lines.first(head)
-        tail_pt  = lines.last(tail)
-        marker   = "… [#{omitted} more lines · full in DB] …"
+        # Trimming: we only need the FIRST `head` and LAST `tail` lines, so
+        # take them off the head/tail SLICES of the buffer rather than splitting
+        # the whole thing into a (potentially huge) lines array. each_line with
+        # a bounded take avoids walking past what we keep on the head side.
+        head_pt = head_lines(s, head)
+        tail_pt = tail_lines(s, tail)
+        omitted = total - head_pt.size - tail_pt.size
+        marker  = "… [#{omitted} more lines · full in DB] …"
 
         (head_pt + [marker] + tail_pt).join("\n")
+      end
+
+      # First +keep+ chomp'd lines of +str+, without materializing the whole
+      # buffer into a lines array (#373). Stops scanning after +keep+ lines.
+      def self.head_lines(str, keep)
+        out = []
+        str.each_line do |line|
+          out << line.chomp
+          break if out.size >= keep
+        end
+        out
+      end
+
+      # Line count of +str+ via a single allocation-free newline-BYTE count
+      # (#373): newlines, +1 for a final line with no trailing newline. Used by
+      # both #preview and #truncate to decide over/under cap WITHOUT splitting a
+      # potentially huge buffer into a `.lines` array. Counts on the byte view
+      # (`b`) so a raw, not-yet-scrubbed buffer (invalid UTF-8 / binary tool
+      # output) doesn't raise "invalid byte sequence" — the `\n` byte (0x0A) is
+      # unambiguous regardless of encoding, and `.b` shares the buffer (no copy).
+      def self.line_count(str)
+        return 0 if str.empty?
+
+        bytes = str.b
+        bytes.count("\n") + (bytes.end_with?("\n") ? 0 : 1)
+      end
+
+      # Last +keep+ chomp'd lines of +str+, found by scanning backward from the
+      # end rather than splitting the whole buffer (#373). Slices a bounded tail
+      # of the string by locating the keep-th-from-last newline.
+      def self.tail_lines(str, keep)
+        return [] if keep <= 0
+
+        idx = str.length
+        keep.times do
+          nl = str.rindex("\n", idx - 1)
+          break if nl.nil?
+
+          idx = nl
+        end
+        # idx now sits ON the newline before the kept tail (or 0 if we ran out).
+        slice = str[idx, str.length - idx]
+        slice = slice[1..] if slice.start_with?("\n")
+        slice.to_s.lines.map(&:chomp)
       end
 
       # Single-line elision to +max+ characters with a trailing ellipsis.
@@ -89,14 +278,42 @@ module Rubino
       # spill.) Pure aside from that injected callback.
       def self.truncate(text, max_bytes:, max_lines:, spill: nil)
         text = text.to_s
+        # Bound PEAK cost BEFORE any whole-buffer work (#373). A 128MB tool
+        # output used to be scrubbed in full (a 128MB copy), then walked twice
+        # by `text.lines` (each a multi-million-element array) just to decide it
+        # was over-cap. Decide over/under with allocation-free passes —
+        # `bytesize` and `count("\n")` — and only ever scrub/slice a BOUNDED
+        # head+tail, never the full buffer. The model-facing cap + spill below
+        # are unchanged; this only stops the materialization blow-up.
         over_bytes = text.bytesize > max_bytes
-        over_lines = text.lines.size > max_lines
-        return text unless over_bytes || over_lines
+        over_lines = line_count(text) > max_lines
 
+        # Under both caps: scrub the (already small) buffer and return. A stray
+        # non-UTF-8 byte (printf '\xe9') OR a NUL (random binary) in SUB-cap
+        # output must still be cleaned, or it crashes JSON.generate / the SQLite
+        # driver and the tool row never persists (lost on --resume).
+        return scrub_utf8(text) unless over_bytes || over_lines
+
+        # Over cap: spill the FULL (raw) output first so nothing is lost, then
+        # shape from bounded head/tail slices. Each slice path scrubs only the
+        # bytes it keeps, so the 128MB buffer is never scrubbed whole.
         spill_path = spill&.call(text)
         text = tail_bias_bytes(text, max_bytes, spill_path) if over_bytes
-        text = tail_bias_lines(text, max_lines, spill_path) if text.lines.size > max_lines
+        # Re-derive the line check on whatever survived the byte pass (the byte
+        # pass already cut to ~max_bytes, so this is now a bounded count).
+        text = scrub_utf8(text) unless over_bytes
+        text = tail_bias_lines(text, max_lines, spill_path) if line_count(text) > max_lines
         text
+      end
+
+      # Encoding-scrub + NUL-strip a BOUNDED byteslice (#373). The head/tail
+      # byte path slices BEFORE scrubbing (so the 128MB buffer is never scrubbed
+      # whole); each kept slice still has to be cleaned exactly like scrub_utf8
+      # (invalid bytes dropped, NUL deleted) so JSON/SQLite don't choke.
+      def self.clean_slice(bytes, encoding)
+        s = bytes.to_s.force_encoding(encoding).scrub("")
+        s = s.encode(Encoding::UTF_8) unless s.encoding == Encoding::UTF_8
+        s.include?(NUL) ? s.delete(NUL) : s
       end
 
       def self.tail_bias_bytes(text, max_bytes, spill_path = nil)
@@ -111,13 +328,13 @@ module Rubino
         # to a simple head truncation (old behavior). Realistic caps go
         # through the head+tail path.
         if tail_budget <= 0
-          truncated = text.byteslice(0, max_bytes).to_s.force_encoding(encoding).scrub("")
+          truncated = clean_slice(text.byteslice(0, max_bytes), encoding)
           tail_note = spill_path ? " · full output: #{spill_path}" : ""
           return "#{truncated}\n... [truncated at #{max_bytes} bytes#{tail_note}]"
         end
 
-        head   = text.byteslice(0, head_budget).to_s.force_encoding(encoding).scrub("")
-        tail   = text.byteslice(-tail_budget, tail_budget).to_s.force_encoding(encoding).scrub("")
+        head   = clean_slice(text.byteslice(0, head_budget), encoding)
+        tail   = clean_slice(text.byteslice(-tail_budget, tail_budget), encoding)
         elided = text.bytesize - head.bytesize - tail.bytesize
         "#{head}#{format(marker_template, elided)}#{tail}"
       end

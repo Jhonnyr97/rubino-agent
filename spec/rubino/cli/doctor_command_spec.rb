@@ -9,8 +9,12 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
   describe "#check_migrations" do
     # memory?: true short-circuits the read-only on-disk guard (#68) so these
-    # examples keep exercising the migrator logic itself.
-    let(:db) { instance_double(Rubino::Database::Connection, memory?: true) }
+    # examples keep exercising the migrator logic itself. corrupt?: false so the
+    # #359 corruption short-circuit doesn't intercept the healthy-DB paths.
+    let(:db) do
+      instance_double(Rubino::Database::Connection,
+                      memory?: true, corrupt?: false, corruption_error?: false)
+    end
 
     before { allow(Rubino).to receive(:database).and_return(db) }
 
@@ -112,13 +116,16 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(result).to eq(name: "provider_keys", status: :ok)
     end
 
-    it "warns naming the configured provider when no credentials resolve" do
+    # #327(c): a missing key for the CONFIGURED provider is a hard ✗ (:fail),
+    # not a soft ⚠ — it is REQUIRED for any model call, so an install without it
+    # is broken, not merely degraded.
+    it "fails naming the configured provider when no credentials resolve" do
       with_config("model" => { "default" => "anthropic/claude-3-5-sonnet", "provider" => "auto" })
 
       result = doctor.send(:check_provider_keys)
 
-      expect(result).to eq(name: "provider_keys", status: :warn)
-      expect(ui.messages.last).to include(level: :warning)
+      expect(result).to eq(name: "provider_keys", status: :fail)
+      expect(ui.messages.last).to include(level: :error)
       expect(ui.messages.last[:message]).to include("anthropic")
     end
 
@@ -131,7 +138,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       result = doctor.send(:check_provider_keys)
 
-      expect(result[:status]).to eq(:warn)
+      expect(result[:status]).to eq(:fail)
     end
 
     it "is :ok for the fake provider without any credentials" do
@@ -155,6 +162,47 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
       expect(result).to eq(name: "provider_keys", status: :ok)
       expect(ui.messages.last[:message]).to include("minimax")
+    end
+  end
+
+  # #327(c): doctor must validate the configured model EXISTS, not merely that
+  # a non-empty string is present — a typo'd model.default used to pass doctor
+  # and only fail at the first model call.
+  describe "#check_model_configured (model existence)" do
+    def with_config(raw)
+      config = Rubino::Config::Configuration.new(raw: raw, home_path: nil)
+      allow(Rubino).to receive(:configuration).and_return(config)
+    end
+
+    it "is :fail when no model is configured" do
+      with_config("model" => { "default" => "" })
+      expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :fail)
+    end
+
+    it "is :ok for a real registry model id" do
+      with_config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
+      allow(doctor).to receive(:assume_exists_provider?).and_return(false)
+      allow(doctor).to receive(:model_in_catalog?).with("gpt-4.1").and_return(true)
+      expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
+    end
+
+    it "is :warn for a typo'd model id on a registry provider" do
+      with_config("model" => { "default" => "gpt-4o-typooo", "provider" => "openai" })
+      allow(doctor).to receive(:assume_exists_provider?).and_return(false)
+      allow(doctor).to receive(:model_in_catalog?).with("gpt-4o-typooo").and_return(false)
+
+      result = doctor.send(:check_model_configured)
+
+      expect(result).to eq(name: "model", status: :warn)
+      expect(ui.messages.last).to include(level: :warning)
+    end
+
+    it "stays :ok for an assume-exists / compatible provider (no registry lookup)" do
+      with_config(
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "providers" => { "minimax" => { "anthropic_compatible" => true } }
+      )
+      expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
     end
   end
 
@@ -317,6 +365,53 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     end
   end
 
+  # #359: a corrupt-but-present DB used to leak the raw SQLite3::CorruptException
+  # class + a stray `PRAGMA journal_mode=WAL` fragment into doctor's output
+  # (check_migrations connected, ran the PRAGMA, and printed the wrapped
+  # exception message). The DB checks must report a clean "corrupt … run setup"
+  # diagnostic with NONE of that internal noise.
+  describe "corrupt-database output hygiene (#359)" do
+    let(:corrupt_dir)  { Dir.mktmpdir("ra-doctor-corrupt") }
+    let(:corrupt_path) { File.join(corrupt_dir, "rubino.sqlite3") }
+
+    after { FileUtils.remove_entry(corrupt_dir) }
+
+    before do
+      seed = Rubino::Database::Connection.new(corrupt_path)
+      seed.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| seed.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      seed.close
+      File.truncate(corrupt_path, 20_000)
+      allow(Rubino).to receive(:database)
+        .and_return(Rubino::Database::Connection.new(corrupt_path))
+    end
+
+    def all_messages
+      ui.messages.map { |m| m[:message].to_s }
+    end
+
+    it "check_database reports a clean corrupt diagnostic (no raw class / PRAGMA leak)" do
+      result = doctor.send(:check_database)
+
+      expect(result).to eq(name: "database", status: :fail)
+      last = ui.messages.last
+      expect(last[:level]).to eq(:error)
+      expect(last[:message]).to match(/corrupt/i)
+      expect(last[:message]).to include("rubino setup")
+      expect(all_messages.join("\n")).not_to include("SQLite3::CorruptException")
+      expect(all_messages.join("\n")).not_to include("journal_mode")
+    end
+
+    it "check_migrations degrades cleanly without leaking the exception or PRAGMA" do
+      result = doctor.send(:check_migrations)
+
+      expect(result).to eq(name: "migrations", status: :fail)
+      expect(ui.messages.last[:level]).to eq(:error)
+      expect(all_messages.join("\n")).not_to include("SQLite3::CorruptException")
+      expect(all_messages.join("\n")).not_to include("journal_mode")
+    end
+  end
+
   describe "#check_document_converters (#6, non-scoring)" do
     it "reports the always-available pure-ruby formats as success" do
       doctor.send(:check_document_converters)
@@ -332,6 +427,53 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       doctor.send(:check_document_converters)
       warning = ui.messages.find { |m| m[:level] == :warning }
       expect(warning[:message]).to include("pdf not available")
+      expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
+    end
+  end
+
+  # F8: when `tools.web` is on, doctor reports WHICH search backend a query
+  # would use (Tavily / SearXNG / keyless DDG) and whether it looks usable, so a
+  # user knows websearch will actually work. It is informational — never scored,
+  # never a :fail — like the MCP / doc-converter sections.
+  describe "#check_websearch_backend (F8)" do
+    around do |example|
+      saved = ENV.to_hash.slice("TAVILY_API_KEY", "SEARXNG_URL")
+      ENV.delete("TAVILY_API_KEY")
+      ENV.delete("SEARXNG_URL")
+      example.run
+    ensure
+      ENV.delete("TAVILY_API_KEY")
+      ENV.delete("SEARXNG_URL")
+      saved.each { |k, v| ENV[k] = v }
+    end
+
+    it "reports Tavily when TAVILY_API_KEY is set" do
+      ENV["TAVILY_API_KEY"] = "tvly-xxx"
+      doctor.send(:check_websearch_backend)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("Tavily")
+      expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
+    end
+
+    it "reports SearXNG when only SEARXNG_URL is set" do
+      ENV["SEARXNG_URL"] = "https://searx.example/search"
+      doctor.send(:check_websearch_backend)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("SearXNG")
+    end
+
+    it "reports keyless DuckDuckGo when reachable and no key is set" do
+      allow(doctor).to receive(:ddg_resolvable?).and_return(true)
+      doctor.send(:check_websearch_backend)
+      msg = ui.messages.find { |m| m[:level] == :success }
+      expect(msg[:message]).to include("DuckDuckGo")
+    end
+
+    it "warns (never fails) when no backend looks usable" do
+      allow(doctor).to receive(:ddg_resolvable?).and_return(false)
+      doctor.send(:check_websearch_backend)
+      warning = ui.messages.find { |m| m[:level] == :warning }
+      expect(warning[:message]).to include("Web search may not work")
       expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
     end
   end

@@ -48,12 +48,35 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     context "in skip mode" do
-      let(:config) { test_configuration("approvals" => { "mode" => "skip" }) }
+      # Pin confirm_all (default is now dangerous_only, #409) so a not-otherwise-
+      # resolved shell command routes to :ask — this context tests that config
+      # "skip" is NOT a headless yolo, independent of the prompt policy.
+      let(:config) do
+        test_configuration(
+          "approvals" => { "mode" => "skip" },
+          "security" => { "confirm_policy" => "confirm_all" }
+        )
+      end
       let(:policy) { described_class.new(config: config) }
 
-      it "allows regardless of risk level" do
-        tool = make_tool(risk_level: :high, risky: true)
+      # SEC-02: config approvals.mode: "skip" is NOT a headless yolo. It stays
+      # permissive for non-risky tools (reads), but a risky tool (write/edit)
+      # must route to :ask so the ToolExecutor's headless fail-closed floor
+      # (#260) can block it when there is no interactive session — only runtime
+      # --yolo may auto-run a write/shell headless.
+      it "allows non-risky (read) tools" do
+        tool = make_tool(risk_level: :low, risky: false)
         expect(policy.decide(tool)).to eq(:allow)
+      end
+
+      it "ASKS for a risky write/edit tool (so the headless floor catches it)" do
+        tool = make_tool(name: "write", risk_level: :medium, risky: true)
+        expect(policy.decide(tool, arguments: { "file_path" => "note.txt" })).to eq(:ask)
+      end
+
+      it "ASKS for a shell command (not allowlisted / not read-only)" do
+        tool = make_tool(name: "shell", risk_level: :high, risky: true)
+        expect(policy.decide(tool, arguments: { "command" => "echo hi > /tmp/x" })).to eq(:ask)
       end
     end
   end
@@ -92,9 +115,13 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "still :asks for a command NOT on the allowlist (and not read-only)" do
+      # confirm_all so a non-allowlisted, non-read-only command resolves to :ask
+      # — this asserts the allowlist gates correctly, independent of the default
+      # prompt policy (item 7: confirm_policy is the sole source of truth, and a
+      # security override here drops the seeded default).
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => ["git status"] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => ["git status"] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "bundle exec rake release" })).to eq(:ask)
@@ -111,20 +138,47 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "an empty allowlist auto-approves nothing" do
+      # confirm_all so the unlisted command would prompt — proving the empty
+      # allowlist pre-approves nothing (item 7: explicit policy, no legacy alias).
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => [] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => [] }
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(tool, arguments: { "command" => "anything not listed" })).to eq(:ask)
+    end
+
+    # CFG-R3-1 — a YAML scalar (`command_allowlist: git status`) once raised an
+    # unhandled NoMethodError (String#filter_map) OUT of #decide: it crashed
+    # closed (no exec) but spewed a backtrace, violating the clean-diagnostic
+    # contract. #decide must now resolve normally (coerced to a single entry).
+    it "does not raise when command_allowlist is a scalar string (CFG-R3-1)" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "command_allowlist" => "git status" } # scalar, not a sequence
+      )
+      pol = described_class.new(config: cfg)
+      expect { pol.decide(tool, arguments: { "command" => "rm -rf /tmp/x" }) }.not_to raise_error
+      # The coerced entry still pre-approves its exact command; an unlisted
+      # write/shell still routes to the prompt (fails closed).
+      expect(pol.decide(tool, arguments: { "command" => "git status" })).to eq(:allow)
+      expect(pol.decide(tool, arguments: { "command" => "rm -rf /tmp/x" })).to eq(:ask)
     end
   end
 
   describe "#decide read-only auto-allow (step 6b)" do
     let(:shell) { make_tool(name: "shell", risk_level: :high, risky: true) }
-    let(:manual_cfg) { test_configuration("approvals" => { "mode" => "manual" }) }
+    # Pin confirm_all here so these examples isolate the read-only auto-allow
+    # gate (step 6b) from the dangerous_only default (#409): under confirm_all a
+    # not-read-only command falls through to :ask, which is what these test.
+    let(:manual_cfg) do
+      test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all" }
+      )
+    end
 
-    it "auto-allows a provably read-only command under the default confirm_all policy" do
+    it "auto-allows a provably read-only command even under confirm_all" do
       pol = described_class.new(config: manual_cfg)
       expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:allow)
       expect(pol.decide(shell, arguments: { "command" => "grep -rn TODO lib | head -20" })).to eq(:allow)
@@ -139,7 +193,12 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "is gated by approvals.auto_allow_readonly: false" do
-      cfg = test_configuration("approvals" => { "mode" => "manual", "auto_allow_readonly" => false })
+      # Pin confirm_all so a non-read-only fall-through is :ask (the default is
+      # now dangerous_only, under which a safe `ls -la` would :allow anyway).
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual", "auto_allow_readonly" => false },
+        "security" => { "confirm_policy" => "confirm_all" }
+      )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:ask)
     end
@@ -153,7 +212,13 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     it "never auto-allows the shell command of a NON-shell tool" do
-      cfg = test_configuration("approvals" => { "mode" => "manual" })
+      # Pin confirm_all so this isolates step 6b (read-only auto-allow is
+      # shell-only): under the dangerous_only default the write tool's own
+      # symmetry path (#427) would :allow it, which is a different gate.
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all" }
+      )
       tool = make_tool(name: "write", risk_level: :high, risky: true)
       expect(described_class.new(config: cfg).decide(tool, arguments: { "file_path" => "ls" })).to eq(:ask)
     end
@@ -174,6 +239,42 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       )
       pol = described_class.new(config: cfg)
       expect(pol.decide(shell, arguments: { "command" => "ls -la" })).to eq(:deny)
+    end
+  end
+
+  # #405: the skill tool is :low (so a read_only agent keeps load/list/show),
+  # but skill(action: "create") WRITES a SKILL.md — it must route to :ask like
+  # any write, so a headless read_only subagent's :ask becomes a fail-closed
+  # block instead of a silent unapproved write. --yolo (step 3) still creates.
+  describe "#decide skill create write-gate (#405)" do
+    let(:skill) { make_tool(name: "skill", risk_level: :low, risky: false) }
+
+    it "asks before a skill(action: create) write even under auto mode" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { "action" => "create", "name" => "evil" })).to eq(:ask)
+    end
+
+    it "asks for a create whether the action key is a string or a symbol" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { action: "create", name: "evil" })).to eq(:ask)
+    end
+
+    it "still auto-allows the read-only skill actions (load/list/show)" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { "action" => "load", "name" => "git-flow" })).to eq(:allow)
+      expect(pol.decide(skill, arguments: { "action" => "list" })).to eq(:allow)
+      expect(pol.decide(skill, arguments: { "action" => "show", "name" => "git-flow" })).to eq(:allow)
+    end
+
+    it "lets a full-access --yolo agent create skills inline (step 3 wins)" do
+      allow(Rubino::Modes).to receive(:skip_approvals?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(skill, arguments: { "action" => "create", "name" => "ok" })).to eq(:allow)
+    end
+
+    it "scopes the approval string as '<action> <name>' for create granularity" do
+      str = described_class.command_string(skill, { "action" => "create", "name" => "deploy" })
+      expect(str).to eq("create deploy")
     end
   end
 
@@ -293,8 +394,14 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => hardline })).to eq(:deny)
     end
 
-    it "leaves a normal (non-read-only) shell command unaffected (still :ask in manual)" do
-      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "manual" }))
+    it "leaves a normal (non-read-only) shell command unaffected (still :ask in manual under confirm_all)" do
+      # Pin confirm_all so the hardline floor is the only thing changing the
+      # outcome here (the default is now dangerous_only, under which make build
+      # would :allow — that path is covered in the confirm_policy describe).
+      pol = described_class.new(config: test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all" }
+      ))
       expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
     end
   end
@@ -383,10 +490,11 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "git status -s" })).to eq(:allow)
     end
 
-    # --- a normal (non-read-only) command under default config is unchanged ---
-    it "a normal shell command under default config still :asks" do
+    # --- a normal (non-read-only, non-dangerous) command runs under the new
+    #     dangerous_only default (#409) ---
+    it "a normal shell command runs unprompted under the default (dangerous_only)" do
       pol = described_class.new(config: test_configuration("approvals" => { "mode" => "manual" }))
-      expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:ask)
+      expect(pol.decide(shell, arguments: { "command" => "make build" })).to eq(:allow)
     end
 
     # --- DangerousPatterns signal is available but NOT yet decisive ---
@@ -399,14 +507,101 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "git push --force origin main" })).to eq(:ask)
     end
 
-    it "a dangerous command on the allowlist is still :allow (S2 keeps allowlist precedence)" do
+    # SEC-01: the allowlist is now chain-aware and runs DangerousPatterns
+    # FIRST, so an allowlisted head can no longer launder a dangerous command.
+    # `git push` allowlisted pre-approves a plain `git push`, but NOT the
+    # history-rewriting `git push --force` — that falls back to the shell gate
+    # (:ask), where the headless floor can block it.
+    it "does NOT auto-allow a dangerous command even if its head is allowlisted (SEC-01)" do
+      # confirm_all so a non-allowlisted form falls to :ask (the headless floor
+      # then blocks it) rather than auto-allowing under dangerous_only — the
+      # SEC-01 intent is that an allowlisted head can't launder a write form.
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "command_allowlist" => ["git push"] }
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => ["git diff"] }
       )
       pol = described_class.new(config: cfg)
-      expect(pol.dangerous?("git push --force origin main")).to be(true)
-      expect(pol.decide(shell, arguments: { "command" => "git push --force origin main" })).to eq(:allow)
+      expect(pol.dangerous?("git diff --output /tmp/PWN")).to be(true).or be(false)
+      # a write/exec form past the allowlisted read verb is NOT auto-allowed
+      expect(pol.decide(shell, arguments: { "command" => "git diff --output /tmp/PWN" })).to eq(:ask)
+      # the safe, exact form the operator actually allowlisted still passes
+      expect(pol.decide(shell, arguments: { "command" => "git diff HEAD~1" })).to eq(:allow)
+    end
+
+    it "does NOT auto-allow a dangerous git verb even when its head is allowlisted (SEC-R2-1)" do
+      # confirm_all so a non-allowlisted form falls to :ask — proving the
+      # mutating `git push` verb is never auto-approved by an allowlisted head.
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "security" => { "confirm_policy" => "confirm_all", "command_allowlist" => ["git push"] }
+      )
+      pol = described_class.new(config: cfg)
+      # push is a mutating verb; the convenience layer never auto-approves it.
+      expect(pol.decide(shell, arguments: { "command" => "git push origin main" })).to eq(:ask)
+    end
+
+    # #427: structured in-workspace edit symmetry. Under dangerous_only a safe
+    # `shell sed -i …` runs unprompted, so the structured edit/write/
+    # multi_edit/apply_patch tools must ALSO be unprompted — otherwise headless
+    # automation is pushed toward raw shell mutation and away from the safer,
+    # read-tracked, diff-producing tools. The always-on #413 write-denylist +
+    # workspace sandbox (enforced inside #call) remain the boundary; the
+    # hardline floor and permissions:deny still run first.
+    context "structured edit symmetry (#427)" do
+      let(:edit)       { make_tool(name: "edit",        risk_level: :medium, risky: true) }
+      let(:write_t)    { make_tool(name: "write",       risk_level: :medium, risky: true) }
+      let(:multi_edit) { make_tool(name: "multi_edit",  risk_level: :medium, risky: true) }
+      let(:apply_patch) { make_tool(name: "apply_patch", risk_level: :medium, risky: true) }
+
+      context "dangerous_only" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" }
+          ))
+        end
+
+        it "allows edit WITHOUT a prompt (symmetric with safe shell)" do
+          args = { "file_path" => "/ws/x", "old_string" => "a", "new_string" => "b" }
+          expect(pol.decide(edit, arguments: args)).to eq(:allow)
+        end
+
+        it "allows write WITHOUT a prompt" do
+          expect(pol.decide(write_t, arguments: { "file_path" => "/ws/y", "content" => "hi" })).to eq(:allow)
+        end
+
+        it "allows multi_edit WITHOUT a prompt" do
+          expect(pol.decide(multi_edit, arguments: { "file_path" => "/ws/x" })).to eq(:allow)
+        end
+
+        it "allows apply_patch WITHOUT a prompt" do
+          expect(pol.decide(apply_patch, arguments: { "patch" => "diff" })).to eq(:allow)
+        end
+
+        it "still honors an explicit permissions:deny on a structured edit (deny-class wins)" do
+          cfg = test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" },
+            "permissions" => { "edit *" => "deny" }
+          )
+          p = described_class.new(config: cfg)
+          expect(p.decide(edit, arguments: { "file_path" => "/ws/secret.env" })).to eq(:deny)
+        end
+      end
+
+      context "confirm_all (opt-in) keeps the prompt" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "confirm_all" }
+          ))
+        end
+
+        it "asks for a structured edit, unchanged" do
+          args = { "file_path" => "/ws/x", "old_string" => "a", "new_string" => "b" }
+          expect(pol.decide(edit, arguments: args)).to eq(:ask)
+        end
+      end
     end
   end
 
@@ -431,10 +626,27 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     let(:dangerous) { "git push --force origin main" }
     let(:hardline)  { "rm -rf /" }
 
-    context "confirm_all (default)" do
+    context "dangerous_only (default, #409 Hermes alignment)" do
       let(:pol) { described_class.new(config: test_configuration("approvals" => { "mode" => "manual" })) }
 
-      it "asks for a safe shell command (today's behavior, unchanged)" do
+      it "allows a safe shell command WITHOUT a prompt (the new default)" do
+        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
+      end
+
+      it "asks for a dangerous shell command" do
+        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
+      end
+    end
+
+    context "confirm_all (opt-in hardening)" do
+      let(:pol) do
+        described_class.new(config: test_configuration(
+          "approvals" => { "mode" => "manual" },
+          "security" => { "confirm_policy" => "confirm_all" }
+        ))
+      end
+
+      it "asks for a safe shell command when opted in" do
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:ask)
       end
 
@@ -476,37 +688,20 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       end
     end
 
-    context "back-compat alias coercion" do
-      it "require_confirmation_for_shell:false coerces to dangerous_only" do
-        cfg = test_configuration(
-          "approvals" => { "mode" => "manual" },
-          "security" => { "require_confirmation_for_shell" => false }
-        )
-        pol = described_class.new(config: cfg)
-        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
-        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
-      end
-
-      it "require_confirmation_for_shell:true keeps confirm_all" do
+    # item 7: confirm_policy is the SOLE source of truth — the legacy
+    # require_confirmation_for_shell alias was removed and is no longer honored.
+    context "removed require_confirmation_for_shell alias" do
+      it "IGNORES require_confirmation_for_shell:true (no silent confirm_all)" do
         cfg = test_configuration(
           "approvals" => { "mode" => "manual" },
           "security" => { "require_confirmation_for_shell" => true }
         )
         pol = described_class.new(config: cfg)
-        expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:ask)
-      end
-
-      it "confirm_policy wins over the alias when BOTH are set" do
-        cfg = test_configuration(
-          "approvals" => { "mode" => "manual" },
-          "security" => {
-            "confirm_policy" => "dangerous_only",
-            "require_confirmation_for_shell" => true
-          }
-        )
-        pol = described_class.new(config: cfg)
-        # alias says confirm_all, but confirm_policy=dangerous_only wins
+        # The removed key has no effect: the seeded dangerous_only default holds,
+        # so a SAFE command still runs unprompted (it would be :ask under the old
+        # alias mapping).
         expect(pol.decide(shell, arguments: { "command" => safe })).to eq(:allow)
+        expect(pol.decide(shell, arguments: { "command" => dangerous })).to eq(:ask)
       end
     end
   end
@@ -525,7 +720,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "ALLOWS memory ops without a prompt in manual mode + shell confirmation" do
       cfg = test_configuration(
         "approvals" => { "mode" => "manual" },
-        "security" => { "require_confirmation_for_shell" => true }
+        "security" => { "confirm_policy" => "confirm_all" }
       )
       policy = described_class.new(config: cfg)
 
@@ -576,22 +771,45 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.last_deny_reason).to eq(:permission_rule)
     end
 
-    it "is :doom_loop when the identical call repeats past the threshold" do
+    # Blocking is now opt-in (#414): the default is warn-not-block, so these
+    # assert :deny under an explicit doom_loop.hard_stop:true config, and at the
+    # raised default threshold of 5 identical calls.
+    it "is :doom_loop when the identical call repeats past the threshold (hard_stop)" do
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "doom_loop" => { "hard_stop" => true, "threshold" => 5 }
+      )
+      pol = described_class.new(config: cfg)
       tool = make_tool(name: "task_result", risk_level: :low, risky: false)
       args = { "task_id" => "sa_1" }
-      decisions = 4.times.map { policy.decide(tool, arguments: args) }
+      decisions = 5.times.map { pol.decide(tool, arguments: args) }
       expect(decisions.last).to eq(:deny)
-      expect(policy.last_deny_reason).to eq(:doom_loop)
+      expect(pol.last_deny_reason).to eq(:doom_loop)
     end
 
-    it "is :doom_loop under yolo too (the guard yolo cannot bypass)" do
+    it "is :doom_loop under yolo too with hard_stop (the guard yolo cannot bypass)" do
       Rubino::Modes.set(:yolo)
+      cfg = test_configuration(
+        "approvals" => { "mode" => "manual" },
+        "doom_loop" => { "hard_stop" => true, "threshold" => 5 }
+      )
+      pol = described_class.new(config: cfg)
       args = { "command" => "ls" }
-      decisions = 4.times.map { policy.decide(shell, arguments: args) }
+      decisions = 5.times.map { pol.decide(shell, arguments: args) }
       expect(decisions.last).to eq(:deny)
-      expect(policy.last_deny_reason).to eq(:doom_loop)
+      expect(pol.last_deny_reason).to eq(:doom_loop)
     ensure
       Rubino::Modes.reset!
+    end
+
+    it "WARNS not blocks on a repeated identical call by default (#414)" do
+      tool = make_tool(name: "task_result", risk_level: :low, risky: false)
+      args = { "task_id" => "sa_1" }
+      decisions = 6.times.map { policy.decide(tool, arguments: args) }
+      # No hard_stop ⇒ every call still resolves (low-risk tool ⇒ :allow), and
+      # the trip surfaces via #doom_loop_warning rather than a :deny.
+      expect(decisions).to all(eq(:allow))
+      expect(policy.doom_loop_warning).to be(true)
     end
 
     it "clears on the next non-deny decision so a stale reason never leaks" do

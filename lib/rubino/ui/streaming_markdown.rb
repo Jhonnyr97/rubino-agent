@@ -42,6 +42,13 @@ module Rubino
       # whole wrapped block stays one unit instead of mis-toggling (#264).
       FENCE_OPEN_RE  = /\A\s*(`{3,})\s*(\S.*)?\z/
       FENCE_CLOSE_RE = /\A\s*(`{3,})\s*\z/
+      # Info strings that mean "this fence WRAPS markdown" — the model boxed a
+      # whole answer (which itself contains nested ```lang fences) in an outer
+      # ```markdown / ```md. For those, and ONLY those, we track fence-nesting
+      # DEPTH: a nested fence's bare close must not be mistaken for the wrapper's
+      # close (T1), so the whole wrapped answer stays ONE block. The renderer
+      # re-renders such a body AS markdown (MarkdownRenderer::MARKDOWN_FENCE_LANGS).
+      MARKDOWN_FENCE_LANGS = %w[markdown md].freeze
       # An ordered ("1. ", "2) ") or unordered ("- ", "* ", "+ ") list item.
       # Used so a loose list (blank lines BETWEEN items) is kept as ONE block
       # instead of being split per-item: each split item was re-rendered on its
@@ -53,7 +60,13 @@ module Rubino
         @pending = +""   # un-newlined remainder (the live tail-in-progress line)
         @block   = []    # completed lines accumulated for the current block
         @in_fence = false
-        @fence_len = 0    # backtick count of the OPEN fence (close needs ≥ this many)
+        @fence_len = 0 # backtick count of the OPEN fence (close needs ≥ this many)
+        # When the OPEN fence is a ```markdown / ```md wrapper, we track nesting
+        # DEPTH (starts at 1 on open): nested opening fences ++ it, bare closes of
+        # ≥ @fence_len -- it, and the block completes only when it returns to 0.
+        # nil = the open fence is a PLAIN code fence (no nesting; closes on the
+        # first bare fence of ≥ @fence_len), the CommonMark default (T1).
+        @fence_depth = nil
         @in_list  = false # current block is a markdown list (keep loose items together)
         @blanks   = 0     # blank lines buffered inside a list, re-emitted iff it continues
       end
@@ -119,6 +132,7 @@ module Rubino
         @block = []
         @in_fence = false
         @fence_len = 0
+        @fence_depth = nil
         @in_list = false
         @blanks = 0
         text
@@ -131,18 +145,22 @@ module Rubino
       def consume_line(line)
         if @in_fence
           @block << line
-          # Close ONLY on a bare fence (no info string) of ≥ the opening run, so
-          # a nested ```ruby inside a ```markdown wrapper doesn't end the block.
-          if (m = line.match(FENCE_CLOSE_RE)) && m[1].length >= @fence_len
-            @in_fence = false
-            return take_block
-          end
-          return nil
+          return nil unless fence_line_closes?(line)
+
+          @in_fence = false
+          @fence_len = 0
+          @fence_depth = nil
+          return take_block
         end
 
         if (m = line.match(FENCE_OPEN_RE)) # opening fence starts a code block
           @in_fence = true
           @fence_len = m[1].length
+          # A ```markdown / ```md wrapper arms nesting-DEPTH tracking (starts at
+          # 1); its body's nested ```lang fences must not close it early (T1).
+          # Any other language (or none) is a plain code fence: depth stays nil,
+          # so it closes on the first bare fence of ≥ @fence_len (CommonMark).
+          @fence_depth = MARKDOWN_FENCE_LANGS.include?(m[2].to_s.strip.downcase) ? 1 : nil
           flush_blanks
           @block << line
           return nil
@@ -178,6 +196,28 @@ module Rubino
         @in_list = true if is_item
         @block << line
         nil
+      end
+
+      # Does this line (already appended to the open fence's block) CLOSE that
+      # fence? For a PLAIN code fence (@fence_depth nil) the first bare fence of
+      # ≥ the opening run closes it — the CommonMark default. For a ```markdown /
+      # ```md WRAPPER we track nesting depth: a nested OPENING fence (carries an
+      # info string, e.g. ```ruby) deepens it, a bare close of ≥ @fence_len
+      # un-nests one level, and only the close that returns depth to 0 ends the
+      # block — so the wrapper's nested fences never close it early (T1).
+      def fence_line_closes?(line)
+        if @fence_depth.nil?
+          m = line.match(FENCE_CLOSE_RE)
+          return !!(m && m[1].length >= @fence_len)
+        end
+
+        if (m = line.match(FENCE_CLOSE_RE)) && m[1].length >= @fence_len
+          @fence_depth -= 1
+          return @fence_depth <= 0
+        end
+        # A nested opening fence (```lang, with an info string) deepens the wrapper.
+        @fence_depth += 1 if line.match?(FENCE_OPEN_RE)
+        false
       end
 
       # Re-emit blank lines buffered inside a continuing list so loose-list

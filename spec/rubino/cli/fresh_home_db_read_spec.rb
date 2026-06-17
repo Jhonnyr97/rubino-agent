@@ -57,4 +57,13 @@ RSpec.describe "Fresh-home DB read commands (#35)" do
     expect { Rubino::CLI::JobsCommand.new([], { "limit" => 20 }).list }.not_to raise_error
     expect(info_messages.join("\n")).to include("No jobs found")
   end
+
+  # NOTE: the old "raced migration left a duplicate schema_info row" context was
+  # removed with the migrator squash. That post-hoc recovery path
+  # (database_repair_message's duplicate-row branch + Migrator#repair!) only
+  # existed to heal an ALREADY-corrupt DB; the single idempotent baseline applied
+  # under the flock + the side-effect-free up_to_date? fast path PREVENTS the
+  # duplicate-schema_info race from forming in the first place, so there is no
+  # such state left to message about. The #35 fresh-home empty-state behaviour
+  # above is unchanged.
 end

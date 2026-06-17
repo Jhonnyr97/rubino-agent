@@ -27,8 +27,61 @@ module Rubino
         # empty/aborted read (#144) before giving up and leaving the child parked.
         APPROVAL_ASK_ATTEMPTS = 3
 
+        # Appended to every "no such subagent id" error (item 5). Subagent ids
+        # (sa_*) live ONLY in the current process — the BackgroundTasks registry
+        # is in-memory, never persisted — so a prior session's id is genuinely
+        # gone after a REPL restart. The bare "no such id" left the user thinking
+        # they'd mistyped; this names the real reason so they don't hunt for a
+        # typo. Surfaced from EVERY not-found path (/agents <id>, /reply <id>,
+        # /stop <id>, steer, probe).
+        RESET_HINT = "(subagents reset when rubino restarts)"
+
         def initialize(ui:)
           @ui = ui
+        end
+
+        # Auto-open the EXISTING interactive prompt for ONE pending subagent
+        # request the human must act on — the REPL idle loop calls this at every
+        # idle tick so the affordance presents ITSELF instead of forcing the user
+        # to guess `/agents <id>` or `/reply <id>` (the maintainer's "auto-open
+        # the existing dropdown" ask). A request that arrives mid-turn, or
+        # survives a turn that is interrupted/aborted, is re-detected here the
+        # next time the REPL returns to idle, so it is never lost.
+        #
+        # Reuses the SAME primitives the manual slash paths use:
+        #   :needs_approval   → #resolve_agent_approval  (the approve/deny/always
+        #                       prompt, identical to /agents <id>)
+        #   :blocked_on_human → #prompt_reply_answer + #deliver_reply (the ◆ ask
+        #                       takeover, identical to /reply <id> with no inline
+        #                       answer)
+        # The manual slash commands stay as a fallback; this is just the primary,
+        # zero-typing surface. Approval is offered FIRST (a parked tool holds a
+        # concurrency slot and a possibly dangerous side effect, so it is the more
+        # urgent gate). Resolves at most ONE request per call so the loop repaints
+        # and re-checks between each. Returns true when it presented a request
+        # (the caller re-polls), false when nothing was pending.
+        #
+        # SECURITY: this changes WHEN the existing approval prompt appears (now it
+        # auto-presents), never WHAT requires approval — the gate semantics, the
+        # policy that flips a child to :needs_approval, and the approve/deny/always
+        # persistence are untouched. The human still makes the same explicit
+        # decision through the same gate.
+        def auto_resolve_pending # rubocop:disable Naming/PredicateMethod -- a prompt-presenting mutator that reports whether it surfaced a request, not a pure query
+          registry = Tools::BackgroundTasks.instance
+          if (entry = registry.awaiting_approval.first)
+            resolve_agent_approval(entry)
+            return true
+          end
+          if (entry = registry.awaiting_human.first)
+            answer = prompt_reply_answer(entry)
+            if answer.to_s.strip.empty?
+              @ui.info("No answer given — #{entry.id} is still waiting.")
+            else
+              deliver_reply(entry, answer)
+            end
+            return true
+          end
+          false
         end
 
         def handle_agents(arguments)
@@ -56,6 +109,20 @@ module Rubino
           end
         end
 
+        # `/stop <id>` is the discoverable alias for the unguessable `/agents
+        # <id> --stop` cancel syntax (FRICTION-4). A bare `/stop` teaches the
+        # syntax and lists running subagents rather than erroring.
+        def handle_stop_alias(arguments)
+          id = arguments.to_s.strip.split(/\s+/).first
+          if id.nil? || id.empty?
+            @ui.info("Stop a running subagent: /stop <id> (same as /agents <id> --stop).")
+            handle_agents("")
+          else
+            handle_agents("#{id} --stop")
+          end
+          :handled
+        end
+
         # child->parent ASK_PARENT answer: /reply <id> <answer>. Resolves the
         # child's ask gate (Run::ApprovalGate#decide) so a BLOCKING ask unwinds with
         # the answer as its tool result, and ALSO pushes the answer onto the child's
@@ -76,7 +143,11 @@ module Rubino
           # waiting on its agent-parent (:blocked_on_parent), if the human chooses
           # to step in.
           entry = Tools::BackgroundTasks.instance.find(id)
-          if entry.nil? || !%i[blocked_on_human blocked_on_parent].include?(entry.status)
+          if entry.nil?
+            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
+            return
+          end
+          unless %i[blocked_on_human blocked_on_parent].include?(entry.status)
             @ui.error("#{id} is not waiting on you.")
             return
           end
@@ -108,7 +179,7 @@ module Rubino
             @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}  (parked · enters child context next turn)")
             @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
           else
-            @ui.error("cannot steer #{id} — no such running subagent.")
+            @ui.error("cannot steer #{id} — no such running subagent. #{RESET_HINT}")
           end
         end
 
@@ -126,7 +197,7 @@ module Rubino
 
           entry = Tools::BackgroundTasks.instance.find(id)
           unless entry
-            @ui.error("cannot probe #{id} — no such subagent.")
+            @ui.error("cannot probe #{id} — no such subagent. #{RESET_HINT}")
             return
           end
 
@@ -171,9 +242,17 @@ module Rubino
           # The ONE shared answer wire (also used by the model-callable
           # answer_child tool): decide the gate + push the steer note + clear the
           # blocked state, all in BackgroundTasks#deliver_answer.
-          Tools::BackgroundTasks.instance.deliver_answer(entry.id, answer)
-          @ui.info("↳ answered #{entry.id}: #{truncate(answer, 80)}")
-          @ui.info("✓ tree unblocked · #{entry.id} resumes at its next turn")
+          # H5 — deliver_answer reports HONESTLY now: false when the child has
+          # already finished and neither delivery path landed. Say so instead of
+          # the false "resumes at its next turn" — there is no next turn.
+          delivered = Tools::BackgroundTasks.instance.deliver_answer(entry.id, answer)
+          if delivered
+            @ui.info("↳ answered #{entry.id}: #{truncate(answer, 80)}")
+            @ui.info("✓ tree unblocked · #{entry.id} resumes at its next turn")
+          else
+            @ui.info("↳ answer to #{entry.id}: #{truncate(answer, 80)}")
+            @ui.error("⚠ not delivered — #{entry.id} already finished; it never saw your answer.")
+          end
           @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
         end
 
@@ -222,7 +301,7 @@ module Rubino
         def show_agent_detail(id)
           entry = Tools::BackgroundTasks.instance.find(id)
           unless entry
-            @ui.error("no background subagent with id #{id}.")
+            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
             return
           end
 
@@ -365,36 +444,56 @@ module Rubino
           @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
           @ui.info("needs approval to run:")
           @ui.info("  #{entry.approval_command.to_s.empty? ? entry.approval_question : entry.approval_command}")
-          answer = ask_approval_answer(entry)
-          return if answer.nil?
+          choice = ask_approval_answer(entry)
+          return if choice.nil?
 
           decision =
-            case answer
-            when "a", "always"      then persist_agent_always(entry)
-                                         true
-            when "o", "once", "y"   then true
-            else                         false
+            case choice
+            when :always_command then persist_agent_always(entry)
+                                      true
+            when :once           then true
+            when :deny_explain   then deny_with_explanation(entry)
+            else                      false
             end
           gate.decide(entry.approval_id, decision)
           @ui.info(decision ? "Approved #{entry.id}." : "Denied #{entry.id}.")
         end
 
-        # Reads the approval answer, re-rendering the prompt on an EMPTY read.
+        # Renders the UNIFIED arrow-key approval menu (TUI-6) for a parked
+        # subagent: the SAME component the main-agent/MCP approval uses
+        # (UI::CLI#subagent_approval_choice → #approval_menu), replacing the old
+        # flat `[o]nce/[a]lways/[n]o deny` line where any non-decision keystroke
+        # — including a slash command typed to inspect first — was silently
+        # treated as a DENY. The menu can only return a real decision symbol, so
+        # a stray keystroke can never resolve the gate by accident.
+        #
         # A background event (another child's completion fold-in) landing while
-        # the prompt is open can abort the underlying TTY read, which used to
-        # surface as an empty answer and silently resolve the gate to DENIED
-        # (#144). An empty/aborted read is therefore never an answer: re-ask,
-        # and after APPROVAL_ASK_ATTEMPTS empty reads return nil WITHOUT
-        # touching the gate — the child stays parked and `/agents <id>`
-        # re-opens the prompt. Denying requires an explicit keypress ("n", or
-        # any other non-approving answer).
+        # the prompt is open can abort the underlying TTY read; the menu then
+        # returns nil, which is NOT a decision — re-render up to
+        # APPROVAL_ASK_ATTEMPTS times, and on a persistent abort leave the child
+        # parked (never auto-deny, #144) so `/agents <id>` re-opens the prompt.
+        # A UI without the unified menu (legacy/scripted) falls back to nil.
         def ask_approval_answer(entry)
+          return nil unless @ui.respond_to?(:subagent_approval_choice)
+
           APPROVAL_ASK_ATTEMPTS.times do
-            answer = @ui.ask("Approve? [o]nce / [a]lways / [n]o deny: ").to_s.strip.downcase
-            return answer unless answer.empty?
+            choice = @ui.subagent_approval_choice
+            return choice if choice
           end
           @ui.info("no answer read — #{entry.id} is still waiting; /agents #{entry.id} to decide.")
           nil
+        end
+
+        # The "Deny & tell the agent why" path: collect a one-line reason and
+        # hand it to the child as a steer note (best-effort) so the subagent
+        # learns WHY its action was refused instead of a bare deny. Always
+        # returns false — the gate is denied either way; the reason is advisory.
+        def deny_with_explanation(entry)
+          reason = @ui.respond_to?(:ask) ? @ui.ask("why deny? (sent to the agent): ").to_s.strip : ""
+          Tools::BackgroundTasks.instance.steer(entry.id, "[approval denied by human] #{reason}") unless reason.empty?
+          false
+        rescue StandardError
+          false
         end
 
         # Persists an "approve always" for a parked subagent's command via the same
@@ -436,7 +535,7 @@ module Rubino
           registry = Tools::BackgroundTasks.instance
           entry    = registry.find(id)
           unless entry
-            @ui.error("no background subagent with id #{id}.")
+            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
             return
           end
 
@@ -446,19 +545,15 @@ module Rubino
           end
 
           # A child parked on a human approval or an ask_parent is blocked in its
-          # gate's wait; cancel the gates so it wakes (Interrupted → deny/cancel) and
-          # unwinds instead of holding its thread until the bound. The stop-cascade
-          # then wakes every DESCENDANT parked on a blocking ask too, so the whole
-          # subtree unwinds at once (S5a — no orphaned blocked grandchild).
-          # Mark the stop FIRST so the very next /agents list shows ◌ stopping
-          # instead of a stale ● running (#108), and so the worker's terminal
-          # write records the unwind as :stopped, not ✗ failed (#13) — then wake
-          # the gates/runner.
-          registry.request_stop(id)
-          entry.approval_gate&.cancel!
-          entry.ask_gate&.cancel!
-          registry.cancel_descendant_ask_gates(id)
-          entry.runner&.cancel!
+          # gate's wait; the shared #stop_entry cancels the gates so it wakes
+          # (Interrupted → deny/cancel) and unwinds instead of holding its thread
+          # until the bound, runs the stop-cascade so every DESCENDANT parked on a
+          # blocking ask unwinds too (S5a — no orphaned blocked grandchild), marks
+          # the stop FIRST so the very next /agents list shows ◌ stopping instead
+          # of a stale ● running (#108) and the worker's terminal write records the
+          # unwind as :stopped, not ✗ failed (#13), then flips the runner token. The
+          # SAME body the parent-teardown #cancel_all uses — one implementation.
+          registry.stop_entry(entry)
           @ui.success("Stop requested for #{id} (#{entry.subagent}); it unwinds at its next checkpoint.")
         end
 

@@ -49,7 +49,8 @@ module Rubino
             disabled.include?(tool.name) ||
               !tool_enabled_in_config?(tool, config) ||
               !Rubino::Modes.allows_tool?(tool.name) ||
-              !aux_dependency_satisfied?(tool, config)
+              !aux_dependency_satisfied?(tool, config) ||
+              situational_tool_hidden?(tool)
           end
         end
 
@@ -61,6 +62,9 @@ module Rubino
         # Clears all registered tools (useful for testing)
         def reset!
           @tools = {}
+          # Drop the memoized web-capability probe (#411) so a fresh test run
+          # re-evaluates it rather than inheriting a prior process's verdict.
+          @web_backend_available = nil
         end
 
         # Registers all default tools
@@ -129,7 +133,74 @@ module Rubino
           register(Rubino::Tools::AnswerChildTool.new)
         end
 
+        # Tools that ONLY make sense once a child SUBAGENT (a background `task`)
+        # exists this session — the parent->child comm channels. Before any task
+        # is spawned they are dead weight (a `steer`/`probe`/`answer_child` with
+        # no child just errors "not your child"; `task_result`/`task_stop` have
+        # nothing to poll). `task` itself (spawn) stays always-on. (#313)
+        TASK_DEPENDENT_TOOLS = %w[task_result task_stop steer probe answer_child].freeze
+
+        # Tools that ONLY make sense once a background SHELL exists this session —
+        # the shell-management channels. Before any `shell run_in_background:true`
+        # they have no handle to act on. `shell` itself stays always-on. (#313)
+        SHELL_DEPENDENT_TOOLS = %w[shell_input shell_output shell_tail shell_kill].freeze
+
         private
+
+        # Context-gates (#313) on SESSION-STABLE lifecycle signals, NOT per-turn
+        # relevance — they flip at most once per session (when a subagent / a
+        # background shell first appears), so the cached tool prefix that the
+        # prompt-cache breakpoint (#311) protects stays byte-stable across the
+        # common turn. Saves ~2k tokens on a normal file-edit turn that has
+        # neither a child nor a background shell.
+        #
+        #   - ask_parent: exposed ONLY when running AS a subagent (the
+        #     thread-local current_subagent_id is set ⇒ this run has a parent).
+        #     Mirrors Definition#resolved_tools' SUBAGENT_ONLY gate so the base
+        #     registry view is honest even outside an agent definition.
+        #   - task_* / steer / probe / answer_child: exposed only once ≥1 child
+        #     task exists in the BackgroundTasks registry (any state — live or
+        #     finished; a finished child can still be polled via task_result).
+        #   - shell_* management: exposed only once ≥1 background shell exists in
+        #     the ShellRegistry.
+        def situational_tool_hidden?(tool)
+          case tool.name
+          when "ask_parent"
+            !running_as_subagent?
+          when *TASK_DEPENDENT_TOOLS
+            !any_subagent?
+          when *SHELL_DEPENDENT_TOOLS
+            !any_background_shell?
+          else
+            false
+          end
+        end
+
+        # True when THIS run is executing as a subagent (has a parent). The
+        # thread-local is set by TaskTool around a child Runner#run!; nil on the
+        # top-level / parent thread, which is exactly the "no parent to ask"
+        # signal ask_parent itself uses to refuse.
+        def running_as_subagent?
+          !Rubino.current_subagent_id.nil?
+        rescue StandardError
+          false
+        end
+
+        # True once at least one child task (in any state) exists this session.
+        def any_subagent?
+          BackgroundTasks.instance.list.any?
+        rescue StandardError
+          # Never let a registry probe failure hide a tool that should show — be
+          # permissive (expose) on error, matching the opt-out posture elsewhere.
+          true
+        end
+
+        # True once at least one background shell exists this session.
+        def any_background_shell?
+          ShellRegistry.instance.any?
+        rescue StandardError
+          true
+        end
 
         def tool_enabled_in_config?(tool, config)
           # Single source of truth: the tool declares its own `tools.<key>`
@@ -146,19 +217,49 @@ module Rubino
           true
         end
 
-        # Hides tools whose runtime dependency isn't configured. Currently only
-        # the `vision` tool: hide ONLY when no auxiliary is configured AND the
-        # primary can't see — that's the one case where calling the tool would
-        # error at runtime. In every other case keep it exposed, including when
-        # the primary already supports vision natively: the model may prefer to
-        # delegate to a better aux (e.g. primary "auto" routes to a mediocre
-        # VLM but auxiliary is Gemini 2.5 Flash / MiniMax-M3). Letting the
-        # model choose is cheap and sometimes the right call.
+        # Hides tools whose runtime dependency isn't configured.
+        #
+        # - vision: hide ONLY when no auxiliary is configured AND the primary
+        #   can't see — the one case where calling it would error at runtime. In
+        #   every other case keep it exposed (the model may prefer a better aux).
+        # - web (webfetch/websearch): now ships ON by default (#411), keyless via
+        #   DuckDuckGo. Hide it only when the web backend is provably unreachable
+        #   so an offline/air-gapped run DEGRADES gracefully (no web tool in the
+        #   request) instead of the model calling a tool that can only error. The
+        #   check is cached + best-effort: a reachable backend (an API key set,
+        #   or DNS resolves) keeps the tools; only a clear "no network at all"
+        #   removes them. On any uncertainty we KEEP the tools exposed (the tool
+        #   itself already returns an error string rather than crashing a turn).
         def aux_dependency_satisfied?(tool, config)
-          return true unless tool.name == "vision"
+          case tool.config_key
+          when "vision"
+            aux_model = config.auxiliary_vision_config["model"].to_s
+            !aux_model.empty? || config.model_supports_vision?
+          when "web"
+            web_backend_available?
+          else
+            true
+          end
+        end
 
-          aux_model = config.auxiliary_vision_config["model"].to_s
-          !aux_model.empty? || config.model_supports_vision?
+        # Best-effort capability check for the web tools (#411). A configured
+        # search API (Tavily/SearXNG) is taken as available without a network
+        # probe; otherwise we check that the DuckDuckGo host resolves. Result is
+        # memoized for the process so it never adds per-turn latency, and any
+        # error resolves to AVAILABLE (fail-open: keep the tool, let the call
+        # surface a runtime error string rather than silently hiding web access).
+        def web_backend_available?
+          return @web_backend_available unless @web_backend_available.nil?
+
+          @web_backend_available =
+            if ENV["TAVILY_API_KEY"] || ENV["SEARXNG_URL"]
+              true
+            else
+              require "resolv"
+              !Resolv.getaddress("html.duckduckgo.com").nil?
+            end
+        rescue StandardError
+          @web_backend_available = true
         end
       end
     end

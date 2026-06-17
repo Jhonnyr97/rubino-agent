@@ -131,7 +131,7 @@ RSpec.describe "BottomComposer scroll-boundary PTY" do
   # Runs +script+ (a String of Ruby) against a real composer inside a ROWS×COLS
   # PTY and returns the bytes the composer wrote. The script gets locals
   # +composer+ (started) and +queue+.
-  def capture(script)
+  def capture(script) # rubocop:disable Metrics/MethodLength
     require "tmpdir"
     harness = <<~RUBY
       $LOAD_PATH.unshift(File.expand_path("lib", Dir.pwd))
@@ -168,6 +168,7 @@ RSpec.describe "BottomComposer scroll-boundary PTY" do
           out << chunk.force_encoding(Encoding::UTF_8)
         rescue IO::WaitReadable
           break if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
           IO.select([master], nil, nil, 0.5)
           retry
         rescue Errno::EIO, EOFError

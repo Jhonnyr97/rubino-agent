@@ -13,7 +13,7 @@ module Rubino
 
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
-                     event_bus: nil, announce_session: true)
+                     event_bus: nil, announce_session: true, session_source: "cli")
         @ui = ui || Rubino.ui
         # An in-chat rewind/fork builds a runner on the child session but has its
         # own purpose-built "┄ rewound to message N — editing ┄" marker, so the
@@ -33,13 +33,31 @@ module Rubino
         @max_turns = max_turns
         @ignore_rules = ignore_rules
         @agent_definition = agent_definition
+        # The `source` stamped on a freshly-created session row. Defaults to
+        # "cli" (a user-driven REPL/one-shot session); the `task` tool passes
+        # "subagent" so internal subagent prompt-sessions can be filtered out of
+        # the user-facing /sessions picker + `sessions list` (they're machinery,
+        # not the user's own conversations) while staying resumable by explicit
+        # id. Like Claude Code hiding its Task subagent sessions from the picker.
+        @session_source = session_source
         # Pre-instantiate so cancel! is meaningful between turns and during the
         # window between Signal.trap install and run() — a too-early Ctrl+C
         # used to land on a nil token and silently no-op, then the next run
         # started fresh and the user's cancel was lost.
         @cancel_token = Interaction::CancelToken.new
+        # Detached post-turn polishing worker (#319): owns the background thread
+        # that drains memory-extract / skill-distill / summarize OFF the live
+        # turn so the next prompt is never gated, and is cancellable via Esc.
+        # Reused across this runner's turns so #running? / #cancel! address the
+        # CURRENT polishing run (coalescing rapid turns).
+        @polishing = Interaction::Polishing.new(config: @config)
         @session = load_or_create_session(session_id)
       end
+
+      # The detached post-turn polishing worker, so the CLI can show the
+      # non-blocking "polishing… (Esc to skip)" indicator while it runs and
+      # extend the single Esc/cancel path to it (#319).
+      attr_reader :polishing
 
       # Executes a full interaction turn, swallowing failures so CLI callers
       # can stay in the REPL after a model/tool error. The friendly UI
@@ -89,18 +107,68 @@ module Rubino
           cancel_token: @cancel_token,
           model_override: @explicit_model_override,
           provider_override: @provider_override,
-          max_tool_iterations: @max_turns
+          max_tool_iterations: @max_turns,
+          polishing: @polishing
         )
 
-        lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
-                                 paste_expansions: paste_expansions)
+        response = lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
+                                            paste_expansions: paste_expansions)
+
+        # Adopt an automatic-compaction swap so the NEXT turn runs on the (small)
+        # compaction child, not the dead parent (P3 F1). When #check_and_compact
+        # fires, it reassigns the lifecycle's session to the child; without
+        # picking that up here the Runner would rebuild every subsequent turn's
+        # Lifecycle on the un-shrunk parent → re-compact every turn (superlinear
+        # DB/context bloat + ~2.9x slowdown). This is the automatic-path
+        # counterpart to the manual /compact swap (chat_command rebuilds the
+        # runner on result[:compact_into]).
+        @session = lifecycle.active_session
+
+        response
+      end
+
+      # Pins the agent Definition this runner threads into every subsequent turn
+      # (the sticky `/agent <name>` / Tab-cycle switch). Lifecycle reads
+      # @agent_definition fresh on each #run!, so swapping it here takes effect
+      # from the NEXT turn — the agent's system prompt and tool scope come along.
+      # nil restores the default (build) persona. The reader feeds the CLI
+      # status bar and a one-shot route that wants to restore it afterwards.
+      attr_accessor :agent_definition
+
+      # Runs ONE turn under +definition+ (a one-shot `/<name> <message>` route)
+      # without disturbing the runner's sticky agent. The override is swapped in
+      # for the single #run and restored in the ensure, so the next idle prompt
+      # is back on whatever the user had pinned.
+      def run_with_agent(definition, input, **)
+        sticky = @agent_definition
+        @agent_definition = definition
+        run(input, **)
+      ensure
+        @agent_definition = sticky
       end
 
       # Flips the current turn's cancel token. Called from the UI thread when
       # the user hits Esc or a second Ctrl+C while the worker is mid-stream.
       # No-op when no turn is in flight.
-      def cancel!
-        @cancel_token&.cancel!
+      #
+      # ONE Esc cancels whatever is in flight (#319): the FOREGROUND turn OR the
+      # DETACHED post-turn polishing. Flipping both tokens is safe — a token is
+      # one-shot and idle-when-untouched, so cancelling the not-running side is a
+      # harmless no-op. The polishing worker stops between jobs and its aux
+      # retry/backoff aborts mid-wait, leaving partial work in place.
+      # +reason+ records WHY the turn was cancelled so the result label stays
+      # truthful: :user (Esc/Ctrl+C, default) vs :external (SIGTERM/SIGHUP
+      # teardown). Plumbed through to the CancelToken / Interrupted (#361b).
+      def cancel!(reason: :user)
+        @cancel_token&.cancel!(reason: reason)
+        @polishing&.cancel!
+      end
+
+      # True while the detached post-turn polishing is still draining — drives
+      # the non-blocking "polishing… (Esc to skip)" indicator the CLI shows
+      # without owning the input.
+      def polishing?
+        @polishing&.running? || false
       end
 
       # Switches the LIVE model for this runner (the in-chat `/model <name>`).
@@ -136,6 +204,11 @@ module Rubino
         @session_repo.end_session!(@session[:id])
       rescue StandardError
         nil
+      ensure
+        # Let any in-flight detached polishing settle (bounded) so a clean
+        # teardown doesn't abandon a half-written extraction (#319). Best-effort:
+        # the cursor re-feeds anything unfinished next session anyway.
+        @polishing&.wait(3)
       end
 
       private
@@ -170,9 +243,31 @@ module Rubino
                   "Try `rubino sessions list`, or resume by id prefix."
           end
 
+          # Owner-guard on EXPLICIT resume (#347): auto-resume already skips a
+          # session a DIFFERENT live process is actively writing, but explicit
+          # `--resume <id>` / `-s <id>` had NO guard — N processes could latch
+          # the same "active" row and interleave writes into one malformed
+          # transcript (user user user … assistant), poisoning the next resume's
+          # history. When the target is live-owned by another process, fork a
+          # fresh child that inherits the full history instead of stomping the
+          # live session; the user keeps their context and the two writers never
+          # interleave.
+          # ATOMICALLY claim the row for THIS process (#390/residual #376).
+          # The old code checked `owned_by_other_live_process?` then later
+          # stamped owner_pid — a TOCTOU window where two concurrent
+          # `--resume <id>` both read the same dead owner_pid, both passed the
+          # check, and both stamped+wrote the live row (user,user … interleave).
+          # claim_for_resume! folds the check and stamp into one compare-and-swap
+          # (same idiom as Jobs::Queue#claim!): exactly one racer wins, the
+          # loser gets false and forks a fresh child off the busy parent.
+          return fork_busy_session(session) unless @session_repo.claim_for_resume!(session)
+
           # An existing row is already in the DB; mark it so the lazy-persist
-          # path (#144) treats it as persisted and never re-inserts.
+          # path (#144) treats it as persisted and never re-inserts. We now own
+          # owner_pid (stamped atomically above) so a later concurrent resume
+          # sees us as the live owner and forks rather than interleaving.
           session[:persisted] = true
+          session[:owner_pid] = Process.pid
           @ui.status("Resuming session: #{session[:id][0..7]}...") if @announce_session
           session
         else
@@ -182,13 +277,43 @@ module Rubino
           # record carries a real id so the whole turn pipeline works unchanged;
           # Lifecycle#persist_user_message flips it to a real row on demand.
           session = @session_repo.build(
-            source: "cli",
+            source: @session_source,
             model: @model_id,
             provider: @provider_override || LLM::ProviderResolver.resolve(@model_id)
           )
           @ui.status("New session: #{session[:id][0..7]}")
           session
         end
+      end
+
+      # Forks a child session off a parent another live process is still writing
+      # (#347), copying the parent's full history so the explicit-resume user
+      # keeps their context, while writing to a SEPARATE row so the two writers
+      # never interleave into one malformed transcript. The child is owned by
+      # THIS process. Mirrors the /branch copy (history + extraction watermark +
+      # message_count sync) without a probe seed.
+      def fork_busy_session(parent)
+        store = @message_store
+        child = @session_repo.create(
+          source: "cli",
+          model: parent[:model] || @model_id,
+          provider: parent[:provider] || @provider_override,
+          title: parent[:title],
+          parent_session_id: parent[:id],
+          cwd: parent[:cwd]
+        )
+        store.copy_into(child[:id], store.for_session(parent[:id]))
+        store.seed_extraction_cursor(child[:id])
+        @session_repo.update(child[:id], message_count: store.count(child[:id]))
+
+        if @announce_session
+          @ui.status(
+            "Session #{parent[:id][0..7]} is in use by another rubino — " \
+            "forked a copy: #{child[:id][0..7]}"
+          )
+        end
+        child[:persisted] = true
+        child
       end
     end
   end

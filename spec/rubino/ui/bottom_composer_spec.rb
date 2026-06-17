@@ -168,6 +168,107 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "flattens embedded newlines to spaces" do
       expect(composer.send(:clamp, "a\nb", 40)).to eq("a b")
     end
+
+    # #426 (Bug A): the status ticker frame is coloured (dim ┄ track + red ◆ +
+    # dim label, all wrapped in \e[…m SGR escapes). On a mid-stream resize its
+    # STALE wide @partial was re-clamped at the new, narrower width; the
+    # per-CHAR left-truncation walk measured each escape byte as a visible
+    # column and could stop INSIDE a \e[2m run, dropping the leading \e and
+    # leaking the literal "[2m" right after the "…" marker (the "…[2m" artifact
+    # seen on screen). Clamp must treat each SGR escape as one atomic,
+    # zero-width token so a left-truncation can never split one.
+    it "never splits an ANSI escape on left-truncation (#426)" do
+      e = "\e"
+      track = (0...5).map { |c| c == 2 ? "#{e}[31m◆#{e}[0m" : "#{e}[2m┄#{e}[0m" }.join
+      frame = "#{track} #{e}[2mthinking · 5s · ~7 tok · esc to interrupt#{e}[0m"
+      # Clamp across every width that forces a left-truncation: not one of them
+      # may leak a "[…m" literal whose leading \e was dropped.
+      (1..composer.send(:display_width, frame)).each do |cols|
+        clamped = composer.send(:clamp, frame, cols)
+        # Every "[…m" present must still carry its leading ESC (a bare "[2m"
+        # means the \e was cut off — the exact on-screen artifact).
+        expect(clamped).not_to(match(/(?<!\e)\[[0-9;]+m/),
+                               "cols=#{cols} leaked an orphaned SGR escape: #{clamped.inspect}")
+      end
+    end
+
+    # ANSI SGR escapes occupy NO display columns, so a coloured frame measures
+    # by its VISIBLE width — counting the escape bytes (each \e[2m is 4 chars)
+    # made it measure ~2× wider and clamp a frame that actually fit (#426).
+    it "measures display width ignoring zero-width ANSI escapes (#426)" do
+      e = "\e"
+      expect(composer.send(:display_width, "#{e}[2mhi#{e}[0m")).to eq(2)
+    end
+  end
+
+  # TUI-2: a rendered INPUT row must fit ONE physical terminal line in DISPLAY
+  # columns. The wrap math in #layout_input already breaks on display width,
+  # but the drawn row is the defensive last line — a wide CJK/emoji glyph at a
+  # boundary, or a degenerate narrow width where the prefix alone is wider than
+  # the budget, must not leave a row at/over @cols that the terminal auto-wraps
+  # onto a SECOND physical line the logical-row clear never erases (the ghost
+  # "❯ …" rows that only Ctrl+L cleared). #fit_row right-truncates (whole-glyph,
+  # ANSI-safe) to one column short of the width so logical rows == physical rows.
+  describe "#fit_row (input-row width fit, TUI-2)" do
+    # winsize is [24, 40] → @cols 40, so a fitted row is <= 39 display columns.
+    it "fits a wide CJK row to one column short of the width" do
+      row = "❯ #{"中" * 40}" # 80 display columns, far over a 40-col terminal
+      fitted = composer.send(:fit_row, row)
+      expect(composer.send(:display_width, fitted)).to be <= 39
+    end
+
+    it "drops a trailing wide glyph WHOLE rather than splitting a cell" do
+      # At an odd remaining budget a width-2 glyph that would overflow is
+      # dropped entire — the fitted width never lands on a half-cell.
+      row = "x#{"中" * 30}"
+      fitted = composer.send(:fit_row, row)
+      expect(composer.send(:display_width, fitted)).to be <= 39
+      # No mojibake: every kept char is whole (re-measuring is stable).
+      flat = fitted.gsub(/\e\[[0-9;]*m/, "")
+      expect(composer.send(:display_width, fitted)).to eq(flat.chars.sum { |c| Unicode::DisplayWidth.of(c) })
+    end
+
+    it "right-truncates (keeps the HEAD), unlike the ellipsis clamp" do
+      row = ("a".."z").to_a.join * 3 # 78 ASCII columns
+      fitted = composer.send(:fit_row, row)
+      expect(fitted).to start_with("abcdefg") # the start the user typed is kept
+      expect(fitted).not_to start_with("…") # not the left-truncation marker
+    end
+
+    it "leaves a row that already fits unchanged" do
+      expect(composer.send(:fit_row, "❯ hello")).to eq("❯ hello")
+    end
+
+    it "never splits an ANSI escape while fitting a colored row" do
+      e = "\e"
+      row = "#{e}[31m▍#{e}[0m❯ " + ("界" * 40)
+      fitted = composer.send(:fit_row, row)
+      # Any SGR present still carries its leading ESC (no orphaned "[31m").
+      expect(fitted).not_to(match(/(?<!\e)\[[0-9;]+m/))
+      expect(composer.send(:display_width, fitted)).to be <= 39
+    end
+  end
+
+  # TUI-2 (root): a long CJK buffer at a narrow width must wrap onto MULTIPLE
+  # visual rows with NO drawn row exceeding the terminal — so the per-frame
+  # input-block clear (which walks the LOGICAL row count) stays exact and no
+  # ghost prompt rows accumulate in scrollback. The wrap path is display-width
+  # aware end to end; this pins that every emitted row fits one physical line.
+  describe "wide-char composer reflow (TUI-2)" do
+    it "lays a long CJK buffer into rows that each fit one physical line" do
+      ("中" * 60).each_char { |c| composer.handle_key(c) }
+      rows, = composer.send(:visible_input_rows)
+      cols = 40 # FakeTermIO winsize
+      rows.each do |row|
+        expect(composer.send(:display_width, row)).to be <= cols - 1
+      end
+    end
+
+    it "keeps every drawn input row within the terminal for mixed CJK + ASCII" do
+      "#{"测试很长的中文输入" * 3}ABCDEF".each_char { |c| composer.handle_key(c) }
+      rows, = composer.send(:visible_input_rows)
+      rows.each { |row| expect(composer.send(:display_width, row)).to be <= 39 }
+    end
   end
 
   describe "buffer editing" do
@@ -197,6 +298,36 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("aé")
       composer.handle_key("\b")
       expect(composer.buffer).to eq("a")
+    end
+
+    # F9 — Ctrl+U clears the WHOLE line (not just to the start), so a half
+    # typed command can't leave residual text that concatenates into the next.
+    it "Ctrl+U clears the whole line, cursor at end of buffer" do
+      "/memory".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\x15") # Ctrl+U
+      expect(composer.buffer).to eq("")
+    end
+
+    it "Ctrl+U clears even when the cursor is parked mid-line" do
+      "hello world".each_char { |c| composer.handle_key(c) }
+      composer.send(:move_to, 5) # cursor after "hello"
+      composer.handle_key("\x15")
+      expect(composer.buffer).to eq("")
+    end
+
+    # #395: Ctrl+L (\x0c) clears the screen + scrollback, homes the cursor, and
+    # redraws the prompt in place — the readline/terminal norm. It must NOT
+    # disturb the typed buffer (only the painted screen).
+    it "Ctrl+L clears the screen and redraws the prompt, keeping the buffer" do
+      "hello".each_char { |c| composer.handle_key(c) }
+      output.truncate(0)
+      output.rewind
+      composer.handle_key("\x0c") # Ctrl+L
+      # Emits the clear-screen + scrollback + home sequence...
+      expect(output.string).to include("\e[2J\e[3J\e[H")
+      # ...then redraws the prompt with the preserved buffer, untouched.
+      expect(output.string).to end_with("#{PROMPT}hello")
+      expect(composer.buffer).to eq("hello")
     end
 
     it "ignores stray control bytes" do
@@ -273,15 +404,14 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
-    # NEW MODEL: Enter while a turn is active INTERRUPTS the current turn and
-    # sends the line as the NEXT turn immediately (the default). The line is
-    # pushed to the queue AND the on_interrupt hook fires; no committed echo
-    # here (the next turn's prompt echo is committed by the chat loop when it
-    # runs) — but the line shows a live "⏳ queued:" indicator while parked
-    # (#129), so a submit that doesn't run instantly is never invisible. The
-    # OLD "queued ▸" deferred echo is retired.
-    context "interrupt-by-default (Enter during an active turn)" do
-      it "fires on_interrupt and queues the line with a live indicator, during streaming" do
+    # NEW MODEL (#421, Claude-Code type-ahead): Enter while a turn is active
+    # QUEUES the line — it does NOT interrupt. The line is pushed to the queue
+    # (FIFO) and shows a live "⏳ queued:" indicator above the input; the current
+    # turn KEEPS RUNNING. No on_interrupt fires (Esc is the interrupt now). The
+    # chat loop commits the line as a normal "<prompt><line>" message when its
+    # turn runs (#commit_queued). The OLD "queued ▸" deferred echo stays retired.
+    context "queue-by-default (Enter during an active turn)" do
+      it "queues the line with a live indicator and does NOT interrupt, during streaming" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> { interrupts += 1 })
@@ -289,101 +419,220 @@ RSpec.describe Rubino::UI::BottomComposer do
         c.begin_content_stream
         "ping".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        expect(interrupts).to eq(1)            # interrupt fired exactly once
-        expect(queue.drain).to eq(["ping"])    # line queued for the immediate next run
+        expect(interrupts).to eq(0)            # the turn is NOT interrupted
+        expect(queue.drain).to eq(["ping"])    # line parked for after the turn
         expect(output.string).not_to include("queued ▸") # old deferred echo retired
-        # Visible while parked (#129): the interrupt line renders the same live
+        # Visible while parked: the type-ahead line renders the same live
         # "⏳ queued:" row an explicit queue gets, removed at dequeue time.
         expect(output.string).to include("⏳ queued: ping")
         expect(c.commit_queued("ping")).to be(true) # dequeue clears it
       end
 
-      it "fires on_interrupt during the THINKING phase too (turn active, not streaming)" do
+      it "queues during the THINKING phase too (turn active, not streaming)" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> { interrupts += 1 })
         c.begin_turn # NO begin_content_stream yet (thinking)
         "while-thinking".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        expect(interrupts).to eq(1)
+        expect(interrupts).to eq(0)
         expect(queue.drain).to eq(["while-thinking"])
+        expect(output.string).to include("⏳ queued: while-thinking")
         expect(output.string).not_to include("queued ▸")
       end
 
-      # #111: the hook's optional quiet flag classifies the interrupt. A SLASH
-      # COMMAND submitted while nothing is visibly in flight (no content
-      # stream, no live partial — e.g. only a subagent card animating) is
-      # QUIET: the chat loop then swallows the `⎿ interrupted` marker that
-      # would otherwise strand a stray artifact above the command's output.
-      context "quiet-interrupt classification (#111)" do
-        def composer_with_quiet_probe
-          quiet_values = []
-          c = described_class.new(input_queue: queue, input: input, output: output,
-                                  on_interrupt: ->(quiet) { quiet_values << quiet })
-          c.begin_turn
-          [c, quiet_values]
-        end
-
-        it "marks a slash command with nothing visibly in flight as quiet" do
-          c, quiet_values = composer_with_quiet_probe
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([true])
-          expect(queue.drain).to eq(["/agents"])
-        end
-
-        it "keeps a plain message loud even when nothing is in flight" do
-          c, quiet_values = composer_with_quiet_probe
-          "hello".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([false])
-        end
-
-        it "keeps a slash command loud while a live partial row is showing" do
-          c, quiet_values = composer_with_quiet_probe
-          c.set_partial("✻ thinking…  2s")
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([false])
-        end
-
-        it "keeps a slash command loud while content is streaming" do
-          c, quiet_values = composer_with_quiet_probe
-          c.begin_content_stream
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(quiet_values).to eq([false])
-        end
-
-        it "still supports a no-arg hook (old contract)" do
-          fired = 0
-          c = described_class.new(input_queue: queue, input: input, output: output,
-                                  on_interrupt: -> { fired += 1 })
-          c.begin_turn
-          "/agents".each_char { |ch| c.handle_key(ch) }
-          c.handle_key("\r")
-          expect(fired).to eq(1)
-        end
+      # FIFO order: two lines typed during one turn stay in submission order, so
+      # they run as their OWN turns A-then-B after the current one (no front-jump
+      # — the old interrupt-by-default push_front is gone).
+      it "stacks multiple Enter-queued lines in FIFO order" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        "msg A".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        "msg B".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(queue.drain).to eq(["msg A", "msg B"]) # FIFO, A first
+        idx_a = output.string.index("⏳ queued: msg A")
+        idx_b = output.string.index("⏳ queued: msg B")
+        expect(idx_a).to be < idx_b
       end
 
-      # end_turn is now a quiet no-op (no deferred echoes to flush).
-      it "emits nothing at turn end (deferred-echo machinery retired)" do
+      # A queued Enter line never front-jumps an explicitly-parked item: an
+      # Alt+Enter / "/queued" earlier in the turn keeps its place; the later
+      # plain Enter lands BEHIND it.
+      it "does not jump ahead of an earlier explicitly-queued item" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        "/queued parked".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        "typed".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(queue.drain).to eq(%w[parked typed]) # parked stays first
+      end
+
+      # end_turn is a quiet no-op for scrollback (no deferred echoes), but it
+      # repaints to clear the affordance — assert it commits nothing new.
+      it "commits nothing to scrollback at turn end (no deferred echoes)" do
         c = described_class.new(input_queue: queue, input: input, output: output,
                                 on_interrupt: -> {})
         c.begin_turn
         "x".each_char { |ch| c.handle_key(ch) }
         c.handle_key("\r")
-        before = output.string.dup
         c.end_turn
-        expect(output.string).to eq(before) # nothing flushed at turn end
+        expect(output.string).not_to include("queued ▸ x")
       end
     end
 
-    # EXPLICIT QUEUE (the exception): Alt+Enter (\e\r) or "/queued <msg>" queues
-    # WITHOUT interrupting — the current turn keeps running. The queued message
-    # shows a live "⏳ queued: <msg>" row above the input while pending; it's
-    # removed and committed as a normal message when its turn runs (#commit_queued).
-    context "explicit queue (Alt+Enter / /queued)" do
+    # Esc = INTERRUPT (#421): with a turn active, a lone Esc cancels the current
+    # turn through the SAME on_interrupt hook (runner.cancel!). The chat loop
+    # then runs the head of the queue; here we assert the composer FIRES the
+    # interrupt (non-quiet) and does not arm the idle rewind chord.
+    context "Esc interrupts the active turn (#421)" do
+      def press_esc(c)
+        # A lone ESC with no escape-sequence tail: feed an empty input so the
+        # EscapeReader resolves :esc and routes to #handle_lone_esc.
+        c.instance_variable_set(:@input, StringIO.new(""))
+        c.handle_key("\e")
+      end
+
+      it "fires on_interrupt (non-quiet) while streaming" do
+        quiet_values = []
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: ->(quiet = false) { quiet_values << quiet })
+        c.begin_turn
+        c.begin_content_stream
+        press_esc(c)
+        expect(quiet_values).to eq([false]) # interrupt fired exactly once, loud
+      end
+
+      it "fires during the THINKING phase and does NOT arm the idle rewind chord" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn # thinking, not streaming
+        press_esc(c)
+        expect(fired).to eq(1)
+        # Mid-turn Esc interrupts; it never arms the Esc-Esc rewind chord.
+        expect(c.instance_variable_get(:@last_esc_at)).to be_nil
+      end
+
+      it "interrupts and then the queue HEAD is what #shift returns (run next)" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        # Queue a line first (type-ahead), then interrupt with Esc.
+        "msg B".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        press_esc(c)
+        expect(queue.shift).to eq("msg B") # the head runs immediately next
+      end
+
+      it "is a no-op (no interrupt) when idle (no turn active)" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        # NO begin_turn: idle. Esc must NOT interrupt.
+        press_esc(c)
+        expect(fired).to eq(0)
+      end
+
+      it "still supports a no-arg interrupt hook (old contract)" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn
+        press_esc(c)
+        expect(fired).to eq(1)
+      end
+    end
+
+    # H1 (CWE-150): a typed/pasted line carrying terminal control/escape
+    # sequences must be NEUTRALIZED at the echo/commit render boundary — the
+    # same defense the approval card already applies — so an OSC title-set
+    # (\e]0;…\a) or CSI clear-screen (\e[2J) is rendered as inert caret notation
+    # instead of EXECUTING against the terminal. Render-only: the model still
+    # receives the literal text (it's pushed to the InputQueue raw).
+    context "terminal-escape injection on submit/echo (CWE-150, H1)" do
+      # Bytes only inserted via #insert reach the buffer; a typed lone ESC is
+      # consumed as an escape sequence, so we drive the payload in as a paste —
+      # exactly the real attack vector (pasting an untrusted string).
+      def paste_into(c, text)
+        c.send(:submit_paste, text)
+      end
+
+      it "neutralizes OSC/CSI escapes in the idle (:prompt) committed echo" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                echo: :prompt)
+        paste_into(c, "\e]0;HIJACKED\ahi\e[2J")
+        c.handle_key("\r")
+        out = output.string
+        expect(out).not_to include("\e]0;HIJACKED\a") # raw OSC title-set gone
+        expect(out).not_to include("\e[2J")           # raw clear-screen gone
+        expect(out).to include("^[]0;HIJACKED^G")     # shown inertly (caret)
+        expect(out).to include("hi")                  # the real text survives
+      end
+
+      it "neutralizes escapes in the steering 'queued ▸' echo" do
+        c = described_class.new(input_queue: queue, input: input, output: output)
+        paste_into(c, "ping\e]0;PWN\a")
+        c.handle_key("\r")
+        out = output.string
+        expect(out).to include("queued ▸ ping^[]0;PWN^G")
+        expect(out).not_to include("\e]0;PWN\a")
+      end
+
+      it "still sends the LITERAL text to the model (sanitization is render-only)" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                echo: :prompt)
+        paste_into(c, "\e]0;X\arun")
+        c.handle_key("\r")
+        # The pasted body is normalized at the buffer seam, so the queue carries
+        # the neutralized-but-LOSSLESS rendering of the user's content (caret
+        # notation), never the raw control bytes that would hijack the terminal.
+        line = queue.drain.first
+        expect(line).not_to include("\e") # no raw ESC reaches downstream
+        expect(line).to include("run")
+      end
+
+      it "leaves plain / unicode / emoji echo unaffected" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                echo: :prompt)
+        paste_into(c, "ciao 世界 🚀")
+        c.handle_key("\r")
+        expect(output.string).to include("❯ ciao 世界 🚀\r\n")
+        expect(queue.drain).to eq(["ciao 世界 🚀"])
+      end
+
+      it "neutralizes escapes in the live input-block render (paste seam)" do
+        c = described_class.new(input_queue: queue, input: input, output: output)
+        paste_into(c, "\e]0;LIVE\a")
+        # The buffer (what #draw_input renders AND what submit pushes) holds the
+        # inert caret form, never the raw OSC bytes that would hijack the title.
+        expect(c.buffer).to eq("^[]0;LIVE^G")
+        expect(output.string).not_to include("\e]0;LIVE\a")
+      end
+
+      it "neutralizes escapes in the live '⏳ queued:' indicator row" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        paste_into(c, "ping\e]0;PWN\a")
+        c.handle_key("\r") # interrupt-by-default → live "⏳ queued:" indicator
+        expect(output.string).to include("⏳ queued: ping^[]0;PWN^G")
+        expect(output.string).not_to include("\e]0;PWN\a")
+      end
+    end
+
+    # EXPLICIT QUEUE: Alt+Enter (\e\r) is now an ALIAS for plain Enter (queue is
+    # the default, #421), and "/queued <msg>" the explicit prefix — both queue
+    # WITHOUT interrupting (Esc interrupts). The queued message shows a live
+    # "⏳ queued: <msg>" row above the input while pending; it's removed and
+    # committed as a normal message when its turn runs (#commit_queued).
+    context "explicit queue (Alt+Enter alias / /queued)" do
       it "Alt+Enter (\\e\\r) queues the buffer without firing on_interrupt" do
         interrupts = 0
         c = described_class.new(input_queue: queue, input: input, output: output,
@@ -778,6 +1027,18 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.menu_open?).to be(false)
     end
 
+    # F9 — accepting a completion while the cursor sits MID-token must replace
+    # the WHOLE token, not concatenate the un-measured tail (`/reasoningasoning`,
+    # the `/memorymemory` class of bug). The accept swallows the trailing run.
+    it "accepting mid-token replaces the whole token (no residual concat)" do
+      "/reasoning".each_char { |ch| composer.handle_key(ch) }
+      composer.send(:move_to, 3) # cursor at "/re|asoning"; menu re-opens for /re
+      expect(composer.menu_open?).to be(true)
+      tab(composer) # accept /reasoning
+      expect(composer.buffer).to eq("/reasoning ")
+      expect(composer.menu_open?).to be(false)
+    end
+
     it "↓ then Enter accepts the SECOND candidate" do
       "/re".each_char { |ch| composer.handle_key(ch) } # menu auto-opens
       arrow(composer, "B") # ↓ → /reset
@@ -1136,6 +1397,36 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "#handle_key Tab (agent cycle on empty input)" do
+    # #320: a Tab with nothing to complete (empty buffer, no menu) cycles the
+    # active PRIMARY agent and adopts the returned status line — the agent
+    # counterpart of Shift+Tab's mode cycle.
+    it "invokes on_agent_cycle and adopts the returned STATUS line" do
+      cycles = 0
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_agent_cycle: lambda {
+                                cycles += 1
+                                " default · agent plan · m3"
+                              })
+      c.handle_key("\t")
+      expect(cycles).to eq(1)
+      expect(output.string).to include(" default · agent plan · m3")
+    end
+
+    it "does NOT cycle the agent when there is text in the buffer (Tab stays completion)" do
+      cycles = 0
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_agent_cycle: -> { cycles += 1 })
+      "/he".each_char { |ch| c.handle_key(ch) } # a typed, completable token
+      c.handle_key("\t")
+      expect(cycles).to eq(0)
+    end
+
+    it "is a quiet no-op when no callback is wired" do
+      expect { composer.handle_key("\t") }.not_to raise_error
+    end
+  end
+
   describe "#handle_key Shift+Tab (mode cycle)" do
     # Shift+Tab arrives as ESC[Z: preload the bytes after ESC, then trigger the
     # escape consumer via handle_key("\e") — the same way the paste specs drive it.
@@ -1217,6 +1508,56 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # #426 (Bug B): the during-turn Ctrl+C double-tap hint. The chat loop's SIGINT
+  # trap used to write "\n(press Ctrl+C again to exit)\n" RAW to the terminal,
+  # scrolling the live region by two rows OUTSIDE LiveRegion's @rows_above
+  # accounting. On a very-early interrupt — the answer's first line still a raw
+  # live-tail preview — that desynced the geometry, so the finalize commit's
+  # \e[1A walk-up fell one row short: the raw preview SURVIVED above the rendered
+  # (curly) line and the prompt committed as a ghost `❯`, duplicating the
+  # preamble. #announce_pending is the TRAP-SAFE fix: it only ASSIGNS @announce
+  # (no render mutex — forbidden in trap context — and no output), and the next
+  # mutex-held frame paints the hint as an IN-PLACE transient row that never
+  # scrolls, so the geometry stays in step and the finalize erases the preview.
+  describe "#announce_pending (trap-safe during-turn hint, #426 Bug B)" do
+    it "sets the transient @announce WITHOUT taking the render mutex or emitting" do
+      # Trap-safe contract: a SIGINT trap can call this, so it must NOT lock the
+      # render mutex (Mutex#lock raises in trap context) and must NOT write any
+      # bytes (a raw scrolling write is what desynced the geometry — Bug B).
+      mutex = composer.instance_variable_get(:@render)
+      expect(mutex).not_to receive(:synchronize)
+      output.truncate(0)
+      output.rewind
+
+      composer.announce_pending("(press Ctrl+C again to exit)")
+
+      expect(composer.instance_variable_get(:@announce)).to eq("(press Ctrl+C again to exit)")
+      expect(output.string).to eq("") # zero bytes — the next frame paints it
+    end
+
+    it "renders the pending hint as an IN-PLACE live row on the next frame, never a raw scroll" do
+      # The interrupt's finalize redraw is the next mutex-held frame; it must
+      # paint the hint as a transient live row (\r\e[2K…\r\n above the prompt) —
+      # NOT as a raw "\n…\n" that scrolls the region (the desync that stranded
+      # the raw preview above the rendered line as the duplicated preamble).
+      composer.announce_pending("(press Ctrl+C again to exit)")
+      output.truncate(0)
+      output.rewind
+
+      composer.send(:redraw) # stand-in for the interrupt's finalize repaint
+
+      expect(output.string).to include("\r\e[2K(press Ctrl+C again to exit)")
+      expect(output.string).not_to include("\r\n(press Ctrl+C again to exit)\r\n")
+      expect(output.string).to end_with(PROMPT)
+    end
+
+    it "leaves the hint cleared on the next keystroke (one-shot toast, no scrollback)" do
+      composer.announce_pending("(press Ctrl+C again to exit)")
+      composer.handle_key("a") # any keystroke dismisses the toast
+      expect(composer.instance_variable_get(:@announce)).to eq("")
+    end
+  end
+
   describe "bracketed paste (L1)" do
     # Drive a paste by preloading the input IO with the bytes that follow the
     # initial ESC, then triggering the escape consumer via handle_key("\e").
@@ -1291,6 +1632,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       Rubino::UI::PasteStore.new(
         config: instance_double(Rubino::Config::Configuration,
                                 paste_collapse_lines: 5,
+                                paste_collapse_chars: 10_000, # high: this exercises the LINE boundary
                                 paste_file_threshold_tokens: 8000),
         session_source: "composer-spec"
       )
@@ -1545,6 +1887,89 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to include("streaming answer in progress")
       # The prompt is redrawn below it.
       expect(output.string).to end_with(PROMPT)
+    end
+
+    # #401: typing a long line then resizing (the column count changes, so the
+    # terminal reflows the wrapped input into a DIFFERENT number of physical
+    # rows) re-echoed/duplicated the in-progress input ~20× into scrollback on
+    # each reflow. Root cause: the resize redraw walked the OLD on-screen row
+    # geometry (@input_above/@rows_above recorded at the previous width) with a
+    # relative \e[1A\e[2K walk-up — under-clearing left the stale copy and the
+    # fresh redraw appended BELOW it, stacking a copy per reflow. The fix forgets
+    # the row geometry before redrawing (the same {LiveRegion#reset_geometry!}
+    # seam Ctrl+L/#395 uses) so the next frame draws ONE clean copy.
+    it "forgets the stale row geometry before redrawing on resize (#401)" do
+      region = composer.instance_variable_get(:@region)
+      # Type a long line that wraps to several physical rows at the start width,
+      # so a real on-screen geometry (input_above) is recorded.
+      "x".ljust(120, "x").each_char { |ch| composer.handle_key(ch) }
+      expect(region.input_above).to be_positive # multi-row before resize
+
+      output.truncate(0)
+      output.rewind
+      # Resize: reset_geometry! must run BEFORE the redraw walks the stale rows.
+      expect(region).to receive(:reset_geometry!).and_call_original.ordered
+      expect(region).to receive(:clear_input_block).and_call_original.ordered
+      allow(output).to receive(:winsize).and_return([24, 200])
+      composer.resize
+
+      # And the reflowed input is emitted exactly ONCE, not duplicated: the
+      # buffer text appears a single time in the post-resize byte stream.
+      expect(output.string.scan("#{PROMPT}#{"x" * 120}").length).to eq(1)
+    end
+
+    # Guard the Ctrl+L (#395) and the plain redraw paths the #401 fix sits next
+    # to: reset_geometry! must NOT leak into a non-resize redraw (a stale-geometry
+    # reset there would desync the in-place clear), and Ctrl+L must still clear.
+    it "does NOT reset geometry on a normal (non-resize) redraw" do
+      composer.handle_key("a")
+      region = composer.instance_variable_get(:@region)
+      expect(region).not_to receive(:reset_geometry!)
+      composer.send(:redraw)
+    end
+  end
+
+  # #421: the stream FINALIZE / INTERRUPT / force-summary commit repaints run
+  # after the status-row ticker + a flurry of transient frames have left the
+  # region's recorded geometry out of step with the physical rows, so the next
+  # #print_above walked one row short and stranded the live prompt (ghost `❯`) /
+  # repainted the kept partial twice. #finalize_region row-accurately erases the
+  # live region and zeroes its geometry so the closing commit lands as ONE clean
+  # frame — the same {LiveRegion#clear}/reset discipline #stop and Ctrl+L use.
+  describe "#finalize_region (#421)" do
+    it "erases the live region in place and zeroes the on-screen geometry" do
+      # Paint a live partial so a real on-screen geometry (rows_above) is recorded.
+      composer.set_partial("◆┄┄┄┄ thinking · 3s · esc to interrupt")
+      region = composer.instance_variable_get(:@region)
+      expect(region.rows_above).to be_positive # something is live above the prompt
+
+      output.truncate(0)
+      output.rewind
+      composer.finalize_region
+
+      # Geometry is reset to a clean blank top row: the partial dropped, the
+      # above-prompt row count zeroed (nothing stale left for the next commit).
+      expect(region.rows_above).to eq(0)
+      expect(composer.instance_variable_get(:@partial)).to eq("")
+      # The erase walked UP and cleared (the row-accurate \e[1A\e[2K), then the
+      # prompt was redrawn fresh.
+      expect(output.string).to include("\e[1A\e[2K")
+      expect(output.string).to end_with(PROMPT)
+    end
+
+    it "redraws subagent cards that are still live after the erase" do
+      composer.set_cards(["▸ sa_e488 · explore · running"])
+      output.truncate(0)
+      output.rewind
+      composer.finalize_region
+      # The card survives the reset (it is re-emitted), so finalize doesn't wipe
+      # legitimately-live above-prompt rows, only resets the geometry.
+      expect(output.string).to include("sa_e488")
+    end
+
+    it "is callable repeatedly without raising (idempotent clean state)" do
+      expect { 2.times { composer.finalize_region } }.not_to raise_error
+      expect(composer.instance_variable_get(:@region).rows_above).to eq(0)
     end
   end
 
@@ -2029,6 +2454,59 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(region.input_below).to eq(1)
     end
 
+    # #421 affordance: while a turn is active the status row carries a dim
+    # "(esc to interrupt)" hint so the user knows Esc cancels the turn (Enter
+    # now queues). It appears on #begin_turn and clears on #end_turn.
+    context "type-ahead affordance (#421)" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output,
+                            status_line: status, on_interrupt: -> {})
+      end
+
+      # A SHORT bar so the bar + "  (esc to interrupt)" hint both fit the test's
+      # 40-col terminal (a long bar legitimately drops the cosmetic hint — its
+      # own example below).
+      let(:status) { "m3" }
+
+      it "shows '(esc to interrupt)' in the status row while a turn is active" do
+        composer.handle_key("x")
+        composer.begin_turn
+        expect(output.string).to include("(esc to interrupt)")
+      end
+
+      it "clears the hint once the turn ends" do
+        composer.handle_key("x")
+        composer.begin_turn
+        output.truncate(0) # only inspect the post-end_turn repaint
+        output.rewind
+        composer.end_turn
+        expect(output.string).not_to include("(esc to interrupt)")
+        expect(output.string).to include("m3") # the bare bar is still drawn
+      end
+
+      it "does not show the hint at the idle prompt (no active turn)" do
+        composer.handle_key("x")
+        expect(output.string).not_to include("(esc to interrupt)")
+      end
+
+      it "does not show the hint without an interrupt hook wired" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                status_line: status) # no on_interrupt
+        c.handle_key("x")
+        c.begin_turn
+        expect(output.string).not_to include("(esc to interrupt)")
+      end
+
+      it "drops the cosmetic hint (keeps the bar) when the combined row overflows" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                status_line: "s" * 30, on_interrupt: -> {}) # 30 + hint > 40
+        c.handle_key("x")
+        c.begin_turn
+        expect(output.string).to include("s" * 30) # bar kept
+        expect(output.string).not_to include("(esc to interrupt)") # hint dropped
+      end
+    end
+
     it "teardown clears the bar row along with the input block" do
       composer.handle_key("x")
       # Drive the shared #stop/#suspend teardown directly (no live reader).
@@ -2175,6 +2653,35 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.prefill("draft")
       composer.prefill(nil)
       expect(composer.buffer).to eq("")
+    end
+  end
+
+  # #319: a single Esc at the idle prompt cancels the detached post-turn
+  # polishing IF the on_escape hook claims it — and only then; otherwise the
+  # Esc still falls through to the Esc-Esc rewind arm.
+  describe "on_escape (single-Esc polishing cancel)" do
+    it "consumes a lone Esc when the hook claims it (cancel polishing)" do
+      fired = false
+      rewound = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_escape: -> { fired = true },
+                              on_double_esc: -> { rewound = true })
+      2.times { c.send(:handle_lone_esc) } # two lone Escs within the window
+
+      # The first Esc was consumed by on_escape (polishing cancel), so the
+      # rewind chord never armed/fired — even on the second Esc.
+      expect(fired).to be(true)
+      expect(rewound).to be(false)
+    end
+
+    it "falls through to the rewind chord when on_escape declines (nothing to cancel)" do
+      rewound = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_escape: -> {}, # nothing in flight (falsy)
+                              on_double_esc: -> { rewound = true })
+      2.times { c.send(:handle_lone_esc) }
+
+      expect(rewound).to be(true)
     end
   end
 end

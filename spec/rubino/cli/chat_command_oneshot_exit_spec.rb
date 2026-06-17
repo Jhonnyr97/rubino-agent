@@ -55,6 +55,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       runner = instance_double(Rubino::Agent::Runner)
       allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
       allow(runner).to receive(:run!).and_raise(RuntimeError, "simulated provider failure")
+      # item 6: the failure-path ensure now finalizes the session.
+      allow(runner).to receive(:session).and_return({ id: "s1" })
+      allow(runner).to receive(:end_session!)
 
       status = nil
       expect do
@@ -63,6 +66,81 @@ RSpec.describe Rubino::CLI::ChatCommand do
         status = e.status
       end.to output(/simulated provider failure/).to_stderr
       expect(status).to eq(1)
+    end
+
+    # #335a — a one-shot SIGINT mid-turn used to raise a bare uncaught Interrupt
+    # (a 60-line backtrace from net/protocol). The one-shot path now traps
+    # SIGINT into a cooperative cancel; the Rubino::Interrupted that propagates
+    # — OR a bare Interrupt that landed deep in a blocking read before the next
+    # chunk checkpoint — exits CLEANLY with the conventional 130, no backtrace.
+    [["cooperative Rubino::Interrupted", Rubino::Interrupted],
+     ["bare Interrupt (deep in a blocking read)", Interrupt]].each do |label, klass|
+      it "exits 130 with a clean notice (no backtrace) on #{label}" do
+        runner = instance_double(Rubino::Agent::Runner)
+        allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+        allow(runner).to receive(:cancel!)
+        allow(runner).to receive(:run!).and_raise(klass)
+        allow(runner).to receive(:session).and_return({ id: "s1" })
+        allow(runner).to receive(:end_session!)
+
+        status = nil
+        expect do
+          described_class.new("query" => "hi").execute
+        rescue SystemExit => e
+          status = e.status
+        end.to output(/interrupted/).to_stderr
+
+        # Exit 130 (clean), never the raw uncaught backtrace exit the bug showed.
+        expect(status).to eq(130)
+      end
+    end
+
+    it "emits a well-formed interrupted JSON result and exits 130 (--json)" do
+      runner = instance_double(Rubino::Agent::Runner)
+      allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+      allow(runner).to receive(:cancel!)
+      allow(runner).to receive(:run!).and_raise(Rubino::Interrupted)
+      allow(runner).to receive(:session).and_return({ id: "s1", model: "fake-model" })
+      allow(runner).to receive(:end_session!)
+
+      status = nil
+      # The interrupted result is a well-formed {type:"result", …} object whose
+      # body carries the interrupt — assert it on stdout, exit 130 alongside.
+      expect do
+        described_class.new("query" => "hi", "json" => true).execute
+      rescue SystemExit => e
+        status = e.status
+      end.to output(/"type":"result".*interrupt/i).to_stdout
+
+      expect(status).to eq(130)
+    end
+  end
+
+  # P2-H3 — empty/whitespace one-shot input must NOT be dispatched to the
+  # model (an empty `-q`/`prompt ""` is truthy in Ruby, so it used to spend a
+  # real API turn). Mirror interactive mode's `next if input.strip.empty?`:
+  # a clear "no prompt provided" message on stderr + non-zero exit, BEFORE any
+  # runner is built or the model is called.
+  describe "empty-input guard on the one-shot path (P2-H3)" do
+    before do
+      # No FakeLLM and no credential stub — the guard must fire well before any
+      # model/credential code is reached. A built runner would prove the guard
+      # failed, so spy on the constructor and assert it never ran.
+      allow(Rubino::Agent::Runner).to receive(:new).and_call_original
+    end
+
+    [["empty string", ""], ["whitespace only", "   \t\n"]].each do |label, blank|
+      it "rejects #{label} with a stderr message, non-zero exit, and no runner built" do
+        status = nil
+        expect do
+          described_class.new("query" => blank).execute
+        rescue SystemExit => e
+          status = e.status
+        end.to output(/no prompt provided/).to_stderr
+
+        expect(status).to eq(1)
+        expect(Rubino::Agent::Runner).not_to have_received(:new)
+      end
     end
   end
 
@@ -75,13 +153,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
     let(:null_ui)  { Rubino::UI::Null.new }
     let(:fake_llm) { FakeLLMAdapter.new }
 
-    # approvals.mode: manual + require_confirmation_for_shell so a bare shell
-    # command resolves to :ask — the exact production default this guards.
+    # approvals.mode: manual + confirm_policy: confirm_all so a bare shell
+    # command resolves to :ask — this guards the headless fail-closed floor
+    # (#260) independent of the default prompt policy (now dangerous_only, #409,
+    # under which `touch` would auto-allow). confirm_all is the hardening opt-in.
     let(:config) do
       mem      = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => false)
       skills   = Rubino::Config::Defaults.to_hash["skills"].merge("auto_distill" => false)
       approval = Rubino::Config::Defaults.to_hash["approvals"].merge("mode" => "manual")
-      test_configuration("memory" => mem, "skills" => skills, "approvals" => approval)
+      security = Rubino::Config::Defaults.to_hash["security"].merge("confirm_policy" => "confirm_all")
+      test_configuration("memory" => mem, "skills" => skills, "approvals" => approval, "security" => security)
     end
 
     let(:marker) { "/tmp/rubino-sec260-#{Process.pid}" }

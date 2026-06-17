@@ -5,10 +5,20 @@ module Rubino
     # Orchestrates the full lifecycle of a single user interaction.
     # Coordinates all phases from input to final response and post-turn jobs.
     class Lifecycle
+      # The session this lifecycle is currently bound to. Starts as the session
+      # passed in, but an automatic budget-triggered compaction swaps it to the
+      # compaction child (see #check_and_compact). The owning Runner reads this
+      # back after #execute so the NEXT turn runs on the (small) child rather
+      # than re-compacting the dead parent every turn (P3 F1). Defined as a
+      # method (not attr_reader) because @session is REASSIGNED on compaction.
+      def active_session
+        @session
+      end
+
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
-                     max_tool_iterations: nil)
+                     max_tool_iterations: nil, polishing: nil)
         @session = session
         @event_bus = event_bus
         @ui = ui
@@ -18,6 +28,12 @@ module Rubino
         @cancel_token = cancel_token
         @model_override = model_override
         @provider_override = provider_override
+        # The Runner-owned detached post-turn polishing worker (#319). When
+        # given, the post-turn jobs are handed to it to drain OFF the live
+        # turn's critical path so the next prompt is never gated. Nil on the
+        # API/server path and nested subagent runs, which keep the original
+        # synchronous inline drain (no interactive prompt to free up).
+        @polishing = polishing
         # Explicit per-run cap from `--max-turns` (Runner → here → IterationBudget).
         # nil ⇒ use the configured agent_max_tool_iterations (#141).
         @max_tool_iterations = max_tool_iterations
@@ -173,17 +189,43 @@ module Rubino
         )
 
         if budget.needs_compaction?(messages)
+          compressor = Context::Compressor.new(session_id: @session[:id])
+
+          # Anti-thrash back-off (#415a): if the last two compactions in this
+          # lineage each saved <10%, skip the paid summary call this turn —
+          # the session is hovering at the threshold and re-compacting would
+          # only shave a message or two. The user can still force /compact.
+          return messages if compressor.thrashing?
+
           @state.transition_to!(:compressing_context, event_bus: @event_bus)
           @ui.compression_started
           @event_bus.emit(Events::COMPRESSION_STARTED, session_id: @session[:id])
 
-          compressor = Context::Compressor.new(session_id: @session[:id])
           result = compressor.compact!
 
           @event_bus.emit(Events::COMPRESSION_FINISHED, **result)
           @ui.compression_finished(result)
 
-          # Reload messages after compaction
+          # Swap the active session to the compaction child (F1). compact!
+          # wrote head+summary+tail into a fresh child and marked THIS parent
+          # status="compacted" — exactly the swap the manual /compact path
+          # performs (chat_command.rb: result[:compact_into] → build_runner on
+          # the child). The automatic path used to skip this, so the turn's
+          # response, update_session_state, and the post-turn jobs all stayed
+          # bound to the now-dead parent: it never shrank, needs_compaction?
+          # stayed permanently true, and the gem re-compacted EVERY subsequent
+          # turn (superlinear DB/context bloat + ~2.9x slowdown). Reassigning
+          # @session to the child means subsequent turns persist to the small
+          # child and compaction fires only once per genuine threshold-cross.
+          # Guard against a no-op compaction (too few messages / empty middle),
+          # which creates no child and returns no target — keep the parent then.
+          child_id = result[:target_session_id]
+          if child_id
+            child = @session_repo.find(child_id)
+            @session = child if child
+          end
+
+          # Reload messages after compaction (from the now-active session)
           assembler = Context::PromptAssembler.new(
             session: @session,
             memory_context: {},
@@ -270,10 +312,26 @@ module Rubino
 
       def enqueue_post_turn_jobs
         queue = Jobs::Queue.new
+        # When a detached polishing worker is wired (interactive CLI), only
+        # PERSIST the rows here and let that worker drain them off the live
+        # turn's critical path (#319). Without one (API/server, subagent) keep
+        # the original behaviour: in inline mode #enqueue drains synchronously.
+        drain_inline = @polishing.nil?
 
-        # Extract memory if enabled
-        if @config.memory_auto_extract?
-          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] })
+        # Turn index for the throttle gates below: message_count grows by a
+        # fixed 2 per completed turn (persist_user_message + update_session_state),
+        # so this is a deterministic, monotonic per-session turn counter — no new
+        # column needed (#412/#414).
+        turn_no = current_turn_index
+
+        # Extract memory if enabled — THROTTLED to ~every N turns (Hermes'
+        # nudge_interval) instead of every turn (#412). `drain_inline` is already
+        # false on the interactive CLI (a polishing worker drains it OFF the live
+        # turn's critical path); it is only true in API/server/subagent contexts
+        # that have no background drainer, so the throttle keeps the aux-LLM
+        # extract off the interactive path AND cuts its cadence ~10x.
+        if @config.memory_auto_extract? && interval_due?(turn_no, @config.memory_auto_extract_interval)
+          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
         end
 
@@ -285,17 +343,42 @@ module Rubino
         # already covered) before spending one aux-model call. Handler lookup
         # is load-order independent: Jobs::Registry resolves the class from
         # the Handlers namespace on demand (#81).
-        if @config.skills_auto_distill?
-          queue.enqueue("DistillSkillJob", { session_id: @session[:id] })
+        if @config.skills_auto_distill? && interval_due?(turn_no, @config.skills_auto_distill_interval)
+          queue.enqueue("DistillSkillJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
         end
 
         # Summarize if session is getting long
         message_count = @message_store.count(@session[:id])
-        return unless message_count > 20
+        if message_count > 20
+          queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] }, drain_inline: drain_inline)
+          @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
+        end
 
-        queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] })
-        @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
+        # Detach: kick the polishing worker so it drains the rows just enqueued
+        # off this thread. Returns immediately — the next prompt is never gated.
+        @polishing&.start(ui: @ui, event_bus: @event_bus)
+      end
+
+      # Deterministic per-session turn counter for the throttle gates (#412/#414).
+      # sessions.message_count grows by a fixed 2 per completed turn
+      # (persist_user_message + update_session_state), so dividing by 2 yields the
+      # turn number. Reads the persisted row (not @session, which is reassigned on
+      # compaction). Falls back to 1 (always-due) if the row can't be read.
+      def current_turn_index
+        row = @session_repo.find(@session[:id])
+        count = row && (row[:message_count] || row["message_count"])
+        count ? [count.to_i / 2, 1].max : 1
+      rescue StandardError
+        1
+      end
+
+      # True when a turn-throttled job is due: every turn for interval <= 1, else
+      # on turns that land on the interval boundary. turn_no is always >= 1.
+      def interval_due?(turn_no, interval)
+        return true if interval.nil? || interval <= 1
+
+        (turn_no % interval).zero?
       end
     end
   end

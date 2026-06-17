@@ -102,6 +102,13 @@ module Rubino
         nil
       end
 
+      # The unified arrow-key subagent approval (TUI-6) has no terminal to draw
+      # on headless: return nil ("no decision"), which the /agents handler reads
+      # as "re-prompt / leave parked" — never an auto-approve or auto-deny.
+      def subagent_approval_choice
+        nil
+      end
+
       # Headless: there is no human to ask, so FAIL CLOSED (#260). The Null
       # adapter drives the one-shot / scripted `rubino prompt` / `-q` path; it
       # used to return true here, silently auto-approving every write and every
@@ -127,6 +134,14 @@ module Rubino
       def tool_blocked(message)
         @approval_blocked = true
         @messages << { level: :tool_blocked, message: message }
+        # F1-subagents: a `task` subagent runs on its OWN fresh Null adapter, so a
+        # block latched here is invisible to the PARENT Null the one-shot CLI
+        # inspects for the exit code. While a headless run is active, also record
+        # the block in the process-global latch the one-shot exit check consults,
+        # so a subagent-blocked headless run exits non-zero with the notice on
+        # stderr instead of false-success. Off the headless path (interactive
+        # subagents, API) this is a no-op — those surface the block their own way.
+        Rubino::Output::HeadlessBlockLatch.record(message) if Rubino.headless?
       end
 
       def approval_blocked?
@@ -158,8 +173,8 @@ module Rubino
         @messages << { level: :tool_body, message: text, kind: kind }
       end
 
-      def tool_chunk(name, chunk)
-        @messages << { level: :tool_chunk, name: name, chunk: chunk }
+      def tool_chunk(name, chunk, kind: :plain)
+        @messages << { level: :tool_chunk, name: name, chunk: chunk, kind: kind }
       end
 
       def compression_started(at: nil)

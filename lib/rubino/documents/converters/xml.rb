@@ -20,8 +20,9 @@ module Rubino
           File.extname(path.to_s).downcase == ".xml"
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           raw = File.read(path, encoding: "bom|utf-8")
+          budget.add_bytes(raw.bytesize)
           pretty = pretty_print(raw) || raw.strip
           "```xml\n#{pretty}\n```\n"
         end

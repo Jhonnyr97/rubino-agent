@@ -66,6 +66,11 @@ module Rubino
         hunks.each do |hunk|
           file_path = File.expand_path(hunk[:file], base_path)
 
+          # SECRET/credential patches (#446) are no longer HARD-refused here —
+          # they are gated UPSTREAM by Security::ApprovalPolicy#decide, which
+          # scans the patch's target paths and prompts (→ :ask) when ANY hunk
+          # touches a secret; an approved apply_patch proceeds, a denied/headless
+          # one never reaches #call. The workspace sandbox below is unchanged.
           unless within_workspace?(file_path)
             return [nil, workspace_violation_message(hunk[:file]) +
                          " (no changes applied — apply_patch is two-phase)"]

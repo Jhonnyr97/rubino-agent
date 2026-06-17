@@ -24,11 +24,36 @@ module Rubino
         def instance
           @instance ||= new
         end
+
+        # Test seam: drop the process-wide registry between examples so the
+        # situational shell-tool gate (#313) starts each spec with no background
+        # shell. Mirrors BackgroundTasks.reset!.
+        def reset!
+          @instance = nil
+        end
       end
 
       def initialize
         @entries = {}
         @mutex   = Mutex.new
+        # Live FOREGROUND shell process groups, keyed by pgid. A foreground
+        # shell's pgid otherwise lives only in the ShellTool#execute_foreground
+        # stack frame of the (sub)agent thread that started it — so on
+        # parent-death there is nothing process-wide to reap it and it
+        # reparents to init as an orphan (MED-2). Tracking it here lets
+        # #kill_all_groups SIGTERM/SIGKILL it synchronously on teardown.
+        @fg_pgids = {}
+      end
+
+      # Track a live foreground shell process group so teardown can reap it.
+      def register_pgid(pgid)
+        @mutex.synchronize { @fg_pgids[pgid] = true }
+        pgid
+      end
+
+      # Drop a foreground shell process group once its own thread has reaped it.
+      def unregister_pgid(pgid)
+        @mutex.synchronize { @fg_pgids.delete(pgid) }
       end
 
       # Spawns `command` detached in its own process group so a single kill
@@ -71,6 +96,16 @@ module Rubino
 
       def find(id)
         @mutex.synchronize { @entries[id] }
+      end
+
+      # True when at least one background shell has been started this session
+      # (and not yet removed). The session-stable signal #313 gates the
+      # shell-management tools on: a normal turn with no background shell never
+      # ships shell_input/shell_output/shell_tail/shell_kill. Flips at most once
+      # per session (when the first background shell is spawned), so the cached
+      # tool prefix stays stable across ordinary turns.
+      def any?
+        @mutex.synchronize { !@entries.empty? }
       end
 
       def remove(id)
@@ -127,7 +162,31 @@ module Rubino
         entry.wait_thr.value.exitstatus
       end
 
+      # Synchronous teardown reaper (MED-2): SIGTERM every live shell process
+      # group this session owns — the background ENTRIES and the tracked
+      # FOREGROUND pgids — give them a brief grace, then SIGKILL any straggler.
+      # Mirrors the Python Hermes `_kill_process` (os.killpg SIGTERM → wait →
+      # SIGKILL). Called from BackgroundTasks#cancel_all so EVERY parent-death
+      # edge (clean quit `ensure`, HUP/TERM trap, REPL break) reaps the child
+      # shells the cooperative cancel token alone can't reach before the process
+      # exits and the shells reparent to init. Returns the pgids it signalled.
+      def kill_all_groups(grace: 0.5)
+        pgids = @mutex.synchronize { (@entries.values.map(&:pgid) + @fg_pgids.keys).uniq }
+        return pgids if pgids.empty?
+
+        pgids.each { |pgid| signal_group("TERM", pgid) }
+        sleep(grace) if grace.positive?
+        pgids.each { |pgid| signal_group("KILL", pgid) }
+        pgids
+      end
+
       private
+
+      def signal_group(sig, pgid)
+        Process.kill(sig, -pgid)
+      rescue Errno::ESRCH, Errno::EPERM
+        # Already dead, already reaped, or not ours — nothing to do.
+      end
 
       def new_id
         "bg_#{SecureRandom.hex(4)}"
@@ -137,6 +196,17 @@ module Rubino
       # mutex protects only against concurrent reads from shell_output_tool.
       def drain_into(entry, rd)
         rd.each_line do |chunk|
+          # Scrub to valid UTF-8 AT THE CAPTURE SEAM, mirroring the FOREGROUND
+          # shell (ShellTool drains through Util::Output.scrub_utf8). A binary /
+          # latin-1 background process (`head -c … /dev/urandom &`, `cat *.png &`)
+          # writes bytes tagged UTF-8 but invalid; left raw in the ring buffer
+          # they blow up JSON.generate (the LLM request) + the SQLite driver when
+          # `shell_output` returns them, and the tool row never persists — the
+          # model loses the record on --resume. Cleaning here means the buffer is
+          # already safe for every reader (read_new / read_all). Terminal-escape
+          # neutralization for what reaches the screen is a separate render-seam
+          # concern (CLI#safe on the close-row metric / write_body_lines).
+          chunk = Util::Output.scrub_utf8(chunk)
           entry.mutex.synchronize do
             entry.buffer << chunk
             overflow = entry.buffer.bytesize - RING_BYTES

@@ -7,14 +7,21 @@ module Rubino
     class MCPToolWrapper < Tools::Base
       attr_reader :mcp_tool, :server_name
 
+      # Cap on the (prefixed) tool name length. A misbehaving MCP server can
+      # advertise an absurdly long tool name (e.g. 20k chars), which would be
+      # registered uncapped, blow up the `tools` table, and 400 at the provider.
+      MAX_NAME_LENGTH = 64
+
       def initialize(mcp_tool, server_name:)
         @mcp_tool = mcp_tool
         @server_name = server_name
       end
 
       def name
-        # Prefix with server name to avoid collisions
-        "#{@server_name}_#{@mcp_tool.name}"
+        # Prefix with server name to avoid collisions. Cap the length so a
+        # hostile/buggy server can't register a giant name that breaks the
+        # `tools` table or 400s the provider (S1-MCP-2).
+        "#{@server_name}_#{@mcp_tool.name}"[0, MAX_NAME_LENGTH]
       end
 
       def description
@@ -28,7 +35,11 @@ module Rubino
         # {}`, so the model had to guess argument names and every call failed
         # server-side validation with -32602 (#170).
         schema = @mcp_tool.params_schema if @mcp_tool.respond_to?(:params_schema)
-        schema || { type: "object", properties: {} }
+        # Coerce anything that isn't a Hash (nil, or a truthy non-Hash like a
+        # string) to a valid empty object schema. A server advertising a
+        # non-Hash `inputSchema` would otherwise poison the whole wire tool
+        # list and 400 every subsequent model call (S1-MCP-1).
+        schema.is_a?(Hash) ? schema : { type: "object", properties: {} }
       end
 
       def risk_level

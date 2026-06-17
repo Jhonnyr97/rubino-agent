@@ -8,6 +8,10 @@ RSpec.describe Rubino::Config::Configuration do
       expect(config.model_default).to eq("openai/gpt-4.1")
     end
 
+    it "defaults temperature to nil (inherit provider default, #414)" do
+      expect(config.model_temperature).to be_nil
+    end
+
     it "returns model temperature" do
       cfg = test_configuration("model" => {
                                  "default" => "openai/gpt-4.1",
@@ -104,17 +108,38 @@ RSpec.describe Rubino::Config::Configuration do
     it "returns tool enabled status" do
       expect(config.tool_enabled?("git")).to be true
       # shell ships ON by default: the agent runs in an isolated per-customer
-      # VM where running commands is the whole point. It stays gated behind the
-      # approval prompt via security.require_confirmation_for_shell.
+      # VM where running commands is the whole point. Dangerous commands stay
+      # gated behind the approval prompt via security.confirm_policy.
       expect(config.tool_enabled?("shell")).to be true
       expect(config.tool_enabled?("browser")).to be false
     end
   end
 
+  # CFG-R3-1 — a YAML scalar (`command_allowlist: git status`) where a sequence
+  # was meant must not reach the matcher as a bare String (String#filter_map ->
+  # NoMethodError out of the approval path). The accessor always returns an Array.
+  describe "security_command_allowlist coercion (CFG-R3-1)" do
+    it "returns the sequence as-is when it is already an array" do
+      cfg = test_configuration("security" => { "command_allowlist" => ["git status", "git diff"] })
+      expect(cfg.security_command_allowlist).to eq(["git status", "git diff"])
+    end
+
+    it "coerces a scalar string to a single-entry array (not a bare String)" do
+      cfg = test_configuration("security" => { "command_allowlist" => "git status" })
+      expect(cfg.security_command_allowlist).to eq(["git status"])
+    end
+
+    it "returns an empty array when the key is absent / nil" do
+      expect(test_configuration("security" => {}).security_command_allowlist).to eq([])
+      expect(test_configuration("security" => { "command_allowlist" => nil }).security_command_allowlist).to eq([])
+    end
+  end
+
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
-      expect(config.agent_max_tool_iterations).to eq(8)
-      expect(config.agent_max_turn_seconds).to eq(120)
+      # Default raised 8→25 (#399); max_turn_seconds raised to a 600s safety-net (#408).
+      expect(config.agent_max_tool_iterations).to eq(25)
+      expect(config.agent_max_turn_seconds).to eq(600)
     end
 
     it "falls back to the built-in default when the value is nil" do
@@ -125,8 +150,28 @@ RSpec.describe Rubino::Config::Configuration do
                                  "max_tool_iterations" => nil,
                                  "max_turn_seconds" => nil
                                })
-      expect(cfg.agent_max_tool_iterations).to eq(8)
-      expect(cfg.agent_max_turn_seconds).to eq(120)
+      expect(cfg.agent_max_tool_iterations).to eq(25)
+      expect(cfg.agent_max_turn_seconds).to eq(600)
+    end
+  end
+
+  # #399: interactive budget-extension knobs.
+  describe "budget-extension accessors (#399)" do
+    it "defaults the prompt ON and the step to max_tool_iterations" do
+      expect(config.agent_budget_extension_prompt?).to be(true)
+      expect(config.agent_budget_extension_step).to eq(config.agent_max_tool_iterations)
+    end
+
+    it "honours an explicit prompt:false (force the old always-summarize)" do
+      cfg = test_configuration("agent" => { "budget_extension_prompt" => false })
+      expect(cfg.agent_budget_extension_prompt?).to be(false)
+    end
+
+    it "uses an explicit positive step and ignores a bad one" do
+      expect(test_configuration("agent" => { "budget_extension_step" => 10 })
+        .agent_budget_extension_step).to eq(10)
+      bad = test_configuration("agent" => { "budget_extension_step" => 0 })
+      expect(bad.agent_budget_extension_step).to eq(bad.agent_max_tool_iterations)
     end
   end
 
@@ -157,33 +202,34 @@ RSpec.describe Rubino::Config::Configuration do
   end
 
   describe "human-in-the-loop accessors" do
-    it "keeps shell behind a confirmation prompt by default" do
-      expect(config.require_confirmation_for_shell?).to be true
+    # item 7: confirm_policy is the SOLE source of truth — the legacy
+    # security.require_confirmation_for_shell alias was removed (no back-compat
+    # mapping, no derivation).
+    it "defaults confirm_policy to :dangerous_only (#409 Hermes alignment)" do
+      expect(config.confirm_policy).to eq(:dangerous_only)
     end
 
-    it "defaults confirm_policy to :confirm_all" do
-      expect(config.confirm_policy).to eq(:confirm_all)
+    it "honors an explicit confirm_all" do
+      cfg = test_configuration("security" => { "confirm_policy" => "confirm_all" })
+      expect(cfg.confirm_policy).to eq(:confirm_all)
     end
 
-    it "derives confirm_policy from require_confirmation_for_shell:false" do
-      cfg = test_configuration("security" => { "require_confirmation_for_shell" => false })
+    it "honors an explicit dangerous_only" do
+      cfg = test_configuration("security" => { "confirm_policy" => "dangerous_only" })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
     end
 
-    it "honors an explicit confirm_policy and lets it win over the alias" do
-      cfg = test_configuration("security" => {
-                                 "confirm_policy" => "dangerous_only",
-                                 "require_confirmation_for_shell" => true
-                               })
+    it "falls back to the :dangerous_only default on an unrecognized confirm_policy" do
+      cfg = test_configuration("security" => { "confirm_policy" => "bogus" })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
     end
 
-    it "falls back to the alias on an unrecognized confirm_policy" do
-      cfg = test_configuration("security" => {
-                                 "confirm_policy" => "bogus",
-                                 "require_confirmation_for_shell" => false
-                               })
+    it "IGNORES the removed require_confirmation_for_shell key (no silent honor)" do
+      # Even set to true (which the legacy alias mapped to confirm_all), the
+      # removed key has zero effect: confirm_policy stays the seeded default.
+      cfg = test_configuration("security" => { "require_confirmation_for_shell" => true })
       expect(cfg.confirm_policy).to eq(:dangerous_only)
+      expect(cfg).not_to respond_to(:require_confirmation_for_shell?)
     end
 
     it "waits a sane, bounded time for a human decision by default" do

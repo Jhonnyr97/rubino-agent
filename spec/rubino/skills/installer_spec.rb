@@ -73,6 +73,77 @@ RSpec.describe Rubino::Skills::Installer do
     end
   end
 
+  # SKILL-1: the frontmatter `name` is attacker-controlled (it comes verbatim
+  # from a cloned repo's SKILL.md). A name like `../../EVIL` must NEVER let an
+  # install write or delete anything outside the skills dir.
+  describe "#install path-traversal hardening (SKILL-1)" do
+    # A hostile checkout whose skill dir holds a SKILL.md with a traversal name.
+    def hostile_checkout(name)
+      checkout = File.join(tmp, "hostile")
+      dir = File.join(checkout, "inner")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: d\n---\nbody")
+      checkout
+    end
+
+    it "refuses a `../` traversal name: nothing written/recorded outside the skills dir" do
+      checkout = hostile_checkout("../PWNED_OUTSIDE_SKILLS")
+      escaped = File.expand_path(File.join(skills_dir, "..", "PWNED_OUTSIDE_SKILLS"))
+
+      installer.install(installer.discover(checkout), checkout: checkout, source: "h/r", commit: "c")
+
+      expect(File.exist?(escaped)).to be(false)
+      expect(installer.sources).to eq({})
+    end
+
+    it "does not rm_rf a victim file outside the skills dir via a traversal name" do
+      victim_dir = File.join(tmp, "precious")
+      FileUtils.mkdir_p(victim_dir)
+      victim = File.join(victim_dir, "important.txt")
+      File.write(victim, "PRECIOUS")
+      checkout = hostile_checkout("../precious")
+
+      installer.install(installer.discover(checkout), checkout: checkout, source: "h/r", commit: "c")
+
+      expect(File.exist?(victim)).to be(true)
+      expect(File.read(victim)).to eq("PRECIOUS")
+    end
+
+    it "rejects absolute, nested-separator, and dot names; keeps a clean sibling" do
+      checkout = File.join(tmp, "mixed")
+      {
+        "/etc/evil" => "abs", "a/b" => "nested", ".." => "dotdot",
+        "good" => "ok"
+      }.each do |name, subdir|
+        dir = File.join(checkout, subdir, "s")
+        FileUtils.mkdir_p(dir)
+        File.write(File.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: d\n---\nbody")
+      end
+
+      installer.install(installer.discover(checkout), checkout: checkout, source: "h/r", commit: "c")
+
+      expect(installer.sources.keys).to contain_exactly("good")
+      expect(File).to exist(File.join(skills_dir, "good", "SKILL.md"))
+      # No stray dirs escaped the skills root. The ledger and its concurrency
+      # lock sibling (both dotfiles the registry's globs ignore) are expected.
+      expect(Dir.children(skills_dir))
+        .to contain_exactly("good", described_class::SOURCES_FILE, "#{described_class::SOURCES_FILE}.lock")
+    end
+
+    it "confines #remove to the skills dir even if a pre-fix ledger recorded a traversal key" do
+      victim_dir = File.join(tmp, "precious2")
+      FileUtils.mkdir_p(victim_dir)
+      File.write(File.join(victim_dir, "keep.txt"), "KEEP")
+      # Simulate a ledger written by the vulnerable version.
+      FileUtils.mkdir_p(skills_dir)
+      File.write(File.join(skills_dir, described_class::SOURCES_FILE),
+                 JSON.generate("../precious2" => { "source" => "h/r", "path" => "x", "commit" => "c" }))
+
+      expect(installer.remove("../precious2")).to be(true)
+      expect(File.exist?(File.join(victim_dir, "keep.txt"))).to be(true)
+    end
+  end
+
   describe "#update" do
     it "reports up-to-date when the source HEAD matches the recorded commit, cloning once per source" do
       checkout = make_checkout
@@ -171,6 +242,66 @@ RSpec.describe Rubino::Skills::Installer do
         # rubocop:enable Style/RedundantFetchBlock
       end.to output(/.+/).to_stderr_from_any_process
       expect(result).to be_nil
+    end
+  end
+
+  # R2-M1 (HIGH): the .sources.json ledger is a read-modify-written shared file.
+  # Before the atomic-write fix, N parallel `skills install` each read the same
+  # empty base and the last writer clobbered the rest, so only ~2 of N entries
+  # survived → orphaned, unremovable skills. The fix serializes the RMW under an
+  # exclusive flock and writes via temp-file + atomic rename.
+  describe "concurrent installs (R2-M1)" do
+    # Each "install" writes one distinct skill into the SAME ledger from its own
+    # process, racing the others. Separate Installer instances on the same dir
+    # mirror separate `rubino skills install` invocations.
+    def make_one_skill_checkout(name)
+      dir = File.join(tmp, "co-#{name}", name)
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: d\n---\nbody")
+      File.join(tmp, "co-#{name}")
+    end
+
+    it "keeps EVERY ledger entry under 8 concurrent writers (no lost update)" do
+      skills_dir # force the lazy lets (skills_dir → tmp) to resolve in the
+      tmp        # PARENT so every forked child shares the SAME skills dir.
+      names = (1..8).map { |i| "skill-#{i}" }
+
+      # fork() gives true parallelism and independent file handles — the real
+      # `rubino skills install x &` scenario, not GVL-serialized threads.
+      pids = names.map do |name|
+        fork do
+          inst = described_class.new(skills_dir: skills_dir)
+          checkout = make_one_skill_checkout(name)
+          inst.install(inst.discover(checkout), checkout: checkout, source: "h/#{name}", commit: "c#{name}")
+          exit!(0) # skip RSpec/SimpleCov at_exit in the forked child
+        end
+      end
+      pids.each { |pid| Process.wait(pid) }
+
+      ledger = described_class.new(skills_dir: skills_dir).sources
+      expect(ledger.keys).to match_array(names)
+      # The atomic rename means the file is always valid JSON, never torn.
+      raw = File.read(File.join(skills_dir, described_class::SOURCES_FILE))
+      expect { JSON.parse(raw) }.not_to raise_error
+    end
+
+    it "leaves every concurrently-installed skill removable (no orphans)" do
+      skills_dir # force the lazy lets to resolve in the parent (see above)
+      tmp
+      names = (1..6).map { |i| "rm-#{i}" }
+      pids = names.map do |name|
+        fork do
+          inst = described_class.new(skills_dir: skills_dir)
+          checkout = make_one_skill_checkout(name)
+          inst.install(inst.discover(checkout), checkout: checkout, source: "h/#{name}", commit: "c")
+          exit!(0) # skip RSpec/SimpleCov at_exit in the forked child
+        end
+      end
+      pids.each { |pid| Process.wait(pid) }
+
+      remover = described_class.new(skills_dir: skills_dir)
+      names.each { |name| expect(remover.remove(name)).to be(true) }
+      expect(remover.sources).to eq({})
     end
   end
 end

@@ -26,10 +26,10 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   end
 
   it "defaults to the seeded model: the first (recommended) provider is openai/gpt-4.1" do
-    # Bug #12: the wizard's recommended default must match the seeded
-    # config/defaults.rb default (model.default => openai/gpt-4.1) so the
-    # from-zero experience is consistent with the non-interactive fail-fast
-    # guidance, which names that same default.
+    # The wizard's recommended default must match the seeded config/defaults.rb
+    # default (model.default => openai/gpt-4.1) so the from-zero experience is
+    # consistent with the non-interactive fail-fast guidance, which names that
+    # same default (maintainer directive: OpenAI default, MiniMax not pushed).
     first = described_class::PROVIDERS.first
     expect(first[:provider]).to eq("openai")
     expect(first[:model]).to eq("gpt-4.1")
@@ -42,12 +42,17 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   it "keeps MiniMax as a first-class selectable option (just not the default)" do
     minimax = described_class::PROVIDERS.find { |p| p[:provider] == "minimax" }
     expect(minimax).not_to be_nil
-    expect(minimax[:model]).to eq("MiniMax-M2.7")
+    expect(minimax[:model]).to eq("MiniMax-M3")
+    # Picking MiniMax must still yield a first-turn-working config: the catalog
+    # carries the anthropic_compatible + base_url wiring it needs to route.
+    expect(minimax[:config]["anthropic_compatible"]).to be true
+    expect(minimax[:config]["base_url"]).to eq("https://api.minimax.io/anthropic")
+    # Available, but NOT the recommended/auto-picked first entry.
     expect(described_class::PROVIDERS.first).not_to eq(minimax)
   end
 
-  it "writes an OpenAI config from scripted input (choice 1, the default)" do
-    # "1" = OpenAI (the recommended default), then the key.
+  it "writes a usable OpenAI config + .env from scripted input (choice 1, the default)" do
+    # "1" = OpenAI (the recommended default), then the key (no base_url prompt).
     ok = wizard("1\nsk-openai-test\n").run
     expect(ok).to be true
 
@@ -55,27 +60,115 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     raw    = YAML.safe_load_file(loader.config_path)
     expect(raw.dig("model", "default")).to eq("gpt-4.1")
     expect(raw.dig("model", "provider")).to eq("openai")
-    expect(File.read(loader.env_path)).to include("OPENAI_API_KEY=sk-openai-test")
+
+    env = File.read(loader.env_path)
+    expect(env).to include("OPENAI_API_KEY=sk-openai-test")
+
+    # The config the agent loads is now usable (key visible in ENV + config).
+    config = Rubino::Config::Configuration.new(raw: loader.load)
+    expect(Rubino::LLM::CredentialCheck.usable?(config)).to be true
   end
 
-  it "writes a usable MiniMax config + .env from scripted input (choice 2)" do
-    # "2" = MiniMax, then the key (no base_url prompt — MiniMax has a default).
+  it "writes a usable MiniMax config + .env when MiniMax is chosen (choice 2)" do
+    # "2" = MiniMax (available, not the default), then the key (no base_url
+    # prompt). The anthropic_compatible + base_url block must land so the first
+    # turn can route — the coherence the F-SETUP-1 fix guarantees per provider.
     ok = wizard("2\nsk-minimax-test\n").run
     expect(ok).to be true
 
     loader = Rubino::Config::Loader.new(home_path: home)
     raw    = YAML.safe_load_file(loader.config_path)
-    expect(raw.dig("model", "default")).to eq("MiniMax-M2.7")
+    expect(raw.dig("model", "default")).to eq("MiniMax-M3")
     expect(raw.dig("model", "provider")).to eq("minimax")
     expect(raw.dig("providers", "minimax", "anthropic_compatible")).to be true
+    expect(raw.dig("providers", "minimax", "base_url")).to eq("https://api.minimax.io/anthropic")
     expect(raw.dig("providers", "minimax", "api_key")).to eq("${MINIMAX_API_KEY}")
 
     env = File.read(loader.env_path)
     expect(env).to include("MINIMAX_API_KEY=sk-minimax-test")
 
-    # The config the agent loads is now usable (key visible in ENV + config).
     config = Rubino::Config::Configuration.new(raw: loader.load)
     expect(Rubino::LLM::CredentialCheck.usable?(config)).to be true
+  end
+
+  it "detects an already-present env key and reuses it instead of forcing a paste" do
+    # Smooth path (industry norm): when the chosen provider's env var is already
+    # set, the wizard offers to use it; a bare Enter accepts the detected key.
+    ENV["OPENAI_API_KEY"] = "sk-from-env"
+    begin
+      # "1" = OpenAI, then Enter to accept the detected env key.
+      ok = wizard("1\n\n").run
+      expect(ok).to be true
+
+      loader = Rubino::Config::Loader.new(home_path: home)
+      raw    = YAML.safe_load_file(loader.config_path)
+      expect(raw.dig("model", "provider")).to eq("openai")
+      # The detected key was persisted to .env (durable for future runs).
+      expect(File.read(loader.env_path)).to include("OPENAI_API_KEY=sk-from-env")
+      expect(output.string).to include("Detected OPENAI_API_KEY")
+    ensure
+      ENV.delete("OPENAI_API_KEY")
+    end
+  end
+
+  # F3: when EXACTLY ONE provider key is in the env, the wizard CONFIRMS that
+  # pick (visible) before the menu — a bare Enter accepts it (fast path), and the
+  # detected key is reused without a second "use the detected key?" prompt.
+  describe "env-key auto-detect confirm (F3)" do
+    it "confirms the detected provider and Enter accepts it (no menu, no double-prompt)" do
+      ENV["MINIMAX_API_KEY"] = "sk-mm-env"
+      begin
+        # A single bare Enter = accept the detected provider AND its env key.
+        ok = wizard("\n").run
+        expect(ok).to be true
+
+        expect(output.string).to include("Detected MINIMAX_API_KEY — use minimax/MiniMax-M3?")
+        # The cold provider menu was NOT shown (confirm short-circuited it).
+        expect(output.string).not_to include("Choose a provider")
+        # No redundant second key-reuse prompt.
+        expect(output.string).not_to include("use it? [Y/n]")
+
+        loader = Rubino::Config::Loader.new(home_path: home)
+        raw    = YAML.safe_load_file(loader.config_path)
+        expect(raw.dig("model", "provider")).to eq("minimax")
+        expect(File.read(loader.env_path)).to include("MINIMAX_API_KEY=sk-mm-env")
+      ensure
+        ENV.delete("MINIMAX_API_KEY")
+      end
+    end
+
+    it "lets the user decline the detected provider and pick from the menu" do
+      ENV["MINIMAX_API_KEY"] = "sk-mm-env"
+      begin
+        # "n" declines the detected MiniMax → menu → "1" picks OpenAI → paste key.
+        ok = wizard("n\n1\nsk-openai-test\n").run
+        expect(ok).to be true
+
+        expect(output.string).to include("Detected MINIMAX_API_KEY")
+        expect(output.string).to include("Choose a provider")
+
+        loader = Rubino::Config::Loader.new(home_path: home)
+        raw    = YAML.safe_load_file(loader.config_path)
+        expect(raw.dig("model", "provider")).to eq("openai")
+      ensure
+        ENV.delete("MINIMAX_API_KEY")
+      end
+    end
+
+    it "does NOT confirm (shows the menu) when MORE THAN ONE key is present" do
+      ENV["MINIMAX_API_KEY"] = "sk-mm"
+      ENV["OPENAI_API_KEY"]  = "sk-oai"
+      begin
+        # Ambiguous → straight to the menu; "1" + Enter (reuse OpenAI env key).
+        ok = wizard("1\n\n").run
+        expect(ok).to be true
+        expect(output.string).not_to include("Detected MINIMAX_API_KEY — use")
+        expect(output.string).to include("Choose a provider")
+      ensure
+        ENV.delete("MINIMAX_API_KEY")
+        ENV.delete("OPENAI_API_KEY")
+      end
+    end
   end
 
   it "returns false (and writes nothing) when the user skips at the provider prompt" do
@@ -95,7 +188,7 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   end
 
   # #31: a single invalid (out-of-range) choice must re-prompt rather than
-  # abandon the wizard. Here "7" is out of range, then "1" (OpenAI) + a key.
+  # abandon the wizard. Here it is out of range, then "1" (OpenAI) + a key.
   it "re-prompts on an invalid choice instead of abandoning setup" do
     n = described_class::PROVIDERS.size
     ok = wizard("#{n + 5}\n1\nsk-openai-test\n").run
@@ -115,5 +208,56 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
   it "still honours an explicit skip after the loop change" do
     ok = wizard("\n").run
     expect(ok).to be false
+  end
+
+  # H2: a Ctrl-C MID-wizard (after picking a provider, before pasting the key)
+  # used to escape as a raw `Interrupt` backtrace out of gets/noecho. It must
+  # abort CLEANLY — "Setup cancelled." + exit 130 — and leave NO half-written
+  # provider config (re-running setup must work).
+  describe "Ctrl-C mid-wizard (H2)" do
+    # An input that yields the provider choice on the FIRST `gets`, then raises
+    # Interrupt on the next read (the hidden key prompt) — i.e. the user pressed
+    # Ctrl-C after choosing a provider, before typing the key.
+    def interrupting_input(first)
+      calls = 0
+      input = double("interrupting-input")
+      allow(input).to receive(:gets) do
+        calls += 1
+        calls == 1 ? first : raise(Interrupt)
+      end
+      input
+    end
+
+    def cancelling_wizard
+      described_class.new(ui: ui, input: interrupting_input("1\n"), output: output)
+    end
+
+    it "exits 130 with a clean 'Setup cancelled.' and no backtrace" do
+      status = nil
+      expect do
+        cancelling_wizard.run
+      rescue SystemExit => e
+        status = e.status
+      end.not_to raise_error
+
+      expect(status).to eq(130)
+      expect(output.string).not_to include(".rb:")
+    end
+
+    it "writes NO provider config on abort, so re-running setup works" do
+      begin
+        cancelling_wizard.run
+      rescue SystemExit
+        nil
+      end
+
+      loader = Rubino::Config::Loader.new(home_path: home)
+      # No config.yml was persisted by the wizard (persist! runs only after a
+      # non-empty key), and a fresh wizard run after the abort completes.
+      ok = wizard("1\nsk-openai-after-abort\n").run
+      expect(ok).to be true
+      raw = YAML.safe_load_file(loader.config_path)
+      expect(raw.dig("model", "provider")).to eq("openai")
+    end
   end
 end

@@ -42,6 +42,10 @@ module Rubino
         @stream_type        = nil
         @stream_md          = nil # StreamingMarkdown buffer, lazily built per content stream
         @thinking_indicator = false
+        # Latched true for the duration of #turn_interrupted so a late content
+        # delta (the adapter's final think-filter flush) can't re-arm a fresh
+        # raw live tail under the committed partial block (#265 interrupt ghost).
+        @turn_interrupting  = false
         # Turn-scoped status row ("Ruby facet"): ONE ticker thread per turn —
         # started when the turn (or a stand-alone wait like /probe) starts and
         # stopped only at turn end / error / interrupt. Events swap its LABEL
@@ -92,14 +96,67 @@ module Rubino
       # together. Field order is the header order the caller chose, which the
       # list callers now lead with the identifying fields (ID/Title/Created).
       def table(headers:, rows:)
+        # Row cells carry UNTRUSTED text — MCP tool/server names (/mcp), memory
+        # content (/memory), session/agent titles. A raw `\e[…` there would
+        # drive the terminal straight out of the grid (R3C-1, CWE-150), and it
+        # would also corrupt TTY::Table's width math / the card layout. Sanitize
+        # every cell to caret notation HERE — the single chokepoint both the
+        # grid and the card paths flow through — before any width measurement.
+        # Headers are rubino's own fixed labels but cost nothing to clean too.
+        #
+        # Keep TRUSTED SGR colour escapes in the cell (FRICTION-3): a status
+        # cell like the /agents "● approval" is rubino's OWN pastel styling, and
+        # the plain caret-notation sanitizer turned its `\e[33m…\e[0m` into a
+        # visible `^[[33m●^[[0m` inside the grid. sanitize_terminal_keep_sgr
+        # preserves the (inert, zero-width) colour while still neutralizing
+        # every cursor-move / clear-screen / OSC byte. Width math below measures
+        # on the SGR-STRIPPED text so the columns line up.
+        rows = rows.map { |row| Array(row).map { |cell| Util::Output.sanitize_terminal_keep_sgr(cell.to_s) } }
         if grid_overflows?(headers, rows)
           render_cards(headers, rows)
+        elsif rows.any? { |row| row.any? { |cell| cell.match?(Util::Output::SGR_RE) } }
+          # TTY::Table measures column width on the RAW string and counts SGR
+          # escape bytes as visible columns, so a colored cell padded the grid
+          # crooked. When any cell carries colour, draw the unicode grid
+          # ourselves on the display (SGR-stripped) width so colour renders AND
+          # the box stays aligned.
+          render_unicode_grid(headers, rows)
         else
           tbl = TTY::Table.new(header: headers, rows: rows)
           # Pin the width explicitly: TTY::Table otherwise probes the terminal
           # via ioctl, which blows up when $stdout is a StringIO (tests/pipes).
           $stdout.puts tbl.render(:unicode, padding: [0, 1], width: terminal_cols, resize: false)
         end
+      end
+
+      # Draws a unicode box grid measuring each column on the DISPLAY width
+      # (#display_width strips SGR), so colored cells stay aligned where
+      # TTY::Table — which counts escape bytes as columns — would not. One left
+      # border + 1 space padding each side, matching TTY::Table's `:unicode`
+      # padding: [0, 1] so the colorless path and this one look identical.
+      def render_unicode_grid(headers, rows)
+        cols    = headers.size
+        widths  = Array.new(cols, 0)
+        ([headers] + rows).each do |row|
+          row.each_with_index { |cell, i| widths[i] = [widths[i], display_width(cell.to_s)].max }
+        end
+        $stdout.puts grid_border(widths, "┌", "┬", "┐")
+        $stdout.puts grid_row(headers, widths)
+        $stdout.puts grid_border(widths, "├", "┼", "┤")
+        rows.each { |row| $stdout.puts grid_row(row, widths) }
+        $stdout.puts grid_border(widths, "└", "┴", "┘")
+      end
+
+      def grid_border(widths, left, mid, right)
+        left + widths.map { |w| "─" * (w + 2) }.join(mid) + right
+      end
+
+      def grid_row(cells, widths)
+        padded = widths.each_index.map do |i|
+          cell = cells[i].to_s
+          " #{cell}#{" " * (widths[i] - display_width(cell))} "
+        end
+        "│#{padded.join("│")}│"
       end
 
       # True when the natural grid width (column maxima + unicode borders +
@@ -140,8 +197,12 @@ module Rubino
         cols&.positive? ? cols : 80
       end
 
+      # Terminal columns a string occupies. SGR colour escapes (`\e[…m`) take
+      # ZERO columns, so they're stripped before measuring — otherwise a colored
+      # /agents status cell measured far wider than it draws and padded the grid
+      # crooked (FRICTION-3). Wide glyphs still count as 2.
       def display_width(str)
-        Unicode::DisplayWidth.of(str.to_s)
+        Unicode::DisplayWidth.of(str.to_s.gsub(Util::Output::SGR_RE, ""))
       end
 
       def ask(prompt)
@@ -280,23 +341,55 @@ module Rubino
 
         # ⚠ is the attention glyph (P7): ◆ belongs to the animated status row.
         rule = derive_rule(tool, command, pattern_key)
-        $stdout.puts @pastel.yellow("⚠ #{question}")
+        # The question/description carry the UNTRUSTED command+args the human is
+        # about to authorize — THE most security-critical sink (R3C-1, CWE-150).
+        # A raw `\e[…` in the command can move the cursor / clear the line and
+        # SPOOF what the approval card shows ("rm -rf" hidden, a benign command
+        # painted over it), so the human approves something other than what runs.
+        # Neutralize to visible caret notation before the trusted @pastel wrap.
+        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
         # The danger annotation is the single most safety-relevant line on the
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
-        $stdout.puts @pastel.red.bold("  ⚠ #{description}") unless description.to_s.empty?
+        $stdout.puts @pastel.red.bold("  ⚠ #{safe(description)}") unless description.to_s.empty?
 
         choice   = approval_choice(rule, tool: tool)
         approved = apply_choice(choice, scope: scope, command: command, rule: rule)
-        # First plain "Approve once" of the session: point at the session-scope
-        # menu options so a multi-edit refactor doesn't keep interrupting
-        # without the user knowing it can stop (#110). Presentation only — the
-        # approval model is untouched.
-        session_scope_tip(tool, choice) if approved
+        # Surface the session-scope escape hatch so a bulk multi-file refactor
+        # doesn't re-prompt per file without the user knowing it can stop (#110,
+        # F4). Fire on the FIRST "Approve once" of the session AND again the
+        # moment a BATCH is detected — a second `:once` for the SAME tool in one
+        # turn (the N-edit refactor signature) — since that's exactly when the
+        # per-file fatigue starts. Presentation only; the approval model is
+        # untouched.
+        if approved && choice == :once
+          @turn_once_by_tool ||= Hash.new(0)
+          @turn_once_by_tool[tool.to_s] += 1
+          session_scope_tip(tool, batch: @turn_once_by_tool[tool.to_s] >= 2)
+        end
         # A deny is a safety action: confirm explicitly that nothing ran, in the
         # same red ✗ styling failed tools use, so "Done." can't be read as "ran"
         # (#83). Approve/allow paths are unchanged.
         denied(tool) unless approved
         approved
+      end
+
+      # The subagent shell-approval choice, rendered with the SAME arrow-key
+      # component as the main-agent menu (TUI-6 — replaces the old flat
+      # `[o]nce/[a]lways/[n]o deny` line a non-decision keystroke silently
+      # denied). PUBLIC: the /agents handler (Handlers::Agents) calls it to
+      # present a parked child's approval through the unified menu. Four named
+      # options matching the maintainer decision; returns one of :once,
+      # :always_command, :no, :deny_explain (or nil on an aborted read, which
+      # the caller treats as "re-prompt", never a deny). The "Deny & tell the
+      # agent why" path lets the human hand the child a reason instead of a
+      # bare deny. The security semantics are unchanged — only the UI unifies.
+      def subagent_approval_choice
+        approval_menu("approve?", [
+                        ["Approve once", :once],
+                        ["Approve always (this command)", :always_command],
+                        ["Deny", :no],
+                        ["Deny & tell the agent why", :deny_explain]
+                      ])
       end
 
       # A destructive yes/No confirm — NOT the tool-approval menu (#218).
@@ -307,7 +400,9 @@ module Rubino
       # every non-interactive path (piped stdin) decline, and only an explicit
       # "y"/"yes" proceeds. Returns true only when the user affirmatively agreed.
       def confirm_destructive(question)
-        $stdout.puts @pastel.yellow("⚠ #{question}")
+        # The question may interpolate an untrusted name (a session title, a fact
+        # body) — sanitize before the trusted yellow wrap (R3C-1, CWE-150).
+        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
         # Off a real terminal there is no one to answer; fail closed (decline)
         # so a piped `n` — or any pipe at all — can never destroy (#218).
         return false unless interactive_terminal?
@@ -322,18 +417,38 @@ module Rubino
         false
       end
 
-      # One dim line, once per session, after the FIRST "Approve once" (#110):
-      # the "this tool (this session)" option already exists in the menu, but
-      # nothing surfaced it, so users approved every single edit by hand.
-      def session_scope_tip(tool, choice)
-        return unless choice == :once
-        return if @session_scope_tip_shown
+      # One dim line per session pointing at the session-scope menu option so a
+      # user stops hand-approving every edit (#110, F4). Re-armed once when a
+      # BATCH is detected (+batch+: the 2nd same-tool "Approve once" in a turn)
+      # so a bulk refactor that's already underway gets a louder nudge even if
+      # the user dismissed the opening tip. Tool-aware wording: an edit/write
+      # batch reads "all edits"/"all writes", which is what the user actually
+      # wants to wave through — not the abstract "this tool".
+      def session_scope_tip(tool, batch: false)
+        return if @session_scope_tip_shown && !batch
+        return if batch && @session_batch_tip_shown
 
         @session_scope_tip_shown = true
-        label = tool.to_s.empty? ? "this tool" : tool
+        @session_batch_tip_shown = true if batch
+        noun = session_scope_noun(tool)
+        lead = batch ? "bulk edit detected" : "tip"
         $stdout.puts @pastel.dim(
-          %(┄ tip: choose "Approve — this tool (this session)" to stop being asked for #{label} this session ┄)
+          %(┄ #{lead}: choose "Approve — #{noun} (this session)" to approve #{noun} for the rest of this session ┄)
         )
+      end
+
+      # How the session-scope option reads for a given tool: a batch of edits is
+      # "all edits", writes "all writes", shell "all shell commands"; anything
+      # else falls back to "this tool". Kept in sync with #approval_choice's
+      # :always_tool label.
+      def session_scope_noun(tool)
+        case tool.to_s
+        when "edit", "multi_edit" then "all edits"
+        when "write"              then "all writes"
+        when "shell"              then "all shell commands"
+        when "", nil              then "this tool"
+        else                           "all #{tool} calls"
+        end
       end
 
       # Explicit, visible confirmation that a denied command was NOT executed.
@@ -396,21 +511,53 @@ module Rubino
         # The metric can carry newlines (e.g. a task_result body): interpolating
         # it raw would continue flush-left and unstyled on the next lines —
         # inline it into the ONE styled row instead.
-        inline = metric ? truncate_inline(metric, 120) : nil
+        #
+        # The metric is UNTRUSTED: for a String-returning tool (e.g. shell_output
+        # reading a background buffer) it is the tool's truncated_preview — the
+        # raw bytes the shell emitted. A `\e]0;…\a` there would set the window
+        # title / a `\e[2J` clear the screen straight from this close row
+        # (R3C-1, CWE-150). #truncate_inline flattens newlines but does NOT touch
+        # escape bytes, so sanitize the source first.
+        inline = metric ? truncate_inline(safe(metric), 120) : nil
         if failed
           suffix = inline && !inline.empty? ? " · #{inline}" : ""
-          $stdout.puts @pastel.red("  └ ✗ failed · #{name}#{suffix}")
+          put_card_row("  └ ✗ failed · #{name}#{suffix}") { |line| @pastel.red(line) }
         else
           suffix = inline && !inline.empty? ? " #{inline}" : ""
-          $stdout.puts @pastel.dim("  └ ✓#{suffix}")
+          put_card_row("  └ ✓#{suffix}") { |line| @pastel.dim(line) }
         end
         @last_block = :tool
+      end
+
+      # Prints a single-line tool-card row (the `└ ✓ <preview>` / `└ ✗ …` close
+      # row), WRAPPING it to the terminal width and HANG-INDENTING continuation
+      # rows under the row's text column instead of letting a long one-line
+      # preview hard-wrap to column 0 at a narrow terminal (TUI-2). The hang
+      # column is the leading whitespace + glyph run (`  └ ✓ ` / `  └ ✗ `), so
+      # the wrapped tail lines up under the preview rather than under the `└`.
+      # +text+ is already sanitized/safe; the block styles each rendered line.
+      def put_card_row(text)
+        hang = text[/\A\s*└ \S+ /] || text[/\A\s*/]
+        body = text[hang.length..] || ""
+        # Wrap the BODY at the width left after the hang column, then prefix the
+        # hang to EVERY row so the first and the continuations occupy the same
+        # left margin (the hang's own glyphs only show on the first row, blanks
+        # on the rest). A minimum body budget keeps a very narrow terminal from
+        # looping on a 1-col field.
+        budget = [terminal_cols - 1 - display_width(hang), 4].max
+        rows   = wrap_tail_row(body, budget)
+        indent = " " * hang.length
+        $stdout.puts(yield("#{hang}#{rows.first}"))
+        rows[1..].each { |row| $stdout.puts(yield("#{indent}#{row}")) }
       end
 
       # Approval requested: renders as `◆ summary`
       def approval_requested(summary:, choices:)
         $stdout.puts
-        $stdout.puts @pastel.yellow("◆ #{summary}")
+        # The summary is derived from the proposed tool/command (untrusted) —
+        # sanitize before the trusted wrap (R3C-1, CWE-150). Choice labels are
+        # rubino's own fixed menu text (trusted).
+        $stdout.puts @pastel.yellow("◆ #{safe(summary)}")
         choices.each do |choice|
           $stdout.puts @pastel.dim("  [#{choice[:key]}] #{choice[:label]}")
         end
@@ -462,18 +609,56 @@ module Rubino
       # interrupt raised outside the streaming bracket must settle too.
       # Swallowed once after a QUIET slash-command interrupt (#111, above).
       def turn_interrupted
+        # Latch the interrupt FIRST: a late content delta (the adapter flushes
+        # its think-filter tail on the way out of an interrupted stream) must
+        # NOT re-open a fresh stream and paint a new raw live tail UNDER the
+        # block #finalize_stream just committed — that stray rolling-tail row is
+        # the #265 ghost on the interrupt path. While latched, #stream drops
+        # content deltas (they can no longer reach the user anyway) so nothing
+        # re-arms the live region after it has been torn down.
+        @turn_interrupting = true
         finalize_stream
+        # Tear down the WHOLE painted live tail, not just the bounded
+        # LIVE_TAIL_ROWS window: any raw rolling-tail rows still on screen (a
+        # tail painted by a delta that landed in the cancel race, before the
+        # latch) are cleared through the live region's row-accurate erase so no
+        # raw/duplicated fragment survives above `⎿ interrupted` (#265).
+        clear_stream_region
         # Interrupt = turn end for the status row: kill the engine thread.
         status_stop
         @thinking_indicator = false
         if @suppress_interrupt_marker
           @suppress_interrupt_marker = false
+          @turn_interrupting = false
+          # Even the QUIET (#111) path reset the region: the thinking-row teardown
+          # above (status_hide/stop) desynced the geometry, so the NEXT committed
+          # line would otherwise inherit the ghost (#421).
+          reset_finalize_geometry
           return
         end
 
+        # Reset the live-region geometry through the composer BEFORE the final
+        # `⎿ interrupted` commit (#421): the thinking-row + live-tail teardown
+        # above left @rows_above out of step with the physical rows, so without
+        # this the marker's #print_above walks one row short, commits the live
+        # prompt as a ghost `❯` above the marker, and repaints the kept partial
+        # twice. The reset makes the marker land as ONE clean frame.
+        reset_finalize_geometry
         clear_line
         $stdout.puts @pastel.dim("  ⎿ interrupted")
         $stdout.flush
+        @turn_interrupting = false
+      end
+
+      # Fully erase the streaming live tail through the live region's
+      # row-accurate clear (it walks up exactly the rows it painted), so an
+      # interrupt can never strand a bounded rolling-tail fragment on screen.
+      # Drops the block buffer too, so a stray post-finalize delta has nothing
+      # to extend. A no-op once the stream is already closed and the tail blank.
+      def clear_stream_region
+        @stream_md = nil
+        @stream_type = nil
+        show_live_tail("")
       end
 
       # Free-line annotation rendered as `┄ message ┄`, dim.
@@ -523,7 +708,12 @@ module Rubino
       # (#input_injected elides the already-shown Result body).
       def subagent_lifecycle(line, status: "done", report: nil, id: nil)
         $stdout.puts unless @last_block == :gap
-        $stdout.puts(status == "failed" ? @pastel.red(line) : @pastel.dim(line))
+        # The lifecycle line embeds the subagent name/summary (untrusted) —
+        # sanitize before the trusted color wrap (R3C-1, CWE-150). The report
+        # body goes through #commit_markdown_block, which renders structured
+        # tokens (no raw passthrough), so it is not a raw-escape sink.
+        safe_line = safe(line)
+        $stdout.puts(status == "failed" ? @pastel.red(safe_line) : @pastel.dim(safe_line))
         if report && !report.to_s.strip.empty?
           $stdout.puts @pastel.dim("  ↳ report:")
           commit_markdown_block(report)
@@ -543,8 +733,9 @@ module Rubino
       def subagent_ask_banner(id, subagent, question)
         $stdout.puts
         $stdout.puts @pastel.dim("┄ a subagent needs you ┄")
-        $stdout.puts @pastel.red.bold("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer")
-        $stdout.puts @pastel.yellow("   ❓ #{question}")
+        $stdout.puts @pastel.red.bold("⛔ #{safe(id)} (#{safe(subagent)}) is BLOCKED, waiting on your answer")
+        # The child's escalated question is untrusted — sanitize (R3C-1, CWE-150).
+        $stdout.puts @pastel.yellow("   ❓ #{safe(question)}")
         $stdout.puts @pastel.dim("   everything it needs is paused until you answer — #{ask_timeout_hint}")
         $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
         $stdout.flush
@@ -634,7 +825,11 @@ module Rubino
         return if text.nil? || text.to_s.empty?
 
         clear_line
-        $stdout.puts @pastel.dim("queued ▸ #{text}")
+        # USER-SUPPLIED steered text: neutralize terminal escapes before the
+        # echo (CWE-150 — H1), the same render-boundary defense the approval
+        # card and the submit echo use. Render-only — the literal text is what
+        # runs next turn; only this echo is sanitized.
+        $stdout.puts @pastel.dim("queued ▸ #{Util::Output.sanitize_terminal(text.to_s)}")
         $stdout.flush
       end
 
@@ -665,7 +860,10 @@ module Rubino
         end
         clear_line
         first, rest = elide_shown_reports(text.to_s).split("\n", 2)
-        $stdout.puts @pastel.dim("↳ received while working: #{first}")
+        # The injected first line is a subagent completion notice (untrusted) —
+        # sanitize before the trusted dim wrap (R3C-1, CWE-150). The rest goes
+        # through #commit_markdown_block, which renders structured tokens.
+        $stdout.puts @pastel.dim("↳ received while working: #{safe(first)}")
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
       end
@@ -727,8 +925,17 @@ module Rubino
       # blank: the turn footer attaches directly under the answer. Shared by
       # the non-streamed (#assistant_text) and streamed (#stream) paths so
       # both turns read identically.
+      #
+      # TUI-4 (the LIVE-render seam): the separator must commit through the
+      # SAME atomic composer seam the block content uses (#commit_block_atomic),
+      # NOT a bare `$stdout.puts`. On the streamed path the post-tool segment
+      # paints its first live tail row via the composer's transient row; a bare
+      # buffered `$stdout.puts` for the gap could be reordered/overwritten by
+      # that repaint, gluing the pre- and post-tool text ("…command.Output:
+      # HELLO") with no separator. Committing the blank as a one-line atomic
+      # block lands it in scrollback AHEAD of the live tail, so the gap is real.
       def answer_gap
-        $stdout.puts unless @last_block == :gap
+        commit_block_atomic([""]) unless @last_block == :gap
         @last_block = :answer
       end
 
@@ -737,6 +944,11 @@ module Rubino
       # the SAME column as the rendered block they become — a flush-left tail
       # under indented committed output read as a jarring seam.
       MD_MARGIN = "  "
+
+      # The 2-space left margin every tool OUTPUT-BODY line is printed behind,
+      # shared by the first row and the hang-indented continuation rows of a
+      # hard-wrapped long line (#write_body_lines, TUI-2 follow-up).
+      BODY_MARGIN = "  "
 
       # Renders a markdown string to committed, styled lines above the composer
       # (each line as `$stdout.puts "#{MD_MARGIN}#{line}"`). Shared by
@@ -751,7 +963,18 @@ module Rubino
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
       # Tables are fit to the terminal width minus the 2-space indent that
       # #commit_markdown_block adds, so wide tables wrap instead of overflowing.
+      #
+      # The SOURCE text is untrusted (a closed assistant-content block, a
+      # subagent report body), so neutralize its terminal-control bytes to
+      # visible caret notation BEFORE parsing (CWE-150, R4-F1): a raw `\e[2J`
+      # in the assistant text would otherwise clear/recolor the screen when the
+      # committed line printed. Sanitizing the SOURCE (not the rendered lines)
+      # leaves the renderer's OWN trusted ANSI — applied per token below — the
+      # only escapes that reach the terminal. This is the shared funnel for the
+      # committed block (#commit_markdown_block) and the atomic block
+      # (#margined_render), so both paths are covered.
       def render_markdown_block(text)
+        text = Util::Output.sanitize_terminal(text)
         MarkdownRenderer.new(width: markdown_width).render(text).map do |line_tokens|
           line_tokens.map do |token, style|
             style.nil? ? token : apply_style(token, style)
@@ -819,6 +1042,13 @@ module Rubino
         collapse_reasoning if @thinking_indicator || !@reasoning_buffer.empty?
         clear_thinking_indicator
 
+        # A content delta arriving while the turn is being interrupted (the
+        # adapter's final think-filter flush on its way out of a cancelled
+        # stream) is dropped: re-opening a stream here would paint a fresh raw
+        # live tail under the already-committed partial block — the #265 ghost.
+        # The partial the user already saw was committed by #finalize_stream.
+        return if @turn_interrupting
+
         if type != @stream_type
           stream_end if @stream_type
           @stream_type = type
@@ -876,7 +1106,7 @@ module Rubino
       # dwells one extra beat at each end of the sweep.
       FACET_TRACK_CELLS = 5
       FACET_FRAMES = [0, 0, 0, 1, 2, 3, 4, 4, 4, 3, 2, 1].freeze
-      # Don't nag fast turns: the "enter to interrupt" hint appears only after
+      # Don't nag fast turns: the "esc to interrupt" hint appears only after
       # the wait has visibly dragged.
       INTERRUPT_HINT_AFTER = 1.5
 
@@ -889,9 +1119,24 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
+        # Per-turn tally of plain "Approve once" choices by tool — drives the
+        # bulk-refactor batch nudge (F4); reset each turn so a new refactor
+        # re-detects its batch.
+        @turn_once_by_tool = nil
+        # The FIRST status of a turn is "waiting for model…", not "thinking":
+        # before the first byte arrives there's a multi-second network/model
+        # round-trip with nothing happening locally (F5). A distinct label makes
+        # that gap read as model latency, not a frozen client. The first stream
+        # delta / reasoning / tool relabels it to "thinking" — every one of those
+        # paths already calls status_ensure/status_show, so the transition is
+        # automatic; we only seed a different opening label here.
         @thinking_indicator = true if thinking_painter
-        status_show("thinking", phase: :thinking)
+        status_show(MODEL_WAIT_LABEL, phase: :thinking)
       end
+
+      # The opening "nothing's happening yet" label (F5), distinct from
+      # "thinking" so the ~12s pre-first-token stall doesn't look like a hang.
+      MODEL_WAIT_LABEL = "waiting for model…"
 
       # Marks the end of a TURN (normal completion, error, or interrupt): the
       # one place the turn-scoped ticker thread is allowed to die.
@@ -1001,6 +1246,27 @@ module Rubino
         end
       end
 
+      # Row-accurately erase the live region and reset its geometry to a clean
+      # blank top row BEFORE a finalize/interrupt/force-summary commit repaint
+      # (#421). The interrupt teardown (status_hide → clear_stream_region →
+      # status_stop) and the force-summary's stream_end leave the composer's
+      # recorded row geometry out of step with the physical rows — the status-row
+      # ticker painted a row #live_rows doesn't track — so the final #print_above
+      # walks one row short and commits the live prompt into scrollback as a ghost
+      # `❯`, and the kept partial / whole summary block repaints twice. Routing
+      # through {BottomComposer#finalize_region} (the same geometry-reset seam
+      # Ctrl+L #395 / resize #401 use) makes the next commit land as ONE clean
+      # frame. A no-op when no composer owns the screen (plain TTY / pipe / tests
+      # / between turns); only terminal IO errors are swallowed (cosmetic).
+      def reset_finalize_geometry
+        composer = BottomComposer.current
+        return unless composer
+
+        composer.finalize_region
+      rescue IOError, Errno::EIO
+        nil
+      end
+
       # True when $stdout is a real terminal (guarded for IO doubles).
       def tty_stdout?
         $stdout.respond_to?(:tty?) && $stdout.tty?
@@ -1033,10 +1299,16 @@ module Rubino
         (monotonic_now - @thinking_started_at).to_i
       end
 
-      # Replay user input in compact form
+      # Replay user input in compact form. The text is USER-SUPPLIED (a freshly
+      # submitted line, a resumed session message, a `!` shell echo), so it is
+      # routed through Util::Output.sanitize_terminal before it is colored and
+      # printed (CWE-150 — H1): an embedded OSC/CSI escape (`\e]0;…\a` set title,
+      # `\e[2J` clear screen) would otherwise EXECUTE against the terminal when
+      # the transcript echoes it. Render-only — the literal text reached the
+      # model already; only this echo is neutralized.
       def replay_user_input(text, at: nil)
         $stdout.puts
-        $stdout.puts @pastel.green("#{text}")
+        $stdout.puts @pastel.green(Util::Output.sanitize_terminal(text.to_s))
         $stdout.puts
         @last_block = :gap
       end
@@ -1074,21 +1346,20 @@ module Rubino
       def tool_body(text, kind: :plain)
         return if text.nil? || text.to_s.empty?
 
+        # A diff is shown IN FULL (no collapse): the +/- hunks ARE the answer
+        # when the user asked to see the diff (G3); collapsing them to 3 lines
+        # defeats the point. Plain output keeps the head-N-lines preview.
+        if kind == :diff
+          write_body_lines(text.to_s) { |chomped| diff_line_color(chomped) }
+          @last_block = :tool
+          return
+        end
+
         limit  = tool_preview_limit
         lines  = text.to_s.lines
         shown  = limit.positive? ? lines.first(limit) : lines
         hidden = lines.size - shown.size
-        write_body_lines(shown.join) do |chomped|
-          if kind == :diff
-            case chomped[0]
-            when "+" then @pastel.green(chomped)
-            when "-" then @pastel.red(chomped)
-            else          @pastel.dim(chomped)
-            end
-          else
-            @pastel.dim(chomped)
-          end
-        end
+        write_body_lines(shown.join) { |chomped| @pastel.dim(chomped) }
         $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
         @last_block = :tool
       end
@@ -1097,8 +1368,17 @@ module Rubino
       # accumulated across chunks. Lines past the preview budget are counted
       # silently; #activity_finished flushes the `… +N lines` marker right
       # before the close row.
-      def tool_chunk(_name, chunk)
+      def tool_chunk(_name, chunk, kind: :plain)
         return if chunk.nil? || chunk.to_s.empty?
+
+        # A diff the user asked to SEE (`git diff`, `git show`): colorize the
+        # hunks and DON'T collapse to the 3-line preview — a code review wants
+        # the full +/- (G3). Plain output keeps the head-N-lines collapse.
+        if kind == :diff
+          write_body_lines(chunk.to_s) { |chomped| diff_line_color(chomped) }
+          @last_block = :tool
+          return
+        end
 
         limit = tool_preview_limit
         unless limit.positive?
@@ -1115,6 +1395,19 @@ module Rubino
           end
         end
         @last_block = :tool
+      end
+
+      # +/-/@@ unified-diff coloring shared by streamed diff chunks (#tool_chunk)
+      # and the end-of-call diff body (#tool_body). `+++`/`---` file headers are
+      # left dim (not green/red) so they don't read as added/removed lines.
+      def diff_line_color(line)
+        case line
+        when /\A[-+]{3}\s/, /\A@@/, /\Adiff /, /\Aindex /
+          @pastel.dim(line)
+        when /\A\+/ then @pastel.green(line)
+        when /\A-/  then @pastel.red(line)
+        else             @pastel.dim(line)
+        end
       end
 
       # Tool finished renders as the compact `└ ✓ metric` close row, or
@@ -1155,7 +1448,16 @@ module Rubino
 
       def compression_finished(metadata, at: nil)
         saved = metadata[:saved_tokens] || metadata["saved_tokens"] || 0
-        $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok ┄")
+        before = metadata[:original_messages] || metadata["original_messages"]
+        after  = metadata[:compacted_messages] || metadata["compacted_messages"]
+        # Show the message-count change alongside the token saving so the notice
+        # reads as a CONTINUATION of the same session, not a silent session-swap
+        # (item 6): `┄ compacted · saved N tok (X→Y msg) ┄`. The `┄ … ┄` rail
+        # (matching the `┄ compacting context… ┄` pre-notice) keeps it visibly
+        # inline in the SAME transcript. Falls back to the bare token line when
+        # the counts aren't supplied (e.g. the API-shaped metadata).
+        msg = before && after ? " (#{before}→#{after} msg)" : ""
+        $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok#{msg} ┄")
       end
 
       # Ctrl+O reveal: re-render the LAST retained reasoning buffer as the
@@ -1434,21 +1736,42 @@ module Rubino
         # shows file_path/old_string, not a command), so non-shell tools get
         # "this exact call" instead (#222). Shell keeps "command".
         narrow = scope_noun(tool)
-        # Pause the bottom composer for the duration of the select so the menu
-        # reads the real $stdin (no reader-thread race) and tty-screen sizes the
-        # real $stdout (no NoMethodError on the StdoutProxy). No-op off-turn.
+        # Labels are grammatically parallel (#87): every line is an
+        # "<Approve|Deny> — <scope>" verb phrase, so the affirmatives and
+        # denies read symmetrically instead of mixing "yes, once" with
+        # "no — deny this once".
+        choices = [["Approve once", :once]]
+        choices << ["Approve — `#{prefix}` commands (always)", :always_prefix] if prefix
+        choices << ["Approve — #{narrow} (always)", :always_command]
+        choices << ["Approve — #{session_scope_noun(tool)} (this session)", :always_tool]
+        choices << ["Deny once", :no]
+        choices << ["Deny — #{narrow} (always)", :deny_always]
+        approval_menu("approve?", choices)
+      end
+
+      # The UNIFIED arrow-key approval menu (TUI-6): the ONE select component
+      # every approval surface renders — main-agent tool approvals
+      # (#approval_choice), MCP, and the subagent shell approval
+      # (#subagent_approval_choice). +choices+ is an ordered [label, value]
+      # list; returns the chosen value (a decision symbol). ↑↓ to move, Enter to
+      # choose; cycle off so the ends don't wrap.
+      #
+      # The bottom composer is paused for the duration of the select so the menu
+      # reads the real $stdin (no reader-thread race) and tty-screen sizes the
+      # real $stdout (no NoMethodError on the StdoutProxy). No-op off-turn.
+      # +filter: true+ closes the "stray slash silently approves" hole (LOW): the
+      # menu used to be a plain `select`, so typing `/status` (a user reaching to
+      # "inspect first") was swallowed with no echo, and the NEXT Enter selected
+      # the highlighted default — Approve once — authorizing a call the user never
+      # meant to. With filtering on, typed characters narrow the list; a slash (or
+      # any token matching no "Approve …/Deny …" label) filters it to EMPTY, and
+      # tty-prompt's `keyenter` is a no-op on an empty list — so an accidental
+      # keystroke + Enter can no longer approve. Arrow-key ↑/↓ + Enter on a real
+      # option is unaffected; backspace clears the filter and restores the rows.
+      def approval_menu(prompt, choices)
         BottomComposer.run_in_terminal do
-          # Labels are grammatically parallel (#87): every line is an
-          # "<Approve|Deny> — <scope>" verb phrase, so the affirmatives and
-          # denies read symmetrically instead of mixing "yes, once" with
-          # "no — deny this once".
-          approval_prompt.select("approve?", cycle: false) do |menu|
-            menu.choice "Approve once", :once
-            menu.choice "Approve — `#{prefix}` commands (always)", :always_prefix if prefix
-            menu.choice "Approve — #{narrow} (always)",         :always_command
-            menu.choice "Approve — this tool (this session)",   :always_tool
-            menu.choice "Deny once",                            :no
-            menu.choice "Deny — #{narrow} (always)",            :deny_always
+          approval_prompt.select(prompt, cycle: false, filter: true) do |menu|
+            choices.each { |label, value| menu.choice label, value }
           end
         end
       end
@@ -1487,12 +1810,45 @@ module Rubino
       end
 
       # Renders body text with the current activity open.
+      # The single chokepoint that prints UNTRUSTED tool output (shell/file/MCP
+      # body + the live shell tail) to the real terminal. Sanitize here
+      # (R2-V1 / CWE-150): raw `\e[2J`/`\e[41m…`/`\e]0;…\a` in that output
+      # would otherwise reach the emulator and clear the screen, recolor, or
+      # set the window title. Util::Output.sanitize_terminal strips the
+      # control/escape bytes (and normalizes bare CR) BEFORE the style wrapper
+      # runs, so rubino's own @pastel ANSI — applied per-line below — stays the
+      # only trusted styling that reaches the terminal.
       def write_body_lines(text, &style)
-        text.each_line do |line|
+        # Width left for body text after the 2-space margin; a small floor keeps
+        # a very narrow terminal from looping on a 1-col field.
+        budget = [terminal_cols - 1 - BODY_MARGIN.length, 4].max
+        Util::Output.sanitize_terminal(text).each_line do |line|
           chomped = line.chomp
-          rendered = style ? style.call(chomped) : chomped
-          $stdout.puts "  #{rendered}"
+          # HARD-WRAP a long no-break token inside the output body instead of
+          # letting the terminal wrap it to column 0 (TUI-2): the card-row fix
+          # (#put_card_row) covered the `└` close rows, but a long unbroken token
+          # in the captured body still hugged the left edge on continuation. Wrap
+          # at the body budget and prefix the SAME margin to every row so the
+          # continuation lines hang-indent under the first.
+          wrap_tail_row(chomped, budget).each do |row|
+            rendered = style ? style.call(row) : row
+            $stdout.puts "#{BODY_MARGIN}#{rendered}"
+          end
         end
+      end
+
+      # The single chokepoint for UNTRUSTED inline text (R3C-1, CWE-150): tool
+      # command/args on the approval card, tool/shell output reflected in a
+      # metric or close row, a subagent's name/summary/question. Neutralizes
+      # every terminal-control byte to visible caret/<XX> notation BEFORE the
+      # caller wraps it in rubino's own (trusted) @pastel styling — so a raw
+      # `\e[2J` / `\e]0;…\a` / cursor-move embedded in that text can never clear
+      # the screen, set the window title, or SPOOF the line the human is about
+      # to authorize. #write_body_lines is the parallel chokepoint for the
+      # multi-line tool BODY; this one covers the single-line interpolated sinks.
+      # rubino's own ANSI is applied around the result and is never passed here.
+      def safe(text)
+        Util::Output.sanitize_terminal(text)
       end
 
       # Applies a style hash to a token string.
@@ -1532,7 +1888,10 @@ module Rubino
         # doesn't glue onto the leftover tail. (The #live seam replaces its own
         # transient row, so this is a no-op there.)
         clear_plain_tail if completed.any?
-        completed.each { |block| commit_markdown_block(block) }
+        # Commit each finished block atomically with the live-tail clear so a raw
+        # tail row can't survive above the rendered block at the scroll boundary
+        # (#265) — the same single-frame discipline the final flush uses.
+        completed.each { |block| commit_block_atomic(margined_render(block)) }
         # Live region: a small ROLLING window over the in-flight block — its last
         # few raw lines, so a long list/table block keeps its recent context
         # visible while it streams instead of vanishing to a single flickering
@@ -1554,22 +1913,63 @@ module Rubino
       # as PLAIN lines so nothing is lost (markdown of a half-open fence would be
       # garbage). Always clears the live region.
       #
-      # The live tail (the rolling window of RAW in-flight wrapped rows) is torn
-      # down FIRST, before the rendered block commits. On an interrupt mid-block
-      # the last painted tail rows would otherwise survive ABOVE the freshly
-      # rendered block — a duplicated, out-of-order ghost fragment under the
-      # heading (#265). Clearing the partial region first lands the final block
-      # on a clean region.
+      # The final block commits in ONE atomic live-region frame that ALSO clears
+      # the raw rolling tail (#commit_block_atomic): the live region erases the
+      # transient tail rows it painted and scrolls the rendered block in a single
+      # mutex-held frame, so the tail can't survive ABOVE the rendered block as a
+      # duplicated/out-of-order ghost (#265). The old two-step
+      # (show_live_tail("") then a per-line commit) left a window where, at the
+      # terminal's scroll boundary, the just-painted raw tail row had already
+      # scrolled past the next frame's relative \e[1A clear — the ghost the QA
+      # gate caught on the INTERRUPT path, where the redraw cycle is cut short.
       def flush_content_stream
         remaining = @stream_md.flush
-        show_live_tail("")
-        return unless remaining
+        unless remaining
+          show_live_tail("")
+          return
+        end
 
-        clear_plain_tail
-        if open_fence?(remaining)
-          remaining.split("\n", -1).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
+        lines =
+          if open_fence?(remaining)
+            # A half-open fence renders as garbage; emit the buffered text PLAIN
+            # so nothing is lost, still margined to sit under the rest.
+            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{line}" }
+          else
+            margined_render(remaining)
+          end
+        commit_block_atomic(lines)
+      end
+
+      # Commit a rendered block AND tear the raw live tail down in a single
+      # live-region frame. When a composer owns the screen its #print_above
+      # clears the live partial and scrolls the whole (possibly multi-line)
+      # block under one render-mutex frame — the clear lands BEFORE the scroll,
+      # so a tail row can't be stranded above the block at the scroll boundary
+      # (#265). Off the composer seam (plain TTY / pipe / tests) fall back to the
+      # per-line path, clearing the in-place tail first.
+      # A markdown block rendered to MD_MARGIN-indented, ANSI-styled lines —
+      # the exact lines #commit_block_atomic commits above the prompt.
+      def margined_render(block)
+        render_markdown_block(block).map { |line| "#{MD_MARGIN}#{line}" }
+      end
+
+      def commit_block_atomic(lines)
+        return if lines.nil? || lines.empty?
+
+        composer = BottomComposer.current
+        if composer && $stdout.respond_to?(:live)
+          # Route around the StdoutProxy's per-line buffering: hand the whole
+          # block to the composer so it commits in ONE frame that also clears the
+          # live partial (no stranded raw tail). nil/empty lines stay as blank
+          # rows (the P3 rhythm) — LiveRegion#commit keeps them.
+          composer.print_above(lines.join("\n"))
         else
-          commit_markdown_block(remaining)
+          # No composer owns the screen (plain TTY / pipe / a #live-shaped test
+          # double): clear the in-place raw tail through the SAME seam a live
+          # region would (#show_live_tail), then commit per line.
+          show_live_tail("")
+          clear_plain_tail
+          lines.each { |line| $stdout.puts line }
         end
       end
 
@@ -1602,7 +2002,14 @@ module Rubino
       # column as the rendered block they snap into. A blank tail passes
       # through untouched (it just clears the transient row).
       def margined_tail(tail)
-        text = tail.to_s
+        # The in-flight tail is RAW untrusted model text (CWE-150, R4-F2): a
+        # streamed `\e[2J` / `\e]0;…\a` would clear the screen or hijack the
+        # window title as the transient row painted. Neutralize to visible caret
+        # notation BEFORE wrapping (so the wrap measurement and #paint_live both
+        # see safe text). Sanitizing here — not in #paint_live — keeps rubino's
+        # OWN trusted frames (the status row, the empty clear) untouched, since
+        # those reach #paint_live without passing through this model-tail seam.
+        text = Util::Output.sanitize_terminal(tail.to_s)
         return text if text.empty?
 
         budget = terminal_cols - MD_MARGIN.length - 1
@@ -1772,7 +2179,7 @@ module Rubino
           parts << "#{(now - (@turn_started_at || s[:phase_started_at])).to_i}s"
           parts << "#{@turn_tool_count} tool#{"s" if @turn_tool_count != 1}" if @turn_tool_count.positive?
           parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
-          parts << "enter to interrupt" if interrupt_hint?(s, now)
+          parts << "esc to interrupt" if interrupt_hint?(s, now)
         else
           parts << "#{(now - s[:phase_started_at]).to_i}s"
         end
@@ -1787,8 +2194,9 @@ module Rubino
         count >= 1000 ? "#{(count / 1000.0).round(1)}k" : count.to_s
       end
 
-      # The hint only appears where Enter actually interrupts (a composer owns
-      # the keyboard) and only once the wait has dragged past the threshold.
+      # The hint only appears where Esc actually interrupts (a composer owns
+      # the keyboard, #421) and only once the wait has dragged past the
+      # threshold.
       def interrupt_hint?(state, now)
         @turn_active &&
           (now - state[:phase_started_at]) >= INTERRUPT_HINT_AFTER &&
@@ -1863,9 +2271,11 @@ module Rubino
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub
-        preview = prompt ? "  #{truncate_inline(prompt, 60)}" : ""
+        # subagent name + prompt preview are UNTRUSTED (model-chosen args):
+        # sanitize before the trusted dim wrap (R3C-1, CWE-150).
+        preview = prompt ? "  #{truncate_inline(safe(prompt), 60)}" : ""
         $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{sub}#{preview}")}"
+        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{safe(sub)}#{preview}")}"
         @activity_open = true
         @activity_name = "task"
         @last_block = :tool
@@ -1888,15 +2298,18 @@ module Rubino
         if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
           # Background spawn: ONE lifecycle grammar (P6) — the live-card row
           # shape, dim, no green ✓ (nothing finished yet; it only started).
-          $stdout.puts @pastel.dim("  └ ▸ #{m[2]} · #{m[1]} · started")
+          # The spawn handle's name fields come from model args — sanitize.
+          $stdout.puts @pastel.dim("  └ ▸ #{safe(m[2])} · #{safe(m[1])} · started")
         else
-          summary = truncate_inline(output.strip, 80)
+          # The subagent's output is UNTRUSTED — sanitize before the close-row
+          # wrap (R3C-1, CWE-150).
+          summary = truncate_inline(safe(output.strip), 80)
           icon, color =
             if delegation_failed?(result)        then ["✗", :red]
             elsif delegation_noop?(result)       then ["⊘", :dim]
             else                                      ["✓", :dim] # quiet close — color only on failure (P1)
             end
-          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{sub}: #{summary}")
+          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{safe(sub)}: #{summary}")
         end
         @delegation_subagent = nil
         @last_block = :tool
@@ -1951,7 +2364,12 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        hint  = Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s
+        # The masked value is the UNTRUSTED command/path/pattern — neutralize
+        # escape bytes BEFORE building the open-row hint, so a `\e]0;…` in a
+        # filename/command can't drive the terminal from the `● name hint` row
+        # (R3C-1, CWE-150). Sanitize the raw text here, then rubino's own OSC-8
+        # hyperlink wrap (trusted) is applied around the clean label.
+        hint  = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
         first = hint.lines.first.to_s.strip
         label = first.length > 60 ? "#{first[0, 57]}..." : first
 
@@ -1970,7 +2388,9 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        first = Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s.lines.first.to_s.strip
+        # The status row repaints 10×/s through the live region — an unsanitized
+        # escape here would drive the terminal on every frame (R3C-1, CWE-150).
+        first = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s).lines.first.to_s.strip
         first.length > 30 ? "#{first[0, 29]}…" : first
       end
 
@@ -1980,11 +2400,7 @@ module Rubino
       end
 
       def pick_hint(arguments)
-        %i[pattern file_path path command].each do |k|
-          v = arguments[k] || arguments[k.to_s]
-          return [k, v] if v && !v.to_s.empty?
-        end
-        nil
+        ToolLabel.pick_hint(arguments)
       end
 
       def color_for(role)

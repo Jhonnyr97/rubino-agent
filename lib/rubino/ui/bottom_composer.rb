@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "io/console"
+require "pastel"
 
 module Rubino
   module UI
@@ -80,6 +81,11 @@ module Rubino
       # fallback for Alt+Enter (which some terminals don't deliver).
       QUEUED_PREFIX = "/queued "
 
+      # The type-ahead AFFORDANCE shown in the status row while a turn is active
+      # (#421): Esc cancels the current turn (Enter now QUEUES). Kept dim and
+      # parenthetical so it reads as a hint, not a chrome label.
+      ESC_INTERRUPT_HINT = "(esc to interrupt)"
+
       # Double-Esc window (seconds): two LONE Esc presses within this at the
       # IDLE prompt fire the +on_double_esc+ hook (the Esc-Esc rewind picker —
       # the Claude Code muscle-memory chord). Tight enough that a deliberate
@@ -127,17 +133,17 @@ module Rubino
       #   status change (e.g. the yolo arm toast). The composer holds no mode
       #   knowledge itself. nil = Shift+Tab is a no-op.
       # @param echo [Symbol] how a submitted line is echoed into scrollback:
-      #   :queued (default) is the IN-TURN composer — Enter INTERRUPTS the active
-      #   turn and sends the line as the next turn (the default), so it never
-      #   commits an echo here (the next turn's prompt echo is committed by the
-      #   chat loop when it runs); :prompt prints the prompt + the line (e.g.
-      #   "default ❯ <line>") — the idle case, where the line IS the user's
-      #   message and should read back like a normal shell submit.
-      # @param on_interrupt [#call, nil] invoked when the user presses Enter to
-      #   submit a line WHILE a turn is active. The chat loop wires this to the
-      #   active turn's cancel so the current turn is interrupted and the
-      #   just-submitted line runs as the next turn immediately. nil ⇒ no
-      #   interrupt (the line is simply queued, as before).
+      #   :queued (default) is the IN-TURN composer — Enter QUEUES the line (the
+      #   Claude-Code type-ahead default, #421): the active turn keeps running
+      #   and the line shows a live "⏳ queued:" indicator, committed by the chat
+      #   loop when its turn runs, so it never commits an echo here; :prompt
+      #   prints the prompt + the line (e.g. "default ❯ <line>") — the idle case,
+      #   where the line IS the user's message and reads back like a shell submit.
+      # @param on_interrupt [#call, nil] invoked when the user presses ESC while
+      #   a turn is active (#421 — Esc is the interrupt; Enter queues). The chat
+      #   loop wires this to the active turn's cancel (runner.cancel!) so the
+      #   current turn is interrupted and the head of the queue runs next. nil ⇒
+      #   Esc is a no-op mid-turn (the composer just queues on Enter).
       # @param pending_queued [Array<String>, nil] shared stack of messages the
       #   user EXPLICITLY queued (Alt+Enter / "/queued <msg>") while a turn is
       #   active. Rendered as "⏳ queued: <msg>" rows ABOVE the input (live region,
@@ -171,21 +177,37 @@ module Rubino
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
-                     on_double_esc: nil)
+                     on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
+                     on_busy_command: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
         @on_ctrl_o     = on_ctrl_o
         @on_mode_cycle = on_mode_cycle
+        # Invoked on a Tab with nothing to complete (empty buffer, menu closed):
+        # cycle the active PRIMARY agent and adopt the returned status-bar line
+        # — the agent counterpart of @on_mode_cycle (Shift+Tab). nil ⇒ Tab stays
+        # a plain completion key.
+        @on_agent_cycle = on_agent_cycle
         @on_double_esc = on_double_esc
-        # Monotonic time of the last LONE Esc (nil when unarmed) — the
-        # double-tap window the Esc-Esc rewind chord measures against.
-        @last_esc_at   = nil
+        # Invoked on a LONE Esc at the idle prompt with no menu open, BEFORE the
+        # Esc-Esc rewind chord arms (#319). Returns truthy to CONSUME the Esc
+        # (the idle "polishing… (Esc to skip)" cancel): a single Esc then cancels
+        # the detached post-turn polishing instead of arming rewind. Returns
+        # falsy (nothing to cancel) to fall through to the normal arm. Runs on
+        # the reader thread — the hook must only flip a flag, never block.
+        @on_escape     = on_escape
+        # @last_esc_at: monotonic time of the last LONE Esc — nil (unarmed) by
+        # default; only read behind `&&` (the double-tap rewind chord window).
         @echo          = echo
         @on_interrupt  = on_interrupt
+        # @on_busy_command classifies a line typed mid-turn so a read-only/control
+        # meta-command runs NOW (Executor#busy_disposition); a state-mutating one
+        # gets a transient notice; free text queues. nil ⇒ legacy queue-all.
+        @on_busy_command = on_busy_command
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
-        @paste_store   = paste_store
+        @paste_store = paste_store
         # Shared (or private) stack of EXPLICITLY-queued messages, rendered as
         # "⏳ queued: <msg>" rows above the input while pending.
         @queued = QueuedIndicators.new(pending_queued || [])
@@ -213,9 +235,8 @@ module Rubino
         # input text starts in on EVERY row (rail + prompt on the first,
         # rail + hanging indent on continuations) — all caret/wrap math
         # anchors to it.
-        @rail_width   = @rail.gsub(ANSI_RE, "").length
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
-        @prefix_width = @rail_width + @prompt_width
+        @prefix_width = @rail.gsub(ANSI_RE, "").length + @prompt_width
         @buffer      = +""
         # Insertion point, measured in CHARACTERS (codepoints) into @buffer.
         # Always in 0..@buffer.length; the terminal cursor is parked here on
@@ -320,6 +341,7 @@ module Rubino
         @running = true
         self.class.current = self
         install_winch_trap
+        install_cont_trap
         @render.synchronize do
           # Leave a blank row above the first prompt so the first above-output
           # doesn't glue onto whatever the REPL just printed.
@@ -341,6 +363,7 @@ module Rubino
         self.class.current = nil if self.class.current.equal?(self)
         stop_reader
         restore_winch_trap
+        restore_cont_trap
         # Raw mode must never leak past the turn, even if the block-form restore
         # was interrupted. Best-effort.
         @input.cooked! if tty?
@@ -364,6 +387,7 @@ module Rubino
         $stdout = @output
         stop_reader
         restore_winch_trap
+        restore_cont_trap
         @input.cooked! if tty?
         @render.synchronize { clear_live_region_to_clean_line }
       rescue IOError, Errno::ENOTTY, Errno::EIO
@@ -379,6 +403,7 @@ module Rubino
         $stdout = @saved_stdout if @saved_stdout
         @saved_stdout = nil
         install_winch_trap
+        install_cont_trap
         @render.synchronize do
           @output.print(PASTE_ON)
           draw_input
@@ -402,6 +427,33 @@ module Rubino
         @render.synchronize do
           @partial = +""
           render_frame(committed: str)
+        end
+      end
+
+      # Row-accurately ERASE the whole live region in place and reset its
+      # on-screen geometry to a clean blank top row — used by the stream
+      # FINALIZE / INTERRUPT / force-summary paths right before they commit
+      # their last line (#421). The interrupt/force-summary repaints run after
+      # the status-row ticker and a flurry of intermediate transient frames
+      # (status_hide → clear_stream_region → status_stop, each a paint_live(""))
+      # have left the region's recorded geometry out of step with the physical
+      # rows — the ticker paints a status row that #live_rows does NOT include,
+      # so @rows_above under-counts and the next #print_above's relative
+      # \e[1A\e[2K walk-up clears one row short: the live prompt is left on
+      # screen and gets COMMITTED into scrollback as the ghost `❯` above the
+      # `⎿ interrupted` marker, and the kept partial / whole summary block
+      # repaints a second time below it (the duplicated block). {LiveRegion#clear}
+      # walks UP exactly the rows it last painted and zeroes the counters, so the
+      # subsequent commit lands as ONE clean frame from a known-blank top row —
+      # the same geometry-reset discipline Ctrl+L (#395) / resize (#401) use,
+      # applied to the finalize path. Drops the partial too so a stale tail can't
+      # repaint. A no-op-safe single frame: nothing is committed here, only the
+      # transient rows are erased and the prompt redrawn fresh.
+      def finalize_region
+        @render.synchronize do
+          @partial = +""
+          @region.clear
+          redraw
         end
       end
 
@@ -503,6 +555,10 @@ module Rubino
       # streams (D7e). Idempotent.
       def begin_turn
         @turn_active = true
+        # Repaint so the "(esc to interrupt)" affordance (#421) appears in the
+        # status row for the whole turn. Guarded: dropped while suspended, like
+        # every other live repaint.
+        @render.synchronize { redraw } unless @suspended
       end
 
       # Marks the END of a turn — the chat loop's run_turn `ensure` calls this
@@ -513,6 +569,9 @@ module Rubino
       # "⏳ queued:" indicator instead of a post-footer echo.)
       def end_turn
         @turn_active = false
+        # Repaint so the "(esc to interrupt)" affordance (#421) clears from the
+        # status row once the turn ends. Guarded like every other live repaint.
+        @render.synchronize { redraw } unless @suspended
       end
 
       # Sets the TRANSIENT announcement row (the Shift+Tab mode confirmation).
@@ -525,6 +584,24 @@ module Rubino
           @announce = (text || "").to_s
           redraw
         end
+      end
+
+      # TRAP-SAFE announce for the during-turn Ctrl+C double-tap hint (#426).
+      # A SIGINT trap MUST NOT take the render mutex (Mutex#lock is forbidden in
+      # trap context) and MUST NOT do a raw scrolling $stderr write either: the
+      # old trap wrote "\n(press Ctrl+C again to exit)\n" straight to the
+      # terminal, scrolling the live region by two rows OUTSIDE LiveRegion's row
+      # accounting. On a very-early interrupt — while the answer's first line is
+      # still a RAW live-tail preview — that desynced @rows_above so the
+      # finalize commit's \e[1A walk-up landed one row short: the raw preview
+      # survived in scrollback above the rendered (curly) line and the prompt
+      # committed as a ghost `❯` (Bug B, same #265/#421 geometry-desync family).
+      # Here we only ASSIGN @announce (one atomic reference store, no mutex, no
+      # output) and let the NEXT mutex-held frame — the interrupt's finalize
+      # redraw — paint it as an in-place transient row that never scrolls. The
+      # hint is cleared on the next keystroke like any other announce.
+      def announce_pending(text)
+        @announce = (text || "").to_s
       end
 
       # Updates the status bar pinned below the input (model + context
@@ -749,12 +826,26 @@ module Rubino
         indent = "#{@rail}#{" " * @prompt_width}"
         texts = rows.map do |row|
           body = row[:chars].join
-          if row[:prompt]
-            "#{@rail}#{@prompt}#{single ? highlight_line(body) : body}"
-          else
-            # Hanging indent (P12): continuations align under the text start.
-            "#{indent}#{body}"
-          end
+          rendered =
+            if row[:prompt]
+              "#{@rail}#{@prompt}#{single ? highlight_line(body) : body}"
+            else
+              # Hanging indent (P12): continuations align under the text start.
+              "#{indent}#{body}"
+            end
+          # Fit each rendered row to one PHYSICAL terminal line (TUI-2): the
+          # wrap math in #layout_input already breaks on display width, but a
+          # wide CJK/emoji glyph at the wrap boundary — or a degenerate narrow
+          # width where the prefix alone is wider than the budget — can still
+          # leave a rendered row at @cols (or past it) display columns. Such a
+          # row arms the terminal's deferred auto-wrap and spills onto a SECOND
+          # physical line that the input-block clear (which walks the LOGICAL
+          # row count from #input_drawn) never erases, so each redraw stacked
+          # another ghost "❯ …" row that only Ctrl+L cleared. Clamping to one
+          # column short of the width keeps logical rows == physical rows so the
+          # clear math stays exact. ASCII never tripped this (every glyph is one
+          # column); wide-char narrow input did.
+          fit_row(rendered)
         end
         [texts, caret_row, caret_col]
       end
@@ -764,11 +855,37 @@ module Rubino
       # styled line wouldn't fit the row (omit whole rather than truncate
       # mid-ANSI — a cut escape sequence would leak attributes into the
       # terminal).
+      #
+      # While a turn is active (thinking OR streaming) the row also carries the
+      # type-ahead AFFORDANCE — a dim "(esc to interrupt)" hint (#421) — so the
+      # user can see that Esc cancels the current turn (Enter now QUEUES). The
+      # hint is appended only when the styled status line is present and the
+      # combined plain width still fits; it never replaces the bar.
       def status_row
-        return nil if @status.empty? || @cols < MIN_STATUS_COLS
+        return nil if @cols < MIN_STATUS_COLS
+
+        if (@turn_active || @content_streaming) && @on_interrupt
+          return interrupt_hint if @status.empty?
+
+          combined = "#{@status}  #{interrupt_hint}"
+          return combined if display_width(combined.gsub(ANSI_RE, "")) <= @cols - 1
+          # The combined line overflows — keep the bar, drop the (cosmetic) hint.
+        end
+
+        return nil if @status.empty?
         return nil if display_width(@status.gsub(ANSI_RE, "")) > @cols - 1
 
         @status
+      end
+
+      # The dim "(esc to interrupt)" type-ahead affordance shown in the status
+      # row while a turn is active (#421). Memoized — it never changes.
+      def interrupt_hint
+        @interrupt_hint ||= pastel.dim(ESC_INTERRUPT_HINT)
+      end
+
+      def pastel
+        @pastel ||= Pastel.new
       end
 
       # Feeds a single character through the edit logic. Public so the PTY/unit
@@ -813,6 +930,8 @@ module Rubino
         when "\x15" then kill_to_start           # Ctrl+U → delete to start of line
         when "\x0f" # Ctrl+O: reveal the last retained reasoning aside.
           request_reveal
+        when "\x0c" # Ctrl+L: clear the screen and redraw the prompt in place.
+          clear_screen
         when "\e"
           # ESC: start of a CSI/SS3 escape (arrows, Home/End, word-jump,
           # Shift+Tab, bracketed paste) OR a lone ESC that dismisses the menu.
@@ -837,6 +956,18 @@ module Rubino
       def resize
         @render.synchronize do
           @cols = compute_cols
+          # Forget the on-screen row geometry BEFORE redrawing (#401). The
+          # @rows_above / @input_above / @input_below counts were recorded at the
+          # OLD column count; on a resize the terminal reflows the wrapped input
+          # (and partial) into a DIFFERENT number of physical rows, so the next
+          # frame's relative \e[1A\e[2K walk-up would clear the wrong row count —
+          # under-clearing leaves the stale copy on screen and the fresh redraw
+          # appends BELOW it, so every reflow stacked another copy of the input
+          # into scrollback (~20× on a 200→70 drag). The terminal already
+          # reflows the bottom rows itself, so zeroing the counters (the same
+          # seam Ctrl+L uses, {LiveRegion#reset_geometry!}) lets the redraw draw
+          # ONE fresh frame over the reflowed copy instead of walking stale rows.
+          @region.reset_geometry!
           # Repaint the FULL live region (cards + menu + partial + prompt) when
           # anything above the prompt is live, reusing the same atomic frame the
           # streaming writer uses; a bare draw_input would repaint only the
@@ -868,7 +999,32 @@ module Rubino
       # The +@buffer+ is redrawn on every frame, so it can never be lost across
       # a scroll. Must be called while holding @render.
       def render_frame(committed:)
+        # Refresh the width from the live terminal every frame. @cols was only
+        # recomputed at init and on SIGWINCH, so a width that was wrong at init
+        # (ttyd/xterm sizes the pty AFTER the process starts, so the first
+        # winsize can report a stale/larger column count) stuck until a resize.
+        # A too-large @cols let a live tail row clamp WIDER than the real
+        # terminal, overflow-wrap to a second physical line, and leave the
+        # single-row \e[1A clear short by a row — the stranded raw tail above the
+        # interrupted block (#265). Only adopt a freshly-read POSITIVE width so a
+        # transient zero/blank winsize (the #95 mid-stream under-report) keeps the
+        # last good @cols instead of collapsing the budget.
+        fresh = live_winsize_cols
+        @cols = fresh if fresh
         @region.frame(committed: committed, rows: live_rows, cols: @cols) { draw_input }
+      end
+
+      # A freshly-read terminal column count, or nil when winsize can't report a
+      # positive width right now (so the caller keeps the last good @cols rather
+      # than falling back to a narrow default mid-stream, #95).
+      def live_winsize_cols
+        positive_int(@output.winsize.last)
+      rescue StandardError
+        begin
+          positive_int(IO.console&.winsize&.last)
+        rescue StandardError
+          nil
+        end
       end
 
       # The live rows for this frame, top → bottom: the subagent cards; the
@@ -906,17 +1062,35 @@ module Rubino
       def clamp(str, cols) = LiveRegion.clamp(str, cols)
       def display_width(str) = LiveRegion.display_width(str)
 
-      # Enter. Captures + clears the buffer, then routes per the interrupt-by-
-      # default model:
+      # Fit a rendered INPUT row to one physical terminal line: right-truncate
+      # (whole-glyph, ANSI-safe) to one column short of the width so the row
+      # never arms the terminal's deferred auto-wrap and spills onto a second
+      # physical line the logical-row clear can't reach (TUI-2). One column
+      # short matches LiveRegion#emit_row's rule. A non-positive width degrades
+      # to the raw row (winsize can briefly report 0 cols); the clear path
+      # guards that case separately.
+      def fit_row(str)
+        budget = @cols - 1
+        return str if budget < 1 || display_width(str) <= budget
+
+        LiveRegion.take_first_columns(str, budget)
+      end
+
+      # Enter. Captures + clears the buffer, then routes per the QUEUE-BY-DEFAULT
+      # (Claude-Code type-ahead) model — Enter while a turn is active QUEUES, it
+      # does NOT interrupt; Esc interrupts (see #handle_lone_esc):
       #   * empty                  → nothing.
-      #   * "/queued <msg>"        → QUEUE the rest (no interrupt), like Alt+Enter.
+      #   * "/queued <msg>"        → QUEUE the rest (the explicit alias, unchanged).
       #   * :prompt (idle)         → immediate "<prompt><line>" echo (unchanged).
-      #   * :queued + turn active  → INTERRUPT the current turn and run the line
-      #                              next (default). The line is pushed; the next
-      #                              turn's prompt echo is committed by the chat
-      #                              loop when it runs, so nothing is echoed here.
+      #   * :queued + turn active  → QUEUE the line behind any earlier-parked
+      #                              items (FIFO) and show its live "⏳ queued:"
+      #                              indicator above the input. The current turn
+      #                              KEEPS RUNNING; the chat loop commits the
+      #                              line as a normal "<prompt><line>" message
+      #                              (and clears the indicator) when its turn
+      #                              runs, so nothing is echoed here.
       #   * :queued + idle         → immediate "queued ▸ <line>" (standalone/tests
-      #                              with no turn and no interrupt hook).
+      #                              with no turn).
       def submit_line
         line = take_buffer
         return if line.strip.empty?
@@ -931,54 +1105,59 @@ module Rubino
 
         if @echo == :prompt
           @input_queue&.push(line)
-          print_above("#{@prompt}#{line}")
-        elsif (@turn_active || @content_streaming) && @on_interrupt
-          # Interrupt-by-default: send the line as the NEXT turn immediately and
-          # interrupt the current one. Push to the FRONT so it runs ahead of any
-          # items the user explicitly parked (Alt+Enter / "/queued") earlier in
-          # this turn, THEN fire the interrupt. No echo here — run_turn commits
-          # the next turn's "<prompt><line>" when it runs — but the line DOES get
-          # a live "⏳ queued:" indicator while parked (#129): if the interrupted
-          # turn doesn't unwind instantly (e.g. it is deep in post-turn work),
-          # the submit must never be invisible. The indicator is removed at
-          # dequeue time like any other queued item.
-          queue_message(line, front: true)
-          fire_interrupt(line)
+          print_above("#{@prompt}#{echo_safe(line)}")
+        elsif @turn_active || @content_streaming
+          # A line typed while a turn is active is normally PARKED behind any
+          # items already queued (FIFO via #push) under a live "⏳ queued:"
+          # indicator — it does NOT interrupt; #commit_queued_prompt commits it
+          # as a normal message when its turn runs (Esc is the interrupt, #421).
+          # EXCEPTION: local read-only/control meta-commands (/agents, /stop,
+          # /status, …) run IMMEDIATELY so they can do their job DURING the turn —
+          # watching a live subagent or cancelling one is useless once queued
+          # behind a long turn. State-mutating commands are NOT available
+          # mid-turn: a TRANSIENT live-region notice (the same #announce channel
+          # the Shift+Tab toast uses — never committed to scrollback) explains
+          # how to interrupt, and the line is discarded.
+          case @on_busy_command&.call(line)
+          when :immediate then nil # already dispatched by the hook; nothing to queue
+          when :blocked
+            cmd = line.strip.split(/\s+/).first
+            announce("⚠ #{cmd} is not available during an active turn — " \
+                     "press Esc to interrupt first")
+          else
+            queue_message(line)
+          end
         else
-          # No active turn (or no interrupt hook wired): a plain queued submit,
-          # echoed immediately as before.
+          # No active turn: a plain queued submit, echoed immediately as before.
           @input_queue&.push(line)
-          print_above("queued ▸ #{line}")
+          print_above("queued ▸ #{echo_safe(line)}")
         end
       end
 
-      # Fire the on_interrupt hook for a mid-turn submit. A SLASH COMMAND
-      # entered while nothing is visibly in flight (no content stream, no live
-      # partial row — e.g. the turn is only repainting a subagent card) is a
-      # QUIET interrupt (#111): the hook receives quiet=true so the chat loop
-      # can suppress the `⎿ interrupted` marker, which would otherwise strand
-      # a stray artifact above the command's own output even though the turn
-      # LOOKED idle. A hook that takes no parameter (tests/embedders) keeps
-      # the old no-arg contract.
-      def fire_interrupt(line)
+      # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
+      # a DELIBERATE, visible cancel, so it is never quiet: the chat loop should
+      # commit the standardized `⎿ interrupted` marker. The +line+ parameter is
+      # retained for the quiet-slash heuristic (#111) — a future quiet-interrupt
+      # caller can pass the submitted line — but Esc passes nil, which reads as a
+      # plain (non-quiet) interrupt. A hook that takes no parameter
+      # (tests/embedders) keeps the old no-arg contract.
+      def fire_interrupt(line = nil)
         if @on_interrupt.arity.zero?
           @on_interrupt.call
         else
-          quiet = line.start_with?("/") && !@content_streaming && @partial.empty?
+          quiet = !line.nil? && line.start_with?("/") && !@content_streaming && @partial.empty?
           @on_interrupt.call(quiet)
         end
       end
 
-      # Alt+Enter (\e\r / \e\n) — or the "/queued" alias — QUEUES the current
-      # buffer WITHOUT interrupting the active turn: push it to the input queue
-      # and add a live "⏳ queued: <msg>" row above the input. The current turn
-      # keeps running; the queued item is committed as a normal message + the
-      # indicator removed when its turn actually runs (the chat loop drives that
-      # via #commit_queued at dequeue time).
-      #
-      # With NO turn active there is nothing to queue behind: Alt+Enter behaves
-      # exactly like plain Enter (#130), so an idle chord can never park the
-      # message under a "⏳ queued:" indicator that no turn boundary will drain.
+      # Alt+Enter (\e\r / \e\n) — kept as an ALIAS for plain Enter now that QUEUE
+      # is the default (#421): in the type-ahead model plain Enter already parks
+      # a mid-turn line under a "⏳ queued:" indicator without interrupting, so
+      # Alt+Enter no longer needs its own binding. It is retained as a no-surprise
+      # synonym (and for the "/queued" doc that references it). With a turn active
+      # it queues the buffer (FIFO) exactly like Enter; with NO turn active it
+      # behaves like plain Enter (#130) so an idle chord can never park a message
+      # under an indicator that no turn boundary will drain.
       def queue_alt_enter
         return submit_line unless @turn_active || @content_streaming
 
@@ -1022,6 +1201,21 @@ module Rubino
       # same way the streamed partial and the subagent cards do.
       def redraw
         live_region? ? render_frame(committed: nil) : draw_input
+      end
+
+      # Ctrl+L: wipe the visible screen + scrollback and redraw the live region
+      # fresh at the top — the readline/terminal norm (Claude Code, Codex, bash).
+      # Erases the screen (\e[2J), the scrollback buffer (\e[3J), and homes the
+      # cursor (\e[H); the live region's row geometry is then forgotten (the
+      # screen is already blank, so the next frame's relative \e[1A\e[2K walk
+      # would be wrong — see {LiveRegion#reset_geometry!}) before redrawing the
+      # prompt from the now-blank top row. Public so the unit tests can drive it.
+      def clear_screen
+        @render.synchronize do
+          @output.print("\e[2J\e[3J\e[H")
+          @region.reset_geometry!
+          redraw
+        end
       end
 
       # True when ANYTHING lives above the prompt — rows already on screen from
@@ -1103,10 +1297,14 @@ module Rubino
         end
       end
 
-      # Delete from the start of the line to the cursor (Ctrl+U).
+      # Ctrl+U: clear the whole input line. Standard readline kills only to the
+      # start of the line, but on a single-line composer users reach for Ctrl+U
+      # to "clear what I typed" — and leaving the tail behind is exactly what
+      # let a half-cleared buffer concatenate into `/memorymemory`. Clear it all
+      # so a fresh command (or a slash completion) starts from an empty line.
       def kill_to_start
         @render.synchronize do
-          @buffer.replace(@buffer.chars.drop(@cursor).join)
+          @buffer.replace("")
           @cursor = 0
           @history.reset!
           auto_update_menu
@@ -1241,6 +1439,21 @@ module Rubino
         @completion.highlight_line(line.to_s)
       end
 
+      # Neutralize terminal control/escape sequences in USER-SUPPLIED text before
+      # it is echoed/committed to the terminal (CWE-150 — H1). A typed or pasted
+      # line containing OSC (`\e]0;…\a` set title, `\e]52;…` clipboard) or CSI
+      # (`\e[2J` clear screen, cursor moves) would otherwise EXECUTE against the
+      # emulator when this composer prints the "<prompt><line>" / "queued ▸
+      # <line>" echo on submit — the same injection the approval card already
+      # neutralizes for tool hints. Reuse the SAME render-boundary sanitizer
+      # (Util::Output.sanitize_terminal): control bytes render as visible caret
+      # notation, inert. RENDER-ONLY — the raw line is what we push to
+      # @input_queue (the model still receives the literal text); only the
+      # terminal echo is neutralized.
+      def echo_safe(text)
+        Util::Output.sanitize_terminal(text.to_s)
+      end
+
       # --- /command + @file completion menu ------------------------------------
       # The dropdown itself — open/refine/accept/dismiss state, candidate
       # resolution and row rendering — lives in the {CompletionMenu}; here is
@@ -1256,6 +1469,28 @@ module Rubino
           accept_completion
         elsif @menu.open(@buffer, @cursor)
           @render.synchronize { redraw }
+        elsif @buffer.strip.empty?
+          # Nothing to complete (empty input, no menu): Tab cycles the active
+          # PRIMARY agent instead of being a dead key. A buffer with text still
+          # falls through to a no-op (we never insert a literal tab), so command
+          # / @file completion is unaffected.
+          cycle_agent
+        end
+      end
+
+      # Tab on empty input: ask the callback to cycle + persist the primary
+      # agent, then adopt the status-bar line it returns (the agent chip leads
+      # the bar) and redraw. A nil return (no callback, or a single agent) is a
+      # no-op. Mirrors #cycle_mode for Shift+Tab.
+      def cycle_agent
+        return unless @on_agent_cycle
+
+        new_status = @on_agent_cycle.call
+        return if new_status.nil?
+
+        @render.synchronize do
+          @status = new_status.to_s
+          redraw
         end
       end
 
@@ -1292,6 +1527,13 @@ module Rubino
         @render.synchronize do
           start, len, replacement = @menu.accept_splice
           chars = @buffer.chars
+          # The menu measures the token only up to the cursor. If the cursor sits
+          # mid-token (or there's residual text right after it — e.g. `/mem|ory`
+          # or a leftover `memory`), the un-measured tail would survive the
+          # splice and concatenate into the accepted command (`/memoryory`,
+          # `/memorymemory`). Extend the replaced span over the rest of the
+          # contiguous non-space run so accepting replaces the WHOLE token.
+          len += 1 while chars[start + len] && !chars[start + len].match?(/\s/)
           chars[start, len] = replacement.chars
           @buffer.replace(chars.join)
           @cursor = start + replacement.chars.length
@@ -1324,7 +1566,20 @@ module Rubino
       def submit_paste(text)
         return if text.nil? || text.empty?
 
-        body = normalize_paste_newlines(text)
+        # Neutralize terminal control/escape bytes in the PASTED body before it
+        # enters the editable buffer (CWE-150 — H1). A bracketed paste delivers
+        # bytes verbatim, so a payload with OSC (`\e]0;…\a` set title) or CSI
+        # (`\e[2J` clear screen) escapes would EXECUTE the moment the input block
+        # redraws the buffer (#draw_input prints each row's chars raw). Routing
+        # the paste through the SAME render-boundary sanitizer the approval card
+        # and the submit echo use turns those bytes into visible, inert caret
+        # notation; \t and \n are preserved so legitimate multi-line/indented
+        # pastes keep their layout. The buffer now matches what is rendered AND
+        # what is submitted, so the caret math (keyed on buffer char indices)
+        # stays exact — raw control bytes are never legitimate visible prompt
+        # content, which is exactly what terminals/CLIs strip from untrusted
+        # bracketed paste.
+        body = Util::Output.sanitize_terminal(normalize_paste_newlines(text))
         return if body.empty?
 
         if @paste_store&.collapse?(body)
@@ -1390,10 +1645,32 @@ module Rubino
             @menu.dismiss!
             redraw # repaint to CLEAR the now-closed menu rows above the prompt
           end
-        elsif double_esc_armed?(now)
+        # Esc = INTERRUPT (Claude-Code type-ahead model, #421): with a turn
+        # active (thinking OR streaming) and no menu to dismiss, a lone Esc
+        # cancels the current turn through the SAME cancel-token machinery Ctrl+C
+        # uses (the @on_interrupt hook flips runner.cancel!). The chat loop then
+        # runs the HEAD of the queue immediately (FIFO #next_input); an empty
+        # queue unwinds to a clean idle prompt. Esc-mashing mid-turn no longer
+        # arms the idle rewind chord — it interrupts.
+        elsif (@turn_active || @content_streaming) && @on_interrupt
           @last_esc_at = nil
-          @on_double_esc.call
+          fire_interrupt(nil)
           return
+        else
+          # A lone Esc at the idle prompt with no menu open: if the
+          # post-turn polishing is in flight, ONE Esc cancels it (#319) — the
+          # hook returns truthy and we CONSUME the press (no rewind arm). With
+          # nothing to cancel it returns falsy and we fall through to the
+          # Esc-Esc rewind arm exactly as before.
+          if !@turn_active && !@content_streaming && @on_escape&.call
+            @last_esc_at = nil
+            return
+          end
+          if double_esc_armed?(now)
+            @last_esc_at = nil
+            @on_double_esc.call
+            return
+          end
         end
 
         @last_esc_at = now
@@ -1591,6 +1868,37 @@ module Rubino
         return unless Signal.list.key?("WINCH")
 
         Signal.trap("WINCH", @prev_winch || "DEFAULT")
+      rescue ArgumentError
+        nil
+      end
+
+      # SIGCONT redraw insurance. When the process is suspended with ^Z (SIGTSTP)
+      # and resumed via `fg`, the kernel resumes the blocked raw read but the
+      # terminal still shows the STALE pre-suspend screen until the next
+      # keystroke — and the input may have dropped out of raw mode. Trap CONT to
+      # force a full re-entry: #resize recomputes the width, resets the on-screen
+      # geometry, and repaints the whole live region (cards + partial + prompt),
+      # exactly the SIGWINCH redraw path — so resume re-enters cleanly. Inert on
+      # the current MRI build (SIGTSTP is ignored, so CONT never fires) but
+      # harmless and correct where ^Z actually suspends. Trap-safe (resize only
+      # takes the render mutex, never re-entrant here) and a no-op when no
+      # composer owns the screen (not running, or suspended for a sub-prompt).
+      def install_cont_trap
+        return unless Signal.list.key?("CONT")
+
+        @prev_cont = Signal.trap("CONT") do
+          resize if @running && !@suspended
+        rescue StandardError
+          nil
+        end
+      rescue ArgumentError
+        @prev_cont = nil
+      end
+
+      def restore_cont_trap
+        return unless Signal.list.key?("CONT")
+
+        Signal.trap("CONT", @prev_cont || "DEFAULT")
       rescue ArgumentError
         nil
       end

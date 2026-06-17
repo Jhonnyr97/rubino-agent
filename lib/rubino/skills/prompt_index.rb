@@ -46,13 +46,13 @@ module Rubino
         lines = summaries.map { |s| "  - #{s}" }.join("\n")
         <<~PROMPT.strip
           ## Skills (mandatory)
-          Before replying, scan the skills below. If a skill matches or is even partially relevant to your task, you MUST load it with skill(name) and follow its instructions. Err on the side of loading — it is always better to have context you don't need than to miss critical steps, pitfalls, or established workflows. Skills contain specialized knowledge — APIs, tool-specific commands, and proven workflows that outperform general-purpose approaches — and they encode the user's preferred conventions and quality standards. Load the relevant skill even for tasks you already know how to do, because the skill defines how it should be done here.
+          The skill catalogue below is the FIRST thing to consult on every task — read it before you plan or act. If a skill matches or is even partially relevant, you MUST load it with skill(name) and follow its instructions BEFORE answering. When unsure, load it: missing a skill's steps, pitfalls, or required conventions is far worse than loading one you didn't need. Skills carry specialized knowledge — APIs, tool-specific commands, and proven workflows that outperform general-purpose approaches — and the user's required conventions and quality standards, so load the matching skill even for tasks you already know how to do, because the skill defines how it must be done here.
 
           <available_skills>
           #{lines}
           </available_skills>
 
-          Only proceed without loading a skill if genuinely none are relevant to the task.
+          Proceed without loading only if genuinely no skill is relevant to the task.
         PROMPT
       end
 

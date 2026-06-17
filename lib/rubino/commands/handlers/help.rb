@@ -25,6 +25,32 @@ module Rubino
           (BuiltIns::NAMES + custom).uniq
         end
 
+        # Closest known slash command to a mistyped +name+ (no leading slash),
+        # rendered WITH its slash for the "Did you mean /X?" hint, or nil when
+        # none is close enough (FRICTION-4). Uses Ruby's stdlib SpellChecker
+        # (DidYouMean) — the same Levenshtein matcher Thor/Bundler use — so the
+        # distance threshold scales with command length. Best-effort: any
+        # matcher hiccup just yields no suggestion.
+        def closest_command(name)
+          require "did_you_mean"
+          bare  = name.to_s.delete_prefix("/")
+          names = available_commands.map { |c| c.to_s.delete_prefix("/") }
+          match = DidYouMean::SpellChecker.new(dictionary: names).correct(bare).first
+          match && "/#{match}"
+        rescue StandardError
+          nil
+        end
+
+        # The unknown-command tail (FRICTION-4): a "Did you mean /X?" line for the
+        # closest match (when one is close enough) followed by the full Available
+        # roster. Lives here next to the command list it reads.
+        def suggest_and_list(name)
+          suggestion = closest_command(name)
+          @ui.info("Did you mean #{suggestion}?") if suggestion
+          @ui.info("Available: #{available_commands.join(", ")}")
+          :handled
+        end
+
         def show_help
           @ui.info("Slash commands run actions or reusable prompts. Type /<name>; /help is this list.")
           @ui.blank_line
@@ -32,7 +58,7 @@ module Rubino
           rows  = help_builtin_rows
           width = rows.map { |name, _| name.length }.max
           rows.each do |name, desc|
-            @ui.info("  #{name.ljust(width)}  - #{desc}")
+            help_line("  #{name.ljust(width)}  - #{desc}")
           end
           @ui.blank_line
 
@@ -42,25 +68,28 @@ module Rubino
           # so they're NOT repeated here — this section is image/file INPUT only,
           # no command rows (#87 de-dup).
           @ui.info("Input:")
-          @ui.info("  ! <command>   - run a shell command yourself, no approval; output joins the context")
-          @ui.info("  @<path>       - autocomplete a workspace file into the prompt")
-          @ui.info("  @<image>      - attach an image (png/jpg/jpeg/gif/webp/bmp) to the turn")
-          @ui.info("  <image path>  - drop or paste an image file path to attach it")
+          help_line("  ! <command>   - run a shell command yourself, no approval; output joins the context")
+          help_line("  @<path>       - autocomplete a workspace file into the prompt")
+          help_line("  @<image>      - attach an image (png/jpg/jpeg/gif/webp/bmp) to the turn")
+          help_line("  <image path>  - drop or paste an image file path to attach it")
           @ui.blank_line
 
           # The keystroke vocabulary was invisible in /help (#87): a newcomer
           # couldn't learn how to cancel a turn, drive the approval menu, or that
           # Tab completes. One compact reference line covers it.
           @ui.info("Keys:")
-          @ui.info("  ↑/↓ + Enter   - choose in the approval menu")
-          @ui.info("  Enter         - send; during a turn, interrupt it and run this next")
-          @ui.info("  Alt-Enter     - queue this to run after the current turn (or /queued <msg>)")
-          @ui.info("  Shift-Tab     - cycle mode (default → plan → yolo)")
-          @ui.info("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
-          @ui.info("  Ctrl-C        - cancel the turn (twice to exit)")
-          @ui.info("  Esc Esc       - rewind to an earlier message (fork + edit & resend)")
-          @ui.info("  Tab           - complete the highlighted /command or @file")
-          @ui.info("  /             - start a command;  @  attach a file/image")
+          help_line("  ↑/↓ + Enter   - choose in the approval menu")
+          help_line("  Enter         - send; during a turn, interrupt it and run this next")
+          help_line("  Alt-Enter     - queue this to run after the current turn (or /queued <msg>)")
+          help_line("  Shift-Tab     - cycle mode (default → plan → yolo)")
+          help_line("  Tab           - complete the highlighted /command or @file (empty input: cycle agent)")
+          help_line("  Ctrl-O        - reveal the last reasoning (collapsed or hidden)")
+          help_line("  Ctrl-C        - cancel the turn (twice to exit)")
+          help_line("  Esc Esc       - rewind to an earlier message (fork + edit & resend)")
+          help_line("  /             - start a command;  @  attach a file/image")
+          @ui.blank_line
+
+          show_agents_help
           @ui.blank_line
 
           custom = @loader.all
@@ -85,6 +114,25 @@ module Rubino
         end
 
         private
+
+        # The available primary agents (switch with /agent <name>, a bare
+        # /<name>, or Tab) and one-shot subagents (/<name> <message>) — #320.
+        # Best-effort: the registry is stable within a process, but a hiccup
+        # must never break /help.
+        def show_agents_help
+          registry = Rubino.agent_registry
+          current  = Rubino::ActiveAgent.current
+          @ui.info("Agents  (switch with /agent <name>, a bare /<name>, or Tab; current marked ▸):")
+          registry.primary_agents.each do |a|
+            marker = a.name == current ? "▸" : " "
+            help_line("  #{marker} /#{a.name.ljust(8)} - #{a.description}")
+          end
+          registry.subagents.each do |a|
+            help_line("    /#{a.name.ljust(8)} - #{a.description} (one-shot: /#{a.name} <message>)")
+          end
+        rescue StandardError
+          nil
+        end
 
         # The Built-in rows for /help, with synonyms collapsed so /help never
         # shows two rows that say the same thing (#87): /exit and /quit share one
@@ -141,6 +189,57 @@ module Rubino
         def custom_desc(cmd)
           desc = cmd.description.to_s.strip
           desc.empty? ? "" : "  - #{desc}"
+        end
+
+        # Emits one help row, wrapping the DESCRIPTION at the terminal width so
+        # the longest rows (~88ch — the `! <command>` / Alt-Enter lines) no
+        # longer get hard-cut at a standard 80-col terminal (F-help-wrap). The
+        # row is split at the FIRST " - " separator: the label column (left of
+        # it, plus the "- " gutter) is preserved on the first line, and every
+        # continuation line HANG-INDENTS under the description so the wrapped
+        # text reads as one aligned column rather than spilling to column 0.
+        # A row with no " - " (free-form copy) is emitted verbatim.
+        def help_line(row)
+          label, desc = row.split(" - ", 2)
+          return @ui.info(row) if desc.nil?
+
+          indent = " " * "#{label} - ".length
+          width  = terminal_width
+          wrap_help_desc(desc, width - indent.length).each_with_index do |seg, i|
+            @ui.info(i.zero? ? "#{label} - #{seg}" : "#{indent}#{seg}")
+          end
+        end
+
+        # Word-wraps a description into lines no wider than +width+ columns,
+        # breaking on spaces; an over-long single word (a long path/flag) is
+        # left intact rather than split mid-token. Width is floored so a very
+        # narrow terminal still makes progress instead of looping.
+        def wrap_help_desc(desc, width)
+          width = [width, 8].max
+          words = desc.split
+          lines = []
+          line  = +""
+          words.each do |word|
+            if line.empty?
+              line << word
+            elsif line.length + 1 + word.length <= width
+              line << " " << word
+            else
+              lines << line
+              line = +word
+            end
+          end
+          lines << line unless line.empty?
+          lines.empty? ? [""] : lines
+        end
+
+        # The current terminal width (columns), defaulting to 80 off a tty or on
+        # any console hiccup — matching the other handlers' helper (#mcp/#skills).
+        def terminal_width
+          cols = IO.console&.winsize&.last
+          cols&.positive? ? cols : 80
+        rescue StandardError
+          80
         end
       end
     end

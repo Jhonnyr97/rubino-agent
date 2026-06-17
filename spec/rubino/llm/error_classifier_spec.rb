@@ -66,6 +66,23 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       expect(c.retryable).to be false
     end
 
+    # #417: ruby_llm raises a statusless ModelNotFoundError ("Unknown model: …")
+    # BEFORE any HTTP call when the configured model id isn't registered. It used
+    # to fall through to the unknown->retryable default and burn ~73s of backoff
+    # on a config error that can NEVER succeed. It must fail fast (non-retryable).
+    it "ModelNotFoundError (statusless config error) -> non-retryable, fails fast (#417)" do
+      c = described_class.classify(RubyLLM::ModelNotFoundError.new("Unknown model: gpt-bogus"))
+      expect(c.reason).to eq(FR::MODEL_NOT_FOUND)
+      expect(c.retryable).to be false
+      expect(described_class.retryable?(RubyLLM::ModelNotFoundError.new("Unknown model: x"))).to be false
+    end
+
+    it "a statusless 'unknown model' message -> non-retryable too (#417)" do
+      c = described_class.classify(RuntimeError.new("The model 'foo' is not a valid model id"))
+      expect(c.reason).to eq(FR::MODEL_NOT_FOUND)
+      expect(c.retryable).to be false
+    end
+
     it "400 with a context-overflow phrase -> context_overflow, should_compress" do
       c = described_class.classify(ruby_llm_error(RubyLLM::Error, 400, "prompt is too long for context window"))
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
@@ -138,6 +155,108 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
     it "stays non-retryable even when wrapped in a 5xx-class error" do
       err = ruby_llm_error(RubyLLM::ServerError, 500, "media exceeds size limit: max 10485760 bytes")
       expect(described_class.retryable?(err)).to be false
+    end
+  end
+
+  # Regression #356: a PERMANENT context-overflow can arrive DISGUISED as a 5xx
+  # — MiniMax wraps the "context window exceeds limit" 400 in a
+  # RubyLLM::ServerError. The blanket ServerError→retryable branch used to win
+  # because classify_typed matched the class BEFORE the context-overflow message
+  # check, so a fail-fast/compress error was retried 5× (~133s) on a request
+  # that fails identically every time. Now the overflow check runs FIRST.
+  describe ".classify — context-overflow disguised as 5xx is not retryable (#356)" do
+    it "ServerError whose message mentions the context window -> context_overflow, not retryable" do
+      err = ruby_llm_error(RubyLLM::ServerError, 500, "internal error: context window exceeds limit")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
+      expect(c.retryable).to be false
+      expect(c.should_compress).to be true
+    end
+
+    it "OverloadedError wrapping a context-overflow phrase is also non-retryable" do
+      err = ruby_llm_error(RubyLLM::OverloadedError, 529, "prompt is too long for context window")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
+      expect(c.retryable).to be false
+      expect(c.should_compress).to be true
+    end
+
+    it "a plain ServerError with NO overflow phrase still stays retryable (no regression)" do
+      err = ruby_llm_error(RubyLLM::ServerError, 500, "internal server error")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::SERVER_ERROR)
+      expect(c.retryable).to be true
+    end
+  end
+
+  # Regression #361(a): an UNRESOLVABLE host is a PERMANENT misconfiguration
+  # (a typo'd base_url) — every retry re-runs the same DNS lookup and fails
+  # identically, so retrying burns the whole budget (~81s). faraday-net_http
+  # wraps the resolver's SocketError in a Faraday::ConnectionFailed, so a naive
+  # "any ConnectionFailed is retryable" classified it as transient. Now a DNS
+  # failure phrasing fails fast.
+  describe ".classify — unresolvable host fails fast (#361a)" do
+    [
+      "Failed to open TCP connection: getaddrinfo: Name or service not known",
+      "getaddrinfo: nodename nor servname provided, or not known",
+      "Temporary failure in name resolution"
+    ].each do |message|
+      it "#{message[0, 30].inspect}… -> not retryable" do
+        err = Faraday::ConnectionFailed.new(message)
+        c = described_class.classify(err)
+        expect(c.retryable).to be false
+        expect(c.reason).to eq(FR::FORMAT_ERROR)
+      end
+    end
+
+    it "a bare SocketError-style getaddrinfo message also fails fast" do
+      expect(described_class.retryable?(SocketError.new("getaddrinfo: Name or service not known"))).to be false
+    end
+
+    it "a genuine transient transport blip still retries (no over-broadening)" do
+      expect(described_class.retryable?(Faraday::ConnectionFailed.new("connection reset by peer"))).to be true
+      expect(described_class.retryable?(Faraday::ConnectionFailed.new("end of file reached"))).to be true
+    end
+  end
+
+  # Regression #327(b): a deterministic 4xx request-validation rejection
+  # ("invalid params" / "invalid request") that some providers surface
+  # STATUSLESS used to fall through to unknown→retryable and burn the whole
+  # api_max_retries:5 backoff (~85s) on a request that fails identically every
+  # time. Now it fails fast as a permanent FORMAT_ERROR.
+  describe ".classify — invalid-params/request validation is not retryable (#327)" do
+    [
+      "invalid params: the thinking budget is not supported by this model",
+      "invalid request: messages[0].role must be one of user|assistant",
+      "Unprocessable Entity: temperature must be <= 2",
+      'API request failed: {"error":{"type":"invalid_request_error","message":"bad tool schema"}}'
+    ].each do |message|
+      it "no-status #{message[0, 28].inspect}… -> format_error, not retryable" do
+        c = described_class.classify(RubyLLM::Error.new(nil, message))
+        expect(c.reason).to eq(FR::FORMAT_ERROR)
+        expect(c.retryable).to be false
+      end
+    end
+
+    it "surfaces the offending field in the classified message" do
+      c = described_class.classify(RubyLLM::Error.new(nil, "invalid params: temperature out of range"))
+      expect(c.message).to include("temperature")
+    end
+
+    it "a 400 'invalid params' is permanent via the status path too" do
+      err = ruby_llm_error(RubyLLM::BadRequestError, 400, "invalid params: bad field")
+      expect(described_class.retryable?(err)).to be false
+    end
+
+    # A context-overflow phrased with an "invalid request" prefix must NOT be
+    # captured by the new invalid-params fail-fast bucket (that would turn a
+    # compressible overflow into a permanent format_error). The invalid_params
+    # classifier defers on any context-overflow phrasing, so behaviour is
+    # unchanged from before this fix (statusless overflow stays unknown).
+    it "does NOT misclassify a context-overflow phrased as an invalid request" do
+      msg = "invalid request: prompt is too long for the context window"
+      c = described_class.classify(RubyLLM::Error.new(nil, msg))
+      expect(c.reason).not_to eq(FR::FORMAT_ERROR)
     end
   end
 

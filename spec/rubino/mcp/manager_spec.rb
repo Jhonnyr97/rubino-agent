@@ -69,6 +69,33 @@ RSpec.describe Rubino::MCP::Manager do
       expect(warning[:message]).to include("filesystem", "connection refused")
     end
 
+    # #dx — a STRING `args` (the natural YAML typo `args: "--root /data"`) used
+    # to be passed straight to the MCP client, which iterated the string into
+    # single characters, spawned a broken process, and surfaced ~8s later as a
+    # misleading "timed out". It is now rejected IMMEDIATELY with a clear config
+    # error — no client is ever constructed, so there is no hang.
+    it "rejects a STRING `args` immediately with a clear message (no spawn, no hang)" do
+      allow(RubyLLM::MCP).to receive(:client) # must NOT be called
+      bad = { "transport" => "stdio", "command" => "fake-mcp-server", "args" => "--root /data" }
+
+      result = manager.start_server("filesystem", bad)
+
+      expect(result).to be_nil
+      expect(RubyLLM::MCP).not_to have_received(:client)
+      expect(manager.last_errors["filesystem"]).to match(/`args` must be a list.*String/m)
+      warning = ui.messages.find { |m| m[:level] == :warning }
+      expect(warning[:message]).to include("filesystem", "`args` must be a list")
+    end
+
+    it "accepts a nil `args` (defaults to []) and a list `args` unchanged" do
+      allow(RubyLLM::MCP).to receive(:client).and_return(fake_client([]))
+
+      manager.start_server("nolist", { "transport" => "stdio", "command" => "x" })
+      expect(RubyLLM::MCP).to have_received(:client).with(
+        hash_including(config: { command: "x", args: [], env: {} })
+      )
+    end
+
     # #182 — the /mcp drill-in answers "why is my server missing?" from the
     # recorded failure; a later successful start clears it.
     it "records the start failure in last_errors and clears it on success" do
@@ -150,7 +177,11 @@ RSpec.describe Rubino::MCP::Manager do
 
       dev = RubyLLM::MCP.config.logger.instance_variable_get(:@logdev).dev
       expect(dev).not_to eq($stdout)
-      expect(dev.path).to eq(File.join(TEST_HOME, "logs", "mcp.log"))
+      # Resolve against the actual rubino home (default_home_path honours
+      # RUBINO_HOME) rather than hardcoding TEST_HOME, so the spec passes under
+      # any isolated home the suite is pointed at instead of assuming one.
+      expect(dev.path)
+        .to eq(File.join(Rubino::Config::Loader.default_home_path, "logs", "mcp.log"))
     end
   end
 

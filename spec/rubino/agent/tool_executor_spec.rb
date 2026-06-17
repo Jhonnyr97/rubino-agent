@@ -149,6 +149,36 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
   end
 
+  # #335b: a cancel that flips while a previous tool was running (or during the
+  # thinking phase) must halt the turn at the NEXT tool boundary — on the
+  # streaming path ruby_llm dispatches tools mid-stream through here, far below
+  # the loop's per-iteration #check!, so without a checkpoint in #execute the
+  # interrupt isn't observed and one more tool fires after the user hit Enter.
+  describe "cancellation checkpoint before a tool runs (#335b)" do
+    subject(:cancellable) do
+      described_class.new(registry: registry, approval_policy: policy, ui: ui,
+                          config: config, tool_call_repository: repo, cancel_token: token)
+    end
+
+    let(:token) { Rubino::Interaction::CancelToken.new }
+
+    it "raises Interrupted and never runs the tool when the token is cancelled" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      token.cancel!
+      expect(tool).not_to receive(:call)
+      expect do
+        cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+      end.to raise_error(Rubino::Interrupted)
+    end
+
+    it "runs the tool normally when the token is not cancelled" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(repo).to receive(:record)
+      result = cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+      expect(result.output).to eq("ok")
+    end
+  end
+
   # Regression: arguments.inspect on multi-line values collapsed everything
   # into one giant line, the terminal cropped at 80 columns, and the user
   # approved a "ls -la" they could see while the model had actually sent
@@ -221,7 +251,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     before { allow(policy).to receive(:decide).and_return(:allow) }
 
     it "streams chunks but does NOT re-render the body for a streaming tool" do
-      expect(streaming_ui).to receive(:tool_chunk).with("fake_stream", "13\n")
+      expect(streaming_ui).to receive(:tool_chunk).with("fake_stream", "13\n", kind: :plain)
       expect(streaming_ui).not_to receive(:tool_body)
       streaming_executor.execute(name: "fake_stream", arguments: {}, call_id: "s1")
     end
@@ -302,7 +332,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     # P7: the common one-short-arg case inlines onto the header.
     it "inlines a single short argument onto the 'wants:' header (P7)" do
       question = executor.send(:approval_question, tool, { "command" => "touch hello.txt" })
-      expect(question).to eq("#{tool.name} wants:  touch hello.txt")
+      expect(question).to eq("#{tool.name} wants: touch hello.txt")
     end
 
     it "lays each argument on its own line" do
@@ -327,6 +357,36 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       question = executor.send(:approval_question, tool, { "blob" => long })
       expect(question).to include("…")
       expect(question.length).to be < 400
+    end
+
+    # multi_edit carries an `edits` array; the generic renderer would dump an
+    # unreadable escaped Ruby hash. It must preview as clean per-edit blocks.
+    describe "multi_edit preview" do
+      let(:multi) do
+        Class.new(Rubino::Tools::Base) do
+          def name = "multi_edit"
+          def description = "multi"
+          def input_schema = { type: "object" }
+          def risk_level = :medium
+          def call(_args) = "ok"
+        end.new
+      end
+
+      it "renders per-edit - old / + new blocks instead of a raw hash" do
+        question = executor.send(:approval_question, multi,
+                                 { "file_path" => "stats.py",
+                                   "edits" => [
+                                     { "old_string" => "def median(nums):\n  s = sorted(nums)",
+                                       "new_string" => "def median(nums):\n  s = sorted(nums)\n  n = len(s)" }
+                                   ] })
+        expect(question).to include("multi_edit wants: stats.py (1 edit)")
+        expect(question).to include("  - def median(nums):")
+        expect(question).to include("  + def median(nums):")
+        expect(question).to include("+   n = len(s)")
+        # No raw Ruby hash inspect leaking literal escapes.
+        expect(question).not_to include("=>")
+        expect(question).not_to include('\n')
+      end
     end
   end
 

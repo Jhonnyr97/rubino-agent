@@ -54,8 +54,32 @@ RSpec.describe "Rubino::CLI::ConfigCommand#get effective (merged) value" do
     expect(got).to include("model.default = #{shown.dig("model", "default")}")
   end
 
-  it "still reports a genuinely absent key as not found" do
-    Rubino::CLI::ConfigCommand.new.get("definitely.absent.key")
-    expect(warning_messages.join("\n")).to include("not found")
+  # F4: a default-sourced value (no entry in config.yml) is annotated so an
+  # "I unset it but it's still set" reads as the default, not a stale setting.
+  it "annotates a default-sourced value with (default)" do
+    expect(File).not_to exist(Rubino::Config::Loader.new.config_path)
+
+    Rubino::CLI::ConfigCommand.new.get("model.default")
+    expect(info_messages.join("\n")).to match(/model\.default = .+ \(default\)\z/)
+  end
+
+  it "does NOT annotate a value the user set in config.yml" do
+    loader = Rubino::Config::Loader.new
+    Rubino::Config::Writer.new(config_path: loader.config_path).set("model.default", "openai/gpt-4.1")
+    Rubino.reload_configuration!
+
+    Rubino.ui = (ui2 = Rubino::UI::Null.new)
+    Rubino::CLI::ConfigCommand.new.get("model.default")
+    got = ui2.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }.join("\n")
+    expect(got).to include("model.default = openai/gpt-4.1")
+    expect(got).not_to include("(default)")
+  end
+
+  # P2-H1/H2: a genuinely absent key is a FAILURE on the automation surface —
+  # the CLI verb raises Thor::Error (non-zero exit, message on stderr) instead
+  # of the old stdout warning + exit 0.
+  it "raises Thor::Error for a genuinely absent key (non-zero exit)" do
+    expect { Rubino::CLI::ConfigCommand.new.get("definitely.absent.key") }
+      .to raise_error(Thor::Error, /config key not found: definitely\.absent\.key/)
   end
 end

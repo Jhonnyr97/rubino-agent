@@ -72,4 +72,68 @@ RSpec.describe Rubino::Tools::EditTool do
       expect(result).to include("3 matches")
     end
   end
+
+  # HIGH-1: an edit is a read-modify-write of an EXISTING file, so a mid-write
+  # crash would destroy the user's original content. The fix routes the final
+  # write through AtomicFile.write_atomic (temp + fsync + atomic rename).
+  describe "crash-safe (atomic) write" do
+    it "writes the result through Util::AtomicFile.write_atomic" do
+      path = write_file("atomic.rb", "alpha\n")
+      expect(Rubino::Util::AtomicFile).to receive(:write_atomic).with(path, "beta\n").and_call_original
+      tool.call("file_path" => path, "old_string" => "alpha", "new_string" => "beta")
+      expect(File.read(path)).to eq("beta\n")
+    end
+  end
+
+  # #326 — a one-line ASCII edit on a file with non-UTF-8 (Latin-1) bytes on
+  # OTHER lines must leave those other lines BYTE-IDENTICAL. The old code ran
+  # `content.scrub` over the whole file before the sub and persisted the
+  # scrubbed buffer, lossily rewriting `André`/`Zürich` to U+FFFD on untouched
+  # lines. The fix reads/writes raw bytes so only the matched span changes.
+  describe "byte-safe edit on an invalid-UTF-8 file (#326)" do
+    it "leaves Latin-1 bytes on untouched lines identical after a one-line ASCII edit" do
+      latin1 = +"name: André\ncity: Zürich\nport: 8080\n"
+      latin1.encode!("ISO-8859-1") # raw Latin-1 é/ü bytes (0xE9 / 0xFC)
+      path = File.join(tmp_dir, "config.txt")
+      File.binwrite(path, latin1)
+
+      original_bytes = File.binread(path)
+
+      result = tool.call("file_path" => path, "old_string" => "8080", "new_string" => "9090")
+      expect(result).to be_a(Hash) # success, not an error string
+
+      after = File.binread(path)
+      # The edited line changed…
+      expect(after).to include("port: 9090".b)
+      # …and the Latin-1 é/ü bytes on the other lines survived verbatim.
+      head = original_bytes.index("port".b)
+      expect(after.byteslice(0, head)).to eq(original_bytes.byteslice(0, head))
+      expect(after.b).to include("Andr\xE9".b)
+      expect(after.b).to include("Z\xFCrich".b)
+    end
+  end
+
+  # #329a — an empty old_string with replace_all would inject new_string at
+  # every char boundary and corrupt the file. Reject it.
+  describe "empty old_string guard (#329a)" do
+    it "refuses an edit with an empty old_string instead of corrupting the file" do
+      path = write_file("guard.txt", "hello world")
+      result = tool.call("file_path" => path, "old_string" => "", "new_string" => "X", "replace_all" => true)
+      expect(result).to be_a(String)
+      expect(result).to include("empty")
+      expect(File.read(path)).to eq("hello world") # untouched
+    end
+  end
+
+  # #329b — old_string == new_string changes nothing, so reporting "1
+  # replacement applied" misleads the model. Reject it, like multi_edit.
+  describe "no-op (identical strings) guard (#329b)" do
+    it "rejects an edit whose old_string equals new_string" do
+      path = write_file("noop.txt", "keep me")
+      result = tool.call("file_path" => path, "old_string" => "keep", "new_string" => "keep")
+      expect(result).to be_a(String)
+      expect(result).to include("identical")
+      expect(File.read(path)).to eq("keep me")
+    end
+  end
 end

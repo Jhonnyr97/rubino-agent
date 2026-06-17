@@ -82,12 +82,15 @@ RSpec.describe "Agent behaviour observable from the UI" do
 
     it "enabled_tools non restituisce tool disabilitati nel config" do
       Rubino::Tools::Registry.register_defaults!
-      # web ships OFF by default (sandboxed VM) — use it as the disabled probe.
-      # shell is now ON by default (the VM is the sandbox; it stays gated by
-      # security.require_confirmation_for_shell), so it can't be the example.
+      # web now ships ON by default (#411), so disable it explicitly to use it
+      # as the disabled probe. shell is ON by default (the VM is the sandbox;
+      # it stays gated by confirm_policy), so it can't be the example.
+      Rubino.configuration.set("tools", "web", false)
       nomi_abilitati = Rubino::Tools::Registry.enabled_tools.map(&:name)
       expect(nomi_abilitati).not_to include("webfetch")
       expect(nomi_abilitati).to include("shell")
+    ensure
+      Rubino.configuration.set("tools", "web", true)
     end
 
     it "enabled_tools restituisce tool senza config esplicita come abilitati (opt-out)" do

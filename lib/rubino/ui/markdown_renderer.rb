@@ -50,7 +50,8 @@ module Rubino
       def render(text)
         return [] if text.nil? || text.to_s.strip.empty?
 
-        doc = Kramdown::Document.new(normalize(text.to_s), input: "GFM", auto_ids: false, hard_wrap: false)
+        src = unwrap_markdown_wrapper(text.to_s)
+        doc = Kramdown::Document.new(normalize(src), input: "GFM", auto_ids: false, hard_wrap: false)
         block_lines(doc.root).reject { |line| line == :drop }
       rescue StandardError
         # Parser failure -> degrade to plain text rather than break the UI.
@@ -58,6 +59,55 @@ module Rubino
       end
 
       private
+
+      # Models routinely box a whole answer in an outer ```markdown / ```md
+      # fence whose body is itself markdown (headings, tables, nested ```ruby
+      # fences). Rendered verbatim that draws a literal code frame around live
+      # markdown; worse, kramdown closes the outer fence on the FIRST bare ```
+      # it meets (a nested block's closer), so the wrapper's real closing ```
+      # orphans as a stray literal line of prose (#264).
+      #
+      # The structural fix per CommonMark §4.5: peel the wrapper at the SOURCE
+      # level before parsing. We detect an opening fence (≥3 backticks/tildes,
+      # ≤3 leading spaces) whose info string is markdown/md, then remove that
+      # opener line and the wrapper's matching CLOSING fence — a line of ≥ the
+      # opener's run of the SAME fence char and nothing but spaces (§4.5). Since
+      # the model boxes its ENTIRE answer, the wrapper's close is the LAST such
+      # line; everything between is the literal body, re-parsed as markdown so
+      # the nested fences resolve correctly and no orphan ``` is ever produced.
+      #
+      # When there is no markdown wrapper (e.g. a plain ```ruby block, or a
+      # genuine lone ``` the model emits while EXPLAINING fence syntax) the
+      # text is returned untouched — that standalone ``` then renders literally
+      # instead of being deleted by a post-hoc heuristic (R2-V2).
+      def unwrap_markdown_wrapper(text)
+        lines = text.split("\n", -1)
+        open_idx = lines.index { |l| !l.strip.empty? }
+        return text if open_idx.nil?
+
+        m = lines[open_idx].match(FENCE_OPEN_RE)
+        return text unless m && MARKDOWN_FENCE_LANGS.include?(m[2].strip.downcase)
+
+        fence_char = m[1][0]
+        fence_len  = m[1].length
+        close_re   = /\A\s{0,3}#{Regexp.escape(fence_char)}{#{fence_len},}\s*\z/
+        close_idx  = nil
+        ((open_idx + 1)...lines.length).each { |j| close_idx = j if lines[j].match?(close_re) }
+
+        body = close_idx ? lines[(open_idx + 1)...close_idx] : lines[(open_idx + 1)..]
+        body.join("\n")
+      end
+
+      # An opening code fence per CommonMark §4.5: up to 3 leading spaces, a run
+      # of ≥3 backticks OR tildes, then an optional info string (which, for
+      # backtick fences, may not itself contain a backtick).
+      FENCE_OPEN_RE = /\A\s{0,3}(`{3,}|~{3,})\s*([^`\n]*)\z/
+
+      # Info strings that mean "this fence WRAPS markdown": models box a whole
+      # answer (which itself contains nested ```lang fences, tables, **bold**)
+      # in an outer ```markdown / ```md. We peel that wrapper and render the
+      # body AS markdown instead of framing it as literal code (#264).
+      MARKDOWN_FENCE_LANGS = %w[markdown md].freeze
 
       # A GFM pipe-table separator row, e.g. "|---|:--:|---|" or "---|---".
       TABLE_SEP_RE = /\A\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*\z/
@@ -98,10 +148,13 @@ module Rubino
         when :header
           header_lines(el)
         when :p
-          # A lone fence marker (a stray ``` a model leaves after an outer
-          # ```markdown wrapper) parses as a paragraph of literal backticks;
-          # drop it rather than leak the ``` as text (#264).
-          fence_only_paragraph?(el) ? [:drop] : wrap_lines(paragraph_lines(el))
+          # The outer ```markdown wrapper is now peeled at the SOURCE level
+          # (unwrap_markdown_wrapper) BEFORE parsing, so its closing ``` never
+          # orphans into a paragraph here. A bare ``` that DOES survive to this
+          # point is a genuine standalone fence the model emitted as prose (e.g.
+          # while explaining fence syntax) — render it literally, do not strip it
+          # (R2-V2).
+          wrap_lines(paragraph_lines(el))
         when :ul
           list_lines(el, ordered: false)
         when :ol
@@ -124,23 +177,6 @@ module Rubino
           tokens = inline_tokens(el.children, {})
           tokens_to_lines(tokens)
         end
-      end
-
-      # When we unwrap a ```markdown body, a nested ```ruby fence inside it has
-      # often lost its closing ``` (the outer wrapper's close consumed it). An
-      # odd count of fence lines means a fence is left open, which would render
-      # the rest as a half-finished code frame; append a closing fence so the
-      # inner code block renders complete (#264).
-      def close_dangling_fence(text)
-        return text unless text.to_s.lines.count { |l| l.match?(/\A\s*`{3,}/) }.odd?
-
-        "#{text}\n```"
-      end
-
-      # True when a paragraph's whole visible text is just a fence marker
-      # (```), i.e. an orphaned fence line with no code body around it.
-      def fence_only_paragraph?(el)
-        inline_tokens(el.children, {}).map { |t, _| t == :br ? "" : t.to_s }.join.strip.match?(/\A`{3,}\z/)
       end
 
       def header_lines(el)
@@ -205,21 +241,18 @@ module Rubino
         end
       end
 
-      # Language tags that mean "this fence WRAPS markdown" (models routinely
-      # box a whole answer in ```markdown / ```md). We render the body AS
-      # markdown instead of drawing a literal code frame around raw `**bold**`,
-      # table pipes and a nested ```ruby fence (#264).
-      MARKDOWN_FENCE_LANGS = %w[markdown md].freeze
-
       def codeblock_lines(el)
         text = el.value.to_s
-        # A stray closing ``` left over when a model wraps its answer in an outer
-        # ```markdown fence parses as an EMPTY code block; drawing a frame around
-        # nothing leaves a broken half-finished box (#264). Emit nothing.
+        # An empty code block (e.g. a model literally sending ```\n```) would draw
+        # a frame around nothing — a broken half-finished box. Emit nothing.
         return [:drop] if text.strip.empty?
 
         lang = el.options[:lang].to_s
-        return render(close_dangling_fence(text)) if MARKDOWN_FENCE_LANGS.include?(lang.downcase)
+        # A markdown-language fence still surviving to a codeblock node (a NESTED
+        # ```markdown inside an already-unwrapped body — the OUTER wrapper is
+        # peeled at the source level in unwrap_markdown_wrapper) is re-rendered AS
+        # markdown rather than framed as literal code (#264).
+        return render(text) if MARKDOWN_FENCE_LANGS.include?(lang.downcase)
 
         lines = text.split("\n", -1)
         # kramdown's fenced codeblock value ends with a trailing newline -> empty last line. Drop it.
@@ -301,6 +334,13 @@ module Rubino
         cells
       end
 
+      # The minimum width a column is allowed to shrink to when the table must be
+      # squeezed to fit the budget. Below this a column degrades into a 1-char-
+      # per-line vertical stack (`I`/`D`, `N`/`a`/`m`/`e`) — unreadable. We keep
+      # every column at least this wide so a single very long cell can't starve
+      # its siblings; the long cell wraps across more lines instead (R1-V2).
+      MIN_COL_WIDTH = 6
+
       # Returns Array<LineTokens> on success, or nil if TTY::Table can't render
       # (so the caller can fall back).
       def render_tty_table(header, rows)
@@ -317,13 +357,66 @@ module Rubino
         # unused — no stretch, no gap. No horizontal padding either: the resize
         # budget ignores it (~2 cols/row overflow); cells still get the gutters.
         opts = { multiline: true, width: fit }
-        opts[:resize] = true if table.width > fit
+        if table.width > fit
+          # Overflow: do NOT hand TTY::Table its own greedy resize (it gives a
+          # single long cell almost the whole width and collapses the siblings to
+          # 1 char — R1-V2). Instead allocate balanced column widths with a floor,
+          # wrapping the long cell across lines so every column stays readable.
+          widths = balanced_column_widths(header, rows, fit)
+          if widths
+            opts[:column_widths] = widths
+          else
+            opts[:resize] = true
+          end
+        end
         str = table.render(:unicode, **opts)
         return nil if str.nil?
 
         str.split("\n").map { |line| [[line, { fg: :gray }]] }
       rescue StandardError
         nil
+      end
+
+      # Allocate per-column widths summing to the content budget (the budget
+      # minus the unicode frame's ncols+1 border chars), guaranteeing each column
+      # at least MIN_COL_WIDTH (or its natural width if smaller) so no column is
+      # starved. Spare width above the floors is shared among the columns that
+      # want more, feeding the narrowest first so short columns fill before a
+      # greedy long cell hoards the rest; no column exceeds its natural width.
+      # Returns nil when even the floors don't fit the budget (let TTY::Table's
+      # own resize handle that degenerate, very-narrow case).
+      def balanced_column_widths(header, rows, fit)
+        all = (header ? [header] : []) + rows
+        ncols = all.map(&:size).max.to_i
+        return nil if ncols.zero?
+
+        # Natural width per column = widest cell (by display columns, CJK-aware).
+        natural = Array.new(ncols, 1)
+        all.each do |r|
+          r.each_with_index { |c, i| natural[i] = [natural[i], display_width(c.to_s)].max }
+        end
+
+        budget = fit - (ncols + 1) # ncols+1 vertical border chars in :unicode
+        floors = natural.map { |w| [w, MIN_COL_WIDTH].min }
+        return nil if floors.sum > budget # too narrow even at floors — bail out
+
+        widths = floors.dup
+        spare  = budget - floors.sum
+        # Distribute spare 1 col at a time, always feeding the column that is
+        # currently NARROWEST among those still under their natural width. This
+        # satisfies short columns fully (e.g. a 7-char "Pending" header) before a
+        # genuinely greedy long cell hoards the rest, and splits the remainder
+        # evenly when several columns are long — so the long cells wrap while the
+        # siblings stay readable, never starved (R1-V2). Never overshoots.
+        loop do
+          wants = (0...ncols).select { |i| widths[i] < natural[i] }
+          break if spare <= 0 || wants.empty?
+
+          i = wants.min_by { |j| widths[j] }
+          widths[i] += 1
+          spare -= 1
+        end
+        widths
       end
 
       # Last-resort plain rendering used only if TTY::Table fails. Joins cells

@@ -256,6 +256,8 @@ Metrics/BlockLength:
 Metrics/ClassLength:
   Exclude:
     - 'lib/rubino/cli/chat_command.rb'
+    - 'lib/rubino/commands/executor.rb'
+    - 'lib/rubino/llm/ruby_llm_adapter.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
     - 'lib/rubino/ui/cli.rb'
 
@@ -406,7 +408,6 @@ Naming/PredicateMethod:
   Exclude:
     - 'lib/rubino/agent/model_call_runner.rb'
     - 'lib/rubino/agent/response_validator.rb'
-    - 'lib/rubino/agent/router.rb'
     - 'lib/rubino/cli/onboarding_wizard.rb'
     - 'lib/rubino/cli/trust_gate.rb'
     - 'lib/rubino/memory/backends/sqlite.rb'
@@ -451,6 +452,7 @@ RSpec/AnyInstance:
     - 'spec/rubino/commands/commands_spec.rb'
     - 'spec/rubino/context/compressor_spec.rb'
     - 'spec/rubino/context/prompt_assembler_active_skill_spec.rb'
+    - 'spec/rubino/context/prompt_assembler_cache_breakpoints_spec.rb'
     - 'spec/rubino/context/prompt_assembler_ignore_rules_spec.rb'
     - 'spec/rubino/context/prompt_assembler_layering_spec.rb'
     - 'spec/rubino/context/prompt_assembler_memory_snapshot_spec.rb'
@@ -462,8 +464,10 @@ RSpec/BeforeAfterAll:
     - '**/spec/spec_helper.rb'
     - '**/spec/rails_helper.rb'
     - '**/spec/support/**/*.rb'
+    - 'spec/rubino/llm/tool_bridge_cache_breakpoint_spec.rb'
     - 'spec/rubino/security/approval_policy_mode_spec.rb'
     - 'spec/rubino/tools/registry_mode_spec.rb'
+    - 'spec/rubino/tools/registry_situational_gating_spec.rb'
     - 'spec/rubino/tools/registry_spec.rb'
 
 # Offense count: 31
@@ -550,7 +554,11 @@ RSpec/DescribeMethod:
     - 'spec/rubino/api/middleware/json_body_size_spec.rb'
     - 'spec/rubino/cli/chat_command_continue_spec.rb'
     - 'spec/rubino/cli/commands_version_spec.rb'
+    - 'spec/rubino/llm/ruby_llm_adapter_cache_spec.rb'
+    - 'spec/rubino/llm/tool_bridge_cache_breakpoint_spec.rb'
+    - 'spec/rubino/tools/registry_situational_gating_spec.rb'
     - 'spec/rubino/context/prompt_assembler_active_skill_spec.rb'
+    - 'spec/rubino/context/prompt_assembler_cache_breakpoints_spec.rb'
     - 'spec/rubino/context/prompt_assembler_ignore_rules_spec.rb'
     - 'spec/rubino/context/prompt_assembler_layering_spec.rb'
     - 'spec/rubino/context/prompt_assembler_memory_snapshot_spec.rb'
@@ -654,12 +662,13 @@ RSpec/LeakyLocalVariable:
   Exclude:
     - 'spec/rubino/no_direct_output_spec.rb'
 
-# Offense count: 7
+# Offense count: 8
 RSpec/MultipleDescribes:
   Exclude:
     - 'spec/rubino/commands/commands_spec.rb'
     - 'spec/rubino/context/prompt_assembler_layering_spec.rb'
     - 'spec/rubino/memory/backends_spec.rb'
+    - 'spec/rubino/tools/encoding_robustness_spec.rb'
     - 'spec/rubino/tools/error_code_spec.rb'
     - 'spec/rubino/tools/tool_fixes_spec.rb'
     - 'spec/rubino/trust_spec.rb'

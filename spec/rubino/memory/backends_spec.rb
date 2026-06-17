@@ -17,8 +17,20 @@ RSpec.describe Rubino::Memory::Backends do
       expect(described_class.build(config: cfg)).to be_a(Rubino::Memory::Backends::Default)
     end
 
-    it "falls back to the default backend for an unknown configured name" do
+    it "REJECTS an explicitly-set unknown backend name with a clear, actionable error" do
       cfg = test_configuration("memory" => { "enabled" => true, "backend" => "does-not-exist" })
+      expect { described_class.build(config: cfg) }
+        .to raise_error(Rubino::Error, /unknown memory backend "does-not-exist".*set memory\.backend to one of/m)
+    end
+
+    it "lists the registered backends in the rejection so the user can fix the typo" do
+      cfg = test_configuration("memory" => { "enabled" => true, "backend" => "typo" })
+      expect { described_class.build(config: cfg) }
+        .to raise_error(Rubino::Error) { |e| expect(e.message).to include(*described_class.names) }
+    end
+
+    it "still falls back to the default backend when memory.backend is BLANK (not a typo)" do
+      cfg = test_configuration("memory" => { "enabled" => true, "backend" => "  " })
       expect(described_class.build(config: cfg)).to be_a(Rubino::Memory::Backends::Default)
     end
   end

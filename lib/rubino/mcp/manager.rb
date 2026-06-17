@@ -154,7 +154,7 @@ module Rubino
         when "stdio"
           opts[:config] = {
             command: server_config["command"],
-            args: server_config["args"] || [],
+            args: validate_stdio_args!(name, server_config["args"]),
             env: server_config["env"] || {}
           }
         when "sse"
@@ -174,6 +174,23 @@ module Rubino
         opts[:request_timeout] = server_config["timeout"] if server_config["timeout"]
 
         opts
+      end
+
+      # stdio `args` MUST be a list (YAML sequence). A STRING — the natural typo,
+      # `args: "--root /data"` instead of `args: ["--root", "/data"]` — used to be
+      # passed straight to ruby_llm-mcp, which iterated the string into single
+      # characters, spawned a broken process, and surfaced ~8s later as a
+      # misleading "timed out" (the spawn never spoke MCP). Reject it HERE so
+      # start_server's rescue turns it into an immediate, clear config error
+      # instead of a hang. nil ⇒ no args (default []).
+      def validate_stdio_args!(name, args)
+        return [] if args.nil?
+        return args if args.is_a?(Array)
+
+        raise ArgumentError,
+              "MCP server '#{name}': `args` must be a list, got #{args.class} " \
+              "(#{args.inspect}). Use a YAML sequence, e.g. " \
+              "args: [\"--root\", \"/data\"] (not a single string)."
       end
     end
   end

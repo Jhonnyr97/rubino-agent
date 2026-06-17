@@ -23,6 +23,16 @@ module Rubino
       # GitHub shorthand: bare `owner/repo` (one slash, no scheme/host).
       GITHUB_SHORTHAND = %r{\A[\w.-]+/[\w.-]+\z}
 
+      # The only shape a skill `name:` may take before it becomes a directory
+      # under the skills root: lowercase alphanumerics in hyphen-separated
+      # segments (Claude Code's skill-name grammar). This is the CWE-22
+      # allowlist defense — same class as the Zed CVE-2026-27800 / Anthropic
+      # EscapeRoute CVE-2025-53110 traversal bugs: it admits no path separator,
+      # no `..`, no dot, no NUL, no leading/trailing hyphen, no absolute path,
+      # nothing but `[a-z0-9-]`.
+      NAME_ALLOWLIST = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+      NAME_MAX_LEN = 64
+
       attr_reader :skills_dir
 
       def initialize(skills_dir: nil)
@@ -65,17 +75,29 @@ module Rubino
       end
 
       # Copies the discover-entries into the skills dir (replacing any prior
-      # copy of the same name) and records their provenance.
+      # copy of the same name) and records their provenance. Entries whose
+      # name isn't a safe single path segment (a hostile repo can put
+      # `name: ../../EVIL` in its frontmatter) are skipped — never written,
+      # never recorded — so an install can't write or delete anything outside
+      # the skills dir (SKILL-1).
       def install(entries, checkout:, source:, commit:)
         FileUtils.mkdir_p(@skills_dir)
-        data = sources
-        entries.each do |entry|
-          dest = File.join(@skills_dir, entry[:name])
-          FileUtils.rm_rf(dest)
-          FileUtils.cp_r(File.join(checkout, entry[:path]), dest)
-          data[entry[:name]] = { "source" => source, "path" => entry[:path], "commit" => commit }
+        # Read-modify-write the ledger under an exclusive lock so N parallel
+        # installs don't lose updates (each reading the same base and the last
+        # writer clobbering the rest → orphaned, unremovable skills). The file
+        # copies stay inside the locked region: each install owns a distinct
+        # name (its own dest dir), so they don't collide, and keeping them under
+        # the lock means the ledger and the on-disk dirs can't diverge.
+        update_sources do |data|
+          entries.each do |entry|
+            name = entry[:name]
+            dest = safe_dest(name) or next
+
+            FileUtils.rm_rf(dest)
+            FileUtils.cp_r(File.join(checkout, entry[:path]), dest)
+            data[name] = { "source" => source, "path" => entry[:path], "commit" => commit }
+          end
         end
-        write_sources(data)
       end
 
       # Re-fetches +names+ (default: every recorded skill) from their recorded
@@ -83,18 +105,22 @@ module Rubino
       # :up_to_date / :failed (clone failed, or the skill's recorded path no
       # longer holds a SKILL.md) / :unknown (no provenance entry).
       def update(names = [])
-        data = sources
-        names = data.keys if names.empty?
         results = {}
-        names.group_by { |name| data.dig(name, "source") }.each do |source, group|
-          next group.each { |name| results[name] = :unknown } if source.nil?
+        # One locked read-modify-write for the whole update so it can't race a
+        # concurrent install/remove/update (lost-update → orphaned entries). The
+        # network clones run inside the lock; updates are infrequent and this
+        # keeps the ledger consistent with what was re-fetched.
+        update_sources do |data|
+          names = data.keys if names.empty?
+          names.group_by { |name| data.dig(name, "source") }.each do |source, group|
+            next group.each { |name| results[name] = :unknown } if source.nil?
 
-          fetched = fetch(source) do |checkout, sha|
-            group.each { |name| results[name] = update_one(name, data[name], checkout, sha) }
-            write_sources(data)
-            true
+            fetched = fetch(source) do |checkout, sha|
+              group.each { |name| results[name] = update_one(name, data[name], checkout, sha) }
+              true
+            end
+            group.each { |name| results[name] = :failed } unless fetched
           end
-          group.each { |name| results[name] = :failed } unless fetched
         end
         results
       end
@@ -102,20 +128,26 @@ module Rubino
       # Deletes the skill dir + provenance entry. Returns false (nothing
       # touched) for a skill without a provenance entry — this mechanism only
       # removes what it installed.
-      def remove(name) # rubocop:disable Naming/PredicateMethod -- "did I remove anything", a mutator reporting what it did
-        data = sources
-        return false unless data.key?(name)
+      def remove(name)
+        removed = false
+        update_sources do |data|
+          next unless data.key?(name)
 
-        FileUtils.rm_rf(File.join(@skills_dir, name))
-        data.delete(name)
-        write_sources(data)
-        true
+          # Confine the delete to the skills dir even if a pre-fix ledger recorded
+          # a traversal key (defense in depth — install now refuses such names).
+          dest = safe_dest(name)
+          FileUtils.rm_rf(dest) if dest
+          data.delete(name)
+          removed = true
+        end
+        removed
       end
 
-      # The provenance ledger (empty hash when absent or unparseable).
+      # The provenance ledger (empty hash when absent or unparseable). Reads
+      # under a shared lock so it can't observe a writer's intermediate state.
       def sources
-        path = File.join(@skills_dir, SOURCES_FILE)
-        File.file?(path) ? JSON.parse(File.read(path)) : {}
+        raw = Util::AtomicFile.read_shared(sources_path)
+        raw ? JSON.parse(raw) : {}
       rescue JSON::ParserError
         {}
       end
@@ -130,16 +162,68 @@ module Rubino
         src = File.join(checkout, entry["path"])
         return :failed unless File.file?(File.join(src, "SKILL.md"))
 
-        dest = File.join(@skills_dir, name)
+        dest = safe_dest(name)
+        return :failed unless dest
+
         FileUtils.rm_rf(dest)
         FileUtils.cp_r(src, dest)
         entry["commit"] = sha
         :updated
       end
 
-      def write_sources(data)
+      # Resolves +name+ to its destination dir inside the skills dir, or nil
+      # when the name isn't a safe single path segment. The frontmatter `name`
+      # is attacker-controlled (it comes straight from a cloned repo's
+      # SKILL.md), so it gets the two independent CWE-22 defenses:
+      #   1. a strict allowlist — only `[a-z0-9]` hyphen-segments, length-capped
+      #      — which already excludes `/`, `\`, `..`, `~`, NUL, and absolutes; and
+      #   2. path confinement — canonicalize the parent against the skills root
+      #      and assert the resolved dest sits directly under it (the trailing
+      #      separator guards against a sibling whose name shares the root's
+      #      prefix), so even if the allowlist were ever loosened the write can't
+      #      escape. realpath failure is treated as deny, never as a fallback.
+      def safe_dest(name)
+        name = name.to_s
+        return nil unless name.length <= NAME_MAX_LEN && NAME_ALLOWLIST.match?(name)
+
+        root = real_skills_root or return nil
+        dest = File.expand_path(name, root)
+        return nil unless dest == File.join(root, name) &&
+                          dest.start_with?(root + File::SEPARATOR)
+
+        dest
+      end
+
+      # The canonical (symlink-resolved) skills root, creating it if needed so
+      # realpath can resolve it. nil — i.e. deny — if it can't be resolved.
+      def real_skills_root
         FileUtils.mkdir_p(@skills_dir)
-        File.write(File.join(@skills_dir, SOURCES_FILE), JSON.pretty_generate(data))
+        File.realpath(@skills_dir)
+      rescue SystemCallError
+        nil
+      end
+
+      def sources_path
+        File.join(@skills_dir, SOURCES_FILE)
+      end
+
+      # Exclusive, atomic read-modify-write of the ledger. Yields the parsed
+      # hash (mutated in place by the block); the post-block state is written
+      # back via temp-file + rename so it's never torn or lost under concurrent
+      # installs/updates/removes.
+      def update_sources
+        FileUtils.mkdir_p(@skills_dir)
+        Util::AtomicFile.update(sources_path) do |raw|
+          data = parse_ledger(raw)
+          yield(data)
+          JSON.pretty_generate(data)
+        end
+      end
+
+      def parse_ledger(raw)
+        raw && !raw.empty? ? JSON.parse(raw) : {}
+      rescue JSON::ParserError
+        {}
       end
     end
   end

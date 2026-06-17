@@ -1,6 +1,142 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-06-15
+
+### Added
+
+- **One-shot tool-activity trace.** The non-interactive text path (`rubino
+  prompt` / `-q` / piped `chat`) now prints a concise per-tool activity trace
+  by default — one line per tool completion (`· edit foo.rb`, `· bash npm
+  test`) — routed to STDERR so the final answer on STDOUT stays clean
+  (`x=$(rubino prompt …)` captures only the answer). `--quiet`/`-Q` silences
+  the trace (machine-silent path); `--verbose`/`-v` widens each line's args.
+  `--output-format json`/`stream-json` (structured events on stdout) and the
+  interactive TUI tool-cards are unchanged. Mirrors the Codex/gemini-cli/Hermes
+  stderr-trace norm (Hermes `-q` default / `-Q` quiet).
+
+- **Prompt-cache breakpoints (`cache_control`).** The conversation now inserts
+  cache breakpoints so the stable prefix (system + tool schemas + prior turns)
+  is reused across round-trips, cutting input-token cost/latency.
+- **Situational tool-schema gating.** Tool definitions sent to the model are
+  scoped to the situation instead of always shipping the full set, reducing
+  prompt size and accidental tool selection.
+- **Primary-agent switching.** Switch the active primary agent inline with
+  `/<name>`, the `/agent` command, or `Tab`; `@` remains reserved for file
+  references.
+- **Detached post-turn polishing.** A post-turn polishing pass runs detached and
+  is cancellable with `Esc`, so it never blocks the next prompt.
+- **Stdin pipe for one-shot.** Piped stdin is consumed as the prompt for
+  one-shot runs (`echo … | rubino prompt`), enabling unix-style composition.
+- **Per-round-trip loop accounting.** Round-trips are counted, usage is summed
+  across them, and `tool_calls` are persisted on the streaming path.
+- **Machine-readable headless output (`--output-format json | stream-json`, #312).**
+  `rubino prompt` / `chat -q` can now emit Claude-Code-aligned JSON for
+  CI/automation instead of prose. `--output-format json` (or the `--json` alias)
+  prints a single `{type:"result", subtype, is_error, result, session_id,
+  exit_reason, num_turns, duration_ms, usage:{input/output/cache_* tokens},
+  total_cost_usd, model}` object on stdout at completion; `--output-format
+  stream-json` emits JSONL (a `system`/`init` line, then Messages-API-shaped
+  `assistant`/`user` step objects, then the same final `result`). In both modes
+  ALL JSON goes to stdout and ALL logs/diagnostics/errors to stderr, and markdown
+  rendering is suppressed. The fail-closed / exit-code contract is preserved: a
+  blocked tool still emits the result with `is_error:true` and a non-zero exit.
+  The schema lives in a single shared serializer (`Rubino::Output::ResultSerializer`)
+  so it never drifts. `text` (default) is unchanged.
+- **Higher tool-loop budget with an interactive extension prompt (#399).** The
+  `max_tool_iterations` default is raised from 8 to 25 so longer agent runs no
+  longer hit the cap mid-task. When the cap is reached interactively, the run
+  pauses with a budget-extension prompt — **Continue +N** (grant another batch),
+  **Summarize** (wrap up with what's done), or **Abort** — instead of failing
+  silently; headless runs keep the force-summarize behavior.
+- **TUI: Ctrl-L clear-screen and a resize-while-typing fix (#395 / #401).**
+  `Ctrl-L` now clears the screen from the composer. Fixed a bug where resizing
+  the terminal while typing reflowed and duplicated the in-progress input into
+  the scrollback.
+
+### Security
+
+- **Hardened/narrowed the command-allowlist convenience layer (SEC-R2-1/2/3).**
+  Closes three default-config / bare-`git` paths that could run arbitrary code
+  or write arbitrary files past the headless gate **without `--yolo`**:
+  - removed code-loading test/build runners (`bundle exec rspec`, …) from the
+    **shipped default** `command_allowlist` — they load and execute arbitrary
+    project code by design (`rspec -r FILE`), so they are not safely
+    auto-approvable (SEC-R2-3);
+  - an allowlisted **git** head is now vetted for GLOBAL flags before the
+    subcommand (`git -c alias.x='!cmd' x`, `-c core.sshCommand=…`, `-C dir`,
+    `--exec-path`) and for code-loading/mutating subcommands (`apply`, `am`,
+    `push`, hooks, …); the "approve git always" path now persists only a
+    narrowed `git <read-only verb>`, never bare `git` (SEC-R2-1);
+  - any allowlisted head whose argument is itself a program
+    (`awk`/`sed`/`perl`/`python`/`ruby`/`node`/`tar`/`tee`/`xargs`/shells) is
+    default-denied auto-approval, and write flags on read heads (`sort -o`, …)
+    are rejected (SEC-R2-2).
+
+  An allowlist is a convenience layer, **not** a security boundary (per industry
+  practice the OS sandbox is the real floor, tracked separately); this narrows
+  it to close the above default-config and bare-`git` RCEs.
+
+### Hardening
+
+Four adversarial QA rounds fixed ~45 issues across the agent. Highlights:
+
+- **Security.** Hardline-floor canonicalization; OOXML zip-bomb total-archive
+  cap; CWE-150 argument sanitization; threat-scanner; tightened
+  command-allowlist (see above).
+- **Correctness.** UTF-8-safe edits; atomic compaction with auto-switch-to-child;
+  resume keeps the full tool history; cwd-scoped sessions; corrupt-DB recovery
+  (incl. `NotADatabaseException`); job-queue compare-and-swap; headless job drain
+  so memory works in automation.
+- **Interrupt.** True cancel — stream cancellation with the partial persisted;
+  clean one-shot `SIGINT`/`SIGTERM` labels.
+- **Performance.** Bounded huge-output memory; spill/paste eviction; streaming
+  grep with consistent ignore rules.
+- **UX.** Config validation; `doctor` checks; resilient timeouts and error
+  classification.
+
+Every fix was container-verified (non-root QA image, real MiniMax for live
+behavior, true 0 failures); a full pre-release functionality sweep confirmed all
+subsystems release-ready.
+
+## [0.4.1] - 2026-06-13
+
+### Security
+
+- **Headless approvals now fail closed (#260).** A one-shot / scripted run
+  (`rubino prompt`, `chat -q`, no TTY) no longer auto-runs a tool that would
+  otherwise prompt: a write/edit, or a shell command not covered by your
+  `permissions` / command allowlist / read-only auto-allow, is **blocked, not
+  run**. A `blocked: <tool> needs approval …` line goes to stderr and the run
+  exits **2**, so CI/automation fails loudly instead of silently skipping (or
+  auto-executing). Full auto-exec now requires an explicit **`--yolo`** —
+  honored ONLY as a CLI flag, never grantable by a project-local/persisted
+  config — and **`--no-yolo`** forces fail-closed even over a yolo boot default.
+
+### Fixed — installer
+
+- **`mise` method (#256)** alongside Homebrew and `rv`, with `global`/`local`
+  scope (`RUBINO_INSTALL_SCOPE`); `RUBINO_INSTALL_METHOD` now accepts `mise`.
+- **Activation/PATH is persisted to your shell rc (#268)** (`.zshrc` /
+  `.bashrc` / `.profile`) and a **post-install fresh-shell gate** fails loudly
+  if `rubino` isn't on PATH in a new shell. `RUBINO_NO_MODIFY_RC=1` opts out.
+- **`mise` installs pin the latest published gem version (#258/#268)** instead
+  of drifting to a pre-release / age-gated build.
+- **Method-aware prereq preflight (#272)** (xz/git/toolchain) with real gem
+  error surfacing, and a **Debian-12 / glibc-too-old steer from rv → mise
+  (#241/#242/#272)** so users don't land on a broken musl Ruby.
+
+### Fixed
+
+- **Config corruption + `doctor` crash on a scalar written over a section (#259).**
+- **Streaming persistence (#266):** pre-tool narration is persisted and the
+  `tool_calls` audit is populated.
+- **TUI render (#269):** table columns sized to content, nested/markdown fences
+  consumed, interrupt "ghost" line cleared.
+- **Memory extraction bounded by a per-session cursor (#249)** — no more
+  re-scanning the whole transcript every turn.
+- **Boots under a bare C/POSIX locale (#273)** without
+  `Encoding::CompatibilityError`.
+- **Session summary folded into the single system message (#253/#254).**
 
 ## [0.4.0] - 2026-06-13
 

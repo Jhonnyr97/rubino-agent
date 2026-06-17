@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 RSpec.describe Rubino::Util::Output do
   describe ".preview" do
     it "returns empty string when input is nil or empty" do
@@ -86,6 +88,170 @@ RSpec.describe Rubino::Util::Output do
       expect(described_class.truncate("short", max_bytes: 1_000, max_lines: 100,
                                                spill: ->(_t) { called = true })).to eq("short")
       expect(called).to be(false)
+    end
+  end
+
+  # #373 — a huge tool output (e.g. 128MB single line) was materialized into
+  # multi-million-element `.lines` arrays MULTIPLE times just to decide it was
+  # over-cap, spiking RSS into the hundreds of MB. The over/under decision must
+  # use allocation-free passes (bytesize / count("\n")), and the full buffer
+  # must never be split with `.lines`.
+  describe ".truncate peak-memory bounds (#373)" do
+    it "decides over/under-cap without materializing .lines on the full buffer" do
+      big = "x" * 2_000_000 # one ~2MB line: .lines would be a giant array
+      # Spy: a `.lines` call on the FULL buffer is the regression. The bounded
+      # head/tail slices (<= max_bytes) may still call .lines — only the whole
+      # 2MB string is forbidden.
+      forbidden = false
+      allow(big).to receive(:lines).and_wrap_original do |orig, *args|
+        forbidden = true
+        orig.call(*args)
+      end
+      described_class.truncate(big, max_bytes: 1_000, max_lines: 100)
+      expect(forbidden).to be(false)
+    end
+
+    it "makes the under-cap line decision without splitting the buffer into .lines" do
+      text = +"a\nb\nc\n" # unfrozen so we can spy on it
+      allow(text).to receive(:lines).and_call_original
+      result = described_class.truncate(text, max_bytes: 10_000, max_lines: 100)
+      # Under cap: returns the (scrubbed) text unchanged, never splitting it.
+      expect(result).to eq("a\nb\nc\n")
+      expect(text).not_to have_received(:lines)
+    end
+
+    it "still produces a tail-biased, byte-capped result for a huge over-cap buffer" do
+      big = "HEAD#{"x" * 1_000_000}TAIL"
+      result = described_class.truncate(big, max_bytes: 1_000, max_lines: 10_000)
+      expect(result.bytesize).to be <= 1_200 # ~max_bytes + marker, not 1MB
+      expect(result).to include("HEAD").and include("TAIL").and include("bytes elided")
+    end
+  end
+
+  # #373 — preview() did `text.lines.map(&:chomp)` unconditionally: a ~1KB value
+  # that happens to be one 2M-char line allocated a 2M-element array just to
+  # learn it fit. The under-cap fits-check must be allocation-free, and trimming
+  # must slice head/tail rather than split the whole buffer.
+  describe ".preview peak-memory bounds (#373)" do
+    it "does not split the full buffer into .lines when trimming a huge buffer" do
+      big = (1..100).map { |i| "line#{i}#{"y" * 50_000}" }.join("\n")
+      forbidden = false
+      allow(big).to receive(:lines).and_wrap_original do |orig, *args|
+        forbidden = true
+        orig.call(*args)
+      end
+      described_class.preview(big, max: 30, head: 5, tail: 10)
+      expect(forbidden).to be(false)
+    end
+
+    it "trims a large multi-line buffer to head + marker + tail correctly" do
+      text = (1..50).map { |i| "line #{i}" }.join("\n")
+      result = described_class.preview(text)
+      head = (1..5).map { |i| "line #{i}" }
+      tail = (41..50).map { |i| "line #{i}" }
+      expect(result).to eq((head + ["… [35 more lines · full in DB] …"] + tail).join("\n"))
+    end
+  end
+
+  # STRM-R2-1 — binary/non-UTF-8 tool output must become a valid UTF-8 string
+  # at the capture seam so JSON.generate (the LLM request) and the SQLite
+  # driver never choke and the tool row persists.
+  describe ".scrub_utf8" do
+    it "returns valid ASCII/UTF-8 text untouched and identical" do
+      s = "plain ascii"
+      expect(described_class.scrub_utf8(s)).to equal(s)
+    end
+
+    it "passes valid multibyte UTF-8 through unchanged" do
+      expect(described_class.scrub_utf8("café — 日本語")).to eq("café — 日本語")
+    end
+
+    it "scrubs binary bytes into a JSON-encodable, valid UTF-8 string" do
+      raw = (+"\xE9\x00\xFF\x80logtail").force_encoding(Encoding::UTF_8)
+      expect(raw.valid_encoding?).to be(false)
+
+      out = described_class.scrub_utf8(raw)
+      expect(out.encoding).to eq(Encoding::UTF_8)
+      expect(out.valid_encoding?).to be(true)
+      expect { JSON.generate({ role: "tool", content: out }) }.not_to raise_error
+    end
+
+    it "re-encodes BINARY-tagged output so JSON.generate doesn't see ASCII-8BIT" do
+      raw = (+"data\xFF").force_encoding(Encoding::ASCII_8BIT)
+      out = described_class.scrub_utf8(raw)
+      expect(out.encoding).to eq(Encoding::UTF_8)
+      expect { JSON.generate({ content: out }) }.not_to raise_error
+    end
+
+    # The crux of STRM-R2-1: a NUL is VALID UTF-8 (U+0000) so String#scrub
+    # keeps it, but the SQLite3 driver treats it as a string terminator and
+    # raises "unrecognized token" — the tool row never persists.
+    it "strips NUL bytes (valid UTF-8 but fatal to SQLite)" do
+      out = described_class.scrub_utf8("BIN_BEFORE\nlog\x00data\x00end")
+      expect(out).not_to include("\x00")
+      expect(out).to eq("BIN_BEFORE\nlogdataend")
+    end
+
+    it "produces a string that actually inserts into SQLite (no unrecognized token)" do
+      require "sequel"
+      out = described_class.scrub_utf8((+"\xE9row\x00\xFFtail").force_encoding(Encoding::UTF_8))
+      db = Sequel.sqlite
+      db.create_table(:t) { String :content }
+      expect { db[:t].insert(content: out) }.not_to raise_error
+      expect(db[:t].count).to eq(1)
+    end
+  end
+
+  # R2-V1 (CWE-150) — terminal escape injection. Raw control/escape bytes in
+  # untrusted tool output must be neutralized before they can reach a real
+  # terminal (clear screen, recolor, set title, clipboard write, cursor move).
+  describe ".sanitize_terminal" do
+    it "strips the CSI clear-screen + SGR color sequences, keeping the text" do
+      out = described_class.sanitize_terminal("\e[2J\e[41mPWN\e[0m done")
+      expect(out).not_to include("\e")
+      expect(out).to include("PWN").and include("done")
+    end
+
+    it "neutralizes the single-byte C1 CSI introducer (U+009B) too" do
+      # U+009B arrives as a valid 2-byte UTF-8 form; stripping ESC alone would
+      # leave it working as `ESC [`.
+      out = described_class.sanitize_terminal("31mRED")
+      expect(out).not_to include("")
+      expect(out).to include("<9B>").and include("RED")
+    end
+
+    it "strips OSC window-title / clipboard sequences" do
+      out = described_class.sanitize_terminal("\e]0;hijacked\a\e]52;c;cGVk\a x")
+      expect(out).not_to include("\e")
+      expect(out).to include("x")
+    end
+
+    it "renders stripped control bytes as visible caret notation (no silent delete)" do
+      out = described_class.sanitize_terminal("a\e\x00\x7Fb")
+      expect(out).to include("^[").and include("^@").and include("^?")
+      expect(out).to include("a").and include("b")
+    end
+
+    it "keeps tab and newline (legitimate layout)" do
+      expect(described_class.sanitize_terminal("a\tb\nc")).to eq("a\tb\nc")
+    end
+
+    it "normalizes a bare CR to a newline so overwrite-spoofing can't rewind" do
+      out = described_class.sanitize_terminal("real total: 100\rfake total: 999")
+      expect(out).not_to include("\r")
+      expect(out).to eq("real total: 100\nfake total: 999")
+    end
+
+    it "collapses CRLF to a single LF" do
+      expect(described_class.sanitize_terminal("a\r\nb")).to eq("a\nb")
+    end
+
+    it "scrubs invalid UTF-8 before sanitizing (binary output is safe to print)" do
+      raw = (+"x\xFF\e[2Jy").force_encoding(Encoding::UTF_8)
+      out = described_class.sanitize_terminal(raw)
+      expect(out.valid_encoding?).to be(true)
+      expect(out).not_to include("\e")
+      expect(out).to include("x").and include("y")
     end
   end
 end

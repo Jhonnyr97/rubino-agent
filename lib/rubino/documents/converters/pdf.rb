@@ -29,14 +29,23 @@ module Rubino
           File.extname(path.to_s).downcase == ".pdf"
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           require "pdf/reader"
           reader = PDF::Reader.new(path)
-          pages = reader.pages.map { |page| page_text(page) }
+          pages = []
+          # budget.tick per page bails a page bomb DURING extraction, and the
+          # accumulated-bytes cap bounds a single pathologically dense page.
+          reader.pages.each do |page|
+            txt = page_text(page)
+            budget.tick(bytes: txt.bytesize)
+            pages << txt
+          end
           text = pages.reject(&:empty?).join("\n\n")
           return scanned_note if text.strip.empty?
 
           text
+        rescue Rubino::Interrupted, CapExceeded
+          raise
         rescue PDF::Reader::MalformedPDFError, PDF::Reader::UnsupportedFeatureError
           scanned_note
         end

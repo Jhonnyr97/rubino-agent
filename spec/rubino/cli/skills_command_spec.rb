@@ -33,6 +33,38 @@ RSpec.describe Rubino::CLI::SkillsCommand do
       expect(rows.find { |r| r[0] == "data-helper" }[1]).to eq("enabled")
       expect(rows.find { |r| r[0] == "legacy-flat" }[1]).to eq("disabled")
     end
+
+    # #369a: an untrusted cwd silently withholds its project-local skills from
+    # the trust-gated listing, leaving the user with no clue the repo's skills
+    # exist. `skills list` must note how many are hidden and how to surface them.
+    it "notes project-local skills hidden because the directory is untrusted" do
+      project = Dir.mktmpdir("rubino-untrusted")
+      skill_dir = File.join(project, ".rubino", "skills", "repo-skill")
+      FileUtils.mkdir_p(skill_dir)
+      File.write(File.join(skill_dir, "SKILL.md"),
+                 "---\nname: repo-skill\ndescription: project-only skill\n---\nbody")
+
+      # The cwd is untrusted, so the trust-gated listing drops the cwd-relative
+      # `.rubino/skills` (default config path) and hides repo-skill; a
+      # trust-inclusive scan rooted here surfaces it as "hidden".
+      allow(Rubino::Skills::Registry).to receive(:project_local_trusted?).and_return(false)
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(project)
+
+      # Default cwd-relative skills.paths (the project-local mechanism), no
+      # built-ins, so only repo-skill is discoverable — and only when trusted.
+      config_with_local = test_configuration(
+        "skills" => { "paths" => [".rubino/skills"], "include_builtin" => false }
+      )
+      allow(Rubino).to receive(:configuration).and_return(config_with_local)
+
+      Dir.chdir(project) { described_class.new.list }
+
+      hint = messages(:warning).join("\n")
+      expect(hint).to include("1 project-local skill hidden")
+      expect(hint).to include("not trusted")
+    ensure
+      FileUtils.remove_entry(project) if project
+    end
   end
 
   describe "#show" do
@@ -44,10 +76,12 @@ RSpec.describe Rubino::CLI::SkillsCommand do
       expect(body).to eq(Rubino::Skills::Registry.trusted.find("data-helper").content)
     end
 
-    it "errors on an unknown skill" do
-      described_class.new.show("nope")
-
-      expect(messages(:error).join).to include("unknown skill: nope")
+    # P2-H1/H2: an unknown skill is a FAILURE — raise Thor::Error (non-zero
+    # exit, message on stderr), matching SessionCommand, instead of the old
+    # stdout ui.error + return 0.
+    it "raises Thor::Error on an unknown skill (non-zero exit, stderr)" do
+      expect { described_class.new.show("nope") }
+        .to raise_error(Thor::Error, /unknown skill: nope/)
     end
   end
 
@@ -124,12 +158,11 @@ RSpec.describe Rubino::CLI::SkillsCommand do
         expect(installer.sources).to eq({})
       end
 
-      it "errors on a --skill name the source doesn't ship, installing nothing" do
+      it "raises Thor::Error on a --skill name the source doesn't ship, installing nothing" do
         stub_fetch(fake_checkout("pdf"))
 
-        described_class.new([], { "skill" => %w[pdf nope] }).install("o/r")
-
-        expect(messages(:error).join).to include("not found in o/r: nope")
+        expect { described_class.new([], { "skill" => %w[pdf nope] }).install("o/r") }
+          .to raise_error(Thor::Error, %r{not found in o/r: nope})
         expect(installer.sources).to eq({})
       end
 
@@ -147,18 +180,16 @@ RSpec.describe Rubino::CLI::SkillsCommand do
         expect(installer.sources.keys).to contain_exactly("pdf", "docx", "pptx", "xlsx")
       end
 
-      it "errors when the fetch fails" do
+      it "raises Thor::Error when the fetch fails" do
         allow(installer).to receive(:fetch).and_return(nil)
 
-        described_class.new.install("nope/nope")
-
-        expect(messages(:error).join).to include("could not fetch nope/nope")
+        expect { described_class.new.install("nope/nope") }
+          .to raise_error(Thor::Error, %r{could not fetch nope/nope})
       end
 
-      it "errors when no source is given" do
-        described_class.new.install
-
-        expect(messages(:error).join).to include("missing source")
+      it "raises Thor::Error when no source is given" do
+        expect { described_class.new.install }
+          .to raise_error(Thor::Error, /missing source/)
       end
     end
 
@@ -196,13 +227,11 @@ RSpec.describe Rubino::CLI::SkillsCommand do
         expect(installer.sources).to eq({})
       end
 
-      it "refuses a skill without a provenance entry, hinting at manual delete" do
+      it "raises Thor::Error for a skill without a provenance entry, keeping the dir" do
         FileUtils.mkdir_p(File.join(skills_dir, "handmade"))
 
-        described_class.new.remove("handmade")
-
-        expect(messages(:error).join).to include("handmade wasn't installed via `rubino skills install`")
-        expect(messages(:info).join).to include("delete the directory manually")
+        expect { described_class.new.remove("handmade") }
+          .to raise_error(Thor::Error, /handmade wasn't installed via `rubino skills install`/)
         expect(Dir.exist?(File.join(skills_dir, "handmade"))).to be(true)
       end
     end
@@ -236,12 +265,28 @@ RSpec.describe Rubino::CLI::SkillsCommand do
       expect(messages(:success).join).to include("Enabled skill: data-helper")
     end
 
-    it "errors on an unknown skill and lists the available ones" do
-      described_class.new.disable("nope")
-
-      expect(messages(:error).join).to include("unknown skill: nope")
-      expect(messages(:info).join).to include("data-helper")
+    it "raises Thor::Error on an unknown skill, persisting nothing" do
+      expect { described_class.new.disable("nope") }
+        .to raise_error(Thor::Error, /unknown skill: nope/)
       expect(Rubino.database.db[:skill_states].count).to eq(0)
+    end
+  end
+
+  # P2-H1: a partial-failure `update` (any unknown / fetch-failed name) must
+  # exit non-zero so automation detects it. The successful/up-to-date names
+  # still print on stdout; the failures go to stderr.
+  describe "#update with an unknown name" do
+    let(:skills_dir) { Dir.mktmpdir("rubino-installed") }
+    let(:installer)  { Rubino::Skills::Installer.new(skills_dir: skills_dir) }
+
+    before { allow(Rubino::Skills::Installer).to receive(:new).and_return(installer) }
+    after  { FileUtils.remove_entry(skills_dir) }
+
+    it "raises Thor::Error when a requested name was never installed" do
+      allow(installer).to receive_messages(sources: { "pdf" => {} }, update: { "nope" => :unknown })
+
+      expect { described_class.new.update("nope") }
+        .to raise_error(Thor::Error, /failed to update: nope/)
     end
   end
 end

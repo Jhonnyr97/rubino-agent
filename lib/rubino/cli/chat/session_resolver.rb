@@ -42,22 +42,26 @@ module Rubino
             # auto-resume would (#43): the latest RESUMABLE session (any status,
             # message_count > 0), not just an "active" one — otherwise a cleanly
             # ended prior session is invisible and -c silently forks a fresh one,
-            # losing context. When there genuinely is none, tell the user instead
-            # of silently starting over.
-            @auto_resumed_session = Session::Repository.new.latest_resumable
+            # losing context. SCOPED to the launch dir (r5 MF-4 / C-1) so -c in
+            # folder B never resumes folder A's conversation, and a session a
+            # different live tab is still writing is skipped (no two-tab stomp).
+            # When there genuinely is none for this dir, tell the user instead of
+            # silently starting over.
+            @auto_resumed_session = Session::Repository.new.latest_resumable_for_cwd
             return @auto_resumed_session[:id] if @auto_resumed_session
 
-            warn pastel.yellow("No previous session to continue — starting a new one.")
+            warn pastel.yellow("No previous session to continue in this directory — starting a new one.")
             return nil
           end
 
           # --new forces a brand-new session; otherwise a BARE interactive `chat`
-          # auto-resumes the most recent resumable session so a user who closed
-          # the terminal continues where they left off. nil ⇒ no prior session
-          # (true first run) ⇒ fresh session + welcome panel.
+          # auto-resumes the most recent resumable session FOR THIS dir so a user
+          # who closed the terminal continues where they left off — without ever
+          # grabbing another folder's session (r5 MF-4 / C-1). nil ⇒ no prior
+          # session for this dir (true first run here) ⇒ fresh session + welcome.
           return nil if opt(:new) || !auto_resume
 
-          @auto_resumed_session = Session::Repository.new.latest_resumable
+          @auto_resumed_session = Session::Repository.new.latest_resumable_for_cwd
           @auto_resumed_session&.dig(:id)
         end
 
@@ -69,14 +73,23 @@ module Rubino
              @auto_resumed_session)
         end
 
-        # One-liner shown when a bare `chat` auto-resumed the last session (#99),
-        # so the continuation is never silent and the user knows how to opt out.
+        # Prominent one-line banner shown when a bare `chat` auto-resumed the
+        # last session (#99, F2): make it OBVIOUS which session was picked up so
+        # a dev never accidentally continues/pollutes an old one. Carries the
+        # SHORT id, the message count, and the cwd it belongs to — the three
+        # facts a "wait, what session am I in?" moment needs — plus how to start
+        # fresh. Rendered as a warning (not dim status) so it actually stands out
+        # against the resumed history that follows.
         def print_auto_resume_line(ui, session)
           return unless session
 
-          title = session[:title].to_s.strip
-          label = title.empty? ? session[:id][0..7] : %("#{title}")
-          ui.status("▸ resuming #{label} (#{session[:id][0..7]}) — /new for a fresh session")
+          id     = session[:id].to_s[0..7]
+          msgs   = session[:message_count].to_i
+          msgcnt = "#{msgs} msg#{"s" if msgs != 1}"
+          cwd    = pretty_cwd(session[:cwd])
+          where  = cwd ? ", #{cwd}" : ""
+          banner = "▸ resumed session #{id} (#{msgcnt}#{where}) — /new for fresh"
+          ui.respond_to?(:warning) ? ui.warning(banner) : ui.status(banner)
         end
 
         # On exit, hand the user back the exact command to return to this chat.
@@ -133,14 +146,7 @@ module Rubino
               name      = msg.tool_name || "tool"
               arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
               ui.tool_started(name, arguments: arguments, at: at)
-              ui.tool_finished(
-                name,
-                result: ::Rubino::Tools::Result.success(
-                  name: name,
-                  call_id: msg.tool_call_id,
-                  output: msg.content.to_s
-                )
-              )
+              ui.tool_finished(name, result: replay_tool_result(msg, name))
             end
           end
 
@@ -149,12 +155,72 @@ module Rubino
 
         private
 
+        # Rebuilds the stored tool message as a Tools::Result carrying its
+        # ORIGINAL outcome, so #tool_finished replays the SAME glyph the live
+        # session showed — a denied/failed tool replays with the red ✗
+        # ("✗ … denied — not executed"), not a blanket green ✓ (the replay path
+        # used to wrap every row as Result.success). The outcome comes from the
+        # persisted metadata (status / error_code, written by Loop#persist_tool_result);
+        # rows that pre-date that field fall back to inferring a failure from the
+        # output text (a "denied"/"Error:" body), so old sessions also replay
+        # correctly rather than always green.
+        def replay_tool_result(msg, name)
+          meta    = msg.metadata.is_a?(Hash) ? msg.metadata : {}
+          status  = (meta[:status] || meta["status"]).to_s
+          code    = meta[:error_code] || meta["error_code"]
+          output  = msg.content.to_s
+          call_id = msg.tool_call_id
+
+          case status
+          when "denied"
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: output, status: :denied)
+          when "error", "failed"
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: output,
+                                        status: :error, error_code: code&.to_sym)
+          when "success", "completed"
+            ::Rubino::Tools::Result.success(name: name, call_id: call_id, output: output,
+                                            error_code: code&.to_sym)
+          else
+            # Legacy rows (no persisted status): infer from the output text so a
+            # denied/errored tool still replays as ✗ instead of a false ✓.
+            replay_result_from_text(name, call_id, output)
+          end
+        end
+
+        # Best-effort outcome inference for tool rows persisted before the
+        # status/error_code metadata existed: a "denied"/"blocked …not run"
+        # body → :denied; an "Error:"-prefixed body → :error; everything else
+        # is treated as a successful run (the common case).
+        def replay_result_from_text(name, call_id, output)
+          text = output.to_s
+          if text.start_with?("Tool execution denied", "Tool execution blocked")
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: text, status: :denied)
+          elsif text.start_with?("Error:")
+            ::Rubino::Tools::Result.new(name: name, call_id: call_id, output: text, status: :error)
+          else
+            ::Rubino::Tools::Result.success(name: name, call_id: call_id, output: text)
+          end
+        end
+
         def opt(key)
           @options[key] || @options[key.to_s]
         end
 
         def pastel
           @pastel ||= Pastel.new
+        end
+
+        # Abbreviate the session's cwd for the resume banner: collapse $HOME to
+        # ~ and show just the basename's last two segments so a deep path
+        # doesn't blow the line width. nil for a session with no recorded cwd.
+        def pretty_cwd(cwd)
+          path = cwd.to_s.strip
+          return nil if path.empty?
+
+          home = Dir.home
+          path = path.sub(%r{\A#{Regexp.escape(home)}(?=/|\z)}, "~") if home && !home.empty?
+          segs = path.split("/")
+          segs.length > 3 ? "…/#{segs.last(2).join("/")}" : path
         end
 
         # Best-effort parse of the timestamp the DB stored on a Message.

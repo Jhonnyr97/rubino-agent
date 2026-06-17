@@ -16,43 +16,146 @@ module Rubino
     # now a single tool-execution path in the entire application.
     module ToolBridge
       # Returns a RubyLLM::Tool instance wrapping agent_tool.
-      def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil)
+      #
+      # call_id_provider: a 0-arity callable returning the id of the tool_call
+      # ruby_llm is about to dispatch (captured by the adapter's
+      # before_tool_call callback). Threaded through so the STREAMING path
+      # populates the same call_id the non-streaming Loop#execute_tool_calls
+      # already passes — which is what makes spill_full_output fire and the
+      # messages.tool_call_id / tool_calls metadata persist (STRM-2). nil in
+      # the test/one-shot fallback path, where the bridge calls tool.call
+      # directly and no real id exists.
+      # Anthropic prompt-cache breakpoint (#311) placed on the LAST tool's wire
+      # definition. RubyLLM's Anthropic::Tools.function_for deep_merges a tool's
+      # provider_params onto its wire def, and Anthropic caches the WHOLE tool
+      # block up to and including the breakpoint — so one cache_control on the
+      # final tool caches every tool definition.
+      CACHE_CONTROL_PROVIDER_PARAMS = { cache_control: { type: "ephemeral" } }.freeze
+
+      # rubocop:disable Metrics/ParameterLists
+      def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil,
+                   cache_breakpoint: false, budget_exhausted: nil)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
                   ui: ui || Rubino.ui,
                   event_bus: event_bus || Rubino.event_bus,
-                  tool_executor: tool_executor)
+                  tool_executor: tool_executor,
+                  call_id_provider: call_id_provider,
+                  cache_breakpoint: cache_breakpoint,
+                  budget_exhausted: budget_exhausted)
       end
+      # rubocop:enable Metrics/ParameterLists
+
+      # Registers every Rubino tool (wrapped as a bridge) on a ruby_llm chat AND
+      # wires the call-id capture the streaming path needs. ruby_llm hands the
+      # bridge only the parsed arguments (Tool#call(args)), not the tool_call
+      # object — so we latch the id from the before_tool_call callback (fired
+      # right before each sequential, tool_concurrency=false dispatch) into a
+      # holder the bridge reads back as call_id. Without this the streaming path
+      # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
+      # rubocop:disable Metrics/ParameterLists
+      def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false,
+                       budget_exhausted: nil, production: nil)
+        list = Array(tools)
+
+        # Security invariant (#355 defensive): approval + audit only fire when a
+        # ToolExecutor is wired — the nil fallback path calls the tool DIRECTLY,
+        # bypassing ApprovalPolicy#decide and record_audit. That fallback exists
+        # ONLY for unit/one-shot doubles. The production wiring (the adapter built
+        # by AdapterFactory) ALWAYS passes a tool_executor. Guard it so a future
+        # refactor can't silently install the unguarded bridge on a real run:
+        # when explicitly told this is a production install AND there are tools to
+        # install, a nil executor is a hard error rather than a silent
+        # approval/audit bypass. (No tools ⇒ nothing to guard, e.g. a probe.)
+        if production && tool_executor.nil? && !list.empty?
+          raise Rubino::Error,
+                "ToolBridge.install: refusing to install tools on a production path " \
+                "without a tool_executor — approval and audit would be bypassed."
+        end
+
+        current_call_id = nil
+        chat.before_tool_call { |tc| current_call_id = tc&.id } if chat.respond_to?(:before_tool_call)
+        # #311: cache the whole tool block by putting a single cache_control
+        # breakpoint on the LAST tool. Tools arrive in the registry's
+        # deterministic insertion order (register_defaults!), so "last" is
+        # stable across turns — the cache key over the tool block holds.
+        last_index = list.size - 1
+        list.each_with_index do |tool, idx|
+          chat.with_tool(self.for(tool, ui: ui, event_bus: event_bus,
+                                        tool_executor: tool_executor,
+                                        call_id_provider: -> { current_call_id },
+                                        cache_breakpoint: cache_tools && idx == last_index,
+                                        budget_exhausted: budget_exhausted))
+        end
+      end
+      # rubocop:enable Metrics/ParameterLists
 
       def self.bridge_class_for(tool_name)
         @cache ||= {}
         @cache[tool_name] ||= build_class(tool_name)
       end
 
+      # rubocop:disable Metrics/ParameterLists, Metrics/PerceivedComplexity
       def self.build_class(tool_name)
         klass = Class.new(::RubyLLM::Tool) do
           define_method(:name) { tool_name }
 
-          define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:|
-            @agent_tool    = agent_tool
-            @ui            = ui
-            @event_bus     = event_bus
-            @tool_executor = tool_executor
+          define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:,
+                                          call_id_provider: nil, cache_breakpoint: false,
+                                          budget_exhausted: nil|
+            @agent_tool       = agent_tool
+            @ui               = ui
+            @event_bus        = event_bus
+            @tool_executor    = tool_executor
+            @call_id_provider = call_id_provider
+            @cache_breakpoint = cache_breakpoint
+            # 0-arity predicate the Loop wires so a tool dispatched mid-stream can
+            # be HALTED once the per-turn iteration/time budget is spent (#355a).
+            @budget_exhausted = budget_exhausted
           end
 
           define_method(:description) { @agent_tool.description }
           define_method(:params_schema) { @agent_tool.input_schema }
 
+          # PER-INSTANCE provider_params (#311). RubyLLM::Tool#provider_params
+          # is normally class-level, but bridge classes are CACHED and shared
+          # across tools/turns — a class-level write would leak the breakpoint
+          # onto every tool of that name. Overriding per instance keeps the
+          # cache_control on exactly the one final tool the installer marked.
+          define_method(:provider_params) do
+            @cache_breakpoint ? Rubino::LLM::ToolBridge::CACHE_CONTROL_PROVIDER_PARAMS : {}
+          end
+
           define_method(:execute) do |**kwargs|
             name = @agent_tool.name
             args = kwargs.transform_keys(&:to_s)
 
+            # Budget-exhausted graceful abort (#355a). ruby_llm runs the whole
+            # model↔tool loop inside one ask(); the Loop can't re-check its budget
+            # between the intermediate round-trips. So before running THIS tool,
+            # consult the per-turn predicate the Loop wired: when the iteration/
+            # time budget is spent, DON'T execute — return RubyLLM::Tool::Halt,
+            # which makes Chat#handle_tool_calls stop recursing (it sets
+            # halt_result and returns) after adding a valid trailing tool message
+            # (no orphaned tool_use). Control returns to the Loop, which runs its
+            # existing budget-exhausted summary. The Halt content is the same
+            # MAX_ITERATIONS nudge the non-streaming path uses, so the model is
+            # told why it was cut off if the Loop chooses to surface it.
+            if @budget_exhausted&.call
+              return ::RubyLLM::Tool::Halt.new(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+            end
+
             if @tool_executor
-              # Full pipeline: approval check → tool.call → truncation → audit record
+              # Full pipeline: approval check → tool.call → truncation → audit record.
+              # Thread the real tool_call id (captured by the adapter's
+              # before_tool_call callback) so the streaming path populates the
+              # spill file + tool_call_id/tool_calls linkage exactly like the
+              # non-streaming Loop#execute_tool_calls (STRM-2).
+              call_id = @call_id_provider&.call
               result = @tool_executor.execute(
                 name: name,
                 arguments: args,
-                call_id: nil
+                call_id: call_id
               )
               result.output
             else
@@ -84,6 +187,7 @@ module Rubino
 
         klass
       end
+      # rubocop:enable Metrics/ParameterLists, Metrics/PerceivedComplexity
     end
   end
 end

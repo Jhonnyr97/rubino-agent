@@ -23,9 +23,14 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     subject(:policy) { described_class.new(config: config) }
 
     let(:config) do
+      # Pin confirm_all (the default is now dangerous_only, #409) so a not-
+      # dangerous `make build` is :ask outside yolo, and hard_stop:true (the
+      # default is now warn-not-block, #414) so the doom guard still denies.
       test_configuration(
         "approvals" => { "mode" => "manual" },
-        "permissions" => { "shell rm *" => "deny" }
+        "permissions" => { "shell rm *" => "deny" },
+        "security" => { "confirm_policy" => "confirm_all" },
+        "doom_loop" => { "hard_stop" => true }
       )
     end
 

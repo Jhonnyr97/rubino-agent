@@ -25,6 +25,25 @@ module Rubino
         []
       end
 
+      # The live fact set rendered for the extractor prompt — newest 60, id
+      # truncated for compactness. (Uses the backend's #live_dataset.)
+      def live_facts_for_prompt
+        live_dataset.order(Sequel.desc(:created_at)).limit(60).all.map do |r|
+          { id: r[:id][0, 8], kind: r[:kind], text: r[:text] }
+        end
+      end
+
+      # The aux model may wrap JSON in prose or a fenced block; extract the
+      # outermost object and parse leniently.
+      def parse_json(content)
+        return nil if content.to_s.strip.empty?
+
+        str = content[/\{.*\}/m] || content
+        JSON.parse(str)
+      rescue JSON::ParserError
+        nil
+      end
+
       # Render the user/assistant turn transcript fed to the aux extractor.
       def turn_text(messages)
         messages.filter_map do |m|

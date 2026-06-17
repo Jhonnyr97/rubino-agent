@@ -127,7 +127,14 @@ module Rubino
                  "Valid subagents: #{available_subagent_names.join(", ")}."
         end
 
-        if background
+        # Force FOREGROUND in headless one-shot (#380): a `rubino prompt`/-q run
+        # has no IdleCardHost to fold a background child's result back in, and the
+        # process exits the instant the parent's answer is ready — so a background
+        # subagent's result would be silently dropped (its notice sink is nil and
+        # its thread is killed on exit). Running synchronously returns the child's
+        # final text as THIS tool's result, so it lands in the parent transcript
+        # and is factored into the one-shot answer, making `task` reliable headless.
+        if background && !Rubino.headless?
           run_background(definition, prompt)
         else
           run_subagent(definition, prompt)
@@ -261,12 +268,28 @@ module Rubino
       # Records the terminal :completed state and notifies the parent.
       # Deliver-or-report for /agents steer (#140): a parked note the child
       # never got another turn to fold in would otherwise vanish silently —
-      # the user believes the child was steered when it wasn't. Drain what's
-      # left NOW (the child is done; nothing can consume it anymore) and say
-      # so, on the parent UI and in the completion notice.
+      # the user believes the child was steered when it wasn't. Say so, on the
+      # parent UI and in the completion notice.
+      #
+      # H5 — the final drain now happens INSIDE #complete, under the SAME
+      # registry mutex that flips the status to terminal (and that #steer checks
+      # before pushing). The previous shape drained the queue HERE (InputQueue
+      # lock) and THEN called #complete (registry lock): a steer/answer arriving
+      # in that gap landed on an already-drained queue — dropped, missing from
+      # `undelivered`, yet reported delivered. Taking the drained notes from
+      # #complete's return closes that gap: a note is either drained here (and
+      # reported undelivered) or rejected by #steer (and reported not-delivered
+      # to its caller) — never silently lost.
       def record_completion(entry, text, sink, parent_ui)
-        undelivered = entry.steer_queue&.drain || []
-        BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+        drained = BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+        # Drop the gate-delivered answer COPIES (#457 regression): a /reply
+        # answer is delivered to the child via its ask gate AND mirrored onto the
+        # steer queue; when the child resumes via the gate and finishes without
+        # another turn, that mirror is drained here. It was NOT undelivered — the
+        # gate delivered it — so reporting it would surface a false "steer note
+        # not delivered" alarm on the happy path. GENUINE steer notes (no
+        # ANSWER_NOTE_PREFIX) still report undelivered, preserving #457's invariant.
+        undelivered = drained.reject { |n| n.to_s.start_with?(BackgroundTasks::ANSWER_NOTE_PREFIX) }
         notify(sink, completion_notice(entry, text, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,
@@ -428,7 +451,10 @@ module Rubino
             max_turns: definition.max_turns,
             ui: child_ui,
             agent_definition: definition,
-            event_bus: Interaction::EventBus.new
+            event_bus: Interaction::EventBus.new,
+            # Tag the child's fresh session as subagent machinery so it's hidden
+            # from the user-facing /sessions picker + `sessions list` (item 2).
+            session_source: "subagent"
           )
         end
       end
@@ -572,7 +598,9 @@ module Rubino
             model_override: definition.resolved_model,
             max_turns: definition.max_turns,
             ui: nested_ui(definition),
-            agent_definition: definition
+            agent_definition: definition,
+            # Hidden from the user-facing /sessions list/picker (item 2).
+            session_source: "subagent"
           )
         end
       end

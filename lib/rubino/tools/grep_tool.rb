@@ -70,7 +70,19 @@ module Rubino
         before  = (ctx || arguments["before"] || arguments[:before] || 0).to_i.clamp(0, 50)
         after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
 
-        expanded_path = File.expand_path(path)
+        expanded_path = expand_workspace_path(path)
+        # Search is BROAD (#406): grep resolves any NON-secret path like
+        # Hermes/Claude/Codex. A grep whose `path` is a SECRET file directly
+        # (#446) is gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask),
+        # exactly like read — so it is NOT refused here; an approved grep of a
+        # secret file proceeds, a denied/headless one never reaches #call.
+        #
+        # F2: a DIRECTORY grep with `include: "*.env"` is NOT a secret target —
+        # the gate above can't see it — but rg's --glob OVERRIDES the default
+        # hidden-exclusion and would LEAK the matched .env lines. We therefore
+        # post-filter the RESULTS (see #filter_secret_hits): any result line that
+        # points at a secret file is stripped, so secrets never escape via an
+        # include-glob regardless of approval.
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?
@@ -84,6 +96,28 @@ module Rubino
 
       def ripgrep_available?
         system("which rg > /dev/null 2>&1")
+      end
+
+      # True when an rg output line (`<file>:<lineno>:…`, a `<file>:<lineno>-…`
+      # context line, or a bare `--` separator) points at a secret/credential
+      # file — used to strip it from the result set so an include-glob over a
+      # directory can't leak a secret (F2). rg prints the file path verbatim
+      # from the search root we gave it; when the root is a single FILE rg omits
+      # the path prefix, but that case is the directly-targeted (approved) grep,
+      # so we resolve a bare line against `search_root` and let it fall through
+      # as non-secret. The `--` separator carries no path and is kept.
+      def secret_result_line?(line, search_root)
+        return false if line.nil? || line.start_with?("--")
+
+        # Split off the leading "<file>:<lineno>" — rg uses ':' for matches and
+        # ':'/'-' for context, always after the line number. Take everything up
+        # to the LAST ':' or '-' that precedes a digit run + delimiter.
+        m = line.match(/\A(.*?):\d+[:-]/)
+        return false unless m
+
+        file = m[1]
+        file = File.expand_path(file, search_root) unless file.start_with?(File::SEPARATOR)
+        !secret_path_category(file).nil?
       end
 
       def search_with_ripgrep(pattern, path, include_pattern, max_results, before, after)
@@ -104,29 +138,75 @@ module Rubino
         argv += ["-A", after.to_s]  if after.positive?
         argv += [pattern, path]
 
-        output = IO.popen(argv, err: %i[child out], &:read)
+        # STREAM rg's output line-by-line and STOP after max_results (#375a).
+        # `IO.popen(argv).read` buffered the ENTIRE rg output — a pattern that
+        # matches a huge file produced +100MB in memory just to `.first(50)` it.
+        # Read until we have max_results+1 lines (the +1 detects "there are
+        # more"), then close the pipe (SIGPIPE stops rg) so neither memory nor
+        # CPU scale with the match count.
+        # F2: filter secret hits ONLY for a DIRECTORY search (an include-glob
+        # like `*.env` can pull a credential file in). A grep whose path is the
+        # secret FILE itself was already approved by the upstream gate, so its
+        # own lines must be returned, not stripped.
+        filter_secrets = File.directory?(path)
+        lines = []
+        more_exist = false
+        IO.popen(argv, err: %i[child out]) do |io|
+          io.each_line do |line|
+            # Drop a hit that points at a secret file BEFORE it counts toward the
+            # cap, so a result set of only-secrets doesn't crowd out the cap with
+            # content we'll never return.
+            next if filter_secrets && secret_result_line?(line, path)
+
+            if lines.size >= max_results
+              more_exist = true
+              break
+            end
+            lines << line
+          end
+          io.close # close early → rg gets SIGPIPE and stops scanning
+        end
         status = $?.exitstatus
+        # When WE deliberately close the pipe early after hitting the cap
+        # (#391/regression #375), rg is killed mid-scan and exits non-zero —
+        # and on some platforms the broken-pipe exit is reported as 1, the SAME
+        # code rg uses for a genuine "no matches". The old `status != 1` guard
+        # therefore EXCLUDED that case and fell through to the `status == 1`
+        # branch, dropping the 50 matches we already collected and reporting
+        # "No matches". Whenever we collected matches AND closed early (more_exist),
+        # it is unambiguously a success regardless of rg's exit code; a real
+        # "no matches" is 0 collected lines and we never closed early, so it
+        # still reaches the status==1 branch and reports correctly.
+        status = 0 if lines.any? && (more_exist || status != 1)
 
         if status == 0
-          all_lines = output.lines
-          lines     = all_lines.first(max_results)
-          more      = all_lines.size - lines.size
+          # We can't cheaply know the exact remaining count once we stop early,
+          # so report "more" without an exact number when the cap was hit.
+          more      = more_exist
           header    = "#{lines.size} match(es) shown" \
-                      "#{" (#{more} more — raise max_results or narrow the pattern)" if more.positive?}"
+                      "#{" (more — raise max_results or narrow the pattern)" if more}"
           full      = "#{header}:\n\n#{lines.join}"
           { output: full,
-            metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more.positive?}",
+            metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more}",
             body: Util::Output.preview(full),
             body_kind: :plain }
         elsif status == 1
           "No matches found for pattern: #{pattern}"
         else
-          "Error executing search: #{output}"
+          "Error executing search: #{lines.join}"
         end
       end
 
       def search_with_ruby(pattern, path, include_pattern, max_results, before, after)
-        regex   = Regexp.new(pattern)
+        # The Ruby fallback is the LIVE path whenever rg isn't on PATH. A bad
+        # pattern the model emits (e.g. an unclosed paren) would otherwise
+        # raise RegexpError and hand the model a raw exception; return a clean,
+        # actionable tool error instead.
+        begin
+          regex = Regexp.new(pattern)
+        rescue RegexpError => e
+          return "Error: invalid regex pattern: #{e.message}"
+        end
         results = []
 
         # ripgrep accepts a single FILE as well as a directory; mirror that
@@ -134,8 +214,22 @@ module Rubino
         # `path` is a file we search it directly (include_pattern is moot).
         files = File.file?(path) ? [path] : Dir.glob(File.join(path, "**", include_pattern || "*"))
 
+        # Honor .gitignore the SAME way the rg path does (#375b): without this
+        # the fallback returned a different, larger set (build artifacts,
+        # node_modules, ignored secrets) than rg — non-deterministic on whether
+        # rg is installed. A single FILE path the model targeted directly is
+        # always searched (mirrors rg searching an explicit file argument).
+        ignore = Util::IgnoreRules.new
+        searching_file = File.file?(path)
+
         files.each do |file|
           next unless File.file?(file)
+          next if !searching_file && ignore.ignored?(file, path)
+          # F2: in a DIRECTORY search, never read a secret file's lines into
+          # results (an include-glob like `*.env` would otherwise leak it). A
+          # single-file grep the model targeted directly is already approved
+          # upstream, so it is searched normally.
+          next if !searching_file && secret_path_category(file)
           next if binary_file?(file)
 
           begin

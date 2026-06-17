@@ -44,6 +44,22 @@ class FakeLLMAdapter
     self
   end
 
+  # Enqueue a text_only response whose +content+ is the WHOLE turn buffer
+  # (pre-tool narration + answer concatenated) but whose +final_text_block+
+  # isolates only the post-last-tool answer — the shape the real streaming
+  # adapter produces on a text → tool → text turn (#core-F1).
+  def enqueue_text_with_final_block(content, final_text_block, input_tokens: 10, output_tokens: 20)
+    @queue << Rubino::LLM::AdapterResponse.new(
+      content: content,
+      tool_calls: [],
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      model_id: "fake-model",
+      final_text_block: final_text_block
+    )
+    self
+  end
+
   # Enqueue an assistant message that contains a single tool call.
   def enqueue_tool_call(tool_name, arguments, call_id: nil, content: nil,
                         input_tokens: 10, output_tokens: 15)
@@ -88,6 +104,19 @@ class FakeLLMAdapter
   # Enqueue a response that raises an error when consumed.
   def enqueue_error(message = "Simulated LLM error")
     @queue << RuntimeError.new(message)
+    self
+  end
+
+  # Enqueue a streaming turn the USER interrupts mid-stream (#338). Mirrors the
+  # real RubyLLMAdapter#stream_once behaviour: it polls the cancel token at each
+  # chunk boundary (adapter line ~229) and raises Rubino::Interrupted the moment
+  # the token is flipped. Here we yield +shown_words+ as content chunks, then on
+  # the next boundary flip +cancel_token+ (simulating the Enter-to-interrupt /
+  # Ctrl+C that runs on another thread) and raise Rubino::Interrupted — so any
+  # +late_words+ are NEVER yielded. The Loop must persist exactly the shown words
+  # (marked interrupted) and drop the late ones.
+  def enqueue_user_interrupt(cancel_token, shown:, late: [])
+    @stream_interrupt = { cancel_token: cancel_token, shown: shown, late: late }
     self
   end
 
@@ -160,6 +189,25 @@ class FakeLLMAdapter
 
   def stream(messages:, tools: nil, response_format: nil, image_paths: nil)
     record_call(messages: messages, tools: tools, image_paths: image_paths)
+
+    # User-interrupt scenario (#338): yield the shown words, then flip the
+    # cancel token and raise at the next boundary, mirroring the real adapter's
+    # per-chunk #check!. The late words are never yielded.
+    if @stream_interrupt
+      scenario = @stream_interrupt
+      @stream_interrupt = nil
+      if block_given?
+        scenario[:shown].each_with_index do |word, idx|
+          text = idx.zero? ? word : " #{word}"
+          yield({ type: :content, text: text, message_id: 0 })
+        end
+      end
+      # The interrupt arrives between chunks (another thread flipped it).
+      scenario[:cancel_token].cancel!
+      # The next per-chunk poll observes it and raises — late words never flow.
+      raise Rubino::Interrupted
+    end
+
     # Run any mid-stream tool side-effect (ToolBridge → executor) before the
     # final assistant text, mirroring the real streaming dispatch order.
     if @stream_side_effect

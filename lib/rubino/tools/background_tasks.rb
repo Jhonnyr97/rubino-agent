@@ -104,6 +104,19 @@ module Rubino
       OUTPUT_TAIL_MAX      = 6
       OUTPUT_TAIL_LINE_MAX = 200
 
+      # Prefix #deliver_answer stamps on the steer-queue COPY of an answer it has
+      # ALREADY delivered to the child via its ask gate (the dual-path delivery:
+      # gate for a blocking ask, steer-queue for a non-blocking one). When the
+      # child resumes via the gate and finishes WITHOUT another turn boundary, the
+      # still-queued copy is drained by #complete and would surface as an
+      # "undelivered steer note" — but the answer WAS delivered via the gate, so
+      # reporting it undelivered is a false alarm (the /reply happy-path
+      # regression from the H5 fix #457). The completion-notice paths filter notes
+      # carrying this prefix OUT of the undelivered report for exactly that
+      # reason; a genuine `/agents <id> steer "..."` note never carries it, so the
+      # deliver-or-report-undelivered invariant for real steer notes is intact.
+      ANSWER_NOTE_PREFIX = "[parent answer] "
+
       class << self
         def instance
           @instance ||= new
@@ -200,6 +213,19 @@ module Rubino
       # see a consistent snapshot. A failure landing on a :stopping entry is a
       # USER-REQUESTED stop unwinding (Interrupted at the next checkpoint), so
       # it is recorded as :stopped — distinct from a genuine :failed (#108/#13).
+      #
+      # H5 — closes the drain↔complete race. The final drain of the child's
+      # steer_queue happens HERE, under the SAME registry mutex that flips the
+      # status to terminal, and #steer refuses to push onto a terminal entry
+      # under that SAME mutex. So a steer/answer arriving concurrently is
+      # serialised against this finalize: it is EITHER pushed before the status
+      # flips (and drained right here into the returned `undelivered` notes) OR
+      # rejected by #steer (which then honestly reports not-delivered). The
+      # earlier shape — drain (InputQueue lock) then complete (registry lock),
+      # two locks with a gap — let an answer land on a now-dead queue: dropped,
+      # omitted from `undelivered`, yet reported delivered. Returns the notes
+      # that were still queued at finalize time (never delivered to the child),
+      # so the caller can surface them as undelivered.
       def complete(entry, status:, result: nil, error: nil)
         @mutex.synchronize do
           status            = :stopped if entry.status == :stopping && status == :failed
@@ -207,6 +233,10 @@ module Rubino
           entry.result      = result
           entry.error       = error
           entry.finished_at = Time.now
+          # Drain UNDER the mutex: anything still here is undelivered (the child
+          # has no further turn to fold it in), and once status is terminal no
+          # new note can arrive — #steer rejects it.
+          entry.steer_queue&.drain || []
         end
       end
 
@@ -298,17 +328,28 @@ module Rubino
       # affordance). Pushes the text onto the child's steering queue, which the
       # child Loop drains at its next iteration boundary (Loop#inject_steered_input)
       # — between turns, never between a tool_use and its results. Best-effort:
-      # returns false (and pushes nothing) when the entry is gone or has no queue
-      # (e.g. a finished child), true when the note was queued.
+      # returns false (and pushes nothing) when the entry is gone, has no queue,
+      # or has ALREADY reached a terminal state (the child finished — there is no
+      # more turn to fold the note into); true when the note was queued.
+      #
+      # H5 — the push happens UNDER the registry mutex, gated on a non-terminal
+      # status, so it is serialised against #complete (which flips the status to
+      # terminal AND drains the queue under that SAME mutex). Either this push
+      # wins the lock first (the note is queued and will be drained — by the
+      # child at its next turn, or by #complete into the undelivered report) or
+      # #complete wins first (status is terminal and this returns false). There
+      # is no window in which a note is pushed onto a queue nobody will drain yet
+      # reported delivered. Pushing inside the mutex is safe: InputQueue#push has
+      # its own lock and never calls back into the registry, so no lock cycle.
       def steer(id, text)
-        queue = @mutex.synchronize do
+        @mutex.synchronize do
           entry = @entries[id]
-          entry&.steer_queue
-        end
-        return false unless queue
+          return false unless entry&.steer_queue
+          return false if terminal_status?(entry.status)
 
-        queue.push(text)
-        true
+          entry.steer_queue.push(text)
+          true
+        end
       end
 
       # Records a BILLED live probe against a child (S3): bumps probe_count and
@@ -383,8 +424,22 @@ module Rubino
         entry = find(id)
         return false unless entry&.ask_gate
 
+        # H5 — #steer is the SINGLE race-free liveness oracle here: it pushes the
+        # answer onto the steer_queue under the registry mutex IFF the child is
+        # still non-terminal, returning false the instant the child has finished
+        # (atomic against #complete, which flips the status and drains the queue
+        # under that same mutex). So we steer FIRST and let its honest result
+        # decide everything:
+        #   false ⇒ the child already finished; neither path can reach it. Do NOT
+        #           decide the gate (a no-op for a child that will never await
+        #           it) and do NOT clear the ask — report not-delivered.
+        #   true  ⇒ the child is live and the answer is queued; a BLOCKING ask
+        #           additionally needs its gate decided so the parked child wakes
+        #           with the answer as its tool result. Then clear the blocked
+        #           state and report delivered.
+        return false unless steer(entry.id, "#{ANSWER_NOTE_PREFIX}#{answer}")
+
         entry.ask_gate.decide(entry.ask_id, answer)
-        steer(entry.id, "[parent answer] #{answer}")
         end_ask(entry.id)
         true
       end
@@ -482,6 +537,54 @@ module Rubino
         descendants_of(id).each { |e| e.ask_gate&.cancel! }
       end
 
+      # The ONE per-entry stop body, shared by every stop path (the human
+      # /agents <id> --stop, the model-callable task_stop, and the
+      # parent-teardown #cancel_all below). Marks the stop so the unwind records
+      # as :stopped (not ✗ failed) and the list shows ◌ stopping, then wakes the
+      # entry no matter HOW it is blocked: a child parked on its OWN approval or
+      # ask gate (cancel those → Interrupted → clean unwind), any descendant
+      # parked on a blocking ask (the stop-cascade), and the runner's CancelToken
+      # for a child between checkpoints. Idempotent and safe on an already-stopped
+      # or never-blocked entry (each cancel! is one-shot; request_stop no-ops on a
+      # non-live status), so #cancel_all can call it across the whole registry.
+      def stop_entry(entry)
+        return unless entry
+
+        request_stop(entry.id)
+        entry.approval_gate&.cancel!
+        entry.ask_gate&.cancel!
+        cancel_descendant_ask_gates(entry.id)
+        entry.runner&.cancel!
+      end
+
+      # Structured-concurrency teardown seam: cancel EVERY live subagent so the
+      # process never leaves a child parked. The required fix for the parent-death
+      # deadlock (#XXX) — when the PARENT dies/interrupts (REPL break, HUP/TERM,
+      # clean quit, an aborted turn) a child blocked on ask_parent(blocking:true)
+      # otherwise stays parked on its gate for the full ask_parent_timeout (~900s)
+      # because nothing cancels its gate; the per-id stop paths only fire on an
+      # explicit /agents --stop or task_stop. Calling this from each parent-death
+      # edge wakes every blocked child SYNCHRONOUSLY (cancel! pushes its sentinel;
+      # the gate's await observes it within one WAKE_TICK) so each unwinds via the
+      # existing `rescue Rubino::Interrupted` with the clean "parent question was
+      # cancelled" message instead of hanging to the bound. No-op when there are no
+      # live children, and idempotent (#stop_entry is), so it is safe to invoke
+      # from a teardown `ensure` and from a signal trap. Snapshots #running first
+      # (outside the per-entry work) so we don't hold the registry mutex across the
+      # gate/runner cancels.
+      def cancel_all
+        running.each { |entry| stop_entry(entry) }
+        # Logical cancel alone (above) only flips cancel tokens and trusts each
+        # child THREAD to observe the token and reap its own shell within a wake
+        # tick — but on parent-DEATH the process exits before the thread reaches
+        # that checkpoint, so any shell a child spawned (its own pgid) reparents
+        # to init as an orphan (MED-2). Reap the tracked shell process groups
+        # SYNCHRONOUSLY here so the same parent-death edges that call cancel_all
+        # (clean quit, HUP/TERM trap, REPL break) leave no surviving shell.
+        ShellRegistry.instance.kill_all_groups
+      end
+      alias shutdown! cancel_all
+
       # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
       # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
       def owned_by?(parent_id, child_id)
@@ -537,6 +640,16 @@ module Rubino
       # thread, so all count as live.
       def live_status?(status)
         %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(status)
+      end
+
+      # A child has reached a TERMINAL state once #complete has run: its worker
+      # thread is done, its steer_queue has been drained, and it has no further
+      # turn to fold a steer note into. #steer rejects pushes onto a terminal
+      # entry (H5) so an answer arriving after finalize is reported undelivered
+      # rather than dropped-but-reported-delivered. :cancelled is included for
+      # the API surface, which records cancellation via #complete too.
+      def terminal_status?(status)
+        %i[completed failed stopped cancelled].include?(status)
       end
 
       def running_count

@@ -16,6 +16,37 @@ RSpec.describe Rubino::Tools::ShellTool do
     expect(tool.risk_level).to eq(:high)
   end
 
+  # G3: a diff-producing command is rendered as a real diff (full hunks, +/-
+  # coloring) rather than a dimmed/collapsed dump. The tool tags the output
+  # kind so the UI knows.
+  describe ".diff_command?" do
+    it "matches diff-producing git/diff commands" do
+      ["git diff", "git diff --staged", "git diff -- src/app.js",
+       "git show HEAD", "git log -p", "diff a.txt b.txt"].each do |cmd|
+        expect(described_class.diff_command?(cmd)).to be(true), cmd
+      end
+    end
+
+    it "does NOT match non-diff commands or false-positive lookalikes" do
+      ["git status", "git add -p", "git difftool", "diffstat",
+       "gitdiff", "ls | diff-ignore", "echo diff"].each do |cmd|
+        expect(described_class.diff_command?(cmd)).to be(false), cmd
+      end
+    end
+  end
+
+  describe "diff render hint" do
+    it "tags a git diff body as :diff" do
+      res = tool.call("command" => "git diff --no-index /etc/hostname /etc/hostname || true")
+      expect(res[:body_kind]).to eq(:diff)
+    end
+
+    it "tags ordinary output as :plain" do
+      res = tool.call("command" => "echo hi")
+      expect(res[:body_kind]).to eq(:plain)
+    end
+  end
+
   describe "command execution" do
     it "returns stdout output" do
       expect(payload(tool.call("command" => "echo hello_shell"))).to include("hello_shell")

@@ -122,9 +122,14 @@ RSpec.describe "Agent end-to-end with FakeLLMAdapter" do
   describe "tool call cycle" do
     let(:tmp_dir) { Dir.mktmpdir("e2e_tool") }
 
-    after         { FileUtils.rm_rf(tmp_dir) }
+    after do
+      Rubino.configuration.set("terminal", "cwd", nil)
+      FileUtils.rm_rf(tmp_dir)
+    end
 
     before do
+      # read is workspace-sandboxed (r5 MF-1) — root the workspace at tmp_dir.
+      Rubino.configuration.set("terminal", "cwd", tmp_dir)
       # Register ReadTool in the global registry so Lifecycle can find it
       Rubino::Tools::Registry.instance.reset!
       Rubino::Tools::Registry.instance.register(Rubino::Tools::ReadTool.new)
