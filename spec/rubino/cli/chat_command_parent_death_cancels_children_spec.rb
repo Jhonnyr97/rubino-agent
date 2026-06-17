@@ -4,11 +4,15 @@ require "stringio"
 
 # Parent-death deadlock fix — the CALL-SITE wiring. BackgroundTasks#cancel_all
 # is the structured-concurrency teardown seam; these specs pin that the
-# parent-death edges in ChatCommand actually invoke it (the behavior that the
+# parent-death edges in ChatCommand do the right teardown (the behavior that the
 # child unwinds rather than parking ~900s is proven in
 # background_tasks_parent_death_spec.rb):
-#   * the HUP/TERM external-teardown trap (install_session_end_traps), BEFORE
-#     exit(0) and trap-safe;
+#   * the HUP/TERM external-teardown trap (install_session_end_traps) reaps the
+#     child shell groups via ShellRegistry#kill_all_groups BEFORE exit(0), and
+#     stays TRAP-SAFE — it does NOT route through #cancel_all, whose #running /
+#     #stop_entry / pre-fix #kill_all_groups all take a Mutex (forbidden in a
+#     trap → ThreadError, which used to kill the whole trap and orphan the
+#     shells, #478);
 #   * the /agent switch (switch_primary_agent) — non-destructive, so it SURFACES
 #     a blocked child rather than cancelling it.
 RSpec.describe Rubino::CLI::ChatCommand do
@@ -21,15 +25,21 @@ RSpec.describe Rubino::CLI::ChatCommand do
   end
 
   describe "HUP/TERM external-teardown trap (install_session_end_traps)" do
-    let(:runner) { instance_double(Rubino::Agent::Runner) }
+    let(:runner)    { instance_double(Rubino::Agent::Runner) }
+    let(:shell_reg) { instance_double(Rubino::Tools::ShellRegistry) }
 
     before do
       allow(runner).to receive(:cancel!)
       allow(runner).to receive(:end_session!)
+      allow(Rubino::Tools::ShellRegistry).to receive(:instance).and_return(shell_reg)
+      allow(shell_reg).to receive(:kill_all_groups)
+      # cancel_all MUST NOT be reached from the trap (its Mutex#synchronize is
+      # forbidden in trap context). Allow it only so we can assert it is NOT
+      # called — a real call would also raise ThreadError under a real signal.
       allow(registry).to receive(:cancel_all)
     end
 
-    it "cancels all live subagents BEFORE exit(0), so a blocked child unwinds on teardown" do
+    it "reaps the child shell groups BEFORE exit(0), trap-safely (no #cancel_all, no Mutex)" do
       skip "no SIGTERM on this platform" unless Signal.list.key?("TERM")
 
       # Arm the traps, then pull back the handler the trap installed (re-trapping
@@ -42,8 +52,13 @@ RSpec.describe Rubino::CLI::ChatCommand do
         expect(handler).to respond_to(:call)
 
         expect { handler.call("TERM") }.to raise_error(SystemExit)
-        expect(registry).to have_received(:cancel_all)
+        # The shell groups are reaped via the lock-free trap-safe path...
+        expect(shell_reg).to have_received(:kill_all_groups)
         expect(runner).to have_received(:cancel!).with(reason: :external)
+        expect(runner).to have_received(:end_session!)
+        # ...NOT through #cancel_all (which takes a Mutex → ThreadError in a trap,
+        # the root cause of #478).
+        expect(registry).not_to have_received(:cancel_all)
       ensure
         Signal.trap("TERM", saved || "DEFAULT")
       end
