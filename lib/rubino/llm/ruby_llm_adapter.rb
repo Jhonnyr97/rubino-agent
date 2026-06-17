@@ -499,6 +499,24 @@ module Rubino
         elsif @provider == "openai"
           base = present_base_url(prov_cfg)
           c.openai_api_base = base if base
+        elsif native_ruby_llm_provider?(@provider)
+          # A provider that ruby_llm supports natively but we don't special-case
+          # above (deepseek, mistral, perplexity, xai, …). It has a stable
+          # default endpoint and a `<provider>_api_key` config setter, but
+          # nothing wired it before — so CredentialCheck would pass on the
+          # presence of <PROVIDER>_API_KEY while the call died with
+          # "Missing configuration for X: x_api_key" (#482). Wire the resolved
+          # key (config first, then the native ENV var) and an optional
+          # base_url override through ruby_llm's generic provider options, so
+          # the preflight verdict matches what the call actually hits. Like the
+          # native openai/anthropic/gemini wiring above (and unlike the
+          # *_compatible paths), only set what's present and leave the gating to
+          # the CredentialCheck preflight — construction must not raise on a
+          # missing key (callers build the adapter just to read .provider).
+          key = native_provider_api_key(prov_cfg)
+          c.public_send("#{@provider}_api_key=", key) if key
+          base = present_base_url(prov_cfg)
+          c.public_send("#{@provider}_api_base=", base) if base
         end
 
         # We OWN retry/backoff in Agent::ModelCallRunner (token-gated,
@@ -546,6 +564,16 @@ module Rubino
               "Missing API key for provider '#{@provider}'. " \
               "Set providers.#{@provider}.api_key in ~/.rubino/config.yml " \
               "(e.g. ${#{@provider.to_s.upcase}_API_KEY} with the value in .env)."
+      end
+
+      # The api_key for a natively-supported provider (deepseek, mistral, …):
+      # config `providers.<name>.api_key` first, then the native <PROVIDER>_API_KEY
+      # ENV var (the SAME var CredentialCheck.usable? consults), or nil. Resolving
+      # from the identical source as the preflight keeps the two in lockstep (#482);
+      # the CredentialCheck preflight — not this wiring — gates a missing key.
+      def native_provider_api_key(prov_cfg)
+        key = prov_cfg["api_key"] || CredentialCheck.provider_env_key(@provider)
+        key unless key.to_s.empty?
       end
 
       # The configured base_url, normalised to nil when blank/whitespace so a
@@ -787,6 +815,15 @@ module Rubino
       # (e.g. MiniMax's native Anthropic-Messages endpoint).
       def anthropic_compatible_provider?
         provider_cfg["anthropic_compatible"] == true
+      end
+
+      # True when ruby_llm supports `provider` natively via a `<provider>_api_key`
+      # config setter (deepseek, mistral, perplexity, xai, …) AND we don't already
+      # special-case it (openai/anthropic/gemini/bedrock have dedicated wiring).
+      # Single source of truth shared with CredentialCheck so the preflight only
+      # promises "usable" for a provider whose key the adapter actually wires (#482).
+      def native_ruby_llm_provider?(provider)
+        CredentialCheck.native_ruby_llm_provider?(provider)
       end
 
       # True when the "hidden" render mode is active. The streaming emit no

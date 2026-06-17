@@ -9,7 +9,7 @@ RSpec.describe Rubino::LLM::CredentialCheck do
 
   def touched_env
     %w[OPENAI_API_KEY ANTHROPIC_API_KEY MINIMAX_API_KEY GEMINI_API_KEY
-       GOOGLE_API_KEY DEEPSEEK_API_KEY]
+       GOOGLE_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY QWEN_API_KEY]
   end
 
   around do |ex|
@@ -95,6 +95,62 @@ RSpec.describe Rubino::LLM::CredentialCheck do
       ENV["OPENAI_API_KEY"] = "sk-openai"
       c = config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
       expect(described_class.usable?(c)).to be true
+    end
+  end
+
+  # Regression (#482): the preflight verdict must MATCH what the model call
+  # actually hits. A provider in ProviderResolver::PROVIDER_PATTERNS that is
+  # neither natively wired nor *_compatible used to PASS usable? on the presence
+  # of <PROVIDER>_API_KEY, but the call then died with
+  # "Missing configuration for X: x_api_key" — a lying preflight (pass-then-crash).
+  #
+  # The fix splits PROVIDER_PATTERNS providers into:
+  #   * ruby_llm-native (deepseek, mistral, …): usable? PASSES *and* the adapter
+  #     wires <provider>_api_key, so the call reaches the provider — verified in
+  #     the adapter spec ("native ruby_llm provider wiring (#482)").
+  #   * unreachable (qwen): no native ruby_llm client and no *_compatible
+  #     base_url — usable? now returns FALSE with an actionable base_url message,
+  #     so the preflight STOPS at boot instead of crashing at call time.
+  describe "preflight matches call time for PROVIDER_PATTERNS providers (#482)" do
+    it "deepseek (ruby_llm-native): usable? is TRUE when DEEPSEEK_API_KEY is set" do
+      ENV["DEEPSEEK_API_KEY"] = "sk-deepseek"
+      c = config("model" => { "default" => "deepseek-chat", "provider" => "deepseek" })
+      expect(described_class.native_ruby_llm_provider?("deepseek")).to be true
+      expect(described_class.usable?(c)).to be true
+    end
+
+    it "mistral (ruby_llm-native): usable? is TRUE when MISTRAL_API_KEY is set" do
+      ENV["MISTRAL_API_KEY"] = "sk-mistral"
+      c = config("model" => { "default" => "mistral-large", "provider" => "mistral" })
+      expect(described_class.native_ruby_llm_provider?("mistral")).to be true
+      expect(described_class.usable?(c)).to be true
+    end
+
+    it "qwen (no native client, no compatible base_url): usable? is FALSE even with QWEN_API_KEY" do
+      ENV["QWEN_API_KEY"] = "sk-qwen"
+      c = config("model" => { "default" => "qwen-max", "provider" => "qwen" })
+      expect(described_class.resolved_provider(c)).to eq("qwen")
+      expect(described_class.native_ruby_llm_provider?("qwen")).to be false
+      # Previously TRUE (then crashed at call time). Now FALSE — preflight stops.
+      expect(described_class.usable?(c)).to be false
+    end
+
+    it "qwen becomes usable when configured as an openai_compatible endpoint" do
+      c = config(
+        "model" => { "default" => "qwen-max", "provider" => "qwen" },
+        "providers" => { "qwen" => { "openai_compatible" => true, "api_key" => "sk-qwen",
+                                     "base_url" => "https://dashscope.example/compatible-mode/v1" } }
+      )
+      expect(described_class.usable?(c)).to be true
+    end
+
+    it "the unreachable message tells the user to set an openai_compatible base_url" do
+      ENV["QWEN_API_KEY"] = "sk-qwen"
+      c = config("model" => { "default" => "qwen-max", "provider" => "qwen" })
+      msg = described_class.missing_key_message(c)
+      expect(msg).to include("no native ruby_llm support")
+      expect(msg).to include("openai_compatible")
+      expect(msg).to include("base_url")
     end
   end
 
