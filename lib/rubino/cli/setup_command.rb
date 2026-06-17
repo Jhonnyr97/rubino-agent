@@ -81,9 +81,16 @@ module Rubino
         # non-interactive (files-only) paths.
         if LLM::CredentialCheck.usable?
           ui.success("Setup complete! Run 'rubino doctor' to verify.")
-        else
+        elsif (model = Rubino.configuration.model_default.to_s).empty?
           ui.warning("Setup files created, but no model is configured yet.")
           ui.status("Run 'rubino setup' again or add an API key, then 'rubino doctor' to verify.")
+        else
+          # A model IS configured (#31) — what's missing is its CREDENTIAL (only a
+          # different provider's key is present), so the old "no model configured"
+          # copy was wrong. Name the model and point at the guided setup.
+          provider = LLM::CredentialCheck.resolved_provider
+          ui.warning("Setup files created, but the API key for #{model} (provider '#{provider}') is missing.")
+          ui.status("Run 'rubino setup' to add it, then 'rubino doctor' to verify.")
         end
       end
 
