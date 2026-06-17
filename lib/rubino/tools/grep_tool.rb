@@ -71,18 +71,12 @@ module Rubino
         after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
 
         expanded_path = expand_workspace_path(path)
-        # Search is BROAD (#406): grep resolves any NON-secret path like
-        # Hermes/Claude/Codex. A grep whose `path` is a SECRET file directly
-        # (#446) is gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask),
-        # exactly like read — so it is NOT refused here; an approved grep of a
-        # secret file proceeds, a denied/headless one never reaches #call.
-        #
-        # F2: a DIRECTORY grep with `include: "*.env"` is NOT a secret target —
-        # the gate above can't see it — but rg's --glob OVERRIDES the default
-        # hidden-exclusion and would LEAK the matched .env lines. We therefore
-        # post-filter the RESULTS (see #filter_secret_hits): any result line that
-        # points at a secret file is stripped, so secrets never escape via an
-        # include-glob regardless of approval.
+        # Search is BROAD (#406): grep resolves any path like Hermes/Claude/
+        # Codex, INCLUDING secret/credential files. Reading a secret is allowed
+        # unprompted, matching the field norm (#480) — there is no read-side
+        # secret gate or result redaction, so an include-glob like `*.env` over
+        # a directory returns its matches like any other file. (Only WRITING a
+        # secret stays approval-gated; see Security::ApprovalPolicy#decide.)
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?
@@ -96,28 +90,6 @@ module Rubino
 
       def ripgrep_available?
         system("which rg > /dev/null 2>&1")
-      end
-
-      # True when an rg output line (`<file>:<lineno>:…`, a `<file>:<lineno>-…`
-      # context line, or a bare `--` separator) points at a secret/credential
-      # file — used to strip it from the result set so an include-glob over a
-      # directory can't leak a secret (F2). rg prints the file path verbatim
-      # from the search root we gave it; when the root is a single FILE rg omits
-      # the path prefix, but that case is the directly-targeted (approved) grep,
-      # so we resolve a bare line against `search_root` and let it fall through
-      # as non-secret. The `--` separator carries no path and is kept.
-      def secret_result_line?(line, search_root)
-        return false if line.nil? || line.start_with?("--")
-
-        # Split off the leading "<file>:<lineno>" — rg uses ':' for matches and
-        # ':'/'-' for context, always after the line number. Take everything up
-        # to the LAST ':' or '-' that precedes a digit run + delimiter.
-        m = line.match(/\A(.*?):\d+[:-]/)
-        return false unless m
-
-        file = m[1]
-        file = File.expand_path(file, search_root) unless file.start_with?(File::SEPARATOR)
-        !secret_path_category(file).nil?
       end
 
       def search_with_ripgrep(pattern, path, include_pattern, max_results, before, after)
@@ -144,20 +116,10 @@ module Rubino
         # Read until we have max_results+1 lines (the +1 detects "there are
         # more"), then close the pipe (SIGPIPE stops rg) so neither memory nor
         # CPU scale with the match count.
-        # F2: filter secret hits ONLY for a DIRECTORY search (an include-glob
-        # like `*.env` can pull a credential file in). A grep whose path is the
-        # secret FILE itself was already approved by the upstream gate, so its
-        # own lines must be returned, not stripped.
-        filter_secrets = File.directory?(path)
         lines = []
         more_exist = false
         IO.popen(argv, err: %i[child out]) do |io|
           io.each_line do |line|
-            # Drop a hit that points at a secret file BEFORE it counts toward the
-            # cap, so a result set of only-secrets doesn't crowd out the cap with
-            # content we'll never return.
-            next if filter_secrets && secret_result_line?(line, path)
-
             if lines.size >= max_results
               more_exist = true
               break
@@ -225,11 +187,6 @@ module Rubino
         files.each do |file|
           next unless File.file?(file)
           next if !searching_file && ignore.ignored?(file, path)
-          # F2: in a DIRECTORY search, never read a secret file's lines into
-          # results (an include-glob like `*.env` would otherwise leak it). A
-          # single-file grep the model targeted directly is already approved
-          # upstream, so it is searched normally.
-          next if !searching_file && secret_path_category(file)
           next if binary_file?(file)
 
           begin

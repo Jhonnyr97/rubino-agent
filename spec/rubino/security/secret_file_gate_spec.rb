@@ -1,15 +1,27 @@
 # frozen_string_literal: true
 
-# #446 — UNIFIED SECRET-FILE APPROVAL GATE.
+# RubyLLM defines a process-global config the spec_helper `before` hook nulls
+# out (spec_helper.rb:120). Loaded explicitly here so the constant is defined
+# regardless of random example order (otherwise an example of this file that
+# happens to run before any RubyLLM-loading spec hits an `uninitialized
+# constant RubyLLM` in that hook — a pre-existing ordering fragility).
+require "ruby_llm"
+
+# SECRET-FILE WRITE APPROVAL GATE (#480 — read gate removed).
 #
-# Reading (read/grep/glob) OR writing/editing (write/edit/multi_edit/apply_patch)
-# a SECRET/credential path requires EXPLICIT user approval — not a silent allow,
-# not a silent hard-block. The gate lives in Security::ApprovalPolicy#decide
-# (→ :ask) and is enforced by ToolExecutor: interactive approve → the tool runs;
-# deny → refused; headless (no human) → FAILS CLOSED. Normal-file reads/writes
-# stay broad and unprompted. The hardline floor still hard-blocks.
+# WRITING/editing (write/edit/multi_edit/apply_patch) a SECRET/credential path
+# requires EXPLICIT user approval — not a silent allow, not a silent hard-block.
+# The gate lives in Security::ApprovalPolicy#decide (→ :ask) and is enforced by
+# ToolExecutor: interactive approve → the tool runs; deny → refused; headless
+# (no human) → FAILS CLOSED.
+#
+# READING a secret (read/grep/glob) is NOT gated — it auto-allows like any
+# broad read (#406), matching the field norm (Claude Code / Codex / aider /
+# Windsurf / LangChain all allow secret reads; protection is on write/exec/
+# network). The per-read approval menu (#446/#451) was removed. Normal-file
+# reads/writes stay broad; the hardline floor still hard-blocks.
 # rubocop:disable RSpec/DescribeClass -- a cross-cutting gate, not one class
-RSpec.describe "secret-file approval gate (#446)" do
+RSpec.describe "secret-file write approval gate (#480)" do
   def make_tool(name:, risky: true, risk_level: :medium)
     instance_double(Rubino::Tools::Base, name: name, risky?: risky, risk_level: risk_level)
   end
@@ -25,7 +37,7 @@ RSpec.describe "secret-file approval gate (#446)" do
   end
 
   # ----------------------------------------------------------------------------
-  # 1. The predicate + the policy decision (read AND write both → :ask)
+  # 1. The predicate + the policy decision (WRITE → :ask, READ → allow)
   # ----------------------------------------------------------------------------
   describe "Security::SecretPath predicate (single source of truth)" do
     it "matches the credential set and the system/home prefixes" do
@@ -44,9 +56,6 @@ RSpec.describe "secret-file approval gate (#446)" do
 
   describe "ApprovalPolicy#decide" do
     {
-      "read" => { "file_path" => ".env" },
-      "grep" => { "pattern" => "K", "path" => ".env" },
-      "glob" => { "pattern" => "*", "path" => ".env" },
       "write" => { "file_path" => ".env", "content" => "x" },
       "edit" => { "file_path" => ".env", "old_string" => "a", "new_string" => "b" },
       "multi_edit" => { "file_path" => ".env", "edits" => [{ "old_string" => "a", "new_string" => "b" }] }
@@ -61,6 +70,19 @@ RSpec.describe "secret-file approval gate (#446)" do
       expect(policy.decide(make_tool(name: "apply_patch"), arguments: { "patch" => patch })).to eq(:ask)
     end
 
+    # The read-side gate was REMOVED (#480): reading a secret auto-allows like
+    # any broad read — no approval menu, no redaction.
+    {
+      "read" => { "file_path" => ".env" },
+      "grep" => { "pattern" => "K", "path" => ".env" },
+      "glob" => { "pattern" => "*", "path" => ".env" }
+    }.each do |tool_name, args|
+      it "does NOT ask for #{tool_name} of a secret path — it AUTO-ALLOWS (no menu, #480)" do
+        expect(policy.decide(make_tool(name: tool_name, risky: false, risk_level: :low),
+                             arguments: args)).to eq(:allow)
+      end
+    end
+
     it "does NOT ask for a NORMAL file read (broad reads stay unprompted, #406)" do
       expect(policy.decide(make_tool(name: "read", risky: false, risk_level: :low),
                            arguments: { "file_path" => "app.rb" })).to eq(:allow)
@@ -73,23 +95,18 @@ RSpec.describe "secret-file approval gate (#446)" do
         .to eq(:allow)
     end
 
-    it "resolves a SYMLINK to a secret and still gates it" do
-      File.write(File.join(tmp_dir, ".env"), "API_KEY=zzz\n")
-      link = File.join(tmp_dir, "innocent.txt")
-      File.symlink(File.join(tmp_dir, ".env"), link)
-      expect(policy.decide(make_tool(name: "read"), arguments: { "file_path" => link })).to eq(:ask)
-    end
-
-    it "resolves a TRAVERSAL path to a secret and still gates it" do
+    it "resolves a TRAVERSAL path to a secret and still gates a WRITE to it" do
       nested = File.join(tmp_dir, "a", "b")
       FileUtils.mkdir_p(nested)
       Rubino.configuration.set("terminal", "cwd", nested)
-      expect(policy.decide(make_tool(name: "read"), arguments: { "file_path" => "../../.env" })).to eq(:ask)
+      expect(policy.decide(make_tool(name: "write"),
+                           arguments: { "file_path" => "../../.env", "content" => "x" })).to eq(:ask)
     end
 
-    it "yolo BYPASSES the secret gate (operator opted into full file trust)" do
+    it "yolo BYPASSES the secret WRITE gate (operator opted into full file trust)" do
       Rubino::Modes.set(:yolo)
-      expect(policy.decide(make_tool(name: "read"), arguments: { "file_path" => ".env" })).to eq(:allow)
+      expect(policy.decide(make_tool(name: "write"),
+                           arguments: { "file_path" => ".env", "content" => "x" })).to eq(:allow)
     ensure
       Rubino::Modes.reset!
     end
@@ -101,7 +118,7 @@ RSpec.describe "secret-file approval gate (#446)" do
   end
 
   # ----------------------------------------------------------------------------
-  # 2. End-to-end through ToolExecutor: approve / deny / headless-fails-closed
+  # 2. End-to-end through ToolExecutor: read auto-allows; write approve/deny/headless
   # ----------------------------------------------------------------------------
   describe "end-to-end via ToolExecutor" do
     let(:registry) do
@@ -123,29 +140,22 @@ RSpec.describe "secret-file approval gate (#446)" do
       path
     end
 
-    it "APPROVED read of a secret returns the real bytes" do
-      ui = double("UI", interactive?: true, confirm: true)
+    it "reading a secret needs NO prompt and returns the real bytes (#480)" do
+      ui = double("UI", interactive?: true)
       allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
+      expect(ui).not_to receive(:confirm)
       result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c1")
       expect(result.output).to include("API_KEY=supersecret")
     end
 
-    it "DENIED read of a secret is refused (no content leaks)" do
-      ui = double("UI", interactive?: true, confirm: false)
-      allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
-      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c2")
-      expect(result.denied?).to be(true)
-      expect(result.output).not_to include("supersecret")
-    end
-
-    it "HEADLESS read of a secret FAILS CLOSED (:noninteractive)" do
+    it "reading a secret HEADLESS also returns the bytes (no fail-closed on reads, #480)" do
       ui = double("UI", interactive?: false)
-      allow(ui).to receive_messages(warning: nil, tool_blocked: nil, tool_started: nil, tool_finished: nil)
+      allow(ui).to receive_messages(warning: nil, tool_blocked: nil, tool_started: nil,
+                                    tool_finished: nil, tool_body: nil)
       exec = executor(ui: ui)
       result = exec.execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c3")
-      expect(result.denied?).to be(true)
-      expect(result.output).not_to include("supersecret")
-      expect(exec.blocked_for_approval?).to be(true)
+      expect(result.output).to include("API_KEY=supersecret")
+      expect(exec.blocked_for_approval?).to be(false)
     end
 
     it "APPROVED write of a secret actually writes it" do
@@ -168,6 +178,19 @@ RSpec.describe "secret-file approval gate (#446)" do
       expect(File).not_to exist(path)
     end
 
+    it "HEADLESS write of a secret FAILS CLOSED (:noninteractive)" do
+      ui = double("UI", interactive?: false)
+      allow(ui).to receive_messages(warning: nil, tool_blocked: nil, tool_started: nil, tool_finished: nil)
+      exec = executor(ui: ui)
+      path = File.join(tmp_dir, ".env")
+      result = exec.execute(name: "write",
+                            arguments: { "file_path" => path, "content" => "API_KEY=new" },
+                            call_id: "c7")
+      expect(result.denied?).to be(true)
+      expect(File).not_to exist(path)
+      expect(exec.blocked_for_approval?).to be(true)
+    end
+
     it "a NORMAL file read needs NO prompt (confirm never called)" do
       ui = double("UI", interactive?: true)
       allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
@@ -180,15 +203,15 @@ RSpec.describe "secret-file approval gate (#446)" do
   end
 
   # ----------------------------------------------------------------------------
-  # 3. F2: include-glob grep must never leak a secret
+  # 3. include-glob grep RETURNS a secret's matches (read gate removed, #480)
   # ----------------------------------------------------------------------------
-  describe "F2 grep include-glob bypass" do
-    it "filters the .env hit out of an include:'*.env' directory search" do
+  describe "grep include-glob over a directory" do
+    it "returns the .env hit for an include:'*.env' directory search (no redaction, #480)" do
       File.write(File.join(tmp_dir, ".env"), "API_KEY=supersecret\n")
       File.write(File.join(tmp_dir, "app.rb"), "API_KEY = 'used'\n")
       out = Rubino::Tools::GrepTool.new.call("pattern" => "API_KEY", "path" => tmp_dir, "include" => "*.env")
       text = out.is_a?(Hash) ? out[:output] : out
-      expect(text).not_to include("supersecret")
+      expect(text).to include("supersecret")
     end
   end
 end
