@@ -256,6 +256,7 @@ Metrics/BlockLength:
 Metrics/ClassLength:
   Exclude:
     - 'lib/rubino/cli/chat_command.rb'
+    - 'lib/rubino/commands/executor.rb'
     - 'lib/rubino/llm/ruby_llm_adapter.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
     - 'lib/rubino/ui/cli.rb'

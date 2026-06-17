@@ -1925,7 +1925,8 @@ module Rubino
                                           pending_queued: pending_queued,
                                           status_line: build_status_line(runner),
                                           max_input_rows: Rubino.configuration.display_input_max_rows,
-                                          paste_store: paste_store)
+                                          paste_store: paste_store,
+                                          on_busy_command: busy_command_handler(runner))
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
@@ -1956,6 +1957,32 @@ module Rubino
           ui.suppress_interrupt_marker if quiet && ui.respond_to?(:suppress_interrupt_marker)
           runner.cancel!
         }
+      end
+
+      # The composer's BUSY-TIME input gate (#421): a line typed WHILE A TURN IS
+      # ACTIVE is normally queued, but a local READ-ONLY/CONTROL meta-command
+      # (/agents, /stop, /status, /jobs, /help, /commands, /tasks, /dirs) must
+      # run IMMEDIATELY — watching a live subagent or cancelling one is useless
+      # once parked behind a long turn. Returns the disposition the composer acts
+      # on (:immediate / :blocked / :pass — see Executor#busy_disposition); for
+      # :immediate it ALSO dispatches the command NOW, on the reader thread,
+      # through the SAME Executor#try_execute path the post-turn dispatch uses.
+      # The immediate set is read-only/control by construction, and its output
+      # routes through the composer's render-mutex-serialized UI (StdoutProxy),
+      # so it cannot corrupt the streaming turn; /stop reuses the same cancel
+      # machinery Esc / `--stop` use, already safe to call concurrently. A
+      # state-mutating command returns :blocked and is NOT run here — the
+      # composer shows a transient notice. Any setup failure degrades to :pass
+      # so the line simply queues (the legacy behavior), never crashing the read.
+      def busy_command_handler(runner)
+        executor = Rubino::Commands::Executor.new(ui: Rubino.ui, runner: runner)
+        lambda do |line|
+          disposition = executor.busy_disposition(line)
+          executor.try_execute(line) if disposition == :immediate
+          disposition
+        rescue StandardError
+          :pass
+        end
       end
 
       # Tears down the composer: restores the real $stdout, flushes any held
