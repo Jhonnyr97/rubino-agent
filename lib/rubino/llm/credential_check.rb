@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "ruby_llm"
+
 module Rubino
   module LLM
     # Single source of truth for "does the configured model have a usable
@@ -41,7 +43,50 @@ module Rubino
         return present?(ENV.fetch("OPENAI_API_KEY", nil))    if prov_cfg["openai_compatible"] == true
         return present?(ENV.fetch("ANTHROPIC_API_KEY", nil)) if prov_cfg["anthropic_compatible"] == true
 
+        # The native ENV var only counts as "usable" when the adapter can
+        # actually reach the provider: a natively-wired provider (openai /
+        # anthropic / google / bedrock) or one ruby_llm supports out of the box
+        # (deepseek, mistral, …). For a resolvable-but-unreachable provider like
+        # qwen — in PROVIDER_PATTERNS yet with no native ruby_llm support and no
+        # *_compatible base_url — the key is present but the call would die with
+        # "Missing configuration". Don't lie: report not-usable so the preflight
+        # matches call time (#482). #unreachable_provider_message explains the fix.
+        return false unless wireable_provider?(provider)
+
         present?(provider_env_key(provider))
+      end
+
+      # Providers the adapter wires from the native ENV var: the four with
+      # dedicated wiring (openai/anthropic/google/bedrock) plus any provider
+      # ruby_llm supports natively (deepseek, mistral, …).
+      def wireable_provider?(provider)
+        %w[openai anthropic google bedrock].include?(provider) ||
+          native_ruby_llm_provider?(provider)
+      end
+
+      # True when ruby_llm exposes a `<provider>_api_key` config setter for this
+      # provider (deepseek, mistral, perplexity, xai, …) — the adapter wires it
+      # generically. Excludes the four we special-case so callers can branch on
+      # "additional native provider". Single source of truth shared with
+      # RubyLLMAdapter#native_ruby_llm_provider?.
+      def native_ruby_llm_provider?(provider)
+        return false if %w[openai anthropic google bedrock].include?(provider.to_s)
+
+        RubyLLM.config.respond_to?(:"#{provider}_api_key=")
+      end
+
+      # Actionable guidance for a resolvable-but-unreachable provider (#482):
+      # ruby_llm has no native client for it, so it must be reached through an
+      # OpenAI-/Anthropic-compatible endpoint with an explicit base_url.
+      def unreachable_provider_message(provider)
+        <<~MSG.strip
+          Provider '#{provider}' has no native ruby_llm support, so a #{provider_env_var_name(provider)}
+          alone is not enough — the model call would fail with "Missing configuration".
+          Configure it as an OpenAI-compatible endpoint in ~/.rubino/config.yml:
+            providers.#{provider}.openai_compatible: true
+            providers.#{provider}.base_url: <the provider's OpenAI-compatible endpoint, e.g. https://host/v1>
+            providers.#{provider}.api_key: ${#{provider_env_var_name(provider)}}
+        MSG
       end
 
       # The native ENV credential a provider reads when no config key is set.
@@ -73,7 +118,19 @@ module Rubino
       # text surfaced on the fail-fast path and in non-interactive contexts.
       def missing_key_message(config = Rubino.configuration)
         provider = resolved_provider(config)
-        env_var  = provider_env_var_name(provider)
+
+        # The provider IS resolvable but ruby_llm can't reach it natively and no
+        # *_compatible base_url is configured: the user may even have set its
+        # <PROVIDER>_API_KEY, yet the call would still die. Tell them the real
+        # fix (an OpenAI-compatible base_url) instead of "set the key" (#482).
+        unless wireable_provider?(provider) ||
+               present?(config.provider_config(provider)["api_key"]) ||
+               config.provider_config(provider)["openai_compatible"] == true ||
+               config.provider_config(provider)["anthropic_compatible"] == true
+          return unreachable_provider_message(provider)
+        end
+
+        env_var = provider_env_var_name(provider)
         loader = Config::Loader.new
         <<~MSG.strip
           No API key configured for provider '#{provider}' (model #{config.model_default}).

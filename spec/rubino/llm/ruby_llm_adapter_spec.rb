@@ -12,6 +12,10 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       c.bedrock_secret_key = nil
       c.bedrock_region     = nil
       c.bedrock_session_token = nil
+      c.deepseek_api_key   = nil
+      c.deepseek_api_base  = nil
+      c.mistral_api_key    = nil
+      c.mistral_api_base   = nil
     end
     ENV.delete("BEDROCK_API_KEY")
     ENV.delete("BEDROCK_SECRET_KEY")
@@ -544,6 +548,65 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       expect do
         described_class.new(model_id: "llama3", config: cfg)
       end.not_to raise_error
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # #482 — a PROVIDER_PATTERNS provider that ruby_llm supports natively
+  # (deepseek, mistral, …) but we didn't special-case used to PASS the
+  # CredentialCheck preflight on <PROVIDER>_API_KEY while the call died with
+  # "Missing configuration for X: x_api_key": nothing wired the key into
+  # RubyLLM.config. The adapter now wires <provider>_api_key generically, so
+  # the preflight verdict matches what the call hits.
+  # -----------------------------------------------------------------------
+  describe "native ruby_llm provider wiring (#482)" do
+    def deepseek_cfg(extra = {})
+      test_configuration(
+        "model" => { "provider" => "deepseek", "default" => "deepseek-chat",
+                     "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "deepseek" => extra }
+      )
+    end
+
+    it "wires deepseek_api_key from the provider config" do
+      described_class.new(model_id: "deepseek-chat", provider: "deepseek",
+                          config: deepseek_cfg("api_key" => "sk-ds-config"))
+      expect(RubyLLM.config.deepseek_api_key).to eq("sk-ds-config")
+    end
+
+    it "wires deepseek_api_key from the native DEEPSEEK_API_KEY env var" do
+      ENV["DEEPSEEK_API_KEY"] = "sk-ds-env"
+      described_class.new(model_id: "deepseek-chat", provider: "deepseek", config: deepseek_cfg)
+      expect(RubyLLM.config.deepseek_api_key).to eq("sk-ds-env")
+    ensure
+      ENV.delete("DEEPSEEK_API_KEY")
+    end
+
+    it "wires an optional base_url override into deepseek_api_base" do
+      described_class.new(
+        model_id: "deepseek-chat", provider: "deepseek",
+        config: deepseek_cfg("api_key" => "sk", "base_url" => "https://ds.example/v1")
+      )
+      expect(RubyLLM.config.deepseek_api_base).to eq("https://ds.example/v1")
+    end
+
+    it "does not raise at construction when no key is set (the preflight gates it)" do
+      ENV.delete("DEEPSEEK_API_KEY")
+      expect { described_class.new(model_id: "deepseek-chat", provider: "deepseek", config: deepseek_cfg) }
+        .not_to raise_error
+      expect(RubyLLM.config.deepseek_api_key).to be_nil
+    end
+
+    # The crux of #482: preflight PASS ⇒ the key the call needs is actually
+    # wired (no pass-then-"Missing configuration" mismatch).
+    it "preflight usable? PASS implies the call-time key is wired" do
+      ENV["DEEPSEEK_API_KEY"] = "sk-ds-env"
+      cfg = deepseek_cfg
+      expect(Rubino::LLM::CredentialCheck.usable?(cfg)).to be true
+      described_class.new(model_id: "deepseek-chat", provider: "deepseek", config: cfg)
+      expect(RubyLLM.config.deepseek_api_key).to eq("sk-ds-env")
+    ensure
+      ENV.delete("DEEPSEEK_API_KEY")
     end
   end
 
