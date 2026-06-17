@@ -31,14 +31,22 @@ module Rubino
       end
 
       # Returns a hash suitable for database insertion
+      #
+      # Free-text columns are run through Util::Output.scrub_utf8 at this PERSIST
+      # seam (#498): a NUL byte is valid UTF-8 (so it survives String#scrub) yet
+      # terminates SQLite's C string mid-literal, surfacing a raw
+      # `SQLite3::SQLException: unrecognized token` even through bound params.
+      # Scrubbing here (the single message-write chokepoint) keeps every prompt
+      # storable no matter what control bytes a paste/upstream model emitted,
+      # and is idempotent on already-clean input.
       def to_row
         {
           id: @id,
           session_id: @session_id,
           role: @role,
-          content: @content,
-          tool_name: @tool_name,
-          tool_call_id: @tool_call_id,
+          content: scrub(@content),
+          tool_name: scrub(@tool_name),
+          tool_call_id: scrub(@tool_call_id),
           token_count: @token_count,
           metadata_json: @metadata.empty? ? nil : JSON.generate(@metadata),
           created_at: @created_at
@@ -61,6 +69,13 @@ module Rubino
       end
 
       private
+
+      # Strip persist-fatal bytes (NUL et al.) from a free-text column at the
+      # write seam (#498), preserving nil so a content-less tool/assistant row
+      # round-trips as nil rather than "".
+      def scrub(value)
+        value.nil? ? nil : Util::Output.scrub_utf8(value)
+      end
 
       # Substitutes each stored [token, body] paste expansion back into +text+.
       # The pairs are stored as an array (not a hash) so the placeholder tokens

@@ -86,6 +86,9 @@ module Rubino
         rescue Rubino::AmbiguousSessionError => e
           @ui.error(e.message)
           :handled
+        rescue Sequel::DatabaseError => e
+          @ui.error("couldn't look up that session: #{db_error_summary(e)}")
+          :handled
         end
 
         # Deletes a session in-chat via the SAME confirm-and-destroy flow the
@@ -181,6 +184,19 @@ module Rubino
         rescue Rubino::AmbiguousSessionError => e
           @ui.error(e.message)
           :handled
+        rescue Sequel::DatabaseError => e
+          @ui.error("couldn't look up that session: #{db_error_summary(e)}")
+          :handled
+        end
+
+        # A one-line summary of a Sequel::DatabaseError for the chat surface
+        # (#498). The chat session-resolution path now fully parameterizes its
+        # queries, but any residual driver-level fault (a corrupt FTS index, a
+        # tokenizer rejecting an exotic byte) must still reach the user as a
+        # single clean line — never a raw `SQLite3::SQLException: ...` plus a
+        # multi-line backtrace. Strip to the innermost driver message.
+        def db_error_summary(error)
+          (error.cause || error).message.to_s.lines.first.to_s.strip
         end
 
         # A session title is auto-generated from the conversation, so it is
