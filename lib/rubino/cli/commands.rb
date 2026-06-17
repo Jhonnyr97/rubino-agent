@@ -124,6 +124,19 @@ module Rubino
         # backtrace for the home error); otherwise the clean one-line stderr Thor
         # itself would have printed. Never a raw backtrace; exit non-zero.
         report_early_error(given_args, clean_thor_message(e, given_args))
+      rescue SystemCallError => e
+        # A filesystem/OS syscall (Errno::*) that reached the boot chokepoint
+        # WITHOUT going through Rubino.ensure_directories!'s file-vs-directory
+        # guard — today a `config set`/`config unset` write whose RUBINO_HOME
+        # points at an existing file, so Util::AtomicFile.mkdir_p raised a raw
+        # ~25-frame fileutils Errno::EEXIST backtrace (MED). Normalize EVERY such
+        # Errno here, the same single chokepoint, into the SAME clean one-liner
+        # chat/setup already emit (clean_errno_message strips Ruby's internal
+        # ` @ <syscall> - <path>` tail): a `rubino: <reason>` stderr line under
+        # text, the #327 envelope on stdout under json/stream-json. Never a raw
+        # backtrace; exit non-zero. Deliberately NOT broadened to StandardError —
+        # only OS-level Errno failures are normalized; a real bug still surfaces.
+        report_early_error(given_args, Rubino.clean_errno_message(e.message))
       end
 
       # Normalizes a Thor dispatch/argument error message into rubino's own
