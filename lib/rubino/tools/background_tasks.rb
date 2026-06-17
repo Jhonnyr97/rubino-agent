@@ -68,7 +68,12 @@ module Rubino
         # by an explicit /reply or stop — see ask_parent_tool.rb); a non-blocking
         # ask returns immediately and the answer is delivered later via
         # `steer_queue`. The human answers via /reply <id>, which decides the gate.
-        :ask_gate, :ask_id, :ask_question, :ask_blocking,
+        # :ask_options — the OPTIONAL concrete answer choices the asking child
+        # supplied (ask_parent `options:`). When present the human's answer
+        # surface is an arrow-select of these options (+ a free-text "Answer"
+        # entry); when nil it stays the [Answer / Dismiss] → free-text affordance.
+        # Display/answer-shape only — never changes WHERE the answer is delivered.
+        :ask_gate, :ask_id, :ask_question, :ask_blocking, :ask_options,
         # Ownership link (S1 — foundation for model-driven steer/probe/ask_parent).
         # owner_subagent_id is the `sa_*` id of the subagent that spawned this
         # child, or nil when the spawner is the human / top-level agent. depth is
@@ -382,7 +387,7 @@ module Rubino
       # answer_child; the question was pushed onto the owner's steer_queue, NOT
       # the human's job); owner_id nil (the human / top-level) → :blocked_on_human
       # (the human answers via /reply <id>).
-      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil)
+      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil, options: nil) # rubocop:disable Metrics/ParameterLists -- keyword args recording one ask's state; splitting would obscure it
         @mutex.synchronize do
           entry = @entries[id]
           return unless entry
@@ -391,6 +396,15 @@ module Rubino
           entry.ask_id       = ask_id
           entry.ask_question = question.to_s
           entry.ask_blocking = blocking ? true : false
+          # Normalize to a clean array of answer choices, or nil when none — so
+          # the answer surface can branch on "options present?" without
+          # re-validating. Each element is EITHER a plain string (label==value)
+          # OR a {"label"=>, "description"=>} map (preserved as a hash, NOT
+          # stringified into a Ruby literal — #475-3); a blank string / a map
+          # without a usable label is dropped. A child that supplies no options
+          # keeps the old (nil) shape.
+          opts               = Array(options).filter_map { |o| normalize_ask_option(o) }
+          entry.ask_options  = opts.empty? ? nil : opts
           entry.status       = owner_id ? :blocked_on_parent : :blocked_on_human
         end
       end
@@ -407,6 +421,7 @@ module Rubino
           entry.ask_id       = nil
           entry.ask_question = nil
           entry.ask_blocking = nil
+          entry.ask_options  = nil
           entry.status       = :running if %i[blocked_on_human blocked_on_parent].include?(entry.status)
         end
       end
@@ -595,6 +610,25 @@ module Rubino
       end
 
       private
+
+      # Normalizes ONE supplied ask_parent answer choice (#475-3). Returns a clean
+      # plain STRING for a plain string or a label-only map (label==value), a
+      # {"label"=>, "description"=>} HASH for a {label, description} map (so the
+      # picker can show the label + a dim description hint and still deliver the
+      # label string — never a Ruby hash literal), or nil for a blank string / a
+      # map without a usable label (dropped by the filter_map caller).
+      def normalize_ask_option(opt)
+        if opt.is_a?(Hash)
+          label = (opt["label"] || opt[:label]).to_s.strip
+          desc  = (opt["description"] || opt[:description]).to_s.strip
+          return nil if label.empty?
+
+          desc.empty? ? label : { "label" => label, "description" => desc }
+        else
+          s = opt.to_s.strip
+          s.empty? ? nil : s
+        end
+      end
 
       # The reason (if any) a reserve at this owner/depth must be refused, checked
       # in the documented order. nil ⇒ allowed. Runs UNDER the mutex (callers hold

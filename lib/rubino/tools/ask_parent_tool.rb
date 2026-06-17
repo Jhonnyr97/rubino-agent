@@ -73,6 +73,23 @@ module Rubino
             blocking: {
               type: "boolean",
               description: "true = pause until answered (you cannot proceed without it). " + "false (default) = keep working; the answer is delivered later as a note."
+            },
+            options: {
+              type: "array",
+              items: {
+                anyOf: [
+                  { type: "string" },
+                  {
+                    type: "object",
+                    properties: {
+                      label: { type: "string", description: "The choice text (this is what gets delivered as the answer)." },
+                      description: { type: "string", description: "OPTIONAL one-line hint shown beside the label." }
+                    },
+                    required: %w[label]
+                  }
+                ]
+              },
+              description: "OPTIONAL concrete choices to pick from. Either plain strings " + "(e.g. [\"sqlite\", \"postgres\"]) or {label, description} maps " + "(e.g. [{\"label\":\"sqlite\",\"description\":\"file-based, zero-setup\"}]). " + "When given, the human picks one with the arrow keys (or still types a free " + "answer); omit for an open free-text question."
             }
           },
           required: %w[question]
@@ -86,6 +103,10 @@ module Rubino
       def call(arguments)
         question = (arguments["question"] || arguments[:question]).to_s.strip
         blocking = blocking_arg(arguments)
+        # The raw choices the model supplied (plain strings and/or
+        # {label, description} maps); BackgroundTasks#begin_ask is the single
+        # point that normalizes/validates them (#475-3), so we just pass through.
+        options  = arguments.key?("options") ? arguments["options"] : arguments[:options]
         return "Error: question is required" if question.empty?
 
         id = Rubino.current_subagent_id
@@ -94,7 +115,7 @@ module Rubino
           return "Error: ask_parent is only available to a background subagent " + "(no parent to ask). Resolve this from your task instead."
         end
 
-        escalate(entry, question, blocking)
+        escalate(entry, question, blocking, options)
       rescue Rubino::Interrupted
         # A /agents <id> --stop (or teardown) cancelled the gate while we were
         # parked. Unwind cleanly: report it as denied/cancelled so the child can
@@ -113,7 +134,7 @@ module Rubino
         [true, "true", 1, "1"].include?(raw)
       end
 
-      def escalate(entry, question, blocking)
+      def escalate(entry, question, blocking, options = nil)
         gate   = Run::ApprovalGate.new
         ask_id = "ask_#{entry.id}"
         gate.register(ask_id)
@@ -124,7 +145,7 @@ module Rubino
         owner_id = entry.owner_subagent_id
         BackgroundTasks.instance.begin_ask(
           entry.id, gate: gate, ask_id: ask_id, question: question,
-                    blocking: blocking, owner_id: owner_id
+                    blocking: blocking, owner_id: owner_id, options: options
         )
         if owner_id
           notify_agent_parent(owner_id, entry, question)
@@ -213,6 +234,13 @@ module Rubino
 
         parent_ui.subagent_ask_banner(entry.id, entry.subagent, question) if parent_ui.respond_to?(:subagent_ask_banner)
         parent_ui.set_subagent_cards if parent_ui.respond_to?(:set_subagent_cards)
+        # Mid-turn AUTO-OPEN: if the parent turn is busy (a bottom composer owns
+        # the screen) this asks the parent CLI to surface the answer dropdown by
+        # ITSELF, without waiting for the next idle tick — the human answers the
+        # child while the parent keeps streaming. Best-effort and no-op when no
+        # turn is live (the idle poll covers that). The trigger runs on THIS (the
+        # child's) thread; the CLI hands it to the input thread (see #auto_open_human_ask).
+        parent_ui.auto_open_human_ask(entry) if parent_ui.respond_to?(:auto_open_human_ask)
       rescue StandardError
         nil
       end

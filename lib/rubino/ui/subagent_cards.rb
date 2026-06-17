@@ -53,7 +53,10 @@ module Rubino
         overflow = live.size - shown.size
         lines    = shown.map { |e| card_line(e) }
         lines << @pastel.dim("  + #{overflow} more · /agents") if overflow.positive?
-        lines << hint_line(shown)
+        # Count blocked children over the FULL live list (pre-cap), not just the
+        # shown cards, so the aggregated ⛔N is the true number waiting on the
+        # human even when some are hidden behind the MAX_CARDS overflow (#475-4).
+        lines << hint_line(live)
         lines
       end
 
@@ -103,13 +106,16 @@ module Rubino
         %i[running needs_approval blocked_on_human stopping].include?(entry.status)
       end
 
-      # Shared hint under the block. When something needs approval the hint leads
-      # with the answer affordance; otherwise it's the watch/stop hint.
-      def hint_line(shown)
-        blocked = shown.count { |e| e.status == :blocked_on_human }
+      # Shared hint under the block. When one or more children are blocked on the
+      # human the hint leads with the aggregated ⛔N answer affordance (N = how
+      # many are waiting, pluralized — #475-4); else if something needs approval
+      # it leads with the approve affordance; otherwise the watch/stop hint.
+      def hint_line(live)
+        blocked = live.count { |e| e.status == :blocked_on_human }
         if blocked.positive?
-          @pastel.red("    \u26d4 #{blocked} subagent waiting on you · /reply <id> to answer")
-        elsif shown.any? { |e| e.status == :needs_approval }
+          subagents = blocked == 1 ? "subagent" : "subagents"
+          @pastel.red("    \u26d4#{blocked} #{subagents} waiting on you · /reply <id> to answer")
+        elsif live.any? { |e| e.status == :needs_approval }
           @pastel.dim("    └ /agents <id> to approve · --stop to cancel")
         else
           @pastel.dim("    └ /agents <id> to watch · --stop to cancel")

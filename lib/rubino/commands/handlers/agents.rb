@@ -73,15 +73,57 @@ module Rubino
             return true
           end
           if (entry = registry.awaiting_human.first)
-            answer = prompt_reply_answer(entry)
-            if answer.to_s.strip.empty?
-              @ui.info("No answer given — #{entry.id} is still waiting.")
-            else
-              deliver_reply(entry, answer)
-            end
+            answer_one_human(entry)
             return true
           end
           false
+        end
+
+        # The ONE shared "surface the answer affordance for a child blocked on the
+        # human, read the human's answer, deliver it down the SAME wire" step —
+        # used by BOTH the idle poll (#auto_resolve_pending) and the mid-turn
+        # auto-open (BottomComposer#request_takeover, triggered by the child's
+        # ask_parent the instant it blocks). Keeping it in one method means the
+        # delivery semantics (free-text or pick-an-option → #deliver_reply →
+        # BackgroundTasks#deliver_answer) are identical on both paths and the
+        # parent turn's state is NEVER touched (deliver_answer only decides the
+        # child's gate + pushes its steer note under the registry mutex).
+        #
+        # An empty answer (the human cancelled — Esc in the dropdown / blank
+        # free-text) leaves the child PARKED and reports it: the affordance/hint
+        # stays so it can re-open. Returns true once it surfaced the request
+        # (the caller re-polls / re-reads awaiting_human for the next head).
+        def answer_one_human(entry) # rubocop:disable Naming/PredicateMethod -- a prompt-presenting mutator that reports it surfaced a request
+          answer = prompt_reply_answer(entry)
+          if answer.to_s.strip.empty?
+            @ui.info("No answer given — #{entry.id} is still waiting.")
+          else
+            deliver_reply(entry, answer)
+          end
+          true
+        end
+
+        # FIFO drain of the children blocked on the human, used by the MID-TURN
+        # auto-open: deliver the head, then RE-READ awaiting_human (a 2nd child
+        # may have asked while the dropdown was open, or the head may have been
+        # delivered/timed-out) and surface the next head, until the queue is
+        # empty. Each #answer_one_human runs its own dropdown takeover; a child
+        # that arrives mid-open simply appends and is picked up on the re-read.
+        # Bounded by the live awaiting_human snapshot shrinking each pass, so it
+        # always terminates. Runs on the INPUT thread (it owns the keyboard).
+        def answer_all_human
+          loop do
+            entry = Tools::BackgroundTasks.instance.awaiting_human.first
+            break unless entry
+
+            answer_one_human(entry)
+            # A cancelled (still-blocked) head would otherwise re-surface forever:
+            # stop once the head is no longer awaiting an answer it just got, OR
+            # the human declined it. We break when the FIRST awaiting_human entry
+            # is unchanged after the attempt (cancelled), so an Esc doesn't loop.
+            still = Tools::BackgroundTasks.instance.awaiting_human.first
+            break if still && still.id == entry.id
+          end
         end
 
         def handle_agents(arguments)
@@ -227,11 +269,75 @@ module Rubino
         # The interactive ◆ takeover for /reply with no inline answer — mirrors the
         # approval menu (composer-suspend, ◆ glyph) so answering an ask_parent feels
         # exactly like answering an approval, a pattern the user already knows.
+        #
+        # Content of the affordance (LOCKED "options if present, else free text"):
+        #   * the asking child supplied `options:` → an arrow-SELECT of those
+        #     concrete options PLUS a trailing "✎ Answer (type)…" entry that opens
+        #     the free-text field. Reuses @ui.select (the same TTY::Prompt picker
+        #     /sessions resume uses) under run_in_terminal.
+        #   * no options → the original free-text @ui.ask, but offered as a
+        #     [Answer / Dismiss] choice first so Esc/Dismiss cleanly CANCELS this
+        #     answer (the child stays blocked) instead of forcing a blank line.
+        # Returns the chosen/typed answer, or "" when the human cancels (Esc /
+        # Dismiss / blank) — answer_one_human then leaves the child parked.
         def prompt_reply_answer(entry)
           @ui.info("")
           @ui.info("◆ #{entry.id} (#{entry.subagent}) asks — everything is waiting on this")
           @ui.info("   ❓ #{entry.ask_question}")
+          options = Array(entry.ask_options)
+          options.empty? ? prompt_free_or_dismiss : prompt_pick_option(options)
+        end
+
+        # No options: [Answer / Dismiss]. "Answer" opens the free-text field;
+        # "Dismiss" (or Esc, which #select returns as nil) cancels — child stays
+        # blocked. A UI without #select (scripted/legacy) falls straight through
+        # to the free-text @ui.ask so the existing behaviour is preserved.
+        def prompt_free_or_dismiss
+          return @ui.ask("✎ your answer › ").to_s unless @ui.respond_to?(:select)
+
+          choice = @ui.select("Answer this subagent?",
+                              [["✎ Answer (type)…", :answer], ["Dismiss (leave blocked)", :dismiss]])
+          return "" unless choice == :answer
+
           @ui.ask("✎ your answer › ").to_s
+        end
+
+        # Options present: arrow-select one of them, or the trailing free-text
+        # entry. Esc (nil from #select) cancels. Reuses @ui.select; a UI without
+        # it answers free-text so scripted callers keep working.
+        def prompt_pick_option(options)
+          return @ui.ask("✎ your answer › ").to_s unless @ui.respond_to?(:select)
+
+          # An option is either a plain string (label==value) or a
+          # {label, description} map. Show the clean LABEL (with the description
+          # as a dim hint when present) and deliver the label STRING as the
+          # answer — never a raw hash literal (#475-3).
+          choices = options.map { |o| [option_label(o), option_value(o)] }
+          choices << ["✎ Answer (type)…", :__free__]
+          choice = @ui.select("Pick an answer for the subagent:", choices)
+          return "" if choice.nil? # Esc / cancelled
+          return @ui.ask("✎ your answer › ").to_s if choice == :__free__
+
+          choice
+        end
+
+        # The display label for a picker option: the bare label for a string,
+        # or "label — description" (description dimmed) for a {label, description}
+        # map. The description rides the label since @ui.select takes only
+        # [label, value] pairs (no separate hint slot).
+        def option_label(opt)
+          return opt.to_s unless opt.is_a?(Hash)
+
+          label = opt["label"].to_s
+          desc  = opt["description"].to_s
+          desc.empty? ? label : "#{label} #{pastel.dim("— #{desc}")}"
+        end
+
+        # The value DELIVERED to the child for a picker option: always the label
+        # STRING (the description is presentational only), so the child's answer
+        # is clean text, never a hash literal.
+        def option_value(opt)
+          opt.is_a?(Hash) ? opt["label"].to_s : opt.to_s
         end
 
         # Routes the answer back DOWN to the child: decide the gate (unblocks a
