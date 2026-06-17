@@ -328,6 +328,12 @@ module Rubino
         # #resume are no-ops, so run_in_terminal nests harmlessly inside the
         # takeover the reader already drives.
         @in_takeover = false
+        # True from the moment #run_pending_takeover adopts a queued block until
+        # the dropdown loop has fully resolved and the composer resumed. The
+        # one-at-a-time guard #request_takeover honours so two near-simultaneous
+        # asks can never spawn OVERLAPPING takeover loops (#486); distinct from
+        # @in_takeover (which only neuters the nested suspend/resume).
+        @takeover_active = false
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -505,7 +511,16 @@ module Rubino
         return false unless @running && !@suspended && @wake_pipe
 
         @render.synchronize do
-          return false if @pending_takeover # one at a time; FIFO re-read gets the rest
+          # ONE dropdown loop at a time (#486). Reject when a takeover is already
+          # QUEUED (@pending_takeover) OR currently RUNNING (@takeover_active) —
+          # the latter closes the gap between #run_pending_takeover clearing
+          # @pending_takeover and the dropdown suspending the composer (where a
+          # 2nd near-simultaneous ask would otherwise slip past, arm a SECOND
+          # pending takeover, and spawn an overlapping #answer_all_human loop with
+          # duplicated dropdown frames + a stale "still waiting" id). The dropped
+          # ask is not lost: #answer_all_human's FIFO re-read of awaiting_human
+          # surfaces it the instant the first loop resolves the current head.
+          return false if @pending_takeover || @takeover_active
 
           @pending_takeover   = block
           @takeover_snapshot  = [@buffer.dup, @cursor]
@@ -554,6 +569,11 @@ module Rubino
         @render.synchronize do
           block = @pending_takeover
           @pending_takeover = nil
+          # Mark the takeover RUNNING the instant we adopt the block, BEFORE the
+          # drain/suspend, so a 2nd ask arriving in the gap before #suspend flips
+          # @suspended is rejected by #request_takeover's guard (#486 — one
+          # dropdown loop at a time; the FIFO re-read surfaces it after).
+          @takeover_active = true if block
         end
         return unless block
 
@@ -581,6 +601,11 @@ module Rubino
           restore_draft_snapshot
           leave_takeover_mode
           repaint_after_takeover
+          # Release the one-at-a-time guard only after the dropdown loop has fully
+          # resolved and the composer has resumed — so the NEXT pending ask (a
+          # sibling that blocked while this loop ran) is taken cleanly on the
+          # reader's next session rather than overlapping this one (#486).
+          @render.synchronize { @takeover_active = false }
         end
       end
 
@@ -795,6 +820,18 @@ module Rubino
 
         capped = Array(lines).first(MAX_CARD_ROWS)
         @render.synchronize do
+          # COALESCE: a card repaint that would draw the EXACT same rows is a
+          # no-op. The idle ticker (1 Hz) and every child tool-start/finish poke
+          # a repaint, but most carry no visible change (same cards, same
+          # elapsed bucket); re-running #render_frame for them only re-issues the
+          # clear→redraw cursor walk over the live region, which on a real
+          # terminal races the raw input reader and could drop/garble an
+          # in-flight keystroke or wedge submit (#485). Repaint ONLY when the
+          # rows actually changed, so an unchanged registry tick never disturbs
+          # the composer buffer/cursor/input reader. (A real CHANGE still
+          # repaints, under this same mutex, so cards stay live.)
+          return if capped == @cards
+
           @cards = capped
           render_frame(committed: nil)
         end
@@ -1003,6 +1040,19 @@ module Rubino
       # the screen can never desync the relative moves. Must be called under
       # @render (callers below already hold it).
       def draw_input
+        # Refresh the width from the live terminal on the CHEAP keystroke path
+        # too, exactly as #render_frame does. @cols was only recomputed at init
+        # and on SIGWINCH, but the trap can read winsize BEFORE the terminal has
+        # committed the new size (a drag coalesces several SIGWINCHes; the kernel
+        # updates the pty winsize asynchronously), so #resize could record a
+        # STALE width. With @cols stale a wrapping line lays out as ONE logical
+        # row while the physical terminal wraps it onto a SECOND line the
+        # single-row \r\e[2K clear never erases — so each keystroke re-emitted
+        # the first row and the duplicate physical wrap-row stair-stepped into
+        # scrollback (#481). Adopting only a freshly-read POSITIVE width keeps a
+        # transient zero/blank winsize from collapsing the budget (#95).
+        fresh = live_winsize_cols
+        @cols = fresh if fresh
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
 
