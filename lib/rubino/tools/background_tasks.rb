@@ -68,7 +68,12 @@ module Rubino
         # by an explicit /reply or stop — see ask_parent_tool.rb); a non-blocking
         # ask returns immediately and the answer is delivered later via
         # `steer_queue`. The human answers via /reply <id>, which decides the gate.
-        :ask_gate, :ask_id, :ask_question, :ask_blocking,
+        # :ask_options — the OPTIONAL concrete answer choices the asking child
+        # supplied (ask_parent `options:`). When present the human's answer
+        # surface is an arrow-select of these options (+ a free-text "Answer"
+        # entry); when nil it stays the [Answer / Dismiss] → free-text affordance.
+        # Display/answer-shape only — never changes WHERE the answer is delivered.
+        :ask_gate, :ask_id, :ask_question, :ask_blocking, :ask_options,
         # Ownership link (S1 — foundation for model-driven steer/probe/ask_parent).
         # owner_subagent_id is the `sa_*` id of the subagent that spawned this
         # child, or nil when the spawner is the human / top-level agent. depth is
@@ -382,7 +387,7 @@ module Rubino
       # answer_child; the question was pushed onto the owner's steer_queue, NOT
       # the human's job); owner_id nil (the human / top-level) → :blocked_on_human
       # (the human answers via /reply <id>).
-      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil)
+      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil, options: nil) # rubocop:disable Metrics/ParameterLists -- keyword args recording one ask's state; splitting would obscure it
         @mutex.synchronize do
           entry = @entries[id]
           return unless entry
@@ -391,6 +396,11 @@ module Rubino
           entry.ask_id       = ask_id
           entry.ask_question = question.to_s
           entry.ask_blocking = blocking ? true : false
+          # Normalize to a clean array of non-empty strings, or nil when none —
+          # so the answer surface can branch on "options present?" without
+          # re-validating. A child that supplies no options keeps the old shape.
+          opts               = Array(options).map { |o| o.to_s.strip }.reject(&:empty?)
+          entry.ask_options  = opts.empty? ? nil : opts
           entry.status       = owner_id ? :blocked_on_parent : :blocked_on_human
         end
       end
@@ -407,6 +417,7 @@ module Rubino
           entry.ask_id       = nil
           entry.ask_question = nil
           entry.ask_blocking = nil
+          entry.ask_options  = nil
           entry.status       = :running if %i[blocked_on_human blocked_on_parent].include?(entry.status)
         end
       end

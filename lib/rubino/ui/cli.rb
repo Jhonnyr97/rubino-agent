@@ -816,6 +816,30 @@ module Rubino
         @subagent_cards ||= SubagentCards.new(pastel: @pastel)
       end
 
+      # MID-TURN AUTO-OPEN bridge (Option A): a background child just escalated an
+      # ask_parent to the HUMAN while the parent turn is busy. If a bottom composer
+      # owns the screen we ask IT to surface the answer dropdown by itself — the
+      # composer wakes its input thread (self-pipe), snapshots the live draft, runs
+      # the dropdown there, delivers via the child's gate (NEVER the parent turn),
+      # then restores the draft. The FIFO drain (answer_all_human) re-reads
+      # awaiting_human after each delivery, so several pending asks resolve one at
+      # a time and a 2nd child that asks mid-open is picked up on the re-read.
+      #
+      # No-op when no turn is live (BottomComposer.current nil) — the idle poll
+      # (Handlers::Agents#auto_resolve_pending) covers that path. Called from the
+      # CHILD thread (AskParentTool#surface_and_notify); the actual takeover runs
+      # on the input thread. Best-effort — a hiccup here must never break the
+      # child or the parent turn.
+      def auto_open_human_ask(_entry = nil)
+        composer = BottomComposer.current
+        return false unless composer
+
+        handler = Commands::Handlers::Agents.new(ui: self)
+        composer.request_takeover { handler.answer_all_human }
+      rescue StandardError
+        false
+      end
+
       # Echoes a line the user typed mid-turn, parked for the next turn.
       # Rendered dim on its own line, prefixed `▸`, so the steered text stays
       # visible without competing with the streaming assistant output. Starts

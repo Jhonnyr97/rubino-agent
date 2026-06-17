@@ -19,10 +19,11 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
     Class.new do
       attr_reader :lines
 
-      def initialize(answers, decisions)
-        @answers   = answers
-        @decisions = decisions
-        @lines     = []
+      def initialize(answers, decisions, selections = [])
+        @answers    = answers
+        @decisions  = decisions
+        @selections = selections
+        @lines      = []
       end
 
       def info(msg = "")    = @lines << msg.to_s
@@ -30,16 +31,22 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       def error(msg = "")   = @lines << msg.to_s
       def separator         = nil
       def ask(_prompt)      = @answers.shift
+      # The reply affordance's options-or-text dropdown (#select), scripted: pop
+      # the next queued selection, defaulting to :answer so the no-options
+      # [Answer/Dismiss] menu routes straight to the free-text @ask the existing
+      # tests drive (so the reply flow is unchanged unless a test scripts a pick).
+      def select(_prompt, _choices) = @selections.empty? ? :answer : @selections.shift
       # The shared arrow-key approval component, scripted: pop the next queued
       # decision symbol (:once/:always_command/:no/:deny_explain) or nil.
       def subagent_approval_choice = @decisions.shift
       def respond_to_missing?(_name, _priv = false) = true
       def method_missing(_name, *_args) = nil
-    end.new(answers, decisions)
+    end.new(answers, decisions, selections)
   end
 
-  let(:answers)   { [] }
-  let(:decisions) { [] }
+  let(:answers)    { [] }
+  let(:decisions)  { [] }
+  let(:selections) { [] }
   let(:handler) { described_class.new(ui: ui) }
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
