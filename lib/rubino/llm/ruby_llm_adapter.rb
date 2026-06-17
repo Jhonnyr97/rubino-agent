@@ -583,7 +583,7 @@ module Rubino
       end
 
       def build_chat(tools: nil, response_format: nil, budget_exhausted: nil)
-        options = { model: @model_id }
+        options = { model: chat_model_id }
         options[:response_format] = response_format if response_format
 
         prov_cfg = provider_cfg
@@ -627,6 +627,29 @@ module Rubino
                                         budget_exhausted: budget_exhausted,
                                         production: true)
         chat
+      end
+
+      # The model id handed to RubyLLM.chat. On the NATIVE path (no explicit
+      # provider — ruby_llm derives the provider from the model registry), a
+      # `provider/model` id like the seeded default "openai/gpt-4.1" matches an
+      # OpenRouter aggregator entry in ruby_llm's registry and routes to
+      # OpenRouter (→ "Missing configuration for OpenRouter") instead of the
+      # OpenAI provider its prefix names. Mirror Hermes' _strip_matching_provider_prefix:
+      # when the model id is prefixed with the SAME provider we already resolved,
+      # strip it so ruby_llm resolves the native provider. A non-matching prefix
+      # (a genuine aggregator id whose vendor differs from the resolved provider)
+      # is left untouched. The *_compatible / assume_model_exists paths pass an
+      # explicit provider to RubyLLM.chat, so they never reach this ambiguity and
+      # keep the raw id verbatim.
+      def chat_model_id
+        id = @model_id.to_s
+        return @model_id unless id.include?("/")
+
+        prefix, remainder = id.split("/", 2)
+        return @model_id if remainder.strip.empty?
+        return remainder if ProviderResolver.resolve(prefix) == @provider
+
+        @model_id
       end
 
       # Applies the request-shaping knobs ruby_llm 1.15 supports — temperature,
