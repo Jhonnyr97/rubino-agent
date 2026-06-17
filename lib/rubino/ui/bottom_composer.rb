@@ -307,6 +307,17 @@ module Rubino
         @pending_takeover  = nil
         @takeover_snapshot = nil
         @input_cols        = nil # width the on-screen input block was laid out at (#481)
+        # WORST-CASE above-caret row count the current input block has occupied
+        # across EVERY width it's been laid out at since the last CLEAN full draw
+        # (#481, chained resize). A single resize-then-wrap is recovered by the
+        # old-vs-live max in #draw_input, but a SECOND consecutive SIGWINCH
+        # (120→50→40) strands the row the 50-col frame itself under-cleared from
+        # the 120-col footprint — neither the 50- nor the 40-col count covers it.
+        # We carry the max footprint forward here and clear up to it on the next
+        # reflow, so the clear walks the worst case across the WHOLE resize chain.
+        # Reset to 0 when a full live-region clear blanks the block (no residue
+        # survives a clean frame), so it never over-clears past a clean draw.
+        @input_above_high_water = 0
         # An optional callable the CLI registers (UI::CLI#auto_open_human_ask) so
         # that the SUBAGENT CARD block — whose last row is the aggregated
         # `⛔N subagents waiting on you` hint — is REPAINTED from the live registry
@@ -1066,8 +1077,18 @@ module Rubino
         # the MAX of the old-width and live-width caret-row counts so no stale
         # row from the prior width survives, then lay out at the live width.
         if @input_cols && @input_cols != @cols
-          @region.widen_input_above(rows_above_caret_at(row_budget_for(@input_cols)))
-          @region.widen_input_above(rows_above_caret_at(row_budget_for(@cols)))
+          # Single resize: clear the MAX of the old-width and live-width footprints
+          # so the reflowed top fragment can't survive. Chained resize (#481, the
+          # residual): a row the PREVIOUS reflow under-cleared (e.g. the 120-col
+          # footprint stranded by the 50-col frame on a 120→50→40 walk) is covered
+          # by neither the 50- nor the 40-col count, so also fold in the WORST-CASE
+          # footprint carried across the whole resize chain (@input_above_high_water).
+          @input_above_high_water = [
+            @input_above_high_water,
+            rows_above_caret_at(row_budget_for(@input_cols)),
+            rows_above_caret_at(row_budget_for(@cols))
+          ].max
+          @region.widen_input_above(@input_above_high_water)
         end
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
@@ -1085,6 +1106,12 @@ module Rubino
         # Remember the width this block was laid out at so the NEXT frame can
         # detect a reflow and widen the clear (#481, see above).
         @input_cols = @cols
+        # Carry the worst-case above-caret footprint forward so a SUBSEQUENT
+        # reflow clears over every width this block has occupied since the last
+        # clean full draw (#481, chained resize). The just-drawn caret_row counts
+        # too: a wider previous frame strands rows a narrower one's own clear
+        # misses, so the high-water must never shrink between clean draws.
+        @input_above_high_water = [@input_above_high_water, caret_row].max
         @output.flush
       end
 
@@ -1424,6 +1451,13 @@ module Rubino
         # last good @cols instead of collapsing the budget.
         fresh = live_winsize_cols
         @cols = fresh if fresh
+        # A full frame ERASES the whole live region (LiveRegion#frame → #clear
+        # walks up over every row above the prompt) before redrawing, so no
+        # reflow residue can survive it: the chained-resize worst-case footprint
+        # is recovered here regardless of width, and the high-water mark resets
+        # to whatever this clean draw lays down (#481). draw_input (the yield)
+        # re-seeds it to the just-drawn caret_row.
+        @input_above_high_water = 0
         @region.frame(committed: committed, rows: live_rows, cols: @cols) { draw_input }
       end
 
@@ -1627,6 +1661,7 @@ module Rubino
         @render.synchronize do
           @output.print("\e[2J\e[3J\e[H")
           @region.reset_geometry!
+          @input_above_high_water = 0
           redraw
         end
       end
