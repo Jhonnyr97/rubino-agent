@@ -2087,7 +2087,12 @@ module Rubino
         return unless Rubino.configuration.memory_auto_extract?
 
         Memory::Flusher.new.flush_before_compaction!(parent_id)
-      rescue StandardError => e
+      rescue SignalException, SystemExit, NoMemoryError, SystemStackError, SecurityError
+        # Genuinely-fatal / control-flow exceptions (Ctrl+C, process exit, OOM,
+        # stack overflow, a tripped security policy) MUST propagate — swallowing
+        # them would wedge the process, not protect the branch.
+        raise
+      rescue Exception => e # rubocop:disable Lint/RescueException -- deliberate best-effort boundary: a memory-flush hiccup must NEVER break the rewind/branch (some transport errors, e.g. WebMock::NetConnectNotAllowedError, descend from Exception not StandardError and would otherwise escape)
         Rubino.logger.warn(event: "branch.parent_flush_failed", error: e.message)
         nil
       end
