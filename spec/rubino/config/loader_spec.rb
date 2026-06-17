@@ -112,6 +112,30 @@ RSpec.describe Rubino::Config::Loader do
       expect { loader.load }.to raise_error(Rubino::Config::ConfigError, /Invalid YAML/)
     end
 
+    # CFG-R2: every malformed shape is normalized to ConfigError at the source,
+    # so no raw Psych/IO exception can escape to the boot path.
+    it "raises ConfigError (not Psych::AliasesNotEnabled) on a YAML alias/anchor" do
+      File.write(File.join(home_path, "config.yml"), "a: &x 1\nb: *x\n")
+      expect { loader.load }.to raise_error(Rubino::Config::ConfigError, %r{alias/anchor})
+    end
+
+    it "raises ConfigError (not TypeError) on a top-level scalar config" do
+      File.write(File.join(home_path, "config.yml"), "just_a_string\n")
+      expect { loader.load }.to raise_error(Rubino::Config::ConfigError, /must be a YAML mapping/)
+    end
+
+    it "raises ConfigError on a top-level sequence config" do
+      File.write(File.join(home_path, "config.yml"), "- a\n- b\n")
+      expect { loader.load }.to raise_error(Rubino::Config::ConfigError, /must be a YAML mapping/)
+    end
+
+    it "raises ConfigError (not Errno::EISDIR) when config path is a symlink to a directory" do
+      target = File.join(home_path, "cfgdir")
+      FileUtils.mkdir_p(target)
+      File.symlink(target, File.join(home_path, "config.yml"))
+      expect { loader.load }.to raise_error(Rubino::Config::ConfigError, /directory/)
+    end
+
     it "strips matched surrounding double quotes in .env values" do
       File.write(File.join(home_path, ".env"), %(QUOTED_KEY="sk-abc-123"\n))
       File.write(File.join(home_path, "config.yml"),

@@ -41,6 +41,13 @@ module Rubino
         # always work and missing extraction gems only narrow the supported set.
         check_document_converters
 
+        # Web search backend (F8): only relevant when `tools.web` is on. Report
+        # which backend a search would actually use (keyless DDG / Tavily /
+        # SearXNG) and whether it looks usable, so a user who enabled web knows
+        # search will work — never a required check (it's informational and must
+        # not flip the exit status).
+        check_websearch_backend if Rubino.configuration.tool_enabled?(:web)
+
         # MCP servers are optional integrations (#90): report each configured
         # server's reachability best-effort, but never let a down MCP server
         # fail doctor — it is informational, not a required check, so non-MCP
@@ -87,7 +94,25 @@ module Rubino
         end
 
         ui.success("Config file exists: #{loader.config_path}")
+
+        # LOAD-time schema validation (F8): a hand-edited config.yml with an
+        # unknown key or a wrong-typed value is structurally fine (loads, digs)
+        # but semantically wrong — the validator only ran at `config set` time,
+        # so doctor used to show a flat green "✓ Config file exists" while a typo
+        # silently degraded behaviour at runtime. Surface each issue as a WARNING
+        # here (non-fatal — config still loads); the check stays :ok so existing
+        # gates aren't tripped by a soft warning.
+        config_issues(loader).each { |msg| ui.warning("config: #{msg}") }
+
         { name: "config", status: :ok }
+      end
+
+      # Load-time config-validation warnings (unknown key / wrong type), or [].
+      # Best-effort: a probe hiccup must never crash doctor.
+      def config_issues(loader)
+        Config::Validator.warnings(loader.raw_config)
+      rescue StandardError
+        []
       end
 
       # Returns a human-readable reason the config is unusable, or nil when it
@@ -115,6 +140,17 @@ module Rubino
           return { name: "database", status: :fail }
         end
 
+        # A corrupt-but-present DB is its own diagnosis (#359): report it as
+        # "corrupt" pointing at `rubino setup` (which quarantines + recreates),
+        # NOT the vague "database not accessible" — and NEVER by letting the raw
+        # SQLite3::CorruptException (with its stray `PRAGMA journal_mode=WAL`
+        # fragment) leak through the StandardError rescue below into user output.
+        if Rubino.database.corrupt?
+          ui.error("database is corrupt (malformed image): #{Rubino.database.db_path}. " \
+                   "Run 'rubino setup' to quarantine it and recreate a fresh database")
+          return { name: "database", status: :fail }
+        end
+
         if Rubino.database.healthy?
           ui.success("Database accessible: #{Rubino.database.db_path}")
           { name: "database", status: :ok }
@@ -123,7 +159,15 @@ module Rubino
           { name: "database", status: :fail }
         end
       rescue StandardError => e
-        ui.error("database error: #{e.message}")
+        # Last-resort guard: still strip a corruption backtrace to the clean
+        # diagnostic if it somehow reaches here (#359), so the raw exception
+        # class + PRAGMA fragment never reach the user.
+        if Rubino.database.corruption_error?(e)
+          ui.error("database is corrupt (malformed image): #{Rubino.database.db_path}. " \
+                   "Run 'rubino setup' to quarantine it and recreate a fresh database")
+        else
+          ui.error("database error: #{e.message}")
+        end
         { name: "database", status: :fail }
       end
 
@@ -131,6 +175,17 @@ module Rubino
         ui = Rubino.ui
         unless database_on_disk?
           ui.error("migrations not run — no database. Run 'rubino setup'")
+          return { name: "migrations", status: :fail }
+        end
+
+        # Skip the pending-migrations probe on a corrupt DB (#359): `pending?`
+        # connects and runs `PRAGMA journal_mode=WAL`, which throws
+        # SQLite3::CorruptException — the old `rescue` then printed that raw
+        # exception (class name + the stray PRAGMA fragment) as the "migration
+        # check failed" reason. check_database already reports the corruption
+        # with the actionable fix; degrade cleanly here without re-leaking it.
+        if Rubino.database.corrupt?
+          ui.error("migration check skipped — database corrupt (run 'rubino setup')")
           return { name: "migrations", status: :fail }
         end
 
@@ -144,7 +199,16 @@ module Rubino
           { name: "migrations", status: :ok }
         end
       rescue StandardError => e
-        ui.error("migration check failed: #{e.message}")
+        # Final guard so a corruption backtrace (raw class + PRAGMA fragment)
+        # never reaches user output even if it surfaces here (#359).
+        if Rubino.database.corruption_error?(e)
+          ui.error("migration check skipped — database corrupt (run 'rubino setup')")
+        elsif e.message.to_s.include?("More than 1 row in migrator table")
+          ui.error("migrator table has duplicate version rows (interrupted/raced migration). " \
+                   "Run 'rubino setup' to repair it")
+        else
+          ui.error("migration check failed: #{e.message}")
+        end
         { name: "migrations", status: :fail }
       end
 
@@ -185,8 +249,11 @@ module Rubino
           ui.success("API key configured (#{provider})")
           { name: "provider_keys", status: :ok }
         else
-          ui.warning("No credentials found for provider '#{provider}'")
-          { name: "provider_keys", status: :warn }
+          # A missing key for the CONFIGURED provider is a hard ✗, not a soft ⚠
+          # (#327): it is REQUIRED for any model call, so the agent can't work
+          # without it. The warning glyph understated a broken install.
+          ui.error("No credentials found for provider '#{provider}'. Set its API key (run 'rubino setup')")
+          { name: "provider_keys", status: :fail }
         end
       rescue TypeError => e
         # A corrupt config (a scalar over the `model`/`providers` section) makes
@@ -200,18 +267,59 @@ module Rubino
         ui = Rubino.ui
         model = Rubino.configuration.model_default
 
-        if model && !model.empty?
+        if model.nil? || model.empty?
+          ui.error("no model configured")
+          return { name: "model", status: :fail }
+        end
+
+        # Validate the model actually EXISTS, not just that a non-empty string is
+        # present (#327): a typo'd `model.default` used to pass doctor and only
+        # fail at the first model call with a 4xx. A custom/assume-exists provider
+        # (MiniMax anthropic_compatible, an openai_compatible gateway) passes
+        # arbitrary ids through deliberately, so its model is reported :ok without
+        # a registry lookup. For a registry-backed provider, an id the catalog
+        # doesn't know is a :warn — likely a typo — without blocking the score.
+        if assume_exists_provider? || model_in_catalog?(model)
           ui.success("Model configured: #{model}")
           { name: "model", status: :ok }
         else
-          ui.error("no model configured")
-          { name: "model", status: :fail }
+          ui.warning("Model '#{model}' is not in the known catalog for this provider (possible typo)")
+          { name: "model", status: :warn }
         end
       rescue TypeError => e
         # `model.default` can't be read when the `model` section was clobbered
         # with a scalar — fail gracefully (check_config already explained why).
         ui.error("model check skipped — config corrupt: #{e.message}")
         { name: "model", status: :fail }
+      end
+
+      # True when the configured provider deliberately accepts arbitrary model
+      # ids (a custom anthropic_compatible / openai_compatible backend, or an
+      # explicit assume_model_exists gateway), so a registry lookup would report
+      # a false "unknown model". The "fake" dev provider is treated the same.
+      def assume_exists_provider?
+        provider = LLM::CredentialCheck.resolved_provider
+        return true if provider == "fake"
+
+        cfg = Rubino.configuration.provider_config(provider)
+        cfg["anthropic_compatible"] == true ||
+          cfg["openai_compatible"] == true ||
+          cfg["assume_model_exists"] == true
+      rescue StandardError
+        # Any resolution hiccup: don't manufacture a false "unknown model" — let
+        # the model be reported present rather than risk a spurious warning.
+        true
+      end
+
+      # True when the model id resolves in ruby_llm's registry. Any registry
+      # hiccup is treated as "known" so a cosmetic check never blocks doctor.
+      def model_in_catalog?(model)
+        require "ruby_llm"
+        !RubyLLM.models.find(model.to_s).nil?
+      rescue RubyLLM::ModelNotFoundError
+        false
+      rescue StandardError
+        true
       end
 
       # Verifies the OAuth-token encryption key is present and well-formed
@@ -263,6 +371,51 @@ module Rubino
         manager.stop_all!
       rescue StandardError => e
         ui.warning("MCP check failed: #{e.message}")
+      end
+
+      # Non-scoring report of the web-search backend (F8). With `tools.web` on,
+      # the websearch tool picks a backend by env, in this priority: Tavily
+      # (TAVILY_API_KEY) → SearXNG (SEARXNG_URL) → keyless DuckDuckGo Instant
+      # Answer. Tell the user WHICH one a search will use and whether it looks
+      # reachable, so an enabled-but-unusable backend is visible here instead of
+      # surfacing as an empty "search unavailable" mid-conversation. Mirrors the
+      # MCP/doc-converter "Optional (…)" sections: informational, never scored,
+      # and any hiccup degrades to a warning so it can't break doctor.
+      def check_websearch_backend
+        ui = Rubino.ui
+        ui.blank_line
+        ui.info("Optional (web search backend, tools.web is on):")
+
+        if present_env?("TAVILY_API_KEY")
+          ui.success("Web search backend: Tavily (TAVILY_API_KEY configured)")
+        elsif present_env?("SEARXNG_URL")
+          ui.success("Web search backend: SearXNG (SEARXNG_URL=#{ENV.fetch("SEARXNG_URL", nil)})")
+        elsif ddg_resolvable?
+          ui.success("Web search backend: DuckDuckGo (keyless; reachable). " \
+                     "Set TAVILY_API_KEY or SEARXNG_URL for full web-index results")
+        else
+          ui.warning("Web search may not work: no TAVILY_API_KEY / SEARXNG_URL and " \
+                     "DuckDuckGo (api.duckduckgo.com) is unreachable. Set TAVILY_API_KEY " \
+                     "or SEARXNG_URL, or disable with `rubino config set tools.web false`")
+        end
+      rescue StandardError => e
+        ui.warning("Web search backend check failed: #{e.message}")
+      end
+
+      def present_env?(var)
+        val = ENV.fetch(var, nil)
+        !val.nil? && !val.to_s.strip.empty?
+      end
+
+      # Best-effort DNS resolution of the keyless DDG Instant-Answer host — the
+      # same cheap reachability probe the tool registry uses to gate the tool,
+      # so doctor's verdict matches whether the tool is actually exposed. Any
+      # resolver error means "not reachable" (the caller then warns).
+      def ddg_resolvable?
+        require "resolv"
+        !Resolv.getaddress("api.duckduckgo.com").nil?
+      rescue StandardError
+        false
       end
 
       # Non-scoring report of the in-process document-conversion capability

@@ -10,11 +10,46 @@ RSpec.describe Rubino::Tools::ReadTool do
 
   let(:tmp_dir) { Dir.mktmpdir("read_tool_spec") }
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  # #406: read is BROAD now (Hermes/Claude/Codex parity) — it resolves any path,
+  # not just the workspace. We still point the root at tmp_dir for the relative-
+  # path fixtures; the broad-read and secret-denylist behaviours have their own
+  # examples (and tool_rw_state_spec covers the cross-tool matrix).
+  before { Rubino.configuration.set("terminal", "cwd", tmp_dir) }
+
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   it "has name 'read' and :low risk" do
     expect(tool.name).to eq("read")
     expect(tool.risk_level).to eq(:low)
+  end
+
+  # #446: reading a secret is now gated UPSTREAM by Security::ApprovalPolicy
+  # (→ :ask / approval dropdown), NOT self-refused inside ReadTool. So at the
+  # tool level an APPROVED read returns the real bytes — the per-tool refusal
+  # is gone. The gate/approve/deny/headless matrix is covered end-to-end in
+  # spec/rubino/security/secret_file_gate_spec.rb.
+  it "reads an APPROVED .env credential file (gate is upstream, #446)" do
+    outside = Dir.mktmpdir("read_secret")
+    path = File.join(outside, ".env")
+    File.write(path, "API_KEY=supersecret\n")
+    out = payload(tool.call("file_path" => path))
+    expect(out).to include("API_KEY=supersecret")
+  ensure
+    FileUtils.rm_rf(outside)
+  end
+
+  it "reads a file OUTSIDE the workspace (broad reads, #406)" do
+    outside = Dir.mktmpdir("read_outside")
+    path = File.join(outside, "ext.rb")
+    File.write(path, "puts :external\n")
+    out = payload(tool.call("file_path" => path))
+    expect(out).to include("puts :external")
+    expect(out).not_to include("outside your workspace")
+  ensure
+    FileUtils.rm_rf(outside)
   end
 
   it "returns line-numbered content for a small file" do
@@ -70,8 +105,9 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(out).to include("[line truncated]")
   end
 
-  it "returns an error for missing file" do
-    expect(tool.call("file_path" => "/no/such/file.txt")).to include("File not found")
+  it "returns an error for a missing file inside the workspace" do
+    out = payload(tool.call("file_path" => File.join(tmp_dir, "nope.txt")))
+    expect(out).to include("File not found")
   end
 
   it "returns an error when offset is past EOF" do

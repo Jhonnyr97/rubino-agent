@@ -95,6 +95,15 @@ module Rubino
         value.positive? ? value : UI::PasteStore::DEFAULT_COLLAPSE_LINES
       end
 
+      # A paste with MORE than this many CHARACTERS also collapses to a
+      # placeholder, even on a single line — a big one-line paste (a long token,
+      # URL, minified JSON) would otherwise flood the composer because the
+      # line-count trigger never fired. Falls back for nil/zero/garbage.
+      def paste_collapse_chars
+        value = dig("paste", "collapse_chars").to_i
+        value.positive? ? value : UI::PasteStore::DEFAULT_COLLAPSE_CHARS
+      end
+
       # A paste estimated above this many tokens (chars/4, the same rule
       # compaction uses) overflows to <home>/sessions/<id>/paste_N.txt and the
       # message carries a read-tool pointer instead of the content.
@@ -129,6 +138,20 @@ module Rubino
         dig("streaming", "enabled") == true
       end
 
+      # -- Doom-loop guard (#414) --
+      # Default WARN-not-block (hard_stop false): a tripped detector surfaces a
+      # warning to the model but does not deny the call.
+      def doom_loop_hard_stop?
+        dig("doom_loop", "hard_stop") == true
+      end
+
+      # Identical-consecutive-call threshold. Falls back to the detector default
+      # when absent/garbage so a bad config value can't disable the guard.
+      def doom_loop_threshold
+        n = Integer(dig("doom_loop", "threshold"), exception: false)
+        n && n >= 2 ? n : Security::DoomLoopDetector::DEFAULT_THRESHOLD
+      end
+
       # -- Agent section --
       def agent_max_turns
         dig("agent", "max_turns")
@@ -144,6 +167,25 @@ module Rubino
 
       def agent_max_turn_seconds
         dig("agent", "max_turn_seconds") || Defaults.dig("agent", "max_turn_seconds")
+      end
+
+      # At the iteration cap, prompt to continue/summarize/abort (#399). Defaults
+      # to true; an explicit false forces the old always-summarize behaviour.
+      # Independent of TTY — the headless guarantee lives in @ui.select returning
+      # nil, not here.
+      def agent_budget_extension_prompt?
+        v = dig("agent", "budget_extension_prompt")
+        v.nil? ? Defaults.dig("agent", "budget_extension_prompt") : v == true
+      end
+
+      # The "+N" one budget extension grants. nil/blank ⇒ max_tool_iterations,
+      # so an extension doubles the per-turn runway (the Cline/Roo "reset the
+      # counter, keep context" amount). Coerced to a positive Integer; a bad
+      # value falls back to the iteration cap.
+      def agent_budget_extension_step
+        raw = dig("agent", "budget_extension_step")
+        n = Integer(raw, exception: false)
+        n&.positive? ? n : agent_max_tool_iterations
       end
 
       def agent_api_max_retries
@@ -244,10 +286,6 @@ module Rubino
         dig("compression", "threshold")
       end
 
-      def compression_gateway_threshold
-        dig("compression", "gateway_threshold")
-      end
-
       def compression_target_ratio
         dig("compression", "target_ratio")
       end
@@ -277,6 +315,13 @@ module Rubino
         dig("memory", "auto_extract") == true
       end
 
+      # Throttle interval (in turns) for memory.auto_extract (#412). Returns a
+      # positive Integer; nil/<=1 (or absent) ⇒ 1 = every turn. The lifecycle
+      # only enqueues ExtractMemoryJob when turns-since-last >= this.
+      def memory_auto_extract_interval
+        positive_interval(dig("memory", "auto_extract_interval"))
+      end
+
       def memory_char_limit
         dig("memory", "memory_char_limit")
       end
@@ -290,6 +335,12 @@ module Rubino
 
         value = dig("skills", "auto_distill")
         value.nil? || value == true
+      end
+
+      # Throttle interval (in turns) for skills.auto_distill (#414). Mirrors
+      # memory_auto_extract_interval. nil/<=1 ⇒ every eligible turn.
+      def skills_auto_distill_interval
+        positive_interval(dig("skills", "auto_distill_interval"))
       end
 
       def memory_user_char_limit
@@ -358,33 +409,36 @@ module Rubino
         dig("approvals", "readonly_commands") || []
       end
 
-      # When true, a `shell` tool call must always be confirmed in manual mode
-      # even if the tool's own risk level wouldn't otherwise require it. Default
-      # true (key absent = on) so shell-by-default stays gated behind a human.
-      def require_confirmation_for_shell?
-        dig("security", "require_confirmation_for_shell") != false
-      end
-
-      # Effective shell prompt policy: :confirm_all (every not-otherwise-allowed
-      # shell command prompts — today's default) or :dangerous_only (safe shell
-      # commands run unprompted; only DangerousPatterns matches prompt).
-      #
-      # Resolution / coercion (documented in defaults.rb):
-      #   - if security.confirm_policy is set explicitly, it WINS (over the
-      #     legacy alias);
-      #   - otherwise it is DERIVED from require_confirmation_for_shell
-      #     (true -> :confirm_all, false -> :dangerous_only),
-      # so any deployment that only ever set the old alias keeps its behavior.
-      # An unrecognized value falls back to the derived alias result.
+      # Effective shell prompt policy and SOLE source of truth (item 7): the
+      # legacy security.require_confirmation_for_shell alias was REMOVED — no
+      # back-compat mapping. :dangerous_only (DEFAULT — safe shell commands run
+      # unprompted; only DangerousPatterns matches prompt) or :confirm_all (every
+      # not-otherwise-allowed shell command prompts). An unset or unrecognized
+      # value falls back to the seeded :dangerous_only default. A config that
+      # still carries the removed key is NOT silently honored — Validator.warnings
+      # flags it at load + in `rubino doctor`.
       def confirm_policy
         raw = dig("security", "confirm_policy")
         return raw.to_sym if %w[confirm_all dangerous_only].include?(raw.to_s)
 
-        require_confirmation_for_shell? ? :confirm_all : :dangerous_only
+        :dangerous_only
       end
 
+      # The pre-approved command allowlist, always returned as an Array.
+      #
+      # YAML lets a user write `command_allowlist: git status` (a scalar) where
+      # a sequence was meant. The matcher (CommandAllowlist#allowlist_token_lists)
+      # calls #filter_map on this value; a bare String would raise an unhandled
+      # NoMethodError out of the approval path (a crash, not the clean
+      # fail-closed contract — CFG-R3-1). Coerce a scalar to a single-entry
+      # array and drop any nil so the matcher always receives a well-formed list.
       def security_command_allowlist
-        dig("security", "command_allowlist") || []
+        raw = dig("security", "command_allowlist")
+        case raw
+        when Array then raw
+        when nil then []
+        else [raw]
+        end
       end
 
       # -- Providers section --
@@ -437,6 +491,14 @@ module Rubino
       end
 
       private
+
+      # Coerce a turn-interval setting to a positive Integer >= 1. Absent / nil /
+      # non-positive / garbage ⇒ 1 (every turn), so a throttle gate never divides
+      # by zero or silently disables the gated work.
+      def positive_interval(raw)
+        n = Integer(raw, exception: false)
+        n && n >= 1 ? n : 1
+      end
 
       # The home this config is bound to: the explicit home_path passed at
       # construction, else the same resolver the Loader uses (RUBINO_HOME →

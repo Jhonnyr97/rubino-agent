@@ -7,7 +7,13 @@ RSpec.describe Rubino::CLI::ChatCommand do
   let(:null_ui) { Rubino::UI::Null.new }
 
   let(:fake_runner) do
-    instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT")
+    # session/polishing are stubbed so the headless usage-persistence (#382) and
+    # post-turn drain (#358/#372) seams the one-shot path now runs don't raise on
+    # the verifying double (they're best-effort and would otherwise be rescued,
+    # but stubbing keeps the example output clean).
+    instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT",
+                                           session: { id: "sess-oneshot", model: "fake-model" },
+                                           polishing: nil, end_session!: nil)
   end
 
   before do
@@ -108,16 +114,32 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(line).to start_with(" default · branch:ab12cd · ")
     end
 
-    it "prefers the last response's REAL recorded usage over the estimate" do
-      # The newest assistant message carries the provider-reported context
-      # (input_tokens, persisted by the agent loop) — that wins over chars/4.
+    it "uses the chars/4 estimate, IGNORING the provider's recorded input_tokens" do
+      # The footer must read the SAME measure compaction does (estimate_tokens),
+      # NOT the provider-reported input_tokens — otherwise the gauge and the
+      # compaction trigger disagree. 4000 chars / 4 = ~1000 tok, regardless of
+      # the 7800 input_tokens persisted on the last response.
       stub_store_with([
-                        { content: "hi" },
+                        { content: "x" * 4_000 },
                         { content: "ok", metadata: { input_tokens: 7_800 }, token_count: 200 }
                       ])
       line = cmd.send(:build_status_line, status_runner)
-      expect(line).to include("ctx ~8k/128k") # 7800 + 200
-      expect(line).to include("(6%)")
+      expect(line).to include("ctx ~1k/128k") # chars/4, not 7800+200
+      expect(line).to include("(1%)")
+    end
+
+    it "footer 'used' and needs_compaction? read the SAME token source" do
+      # The footer's token figure (context_tokens) and the compaction decision
+      # (needs_compaction?) must both come from TokenBudget#estimate_tokens over
+      # the live message set, so the gauge reflects what compaction will decide.
+      msgs = [
+        instance_double(Rubino::Session::Message, content: "x" * 4_000, metadata: {}, token_count: 0)
+      ]
+      budget = Rubino::Context::TokenBudget.new(model_id: "minimax-m3", config: Rubino.configuration)
+      from_footer = cmd.send(:context_tokens, msgs, budget)
+      from_budget = budget.estimate_tokens(msgs.map { |m| { content: m.content } })
+      expect(from_footer).to eq(from_budget)
+      expect(from_footer).to eq(1_000)
     end
 
     it "honours model.context_length as the window" do
@@ -183,6 +205,41 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # #359: a corrupt-but-PRESENT DB used to be routed to "rubino isn't set up yet
+  # — run `rubino setup`" (misleading: the DB exists, it's corrupt). The chat
+  # entry guard must route corruption to the doctor diagnostic instead, mirroring
+  # the guarded path `sessions list` uses (#333).
+  describe "#ensure_database_ready! corrupt-DB routing (#359)" do
+    let(:corrupt_dir)  { Dir.mktmpdir("ra-chat-corrupt") }
+    let(:corrupt_path) { File.join(corrupt_dir, "rubino.sqlite3") }
+
+    after { FileUtils.remove_entry(corrupt_dir) }
+
+    before do
+      seed = Rubino::Database::Connection.new(corrupt_path)
+      seed.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| seed.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      seed.close
+      File.truncate(corrupt_path, 20_000)
+      allow(Rubino).to receive(:database)
+        .and_return(Rubino::Database::Connection.new(corrupt_path))
+    end
+
+    it "tells the user the DB is corrupt and points at doctor, NOT setup" do
+      cmd = described_class.new({})
+      expect do
+        expect { cmd.send(:ensure_database_ready!) }.to raise_error(SystemExit)
+      end.to output(/corrupt.*doctor/m).to_stderr
+    end
+
+    it "does NOT print the misleading 'isn't set up' / setup message" do
+      cmd = described_class.new({})
+      expect do
+        expect { cmd.send(:ensure_database_ready!) }.to raise_error(SystemExit)
+      end.not_to output(/isn't set up|run `rubino setup`/).to_stderr
+    end
+  end
+
   # -----------------------------------------------------------------------
   # One-shot detection
   # -----------------------------------------------------------------------
@@ -224,8 +281,24 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect { described_class.new("query" => "ping", "z" => true).execute }.to output("RESPONSE_TEXT\n").to_stdout
     end
 
-    it "passes Null UI to Runner" do
+    it "passes a Null-family (non-interactive) UI to Runner" do
       described_class.new("query" => "ping").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        # HeadlessTrace IS-A Null, so this asserts the headless one-shot never
+        # gets the interactive UI::CLI — while allowing the default trace adapter.
+        hash_including(ui: a_kind_of(Rubino::UI::Null))
+      )
+    end
+
+    it "defaults to the HeadlessTrace adapter (per-tool stderr trace on)" do
+      described_class.new("query" => "ping").execute
+      expect(Rubino::Agent::Runner).to have_received(:new).with(
+        hash_including(ui: an_instance_of(Rubino::UI::HeadlessTrace))
+      )
+    end
+
+    it "uses a plain Null adapter under --quiet (trace silenced)" do
+      described_class.new("query" => "ping", "quiet" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(ui: an_instance_of(Rubino::UI::Null))
       )
@@ -375,7 +448,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "--continue fetches latest resumable session" do
-      allow(repo).to receive(:latest_resumable).and_return(session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(session)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: "abc123ef")
@@ -383,7 +456,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "--continue passes nil when no resumable session" do
-      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
       described_class.new("query" => "hi", "continue" => true).execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: nil)
@@ -406,8 +479,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "bare-chat resume + teardown (#99/#100)" do
     let(:repo) { Rubino::Session::Repository.new(db: db.db) }
 
-    let(:resumed_session) { { id: "deadbeefcafef00d", title: "add modulo op", status: "active" } }
-    let(:new_session)     { { id: "00000000fresh000", title: nil, status: "active" } }
+    let(:resumed_session) do
+      { id: "deadbeefcafef00d", title: "add modulo op", status: "active",
+        message_count: 7, cwd: Dir.pwd }
+    end
+    let(:new_session) { { id: "00000000fresh000", title: nil, status: "active" } }
 
     before do
       allow(Rubino::Session::Repository).to receive(:new).and_return(repo)
@@ -423,7 +499,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "auto-resumes the most recent resumable session on a bare chat" do
-      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(resumed_session)
       allow(fake_runner).to receive(:session).and_return(resumed_session)
 
       described_class.new({}).execute
@@ -434,18 +510,21 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "prints the resume one-liner so the continuation is never silent" do
-      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(resumed_session)
       allow(fake_runner).to receive(:session).and_return(resumed_session)
 
       described_class.new({}).execute
 
-      line = null_ui.messages.find { |m| m[:message].to_s.include?("resuming") }
+      line = null_ui.messages.find { |m| m[:message].to_s.include?("resumed session") }
       expect(line).not_to be_nil
-      expect(line[:message]).to include("/new for a fresh session")
+      # OBVIOUS banner (F2): short id + message count + cwd + how to start fresh.
+      expect(line[:message]).to include("deadbeef")
+      expect(line[:message]).to include("7 msgs")
+      expect(line[:message]).to include("/new for fresh")
     end
 
     it "starts a fresh session (and welcomes) on a true first run" do
-      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
       allow(fake_runner).to receive(:session).and_return(new_session)
 
       described_class.new({}).execute
@@ -458,7 +537,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "--new forces a fresh session even when one is resumable" do
-      allow(repo).to receive(:latest_resumable).and_return(resumed_session)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(resumed_session)
       allow(fake_runner).to receive(:session).and_return(new_session)
 
       described_class.new("new" => true).execute
@@ -469,7 +548,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "marks the session ended on a clean teardown (#100)" do
-      allow(repo).to receive(:latest_resumable).and_return(nil)
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
       allow(fake_runner).to receive(:session).and_return(new_session)
 
       described_class.new({}).execute
@@ -494,6 +573,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "installs a HUP handler that ends the session on close" do
       skip "SIGHUP not supported on this platform" unless Signal.list.key?("HUP")
       allow(runner).to receive(:end_session!)
+      # #361b: the teardown trap flips the cancel token with reason :external so
+      # an in-flight turn is labeled "interrupted by external signal", not "by
+      # user". Allow + assert that here.
+      allow(runner).to receive(:cancel!)
 
       cmd = described_class.new({})
       prev = cmd.send(:install_session_end_traps, runner)
@@ -506,6 +589,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(handler).to respond_to(:call)
       expect { handler.call }.to raise_error(SystemExit)
 
+      expect(runner).to have_received(:cancel!).with(reason: :external)
       expect(runner).to have_received(:end_session!)
     end
   end
@@ -673,26 +757,28 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "ensure_setup! (first-run auto-init)" do
     it "auto-initializes an un-migrated database instead of crashing" do
       allow(db).to receive(:healthy?).and_return(false)
-      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      # up_to_date? is the side-effect-free fast-path probe (#race); false here
+      # so the boot path takes the lock and runs the real migrate.
+      migrator = instance_double(Rubino::Database::Migrator, up_to_date?: false)
       allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
       allow(Rubino).to receive(:ensure_directories!)
-      expect(migrator).to receive(:migrate!)
+      expect(migrator).to receive(:migrate!).with(lock_path: Rubino.migration_lock_path)
 
       expect { described_class.new("query" => "hi").execute }.not_to raise_error
     end
 
     it "runs pending migrations on a healthy-but-stale database" do
-      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      migrator = instance_double(Rubino::Database::Migrator, up_to_date?: false)
       allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
       allow(Rubino).to receive(:ensure_directories!)
-      expect(migrator).to receive(:migrate!)
+      expect(migrator).to receive(:migrate!).with(lock_path: Rubino.migration_lock_path)
 
       described_class.new("query" => "hi").execute
     end
 
     it "exits with a friendly message (not a backtrace) when auto-init fails" do
       allow(db).to receive(:healthy?).and_return(false)
-      migrator = instance_double(Rubino::Database::Migrator, pending?: true)
+      migrator = instance_double(Rubino::Database::Migrator, up_to_date?: false)
       allow(Rubino::Database::Migrator).to receive(:new).and_return(migrator)
       allow(Rubino).to receive(:ensure_directories!)
       allow(migrator).to receive(:migrate!).and_raise(StandardError, "disk full")
@@ -821,15 +907,33 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:run_turn, runner, "hello", ui)
     end
 
-    it "first Ctrl+C flips the token, warns the user, and stays in the REPL" do
+    it "first Ctrl+C flips the token, hints via the composer, and stays in the REPL" do
       allow(runner).to receive(:cancel!)
-      warned = nil
-      allow($stderr).to receive(:write) { |s| warned = s }
+      # #426 (Bug B): the double-tap hint no longer does a raw scrolling
+      # $stderr.write from the trap (that desynced the live-region geometry and
+      # duplicated the kept preamble). It routes through the composer's
+      # TRAP-SAFE #announce_pending, which paints the hint as an in-place
+      # transient row on the next finalize frame.
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:announce_pending)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      raw = nil
+      allow($stderr).to receive(:write) { |s| raw = s }
 
       expect { run_turn_firing_int(runner, taps: 1) }.not_to raise_error
 
       expect(runner).to have_received(:cancel!).at_least(:once)
-      expect(warned).to include("Ctrl+C again to exit")
+      expect(composer).to have_received(:announce_pending).with("(press Ctrl+C again to exit)")
+      # No raw scrolling write to the terminal — that was the geometry-desync source.
+      expect(raw).to be_nil
+    end
+
+    it "skips the hint cleanly (no raise) when no composer owns the screen" do
+      allow(runner).to receive(:cancel!)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(nil)
+
+      expect { run_turn_firing_int(runner, taps: 1) }.not_to raise_error
+      expect(runner).to have_received(:cancel!).at_least(:once)
     end
 
     it "second Ctrl+C within the window re-raises so the REPL exits" do
@@ -1268,7 +1372,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # the queue), then each queued item in submission order, each as its own
     # visible turn (echo + indicator removed at commit). Nothing parks
     # invisibly behind a later send.
-    describe "Enter-interrupt with explicitly queued items (#129)" do
+    describe "Enter-queue (type-ahead) FIFO ordering (#421)" do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
       let(:runner) do
         instance_double(Rubino::Agent::Runner, cancel!: nil,
@@ -1285,33 +1389,31 @@ RSpec.describe Rubino::CLI::ChatCommand do
         end
       end
 
-      it "drains the queue in order across the boundaries after the interrupt" do
+      it "queues each Enter line in FIFO order and drains them after the turn" do
         runs = []
         allow(runner).to receive(:run) do |prompt, **|
           runs << prompt
           if runs.length == 1
-            # Mid-turn: the user Alt+Enters AAA and BBB, then Enter-interrupts
-            # with CHERRY (front of the queue + cancel).
+            # Mid-turn: queue-by-default (#421). The user types A, B, C and hits
+            # Enter for each — all PARKED (no interrupt), the turn keeps running.
             composer = Rubino::UI::BottomComposer.current
             "AAA".each_char { |ch| composer.handle_key(ch) }
-            composer.instance_variable_set(:@input, StringIO.new("\r"))
-            composer.handle_key("\e") # Alt+Enter
+            composer.handle_key("\r") # Enter → queue
             "BBB".each_char { |ch| composer.handle_key(ch) }
-            composer.instance_variable_set(:@input, StringIO.new("\r"))
-            composer.handle_key("\e") # Alt+Enter
+            composer.handle_key("\r") # Enter → queue
             "CHERRY".each_char { |ch| composer.handle_key(ch) }
-            composer.handle_key("\r") # Enter-interrupt
-            nil # the interrupted turn yields no answer
-          else
-            "ok"
+            composer.handle_key("\r") # Enter → queue
           end
+          "ok"
         end
 
         cmd.send(:run_turn, runner, "long essay", ui, input_queue)
 
-        # Every parked line is VISIBLE while pending (#129): the interrupting
-        # line and the queued items all carry a "⏳ queued:" indicator.
-        expect(cmd.send(:pending_queued)).to eq(%w[CHERRY AAA BBB])
+        # The turn was NOT interrupted: it ran to completion ("ok").
+        expect(runner).not_to have_received(:cancel!)
+        # Every parked line is VISIBLE while pending, in FIFO submission order —
+        # no front-jump (the old interrupt-by-default push_front is gone).
+        expect(cmd.send(:pending_queued)).to eq(%w[AAA BBB CHERRY])
 
         # The boundaries that follow consume everything, in order, with no
         # fresh read in between — and each commit clears its indicator.
@@ -1320,7 +1422,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
           cmd.send(:run_turn, runner, line, ui, input_queue)
         end
 
-        expect(runs).to eq(["long essay", "CHERRY", "AAA", "BBB"])
+        expect(runs).to eq(["long essay", "AAA", "BBB", "CHERRY"])
         expect(cmd.send(:pending_queued)).to eq([])    # all indicators cleared
         expect(input_queue.pending?).to be(false)      # nothing left parked
       end
@@ -1356,18 +1458,19 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     # BH-1 (the crash that shipped): the in-turn composer's on_interrupt lambda
     # is wired by the REAL #start_composer, where `runner` was NOT in scope (a
-    # parameter of #run_turn, no @runner ivar). So the instant the user pressed
-    # Enter during a turn — the documented interrupt gesture — the lambda raised
-    # `NameError: undefined local variable or method 'runner'`, dumping a
-    # backtrace into the chat, NOT cancelling the turn, and killing the reader.
+    # parameter of #run_turn, no @runner ivar). So the instant the user fired the
+    # interrupt gesture during a turn, the lambda raised `NameError: undefined
+    # local variable or method 'runner'`, dumping a backtrace into the chat, NOT
+    # cancelling the turn, and killing the reader.
     #
+    # Under the type-ahead model (#421) the interrupt gesture is ESC, not Enter.
     # The existing bottom_composer specs inject their OWN on_interrupt stub, so
     # they never exercised this wiring — which is why it shipped broken. This
     # drives the REAL ChatCommand seam: build the composer via #start_composer
-    # (the production wiring), then submit a line via the composer's keystroke
+    # (the production wiring), then press ESC via the composer's keystroke
     # handler while a turn is active, and assert the interrupt resolves `runner`
     # and calls #cancel! with NO NameError.
-    describe "interrupt-by-default wiring (BH-1)" do
+    describe "Esc-interrupt wiring (BH-1, #421)" do
       let(:runner) do
         instance_double(Rubino::Agent::Runner, run: "ok",
                                                session: { id: "sess-x", model: "m" })
@@ -1388,20 +1491,22 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       # Drive the WHOLE production seam: #run_turn builds the composer via the
       # real #start_composer and runs the runner. We stand in for the reader by
-      # pressing Enter (the documented interrupt gesture) mid-turn on the SAME
-      # composer #start_composer wired — so the real on_interrupt lambda fires.
-      # Against the buggy code this raised `NameError: undefined local variable
-      # or method 'runner'` (BH-1); after the fix it resolves `runner` and
-      # cancels. NO hand-built on_interrupt stub anywhere — that is the whole
-      # point (the prior specs stubbed it and never caught the crash).
-      it "an Enter-during-turn submit resolves `runner` and calls cancel! (no NameError)" do
+      # pressing ESC (the interrupt gesture, #421) mid-turn on the SAME composer
+      # #start_composer wired — so the real on_interrupt lambda fires. Against
+      # the buggy code this raised `NameError` (BH-1); after the fix it resolves
+      # `runner` and cancels. A type-ahead line queued first must run next. NO
+      # hand-built on_interrupt stub anywhere — that is the whole point.
+      it "an Esc-during-turn press resolves `runner` and calls cancel! (no NameError)" do
         raised = nil
         allow(runner).to receive(:run) do
           composer = Rubino::UI::BottomComposer.current
           composer.begin_turn
-          "interrupt me".each_char { |ch| composer.handle_key(ch) }
+          # Type-ahead a line (Enter → queue), then ESC to interrupt.
+          "run me next".each_char { |ch| composer.handle_key(ch) }
+          composer.handle_key("\r")
           begin
-            composer.handle_key("\r") # fires the REAL on_interrupt lambda
+            composer.instance_variable_set(:@input, StringIO.new("")) # lone ESC
+            composer.handle_key("\e") # fires the REAL on_interrupt lambda
           rescue NameError => e
             raised = e # capture so the turn still unwinds and we can assert
           end
@@ -1412,7 +1517,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         expect(raised).to be_nil, "on_interrupt raised: #{raised&.message}" # BH-1
         expect(runner).to have_received(:cancel!)        # the turn was cancelled
-        expect(input_queue.shift).to eq("interrupt me")  # line parked to run next
+        expect(input_queue.shift).to eq("run me next")   # queued line runs next
       end
     end
 

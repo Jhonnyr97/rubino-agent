@@ -11,21 +11,39 @@ module Rubino
         @queue = Queue.new(db: @db)
       end
 
+      # Statuses a job can never be re-run from — it already reached a terminal
+      # outcome. run_job refuses these (#346) so a double-call (two processes
+      # reaping the same orphan, a stale retry) can NEVER execute — and re-bill —
+      # an already-finished job a second time.
+      TERMINAL_STATUSES = %w[completed failed dead].freeze
+
       # Runs a specific job by ID
       def run_job(job_id)
         job = @db[:jobs].where(id: job_id).first
         return unless job
 
-        handler = Registry.handler_for(job[:type])
-        unless handler
-          @queue.fail!(job_id, error: "No handler registered for: #{job[:type]}")
-          return
-        end
+        # Defence-in-depth re-check (#346): refuse a row that already reached a
+        # terminal status. The CAS claim in Queue#reap_inline_orphans/#dequeue is
+        # the primary guard against two processes double-running an orphan; this
+        # second check means even a direct run_job on an already-completed row is
+        # a harmless no-op rather than a second (billed) execution.
+        return if TERMINAL_STATUSES.include?(job[:status])
 
-        payload = JSON.parse(job[:payload_json], symbolize_names: true)
         run_id = record_run_start(job_id)
 
+        # Handler resolution and payload parsing live INSIDE the rescue so a
+        # bad row (unknown type, or non-JSON payload_json written by an older
+        # build / a corrupt write) is failure-isolated exactly like a handler
+        # exception: it reaches fail! (terminal in inline mode) instead of
+        # escaping. In inline mode run_job is driven directly by enqueue/
+        # reap_inline_orphans on a live turn, so an escaping JSON::ParserError
+        # would otherwise take down the whole interaction (#J1).
         begin
+          handler = Registry.handler_for(job[:type])
+          raise "No handler registered for: #{job[:type]}" unless handler
+
+          payload = JSON.parse(job[:payload_json], symbolize_names: true)
+
           Rubino.event_bus.emit(Interaction::Events::JOB_STARTED, type: job[:type])
           handler.new.perform(payload)
           @queue.complete!(job_id)

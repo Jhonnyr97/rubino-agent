@@ -14,9 +14,22 @@ module Rubino
         true
       end
 
+      # Drop the `tree` command Thor injects into every subclass (#327): under a
+      # registered subcommand its usage banner renders the doubled "rubino rubino
+      # config tree" (the parent's `rubino` prefix + this class's own "rubino
+      # config" namespace). The top-level `rubino tree` already prints the whole
+      # command tree, so the inherited copy here is redundant noise; remove it.
+      remove_command :tree
+
       desc "get KEY", "Get a configuration value (dot-notation; secrets masked)"
       def get(key)
-        self.class.render_get(key, ui: Rubino.ui)
+        # A missing key is a FAILURE on the automation surface (P2-H1/H2): when
+        # render_get reports not-found, raise Thor::Error so exit_on_failure?
+        # exits non-zero with the message on stderr (the shared renderer's
+        # ui.warning went to stdout and returned 0). The in-chat `/config get`
+        # surface ignores the return value, so its REPL-friendly warning stays.
+        found = self.class.render_get(key, ui: Rubino.ui)
+        raise Thor::Error, "config key not found: #{key}" unless found
       end
 
       # ONE get rendering for both surfaces (#187): this CLI verb and the
@@ -26,25 +39,72 @@ module Rubino
       # of falsely reported "not found" (issue #36). A scalar intermediate
       # node (e.g. descending into a String) has no #dig; treat such a path as
       # "not found" rather than crashing. Secret-named keys render masked.
+      #
+      # Returns true when the key resolved, false when not found, so the CLI
+      # verb can exit non-zero on a miss (P2-H1) while the REPL surface ignores
+      # the return. The not-found NOTICE is left to each caller: the CLI verb
+      # raises a Thor::Error (stderr + non-zero), the in-chat handler shows the
+      # stdout warning below — so a miss never double-prints.
+      # rubocop:disable Naming/PredicateMethod -- it RENDERS (a side effect) and
+      # returns found?; it isn't a pure predicate, and the name is the documented
+      # shared-renderer seam (#187) referenced by the in-chat handler.
       def self.render_get(key, ui:)
+        path = key.split(".")
         value =
           begin
-            Rubino.configuration.dig(*key.split("."))
+            Rubino.configuration.dig(*path)
           rescue TypeError
             nil
           end
-        if value.nil?
-          ui.warning("Key '#{key}' not found")
-        else
-          ui.info("#{key} = #{redact(value, key: key.split(".").last)}")
-        end
+        return false if value.nil?
+
+        # F4: annotate a value that comes from the built-in DEFAULTS rather than
+        # the user's config.yml, so "I unset it but `config get` still shows a
+        # value" reads correctly — the default is what's in effect, not a stale
+        # setting. A key whose resolved value is NOT present in the raw (un-merged)
+        # user file is default-sourced.
+        suffix = from_defaults?(path) ? " (default)" : ""
+        ui.info("#{key} = #{redact(value, key: path.last)}#{suffix}")
+        true
       end
+
+      # True when +path+ has no value in the user's config.yml as written on disk
+      # (so the merged value is coming from the built-in defaults). Best-effort:
+      # any read hiccup reports false (no annotation) rather than a false
+      # "(default)". A nil at the path in the raw file counts as "not set".
+      def self.from_defaults?(path)
+        raw =
+          begin
+            Config::Loader.new.raw_config
+          rescue StandardError
+            {}
+          end
+        raw.is_a?(Hash) && raw.dig(*path).nil?
+      end
+      # rubocop:enable Naming/PredicateMethod
 
       desc "set KEY VALUE", "Set a configuration value (dot-notation)"
       def set(key, value)
         writer = Config::Writer.new(config_path: config_path)
         writer.set(key, value)
-        Rubino.ui.success("#{key} = #{value}")
+        # Mask a secret-named value the SAME way `config get`/`show` do (#187):
+        # a successful SET must not echo a raw api_key/token into the scrollback.
+        Rubino.ui.success("#{key} = #{self.class.redact(value, key: key.split(".").last)}")
+      rescue ConfigurationError => e
+        Rubino.ui.error(e.message)
+        exit(1)
+      end
+
+      desc "unset KEY", "Remove a configuration key (drop a setting; reverts to the default)"
+      def unset(key)
+        writer = Config::Writer.new(config_path: config_path)
+        if writer.unset(key)
+          Rubino.ui.success("unset #{key}")
+        else
+          # Not present is a no-op, not a failure: exit 0 with a clear notice so
+          # `config unset` is idempotent (re-running it never errors).
+          Rubino.ui.info("#{key} was not set (nothing to remove)")
+        end
       rescue ConfigurationError => e
         Rubino.ui.error(e.message)
         exit(1)

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "thor"
+require "json"
 
 module Rubino
   module CLI
@@ -15,6 +16,36 @@ module Rubino
       def self.exit_on_failure?
         true
       end
+
+      # One-line description of what rubino IS, surfaced as a top-line tagline in
+      # `rubino --help` / `rubino help` — Thor's stock command list opens cold
+      # with "Commands:" and never says what the tool does or where to start
+      # (F-help). Wrap Thor's #help to print a tagline above the listing and a
+      # "Getting started: run `rubino setup`" hint below it, so a brand-new user
+      # lands on the first action instead of a bare verb table.
+      TAGLINE = "rubino — an AI coding agent that reads, edits, and runs code."
+      GETTING_STARTED = "Getting started: run `rubino setup` to configure a model, " \
+                        "then `rubino chat` (or `rubino \"your prompt\"`)."
+
+      # rubocop:disable Style/OptionalBooleanParameter -- overrides Thor's own
+      # `def help(shell, subcommand = false)`; the positional boolean is Thor's
+      # public signature (instance #help calls it positionally), not ours to change.
+      def self.help(shell, subcommand = false)
+        # Only decorate the TOP-LEVEL command listing (`rubino --help`), not a
+        # per-command help page (`rubino help chat`) — those are dispatched with
+        # the command name and handled by super unchanged.
+        if subcommand
+          super
+          return
+        end
+
+        shell.say(TAGLINE)
+        shell.say
+        super
+        shell.say(GETTING_STARTED)
+        shell.say
+      end
+      # rubocop:enable Style/OptionalBooleanParameter
 
       # Allow passing prompt directly as default task:
       # rubino "my prompt"
@@ -48,7 +79,229 @@ module Rubino
           return super(["help", cmd], config)
         end
 
-        super
+        # Reject an unknown LEADING flag before it is swallowed into the prompt
+        # (F7). `chat` is the default command, so `rubino --frobnicate …` (or
+        # `rubino prompt --frobnicate`) routes to chat/prompt and a TYPO'D flag
+        # silently became part of the message text (or an empty-prompt run)
+        # instead of erroring. Validate the leading `--flags` of a chat/prompt
+        # invocation against that command's declared options here and surface a
+        # clean "unknown flag" instead. A legitimate prompt that merely CONTAINS
+        # `--` text (`rubino "run git log --oneline"`) is untouched: only a flag
+        # in the LEADING run (before the first positional word) is checked.
+        if (bad = unknown_leading_flag(given_args))
+          report_early_error(given_args, "unknown flag '#{bad}'. Run `rubino #{chat_like_command(given_args)} --help` for valid flags")
+        end
+
+        # Force Thor's own `start` to RE-RAISE a Thor::Error (unknown command,
+        # bad/malformed flag, ambiguous command, a subcommand's `raise
+        # Thor::Error`) instead of swallowing it into a bare stderr line + exit
+        # (its default). We catch it below so EVERY dispatch/argument error is
+        # surfaced format-aware (#327): a clean stderr line under text, a
+        # well-formed JSON error envelope on STDOUT under --output-format
+        # json|stream-json — never an empty stdout, and never a raw backtrace.
+        super(given_args, config.merge(debug: true))
+      rescue Rubino::Database::BusyError => e
+        # Final backstop (#333/#359): a SUSTAINED concurrent-migration lock that
+        # outlived the connection retry budget must surface as a clean single
+        # line + non-zero exit at this one chokepoint — never a raw Sequel/
+        # SQLite backtrace from whichever command happened to touch the DB.
+        # (Rubino::Database::BusyError is DEFINED in the always-loaded errors.rb
+        # so naming it here can never NameError before the DB is autoloaded —
+        # #445-regression fix.)
+        warn "rubino: #{e.message}"
+        exit(1)
+      rescue Thor::Error, Rubino::ConfigurationError => e
+        # A pre-run error that reached the boot chokepoint:
+        #   * Thor::Error — a dispatch/argument failure (Thor::UndefinedCommandError
+        #     carrying its own "Did you mean?" suggestion, MalformattedArgumentError
+        #     for a bad `--max-turns abc`, a subcommand's `raise Thor::Error`).
+        #   * Rubino::ConfigurationError — a source-raised config error, today a
+        #     careless RUBINO_HOME pointing at a file / read-only parent (F13,
+        #     raised by Rubino.ensure_directories!).
+        # Surface it in the format the invocation asked for: under json/stream-json
+        # emit the #327 envelope on stdout so automation can parse the failure (the
+        # prior behaviour left stdout EMPTY for Thor errors, or leaked a raw Errno
+        # backtrace for the home error); otherwise the clean one-line stderr Thor
+        # itself would have printed. Never a raw backtrace; exit non-zero.
+        report_early_error(given_args, clean_thor_message(e, given_args))
+      rescue SystemCallError => e
+        # A filesystem/OS syscall (Errno::*) that reached the boot chokepoint
+        # WITHOUT going through Rubino.ensure_directories!'s file-vs-directory
+        # guard — today a `config set`/`config unset` write whose RUBINO_HOME
+        # points at an existing file, so Util::AtomicFile.mkdir_p raised a raw
+        # ~25-frame fileutils Errno::EEXIST backtrace (MED). Normalize EVERY such
+        # Errno here, the same single chokepoint, into the SAME clean one-liner
+        # chat/setup already emit (clean_errno_message strips Ruby's internal
+        # ` @ <syscall> - <path>` tail): a `rubino: <reason>` stderr line under
+        # text, the #327 envelope on stdout under json/stream-json. Never a raw
+        # backtrace; exit non-zero. Deliberately NOT broadened to StandardError —
+        # only OS-level Errno failures are normalized; a real bug still surfaces.
+        report_early_error(given_args, Rubino.clean_errno_message(e.message))
+      end
+
+      # Normalizes a Thor dispatch/argument error message into rubino's own
+      # voice, so every pre-run failure reads as one clean `rubino: <msg>` line
+      # instead of mixing Thor's raw `ERROR: …`/`Usage: …` text with our
+      # hand-crafted unknown-command/unknown-flag voice (copy-consistency).
+      #   * An unknown command (Thor::UndefinedCommandError) becomes
+      #     "unknown command 'X'. Did you mean `setup`? Run `rubino --help`."
+      #     — the closest-match did-you-mean mirrors the in-REPL slash hint (F2),
+      #     replacing Thor's terser "Could not find command … Did you mean? …".
+      #   * An argument/usage error (Thor::InvocationError, e.g. a command called
+      #     with stray args/flags) has its internal `ERROR: ` prefix and trailing
+      #     `Usage: …` line stripped, leaving just the plain sentence.
+      # Any other Thor/Configuration error passes through unchanged.
+      def self.clean_thor_message(error, given_args)
+        name = Array(given_args).first.to_s
+        # Only the TOP-LEVEL unknown command gets rubino's did-you-mean voice. A
+        # nested miss (`rubino sessions frobnicate`) also surfaces as an
+        # UndefinedCommandError, but `given_args.first` there is the VALID parent
+        # ("sessions") — suggesting against the top-level roster would be wrong, so
+        # those fall through to Thor's own (cleaned) "Could not find command …".
+        if error.is_a?(Thor::UndefinedCommandError) && !commands.key?(name.tr("-", "_"))
+          msg = "unknown command '#{name}'."
+          if (suggestion = closest_command(name))
+            msg += " Did you mean `#{suggestion}`?"
+          end
+          return "#{msg} Run `rubino --help`."
+        end
+
+        # Drop Thor's `ERROR: ` lead and its `Usage: "…"` continuation line(s),
+        # keeping the first clean sentence (e.g. the "was called with arguments"
+        # line) — never the raw two-line `ERROR:/Usage:` block.
+        error.message.to_s.sub(/\AERROR: /, "").split("\nUsage:", 2).first.strip
+      end
+
+      # The closest known top-level command/subcommand to a mistyped +name+, for
+      # the unknown-command did-you-mean (F2). Uses the same stdlib DidYouMean
+      # SpellChecker the in-REPL slash hint uses; best-effort (nil on any hiccup).
+      def self.closest_command(name)
+        require "did_you_mean"
+        dict = commands.keys.map(&:to_s)
+        DidYouMean::SpellChecker.new(dictionary: dict).correct(name.to_s).first
+      rescue StandardError
+        nil
+      end
+
+      # The chat-like command an arg list dispatches to (`chat` or `prompt`), or
+      # nil when it isn't one. A bare invocation (`rubino "hi"`, `rubino
+      # --frobnicate`) falls to the default command (chat); an explicit
+      # `rubino prompt …` / `rubino chat …` is named outright. Subcommands and
+      # other top-level commands return nil — Thor already rejects unknown flags
+      # for those, and only chat/prompt have a positional that swallows a typo.
+      def self.chat_like_command(given_args)
+        first = Array(given_args).first.to_s
+        return first if %w[chat prompt].include?(first)
+        # A leading flag / quoted prompt (not a known command) → default command.
+        return "chat" if first.start_with?("-") || !commands.key?(first.tr("-", "_"))
+
+        nil
+      end
+
+      # The first LEADING `--flag` of a chat/prompt invocation that isn't a
+      # declared option, or nil (F7). "Leading" = appears before the first
+      # POSITIONAL word, so a `--`-containing prompt is never misread: once a
+      # non-flag token is seen, the rest is the prompt and is not inspected.
+      # Value-taking flags consume their following token so `--model foo` doesn't
+      # treat `foo` as a positional. Only inspects chat/prompt; other commands
+      # return nil (Thor handles their flags).
+      def self.unknown_leading_flag(given_args)
+        command = chat_like_command(given_args)
+        return nil unless command
+
+        args = Array(given_args).map(&:to_s)
+        # Drop the explicit command word when present; for the default-command
+        # path the whole list is the chat args.
+        args = args.drop(1) if %w[chat prompt].include?(args.first)
+        known = known_flag_tokens(command)
+
+        i = 0
+        while i < args.size
+          tok = args[i]
+          break unless tok.start_with?("-") && tok != "-" # first positional ⇒ stop
+
+          flag = tok.split("=", 2).first
+          return flag unless known.include?(flag)
+
+          # A known value-flag with a space-separated value consumes the next
+          # token so it isn't mistaken for the first positional.
+          i += value_flag?(command, flag) && !tok.include?("=") ? 2 : 1
+        end
+        nil
+      end
+
+      # The set of accepted flag spellings for a command — every declared
+      # `--long`, `--no-long` (booleans), and short `-x` alias — so a typo is
+      # caught but a real flag in any spelling is accepted.
+      def self.known_flag_tokens(command)
+        opts = commands[command]&.options || {}
+        # --help/-h and the global --version/-v are always valid spellings; the
+        # latter is handled at the top of #start when LEADING, but a non-leading
+        # `chat --version` must still fall through to Thor (not be rejected as
+        # "unknown"), preserving the pre-F7 dispatch behaviour.
+        tokens = HELP_FLAGS + %w[--version -v]
+        opts.each_value do |o|
+          tokens << "--#{o.name.tr("_", "-")}"
+          tokens << "--no-#{o.name.tr("_", "-")}" if o.type == :boolean
+          Array(o.aliases).each { |a| tokens << a }
+        end
+        tokens.uniq
+      end
+
+      # True when a flag carries a value (so its next token is the value, not a
+      # positional). Booleans don't; everything else does.
+      def self.value_flag?(command, flag)
+        opts = commands[command]&.options || {}
+        opt = opts.values.find do |o|
+          long = "--#{o.name.tr("_", "-")}"
+          long == flag || Array(o.aliases).include?(flag)
+        end
+        opt && opt.type != :boolean
+      end
+
+      # Surfaces a pre-run error (a Thor dispatch/argument error caught in #start,
+      # or any other boot-time failure that escapes a command body) in the
+      # invocation's chosen output format, then exits non-zero (#327). Under
+      # --output-format json|stream-json the message becomes the same
+      # {type:"result", is_error:true, …} envelope ChatCommand#fail_arg! emits for
+      # an empty prompt / invalid --output-format, so a json consumer ALWAYS gets
+      # a parseable object on stdout; under text it is the clean `rubino: <msg>`
+      # stderr line. The JSON path is wholly best-effort: an envelope hiccup must
+      # never mask the underlying failure, so it falls back to the stderr line.
+      def self.report_early_error(given_args, message, exit_code: 1)
+        if json_output_requested?(given_args)
+          begin
+            $stdout.puts JSON.generate(Output::ResultSerializer.arg_error(message: message))
+            $stdout.flush
+          rescue StandardError
+            warn "rubino: #{message}"
+          end
+        else
+          warn "rubino: #{message}"
+        end
+        exit(exit_code)
+      end
+
+      # True when the raw CLI args ask for a machine-readable one-shot mode —
+      # `--json`, or `--output-format json|stream-json` (hyphen or underscore,
+      # `=`-joined or space-separated). Decided from the raw argv (NOT Thor's
+      # parsed options) because the error we're reporting can be the very failure
+      # that aborted option parsing, so parsed options may be unavailable. Mirrors
+      # ChatCommand#json_requested? so the early-error envelope matches the
+      # in-command one.
+      def self.json_output_requested?(given_args)
+        args = Array(given_args).map(&:to_s)
+        return true if args.include?("--json")
+
+        args.each_with_index do |a, i|
+          if ["--output-format", "--output_format"].include?(a)
+            val = args[i + 1].to_s.tr("-", "_")
+            return true if %w[json stream_json].include?(val)
+          elsif (m = a.match(/\A--output[-_]format=(.+)\z/))
+            return true if %w[json stream_json].include?(m[1].tr("-", "_"))
+          end
+        end
+        false
       end
 
       # Wrap subcommand help so `chat --help` / `prompt --help` stay within 80
@@ -138,6 +391,26 @@ module Rubino
       option :max_turns,               type: :numeric, desc: "Max tool iterations per turn"
       option :ignore_rules,            type: :boolean, desc: "Skip AGENTS.md and context files"
 
+      # Machine-readable headless output (one-shot / -q only). `text` (default)
+      # prints prose; `json` emits a single result object on stdout at
+      # completion; `stream-json` emits JSONL (system→assistant→user→result).
+      # In json/stream-json modes ALL JSON goes to stdout and ALL logs/errors to
+      # stderr, and markdown rendering is suppressed. `--json` is an alias for
+      # `--output-format json`.
+      option :output_format, type: :string, banner: "FORMAT",
+                             desc: "One-shot output: text | json | stream-json (default text)"
+      option :json,          type: :boolean, desc: "Alias for --output-format json"
+
+      # One-shot TEXT trace control. By default a `rubino prompt`/-q text run
+      # prints a concise per-tool activity trace to STDERR (`· edit foo.rb`),
+      # answer-only on STDOUT. --quiet/-Q silences that trace (machine path);
+      # --verbose/-v widens each line's args. NOTE: -q is --query (the prompt
+      # content), so the QUIET flag is the CAPITAL -Q (mirrors Hermes -q/-Q).
+      option :quiet,         aliases: "-Q", type: :boolean,
+                             desc: "Silence the one-shot stderr tool-activity trace (answer-only)"
+      option :verbose,       aliases: "-v", type: :boolean,
+                             desc: "Expand the one-shot stderr tool-activity trace (fuller args)"
+
       # Add extra allowed workspace roots at launch (repeatable), like Claude
       # Code's --add-dir. Write/edit tools then accept files under any added
       # root; an added dir's project context/skills are gated by folder-trust.
@@ -165,6 +438,13 @@ module Rubino
       option :ignore_rules,                type: :boolean, desc: "Skip AGENTS.md/context files"
       option :add_dir,                     type: :string, repeatable: true,
                                            desc: "Add an extra allowed workspace directory (repeatable)"
+      option :output_format,               type: :string, banner: "FORMAT",
+                                           desc: "Output: text | json | stream-json (default text)"
+      option :json,                        type: :boolean, desc: "Alias for --output-format json"
+      option :quiet,        aliases: "-Q", type: :boolean,
+                            desc: "Silence the stderr tool-activity trace (answer-only)"
+      option :verbose,      aliases: "-v", type: :boolean,
+                            desc: "Expand the stderr tool-activity trace (fuller args)"
       def prompt(*args)
         query = args.join(" ")
         opts = options.to_h.merge(query: query)

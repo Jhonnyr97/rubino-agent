@@ -15,10 +15,17 @@ RSpec.describe Rubino::UI::StatusBar do
       expect(line).to eq(" minimax-m3 · ctx ~8.4k/64k (13%)")
     end
 
-    # P9: a fresh session must not carry a permanent "(0%)".
-    it "drops the percentage entirely below 1%" do
+    # TUI-1: a sub-1k session must render the USED figure in the same `k` unit
+    # as the window AND always show the percentage, so `~129/128k` can never
+    # scan as "over budget". A near-empty session reads `~0.1k/128k (0%)`.
+    it "renders the used figure in the window's k unit below 1k (never over-budget)" do
       line = described_class.render(model: "minimax-m3", tokens: 105, window: 128_000, pastel: plain)
-      expect(line).to eq(" minimax-m3 · ctx ~105/128k")
+      expect(line).to eq(" minimax-m3 · ctx ~0.1k/128k (0%)")
+    end
+
+    it "always shows the percentage when the window is known" do
+      line = described_class.render(model: "m3", tokens: 105, window: 128_000, pastel: plain)
+      expect(line).to include("(0%)")
     end
 
     it "drops the percentage when the window is unknown (nil)" do
@@ -50,6 +57,13 @@ RSpec.describe Rubino::UI::StatusBar do
         line = described_class.render(model: "m3", tokens: 100, window: nil,
                                       chips: { mode: :plan, branch: "ab12cd", skill: "s" }, pastel: plain)
         expect(line).to eq(" plan · branch:ab12cd · skill s · m3 · ~100 tok")
+      end
+
+      # #320: the active primary agent chip sits right after the mode.
+      it "renders the agent token after the mode" do
+        line = described_class.render(model: "m3", tokens: 100, window: nil,
+                                      chips: { mode: :default, agent: "plan" }, pastel: plain)
+        expect(line).to eq(" default · agent plan · m3 · ~100 tok")
       end
 
       it "omits every chip when none is given (legacy bare bar)" do
@@ -88,6 +102,69 @@ RSpec.describe Rubino::UI::StatusBar do
       line = described_class.render(model: "m", tokens: 95_000, window: 100_000, pastel: pastel)
       # The token-count segment AFTER the red % still opens its own dim span.
       expect(line.split("95%").last).to include("\e[2m")
+    end
+
+    # TUI-5: the percentage is a SATURATION gauge — it must never read past
+    # 100% even when the provider-reported prompt size (tokens) exceeds the
+    # window (a pinned context.max_tokens smaller than the real prompt, or the
+    # provider counting more than the chars/4 default assumes). An unclamped
+    # ratio printed an impossible "(245%)" / "(230%)".
+    it "clamps the percentage at 100% when tokens exceed the window" do
+      line = described_class.render(model: "m3", tokens: 26_600, window: 8_000, pastel: plain)
+      expect(line).to eq(" m3 · ctx ~26.6k/8k (100%)")
+    end
+
+    it "still shows the raw tokens/window pair when over budget" do
+      # The over-budget state stays visible (26.6k > 8k) — only the % is pinned.
+      line = described_class.render(model: "m3", tokens: 26_600, window: 8_000, pastel: plain)
+      expect(line).to include("~26.6k/8k")
+    end
+
+    it "colors a clamped over-budget percentage red (crit band)" do
+      line = described_class.render(model: "m", tokens: 46, window: 20, pastel: pastel)
+      expect(line).to include("\e[31m100%")
+    end
+
+    # TUI-1: the reported "ctx ~245/128k" was the over-budget-LOOKING bug —
+    # 245 tokens IS 0.2% of a 128k window, but the bare `245` next to `128k`
+    # scanned as full. The fix renders the used figure in the window's `k` unit
+    # and always shows the (clamped) percentage, so the tiny ratio reads
+    # unambiguously as `~0.2k/128k (0%)`.
+    it "renders a tiny legitimate ratio in matched units with a 0% gauge" do
+      line = described_class.render(model: "m3", tokens: 245, window: 128_000, pastel: plain)
+      expect(line).to eq(" m3 · ctx ~0.2k/128k (0%)")
+    end
+  end
+
+  describe ".abbreviate_to" do
+    it "forces the used figure into k when the window is in k" do
+      expect(described_class.abbreviate_to(129, 128_000)).to eq("0.1k")
+      expect(described_class.abbreviate_to(8_421, 64_000)).to eq("8.4k")
+    end
+
+    it "floors a non-zero sub-100 count to 0.1k (never a misleading 0k)" do
+      expect(described_class.abbreviate_to(5, 128_000)).to eq("0.1k")
+    end
+
+    it "renders a zero count as 0k" do
+      expect(described_class.abbreviate_to(0, 128_000)).to eq("0k")
+    end
+
+    it "falls back to the plain abbreviation for a sub-1k window (units already match)" do
+      expect(described_class.abbreviate_to(50, 500)).to eq("50")
+    end
+  end
+
+  describe ".context_pct" do
+    it "clamps to 0..100" do
+      expect(described_class.context_pct(46, 20)).to eq(100)
+      expect(described_class.context_pct(13, 100)).to eq(13)
+      expect(described_class.context_pct(0, 100)).to eq(0)
+    end
+
+    it "is 0 for a non-positive window" do
+      expect(described_class.context_pct(50, 0)).to eq(0)
+      expect(described_class.context_pct(50, nil)).to eq(0)
     end
   end
 

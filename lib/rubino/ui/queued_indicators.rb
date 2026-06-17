@@ -50,7 +50,12 @@ module Rubino
         return [] if @list.empty?
 
         shown = @list.first(MAX_ROWS)
-        rows = shown.map { |msg| pastel.dim("⏳ queued: #{msg}") }
+        # The queued message is USER-SUPPLIED, so neutralize terminal escapes
+        # before it is rendered as a live indicator row (CWE-150 — H1): the same
+        # render-boundary defense the submit echo and approval card use. The raw
+        # message is what runs as the next turn's prompt; only this row is
+        # sanitized.
+        rows = shown.map { |msg| pastel.dim("⏳ queued: #{Util::Output.sanitize_terminal(msg.to_s)}") }
         overflow = @list.size - shown.size
         rows << pastel.dim("┄ +#{overflow} more queued ┄") if overflow.positive?
         rows

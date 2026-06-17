@@ -18,10 +18,22 @@ module Rubino
 
       MODULE_DEFAULTS = {
         "model" => {
+          # Public-gem default is OpenAI gpt-4.1 (maintainer directive): it is
+          # the most broadly available provider and needs no special provider
+          # block to route — just OPENAI_API_KEY — so a defaults-only config is
+          # coherent and the first turn works. MiniMax stays an AVAILABLE wizard
+          # choice but is NOT the seeded/recommended default. The onboarding
+          # wizard's recommended (first) entry mirrors this exact default.
+          # provider "auto" derives the concrete provider from the model id
+          # (openai/* → openai); the wizard/auto-detect write an explicit
+          # provider when the user/env picks a non-OpenAI backend.
           "default" => "openai/gpt-4.1",
           "provider" => "auto",
           "context_length" => nil,
-          "temperature" => 0.3,
+          # nil = inherit the provider default (Hermes injects no temperature).
+          # 0.3 used to be hardcoded but is inert under thinking-on (forced to 1)
+          # and only surfaced when thinking was disabled (#414).
+          "temperature" => nil,
           # Max output tokens for the anthropic-family path (anthropic_compatible
           # MiniMax, native anthropic, bedrock). ruby_llm defaults the Anthropic
           # max_tokens to 4096, which a reasoning model can exhaust on thinking
@@ -110,18 +122,55 @@ module Rubino
           }
         },
         "agent" => {
+          # OUTER rail on tool iterations, enforced in IterationBudget alongside
+          # max_tool_iterations (#414): the budget caps at min(max_tool_iterations,
+          # max_turns). Previously DEAD config (assigned, never read); now wired as
+          # a real ceiling. `--max-turns N` overrides max_tool_iterations directly.
           "max_turns" => 90,
-          "max_tool_iterations" => 8,
-          "max_turn_seconds" => 120,
+          # Per-turn model↔tool round-trip cap. Raised 8→25 (#399): 8 was a
+          # rubino-only outlier (the Hermes reference uses 90; peer tools cluster
+          # 10–25 for "stop-and-ask"). 25 matches Cursor's tuned interactive cap —
+          # high enough that real multi-file tasks finish, low enough to still
+          # catch runaways. Kept at 25 (a deliberate prior decision, #414).
+          "max_tool_iterations" => 25,
+          # At the iteration cap, in INTERACTIVE mode, prompt the user to
+          # continue/summarize/abort instead of silently force-summarizing (#399).
+          # false forces the old always-summarize behaviour; headless/non-TTY
+          # runs ALWAYS force-summarize regardless of this flag (no human to ask).
+          "budget_extension_prompt" => true,
+          # The "+N" granted by one budget extension at the cap. nil ⇒ use
+          # max_tool_iterations (so one extension doubles the runway). Capped by
+          # the outer max_turns rail, which extensions do NOT raise — repeated
+          # extensions can never bypass the iteration/turn ceiling.
+          "budget_extension_step" => nil,
+          # Pure SAFETY-NET wall clock on a single turn, NOT a working-time cap
+          # (#408). Hermes' IterationBudget has no clock at all; the old 120s
+          # KILLED slow-but-legitimate test/build turns mid-work (and was the
+          # root that made the #403 budget-extension loop possible). Raised to a
+          # backstop only a genuinely runaway turn should ever hit. nil disables.
+          "max_turn_seconds" => 600,
           # 5 retries with exponential backoff = 1+2+4+8+16 = 31s total wait.
           # Sized to absorb common provider blips (MiniMax intl in particular
           # has been observed returning "API server error - please try again"
           # for ~15-25 seconds before recovering) without timing out the user.
           "api_max_retries" => 5,
           # Hard ceiling (seconds) on a single full-jitter backoff draw between
-          # retries: sleep = max(0.2, rand * min(2^(n-1), cap)). Caps worst-case
-          # per-retry wait so a flapping backend can't stall a turn for minutes.
+          # retries on the ERROR path: delay = min(base*2^(n-1), cap) + jitter.
+          # Caps worst-case per-retry wait so a flapping backend can't stall a
+          # turn on one sleep. 16 keeps the worst single wait to ~24s (16 +
+          # 0.5*16 jitter) instead of the 60s ERROR_PATH ceiling. (Previously
+          # declared but NEVER read — the error path hardcoded the 60s cap.)
           "api_retry_backoff_cap_seconds" => 16,
+          # Hard TOTAL wall-time budget (seconds) across all error-path retries
+          # for one model call. A permanently-unreachable host (resolves but the
+          # port is dead → retryable connection timeout) used to burn ~75-110s
+          # across 5 retries before giving up. This is a Codex-style "total
+          # elapsed" cap: keep retrying genuinely-transient errors, but once the
+          # cumulative backoff already spent PLUS the next planned wait would
+          # cross this budget, fail fast with a clear "gave up after ~Ns" message
+          # instead of stalling the user. Does NOT shorten legitimate recovery
+          # inside the window. nil ⇒ no total cap (count-based only).
+          "api_retry_total_timeout_seconds" => 30,
           # Higher ceiling used ONLY for overload (529/503) and MiniMax "unknown
           # error" blips: those backends stay overloaded for tens of seconds, so
           # the 16s cap retries too eagerly back into a still-hot endpoint. 60s
@@ -214,6 +263,10 @@ module Rubino
           # (chars/4) is written to <home>/sessions/<id>/paste_N.txt instead
           # and the sent message carries a read-tool pointer to it.
           "collapse_lines" => 5,
+          # A paste longer than this many CHARS also collapses to the chip, even
+          # on a single line — a big one-line paste (long URL/token/minified
+          # JSON) would otherwise flood the composer.
+          "collapse_chars" => 400,
           "file_threshold_tokens" => 8000
         },
         "notifications" => {
@@ -246,8 +299,7 @@ module Rubino
           "enabled" => true,
           "transport" => "off",
           "edit_interval" => 0.3,
-          "buffer_threshold" => 40,
-          "cursor" => " \u2589"
+          "buffer_threshold" => 40
         },
         "context" => {
           "engine" => "compressor",
@@ -256,7 +308,6 @@ module Rubino
         "compression" => {
           "enabled" => true,
           "threshold" => 0.50,
-          "gateway_threshold" => 0.85,
           "target_ratio" => 0.20,
           "protect_first_n" => 3,
           "protect_last_n" => 20,
@@ -267,6 +318,14 @@ module Rubino
           "enabled" => true,
           "backend" => "sqlite",
           "auto_extract" => true,
+          # Throttle the background aux-LLM memory extraction to ~every N turns
+          # instead of EVERY turn (#412), mirroring Hermes' nudge_interval (10):
+          # extraction enqueues only when turns-since-last-extract >= this. 10x
+          # fewer aux calls + far less of the conversation shipped to the
+          # extractor. nil/<=1 = every turn (old behaviour). The extract is also
+          # ALWAYS backgrounded off the interactive critical path (never drained
+          # inline on the live CLI turn).
+          "auto_extract_interval" => 10,
           "auto_save" => true,
           "user_profile_enabled" => true,
           "project_context_enabled" => true,
@@ -278,6 +337,13 @@ module Rubino
           # throttled by it or long multi-session conversations stall once the
           # injection budget fills. `nil` = unbounded ingest (the default).
           "ingest_char_limit" => nil,
+          # Bounded retry budget for the aux extraction call on a transient
+          # error (429 rate-limit / overloaded / 5xx). Under concurrent load the
+          # aux call used to drop the fact on the first RateLimitError; now it
+          # backs off and retries up to this many times (honouring Retry-After)
+          # before giving up, and the per-session cursor re-feeds the turn next
+          # time even then — so memory isn't lost to a transient rate limit.
+          "extract_max_retries" => 3,
           # tiny-Zep SQLite backend tuning. `vector` enables best-effort
           # sqlite-vec/RubyLLM.embed KNN on top of the always-on FTS5 hybrid;
           # off by default so the stock install needs no extra deps. `graph`
@@ -327,12 +393,19 @@ module Rubino
           "git" => true,
           # Default ON: the agent ships to run inside an isolated per-customer
           # VM where running shell commands is the whole point. The blast radius
-          # is the VM, and security.require_confirmation_for_shell (default true)
-          # still gates every command behind an approval prompt.
+          # is the VM, and security.confirm_policy (default dangerous_only) still
+          # routes any DangerousPattern command through an approval prompt while
+          # safe commands run unprompted (set confirm_policy: confirm_all to gate
+          # every command).
           "shell" => true,
           "ruby" => true,
 
-          "web" => false,
+          # Default ON, matching Hermes (web tools ship in the default toolset,
+          # keyless via the DuckDuckGo backend) (#411). Gated at runtime on
+          # backend reachability in Registry#web_backend_available? so an
+          # unreachable network DEGRADES gracefully (the tool is hidden / its
+          # call returns an error string) rather than crashing a turn.
+          "web" => true,
           "memory" => true
         },
         "tool_output" => {
@@ -399,6 +472,18 @@ module Rubino
             # Documents are hint-only by default (cost / injection blast radius);
             # the flag is reserved for a future in-process extract path.
             "auto_extract_documents" => false,
+            # Decompression-bomb / runaway-conversion caps for the in-process
+            # document converters (Documents::Limits). The 25 MB on-disk
+            # max_file_bytes is trivially defeated by zip compression (a 100 KB
+            # .docx expands to ~34 MB of XML / 1M paragraphs), so the converter
+            # caps BEFORE/DURING conversion: a paragraph/row/page/slide count
+            # ceiling, an accumulated decompressed-bytes ceiling (also checked
+            # against the OOXML central directory BEFORE the gem inflates), and
+            # a wall-clock budget. On any cap it bails to the shell-extraction
+            # hint instead of hanging / OOM-killing the turn.
+            "convert_max_elements" => 50_000,
+            "convert_max_decompressed_bytes" => 5_000_000, # ~5 MB extracted text
+            "convert_wall_clock_seconds" => 15.0,
             # Routing an image to an EXTERNAL aux model is data egress; on by
             # default to preserve the existing aux-vision behaviour.
             "aux_vision_egress" => true,
@@ -415,33 +500,42 @@ module Rubino
         },
         "security" => {
           # Prompt policy for shell commands not otherwise allowed/denied:
-          #   confirm_all    (DEFAULT) every such command prompts for approval.
-          #   dangerous_only (reference-faithful) safe commands run unprompted;
-          #                  only DangerousPatterns matches prompt.
-          # Intentionally NOT defaulted here: when the key is absent the
-          # accessor derives it from require_confirmation_for_shell below
-          # (true -> confirm_all, false -> dangerous_only). Setting the key
-          # explicitly makes confirm_policy win over the legacy alias. The
-          # hardline floor and permissions:deny always precede this regardless
-          # of policy, so dangerous_only never weakens the non-bypassable floor.
-          #
-          #   "confirm_policy" => "confirm_all",
-          #
-          # Legacy alias for confirm_policy (see above). Kept working for any
-          # existing readers. When true, every `shell` command goes through the
-          # approval prompt regardless of the tool's own risk level. Default ON.
-          "require_confirmation_for_shell" => true,
-          "command_allowlist" => [
-            "git status",
-            "git diff",
-            "bundle exec rspec"
-          ],
+          #   dangerous_only (DEFAULT, reference-faithful) safe commands run
+          #                  unprompted; only DangerousPatterns matches prompt.
+          #   confirm_all    (opt-in hardening) every such command prompts.
+          # Aligned to Hermes (#409): Hermes has no confirm-policy concept —
+          # detect_dangerous_command is its SOLE prompt trigger; non-dangerous
+          # commands run unprompted. The old confirm_all default prompted on
+          # every npm test / make / ls — huge DX friction. The hardline floor
+          # and permissions:deny always precede this regardless of policy, so
+          # dangerous_only never weakens the non-bypassable floor. Set
+          # confirm_policy: "confirm_all" to restore prompt-on-everything.
+          "confirm_policy" => "dangerous_only",
+          # EMPTY by default (#409), aligning to Hermes' empty allowlist: once
+          # the prompt policy is dangerous_only, safe commands (incl. git status
+          # / git diff) already run unprompted via the policy + read-only
+          # auto-allow, so the seeded entries were non-load-bearing. A
+          # code-loading runner (`bundle exec rspec`, `rake`, `npm test`) is
+          # still NOT safely allowlistable (SEC-R2-3: `rspec -r FILE` is RCE);
+          # users who want exact-command pre-approval opt in explicitly.
+          "command_allowlist" => [],
 
           "website_blocklist" => {
             "enabled" => false,
             "domains" => [],
             "shared_files" => []
           }
+        },
+        # Repeated-identical-tool-call guard (DoomLoopDetector). Aligned to
+        # Hermes' tool_guardrails (#414): hard_stop OFF by default (WARN, don't
+        # block) and a higher threshold, so a legitimate 3rd retry of an
+        # idempotent read is no longer hard-denied. With hard_stop:false the
+        # policy surfaces a doom-loop WARNING to the model on the Nth identical
+        # call but still lets it through; set hard_stop:true to restore the old
+        # block-at-threshold behaviour.
+        "doom_loop" => {
+          "hard_stop" => false,
+          "threshold" => 5
         },
         "privacy" => {
           "redact_pii" => false
@@ -467,13 +561,21 @@ module Rubino
         #   prompts.overrides.<role> — full replacement of the built-in
         #     role prompt (escape hatch; prefer preamble for incremental
         #     tweaks).
+        #   prompts.prompt_cache — when true (default) the assembler emits
+        #     Anthropic prompt-cache breakpoints (cache_control) on the stable
+        #     system prefix and the last tool definition, so the fixed prompt
+        #     prefix + tool block are cached across turns (#311). The volatile
+        #     tail (fresh relevant-memories + post-compaction summary) is kept
+        #     AFTER the system breakpoint so the cached bytes stay byte-stable.
+        #     Honored by anthropic-family providers; other providers ignore it.
         "prompts" => {
           "preamble" => nil,
           "environment" => {
             "enabled" => true,
             "extra_utilities" => []
           },
-          "overrides" => {}
+          "overrides" => {},
+          "prompt_cache" => true
         },
         "quick_commands" => {},
         "mcp" => {
@@ -489,6 +591,11 @@ module Rubino
           # number of LLM turns — can keep skills usable while turning off the
           # extra background aux call.
           "auto_distill" => true,
+          # Throttle post-turn skill distillation to ~every N turns (#414),
+          # mirroring memory.auto_extract_interval, so a tool-heavy session
+          # doesn't spend an aux-model call every single turn. nil/<=1 = every
+          # eligible turn. The job's own deterministic gate still applies on top.
+          "auto_distill_interval" => 10,
           # Discover the skills shipped *inside the gem* (skills/<name>/SKILL.md),
           # so every install gets the built-in catalogue (e.g. ruby-expert) with
           # no copy step, on top of the user paths below. Built-ins are scanned

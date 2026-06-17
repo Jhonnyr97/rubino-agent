@@ -70,7 +70,10 @@ RSpec.describe Rubino::LLM::Request do
         thinking: { enabled: true, budget: 8000 },
         prefill: "Sure, ",
         image_paths: ["/tmp/cat.png"],
-        stream: true
+        stream: true,
+        on_intermediate_message: nil,
+        on_round_trip: nil,
+        budget_exhausted: nil
       )
     end
   end
@@ -81,15 +84,21 @@ RSpec.describe Rubino::LLM::Request do
 
     it "routes a non-streaming request to #chat" do
       req = described_class.new(messages: [{ role: "user", content: "hi" }], stream: false)
+      # The per-turn round-trip hooks (#355 #351) ride on the Request and flow
+      # through dispatch as nil by default.
       expect(adapter).to receive(:chat).with(messages: req.messages, tools: req.tools,
-                                             image_paths: req.image_paths, prefill: req.prefill)
+                                             image_paths: req.image_paths, prefill: req.prefill,
+                                             on_intermediate_message: nil, on_round_trip: nil,
+                                             budget_exhausted: nil)
       adapter.call(req)
     end
 
     it "routes a streaming request to #stream" do
       req = described_class.new(messages: [{ role: "user", content: "hi" }], stream: true)
       expect(adapter).to receive(:stream).with(messages: req.messages, tools: req.tools,
-                                               image_paths: req.image_paths, prefill: req.prefill)
+                                               image_paths: req.image_paths, prefill: req.prefill,
+                                               on_intermediate_message: nil, on_round_trip: nil,
+                                               budget_exhausted: nil)
       adapter.call(req) { |_chunk| }
     end
 

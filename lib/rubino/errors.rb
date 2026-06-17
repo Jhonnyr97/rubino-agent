@@ -19,6 +19,24 @@ module Rubino
   # Domain errors (ConfigurationError, DatabaseError, SessionError, ToolError,
   # CompactionError, JobError) also subclass Error and live in lib/rubino.rb.
 
+  module Database
+    # Raised when a DB connection can't be established because a peer held the
+    # write lock past the bounded retry budget — a SUSTAINED concurrent-migration
+    # contention (#333/#359). Reopened with its full rationale in
+    # database/connection.rb, but DEFINED here, in the always-`require`d
+    # errors.rb, on purpose: `CLI::Commands.start` rescues this constant as its
+    # final boot-lock backstop (#445), and database/connection.rb is LAZILY
+    # autoloaded (only once `Rubino.database` is first touched). For any error
+    # that reaches that rescue BEFORE the DB is opened — an unknown subcommand, a
+    # bad flag, an empty prompt, a config-set validation error — Ruby would
+    # otherwise evaluate the rescue's class expression against an UNLOADED
+    # constant and raise `NameError: uninitialized constant
+    # Rubino::Database::BusyError`, masking the real (often clean Thor) error
+    # with a ~60-line backtrace. Defining it eagerly here keeps the rescue inert
+    # for non-DB errors while still catching a genuine concurrent-boot BusyError.
+    class BusyError < StandardError; end
+  end
+
   # Resource not found. Maps to 404.
   #
   # @param resource [String, Symbol] resource type (e.g. "Session", :run)
@@ -60,12 +78,25 @@ module Rubino
     end
   end
 
-  # User interrupted an in-progress LLM turn (Esc / Ctrl+C in the chat TUI).
-  # Caught by the Loop/Lifecycle so partial content can still be persisted
-  # and the UI can return to a ready state cleanly.
+  # An in-progress LLM turn was aborted. +reason+ distinguishes a deliberate
+  # user interrupt (Esc / Ctrl+C in the chat TUI — :user) from an EXTERNAL
+  # teardown (SIGTERM/SIGHUP from systemd, a terminal close, or a supervisor
+  # kill — :external). Both are caught by the Loop/Lifecycle so partial content
+  # can still be persisted and the UI returns to a ready state cleanly, but the
+  # result LABEL must not claim "interrupted by user" when no user interrupted
+  # (#361b). Default stays :user with the historical message for compatibility.
   class Interrupted < Error
-    def initialize(message = "interrupted by user")
-      super
+    attr_reader :reason
+
+    def initialize(message = nil, reason: :user)
+      @reason = reason
+      super(message || default_message(reason))
+    end
+
+    private
+
+    def default_message(reason)
+      reason == :external ? "interrupted by external signal" : "interrupted by user"
     end
   end
 

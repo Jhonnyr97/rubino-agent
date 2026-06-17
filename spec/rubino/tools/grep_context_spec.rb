@@ -9,9 +9,16 @@ RSpec.describe Rubino::Tools::GrepTool do
 
   let(:tmp_dir) { Dir.mktmpdir("grep-context") }
 
-  before { allow(tool).to receive(:ripgrep_available?).and_return(false) }
+  # grep is workspace-sandboxed (r5 MF-1) — root the workspace at tmp_dir.
+  before do
+    Rubino.configuration.set("terminal", "cwd", tmp_dir)
+    allow(tool).to receive(:ripgrep_available?).and_return(false)
+  end
 
-  after { FileUtils.rm_rf(tmp_dir) }
+  after do
+    Rubino.configuration.set("terminal", "cwd", nil)
+    FileUtils.rm_rf(tmp_dir)
+  end
 
   def write_file(name, content)
     path = File.join(tmp_dir, name)

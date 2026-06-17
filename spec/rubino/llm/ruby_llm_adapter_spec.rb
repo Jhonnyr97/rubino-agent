@@ -115,14 +115,16 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(bare.raw).to be_nil
       end
 
-      it "exposes usage as a nil-safe token hash" do
-        expect(bare.usage).to eq(input_tokens: 1, output_tokens: 2)
+      it "exposes usage as a nil-safe token hash (incl. #311 prompt-cache counters)" do
+        expect(bare.usage).to eq(input_tokens: 1, output_tokens: 2,
+                                 cache_read_input_tokens: 0, cache_creation_input_tokens: 0)
       end
 
       it "zeroes usage when tokens are nil" do
         r = described_class.new(content: "hi", tool_calls: [],
                                 input_tokens: nil, output_tokens: nil, model_id: "m")
-        expect(r.usage).to eq(input_tokens: 0, output_tokens: 0)
+        expect(r.usage).to eq(input_tokens: 0, output_tokens: 0,
+                              cache_read_input_tokens: 0, cache_creation_input_tokens: 0)
       end
     end
 
@@ -148,6 +150,32 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
       it "keeps text_only? working unchanged" do
         expect(full.text_only?).to be true
+      end
+    end
+
+    # --- final_text_block (#core-F1) ------------------
+    context "final_text_block (the post-last-tool answer in isolation)" do
+      it "falls back to content when not supplied (single-block / non-streaming)" do
+        r = described_class.new(content: "PROBEDONE", tool_calls: [],
+                                input_tokens: 1, output_tokens: 1, model_id: "m")
+        expect(r.final_text_block).to eq("PROBEDONE")
+      end
+
+      it "returns ONLY the final block when supplied, not the full buffer" do
+        r = described_class.new(
+          content: "I'll create the file now.PROBEDONE", tool_calls: [],
+          input_tokens: 1, output_tokens: 1, model_id: "m",
+          final_text_block: "PROBEDONE"
+        )
+        expect(r.content).to eq("I'll create the file now.PROBEDONE")
+        expect(r.final_text_block).to eq("PROBEDONE")
+      end
+
+      it "falls back to content when the supplied block is nil" do
+        r = described_class.new(content: "answer", tool_calls: [],
+                                input_tokens: 1, output_tokens: 1, model_id: "m",
+                                final_text_block: nil)
+        expect(r.final_text_block).to eq("answer")
       end
     end
   end
@@ -519,6 +547,42 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     end
   end
 
+  # #dx — an EMPTY base_url on an openai_compatible provider used to be passed
+  # through as an empty api_base, so the call hit a garbage endpoint and surfaced
+  # as a misleading AUTH/connection error. It is now detected and surfaced as a
+  # clear "base_url is empty/misconfigured" error — even when the key is present.
+  describe "empty base_url validation (#dx)" do
+    def compat_cfg(base_url)
+      test_configuration(
+        "model" => { "provider" => "ollama", "default" => "llama3", "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "ollama" => { "openai_compatible" => true, "api_key" => "sk-test", "base_url" => base_url } }
+      )
+    end
+
+    it "surfaces a base_url error (NOT an auth error) for an empty base_url with a key present" do
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("")) }
+        .to raise_error(Rubino::Error, %r{base_url is empty/misconfigured for provider 'ollama'})
+    end
+
+    it "treats a whitespace-only base_url as empty too" do
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("   ")) }
+        .to raise_error(Rubino::Error, %r{base_url is empty/misconfigured})
+    end
+
+    it "the base_url error is distinct from the missing-key error" do
+      # key present but base_url empty ⇒ base_url message, not 'Missing API key'.
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("")) }
+        .to raise_error(Rubino::Error, /base_url is empty/)
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("")) }
+        .not_to raise_error(Rubino::Error, /Missing API key/)
+    end
+
+    it "still accepts a present base_url" do
+      expect { described_class.new(model_id: "llama3", config: compat_cfg("http://localhost:11434/v1")) }
+        .not_to raise_error
+    end
+  end
+
   # -----------------------------------------------------------------------
   # gateway provider — model name "auto" passthrough.
   # The /v1/* gateway rewrites the model upstream, so the agent
@@ -564,6 +628,46 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       expect(RubyLLM).to receive(:chat).with(
         hash_including(model: "auto", provider: :openai, assume_model_exists: true)
       ).and_return(double("chat", with_tool: nil))
+
+      adapter.send(:build_chat)
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # Native-path model-id normalization (MED-1). The seeded public default is
+  # `openai/gpt-4.1` with provider: auto. On the NATIVE path (no explicit
+  # provider) ruby_llm derives the provider from its model registry, where the
+  # slash-prefixed `openai/gpt-4.1` matches an OpenRouter AGGREGATOR entry and
+  # routes to OpenRouter (→ "Missing configuration for OpenRouter:
+  # openrouter_api_key") instead of the OpenAI provider its prefix names. The
+  # adapter strips a `provider/` prefix that matches the already-resolved
+  # provider (Hermes' _strip_matching_provider_prefix) so the bare id routes to
+  # the native provider, while non-matching prefixes (genuine aggregator ids)
+  # stay verbatim.
+  # -----------------------------------------------------------------------
+  describe "#build_chat native model-id normalization (MED-1)" do
+    let(:cfg) { test_configuration }
+
+    it "strips the matching provider prefix so openai/gpt-4.1 routes to OpenAI, not OpenRouter" do
+      adapter = described_class.new(model_id: "openai/gpt-4.1", provider: "openai", config: cfg)
+      expect(RubyLLM).to receive(:chat).with(hash_including(model: "gpt-4.1"))
+                                       .and_return(double("chat", with_tool: nil))
+
+      adapter.send(:build_chat)
+    end
+
+    it "leaves a non-matching vendor prefix verbatim (genuine aggregator id)" do
+      adapter = described_class.new(model_id: "anthropic/claude-opus-4", provider: "openai", config: cfg)
+      expect(RubyLLM).to receive(:chat).with(hash_including(model: "anthropic/claude-opus-4"))
+                                       .and_return(double("chat", with_tool: nil))
+
+      adapter.send(:build_chat)
+    end
+
+    it "passes an unprefixed model id through unchanged" do
+      adapter = described_class.new(model_id: "gpt-4.1", provider: "openai", config: cfg)
+      expect(RubyLLM).to receive(:chat).with(hash_including(model: "gpt-4.1"))
+                                       .and_return(double("chat", with_tool: nil))
 
       adapter.send(:build_chat)
     end
@@ -836,6 +940,65 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       expect do
         adapter.stream(messages: [{ role: "user", content: "hi" }]) { |_| }
       end.not_to raise_error
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # final_text_block across a multi-block streaming turn (#core-F1)
+  #
+  # ruby_llm runs the whole model↔tool loop inside ONE ask(): on a turn that
+  # narrates, calls a tool, then answers, it streams two text blocks
+  # (text → tool_use → text) separated by a before_message boundary. The full
+  # buffer concatenates BOTH (kept for the transcript/render), but the response's
+  # #final_text_block must isolate only the LAST block — the post-tool answer —
+  # so a headless `OUT=$(rubino prompt …)` returns "PROBEDONE", not
+  # "I'll create the file now.PROBEDONE".
+  # -----------------------------------------------------------------------
+  describe "#stream final_text_block on a text → tool → text turn (#core-F1)" do
+    # A chat double that streams two content blocks with a before_message
+    # boundary between them (the boundary ruby_llm fires when it starts the
+    # post-tool assistant message), exactly as a real multi-step ask does.
+    let(:two_block_chat) do
+      c = double("Chat")
+      allow(c).to receive(:with_tool).and_return(c)
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      before_cb = nil
+      after_cb  = nil
+      allow(c).to receive(:before_message) { |&blk| before_cb = blk }
+      allow(c).to receive(:after_message) { |&blk| after_cb = blk }
+      resp = double("Response", content: "PROBEDONE", input_tokens: 1,
+                                output_tokens: 1, tool_calls: nil)
+      allow(c).to receive(:ask) do |_, &blk|
+        # Block 1: the pre-tool narration.
+        blk.call(double("Chunk", content: "I'll create the file now.", thinking: nil))
+        # ruby_llm ENDS block 1 (flushes its think-filter tail under block 1) then
+        # STARTS the post-tool assistant message → block boundary fires. This
+        # after→before ordering is exactly how a real multi-step ask sequences the
+        # callbacks, and is what keeps the block-1 tail on block 1.
+        after_cb&.call
+        before_cb&.call
+        # Block 2: the real answer, after the tool ran.
+        blk.call(double("Chunk", content: "PROBEDONE", thinking: nil))
+        resp
+      end
+      c
+    end
+
+    let(:adapter) do
+      cfg = test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o",
+                     "temperature" => 0.3, "context_length" => nil }
+      )
+      a = described_class.new(model_id: "gpt-4o", config: cfg)
+      allow(a).to receive(:build_chat).and_return(two_block_chat)
+      a
+    end
+
+    it "keeps the FULL buffer in content (transcript/render) but isolates the last block as the answer" do
+      result = adapter.stream(messages: [{ role: "user", content: "make a file" }]) { |_| }
+      expect(result.content).to eq("I'll create the file now.PROBEDONE")
+      expect(result.final_text_block).to eq("PROBEDONE")
     end
   end
 
@@ -1198,7 +1361,13 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     # the toolUse was persisted without its tool_calls array. Loop now
     # stashes them under metadata; load_history reconstructs RubyLLM::ToolCall
     # objects so the assistant block contains the toolUse block on resume.
-    it "rebuilds tool_calls on assistant messages so the toolUse block is intact" do
+    #
+    # #370: the reconstructed tool_calls MUST be a Hash keyed by tool_call id
+    # ({ id => RubyLLM::ToolCall }) — the shape every ruby_llm provider produces
+    # and the shape its Anthropic formatter consumes via `tool_calls.each_value`.
+    # An Array (the #367 regression) raised `undefined method 'each_value' for
+    # Array` on the next completion after a resume.
+    it "rebuilds tool_calls as a Hash keyed by id so the toolUse block is intact" do
       messages = [
         { role: "user", content: "list files" },
         {
@@ -1212,10 +1381,66 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
       adapter.send(:load_history, chat, messages)
       assistant = chat.messages.find { |m| m.role == :assistant }
-      expect(assistant.tool_calls).to be_an(Array)
-      expect(assistant.tool_calls.first).to be_a(RubyLLM::ToolCall)
-      expect(assistant.tool_calls.first.id).to eq("call_1")
-      expect(assistant.tool_calls.first.name).to eq("shell")
+      expect(assistant.tool_calls).to be_a(Hash)
+      expect(assistant.tool_calls.keys).to eq(["call_1"])
+      call = assistant.tool_calls["call_1"]
+      expect(call).to be_a(RubyLLM::ToolCall)
+      expect(call.id).to eq("call_1")
+      expect(call.name).to eq("shell")
+      # The exact shape the formatter walks (anthropic/chat.rb:176).
+      expect { assistant.tool_calls.each_value { |_| } }.not_to raise_error
+    end
+
+    # #370 part B: an assistant row with EMPTY text but live tool_calls (the
+    # model called a tool with no narration) must NOT be skipped — dropping it
+    # orphans the following tool result (tool_call_id with no matching tool_use)
+    # → provider 400 on the next completion.
+    it "keeps an empty-content assistant row that carries tool_calls (pair survives)" do
+      messages = [
+        { role: "user", content: "list files" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "call_9", name: "shell", arguments: { command: "ls" } }]
+        },
+        { role: "tool", content: "a.rb", tool_call_id: "call_9" },
+        { role: "user", content: "thanks" }
+      ]
+
+      adapter.send(:load_history, chat, messages)
+      assistant = chat.messages.find { |m| m.role == :assistant }
+      tool_msg  = chat.messages.find { |m| m.role == :tool }
+      expect(assistant).not_to be_nil # not dropped despite empty content
+      expect(assistant.tool_calls).to be_a(Hash)
+      expect(assistant.tool_calls.key?("call_9")).to be true
+      # The tool result is not orphaned: its id matches the assistant's toolUse.
+      expect(tool_msg.tool_call_id).to eq("call_9")
+    end
+
+    # #370: PARALLEL tool calls (multiple toolUse blocks in one assistant
+    # message) all survive the rehydration, each keyed by its own id.
+    it "rebuilds parallel tool_calls into a Hash with every id" do
+      messages = [
+        { role: "user", content: "do two things" },
+        {
+          role: "assistant",
+          content: "running both",
+          tool_calls: [
+            { id: "call_a", name: "shell",     arguments: { command: "ls" } },
+            { id: "call_b", name: "read_file", arguments: { path: "x" } }
+          ]
+        },
+        { role: "tool", content: "ok",  tool_call_id: "call_a" },
+        { role: "tool", content: "txt", tool_call_id: "call_b" },
+        { role: "user", content: "thanks" }
+      ]
+
+      adapter.send(:load_history, chat, messages)
+      assistant = chat.messages.find { |m| m.role == :assistant }
+      expect(assistant.tool_calls).to be_a(Hash)
+      expect(assistant.tool_calls.keys).to contain_exactly("call_a", "call_b")
+      expect(assistant.tool_calls["call_a"].name).to eq("shell")
+      expect(assistant.tool_calls["call_b"].name).to eq("read_file")
     end
 
     it "treats nil/empty tool_calls as a plain assistant turn" do
@@ -1227,6 +1452,19 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       adapter.send(:load_history, chat, messages)
       assistant = chat.messages.find { |m| m.role == :assistant }
       expect(assistant.tool_calls).to be_nil
+    end
+
+    # A plain assistant row with empty text AND no tool_calls is still skipped
+    # (a degenerate empty turn strict providers reject) — only the tool_call
+    # carrier is exempt from the empty-content skip.
+    it "still skips an empty-content assistant row with no tool_calls" do
+      messages = [
+        { role: "assistant", content: "", tool_calls: [] },
+        { role: "user", content: "next" }
+      ]
+
+      adapter.send(:load_history, chat, messages)
+      expect(chat.messages.any? { |m| m.role == :assistant }).to be false
     end
   end
 

@@ -80,15 +80,20 @@ module Rubino
       # are forwarded to ruby_llm's `with:` slot so the primary model ingests
       # the bytes natively (no `vision` tool round-trip). Only meaningful on
       # the first model call of a turn — Loop strips it for follow-ups.
-      def chat(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil)
+      def chat(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil,
+               on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil)
         if bedrock_bearer_mode?
           bedrock_bearer_client.chat(messages: messages, tools: tools)
         else
-          chat_instance = build_chat(tools: tools, response_format: response_format)
+          chat_instance = build_chat(tools: tools, response_format: response_format,
+                                     budget_exhausted: budget_exhausted)
           load_history(chat_instance, messages)
           apply_prefill(chat_instance, prefill)
+          usage = wire_round_trip_callbacks(chat_instance,
+                                            on_intermediate_message: on_intermediate_message,
+                                            on_round_trip: on_round_trip)
           response = chat_instance.ask(last_user_content(messages), with: presence(image_paths))
-          build_response(response)
+          build_response(response, usage: usage)
         end
       end
 
@@ -96,7 +101,8 @@ module Rubino
       # sentinels are routed to the :thinking channel. Buffered partial content
       # is preserved across mid-stream parse errors so downstream code can show
       # whatever the model produced before the failure.
-      def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil, &)
+      def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil,
+                 on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil, &)
         if bedrock_bearer_mode?
           # BedrockBearerClient#stream buffers the whole /converse response before
           # its first emit, so a transport error can only fire pre-first-chunk —
@@ -116,7 +122,9 @@ module Rubino
         # streaming-specific safety) stays here; the actual retrying is the
         # runner's job.
         stream_once(messages: messages, tools: tools, response_format: response_format,
-                    image_paths: image_paths, prefill: prefill, &)
+                    image_paths: image_paths, prefill: prefill,
+                    on_intermediate_message: on_intermediate_message,
+                    on_round_trip: on_round_trip, budget_exhausted: budget_exhausted, &)
       end
 
       # Returns model information (context window, etc.)
@@ -139,12 +147,21 @@ module Rubino
       # The raw #call dispatch (streaming vs non-streaming), shared by the
       # normal path and the one-shot thinking-budget retry (#75).
       def dispatch(request, &)
+        # Per-turn round-trip hooks (#355 #351) ride on the Request; pass them so
+        # the streaming/non-streaming transports can wire the ruby_llm callbacks
+        # (intermediate-message persistence, round-trip counting) and ToolBridge
+        # can consult the budget-exhausted predicate for graceful Halt.
+        hooks = {
+          on_intermediate_message: request.on_intermediate_message,
+          on_round_trip: request.on_round_trip,
+          budget_exhausted: request.budget_exhausted
+        }
         if request.stream?
           stream(messages: request.messages, tools: request.tools,
-                 image_paths: request.image_paths, prefill: request.prefill, &)
+                 image_paths: request.image_paths, prefill: request.prefill, **hooks, &)
         else
           chat(messages: request.messages, tools: request.tools,
-               image_paths: request.image_paths, prefill: request.prefill)
+               image_paths: request.image_paths, prefill: request.prefill, **hooks)
         end
       end
 
@@ -160,10 +177,22 @@ module Rubino
       # One streaming attempt. See #stream for the retry / no-double-output
       # contract. Inline <think>…</think> sentinels are routed to :thinking;
       # buffered content is preserved across mid-stream parse/transport errors.
-      def stream_once(messages:, tools:, response_format:, image_paths:, prefill: nil, &block)
-        chat_instance = build_chat(tools: tools, response_format: response_format)
+      def stream_once(messages:, tools:, response_format:, image_paths:, prefill: nil,
+                      on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil, &block)
+        chat_instance = build_chat(tools: tools, response_format: response_format,
+                                   budget_exhausted: budget_exhausted)
         load_history(chat_instance, messages)
         apply_prefill(chat_instance, prefill)
+
+        # Round-trip accounting (#355 #351): registered ADDITIVELY so it does not
+        # disturb the block-id wiring below (ruby_llm appends callbacks, never
+        # replaces). Persists intermediate assistant(tool_use) messages, counts
+        # round-trips for the budget, and sums per-message usage across the whole
+        # in-ask tool loop. Sums are read back into build_response so token_total
+        # reflects EVERY round-trip's spend, not just the final message.
+        usage = wire_round_trip_callbacks(chat_instance,
+                                          on_intermediate_message: on_intermediate_message,
+                                          on_round_trip: on_round_trip)
 
         think_filter  = InlineThinkFilter.new
         buffered      = +""
@@ -181,10 +210,25 @@ module Rubino
         # block, before the tool fires) and emits the block boundary.
         message_block_id = 0
 
+        # The text of the CURRENT content block only (#core-F1). `buffered` keeps
+        # every block of the turn concatenated for the transcript/render; this
+        # resets at each new block so that, when the stream finishes, it holds just
+        # the LAST block — the post-final-tool answer with no pre-tool narration
+        # glued on. The headless one-shot `result` surfaces this, not `buffered`.
+        last_block      = +""
+        last_block_seen = message_block_id
+
         emit = lambda do |type, text|
           next if text.nil? || text.empty?
 
-          buffered << text if type == :content
+          if type == :content
+            buffered << text
+            # New content block since the last content delta ⇒ start fresh, so
+            # only the final block survives to the end of the stream.
+            last_block.clear if message_block_id != last_block_seen
+            last_block_seen = message_block_id
+            last_block << text
+          end
 
           begin
             block.call({ type: type, text: text, message_id: message_block_id })
@@ -221,6 +265,20 @@ module Rubino
           chat_instance.on_end_message(&close_block)
         end
 
+        # #360: the per-chunk check_stream_stale! only fires WHEN a chunk
+        # arrives — so if the upstream opens the stream then goes silent (a
+        # stalled SSE / a 200 that never sends an event), nothing inside the
+        # callback ever runs and the only backstop is the 600s socket
+        # read-timeout. Bound the idle gap INDEPENDENTLY of chunk arrival with a
+        # watchdog thread that wakes on `stale_after` (300s default, well below
+        # 600s; configurable via providers.<name>.stale_timeout_seconds) and, on
+        # observing an idle past the deadline, raises StreamStaleError INTO this
+        # streaming thread to break it out of the blocking socket read. The
+        # rescue below then surfaces a clear "stream stalled" and lets the retry
+        # ladder run. The closure reads `last_chunk_at`/`chunks_seen` live (they
+        # are reassigned in the callback) via a shared binding.
+        watchdog = start_stale_watchdog(stale_after) { last_chunk_at }
+
         begin
           response = chat_instance.ask(last_user_content(messages), with: presence(image_paths)) do |chunk|
             # User interrupt poll. Raised here propagates out of the streaming
@@ -248,7 +306,20 @@ module Rubino
           # what arrived before they hit Esc.
           flush_filter(think_filter, &emit)
           raise
-        rescue JSON::ParserError, StreamStaleError => e
+        rescue StreamStaleError => e
+          # The stream stalled (no chunk within the idle bound). If NOTHING was
+          # emitted yet, RAISE so the runner re-issues a fresh request — safe, no
+          # token reached the user, and the user sees "stream stalled — retrying"
+          # rather than a 600s hang (#360). If chunks already flowed, preserve the
+          # partial and stop (same no-double-output contract as a transport drop).
+          if chunks_seen.zero?
+            log_safely(event: "llm.stream.stalled", error: e.message)
+            raise
+          end
+          log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
+          flush_filter(think_filter, &emit)
+          return partial_response(buffered)
+        rescue JSON::ParserError => e
           # Preserve whatever we've buffered so far so the user sees partial
           # output instead of a blank failure. (issues #12, #22)
           log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
@@ -267,12 +338,88 @@ module Rubino
                      buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
           return partial_response(buffered)
+        ensure
+          # Always tear the watchdog down — on success, on partial-return, and on
+          # a raised StreamStaleError/transport drop — so it never leaks a thread
+          # or fires against a finished stream.
+          stop_stale_watchdog(watchdog)
         end
 
         # Guard flush in the same way as the per-chunk emit so a final UI error
         # doesn't lose the response. (issue #21)
         flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        build_response(response, buffered)
+        build_response(response, buffered, usage: usage, final_text_block: last_block)
+      end
+
+      # Wires the per-round-trip ruby_llm callbacks (#355 #351) and returns a
+      # mutable usage accumulator { input:, output: } the caller folds into
+      # build_response. ruby_llm fires after_message once per message it appends
+      # inside a single ask — the streamed/non-streamed assistant turns AND the
+      # synthetic tool result messages (Chat#complete L181, #handle_tool_calls
+      # L286). We:
+      #   * sum input/output tokens for EVERY assistant message so the response
+      #     reports the WHOLE turn's spend, not just the last message (#355b);
+      #   * for an INTERMEDIATE assistant message that carries tool_calls (i.e.
+      #     not the final text turn), hand the Loop a normalized hash so it
+      #     persists the same assistant(tool_use) row the non-streaming path
+      #     writes (#351), and bump the round-trip counter so the Loop can bound
+      #     the in-ask loop against its iteration/time budget (#355a).
+      #
+      # IDEMPOTENCY: the final assistant TEXT message has no tool_calls, so it is
+      # never sent to on_intermediate_message — the Loop keeps sole ownership of
+      # persisting the final turn. Tool result messages (role :tool) are skipped
+      # entirely. Registered additively, so the existing before/after_message
+      # block-id wiring is untouched.
+      def wire_round_trip_callbacks(chat_instance, on_intermediate_message:, on_round_trip:)
+        usage = { input: 0, output: 0 }
+        return usage unless chat_instance.respond_to?(:after_message)
+
+        chat_instance.after_message do |msg|
+          next if msg.nil?
+          next unless msg.respond_to?(:role) && msg.role == :assistant
+
+          usage[:input]  += msg.input_tokens.to_i  if msg.respond_to?(:input_tokens)
+          usage[:output] += msg.output_tokens.to_i if msg.respond_to?(:output_tokens)
+
+          next unless intermediate_tool_message?(msg)
+
+          on_round_trip&.call
+          on_intermediate_message&.call(normalize_intermediate(msg))
+        end
+        usage
+      end
+
+      # True when +msg+ is an intermediate assistant turn that requested tools
+      # (so it must be persisted as an assistant(tool_use) row). The final text
+      # turn carries no tool_calls and is excluded — the Loop persists it.
+      def intermediate_tool_message?(msg)
+        return false unless msg.respond_to?(:tool_call?)
+
+        msg.tool_call?
+      rescue StandardError
+        false
+      end
+
+      # Normalizes a ruby_llm assistant(tool_use) Message into the plain hash the
+      # Loop persists (mirrors AdapterResponse's tool_calls shape, so
+      # persist_assistant_message stores the same metadata the non-streaming path
+      # does — id/name/arguments + per-message usage).
+      def normalize_intermediate(msg)
+        {
+          content: msg.respond_to?(:content) ? msg.content : nil,
+          tool_calls: normalize_message_tool_calls(msg),
+          input_tokens: msg.respond_to?(:input_tokens) ? msg.input_tokens.to_i : 0,
+          output_tokens: msg.respond_to?(:output_tokens) ? msg.output_tokens.to_i : 0
+        }
+      end
+
+      def normalize_message_tool_calls(msg)
+        return [] unless msg.respond_to?(:tool_calls) && msg.tool_calls
+
+        Array(msg.tool_calls).map do |tc|
+          call = tc.is_a?(Array) ? tc.last : tc
+          { id: call.id, name: call.name, arguments: call.arguments }
+        end
       end
 
       # Flushes the think-filter, swallowing UI/flush errors so a late failure
@@ -343,13 +490,15 @@ module Rubino
         # endpoint (e.g. MiniMax's /anthropic), which avoids the OpenAI-endpoint
         # quirks (no-[DONE] stream close, string-shaped errors).
         if openai_compatible_provider?
-          c.openai_api_base = prov_cfg["base_url"] if prov_cfg["base_url"]
+          c.openai_api_base = required_base_url!(prov_cfg)
           c.openai_api_key  = openai_compatible_api_key!(prov_cfg)
         elsif anthropic_compatible_provider?
-          c.anthropic_api_base = prov_cfg["base_url"] if prov_cfg["base_url"]
+          base = present_base_url(prov_cfg)
+          c.anthropic_api_base = base if base
           c.anthropic_api_key  = anthropic_compatible_api_key!(prov_cfg)
-        elsif @provider == "openai" && prov_cfg["base_url"]
-          c.openai_api_base = prov_cfg["base_url"]
+        elsif @provider == "openai"
+          base = present_base_url(prov_cfg)
+          c.openai_api_base = base if base
         end
 
         # We OWN retry/backoff in Agent::ModelCallRunner (token-gated,
@@ -399,6 +548,31 @@ module Rubino
               "(e.g. ${#{@provider.to_s.upcase}_API_KEY} with the value in .env)."
       end
 
+      # The configured base_url, normalised to nil when blank/whitespace so a
+      # config like `base_url: ""` (or a stripped-to-empty env interpolation)
+      # is treated as "unset" instead of being passed through as an EMPTY api_base.
+      # An empty api_base used to make the request hit an empty/garbage endpoint
+      # and surface as a cryptic AUTH/connection error rather than the real cause.
+      def present_base_url(prov_cfg)
+        raw = prov_cfg["base_url"].to_s.strip
+        raw.empty? ? nil : raw
+      end
+
+      # An openai_compatible provider has NO native default endpoint — base_url is
+      # REQUIRED. A blank/empty base_url here is the actual misconfiguration, so
+      # raise a clear "base_url is empty/misconfigured" error instead of letting an
+      # empty api_base be sent and misattributed to a missing/invalid credential.
+      def required_base_url!(prov_cfg)
+        base = present_base_url(prov_cfg)
+        return base if base
+
+        raise Rubino::Error,
+              "base_url is empty/misconfigured for provider '#{@provider}'. " \
+              "An OpenAI-compatible provider needs a base_url — set " \
+              "providers.#{@provider}.base_url in ~/.rubino/config.yml to the " \
+              "endpoint (e.g. https://host/v1)."
+      end
+
       # Resolution fallback for the direct-construction edge: AdapterFactory
       # always passes a concrete provider, so this only runs when the adapter is
       # built without one (tests, one-shot callers). Interpret the config
@@ -408,8 +582,8 @@ module Rubino
         ProviderResolver.resolve(@model_id, explicit_provider: @config.model_provider)
       end
 
-      def build_chat(tools: nil, response_format: nil)
-        options = { model: @model_id }
+      def build_chat(tools: nil, response_format: nil, budget_exhausted: nil)
+        options = { model: chat_model_id }
         options[:response_format] = response_format if response_format
 
         prov_cfg = provider_cfg
@@ -440,16 +614,42 @@ module Rubino
 
         apply_generation_params(chat)
 
-        # Register tools — ToolBridge wraps each Rubino tool so ruby_llm can
-        # call it. When a ToolExecutor is available, execution goes through the
-        # full pipeline (approval, truncation, audit recording). Otherwise the
-        # bridge calls tool.call() directly (used in tests/one-shot mode).
-        Array(tools).each do |tool|
-          chat.with_tool(ToolBridge.for(tool, ui: @ui, event_bus: @event_bus,
-                                              tool_executor: @tool_executor))
-        end
-
+        # Register tools and wire the streaming call-id capture (ToolBridge owns
+        # both so the spill / tool_call_id linkage works on the streaming path —
+        # STRM-2). Falls back to direct tool.call when @tool_executor is nil.
+        # cache_tools (#311): on the anthropic-family path, with prompt caching
+        # enabled, put a cache_control breakpoint on the last tool so the whole
+        # tool block is cached. Other providers ignore cache_control, so we only
+        # emit it where it is honored (and where the system breakpoint also fires).
+        ToolBridge.install(chat, tools, ui: @ui, event_bus: @event_bus,
+                                        tool_executor: @tool_executor,
+                                        cache_tools: tool_cache_breakpoint?,
+                                        budget_exhausted: budget_exhausted,
+                                        production: true)
         chat
+      end
+
+      # The model id handed to RubyLLM.chat. On the NATIVE path (no explicit
+      # provider — ruby_llm derives the provider from the model registry), a
+      # `provider/model` id like the seeded default "openai/gpt-4.1" matches an
+      # OpenRouter aggregator entry in ruby_llm's registry and routes to
+      # OpenRouter (→ "Missing configuration for OpenRouter") instead of the
+      # OpenAI provider its prefix names. Mirror Hermes' _strip_matching_provider_prefix:
+      # when the model id is prefixed with the SAME provider we already resolved,
+      # strip it so ruby_llm resolves the native provider. A non-matching prefix
+      # (a genuine aggregator id whose vendor differs from the resolved provider)
+      # is left untouched. The *_compatible / assume_model_exists paths pass an
+      # explicit provider to RubyLLM.chat, so they never reach this ambiguity and
+      # keep the raw id verbatim.
+      def chat_model_id
+        id = @model_id.to_s
+        return @model_id unless id.include?("/")
+
+        prefix, remainder = id.split("/", 2)
+        return @model_id if remainder.strip.empty?
+        return remainder if ProviderResolver.resolve(prefix) == @provider
+
+        @model_id
       end
 
       # Applies the request-shaping knobs ruby_llm 1.15 supports — temperature,
@@ -471,12 +671,6 @@ module Rubino
       # only safe on the anthropic-family path; for openai/ollama/etc. we leave
       # token limits to the provider (apply_max_tokens: false) and only apply
       # temperature.
-      #
-      # ruby_llm wiring confirmed on 1.15:
-      #   * with_temperature(t)        -> payload[:temperature]               (anthropic/chat.rb add_optional_fields)
-      #   * with_params(max_tokens: n) -> deep-merged over payload[:max_tokens] (provider.rb#complete)
-      #   * with_thinking(budget: n)   -> payload[:thinking] = {type:"enabled",
-      #                                     budget_tokens:n}                   (anthropic/chat.rb build_thinking_payload)
       def apply_generation_params(chat)
         anthropic_family = anthropic_generation_path?
 
@@ -510,6 +704,19 @@ module Rubino
       def anthropic_generation_path?
         anthropic_compatible_provider? ||
           %w[anthropic bedrock].include?(@provider.to_s)
+      end
+
+      # True when the tool block should carry an Anthropic prompt-cache
+      # breakpoint (#311): the anthropic-family path AND prompt caching enabled
+      # in config (prompts.prompt_cache, default on). cache_control is an
+      # Anthropic concept, so we never emit it on the openai path.
+      def tool_cache_breakpoint?
+        return false unless anthropic_generation_path?
+
+        value = @config.dig("prompts", "prompt_cache")
+        value.nil? || value == true
+      rescue StandardError
+        false
       end
 
       # Configurable max output tokens. providers.<name>.max_tokens wins, then
@@ -609,10 +816,46 @@ module Rubino
       end
 
       def check_stream_stale!(last_chunk_at, stale_after)
-        return if stale_after.to_i <= 0
+        return if stale_after.to_f <= 0
         return if (monotonic_now - last_chunk_at) <= stale_after
 
         raise StreamStaleError, "no chunk received for #{stale_after}s"
+      end
+
+      # Watchdog that bounds a STALLED stream independent of chunk arrival
+      # (#360): the per-chunk check_stream_stale! cannot fire once chunks stop,
+      # so a stream that opens then goes silent would otherwise block on the
+      # blocking socket read until the 600s read-timeout. This thread wakes on
+      # short ticks, recomputes the idle gap from the live `last_chunk_at`
+      # (read via the given block each tick), and on observing an idle past
+      # `stale_after` raises StreamStaleError INTO the streaming thread to break
+      # it out of the read. nil when stale_after <= 0 (watchdog disabled).
+      def start_stale_watchdog(stale_after, &last_chunk_at_reader)
+        return if stale_after.to_f <= 0
+
+        target = Thread.current
+        # Tick fast enough to bound the OVERSHOOT past the deadline, but never
+        # busy-spin: cap the tick at 1s and never exceed the deadline itself.
+        tick = (stale_after.to_f / 4.0).clamp(0.01, 1.0)
+        Thread.new do
+          loop do
+            sleep(tick)
+            idle = monotonic_now - last_chunk_at_reader.call
+            next if idle <= stale_after
+
+            target.raise(StreamStaleError.new("no chunk received for #{stale_after}s"))
+            break
+          end
+        end
+      end
+
+      def stop_stale_watchdog(watchdog)
+        return unless watchdog
+
+        watchdog.kill
+        watchdog.join
+      rescue StandardError
+        nil
       end
 
       def log_safely(**fields)
@@ -657,9 +900,21 @@ module Rubino
         return if history.empty?
 
         history.each do |msg|
-          role    = (msg[:role] || msg["role"]).to_sym
-          content = msg[:content] || msg["content"]
-          next if content.nil? || content.empty?
+          role         = (msg[:role] || msg["role"]).to_sym
+          content      = msg[:content] || msg["content"]
+          tool_calls   = rebuild_tool_calls(msg[:tool_calls] || msg["tool_calls"]) if role == :assistant
+          # A Content::Raw (the #311 prompt-cache system block) is a structured
+          # provider payload, not a String — it has no #empty?. Treat it as
+          # always-present; only String/nil content is empty-checked.
+          #
+          # An assistant row that carries tool_calls MUST NOT be skipped even
+          # when its text content is empty — MiniMax/Anthropic narrate-then-call
+          # (or call with no preamble), persisting an assistant row with empty
+          # text but live tool_calls. Dropping it orphans the following tool
+          # result row (tool_call_id with no matching tool_use) → provider 400
+          # on the next completion (#370).
+          empty_content = content.nil? || (content.respond_to?(:empty?) && content.empty?)
+          next if empty_content && !(role == :assistant && tool_calls && !tool_calls.empty?)
 
           case role
           when :system
@@ -670,7 +925,7 @@ module Rubino
             chat_instance.messages << RubyLLM::Message.new(
               role: role,
               content: content,
-              tool_calls: rebuild_tool_calls(msg[:tool_calls] || msg["tool_calls"])
+              tool_calls: tool_calls
             )
           when :tool
             chat_instance.messages << RubyLLM::Message.new(
@@ -702,17 +957,24 @@ module Rubino
       # Reconstructs RubyLLM::ToolCall objects from the hashes persisted under
       # assistant message metadata. Returns nil for empty/missing input so
       # RubyLLM::Message treats it as a plain assistant turn.
+      #
+      # MUST return a Hash keyed by tool_call id ({ id => RubyLLM::ToolCall }),
+      # NOT an Array — that is the shape every ruby_llm provider produces
+      # (see anthropic/tools.rb#parse_tool_calls) and the shape its formatter
+      # consumes via `msg.tool_calls.each_value` (anthropic/chat.rb:176). An
+      # Array here raises `undefined method 'each_value' for Array` on the next
+      # completion after a resume (#370).
       def rebuild_tool_calls(raw)
         return nil if raw.nil? || (raw.respond_to?(:empty?) && raw.empty?)
 
-        Array(raw).map do |tc|
-          h = tc.transform_keys(&:to_sym) if tc.is_a?(Hash)
-          h ||= tc
-          RubyLLM::ToolCall.new(
+        Array(raw).each_with_object({}) do |tc, acc|
+          h = tc.is_a?(Hash) ? tc.transform_keys(&:to_sym) : tc
+          call = RubyLLM::ToolCall.new(
             id: h[:id],
             name: h[:name],
             arguments: h[:arguments] || {}
           )
+          acc[call.id] = call
         end
       end
 
@@ -723,19 +985,98 @@ module Rubino
       # be dropped from the headless output and the persisted transcript (#261).
       # Prefer the buffer when present; it's already been streamed to the live
       # UI chunk-by-chunk, so using it here re-persists, never re-renders.
-      def build_response(response, buffered = nil)
+      #
+      # +usage+, when present (the round-trip accumulator from
+      # wire_round_trip_callbacks), reports the SUMMED input/output tokens across
+      # EVERY assistant message of the turn — so a multi-round-trip streaming turn
+      # bills its true spend, not just the final message (#355b). Falls back to
+      # the final response's own usage when no accumulator was wired (the
+      # accumulator is only zero when ruby_llm surfaced no per-message usage, in
+      # which case the final-message usage is the best we have).
+      def build_response(response, buffered = nil, usage: nil, final_text_block: nil)
         return nil unless response
+
+        # Budget Halt (#355a): when ToolBridge returned RubyLLM::Tool::Halt to
+        # stop the in-ask loop, ruby_llm's handle_tool_calls returns the Halt
+        # itself (not a Message). It exposes no usage/tool_calls, so build a
+        # response from the buffered streamed text (the preamble the user already
+        # saw) with NO tool calls and the summed usage — the Loop then runs its
+        # budget-exhausted summary. content_for_halt prefers the buffer; the Halt
+        # content is the internal nudge, not user-facing answer text.
+        if response.is_a?(::RubyLLM::Tool::Halt)
+          summed_in, summed_out = usage ? [usage[:input].to_i, usage[:output].to_i] : [0, 0]
+          return AdapterResponse.new(
+            content: buffered.to_s,
+            tool_calls: [],
+            input_tokens: summed_in,
+            output_tokens: summed_out,
+            model_id: @model_id,
+            halted: true,
+            raw: response
+          )
+        end
+
+        input_tokens, output_tokens = summed_usage(response, usage)
 
         AdapterResponse.new(
           content: buffered && !buffered.empty? ? buffered : response.content,
           tool_calls: extract_tool_calls(response),
-          input_tokens: response.input_tokens,
-          output_tokens: response.output_tokens,
+          input_tokens: input_tokens,
+          output_tokens: output_tokens,
           model_id: @model_id,
           stop_reason: extract_stop_reason(response),
           thinking: extract_thinking(response),
+          cache_read_tokens: cache_token(response, :cache_read_tokens),
+          cache_creation_tokens: cache_token(response, :cache_creation_tokens),
+          # The isolated final text block (#core-F1). Only meaningful when it
+          # differs from the full buffer (a multi-block turn that ended after a
+          # tool call); nil ⇒ AdapterResponse#final_text_block falls back to
+          # content, so single-block and non-streaming turns are unchanged.
+          final_text_block: final_block_for(final_text_block, buffered),
           raw: response
         )
+      end
+
+      # Returns the final-block text to carry on the response, or nil when it adds
+      # nothing over the full buffer (single block, or no boundary tracked) so the
+      # response falls back to +content+. Guards against a falsely-narrow answer:
+      # only narrows when the captured last block is a non-empty STRICT suffix of
+      # the buffer (i.e. earlier blocks really were dropped).
+      def final_block_for(last_block, buffered)
+        return nil if last_block.nil? || buffered.nil?
+
+        lb = last_block.to_s
+        return nil if lb.empty? || lb == buffered
+        return nil unless buffered.end_with?(lb)
+
+        lb
+      end
+
+      # Resolves the [input, output] token pair build_response reports. Prefers
+      # the per-round-trip accumulator (the WHOLE turn's spend, #355b); falls back
+      # to the final response's own usage when the accumulator saw no per-message
+      # usage (a provider/path that doesn't surface it) so single-call turns are
+      # unchanged.
+      def summed_usage(response, usage)
+        return [response.input_tokens, response.output_tokens] if usage.nil?
+
+        summed_in  = usage[:input].to_i
+        summed_out = usage[:output].to_i
+        return [response.input_tokens, response.output_tokens] if summed_in.zero? && summed_out.zero?
+
+        [summed_in, summed_out]
+      end
+
+      # Prompt-cache counter (#311) RubyLLM surfaces on the response message
+      # (cache_read_tokens / cache_creation_tokens, from the Anthropic
+      # cache_read_input_tokens / cache_creation_input_tokens usage fields).
+      # Defaults to 0 on any path/provider that doesn't report it.
+      def cache_token(response, reader)
+        return 0 unless response.respond_to?(reader)
+
+        response.public_send(reader).to_i
+      rescue StandardError
+        0
       end
 
       # Normalize the provider's finish/stop reason to the boundary's

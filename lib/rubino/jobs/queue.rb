@@ -13,8 +13,15 @@ module Rubino
         @config = config || Rubino.configuration
       end
 
-      # Enqueues a new job
-      def enqueue(type, payload, priority: 100, run_at: nil)
+      # Enqueues a new job.
+      #
+      # +drain_inline+ controls the inline-mode auto-execute: when true (the
+      # default) an inline-mode enqueue runs the job synchronously right here,
+      # as before. The post-turn polishing path (#319) passes
+      # +drain_inline: false+ so the row is only PERSISTED — the detached
+      # Interaction::Polishing thread then drains it off the live turn's
+      # critical path, so a slow/429 aux call can never block the next prompt.
+      def enqueue(type, payload, priority: 100, run_at: nil, drain_inline: true)
         now = Time.now.utc.iso8601
         id = SecureRandom.uuid
 
@@ -30,6 +37,8 @@ module Rubino
           created_at: now,
           updated_at: now
         )
+
+        return id unless drain_inline
 
         # If inline mode, execute immediately — but first drain any stale rows
         # a previous inline run left orphaned (#84/#224). Inline mode has no
@@ -60,18 +69,29 @@ module Rubino
 
         return nil unless job
 
-        # Lock the job
+        return nil unless claim!(job[:id], worker_id: worker_id)
+
+        @db[:jobs].where(id: job[:id]).first
+      end
+
+      # Atomically claims a single row by id: the SAME compare-and-swap lock
+      # #dequeue uses, transitioning queued → running only while the row is
+      # still `queued`. Returns true to exactly ONE caller; every concurrent
+      # claim (another process sharing this RUBINO_HOME, or a re-entrant reap)
+      # sees the row already `running` and gets false. The reaper (#346) claims
+      # through here before running each orphan, so two processes can never
+      # double-run (and double-bill) the same ExtractMemoryJob.
+      def claim!(job_id, worker_id:) # rubocop:disable Naming/PredicateMethod -- a mutating CAS (bang), not a query; the boolean reports whether THIS caller won the lock
+        now = Time.now.utc.iso8601
         updated = @db[:jobs]
-                  .where(id: job[:id], status: "queued")
+                  .where(id: job_id, status: "queued")
                   .update(
                     status: "running",
                     locked_at: now,
                     locked_by: worker_id,
                     updated_at: now
                   )
-
-        # Return nil if another worker grabbed it first
-        updated > 0 ? @db[:jobs].where(id: job[:id]).first : nil
+        updated.positive?
       end
 
       # Marks a job as completed
@@ -161,6 +181,7 @@ module Rubino
       def reap_inline_orphans(before: nil)
         now = Time.now.utc.iso8601
         runner = Runner.new(db: @db)
+        worker_id = "reap-#{Process.pid}"
 
         dataset = @db[:jobs]
                   .where(status: "queued", locked_by: nil)
@@ -168,7 +189,41 @@ module Rubino
                   .order(:priority, :run_at)
         dataset = dataset.exclude(id: before) if before
 
-        dataset.select_map(:id).each { |orphan_id| runner.run_job(orphan_id) }
+        # Isolate each orphan: run_job already failure-isolates a bad row
+        # terminally, but a defence-in-depth guard here means even an
+        # unexpected raise (e.g. a DB error draining one row) can NEVER abort
+        # the live turn that is enqueuing — mirrors the poison-row defence
+        # Scheduler#schedule has for unparseable cron rows (#J1).
+        #
+        # CAS-claim each orphan through the SAME lock #dequeue uses BEFORE
+        # running it (#346). Two processes sharing one RUBINO_HOME used to both
+        # see the same queued orphans and run_job them directly — no lock, no
+        # terminal re-check — double-running (and double-billing) the aux work.
+        # The atomic claim transitions queued → running for exactly one caller;
+        # a row another process already grabbed returns false and is skipped.
+        dataset.select_map(:id).each do |orphan_id|
+          next unless claim!(orphan_id, worker_id: worker_id)
+
+          runner.run_job(orphan_id)
+        rescue StandardError => e
+          Rubino.logger.warn(event: "jobs.reap_orphan_failed", job_id: orphan_id, error: e.class.name,
+                             message: e.message)
+        end
+      end
+
+      # The next still-queued, due, UNLOCKED job row (no lock taken). Used by the
+      # detached post-turn polishing drain (#319), which runs each row through
+      # Jobs::Runner#run_job sequentially on its own thread — so it needs the
+      # next candidate, not a worker-locked claim. Returns nil when the queue has
+      # nothing due. Scanned fresh each call so rows a follow-up turn enqueues
+      # mid-drain are picked up by the same worker (coalescing).
+      def next_due_queued
+        now = Time.now.utc.iso8601
+        @db[:jobs]
+          .where(status: "queued", locked_by: nil)
+          .where { run_at <= now }
+          .order(:priority, :run_at)
+          .first
       end
 
       # Cleans up old completed jobs

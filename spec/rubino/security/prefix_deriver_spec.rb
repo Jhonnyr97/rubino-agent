@@ -2,10 +2,32 @@
 
 RSpec.describe Rubino::Security::PrefixDeriver do
   describe ".rule_for" do
-    it "derives a command PREFIX from a plain command" do
-      rule = described_class.rule_for(tool: "shell", command: "git status")
+    it "derives a head-only PREFIX from a plain non-wrapper command" do
+      rule = described_class.rule_for(tool: "shell", command: "docker ps -a")
       expect(rule.kind).to eq(:prefix)
-      expect(rule.value).to eq("git")
+      expect(rule.value).to eq("docker")
+    end
+
+    # SEC-R2-1: a git prefix is NARROWED to `git <read-only verb>`, never bare
+    # `git` — a bare `git` prefix persisted to the allowlist would pre-approve
+    # `git apply`, `git -c alias.x=!cmd x`, ... = RCE/arbitrary-write.
+    it "derives a NARROW `git <verb>` prefix for a read-only git command" do
+      rule = described_class.rule_for(tool: "shell", command: "git status -s")
+      expect(rule.kind).to eq(:prefix)
+      expect(rule.value).to eq("git status")
+    end
+
+    # A non-read-only git verb gets NO prefix (no bare-git broadening): it falls
+    # back to the exact command rule, so "always_prefix" is never offered for it.
+    it "does NOT derive a :prefix for a mutating git verb (falls back to exact command)" do
+      rule = described_class.rule_for(tool: "shell", command: "git apply patch")
+      expect(rule.kind).to eq(:command)
+      expect(rule.value).to eq("git apply patch")
+    end
+
+    it "does NOT derive a :prefix for a git command carrying a global flag" do
+      rule = described_class.rule_for(tool: "shell", command: "git -c alias.x=!touch x")
+      expect(rule.kind).to eq(:command)
     end
 
     it "keeps a wrapper verb in the prefix so wrapped tools don't collapse" do
@@ -77,8 +99,9 @@ RSpec.describe Rubino::Security::PrefixDeriver do
     end
 
     it "prefix rule covers any command that start_with? it" do
-      rule = described_class.rule_for(tool: "shell", command: "git status")
-      expect(rule.covers?("git diff")).to be(true)
+      rule = described_class.rule_for(tool: "shell", command: "npm run test")
+      expect(rule.value).to eq("npm run")
+      expect(rule.covers?("npm run build")).to be(true)
       expect(rule.covers?("npm install")).to be(false)
     end
 

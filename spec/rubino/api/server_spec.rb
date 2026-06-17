@@ -39,4 +39,40 @@ RSpec.describe Rubino::API::Server do
       expect(described_class::DEFAULT_HOST).to eq("127.0.0.1")
     end
   end
+
+  # S5-1 — errors raised below the Rack stack (e.g. Puma's HTTP parser rejecting
+  # an oversized QUERY_STRING) bypass ErrorHandler; without a lowlevel handler
+  # Puma renders its verbose default page, leaking the Puma version + gem
+  # file paths/line numbers. The handler must render a clean, internals-free
+  # envelope.
+  describe ".lowlevel_error_handler" do
+    let(:handler) { described_class.lowlevel_error_handler }
+
+    it "renders a clean JSON envelope with no internals" do
+      err = Puma::HttpParserError.new(
+        "HTTP element QUERY_STRING is longer than the (1024 * 10) allowed length (was 20000)"
+      )
+      status, headers, body = handler.call(err, {}, 400)
+
+      expect(status).to eq(400)
+      expect(headers["content-type"]).to eq("application/json")
+      payload = JSON.parse(body.join)
+      expect(payload).to eq("error" => { "code" => "bad_request", "message" => "bad request" })
+    end
+
+    it "never leaks the exception class, message, backtrace, or file paths" do
+      err = RuntimeError.new("Puma::HttpParserError at /usr/local/bundle/gems/puma-6.6.1/lib/puma/client.rb:307")
+      _status, _headers, body = handler.call(err, {}, 400)
+      rendered = body.join
+
+      expect(rendered).not_to include("puma-")
+      expect(rendered).not_to include("/usr/local/bundle")
+      expect(rendered).not_to include("client.rb")
+      expect(rendered).not_to include("HttpParserError")
+    end
+
+    it "is callable with Puma's looser arity (error only)" do
+      expect { handler.call(StandardError.new("x")) }.not_to raise_error
+    end
+  end
 end

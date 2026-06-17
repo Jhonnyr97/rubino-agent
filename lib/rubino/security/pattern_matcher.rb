@@ -21,17 +21,40 @@ module Rubino
       end
 
       # Returns the action for a given tool call description
-      # Returns :allow, :ask, or :deny
+      # Returns :allow, :ask, or :deny (nil when no rule matches).
+      #
+      # DENY ALWAYS WINS (the documented permissions invariant). Resolution is
+      # NOT a plain first-hit on the specificity-sorted list — that let a longer,
+      # more specific :allow outrank a shorter overlapping :deny (e.g.
+      # "shell git push" => deny vs. "shell git push --force-with-lease …" =>
+      # allow), silently swallowing the deny. Instead we resolve in two passes
+      # over ALL matching rules:
+      #
+      #   1. If ANY matching rule is :deny, the result is :deny — regardless of
+      #      a longer overlapping :allow/:ask. (deny wins ACROSS verdict classes)
+      #   2. Otherwise the FIRST (= longest/most-specific, per #parse_rules)
+      #      matching :allow/:ask wins. (longest-match preserved WITHIN a class)
+      #
+      # The hardline floor is a separate, earlier layer (ApprovalPolicy step 1)
+      # and is unaffected.
       def match(tool_name, command_or_args = nil)
         full_string = [tool_name, command_or_args].compact.join(" ")
 
-        # Check rules from most specific to least specific
+        first_non_deny = nil
         @rules.each do |pattern, action|
-          return action.to_sym if matches_pattern?(full_string, pattern)
+          next unless matches_pattern?(full_string, pattern)
+
+          sym = action.to_sym
+          # Pass 1: a deny short-circuits everything — deny always wins.
+          return :deny if sym == :deny
+
+          # Pass 2 (deferred): remember the first (most-specific) allow/ask, but
+          # keep scanning in case a shorter overlapping deny is still ahead.
+          first_non_deny ||= sym
         end
 
-        # Default: no explicit match
-        nil
+        # No matching deny: the longest/most-specific allow/ask (or nil).
+        first_non_deny
       end
 
       # Returns true if the pattern matches the input

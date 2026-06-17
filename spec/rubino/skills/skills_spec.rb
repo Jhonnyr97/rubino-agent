@@ -55,6 +55,49 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # The bundled ruby-expert skill carries `languages: [ruby]` so it no longer
+    # auto-brands every session as Ruby/Rails. It stays discoverable/loadable on
+    # demand (names/find), but the system-prompt catalogue (#summaries) only
+    # lists it when the project is actually a Ruby project.
+    describe "language-scoped built-in skills" do
+      def registry_in(root)
+        allow(Rubino::Workspace).to receive(:primary_root).and_return(root)
+        described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+      end
+
+      def summary_names(reg)
+        reg.summaries.map { |s| s.split(":", 2).first }
+      end
+
+      it "lists ruby-expert in summaries when the project is Ruby" do
+        Dir.mktmpdir do |root|
+          File.write(File.join(root, "Gemfile"), "source 'x'")
+          expect(summary_names(registry_in(root))).to include("ruby-expert")
+        end
+      end
+
+      it "omits ruby-expert from summaries in a Python project" do
+        Dir.mktmpdir do |root|
+          File.write(File.join(root, "requirements.txt"), "flask")
+          File.write(File.join(root, "app.py"), "print(1)")
+          reg = registry_in(root)
+          expect(summary_names(reg)).not_to include("ruby-expert")
+          # Still discoverable and loadable on demand (opt-in via /skills picker
+          # or the `skill` tool) — gating only governs the auto-load catalogue.
+          expect(reg.names).to include("ruby-expert")
+          expect(reg.load_skill("ruby-expert")).to include("Ruby expert")
+        end
+      end
+
+      it "still lists ruby-expert when the project language is unknown" do
+        Dir.mktmpdir do |root|
+          # Bare scratch dir, no markers: don't hide skills from a project we
+          # can't classify.
+          expect(summary_names(registry_in(root))).to include("ruby-expert")
+        end
+      end
+    end
+
     # #135: RUBINO_HOME must relocate skills like config/.env/DB/commands. The
     # stock "~/.rubino/skills" entry used to File.expand_path against the REAL
     # home, so an isolated home silently lost its user skills.
@@ -182,6 +225,50 @@ RSpec.describe "Skills (directory layout + disclosure)" do
 
           expect { reg.names }.not_to raise_error
           expect(reg.names).to include("good")
+        end
+      end
+    end
+
+    # SKILL-2: a single SKILL.md with INVALID UTF-8 bytes used to raise
+    # ArgumentError("invalid byte sequence") inside `raw.split("---")` and,
+    # with no per-skill rescue, brick discovery of EVERY skill — the CLI
+    # stack-traced and the agent silently lost all skills. The loader now
+    # scrubs undecodable bytes, and discovery skips any skill that still fails.
+    context "non-UTF-8 SKILL.md (SKILL-2)" do
+      it "lists the good skills and scrubs the bad one instead of crashing" do
+        Dir.mktmpdir do |dir|
+          FileUtils.mkdir_p(File.join(dir, "binskill"))
+          File.binwrite(File.join(dir, "binskill", "SKILL.md"),
+                        "---\nname: binskill\ndescription: d\n---\n\xff\xfe\x00garbage".b)
+          FileUtils.mkdir_p(File.join(dir, "goodskill"))
+          File.write(File.join(dir, "goodskill", "SKILL.md"),
+                     "---\nname: goodskill\ndescription: fine\n---\nbody")
+          reg = described_class.new(
+            config: test_configuration("skills" => { "paths" => [dir] }), include_builtin: false
+          )
+
+          expect { reg.names }.not_to raise_error
+          expect(reg.names).to include("goodskill", "binskill")
+          # The scrubbed body is still loadable (no crash on content read).
+          expect { reg.find("binskill").content }.not_to raise_error
+        end
+      end
+
+      it "skips (warns, does not crash) a skill whose Skill build raises, keeping the rest" do
+        Dir.mktmpdir do |dir|
+          File.write(File.join(dir, "good.md"), "---\nname: good\ndescription: fine\n---\nbody")
+          File.write(File.join(dir, "boom.md"), "---\nname: boom\ndescription: d\n---\nbody")
+          reg = described_class.new(
+            config: test_configuration("skills" => { "paths" => [dir] }), include_builtin: false
+          )
+          # Force one skill build to blow up in an unanticipated way.
+          allow(Rubino::Skills::Skill).to receive(:new).and_call_original
+          allow(Rubino::Skills::Skill).to receive(:new)
+            .with(path: a_string_ending_with("boom.md")).and_raise(RuntimeError, "kaboom")
+
+          expect { reg.names }.to output(/skipping skill.*boom\.md.*kaboom/m).to_stderr
+          expect(reg.names).to include("good")
+          expect(reg.names).not_to include("boom")
         end
       end
     end
@@ -321,6 +408,63 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         expect(skill.current_linked_files).not_to include("references/torque.md")
       end
     end
+
+    # R2-M3 — the SKILL.md ENTRYPOINT itself was read straight off @path, so a
+    # hostile catalogue could symlink it to /etc/passwd (read into the summary on
+    # EVERY prompt + the body) or ship a multi-MB body that loaded uncapped. The
+    # existing realpath confinement only covered BUNDLED files read via #read_file.
+    describe "entrypoint confinement + size cap (R2-M3)" do
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @dir = dir
+          @skill_dir = File.join(dir, "evil-skill")
+          FileUtils.mkdir_p(@skill_dir)
+          example.run
+        end
+      end
+
+      it "refuses a SKILL.md that symlinks OUT of the skill dir (no /etc/passwd)" do
+        secret = File.join(@dir, "secret.txt")
+        File.write(secret, "SHOULD-NOT-LEAK root:x:0:0")
+        File.symlink(secret, File.join(@skill_dir, "SKILL.md"))
+
+        # Refused at construction (the summary is parsed in #initialize), so the
+        # secret never reaches the metadata/summary the prompt index would show.
+        expect { Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md")) }
+          .to raise_error(Rubino::Error, /escapes its directory/)
+      end
+
+      it "skips a symlinked-entrypoint skill in registry discovery (not followed)" do
+        File.symlink("/etc/passwd", File.join(@skill_dir, "SKILL.md"))
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [@dir] }),
+          include_builtin: false
+        )
+        # add_skills rescues the raise and skips it — the skill never registers,
+        # so /etc/passwd never reaches a summary or the prompt index.
+        expect { registry.discover! }.to output(/skipping skill/).to_stderr
+        expect(registry.summaries.join).not_to include("root:")
+      end
+
+      it "truncates a SKILL.md past the size cap instead of loading it uncapped" do
+        cap = Rubino::Skills::Skill::MAX_SOURCE_BYTES
+        body = "x" * (cap + (5 * 1024 * 1024)) # ~5 MB over the cap
+        File.write(File.join(@skill_dir, "SKILL.md"),
+                   "---\nname: huge\ndescription: big\n---\n#{body}")
+
+        skill = Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md"))
+        expect(skill.content.bytesize).to be <= cap + 100
+        expect(skill.content).to include("skill truncated")
+      end
+
+      it "reads a normal in-dir SKILL.md unchanged" do
+        File.write(File.join(@skill_dir, "SKILL.md"),
+                   "---\nname: ok\ndescription: fine\n---\nhello body")
+        skill = Rubino::Skills::Skill.new(path: File.join(@skill_dir, "SKILL.md"))
+        expect(skill.name).to eq("ok")
+        expect(skill.content).to eq("hello body")
+      end
+    end
   end
 
   describe Rubino::Skills::SkillTool do
@@ -431,19 +575,32 @@ RSpec.describe "Skills (directory layout + disclosure)" do
     # Writes <name>/SKILL.md inline (0 extra LLM calls), validates the
     # frontmatter contract, and rejects bad input.
     describe %(action: "create") do
+      # SK-1: authored skills are written under the agent HOME skills dir
+      # (RUBINO_HOME → ~/.rubino/skills), NOT the cwd-relative skills.paths.
+      # @home stands in for that resolved home; @write_dir is its skills/ dir —
+      # the place create must write and the registry must discover.
       around do |example|
-        Dir.mktmpdir do |dir|
-          @write_dir = dir
+        Dir.mktmpdir do |home|
+          @home = home
+          @write_dir = File.join(home, "skills")
+          FileUtils.mkdir_p(@write_dir)
           Rubino::Metrics.reset!
           example.run
           Rubino::Metrics.reset!
         end
       end
 
-      let(:config) { test_configuration("skills" => { "paths" => [@write_dir] }) }
+      # skills.paths deliberately points somewhere ELSE (the legacy cwd-relative
+      # default) to prove create ignores it and uses the home dir instead.
+      let(:config) do
+        test_configuration("skills" => { "paths" => ["~/.rubino/skills"] })
+      end
       let(:registry) { Rubino::Skills::Registry.new(config: config) }
 
-      before { allow(Rubino).to receive(:configuration).and_return(config) }
+      before do
+        allow(Rubino).to receive(:configuration).and_return(config)
+        allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
+      end
 
       it "exposes action/description/body in the input schema with the load/create enum" do
         props = tool.input_schema[:properties]
@@ -472,6 +629,26 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         # The newly created skill is immediately discoverable (re-scan).
         expect(registry.find("gem-patch-release")).not_to be_nil
         expect(Rubino::Metrics.render).to match(/^skills_created_total(\{\})? 1$/)
+      end
+
+      # SK-1: with cwd inside a repo, a created skill must NOT land in the
+      # project tree — it goes to the agent HOME skills dir. Regression for the
+      # leak where skills_write_dir was the cwd-relative .rubino/skills.
+      it "writes under the agent HOME, not the cwd, even when cwd is a repo" do
+        Dir.mktmpdir do |repo|
+          Dir.chdir(repo) do
+            tool.call(
+              "action" => "create", "name" => "repo-leak-check",
+              "description" => "must not leak into the repo cwd", "body" => "# body\n"
+            )
+          end
+          # Nothing was written into the cwd repo tree...
+          expect(Dir.glob(File.join(repo, "**", "SKILL.md"))).to be_empty
+          expect(File).not_to exist(File.join(repo, ".rubino"))
+        end
+        # ...it landed in the agent HOME skills dir.
+        expect(File).to exist(File.join(@write_dir, "repo-leak-check", "SKILL.md"))
+        expect(registry.find("repo-leak-check")).not_to be_nil
       end
 
       it "quotes the description so a colon can't break the YAML frontmatter" do
@@ -547,6 +724,19 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       it "renders the mandatory-scan header" do
         expect(index.render).to include("## Skills (mandatory)")
         expect(index.render).to include("you MUST load it with skill(name)")
+      end
+
+      # Item 7: the auto-trigger phrasing, adapted from peer agents (Hermes'
+      # scan-before-reply block, Anthropic's "know WHEN each skill should be
+      # used" pre-load framing, Codex's "initial list … so it can choose"),
+      # instructs the model to CONSULT the catalogue FIRST and load a matching
+      # skill BEFORE answering. Auto-triggering remains model-dependent.
+      it "instructs the model to consult the catalogue first and load before answering (item 7)" do
+        out = index.render
+        expect(out).to include("FIRST thing to consult on every task")
+        expect(out).to include("BEFORE answering")
+        # The escape hatch survives so a genuinely irrelevant task isn't forced.
+        expect(out).to include("Proceed without loading only if genuinely no skill is relevant")
       end
 
       it "lists each skill as `- name: description` inside <available_skills>" do

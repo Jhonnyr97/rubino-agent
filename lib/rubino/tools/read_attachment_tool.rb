@@ -93,7 +93,9 @@ module Rubino
                  "reads documents and text. Inspect other kinds via the shell."
         end
 
-        markdown = Rubino::Documents.to_markdown(cls.path, mime: cls.mime)
+        # Thread the cancel_token so a runaway/bomb conversion is interruptible
+        # mid-flight and bounded by the converter's wall-clock/element caps.
+        markdown = Rubino::Documents.to_markdown(cls.path, mime: cls.mime, cancel_token: @cancel_token)
         # No in-process converter (unknown format / optional gem absent): degrade
         # with the actionable shell-extraction hint, exactly like the preamble.
         # NEVER raise -- a missing gem must not break the turn.

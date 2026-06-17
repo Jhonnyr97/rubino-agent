@@ -10,6 +10,61 @@ require "fileutils"
 RSpec.describe Rubino::Tools::RubyTool do
   subject(:tool) { described_class.new }
 
+  # The orphan-reaping spec below asserts that a DETACHED grandchild disappears
+  # after its parent is killed. That only holds when PID 1 actually reaps
+  # orphaned descendants: a killed-but-detached grandchild is reparented to
+  # PID 1, and without a real init/reaper there it lingers as a <defunct>
+  # zombie that `Process.kill(0, pid)` still reports as alive — so the
+  # assertion can never be satisfied. Bare containers (e.g. plain
+  # `docker run` without --init/tini) have no such reaper. Detect the
+  # capability FUNCTIONALLY rather than by sniffing PID 1's name: fork a child
+  # that forks a grandchild and exits immediately, orphaning the grandchild;
+  # the grandchild exits at once. If PID 1 reaps it, it vanishes (ESRCH);
+  # otherwise it persists as a zombie. Memoized — the env doesn't change.
+  def reaper_available?
+    return @reaper_available unless @reaper_available.nil?
+
+    @reaper_available =
+      begin
+        r, w = IO.pipe
+        intermediate = fork do
+          r.close
+          grandchild = fork { exit!(0) } # orphaned when `intermediate` exits below
+          w.write(grandchild.to_s)
+          w.close
+          exit!(0) # reparents the (already-exited) grandchild to PID 1
+        end
+        w.close
+        Process.waitpid(intermediate) # reap the intermediate so only the orphan remains
+        grandchild = r.read.to_i
+        r.close
+
+        # Give PID 1 a beat to reap, then probe. ESRCH => reaped (real init).
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2.0
+        reaped = false
+        loop do
+          begin
+            Process.kill(0, grandchild)
+          rescue Errno::ESRCH
+            reaped = true
+          end
+          break if reaped
+          break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+          sleep 0.02
+        end
+        # Best-effort cleanup of a lingering zombie's slot.
+        begin
+          Process.waitpid(grandchild, Process::WNOHANG)
+        rescue Errno::ECHILD, Errno::ESRCH
+          nil
+        end
+        reaped
+      rescue NotImplementedError
+        false # no fork (e.g. Windows/JRuby) — the spec is skipped anyway
+      end
+  end
+
   it "has name 'ruby' and :medium risk" do
     expect(tool.name).to eq("ruby")
     expect(tool.risk_level).to eq(:medium)
@@ -105,5 +160,88 @@ RSpec.describe Rubino::Tools::RubyTool do
 
     expect(out).to include("cancelled")
     expect(elapsed).to be < 5 # far below the 60s sleep / configured timeout
+  end
+
+  # #328 — a snippet that backgrounds a child (system("... &"), spawn, fork)
+  # used to ORPHAN that grandchild on timeout: #terminate killed only the
+  # direct child PID. The fix spawns the child in its own process group and
+  # signals the WHOLE group (negative PID) on timeout/cancel, mirroring
+  # ShellTool, so no descendant survives the call.
+  it "kills backgrounded descendants on timeout (no orphans)" do
+    skip "POSIX process groups only" if Gem.win_platform?
+    # Environmental guard (not a product concern): the detached grandchild is
+    # reparented to PID 1 when its parent is killed, so this can only pass
+    # where PID 1 reaps orphans. In a reaper-less container the grandchild
+    # lingers as a <defunct> zombie that still answers `kill(0)`, so skip
+    # rather than flake. The example stays COLLECTED (skip keeps it in the
+    # count) and still RUNS wherever a real init/reaper is present.
+    skip "requires a PID-1 reaper for orphaned descendants (none in this environment)" unless reaper_available?
+
+    Dir.mktmpdir do |dir|
+      pidfile = File.join(dir, "child.pid")
+      allow(Rubino.configuration).to receive(:agent_max_turn_seconds).and_return(1)
+
+      # Background a long-lived grandchild whose PID we record, then sleep so the
+      # PARENT snippet hits the 1s timeout while the grandchild is still alive.
+      code = <<~RUBY
+        child = spawn("sleep 30")
+        Process.detach(child)
+        File.write(#{pidfile.dump}, child.to_s)
+        $stdout.flush
+        sleep 30
+      RUBY
+
+      out = tool.call("code" => code)
+      expect(out).to include("timed out")
+
+      # Wait for the pidfile then assert the grandchild is gone (signalled via
+      # the process group). Poll briefly so the group-kill has a beat to land.
+      sleep 0.05 until File.exist?(pidfile) && !File.read(pidfile).strip.empty?
+      grandchild = File.read(pidfile).strip.to_i
+      expect(grandchild).to be > 0
+
+      # Bounded poll with a GENEROUS deadline (up to 30s) purely for
+      # LOAD-TOLERANCE: under heavy parallel suite load in a Docker PID-ns the
+      # group-kill is CORRECT but the signal delivery + reap of the grandchild
+      # can lag well past a tight window before `kill(0)` observes ESRCH. #438
+      # widened this once (1s → 5s) and helped but didn't eliminate the flake
+      # under the heaviest parallel runs, so widen further. This is LOAD
+      # TOLERANCE, NOT masking: the deadline only bounds HOW LONG we are willing
+      # to WAIT for an already-correct kill to be observed — we break the instant
+      # the grandchild is gone (so a fast machine still finishes in ~ms), and we
+      # still assert `alive == false` below, so a grandchild that GENUINELY
+      # survives (a real orphan regression) still drives `alive` true past the
+      # deadline and FAILS the test. A longer deadline can never turn a real
+      # orphan into a pass — it only gives a slow-but-correct kill room to land.
+      #
+      # A short settle before the FIRST probe gives the group-kill a beat to be
+      # delivered under load, so the common case observes the dead grandchild on
+      # poll #1 instead of racing it — but it is NOT a "sleep and assume": the
+      # bounded poll + the alive assertion below are the real check.
+      sleep 0.1
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30.0
+      alive = nil
+      loop do
+        alive = begin
+          Process.kill(0, grandchild) # raises ESRCH once it's truly gone
+          true
+        rescue Errno::ESRCH
+          false
+        end
+        break unless alive
+        break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.05
+      end
+
+      # Cleanup safeguard so a regression doesn't leak a real sleeper.
+      begin
+        Process.kill("KILL", grandchild) if alive
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
+
+      expect(alive).to be(false), "grandchild #{grandchild} survived the ruby tool timeout (orphaned)"
+    end
   end
 end

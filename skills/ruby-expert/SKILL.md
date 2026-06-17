@@ -1,6 +1,7 @@
 ---
 name: ruby-expert
 description: Deep Ruby & Rails expertise — idioms, OO design, metaprogramming, errors/types, concurrency, Rails, testing, performance, security, tooling, gem authoring. Load when writing, reviewing, debugging, or designing Ruby or Rails code, or when a Ruby/Rails decision needs an authoritative answer.
+languages: [ruby]
 ---
 
 # Ruby expert

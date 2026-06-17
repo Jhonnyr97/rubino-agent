@@ -105,6 +105,7 @@ detect_shell_rc() {
   case "$shell_name" in
     zsh)  printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
     bash) printf '%s\n' "$HOME/.bashrc" ;;
+    fish) printf '%s\n' "${__fish_config_dir:-$HOME/.config/fish}/config.fish" ;;
     *)    printf '%s\n' "$HOME/.profile" ;;
   esac
 }
@@ -130,31 +131,99 @@ rc_targets() {
       else printf '%s\n' "$HOME/.profile"
       fi
       ;;
+    fish)
+      # fish does NOT read ~/.profile (it isn't POSIX); its config lives in
+      # config.fish, sourced for every fish session (login + interactive).
+      printf '%s\n' "${__fish_config_dir:-$HOME/.config/fish}/config.fish"
+      ;;
     *)
       printf '%s\n' "$HOME/.profile"
       ;;
   esac
 }
 
+# The shell-correct line that prepends $1 (a directory) to PATH, persisted into
+# an rc file. POSIX shells (bash/zsh/sh) get `export PATH="DIR:$PATH"`; fish does
+# NOT understand that syntax (no `$PATH` colon list, no `export`) — it needs
+# `fish_add_path DIR`. Writing the POSIX form into config.fish would be ignored
+# (or error), leaving fish users with a broken PATH while we report success
+# (INST-R3-1). Args: $1 = bindir.
+path_persist_line() {
+  local dir="$1" shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    fish) printf 'fish_add_path %s\n' "$dir" ;;
+    *)    printf 'export PATH="%s:$PATH"\n' "$dir" ;;
+  esac
+}
+
+# Acquire an exclusive per-rc lock, run a command, release. The lock makes the
+# check-then-append in _append_line_to_rc atomic: without it two concurrent
+# installs both pass the `grep -qF` (the line is in neither yet) and both append,
+# producing DUPLICATE activation blocks (TOCTOU).
+#
+# We use `mkdir` as the mutex primitive, not `flock`: mkdir is atomic on every
+# POSIX filesystem and present on macOS/busybox alike (flock ships with
+# util-linux and is absent on stock macOS). Spin with a short sleep until the
+# lock dir is ours, with a stale-lock timeout so a crashed installer can't wedge
+# the next one forever. Falls back to running unlocked only if even mkdir is
+# somehow unavailable. Args: $1 = lock dir, $2... = command to run while held.
+with_rc_lock() {
+  local lockdir="$1"; shift
+  local waited=0
+  # Try for up to ~5s (50 * 0.1s), then assume the holder died and proceed.
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if [ "$waited" -ge 50 ]; then
+      rm -rf "$lockdir" 2>/dev/null || true
+      mkdir "$lockdir" 2>/dev/null || break
+      break
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  # Ensure we drop the lock even if the command fails.
+  "$@"
+  local rc=$?
+  rmdir "$lockdir" 2>/dev/null || true
+  return "$rc"
+}
+
+# Append a single line, once, to one rc file. Idempotent via RC_MARKER + a grep
+# for the exact line. MUST run under with_rc_lock so the grep-then-append can't
+# race a concurrent install. Echoes "touched" if the line is present afterward.
+_append_line_to_rc() {
+  local line="$1" rc="$2"
+  # Create the file if missing (login shells will source it). Ensure the parent
+  # dir exists first — fish's config.fish lives under ~/.config/fish, which may
+  # not exist yet on a fresh box (a bare `: >"$rc"` would then fail silently).
+  [ -e "$rc" ] || mkdir -p "$(dirname "$rc")" 2>/dev/null || true
+  [ -e "$rc" ] || : >"$rc" 2>/dev/null || return 0
+  if grep -qF "$line" "$rc" 2>/dev/null; then
+    printf 'touched'
+    return 0
+  fi
+  if {
+      printf '\n%s\n' "$RC_MARKER"
+      printf '%s\n' "$line"
+    } >>"$rc" 2>/dev/null; then
+    printf 'touched'
+  fi
+}
+
 # Append a single line, once, to each startup file from rc_targets(). Guarded by
-# RC_MARKER + a grep for the exact line so re-runs don't duplicate. Sets
-# PERSISTED_RC to the space-separated files it touched. Returns 0 if the line is
-# present in at least one target afterward.
+# RC_MARKER + a grep for the exact line so re-runs don't duplicate, and by an
+# exclusive per-rc lock so CONCURRENT installs don't duplicate either (TOCTOU).
+# Sets PERSISTED_RC to the space-separated files it touched. Returns 0 if the
+# line is present in at least one target afterward.
 persist_to_rc() {
-  local line="$1" rc any=1 touched=""
+  local line="$1" rc any=1 touched="" res
   [ "$RUBINO_NO_MODIFY_RC" = "1" ] && return 1
   while IFS= read -r rc; do
     [ -n "$rc" ] || continue
-    # Create the file if missing (login shells will source it).
-    [ -e "$rc" ] || : >"$rc" 2>/dev/null || continue
-    if grep -qF "$line" "$rc" 2>/dev/null; then
-      touched="${touched:+$touched }$rc"; any=0
-      continue
-    fi
-    if {
-        printf '\n%s\n' "$RC_MARKER"
-        printf '%s\n' "$line"
-      } >>"$rc" 2>/dev/null; then
+    # The subshell scopes the "touched" capture; the lock serializes the
+    # check-then-append against any other installer touching this same rc.
+    res="$(with_rc_lock "${rc}.rubino.lock.d" _append_line_to_rc "$line" "$rc")"
+    if [ "$res" = "touched" ]; then
       touched="${touched:+$touched }$rc"; any=0
     fi
   done <<EOF
@@ -178,6 +247,18 @@ verify_fresh_shell() {
   local found=1
   case "$shell_name" in
     zsh)  zsh  -i -c "command -v ${BIN_NAME} >/dev/null 2>&1" >/dev/null 2>&1 || found=0 ;;
+    # fish: probe fish itself (a fresh login+interactive session sources
+    # config.fish), NOT bash -lic — bash would find a POSIX export the user's
+    # fish never reads, reporting a false success over a broken fish (INST-R3-1).
+    # `type -q` is fish's `command -v`. If fish isn't installed to probe with,
+    # fall through to a best-effort PATH check rather than claim success.
+    fish)
+      if command -v fish >/dev/null 2>&1; then
+        fish -l -i -c "type -q ${BIN_NAME}" >/dev/null 2>&1 || found=0
+      else
+        command -v "${BIN_NAME}" >/dev/null 2>&1 || found=0
+      fi
+      ;;
     *)    bash -lic "command -v ${BIN_NAME} >/dev/null 2>&1" >/dev/null 2>&1 || found=0 ;;
   esac
 
@@ -678,8 +759,14 @@ setup_mise() {
     bash) act_sh="bash" ;;
     *)    act_sh="$shell_name" ;;
   esac
-  # Use a bare `mise` in the persisted line so it stays valid if the binary moves.
-  act_line="eval \"\$($mise_bin activate ${act_sh:-bash})\""
+  # The activation snippet differs by shell: POSIX shells eval the command
+  # substitution; fish pipes it to `source` (fish has no `eval "$(...)"`). Using
+  # the POSIX form in config.fish would error and leave fish broken (INST-R3-1).
+  if [ "$shell_name" = "fish" ]; then
+    act_line="$mise_bin activate fish | source"
+  else
+    act_line="eval \"\$($mise_bin activate ${act_sh:-bash})\""
+  fi
 
   if command -v "${BIN_NAME}" >/dev/null 2>&1; then
     ok "${BIN_NAME} is already on your PATH (mise is activated)."
@@ -826,7 +913,8 @@ else
   PATH_OK=0
 fi
 
-PATH_LINE="export PATH=\"${GEM_BIN_DIR}:\$PATH\""
+# Shell-correct PATH-persist line (fish needs `fish_add_path`, not POSIX export).
+PATH_LINE="$(path_persist_line "${GEM_BIN_DIR}")"
 
 if [ "$PATH_OK" -ne 1 ]; then
   # Persist the PATH line to the user's rc so a fresh login shell finds rubino —

@@ -53,7 +53,13 @@ module Rubino
               paint
               break unless children_live?
             end
-          rescue StandardError
+          rescue StandardError => e
+            # The ticker exits on any error so a hiccup never crashes the REPL,
+            # but a swallowed coding bug would silently kill the live-card refresh
+            # for the rest of the session with no trace. Log it once (this rescue
+            # only ever fires once per ticker — the loop is already dead here).
+            Rubino.logger.warn(event: "cli.idle_card_ticker.crashed",
+                               error: e.message, error_class: e.class.name)
             nil
           end
         end

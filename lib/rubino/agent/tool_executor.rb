@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "securerandom"
+
 module Rubino
   module Agent
     # Executes tool calls with approval checks and result formatting.
@@ -57,6 +59,17 @@ module Rubino
 
       # Executes a single tool call, returns a Tools::Result.
       def execute(name:, arguments:, call_id:)
+        # Cancellation checkpoint BEFORE the tool runs (#335b). On the streaming
+        # path ruby_llm dispatches tool calls mid-stream through ToolBridge into
+        # here, and the loop's per-iteration #check! is far above us — so without
+        # this a cancel that arrived while a PREVIOUS tool was running (or during
+        # the thinking phase) wouldn't be observed until the model resumed
+        # streaming, letting the next tool fire after the user already hit
+        # interrupt. Raising here halts the in-flight turn at the next tool
+        # boundary, the soonest safe checkpoint, so "esc to interrupt" actually
+        # stops the agent instead of letting it run one more tool.
+        @cancel_token&.check!
+
         tool = @registry.find(name)
         raise ToolError, "Unknown tool: #{name}" unless tool
 
@@ -102,6 +115,18 @@ module Rubino
           end
         end
 
+        # Warn-not-block doom-loop guard (#414): when the detector tripped but
+        # hard_stop is off (the default), the call is ALLOWED — surface a
+        # one-time warning so a stuck autopilot is visible without hard-denying a
+        # legitimate repeated/idempotent call.
+        if @approval_policy.respond_to?(:doom_loop_warning) &&
+           @approval_policy.doom_loop_warning && @ui.respond_to?(:warning)
+          @ui.warning(
+            "doom-loop guard: '#{name}' called with identical arguments repeatedly — " \
+            "proceeding (set doom_loop.hard_stop:true to block)"
+          )
+        end
+
         notify_yolo_if_applicable(tool, arguments)
         emit_started(name, arguments)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -141,7 +166,11 @@ module Rubino
         if tool.respond_to?(:stream_chunk=) && (@ui.respond_to?(:tool_chunk) || @event_bus)
           tool.stream_chunk = lambda do |chunk|
             streamed = true
-            @ui.tool_chunk(name, chunk) if @ui.respond_to?(:tool_chunk)
+            # Read stream_kind LAZILY: the tool only knows its output kind
+            # (e.g. :diff for `git diff`) once #call has inspected the command,
+            # which happens AFTER this lambda is installed.
+            kind = tool.respond_to?(:stream_kind) ? (tool.stream_kind || :plain) : :plain
+            @ui.tool_chunk(name, chunk, kind: kind) if @ui.respond_to?(:tool_chunk)
             # Mirror the chunk onto the bus so the API/SSE stream isn't silent
             # during a long tool call: the Recorder maps TOOL_PROGRESS to a
             # `tool.progress` event, which resets the idle watchdog. Without
@@ -279,9 +308,12 @@ module Rubino
           masked = Util::SecretsMask.mask_value(value, key: key)
           memo[key.to_s] = truncate_for_event(masked.to_s)
         end
-      rescue StandardError
+      rescue StandardError => e
         # Never block the run because of a serialisation hiccup — drop the
-        # arguments rather than crash the tool emission path.
+        # arguments rather than crash the tool emission path. Log it so a coding
+        # bug here doesn't silently blank every tool event's arguments.
+        Rubino.logger&.warn(event: "tool_executor.sanitize_arguments_failed",
+                            error: e.message, error_class: e.class.name)
         nil
       end
 
@@ -309,8 +341,11 @@ module Rubino
           status: "denied",
           error: reason
         )
-      rescue StandardError
-        # Don't fail the user's request just because the audit write failed.
+      rescue StandardError => e
+        # Don't fail the user's request just because the audit write failed —
+        # but log it, so a silently dropped denial-audit row is traceable.
+        Rubino.logger&.warn(event: "tool_executor.record_denied_failed",
+                            error: e.message, error_class: e.class.name)
       end
 
       # Stamps the executor's session id onto the Result (built deep in the tool
@@ -406,13 +441,21 @@ module Rubino
         # header followed by nothing reads as a truncated/broken card (#109).
         return "#{tool.name} wants to run" if pairs.empty?
 
+        # multi_edit carries an `edits` ARRAY whose generic .to_s render is an
+        # unreadable escaped Ruby hash (literal \n, truncated). Lay it out as
+        # clean per-edit `- old` / `+ new` blocks, matching how the single
+        # `edit` tool already previews — so the user can see what will change.
+        if (edits_preview = multi_edit_preview(tool, arguments))
+          return edits_preview
+        end
+
         # The common case — ONE short single-line argument (a shell command, a
-        # file path) — inlines onto the header: `shell wants:  touch hello.txt`
+        # file path) — inlines onto the header: `shell wants: touch hello.txt`
         # (P7). Multi-arg / multi-line calls keep the per-key layout below.
         if pairs.size == 1
           key, value = pairs.first
           text = Util::SecretsMask.mask_value(value, key: key).to_s
-          return "#{tool.name} wants:  #{text}" if !text.include?("\n") && text.length <= 120
+          return "#{tool.name} wants: #{text}" if !text.include?("\n") && text.length <= 120
         end
 
         lines = ["#{tool.name} wants:"]
@@ -437,6 +480,42 @@ module Rubino
         end
       end
 
+      # Clean per-edit preview for multi_edit: a header with the file path then,
+      # for each edit, its `- old` / `+ new` lines (edits blank-line separated),
+      # trimmed to a sane line budget. nil for any other tool / shape so the
+      # generic per-key formatter handles it. Mirrors EditTool's diff preview.
+      MULTI_EDIT_PREVIEW_LINES = 16
+      def multi_edit_preview(tool, arguments)
+        return nil unless tool.name == "multi_edit"
+
+        edits = arguments["edits"] || arguments[:edits]
+        return nil unless edits.is_a?(Array) && !edits.empty?
+
+        path  = arguments["file_path"] || arguments[:file_path]
+        lines = ["multi_edit wants: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
+        body  = []
+        edits.each_with_index do |edit, idx|
+          old_s = edit["old_string"] || edit[:old_string]
+          new_s = edit["new_string"] || edit[:new_string]
+          body << "" unless idx.zero?
+          body.concat(Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" })
+          body.concat(Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" })
+        end
+        if body.size > MULTI_EDIT_PREVIEW_LINES
+          dropped = body.size - MULTI_EDIT_PREVIEW_LINES
+          body    = body.first(MULTI_EDIT_PREVIEW_LINES)
+          body << "  [… #{dropped} more line(s)]"
+        end
+        (lines + body).join("\n")
+      rescue StandardError => e
+        # A preview is cosmetic — fall back to the generic per-key formatter
+        # rather than crash the approval prompt. Log it so a malformed-shape
+        # coding bug here doesn't silently disable the multi_edit diff preview.
+        Rubino.logger&.warn(event: "tool_executor.multi_edit_preview_failed",
+                            error: e.message, error_class: e.class.name)
+        nil
+      end
+
       # Persists the complete (pre-truncation) output to a per-call file under
       # the rubino home so the model can read back whatever the inline
       # head+tail elided (the spill seam Util::Output.truncate calls back into
@@ -450,7 +529,21 @@ module Rubino
         dir = File.join(Rubino.home_path, "tool-results")
         FileUtils.mkdir_p(dir)
         path = File.join(dir, "#{id}.txt")
-        File.write(path, text)
+        # Write ATOMICALLY (temp + rename): a plain File.write can be cut MID-
+        # WRITE by an Interrupt (Ctrl+C) — which is NOT a StandardError, so the
+        # rescue below never catches it — leaving a TRUNCATED recovery file the
+        # marker still points the model at, so it reads back a silently partial
+        # output. rename(2) on the same filesystem is atomic, so a reader sees
+        # either the old file or the complete new one, never a torn one; the temp
+        # is cleaned up if the interrupt lands before the rename.
+        tmp = "#{path}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
+        begin
+          File.write(tmp, text)
+          File.rename(tmp, path)
+        rescue Exception # rubocop:disable Lint/RescueException
+          FileUtils.rm_f(tmp)
+          raise
+        end
         path
       rescue StandardError => e
         Rubino.logger&.warn(event: "tool_output.spill_failed", error: e.message)

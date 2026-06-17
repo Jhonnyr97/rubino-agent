@@ -75,6 +75,122 @@ RSpec.describe Rubino::UI::CLI do
       expect(clear_idx).to be < commit_idx
     end
 
+    # #265 (interrupt path): when a real composer owns the screen, the final
+    # block must commit in ONE live-region frame that also clears the raw live
+    # tail — NOT the old two-step (clear the partial, then commit the block
+    # line-by-line), whose window let a just-painted raw tail row scroll past
+    # the next frame's relative clear and survive ABOVE the rendered block. We
+    # assert the whole rendered block is handed to the composer as a SINGLE
+    # #print_above (atomic clear+commit), not dribbled per line.
+    it "commits the finalized block in one atomic composer frame (#265 interrupt)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      commits  = []
+      allow(composer).to receive(:print_above) { |s| commits << s }
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      live_io = Object.new
+      live_io.define_singleton_method(:live) { |_s| self }
+      live_io.define_singleton_method(:puts) { |*| nil }
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "The Ruby language was born in 1993 and ")
+        ui.stream(type: :content, text: "grew into a beloved tool for developers.")
+        ui.stream_end
+      ensure
+        $stdout = old
+      end
+
+      # The WHOLE block lands in a SINGLE print_above (one atomic clear+commit
+      # frame) — not dribbled across several committed-line frames, which is what
+      # let a raw tail row survive between them. So exactly one print_above
+      # carries the answer, and it holds the whole sentence (wrapping aside).
+      answer_commits = commits.select { |s| s.to_s.include?("beloved tool") }
+      expect(answer_commits.size).to eq(1)
+      flat = answer_commits.first.gsub(/\s+/, " ")
+      expect(flat).to include("The Ruby language was born in 1993")
+      expect(flat).to include("beloved tool for developers")
+    end
+
+    # #265 ghost root cause: a content delta arriving WHILE the turn is being
+    # interrupted (the adapter flushes its think-filter tail on the way out of a
+    # cancelled stream) must NOT re-open a stream and paint a fresh raw live tail
+    # under the already-committed partial. #turn_interrupted latches this; the
+    # late delta is dropped.
+    it "drops a late content delta while interrupting so it can't re-arm a live tail (#265)" do
+      tailed = []
+      allow(ui).to receive(:show_live_tail) { |t| tailed << t }
+      allow(ui).to receive(:status_stop)
+      allow(ui).to receive(:clear_line)
+      allow(ui).to receive(:collapse_reasoning)
+      out = capture_stdout do
+        ui.instance_variable_set(:@turn_interrupting, true)
+        ui.stream(type: :content, text: "stray tail flushed during the interrupt")
+      end
+      # No fresh raw tail was painted for the stray delta, and it wasn't echoed.
+      expect(tailed).to be_empty
+      expect(out).not_to include("stray tail flushed")
+    end
+
+    # TUI-4 (the LIVE-render seam): a post-tool answer segment streaming after a
+    # pre-tool narration segment must be separated by a real committed blank
+    # line. The pre-tool block and the gap both commit through the composer's
+    # atomic #print_above seam, so the gap lands in scrollback AHEAD of the
+    # post-tool live tail — never a bare buffered puts that the tail repaint can
+    # reorder/overwrite into "…command.Output: HELLO".
+    it "commits the inter-segment gap atomically so pre/post-tool text can't glue (TUI-4)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      commits  = []
+      allow(composer).to receive(:print_above) { |s| commits << s }
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      allow(ui).to receive(:show_live_tail)
+
+      live_io = Object.new
+      live_io.define_singleton_method(:live) { |_s| self }
+      live_io.define_singleton_method(:puts) { |*| nil }
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "I'll run the command.")
+        ui.stream_block_end(1)
+        ui.tool_started("shell", arguments: { command: "echo HELLO" })
+        ui.tool_finished("shell", result: nil)
+        ui.stream(type: :content, text: "Output: HELLO")
+        ui.stream_end
+      ensure
+        $stdout = old
+      end
+
+      # A blank line was committed atomically (the gap), and it lands BEFORE the
+      # post-tool "Output:" block in the committed-frame order — proof the two
+      # segments can't glue.
+      blank_idx  = commits.index { |s| s.to_s.strip.empty? }
+      output_idx = commits.index { |s| s.to_s.include?("Output: HELLO") }
+      expect(blank_idx).not_to be_nil
+      expect(output_idx).not_to be_nil
+      expect(blank_idx).to be < output_idx
+      # The pre- and post-tool texts never share one committed frame.
+      glued = commits.any? { |s| s.to_s.include?("command.") && s.to_s.include?("Output:") }
+      expect(glued).to be(false)
+    end
+
     it "buffers thinking text instead of raw-printing it (bug #2)" do
       out = capture_stdout do
         ui.stream(type: :thinking, text: "musing")
@@ -319,6 +435,77 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("⎿ interrupted")
       expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
       expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
+    end
+
+    # #421: interrupt-during-thinking left a STALE thinking row + a ghost `❯`
+    # composer prompt above the `⎿ interrupted` marker (two prompts). The
+    # thinking-row + live-tail teardown (status_hide → clear_stream_region →
+    # status_stop) desyncs the composer's recorded row geometry from the physical
+    # rows, so the marker's #print_above walks one row short and commits the live
+    # prompt as a ghost. The fix resets the live-region geometry through the
+    # composer (BottomComposer#finalize_region) BEFORE the marker commits — the
+    # same reset_geometry! discipline Ctrl+L (#395) / resize (#401) use, on the
+    # finalize path. Assert the reset runs, and that it runs BEFORE the marker.
+    it "resets the live-region geometry before committing the marker on interrupt (#421)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      events = []
+      allow(composer).to receive(:finalize_region) { events << :finalize_region }
+      allow(composer).to receive(:print_above) { |s| events << [:print_above, s] }
+      allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      live_io = Object.new
+      live_io.define_singleton_method(:live) { |_s| self }
+      live_io.define_singleton_method(:puts) { |*a| composer.print_above(a.join) }
+      live_io.define_singleton_method(:print) { |*| self }
+      live_io.define_singleton_method(:write) { |*a| a.join.bytesize }
+      live_io.define_singleton_method(:flush) { self }
+      live_io.define_singleton_method(:tty?) { false }
+      live_io.define_singleton_method(:respond_to?) { |m, *| m == :live || super(m) }
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.thinking_started
+        ui.turn_interrupted
+      ensure
+        $stdout = old
+      end
+
+      # The geometry reset ran, and it ran BEFORE the `⎿ interrupted` marker was
+      # committed (so the marker lands as one clean frame, no ghost prompt).
+      expect(events).to include(:finalize_region)
+      marker_idx = events.index { |e| e.is_a?(Array) && e[1].to_s.include?("interrupted") }
+      reset_idx  = events.index(:finalize_region)
+      expect(reset_idx).to be < marker_idx
+    end
+
+    # #421: even the QUIET (#111) interrupt path must reset the geometry — the
+    # thinking-row teardown desynced it, so the NEXT committed line would inherit
+    # the ghost otherwise. The marker is still swallowed; only the reset runs.
+    it "resets the geometry on the quiet (suppressed) interrupt path too (#421)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:finalize_region)
+      allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:print_above)
+      allow(composer).to receive(:begin_content_stream)
+      allow(composer).to receive(:end_content_stream)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      ui.suppress_interrupt_marker
+      out = capture_stdout { ui.turn_interrupted }
+
+      expect(out).not_to include("⎿ interrupted") # still swallowed (#111)
+      expect(composer).to have_received(:finalize_region)
+    end
+
+    # #421: with NO composer (plain TTY / pipe / between turns) the geometry
+    # reset is a quiet no-op — it must never raise and the marker still prints.
+    it "is a no-op reset with no composer, marker still prints (#421)" do
+      out = capture_stdout { ui.turn_interrupted }
+      expect(out).to include("⎿ interrupted")
     end
 
     it "handles multi-line streamed text" do
@@ -692,6 +879,74 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # TUI-2: at a narrow terminal the single-line tool-card close row (`└ ✓ …`)
+  # used to hard-wrap to column 0; the long preview must HANG-INDENT under the
+  # row's text column (after `  └ ✓ `) instead.
+  describe "#tool_finished narrow-terminal hang-indent (TUI-2)" do
+    it "hang-indents the wrapped close-row preview under the └ ✓ text column" do
+      allow(ui).to receive(:terminal_cols).and_return(30)
+      metric = "alpha beta gamma delta epsilon zeta eta"
+      result = double("Result", truncated_preview: nil, success?: true, metrics: metric)
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: nil)
+        ui.tool_finished("shell", result: result)
+      end
+      close = out.lines.map(&:chomp).reject(&:empty?)
+      # The first close-row line carries the glyph; nothing wraps to column 0.
+      first = close.find { |l| l.include?("└ ✓") }
+      expect(first).not_to be_nil
+      continuations = close[(close.index(first) + 1)..]
+      expect(continuations).not_to be_empty
+      # Continuations hang-indent to the "  └ ✓ " column (6 spaces), never col 0.
+      continuations.each do |line|
+        next if line.empty?
+
+        expect(line).to start_with("      ") # 6-space hang ("  └ ✓ ")
+      end
+    end
+
+    it "leaves a short close row on one line (no wrap) at a wide terminal" do
+      allow(ui).to receive(:terminal_cols).and_return(120)
+      result = double("Result", truncated_preview: "11 lines", success?: true, metrics: "11 lines")
+      out = capture_stdout do
+        ui.tool_started("read", arguments: nil)
+        ui.tool_finished("read", result: result)
+      end
+      expect(out.lines.count { |l| l.include?("└ ✓") }).to eq(1)
+      expect(out).to include("└ ✓ 11 lines")
+    end
+  end
+
+  # TUI-2 follow-up: a long UNBROKEN token in the captured tool OUTPUT-BODY used
+  # to hard-wrap to column 0 (the card-row fix only covered the `└` close rows).
+  # #write_body_lines now hard-wraps the body at the terminal width and prefixes
+  # the 2-space body margin to every continuation row.
+  describe "#tool_body narrow-terminal output-body hang-indent (TUI-2)" do
+    it "wraps a long no-break token inside the body and hang-indents continuations" do
+      allow(ui).to receive(:terminal_cols).and_return(20)
+      long = "x" * 80 # no break opportunity, far past a 20-col terminal
+      out = capture_stdout { ui.tool_body(long, kind: :plain) }
+      lines = out.lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "").chomp }.reject(&:empty?)
+      expect(lines.length).to be > 1 # it actually wrapped
+      lines.each do |line|
+        # Every row sits behind the 2-space body margin — none hugs column 0.
+        expect(line).to start_with("  ")
+        expect(line).not_to start_with("x") # never wrapped flush-left
+        # Each visible row fits the terminal width (margin + body ≤ cols).
+        expect(line.length).to be <= 20
+      end
+      # The full token survives across the wrapped rows.
+      expect(lines.map(&:strip).join).to eq(long)
+    end
+
+    it "keeps a short body line on one row (no spurious wrap) at a wide terminal" do
+      allow(ui).to receive(:terminal_cols).and_return(120)
+      out = capture_stdout { ui.tool_body("short line", kind: :plain) }
+      lines = out.lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "").chomp }.reject(&:empty?)
+      expect(lines).to eq(["  short line"])
+    end
+  end
+
   # #123: the `task` (delegation) card is the B7 family on the delegation row.
   # The task tool reports failures by RETURNING an error STRING ("Error: …",
   # "At capacity: …"), which the executor wraps in a SUCCESS-status Result, so
@@ -960,6 +1215,25 @@ RSpec.describe Rubino::UI::CLI do
     it "does not notify a turn_finished without a turn bracket" do
       capture_stdout { ui.turn_finished }
       expect(notifier).not_to have_received(:turn_finished)
+    end
+
+    # F5: the opening of a turn is a multi-second model round-trip with nothing
+    # happening locally. The first status must read "waiting for model…", not
+    # "thinking", so the gap doesn't look frozen — then flip to "thinking" the
+    # moment the first reasoning/content delta or tool arrives.
+    it "opens a turn in a distinct 'waiting for model' state, then thinking" do
+      # Force a painter so status_show is not a no-op off the TTY.
+      allow(ui).to receive(:thinking_painter).and_return(->(_f) {})
+      opening = after = nil
+      capture_stdout do
+        ui.turn_started
+        opening = ui.instance_variable_get(:@status)&.dup
+        ui.stream(type: :thinking, text: "let me look")
+        after = ui.instance_variable_get(:@status)&.dup
+        ui.turn_finished
+      end
+      expect(opening[:label]).to eq("waiting for model…")
+      expect(after[:label]).to eq("thinking")
     end
 
     it "rings needs_approval when the approval card parks the run on the human" do
@@ -1270,6 +1544,35 @@ RSpec.describe Rubino::UI::CLI do
       expect(marker).to be < close
     end
 
+    # G3: "show me the diff" — a diff is the answer, so render the FULL hunks
+    # (no 3-line collapse) and color them. Applies to BOTH the streamed shell
+    # path (git diff) and a non-streamed :diff body.
+    it "shows a streamed diff IN FULL, colored, with no collapse marker (G3)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      diff = "diff --git a/x b/x\n@@ -1,4 +1,4 @@\n ctx\n-old\n+new\n more\n"
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "git diff" })
+        diff.each_line { |l| ui.tool_chunk("shell", l, kind: :diff) }
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("old")
+      expect(out).to include("new")
+      expect(out).not_to include("full output → context")
+      expect(out).to match(/\e\[31m.*-old/)  # removed line red
+      expect(out).to match(/\e\[32m.*\+new/) # added line green
+    end
+
+    it "shows a :diff #tool_body IN FULL with no collapse marker (G3)" do
+      diff = (1..10).map { |i| "+added #{i}" }.join("\n")
+      out = capture_stdout do
+        ui.tool_started("shell", arguments: { command: "git show" })
+        ui.tool_body(diff, kind: :diff)
+        ui.tool_finished("shell", result: nil)
+      end
+      expect(out).to include("added 10") # last hunk line not amputated
+      expect(out).not_to include("full output → context")
+    end
+
     it "keeps a short body intact, with no marker" do
       out = capture_stdout do
         ui.tool_started("shell", arguments: nil)
@@ -1415,11 +1718,28 @@ RSpec.describe Rubino::UI::CLI do
     # plain "Approve once" now prints a one-time tip naming it.
     it "tips the session-scope option once after the first 'Approve once' (#110)" do
       stub_choice(:once)
+      first = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
+      expect(first).to include(%(tip: choose "Approve — all edits (this session)"))
+      expect(first).to include("approve all edits for the rest of this session")
+    end
+
+    # F4: a SECOND same-tool "Approve once" in one turn is the bulk-refactor
+    # signature — re-arm the nudge (louder "bulk edit detected" lead) so a batch
+    # already underway is told it can wave the rest through.
+    it "re-arms a louder nudge once a bulk edit batch is detected (F4)" do
+      stub_choice(:once)
+      ui.turn_started
       first  = capture_stdout { ui.confirm("Allow edit?", scope: "edit:a", tool: "edit") }
       second = capture_stdout { ui.confirm("Allow edit?", scope: "edit:b", tool: "edit") }
-      expect(first).to include(%(tip: choose "Approve — this tool (this session)"))
-      expect(first).to include("for edit this session")
-      expect(second).not_to include("tip:")
+      third  = capture_stdout { ui.confirm("Allow edit?", scope: "edit:c", tool: "edit") }
+      expect(first).to include("tip:")
+      expect(second).to include("bulk edit detected")
+      expect(second).to include(%(Approve — all edits (this session)))
+      # The batch nudge fires only ONCE, not on every subsequent edit.
+      expect(third).not_to include("tip:")
+      expect(third).not_to include("bulk edit detected")
+    ensure
+      ui.turn_finished
     end
 
     it "prints no session-scope tip on a deny (#110)" do
@@ -1501,7 +1821,8 @@ RSpec.describe Rubino::UI::CLI do
 
     it "offers the prefix option and persists the PREFIX rule on 'always_prefix'" do
       prompt = stub_choice(:always_prefix)
-      expect(Rubino::Security::AllowlistPersister).to receive(:persist).with("git")
+      # SEC-R2-1: the persisted prefix is `git status`, never bare `git`.
+      expect(Rubino::Security::AllowlistPersister).to receive(:persist).with("git status")
       capture_stdout do
         ui.confirm("ok?", scope: "shell:git status", tool: "shell", command: "git status")
       end
@@ -1602,7 +1923,8 @@ RSpec.describe Rubino::UI::CLI do
 
     it "deny_always persists a PREFIX-scoped permissions:deny rule and returns false" do
       stub_choice(:deny_always)
-      expect(Rubino::Security::DenyPersister).to receive(:persist).with("shell git*")
+      # SEC-R2-1: scoped to the narrowed `git status` prefix, not bare `git*`.
+      expect(Rubino::Security::DenyPersister).to receive(:persist).with("shell git status*")
       capture_stdout do
         expect(ui.confirm("ok?", scope: "shell:git status", tool: "shell", command: "git status")).to be(false)
       end
@@ -1656,6 +1978,26 @@ RSpec.describe Rubino::UI::CLI do
       out = capture_stdout { ui.compression_finished({ saved_tokens: 4200 }) }
       expect(out).to include("┄ compacted · saved 4200 tok ┄")
     end
+
+    # Item 6: an auto-compaction notice shows the message-count change alongside
+    # the token saving — `┄ compacted · saved N tok (X→Y msg) ┄` — so it reads as
+    # a CONTINUATION of the same session (the `┄ … ┄` rail matching the pre-
+    # notice), not a silent session-swap. No confirmation prompt is involved.
+    it "includes the X→Y message-count change when supplied (item 6)" do
+      out = capture_stdout do
+        ui.compression_finished({ saved_tokens: 3100, original_messages: 40, compacted_messages: 8 })
+      end
+      expect(out).to include("┄ compacted · saved 3100 tok (40→8 msg) ┄")
+    end
+
+    it "still bookends the pre-notice and the result so it's visibly inline (item 6)" do
+      pre  = capture_stdout { ui.compression_started }
+      post = capture_stdout do
+        ui.compression_finished({ saved_tokens: 10, original_messages: 12, compacted_messages: 5 })
+      end
+      expect(pre).to include("┄ compacting context… ┄")
+      expect(post).to include("┄ compacted · saved 10 tok (12→5 msg) ┄")
+    end
   end
 
   describe "#activity_started / #activity_finished" do
@@ -1701,6 +2043,96 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("◆ Apply changes?")
       expect(out).to include("[y] apply")
       expect(out).to include("[n] cancel")
+    end
+  end
+
+  # TUI-6: ONE arrow-key approval component (#approval_menu) backs every
+  # approval surface — main-agent tool approvals, MCP, and the subagent shell
+  # approval (#subagent_approval_choice). No flat single-line letter prompt.
+  describe "unified approval menu (TUI-6)" do
+    def stub_select(symbol)
+      prompt = instance_double(TTY::Prompt)
+      offered = nil
+      allow(prompt).to receive(:select) do |_q, **_opts, &blk|
+        menu = double("menu")
+        offered = []
+        allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        blk&.call(menu)
+        symbol
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      [prompt, -> { offered }]
+    end
+
+    it "renders the subagent approval through the SAME TTY::Prompt select component" do
+      prompt, = stub_select(:once)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      expect(ui.subagent_approval_choice).to eq(:once)
+      expect(prompt).to have_received(:select)
+    end
+
+    it "offers the four named subagent options (no double-negative flat line)" do
+      _prompt, offered = stub_select(:no)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      ui.subagent_approval_choice
+      expect(offered.call).to eq([
+                                   ["Approve once", :once],
+                                   ["Approve always (this command)", :always_command],
+                                   ["Deny", :no],
+                                   ["Deny & tell the agent why", :deny_explain]
+                                 ])
+    end
+
+    it "main-agent #approval_choice routes through the same #approval_menu" do
+      _prompt, offered = stub_select(:once)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+      expect(ui.send(:approval_choice, nil, tool: "shell")).to eq(:once)
+      # The shared select rendered the main-agent option set.
+      expect(offered.call.map(&:last)).to include(:once, :always_command, :no, :deny_always)
+    end
+
+    # Item 1 (LOW): the main approval menu used to be a plain `select` with NO
+    # filter, so typing `/status` was swallowed and the next Enter selected the
+    # highlighted default (Approve once) — an accidental approve. The menu now
+    # runs with `filter: true` so a stray keystroke narrows the list instead of
+    # silently riding on the default.
+    it "drives the select with filter: true so stray slash input can't approve" do
+      captured_opts = nil
+      prompt = instance_double(TTY::Prompt)
+      allow(prompt).to receive(:select) do |_q, **opts, &blk|
+        captured_opts = opts
+        blk&.call(double("menu").tap { |m| allow(m).to receive(:choice) })
+        :once
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+
+      ui.send(:approval_menu, "approve?", [["Approve once", :once], ["Deny once", :no]])
+      expect(captured_opts).to include(filter: true)
+    end
+
+    # Behavioral guard at the tty-prompt boundary: a `/status` filter matches NO
+    # "Approve …/Deny …" label, so the filtered choice list is EMPTY — and
+    # tty-prompt's keyenter is a no-op on an empty list. Pressing Enter therefore
+    # cannot complete the menu (cannot approve) while a stray slash is typed.
+    it "leaves an empty (un-enterable) list when a slash is typed (no accidental approve)" do
+      list = TTY::Prompt::List.new(TTY::Prompt.new, filter: true)
+      list.choice "Approve once", :once
+      list.choice "Approve always (this command)", :always_command
+      list.choice "Deny", :no
+
+      # Sanity: with no filter typed yet, Enter WOULD complete (approve).
+      expect(list.choices).not_to be_empty
+
+      # Simulate the user typing "/status" — each printable char feeds the filter.
+      "/status".each_char do |c|
+        list.send(:keypress, double("ev", value: c, key: double(name: nil)))
+      end
+      expect(list.choices).to be_empty
+
+      # Enter on the empty filtered list does NOT mark the menu done → no approve.
+      list.send(:keyenter)
+      expect(list.instance_variable_get(:@done)).to be_falsey
     end
   end
 

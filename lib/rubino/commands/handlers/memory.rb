@@ -98,12 +98,12 @@ module Rubino
           matches = memory_backend.list(limit: 200)
                                   .select { |m| m[:content].to_s.downcase.include?(needle) }
           if matches.empty?
-            @ui.info("No facts matching #{query.inspect}.")
+            @ui.info("No facts matching #{safe(query.inspect)}.")
             return
           end
 
           shown = matches.first(20)
-          @ui.info(%(#{shown.length} match#{"es" if shown.length != 1} for #{query.inspect}))
+          @ui.info(%(#{shown.length} match#{"es" if shown.length != 1} for #{safe(query.inspect)}))
           # A targeted search must SHOW the matched fact in full — the list-view's
           # narrow truncation hides exactly the part the user searched for (#85).
           # Print each match's full content, wrapping to the terminal width.
@@ -112,9 +112,12 @@ module Rubino
         end
 
         # One searched fact, content shown end-to-end (wrapped, never truncated).
+        # `content` is attacker-influenceable (extracted from conversation), so
+        # neutralize its terminal-control bytes to caret notation BEFORE it goes
+        # to the non-sanitizing `info` funnel (CWE-150, R4-N2).
         def render_memory_match(memory)
-          head    = "#{memory[:id].to_s[0..7]}  #{memory[:kind]}  "
-          content = memory[:content].to_s.gsub(/\s+/, " ").strip
+          head    = "#{safe(memory[:id].to_s[0..7])}  #{safe(memory[:kind])}  "
+          content = safe(memory[:content].to_s.gsub(/\s+/, " ").strip)
           wrap_skill_line(head, content).each { |line| @ui.info(line) }
         end
 
@@ -137,7 +140,7 @@ module Rubino
           end
 
           store.delete(memory[:id])
-          @ui.success(%(Forgot #{memory[:id][0..7]} "#{truncate(memory[:content], 60)}"))
+          @ui.success(%(Forgot #{safe(memory[:id][0..7])} "#{safe(truncate(memory[:content], 60))}"))
         end
 
         # Resolve the *configured* memory backend (default: sqlite tiny-Zep), the
@@ -186,6 +189,13 @@ module Rubino
         def truncate(text, max)
           s = text.to_s.gsub(/\s+/, " ").strip
           s.length > max ? "#{s[0, max - 1]}…" : s
+        end
+
+        # Neutralize terminal-control bytes in attacker-influenceable stored
+        # text (fact content/ids) to visible caret notation before it reaches
+        # the non-sanitizing `info`/`success` funnel (CWE-150, R4-N2).
+        def safe(text)
+          Rubino::Util::Output.sanitize_terminal(text)
         end
 
         def terminal_width

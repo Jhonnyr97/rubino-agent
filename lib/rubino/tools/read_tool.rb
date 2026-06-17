@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+
 module Rubino
   module Tools
     # Reads a file with `cat -n` style line numbers, offset/limit windowing,
@@ -49,7 +51,12 @@ module Rubino
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
-        expanded = File.expand_path(file_path)
+        expanded = expand_workspace_path(file_path)
+        # Reads are BROAD (#406): like Hermes/Claude/Codex, read resolves any
+        # NON-secret path with no prompt (clone-and-inspect). A SECRET/credential
+        # path (#446) is NOT refused here anymore — it is gated UPSTREAM by
+        # Security::ApprovalPolicy#decide (→ :ask), so an APPROVED read returns
+        # the real bytes while a denied/headless read never reaches #call.
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
@@ -64,20 +71,21 @@ module Rubino
         offset = 1 if offset < 1
         limit  = DEFAULT_LIMIT if limit <= 0
 
-        # Stash mtime BEFORE rendering so a slow render on a huge file doesn't
-        # race with a concurrent writer — we want the mtime the model "saw",
-        # not the one at end-of-render.
-        mtime = File.mtime(expanded)
-        @read_tracker&.register(expanded, mtime)
+        # Stash mtime + content hash BEFORE rendering so a slow render on a huge
+        # file doesn't race with a concurrent writer — we want the state the
+        # model "saw", not the one at end-of-render. The hash is the single
+        # source of truth the edit-gate and dedup both consult.
+        mtime  = File.mtime(expanded)
+        digest = Digest::SHA256.hexdigest(File.binread(expanded))
+        @read_tracker&.register(expanded, mtime, digest)
 
-        # Re-reading the exact same window (same file, offset, limit, unchanged
-        # mtime) within a turn just re-injects bytes already in context. Return
-        # a short nudge instead so the conversation doesn't carry the same
-        # content twice. A real edit bumps mtime, so legitimate re-reads pass.
-        dup = @read_tracker&.register_window(expanded, offset, limit, mtime)
-        if dup && dup > 1
+        # Re-reading the exact same window of UNCHANGED bytes just re-injects
+        # content already in context. Skip the work with a nudge — but only when
+        # the file still hashes the same, the TTL holds, and no edit-failure
+        # recovery is pending (those serve fresh content). See ReadTracker.
+        if @read_tracker&.duplicate_read?(expanded, offset, limit, digest)
           return { output: "[DUPLICATE READ] Exact repeat of an earlier read of #{file_path} " \
-                           "(lines #{offset}-#{offset + limit - 1}) this turn — reuse that result " \
+                           "(lines #{offset}-#{offset + limit - 1}) — reuse that result " \
                            "instead of re-reading.",
                    metrics: "duplicate" }
         end
@@ -161,12 +169,22 @@ module Rubino
         last_shown  = offset - 1
         byte_capped = false
 
-        File.open(expanded, "r") do |io|
+        # Open as UTF-8 regardless of the process locale (#273): under a bare
+        # C/POSIX locale the default external encoding is US-ASCII, which would
+        # tag every line ASCII and force the scrub below to mangle perfectly
+        # valid UTF-8 file content. Pinning UTF-8 reads it correctly.
+        File.open(expanded, "r:UTF-8") do |io|
           io.each_line do |line|
             total_lines += 1
             next if total_lines < offset
             break if total_lines > last_line
 
+            # A single non-UTF-8 byte (e.g. a Latin-1 `é` in a legacy/EU
+            # source comment) would otherwise blow up `chomp`/`format` with
+            # "invalid byte sequence in UTF-8". Scrub it to the replacement
+            # char so the model can still read (and then edit) the file —
+            # lossy but graceful, instead of a blind read failure.
+            line = line.scrub unless line.valid_encoding?
             chomped = line.chomp
             chomped = chomped.byteslice(0, MAX_LINE_WIDTH) + "… [line truncated]" if chomped.bytesize > MAX_LINE_WIDTH
             out << format("%6d\t%s\n", total_lines, chomped)

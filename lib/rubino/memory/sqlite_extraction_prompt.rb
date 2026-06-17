@@ -26,6 +26,17 @@ module Rubino
         If a fact will be stale within a week (PR/issue/commit numbers, task progress, TODO state), DO NOT save it.
         Procedures and how-to workflows are NOT memory — skip them.
 
+        SALIENCE — most turns store NOTHING. Only save when the user asserted
+        something durable about themselves, their preferences, or their project.
+        Return {"add": [], "supersede": [], "edges": []} for trivial turns:
+          - greetings / acknowledgements / one-word input ("hi", "help", "thanks", "ok")
+          - throwaway Q&A and chit-chat with no durable assertion
+          - transient task chatter about THIS session's work — e.g.
+            "User decided to remove the mode feature.",
+            "User asked for a test file named test_stats.py.",
+            "Project has a stats.py with a main()." (in-the-moment task state, not a convention)
+        When unsure whether something is durable enough to matter next week, DO NOT save it.
+
         SUPERSEDE: if a new fact CONTRADICTS an existing one (same subject, changed value),
         emit it under "supersede" with the id of the fact it replaces. Prefer the newer information.
         Tag each fact with 1-4 lowercase entity keywords (people, tools, projects) for retrieval.

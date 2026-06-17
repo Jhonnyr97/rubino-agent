@@ -102,8 +102,10 @@ auxiliary:
 ```yaml
 agent:
   max_turns: 90                              # Max turns per session
-  max_tool_iterations: 8                     # Max consecutive tool calls
-  max_turn_seconds: 120                      # Timeout per turn
+  max_tool_iterations: 25                    # Max per-turn model<->tool round-trips (cap)
+  budget_extension_prompt: true              # At the cap, prompt continue/summarize/abort (interactive only)
+  budget_extension_step: null                # "+N" per extension (null = max_tool_iterations)
+  max_turn_seconds: 120                      # Timeout per turn (outer rail; extensions never raise it)
   api_max_retries: 5                         # LLM API retry count (exp backoff)
   api_retry_backoff_cap_seconds: 16          # Max per-retry backoff draw
   api_retry_backoff_overload_cap_seconds: 60 # Higher cap used only for overload (529/503)
@@ -287,7 +289,7 @@ tools:
   workspace_strict: true  # Sandbox write/edit/delete to workspace_root; false = any reachable path
   git: true
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
-                          # every command is still gated by security.require_confirmation_for_shell
+                          # dangerous commands are still gated by security.confirm_policy
   ruby: true
   web: false              # Gates BOTH the webfetch and websearch tools
   memory: true
@@ -372,12 +374,13 @@ attachments:
 
 ```yaml
 security:
-  # confirm_policy: "confirm_all"      # confirm_all (default) | dangerous_only; derived from the alias below when absent
-  require_confirmation_for_shell: true  # legacy alias for confirm_policy; true => confirm_all
-  command_allowlist:                    # prefix-matched commands pre-approved (empty = approve nothing)
+  confirm_policy: "dangerous_only"      # dangerous_only (default) | confirm_all
+                                        # (the old require_confirmation_for_shell key was removed)
+  command_allowlist:                    # pre-approved commands (read-only intent only; empty = approve nothing)
     - "git status"
     - "git diff"
-    - "bundle exec rspec"
+    # Test/build runners (bundle exec rspec, rake, npm test) are NOT shipped here:
+    # they load and run arbitrary project code, so add one only if you accept that.
   website_blocklist:
     enabled: false
     domains: []
@@ -461,20 +464,6 @@ formatters:
   "*.py": "black"
 ```
 
-### agents
-
-Custom agent definitions:
-
-```yaml
-agents:
-  security:
-    type: subagent
-    model: "anthropic/claude-sonnet-4-20250514"
-    description: "Security-focused code review"
-    tools: [read, grep, glob]
-    mcp_servers: []
-```
-
 ### prompts
 
 System-prompt layering. The defaults ship the built-in role prompts.
@@ -513,9 +502,17 @@ formatters:
   "*.py": "black"
 ```
 
-### agents (planned)
+### agents (planned — not yet read)
 
-Custom agent definitions (multi-agent routing is not fully wired yet — see [agents.md](agents.md)):
+> **Status: planned, has no effect today.** The `agents:` key is reserved but is
+> **not read** by the registry, so declaring custom agents in `config.yml` does
+> nothing yet. Primary-agent *switching* among the built-in agents already ships
+> (`/agent`, `/<name>`, Tab — see [agents.md](agents.md#primary-agent-switching));
+> what is not wired is authoring NEW agents from config. To register a custom
+> agent today, use `AgentRegistry#register` programmatically (see
+> [agents.md](agents.md#custom-agents-via-code)).
+
+The intended shape, once config-authored agents land:
 
 ```yaml
 agents:

@@ -203,6 +203,53 @@ module Rubino
       Thread.current[:rubino_current_subagent_id] = prev
     end
 
+    # The CancelToken governing best-effort AUX work (post-turn polishing:
+    # memory-extract / skill-distill / summarize) running on THIS thread, if
+    # any. The detached polishing thread (Interaction::Polishing) binds its
+    # token here so the aux retry/backoff loop (Memory::AuxRetry) can poll it
+    # and abort the moment the user presses Esc — without threading a token
+    # through every aux call site. Nil on the foreground turn thread and on the
+    # API/server path (no detached polishing), where aux work is uncancellable
+    # as before.
+    def aux_cancel_token
+      Thread.current[:rubino_aux_cancel_token]
+    end
+
+    # Binds +token+ as the aux cancel token for the duration of the block
+    # (set by Interaction::Polishing around its detached job drain, exactly
+    # like #with_ui binds the run's UI). Thread-local so the aux retry loop
+    # reaches it with zero signature churn.
+    def with_aux_cancel_token(token)
+      prev = Thread.current[:rubino_aux_cancel_token]
+      Thread.current[:rubino_aux_cancel_token] = token
+      yield
+    ensure
+      Thread.current[:rubino_aux_cancel_token] = prev
+    end
+
+    # True while a HEADLESS one-shot run (`rubino prompt`/-q) is executing on
+    # THIS thread. Bound by ChatCommand#run_oneshot via #with_headless so tools
+    # that behave differently with no live REPL can tell — today only TaskTool,
+    # which forces `task` subagents to run FOREGROUND in headless mode (#380): in
+    # one-shot there is no IdleCardHost to fold a background child's result back
+    # in and the process exits the instant the parent's answer is ready, so a
+    # background fan-out would be silently dropped. Nil/false on the interactive
+    # REPL and the API/server path, where background subagents are surfaced.
+    def headless?
+      Thread.current[:rubino_headless] || false
+    end
+
+    # Binds the headless one-shot flag for the duration of the block (set by
+    # ChatCommand#run_oneshot around the turn, exactly like #with_ui). Thread-
+    # local so a tool reaches it with zero signature churn through the loop.
+    def with_headless
+      prev = Thread.current[:rubino_headless]
+      Thread.current[:rubino_headless] = true
+      yield
+    ensure
+      Thread.current[:rubino_headless] = prev
+    end
+
     # Returns the current structured logger.
     def logger
       @logger ||= Logger.new
@@ -214,6 +261,14 @@ module Rubino
     # Returns the database connection
     def database
       @database ||= Database::Connection.new(configuration.database_path)
+    end
+
+    # Drops the memoized DB connection so the next #database call opens the file
+    # afresh. Used by `setup` after quarantining a corrupt DB so it reconnects
+    # to the newly-recreated file rather than the closed/renamed handle.
+    def reset_database!
+      @database&.close
+      @database = nil
     end
 
     # First-run guard for any DB-touching entry point. A brand-new RUBINO_HOME
@@ -230,14 +285,121 @@ module Rubino
     def ensure_database_ready!
       connection = database
       migrator   = Database::Migrator.new(connection)
-      return true unless connection.healthy? == false || migrator.pending?
+
+      # FAST PATH (lock-free, race-safe): a side-effect-free read of
+      # `schema_info` that does NOT construct a Sequel migrator. The common case
+      # — an already-set-up home — returns here without touching the lock. Note
+      # we MUST NOT call `migrator.pending?` off the lock: merely constructing
+      # Sequel's IntegerMigrator inserts the version-0 row, and two concurrent
+      # boots both inserting it is exactly the duplicate-row corruption (#race).
+      if connection.healthy? && migrator.up_to_date?
+        # A fully-migrated home can still be MOUNTED read-only (F14): the schema
+        # reads fine, but the very next write (the session row) would crash with
+        # a raw `SQLite3::ReadOnlyException` past this guard. Catch it HERE — a
+        # cheap dir-writability probe, no DB write — and raise the accurate
+        # "not writable" diagnosis instead, matching the migrate-path branch
+        # below. A real (writable) home passes through untouched.
+        raise ConfigurationError, "rubino home / database is not writable: #{home_path}" \
+          unless home_writable?
+
+        return true
+      end
 
       ensure_directories!
-      migrator.migrate!
+      # Serialize the migration across concurrent boots (#race): N fresh
+      # `rubino` processes on a brand-new home would otherwise BOTH probe +
+      # migrate at once and corrupt the migrator bookkeeping. migrate! takes an
+      # exclusive flock and does the `pending?` probe + migrate entirely under
+      # it; waiters re-check and no-op. The lockfile lives in the home, which
+      # ensure_directories! just created.
+      migrator.migrate!(lock_path: migration_lock_path)
       true
+    rescue Database::BusyError, ConfigurationError
+      # A sustained concurrent-migration lock that outlived the connection
+      # retry budget (#333/#359), or a careless RUBINO_HOME that points at a file
+      # / a read-only parent (F13), is NOT an "un-set-up" home — re-raise so the
+      # single CLI chokepoint surfaces the clean one-liner instead of this method
+      # masking it as `false` → a misleading "run setup" message.
+      raise
     rescue StandardError => e
       logger.debug(event: "ensure_database_ready_failed", error: "#{e.class}: #{e.message}")
+      # A read-only / not-writable home (F14) is NOT an un-set-up install: the
+      # files may be perfectly present, the directory is just mounted read-only
+      # or owned by another user, so migrate! can't open the lock/journal
+      # (Errno::EACCES/EROFS) or SQLite reports "attempt to write a readonly
+      # database". Masking that as `false` produced the misleading
+      # "isn't set up yet — run `rubino setup`" — doctor already diagnoses it
+      # correctly. Raise the ACCURATE diagnosis (matching the F13 home-error
+      # phrasing) so the single CLI chokepoint surfaces it instead of "not
+      # set up". Everything else still degrades to false.
+      if not_writable_error?(e)
+        raise ConfigurationError,
+              "rubino home / database is not writable: #{home_path} (#{clean_errno_message(e.message)})"
+      end
+
       false
+    end
+
+    # Cheap, side-effect-free check that the home directory accepts writes — the
+    # F14 read-only-mount guard. Falls back to assuming writable on any probe
+    # hiccup (the migrate path will still catch a real failure with the same
+    # accurate message), so this never wrongly blocks a usable home.
+    def home_writable?
+      File.writable?(home_path)
+    rescue StandardError
+      true
+    end
+
+    # True when +error+ is a write-permission / read-only-filesystem failure
+    # (vs. a genuinely un-set-up or transiently-busy home): a directory mounted
+    # read-only, owned by another user, or a SQLite "readonly database" report.
+    # Used by ensure_database_ready! to give an ACCURATE message instead of the
+    # misleading "not set up" (F14).
+    def not_writable_error?(error)
+      return true if error.is_a?(Errno::EACCES) || error.is_a?(Errno::EROFS) || error.is_a?(Errno::EPERM)
+
+      error.message.to_s.downcase.include?("readonly") ||
+        error.message.to_s.downcase.include?("read-only") ||
+        error.message.to_s.downcase.include?("read only")
+    end
+
+    # A clean, user-facing form of an Errno message. Ruby appends an internal
+    # ` @ <syscall> - <path>` artifact to SystemCallError messages
+    # (e.g. "Operation not permitted @ apply2files - /home/x",
+    # "Permission denied @ dir_s_mkdir - /home/x") — the C function name and a
+    # path we already name elsewhere in the sentence. Strip that tail so the
+    # surfaced message is just the plain reason ("Operation not permitted").
+    def clean_errno_message(message)
+      message.to_s.sub(/ @ \S+ - .*\z/, "")
+    end
+
+    # Path to the inter-process migration lockfile in the rubino home. A single
+    # source of truth so setup and the boot path lock on the SAME file.
+    def migration_lock_path
+      File.join(home_path, ".migrate.lock")
+    end
+
+    # A clean, actionable message when the on-disk DB is PRESENT but UNUSABLE,
+    # else nil. Covers the un-setup-able state a user command must never crash
+    # on with a raw backtrace (#333/#359): a corrupt/malformed image →
+    # quarantine + recreate via setup. (The concurrent first-boot race that used
+    # to leave duplicate `schema_info` rows is now prevented at the source by the
+    # flock + side-effect-free `up_to_date?` fast path in the migrator, so there
+    # is no post-hoc duplicate-row state left to message about.)
+    # Read-only: never creates the file (matches doctor's #68 contract).
+    def database_repair_message
+      db = database
+      return nil if db.memory? || !File.exist?(db.db_path)
+
+      if db.corrupt?
+        "database is corrupt (malformed image): #{db.db_path}\n" \
+          "Run `rubino doctor` to diagnose, then `rubino setup` to quarantine it " \
+          "and recreate a fresh database."
+      end
+    rescue StandardError
+      # Detection itself must never crash a command; treat an unexpected probe
+      # failure as "no clean message available" and let normal flow continue.
+      nil
     end
 
     # Returns the event bus instance
@@ -295,11 +457,33 @@ module Rubino
     # (#65): an auto-created home used to be left at the umask's 0755.
     def ensure_directories!
       home = home_path
-      FileUtils.mkdir_p(home)
-      File.chmod(0o700, home)
-      %w[memories sessions logs skills commands tools plugins].each do |subdir|
-        dir = File.join(home, subdir)
-        FileUtils.mkdir_p(dir) unless File.directory?(dir)
+      # A careless RUBINO_HOME (the value points at an EXISTING FILE, or its
+      # parent is read-only) made FileUtils.mkdir_p raise a raw Errno::EEXIST /
+      # Errno::EACCES backtrace from deep in fileutils.rb — masking the actual,
+      # trivially-fixable mistake (F13). Normalize both into a clean, actionable
+      # domain error AT THE SOURCE so the single CLI chokepoint surfaces one line
+      # ("RUBINO_HOME is not a writable directory: <path>") + exit 1, in any
+      # output format, with no trace. A directory that already exists is fine.
+      if File.exist?(home) && !File.directory?(home)
+        raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} " \
+                                  "(it points at an existing file — set RUBINO_HOME to a directory path)"
+      end
+
+      begin
+        FileUtils.mkdir_p(home)
+        # chmod/mkdir on an EXISTING read-only RUBINO_HOME (its parent let
+        # mkdir_p no-op, but the dir itself is not owner-writable) raises a raw
+        # Errno::EPERM/EACCES from deep in fileutils — the same unguarded
+        # backtrace F13 normalized for mkdir. Keep the perm ops inside the
+        # rescue so a non-writable home yields the SAME clean one-line domain
+        # error + exit 1, no trace.
+        File.chmod(0o700, home)
+        %w[memories sessions logs skills commands tools plugins].each do |subdir|
+          dir = File.join(home, subdir)
+          FileUtils.mkdir_p(dir) unless File.directory?(dir)
+        end
+      rescue SystemCallError => e
+        raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} (#{clean_errno_message(e.message)})"
       end
     end
   end

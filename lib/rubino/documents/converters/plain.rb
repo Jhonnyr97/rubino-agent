@@ -42,8 +42,9 @@ module Rubino
           MARKDOWN_EXTS.include?(ext) || LANGS.key?(ext)
         end
 
-        def convert(path)
+        def convert(path, budget = Limits.null_budget)
           raw = File.binread(path).to_s.dup.force_encoding("UTF-8")
+          budget.add_bytes(raw.bytesize)
           raw = raw.scrub("�") unless raw.valid_encoding?
           ext = File.extname(path.to_s).downcase
 

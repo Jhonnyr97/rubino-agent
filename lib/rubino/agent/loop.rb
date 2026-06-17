@@ -4,7 +4,7 @@ module Rubino
   module Agent
     # The core agent loop that handles LLM calls and tool execution cycles.
     # Runs until the LLM produces a final text response or budget is exhausted.
-    class Loop
+    class Loop # rubocop:disable Metrics/ClassLength
       # Nudge issued on the final, toolless model call when the iteration/budget
       # ceiling is hit. Mirrors the reference handle_max_iterations summary request
       # — ask the model to wrap up in prose
@@ -81,7 +81,7 @@ module Rubino
       end
 
       # Runs the agent loop, returning the final assistant response content.
-      def run(messages:, tools:)
+      def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity
         # Stash the resolved toolset so #streaming? can decide, per run, whether
         # this turn might block on a human (clarify/approval). When it might, we
         # run NON-STREAMING so the LLM HTTP request completes and CLOSES before
@@ -90,6 +90,18 @@ module Rubino
         @turn_tools     = Array(tools)
         iteration       = 0
         turn_started_at = monotonic_now
+
+        # Reflect-guard against fabricated "done" (the #1 trust-killer): a
+        # toolless turn whose prose claims an action it never carried out. Built
+        # once per turn from the toolset actually on offer; counts its own
+        # corrective re-prompts so it can stop honestly at the cap.
+        @action_guard       = ActionClaimGuard.new(exposed_tool_names: @turn_tools.map { |t| tool_name_of(t) })
+        @reflection_count   = 0
+        # The user request driving this turn, captured from the OPENING transcript
+        # (before any guard reflection note is appended) — the guard consults it
+        # to skip challenging a NO-ACTION (plan/explain/"don't run tools") turn the
+        # user explicitly asked for (#353a).
+        @turn_user_request  = originating_user_request(messages)
 
         # If a previous turn rotated to a fallback, restore the primary backend
         # so this turn gets a fresh attempt with the preferred model
@@ -103,7 +115,30 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
-        token_total     = 0
+        # Of the tools that RAN, how many were MUTATING (edit/write/patch). Lets
+        # the pessimistic-summary reconciliation (#381) say "N tool calls (M edits
+        # — review uncommitted changes)" so a developer is pointed at real,
+        # possibly-uncommitted disk changes when the model claims it did nothing.
+        @edit_count     = 0
+        # Round-trips ruby_llm ran INSIDE a single streaming ask() this turn
+        # (#355a). ruby_llm drives the whole model↔tool loop within one
+        # chat.ask, so the outer `iteration` counter above stays at 1 for the
+        # entire streaming turn and never re-consults the budget between the
+        # intermediate round-trips. The adapter calls #note_stream_round_trip
+        # once per round-trip (via on_round_trip), and #stream_budget_exhausted?
+        # reads this count so ToolBridge can Halt the in-ask loop once the
+        # iteration/time budget is spent. Reset per turn.
+        @stream_round_trips = 0
+        # Accumulates the content streamed to the screen this turn so that an
+        # interrupt mid-stream can persist EXACTLY what the user saw, marked
+        # interrupted (#338b). Reset per turn — a one-shot CancelToken plus a
+        # fresh buffer means a stale partial can never attach to a later turn.
+        @interrupt_partial = +""
+        # True once any denial this turn was a headless fail-closed block ("needs
+        # approval but no interactive session", #260) — lets the binding guard
+        # point at `--yolo` (F2) instead of "approve it" in the honest message.
+        @noninteractive_block = false
+        token_total = 0
 
         loop do
           iteration += 1
@@ -120,8 +155,15 @@ module Rubino
 
           unless @budget.can_continue?(iteration)
             @ui.warning("Iteration budget exhausted (#{iteration} turns)")
-            return summarize_on_budget_exhausted(messages, iteration,
-                                                 turn_started_at, token_total)
+            outcome = handle_budget_exhausted(messages, iteration,
+                                              turn_started_at, token_total)
+            # :continue → the user (interactively) granted more budget; the
+            # iteration cap was raised and we re-enter the SAME turn with full
+            # context (no re-summary, no truncation). Anything else is the final
+            # assistant text (force-summary / abort).
+            next if outcome == :continue
+
+            return outcome
           end
 
           @event_bus.emit(Interaction::Events::MODEL_CALL_STARTED, iteration: iteration)
@@ -134,19 +176,50 @@ module Rubino
             response = call_model(messages, tools, iteration)
           rescue Rubino::Interrupted
             # The streaming callback (or the per-iteration check above)
-            # observed cancellation. Close any open stream box on the UI
-            # (commits the partial answer streamed so far) and bail out — the
-            # standardized `⎿ interrupted` marker is appended once by the Runner's
-            # rescue, right after this kept partial. Lifecycle will not persist a
-            # turn that never completed, but the user already saw the partial.
+            # observed cancellation. Persist EXACTLY the partial that was shown
+            # on screen — flagged interrupted in metadata — so storage matches
+            # the screen and the transcript stays truthful & resumable (#338b).
+            # Without this, the on-screen `⎿ interrupted` partial was absent from
+            # the messages table and resume/compaction/memory diverged from what
+            # the user saw. Then close any open stream box (commits the partial
+            # answer streamed so far) and bail out — the standardized
+            # `⎿ interrupted` marker is appended once by the Runner's rescue,
+            # right after this kept partial. The upstream stream is already
+            # cancelled: raising out of the per-chunk callback unwinds Faraday's
+            # net-http read loop, which closes the socket (no drain) — verified
+            # against ruby_llm 1.x's Streaming#stream_response, where the block
+            # we raise from runs inside the on_data handler.
+            persist_interrupted_partial
             @ui.stream_end if streaming?
             raise
           end
           @event_bus.emit(Interaction::Events::MODEL_CALL_FINISHED,
                           tokens: response.total_tokens,
+                          input_tokens: response.input_tokens,
+                          output_tokens: response.output_tokens,
+                          stop_reason: response.stop_reason,
+                          model_id: response.model_id,
                           has_tool_calls: response.has_tool_calls?)
 
           token_total += response.total_tokens.to_i
+
+          # #355a: the streaming round-trip loop was cut short mid-flight because
+          # this turn's iteration/time budget was spent (ToolBridge returned
+          # Tool::Halt). ruby_llm already added a valid trailing tool message, so
+          # the history is well-formed — hand off to the same budget-exhausted
+          # summary the outer-loop cap uses. `iteration` is still 1 for a
+          # streaming turn, so pass the round-trip count as the iteration reached.
+          if response.halted?
+            outcome = handle_budget_exhausted(messages, @stream_round_trips,
+                                              turn_started_at, token_total)
+            # :continue → budget extended; the next ask() picks up the
+            # well-formed post-Halt history (ruby_llm already appended the
+            # trailing tool message) and resumes the in-ask round-trip loop
+            # against the now-larger budget. No tool_bridge change needed.
+            next if outcome == :continue
+
+            return outcome
+          end
 
           if response.interrupted?
             # The upstream stream was cut before a clean completion (no
@@ -168,10 +241,35 @@ module Rubino
           end
 
           if response.text_only?
-            persist_assistant_message(response)
-            finalize_stream(response)
+            # Fabricated-"done" gate: the structured tool-call channel is the
+            # ONLY thing that advances state. If this toolless turn's prose
+            # asserts an action against a tool we expose (or claims a `cd` we
+            # cannot do), DON'T let that reach the user as a completed answer.
+            guard = guard_text_only_turn(response, messages)
+            # A corrective user message was appended; loop again so the model
+            # either calls the tool or owns up. iteration/token_total carry on.
+            next if guard == :reflected
+
+            # cd: the claim can never be true, so we replaced the fabricated
+            # final answer with an honest message (how to actually change the
+            # workspace). Surface that, not the model's no-op claim.
+            final = guard.is_a?(String) ? guard : response.content
+
+            persist_final_text(response, final)
+            finalize_stream_text(response, final)
             emit_turn_summary(turn_started_at, token_total)
-            return response.content
+
+            # The ANSWER returned to the caller is the LAST text block only
+            # (#core-F1): on a streaming turn whose final round-trip used a tool,
+            # `response.content` is every text block of the turn concatenated
+            # (pre-tool narration + post-tool answer, no delimiter), which a
+            # headless `OUT=$(rubino prompt …)` would capture as one run-on string.
+            # The full text was already streamed live and persisted via #final
+            # above (transcript/render keep the narration, #261); the value we
+            # HAND BACK is the post-final-tool answer in isolation. A guard
+            # replacement is a synthesized string with no narration to strip, so it
+            # passes through unchanged.
+            return guard.is_a?(String) ? guard : response.final_text_block
           end
 
           if response.has_tool_calls?
@@ -272,7 +370,7 @@ module Rubino
       # parks) AND the toolset contains a tool that can trigger the gate:
       #   - `question`  → @ui.ask (clarify) — always blocks when called.
       #   - any risky tool under manual approvals → @ui.confirm — blocks.
-      #   - `shell` when require_confirmation_for_shell is on → confirm.
+      #   - `shell` under confirm_policy: confirm_all → confirm.
       # Memoised per run; the toolset is fixed for the turn.
       def interactive_turn?
         return @interactive_turn unless @interactive_turn.nil?
@@ -307,6 +405,87 @@ module Rubino
         tool.respond_to?(:name) ? tool.name.to_s : tool.to_s
       end
 
+      # Budget exhausted (#399). In INTERACTIVE mode, ask the human what to do
+      # before ending the turn with a force-summary: continue (grant more
+      # budget), summarize now (today's behaviour), or abort. Returns:
+      #   :continue — the cap was raised via IterationBudget#extend!; the caller
+      #               re-enters the SAME turn with FULL context (no re-summary,
+      #               no truncation).
+      #   String    — the final assistant text (force-summary, or the honest
+      #               abort note).
+      #
+      # HEADLESS GUARANTEE: @ui.select returns nil on UI::Null / UI::Base /
+      # no-TTY (see UI::CLI#select's interactive_terminal? gate), and a nil/
+      # unrecognised choice falls straight through to force-summarize — so the
+      # API/headless path is byte-identical to before this change. The prompt is
+      # also skipped entirely when agent.budget_extension_prompt is false.
+      def handle_budget_exhausted(messages, iteration, turn_started_at, token_total)
+        case budget_extension_choice(iteration)
+        when :continue
+          step = @config.agent_budget_extension_step
+          new_cap = @budget.extend!(step)
+          @event_bus.emit(Interaction::Events::BUDGET_EXTENDED,
+                          iteration: iteration, granted: step, new_cap: new_cap)
+          @ui.note("Continuing — granted +#{step} tool iterations") if @ui.respond_to?(:note)
+          :continue
+        when :abort
+          abort_on_budget_exhausted(iteration, turn_started_at, token_total)
+        else
+          # :summarize, nil (headless / cancelled), or prompt disabled → today's
+          # force-summarize, unchanged.
+          force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
+        end
+      end
+
+      # Returns the user's choice at the cap, or nil to fall through to
+      # force-summarize. nil whenever the prompt is disabled by config OR the UI
+      # can't prompt a human (@ui.select → nil on Null/Base/no-TTY) — the latter
+      # is the headless guarantee, requiring zero special-casing here.
+      #
+      # #403: also nil when extending wouldn't help — i.e. a NON-extendable rail
+      # (the TIME limit OR the max_turns outer rail), not the soft iteration
+      # ceiling, is what's exhausted. extend! only raises the soft ceiling, so
+      # prompting "Continue (+N)" against either rail grants a no-op and the next
+      # pass re-exhausts on the same rail → infinite re-prompt. Only offer the
+      # prompt when the budget says extending can actually help.
+      def budget_extension_choice(iteration)
+        return nil unless @config.agent_budget_extension_prompt?
+        return nil unless @budget.extendable?(iteration)
+
+        step = @config.agent_budget_extension_step
+        @ui.select(
+          "Reached #{iteration} tool iterations",
+          [["Continue (+#{step})", :continue],
+           ["Summarize now", :summarize],
+           ["Abort", :abort]]
+        )
+      end
+
+      # :abort — the user asked to stop here. End the turn honestly with a short
+      # note rather than a force-summary (no extra model call). The ledger note
+      # keeps it truthful about how much ran.
+      def abort_on_budget_exhausted(iteration, turn_started_at, token_total)
+        note = "Stopped at user request after #{iteration} tool iteration" \
+               "#{"s" if iteration != 1} (#{tool_count_label})."
+        persist_user_message_note(note)
+        @ui.stream({ type: :content, text: note, message_id: 0 })
+        @ui.stream_end
+        emit_turn_summary(turn_started_at, token_total)
+        note
+      end
+
+      # Persists a harness-authored final assistant note (the abort message).
+      # A plain assistant row so --resume / audit keep the truthful ending.
+      def persist_user_message_note(note)
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: note
+          )
+        end
+      end
+
       # Budget exhausted: instead of ending the turn with nothing, issue ONE
       # final model call with the tools stripped, nudging the model to summarise
       # what it did and what remains. The summary still runs through the normal
@@ -314,7 +493,7 @@ module Rubino
       # becomes the turn's final assistant content. Because tools are empty AND
       # this is the loop's terminal action, the summary can never re-enter the
       # tool loop. Ports conversation_loop.py:4296 / handle_max_iterations.
-      def summarize_on_budget_exhausted(messages, iteration, turn_started_at, token_total)
+      def force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
         persist_user_message(MAX_ITERATIONS_SUMMARY_NUDGE)
         messages << { role: "user", content: MAX_ITERATIONS_SUMMARY_NUDGE }
 
@@ -323,13 +502,121 @@ module Rubino
         response = call_model(messages, [], iteration)
         @event_bus.emit(Interaction::Events::MODEL_CALL_FINISHED,
                         tokens: response.total_tokens,
+                        input_tokens: response.input_tokens,
+                        output_tokens: response.output_tokens,
+                        stop_reason: :max_iterations,
+                        model_id: response.model_id,
                         has_tool_calls: response.has_tool_calls?)
         token_total += response.total_tokens.to_i
 
-        persist_assistant_message(response)
-        finalize_stream(response)
+        # PESSIMISTIC-fabrication gate (#381): this forced summary ran AFTER real
+        # tool calls this turn. If the model writes it pessimistically — "I did
+        # nothing, read no files, made no edits" — while the ledger shows tools
+        # DID run, the user must learn work that happened did not vanish. The
+        # ledger (@tool_count / @edit_count), not the narration, is the authority
+        # on side-effects.
+        #
+        # The truthful harness note is HARNESS DIAGNOSTIC, not model answer, so it
+        # is routed to STDERR (via #warning) — NOT appended into the returned text
+        # answer, which would pollute `--output-format text` stdout, the
+        # clean-stdout contract (#418, mirroring the #372 / created-skills
+        # routing). nil ⇒ summary already truthful (or no tools ran) → no note.
+        note = @action_guard.pessimistic_summary_note(
+          content: response.content,
+          tool_count: @tool_count,
+          edit_count: @edit_count
+        )
+        emit_harness_note(note) if note
+
+        final = response.content
+        persist_final_text(response, final)
+        # Reset the live-region geometry before the force-summary's final commit
+        # repaint (#421): this terminal summary runs after a fresh thinking-row
+        # phase (#thinking_started above) and a streamed block, which leave the
+        # composer's recorded row geometry out of step with the physical rows.
+        # Without the reset the closing #stream_end walks a stale row count and
+        # the WHOLE summary block repaints twice. Same geometry-reset seam the
+        # interrupt finalize (#421) / Ctrl+L (#395) / resize (#401) use; guarded
+        # so non-CLI UIs (Null/API/Base) are untouched.
+        @ui.reset_finalize_geometry if @ui.respond_to?(:reset_finalize_geometry)
+        finalize_stream_text(response, final)
         emit_turn_summary(turn_started_at, token_total)
-        response.content
+        final
+      end
+
+      # Surface the #381 reconcile note as a HARNESS diagnostic off the answer
+      # stream: a #warning (stderr in the CLI; latched + echoed to stderr by the
+      # headless one-shot adapter, #260) plus an event-bus signal so the JSON /
+      # SSE consumers can carry it as metadata. Never written into the text
+      # answer that reaches `--output-format text` stdout (#418).
+      def emit_harness_note(note)
+        @ui.warning(note) if @ui.respond_to?(:warning)
+        @event_bus&.emit(Interaction::Events::HARNESS_NOTE, note: note)
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "loop.harness_note_failed", error: e.message)
+      end
+
+      # The fabricated-"done" gate for a TEXT-ONLY turn (#r5 F1 / MF-3 / B1).
+      # Investigation: MiniMax-M3 via /anthropic DOES return structured tool_use
+      # blocks and rubino parses them correctly (verified with RUBYLLM_DEBUG) —
+      # the failure is not an XML-in-text leak, it's the model genuinely
+      # narrating an action ("Running the suite now.", "Saved to hello.py")
+      # while issuing ZERO tool calls, so a fake success reaches the user. Since
+      # the structured channel is the only thing that advances state, a toolless
+      # turn that asserts such an action is a claim with nothing behind it.
+      #
+      # Returns:
+      #   :reflected — a corrective user message was appended to `messages`; the
+      #                Loop must re-enter (the model now either calls the tool or
+      #                says it can't). Capped at MAX_REFLECTIONS.
+      #   String     — an honest replacement for the final answer. The cd case
+      #                (rubino has no cd tool); the BINDING terminal override
+      #                (G1: reflection budget spent, model still fabricating a
+      #                mutation); and the denied/blocked-but-claims case (F1/F2:
+      #                a fabricated success-narration or diff after a tool was
+      #                blocked) all return their honest replacement text here.
+      #   nil        — nothing to do; surface the model's text as-is.
+      def guard_text_only_turn(response, messages)
+        # The reflection budget is spent → the guard must be BINDING this turn:
+        # replace a still-fabricated answer rather than ask for one more turn.
+        terminal = @reflection_count >= ActionClaimGuard::MAX_REFLECTIONS
+        verdict = @action_guard.evaluate(
+          content: response.content,
+          tool_count: @tool_count,
+          denied_count: @denied_count,
+          noninteractive: @noninteractive_block,
+          terminal: terminal,
+          user_request: @turn_user_request
+        )
+        return nil if verdict.nil?
+
+        kind, payload = verdict
+        # cd / blocked / terminal-replace all REPLACE the final answer with the
+        # honest deterministic text (payload) — the guard's verdict overrides the
+        # model's fabrication on this terminal turn.
+        return payload if %i[cd blocked replace].include?(kind)
+
+        # :reflect — re-prompt once, under the cap. The reflection is appended as
+        # a USER message at the same safe ordering boundary the steering injection
+        # uses (after the cancel check, no open tool_use pair).
+        note = @action_guard.reflection_message(payload, prior_reflections: @reflection_count)
+        @reflection_count += 1
+        # The fabricated text already streamed to the UI on the streaming path;
+        # close that box so the corrective re-prompt's answer renders cleanly
+        # beneath it (the kept partial stays visible, like an interrupt).
+        @ui.stream_end if streaming?
+        persist_assistant_message(response)
+        messages << build_assistant_tool_use_message(response)
+        persist_user_message(note)
+        messages << { role: "user", content: note }
+        @ui.note("checking that claim — no tool call was issued") if @ui.respond_to?(:note)
+        :reflected
+      end
+
+      # The last user message in the OPENING transcript (no guard notes appended
+      # yet at this point), as a plain string. Defensive "" when there is none.
+      def originating_user_request(messages)
+        (Array(messages).reverse.find { |msg| msg[:role].to_s == "user" } || {}).fetch(:content, "").to_s
       end
 
       # Builds the per-call LLM::Request and runs it through the ModelCallRunner,
@@ -347,14 +634,39 @@ module Rubino
           messages: messages,
           tools: tools,
           image_paths: image_paths,
-          stream: streaming?
+          stream: streaming?,
+          # Round-trip hooks (#355 #351). ruby_llm runs the WHOLE model↔tool loop
+          # inside one streaming ask(); these let the Loop observe and bound that
+          # inner loop. on_intermediate_message persists each intermediate
+          # assistant(tool_use) row so the streaming transcript matches the
+          # non-streaming one (#351); on_round_trip counts round-trips so the
+          # budget can be consulted mid-loop; budget_exhausted is the predicate
+          # ToolBridge consults to Halt once the budget is spent (#355a).
+          on_intermediate_message: method(:persist_intermediate_assistant),
+          on_round_trip: method(:note_stream_round_trip),
+          budget_exhausted: method(:stream_budget_exhausted?)
         )
 
         # Single boundary entry (normalize_response seam).
         # The adapter dispatches stream-vs-chat off request.stream internally;
         # streaming yields chunks to the block, non-streaming returns in one shot.
         # The runner forwards this block straight through on each attempt.
+        #
+        # Interrupt path (#338): every content delta is also accumulated into
+        # @interrupt_partial so that if the user cancels mid-stream — and the
+        # adapter raises Rubino::Interrupted before returning a response — the
+        # Loop still has the exact text that was shown on screen to PERSIST as an
+        # interrupted partial (storage matches the screen, transcript stays
+        # truthful & resumable). And once the cancel token has flipped, a late
+        # chunk that escaped the per-chunk poll (arriving in the window between
+        # the flag flip and the adapter tearing down the socket) is DROPPED here
+        # — it is neither rendered nor accumulated, so no late token can bleed
+        # into the next turn (Gemini's turnCancelledRef pattern, belt-and-
+        # suspenders on top of the socket abort the raise already triggers).
         stream_chunk = lambda do |chunk|
+          next if @cancel_token&.cancelled?
+
+          @interrupt_partial << chunk[:text].to_s if chunk.is_a?(Hash) && chunk[:type] == :content
           @ui.stream(chunk)
           @event_bus.emit(Interaction::Events::MODEL_STREAM, chunk: chunk)
         end
@@ -386,6 +698,37 @@ module Rubino
           base_tokens: @config.dig("model", "max_tokens"),
           ui: @ui
         )
+      end
+
+      # Persist the turn's final assistant text. When the guard left the content
+      # untouched (`final` == response.content) this is exactly
+      # #persist_assistant_message. When the guard REPLACED it (cd honest answer),
+      # persist the replacement so --resume/audit keep the truthful turn, not the
+      # model's no-op claim.
+      def persist_final_text(response, final)
+        return persist_assistant_message(response) if final.equal?(response.content) || final == response.content
+
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: final,
+            token_count: response.output_tokens,
+            metadata: response.input_tokens.to_i.positive? ? { input_tokens: response.input_tokens } : {}
+          )
+        end
+      end
+
+      # Render the final text. Unchanged content streams/finalizes as before. A
+      # replaced cd answer: on the streaming path the fabricated line already
+      # reached the screen, so close that box and print the honest correction as
+      # a fresh block; on the non-streaming path just render the honest text.
+      def finalize_stream_text(response, final)
+        return finalize_stream(response) if final.equal?(response.content) || final == response.content
+
+        @ui.stream_end if streaming?
+        @ui.stream({ type: :content, text: final.to_s, message_id: 0 })
+        @ui.stream_end
       end
 
       def finalize_stream(response)
@@ -434,15 +777,23 @@ module Rubino
         # "0 run · 1 denied" so the deny outcome is unambiguous (#83).
         if result.respond_to?(:denied?) && result.denied?
           @denied_count += 1
+          # A headless fail-closed block carries the distinctive noninteractive
+          # denial output; remember it so the binding guard's honest message can
+          # name `--yolo` rather than "approve interactively" (F2).
+          @noninteractive_block = true if result.output.to_s.include?("no interactive session")
         else
           @tool_count += 1
+          # Track mutating tool calls separately so the pessimistic-summary
+          # reconciliation (#381) can point the user at uncommitted disk changes.
+          @edit_count += 1 if ActionClaimGuard::MUTATING_TOOLS.include?(name.to_s)
         end
         persist_tool_result(
           role: "tool",
           content: result.output,
           tool_call_id: call_id,
           name: name,
-          arguments: arguments
+          arguments: arguments,
+          result: result
         )
       end
 
@@ -488,6 +839,102 @@ module Rubino
         @session_repo ||= Session::Repository.new
       end
 
+      # Persists the partial assistant text streamed so far when the user
+      # interrupts mid-turn (#338b). Bound to THIS session (and thereby the
+      # current user turn — the user row was appended by Lifecycle before the
+      # model call), flagged interrupted: true in metadata so resume / audit /
+      # compaction can tell a cut-off turn from a completed one and never
+      # mistake the truncated buffer for a finished answer. No-op when nothing
+      # streamed (interrupt during "thinking" before the first content token) —
+      # there's no partial to keep, only a status row to clear.
+      def persist_interrupted_partial
+        partial = @interrupt_partial.to_s
+        return if partial.strip.empty?
+
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: partial,
+            metadata: { interrupted: true }
+          )
+        end
+        session_repo.increment_message_count!(@session[:id])
+      rescue StandardError => e
+        # Persisting the partial must never mask the interrupt itself — log and
+        # let the Interrupted propagate so the turn still unwinds cleanly.
+        Rubino.logger.warn(event: "loop.interrupt.persist_failed", error: e.message)
+      end
+
+      # #351: persist an INTERMEDIATE assistant(tool_use) message that ruby_llm
+      # produced inside a single streaming ask(). On the non-streaming path the
+      # Loop writes this row itself (via #persist_assistant_message before
+      # #execute_tool_calls); on the streaming path ruby_llm runs the whole loop
+      # internally and the row was previously never written — so resume /
+      # repair_tool_pairs / compaction saw tool(result) rows with no matching
+      # assistant(tool_use), and strict providers 400'd on the next turn. The
+      # adapter hands us the normalized message ({content:, tool_calls:,
+      # input_tokens:, output_tokens:}); we write the SAME shape the
+      # non-streaming path does (tool_calls + input_tokens in metadata).
+      #
+      # IDEMPOTENCY: the adapter only calls this for assistant messages that carry
+      # tool_calls — never the final text turn (which the Loop's own text path
+      # persists). Tokens are NOT folded into token_total here: the streaming
+      # build_response already SUMS every round-trip's usage into the single
+      # response whose total_tokens the loop adds once (#355b), so counting them
+      # again here would double-bill.
+      def persist_intermediate_assistant(msg)
+        # Orphan-avoidance (#355a + #351): on_round_trip fired just before this,
+        # so if the budget is now exhausted EVERY tool of this round-trip will be
+        # Halted by ToolBridge — no tool(result) row will be persisted for them.
+        # Persisting the assistant(tool_use) row anyway would leave an orphaned
+        # tool_use that repair_tool_pairs would later have to strip. The whole
+        # round-trip is voided by the Halt, so skip persisting it; the turn ends
+        # with the budget-exhausted summary instead. Completed round-trips (budget
+        # still available) persist normally and their tool results land via the
+        # ToolExecutor on_result sink.
+        return if stream_budget_exhausted?
+
+        tool_calls = msg[:tool_calls] || []
+        metadata = tool_calls.empty? ? {} : { tool_calls: tool_calls }
+        input_tokens = msg[:input_tokens].to_i
+        metadata[:input_tokens] = input_tokens if input_tokens.positive?
+
+        with_db_retries do
+          @message_store.create(
+            session_id: @session[:id],
+            role: "assistant",
+            content: msg[:content],
+            token_count: msg[:output_tokens],
+            metadata: metadata
+          )
+        end
+      rescue StandardError => e
+        # A persistence hiccup on an intermediate row must never abort the live
+        # tool loop the model is mid-way through — log and carry on.
+        Rubino.logger&.warn(event: "loop.intermediate.persist_failed", error: e.message)
+      end
+
+      # #355a: counts one round-trip ruby_llm ran inside the streaming ask().
+      # Fired by the adapter (on_round_trip) on each assistant(tool_use) message.
+      def note_stream_round_trip
+        @stream_round_trips += 1
+      end
+
+      # #355a: the predicate ToolBridge consults BEFORE each mid-stream tool
+      # dispatch. True once the per-turn iteration/time budget can no longer
+      # accommodate the round-trips ruby_llm has already produced — at which
+      # point the bridge returns Tool::Halt to stop the in-ask loop gracefully
+      # (current batch + at most one more model call) and hand control back here
+      # for the existing budget-exhausted summary. Counting the round-trips as
+      # iterations maps the in-ask loop onto the same budget the non-streaming
+      # path consumes one iteration at a time.
+      def stream_budget_exhausted?
+        return false if @stream_round_trips.zero?
+
+        !@budget.can_continue?(@stream_round_trips)
+      end
+
       def persist_assistant_message(response)
         # Stash tool_calls under metadata so --resume can rebuild the
         # assistant(toolUse) → tool(result) pair the provider expects. Without
@@ -520,6 +967,15 @@ module Rubino
         # Old rows that pre-date this field hydrate with empty metadata; the
         # replay path falls back to printing just the name.
         metadata = result[:arguments] ? { arguments: result[:arguments] } : {}
+        # Persist the OUTCOME (status + error_code) so --resume replay renders
+        # the SAME glyph the live session showed — a denied/failed tool replays
+        # with the red ✗, not a blanket green ✓ (the replay path used to wrap
+        # every stored row as Result.success). Old rows hydrate without these
+        # keys; the replay path then infers the outcome from the output text.
+        if (res = result[:result])
+          metadata[:status] = res.status.to_s if res.respond_to?(:status) && res.status
+          metadata[:error_code] = res.error_code.to_s if res.respond_to?(:error_code) && res.error_code
+        end
 
         with_db_retries do
           @message_store.create(

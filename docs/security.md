@@ -4,7 +4,7 @@ rubino runs real tools — shell, file writes, Ruby, git. The safety model is la
 
 ## Is it safe to enable shell?
 
-Yes. `tools.shell` is **on by default** because the agent ships to run inside an isolated VM where running commands is the whole point. Every command is still gated: by default `security.require_confirmation_for_shell` is `true`, so each shell command goes through an approval prompt, and a hardline floor blocks catastrophic commands regardless of any setting.
+Yes. `tools.shell` is **on by default** because the agent ships to run inside an isolated VM where running commands is the whole point. Every command is still gated: by default `security.confirm_policy` is `dangerous_only`, so a command matching a dangerous pattern goes through an approval prompt (set it to `confirm_all` to prompt on every command), and a hardline floor blocks catastrophic commands regardless of any setting.
 
 ## The approval decision order
 
@@ -51,10 +51,12 @@ Actions: `allow`, `ask`, `deny`. A `deny` rule is a deny-class check and beats e
 
 ## Shell confirmation policy
 
-`security.confirm_policy` (with `security.require_confirmation_for_shell` as a legacy alias):
+`security.confirm_policy`:
 
-- **`confirm_all`** (default; alias `true`) — every shell command not otherwise allowed/denied prompts for approval.
-- **`dangerous_only`** (alias `false`) — safe commands run unprompted; only commands matching a dangerous pattern prompt. The hardline floor and `permissions: deny` still run first, so this never weakens the floor.
+- **`dangerous_only`** (default) — safe commands run unprompted; only commands matching a dangerous pattern prompt. The hardline floor and `permissions: deny` still run first, so this never weakens the floor.
+- **`confirm_all`** — every shell command not otherwise allowed/denied prompts for approval.
+
+(The old `security.require_confirmation_for_shell` key was **removed** — it is no longer honored. Use `security.confirm_policy`.)
 
 ## Command allowlist
 
@@ -65,10 +67,13 @@ security:
   command_allowlist:
     - "git status"
     - "git diff"
-    - "bundle exec rspec"
 ```
 
 An **empty** allowlist pre-approves nothing — pre-approval is opt-in.
+
+A matched entry pre-approves only its **read-only intent**, never a smuggled write/exec form: an allowlisted head can't carry an output/exec flag (`git diff --output FILE`, `sort -o FILE`, `find -exec/-delete`), a git **global** flag (`git -c alias.x='!cmd' x`, `git -c core.sshCommand=…`, `git -C dir`, `--exec-path`), or a mutating/code-loading git subcommand (`git apply`, `git am`, `git push`, hooks). Heads whose argument is itself a program (`awk`, `sed`, `perl`, `python`, `ruby`, `node`, `tar`, `tee`, `xargs`, shells) are **never** auto-approved even if allowlisted — they still prompt. The **shipped default** is read-only git only; test/build runners (`bundle exec rspec`, `rake`, `npm test`) are deliberately not shipped auto-approved because they load and execute arbitrary project code by design — add one explicitly only if you accept that.
+
+> An allowlist is a **convenience** layer, not a security boundary. Per industry practice (Claude Code/Codex, GTFOBins) a deny/allow list of command strings cannot be exhaustive; the OS sandbox is the real floor. This layer is narrowed to close the default-config and bare-`git` RCEs, not to be relied on as the only barrier.
 
 ## Auto-allowed read-only commands
 
@@ -98,6 +103,12 @@ approvals:
     - "jq"                    # bare name matches that command head
     - "docker ps"             # multi-word entry matches those leading tokens
 ```
+
+## Headless / non-interactive approvals fail closed
+
+A one-shot or scripted run (`rubino prompt`, `chat -q`, or any run with no TTY) has **no interactive session to approve from**, so it **fails closed**: a tool that would otherwise prompt — a write/edit, or a shell command **not** covered by your `permissions` / command allowlist / read-only auto-allow — is **blocked, not run**. A single-line `blocked: <tool> needs approval but no interactive session (use --yolo to allow, or allowlist it)` goes to stderr and the run exits **2**, so automation/CI fails loudly instead of silently skipping (or, worse, auto-executing) the action. Anything you already allowlisted, and every read-only command, still runs unprompted.
+
+To opt back into full auto-execute, pass **`--yolo`**; **`--no-yolo`** forces fail-closed even if a yolo default was set. `--yolo` is honored **only** as a CLI flag — a project-local or persisted config can never grant it, so an untrusted checkout can't silently switch a scripted run into auto-execute. The hardline floor and explicit `permissions: deny` rules still apply under `--yolo`. (See [commands.md §Exit codes](commands.md#exit-codes-scripting-around-prompt--one-shot).)
 
 ## Deny/approve scope: once vs session
 

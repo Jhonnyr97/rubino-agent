@@ -16,6 +16,16 @@ module Rubino
     class Skill
       attr_reader :name, :description, :path, :metadata, :linked_files
 
+      # Languages this skill is scoped to (lower-cased tokens, e.g. ["ruby"]),
+      # parsed from the optional `languages:` frontmatter key. Empty means the
+      # skill is language-agnostic and always surfaced. A scoped skill is only
+      # auto-listed in the system-prompt catalogue when the project uses one of
+      # its languages — see Registry#summaries — so a Ruby skill no longer
+      # brands a Python project. It stays discoverable/loadable on demand.
+      def languages
+        Array(@metadata["languages"]).map { |l| l.to_s.strip.downcase }.reject(&:empty?)
+      end
+
       def initialize(path:)
         @path = path
         @metadata = {}
@@ -127,8 +137,53 @@ module Rubino
         nil
       end
 
+      # Reads the markdown body as UTF-8, replacing any invalid/undefined byte
+      # sequences instead of raising. A single skill carrying a non-UTF-8
+      # SKILL.md (a corrupt or hostile file) must never crash discovery — it
+      # used to raise ArgumentError("invalid byte sequence") deep inside
+      # `raw.split("---")` and brick the whole registry (SKILL-2). Scrubbing
+      # keeps the readable text and turns the bad bytes into U+FFFD.
+      #
+      # The entrypoint itself is confined and size-capped (R2-M3) BEFORE it is
+      # read: see #safe_source_path (refuses a SKILL.md that symlinks OUT of its
+      # skill dir, e.g. -> /etc/passwd) and #cap_source (truncates a SKILL.md
+      # past MAX_SOURCE_BYTES so a multi-MB body can't flood the system prompt).
+      def read_source
+        cap_source(File.read(safe_source_path, encoding: "UTF-8"))
+          .scrub("�")
+      end
+
+      # The entrypoint markdown path, resolved through symlinks and refused if it
+      # escapes its own skill dir (R2-M3). The existing #resolve_within_dir
+      # confines BUNDLED files read via #read_file, but the SKILL.md/<name>.md
+      # ENTRYPOINT was read straight off @path — a hostile catalogue could make
+      # it a symlink to /etc/passwd and have its contents mined into the skill
+      # summary (every prompt) and body. Raising here makes Registry#add_skills
+      # skip the skill with a warning instead of following the link.
+      def safe_source_path
+        root = File.realpath(File.dirname(@path))
+        resolved = File.realpath(@path)
+        unless resolved == File.join(root, File.basename(@path)) ||
+               resolved.start_with?("#{root}#{File::SEPARATOR}")
+          raise Rubino::Error, "skill entrypoint escapes its directory: #{@path}"
+        end
+
+        resolved
+      end
+
+      # Truncate an over-budget SKILL.md so a giant (e.g. 5 MB) body can't load
+      # uncapped into the prompt (R2-M3). Keeps the leading MAX_SOURCE_BYTES,
+      # which still carries the frontmatter + the start of the body, and appends a
+      # visible marker. byteslice can split a multibyte char; #read_source scrubs
+      # the dangling bytes to U+FFFD right after.
+      def cap_source(raw)
+        return raw if raw.bytesize <= MAX_SOURCE_BYTES
+
+        "#{raw.byteslice(0, MAX_SOURCE_BYTES)}\n\n[skill truncated: exceeded #{MAX_SOURCE_BYTES} bytes]"
+      end
+
       def parse_frontmatter!
-        raw = File.read(@path, encoding: "UTF-8")
+        raw = read_source
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
@@ -160,7 +215,7 @@ module Rubino
       end
 
       def load_content
-        raw = File.read(@path, encoding: "UTF-8")
+        raw = read_source
 
         if raw.start_with?("---")
           parts = raw.split("---", 3)
@@ -171,6 +226,12 @@ module Rubino
       end
 
       EXCLUDED_DIRS = %w[.git .svn .hg node_modules __pycache__ .DS_Store].freeze
+
+      # Hard cap on the SKILL.md entrypoint size read into memory/prompt (R2-M3).
+      # A sane SKILL.md is a few KB of frontmatter + instructions; 256 KiB is
+      # generous headroom while still refusing a multi-MB body that would flood
+      # the system prompt. Past this the source is truncated (see #cap_source).
+      MAX_SOURCE_BYTES = 256 * 1024
     end
   end
 end

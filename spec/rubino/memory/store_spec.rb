@@ -23,6 +23,22 @@ RSpec.describe Rubino::Memory::Store do
       memory = store.create(kind: "fact", content: "test")
       expect(memory[:confidence]).to eq(1.0)
     end
+
+    # R4-N3 — a NUL byte (valid UTF-8) makes the SQLite3 driver raise
+    # "unrecognized token" so the row never persists; scrub_utf8 at the write
+    # seam strips it (and repairs invalid encoding) so the fact still stores.
+    it "strips a NUL byte from content so the row persists" do
+      memory = store.create(kind: "fact", content: "before\x00after")
+      expect(memory[:content]).to eq("beforeafter")
+      expect(store.find(memory[:id])[:content]).to eq("beforeafter")
+    end
+
+    it "coerces non-UTF-8 content to valid UTF-8 instead of failing to persist" do
+      memory = store.create(kind: "fact", content: (+"caf\xE9").force_encoding("ASCII-8BIT"))
+      expect(memory[:id]).not_to be_nil
+      expect(memory[:content].encoding).to eq(Encoding::UTF_8)
+      expect(memory[:content].valid_encoding?).to be(true)
+    end
   end
 
   describe "#list" do
@@ -62,6 +78,21 @@ RSpec.describe Rubino::Memory::Store do
 
     it "returns false for unknown ID" do
       expect(store.delete("unknown-id-00000000")).to be false
+    end
+
+    # #416: delete("") used to LIKE-match the `%` wildcard → wiped every row and
+    # reported success. A blank id must delete NOTHING and report failure.
+    it "delete(\"\") deletes NOTHING and reports failure (no mass-wipe)" do
+      store.create(kind: "fact", content: "keep me 1")
+      store.create(kind: "fact", content: "keep me 2")
+      expect(store.count).to eq(2)
+      expect(store.delete("")).to be false
+      expect(store.count).to eq(2)
+    end
+
+    it "find(\"\") returns nil instead of an arbitrary first row" do
+      store.create(kind: "fact", content: "present")
+      expect(store.find("")).to be_nil
     end
   end
 

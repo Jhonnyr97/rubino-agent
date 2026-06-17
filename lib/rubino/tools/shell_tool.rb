@@ -39,6 +39,22 @@ module Rubino
         code.zero? || code == SIGPIPE_EXIT
       end
 
+      # True when the command's primary output is a unified diff the dev is
+      # asking to SEE — `git diff`, `git show`, `git log -p`, or plain `diff`.
+      # Matched on the FIRST stage of the command only (anything piped into a
+      # pager/`head`/grep is the user already reshaping it, so don't force
+      # diff-render on that). Word-boundary anchored so `gitdiff`/`diffstat`
+      # don't false-positive, and `git difftool` (opens an editor) is excluded.
+      DIFF_COMMAND = /\A\s*
+        (?:git\s+(?:diff|show|whatchanged)(?!\w)(?!\S*tool)
+          |git\s+log\b[^|&;]*\s-p\b
+          |diff\s)
+      /x
+
+      def self.diff_command?(command)
+        DIFF_COMMAND.match?(command.to_s)
+      end
+
       def name
         "shell"
       end
@@ -91,6 +107,13 @@ module Rubino
 
         return "Error: command is required" if command.nil? || command.to_s.empty?
 
+        # "show me the diff" DX: when the command's job is to PRODUCE a diff
+        # (`git diff`, `git show`, `diff …`), render its output as a real diff —
+        # +/- coloring AND full hunks (no 3-line collapse) — instead of dimming
+        # and truncating it like any other shell dump (G3). The streaming lambda
+        # and the end-of-call body both read this hint.
+        @stream_kind = self.class.diff_command?(command) ? :diff : :plain
+
         if (denied = destructive_pattern_match(command))
           return { output: "Error: refusing to run #{denied} — this is hardcoded as " \
                            "destructive and not overridable by --yolo. " \
@@ -113,7 +136,7 @@ module Rubino
           { output: run[:text],
             metrics: foreground_metric(run),
             body: Util::Output.preview(run[:text]),
-            body_kind: :plain,
+            body_kind: @stream_kind || :plain,
             exit_code: run[:exit_code],
             timed_out: run[:timed_out],
             cancelled: run[:cancelled],
@@ -190,6 +213,7 @@ module Rubino
       # from the same data, keeping the parse path single-sourced.
       def execute_foreground(command, cwd, timeout)
         rd = nil
+        pgid = nil
         rd, wr = IO.pipe
         # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
         # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
@@ -198,6 +222,12 @@ module Rubino
                             chdir: cwd, pgroup: true, out: wr, err: wr)
         pgid = pid
         wr.close
+        # Register the live process group so a parent-death teardown can reap it
+        # synchronously (MED-2). The foreground pgid otherwise lives only in this
+        # stack frame, so cancel_all's cooperative cancel can't reach it before
+        # the process exits and the shell reparents to init as an orphan. The
+        # `ensure` below drops it once THIS thread has reaped it normally.
+        ShellRegistry.instance.register_pgid(pgid)
 
         # Drain the merged stdout+stderr pipe line-by-line so each chunk can
         # be streamed to the UI/event stream as the subprocess writes it,
@@ -210,6 +240,14 @@ module Rubino
         output_thr = Thread.new do
           begin
             rd.each_line do |line|
+              # Scrub to valid UTF-8 AT THE CAPTURE SEAM (STRM-R2-1): a binary
+              # / latin-1 process (`head -c 1500 /dev/urandom`, `cat *.png`)
+              # writes bytes tagged UTF-8 but invalid. Left raw they later blow
+              # up JSON.generate (the LLM request) + the SQLite driver and the
+              # tool row never persists — the model loses the record on
+              # --resume. Cleaning HERE means the accumulated output AND the
+              # streamed chunk are both clean before anything copies them.
+              line = Util::Output.scrub_utf8(line)
               output_buf << line
               emit_chunk(line)
             end
@@ -288,6 +326,7 @@ module Rubino
         { text: "Shell error: #{e.message}", exit_code: nil, timed_out: false,
           cancelled: false, shell_error: true, duration_ms: 0 }
       ensure
+        ShellRegistry.instance.unregister_pgid(pgid) if pgid
         rd.close if rd && !rd.closed?
       end
 

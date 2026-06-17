@@ -255,15 +255,19 @@ module Rubino
         [items, start, token.chars.length]
       end
 
-      # The completion TOKEN under the cursor: the leading run of non-space
-      # chars from the start of the line up to the cursor, when it begins with
-      # / or @. Returns [token, start_index] or nil when the cursor isn't on a
-      # token.
+      # The completion TOKEN under the cursor. Returns [token, start_index] or
+      # nil when the cursor isn't on a completable token.
+      #
+      # Two DISTINCT triggers, matching every peer slash palette (Claude Code,
+      # Codex, aider): a `/`-command arms ONLY as the FIRST token on the line
+      # (anchored at \A, leading spaces allowed) — a `/` mid-line is literal
+      # path/URL text (`rm -rf /`, `ls /`, `https://`) and MUST NOT arm the
+      # command menu, or Enter would silently accept a highlighted command and
+      # rewrite the line. An `@`-mention still arms after \A OR any whitespace,
+      # since mentions legitimately appear anywhere on the line.
       def current_token(buffer, cursor)
         prefix = buffer.chars.first(cursor).join
-        # Only the FIRST token on the line completes (a leading /command, or an
-        # @mention anywhere the run back to a space starts with @).
-        m = prefix.match(%r{(?:\A|\s)([/@]\S*)\z})
+        m = prefix.match(%r{\A\s*(/\S*)\z}) || prefix.match(/(?:\A|\s)(@\S*)\z/)
         return nil unless m
 
         [m[1], m.begin(1)]

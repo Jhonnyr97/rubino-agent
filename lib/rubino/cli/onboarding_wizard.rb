@@ -19,9 +19,13 @@ module Rubino
       # Each provider: the model.provider to write, a default model id, the .env
       # key var, and any providers.<name> config block to persist. Ordered so the
       # recommended default comes first and matches the seeded config default
-      # (config/defaults.rb model.default => openai/gpt-4.1), keeping the from-zero
-      # experience consistent between the wizard and the non-interactive
-      # fail-fast guidance.
+      # (config/defaults.rb model.default => openai/gpt-4.1), keeping the
+      # from-zero experience consistent between the wizard and the non-interactive
+      # fail-fast guidance. OpenAI is the recommended default (maintainer
+      # directive); MiniMax stays a first-class selectable option — listed but
+      # NOT pushed or auto-selected — and carries the anthropic_compatible +
+      # base_url wiring it needs so picking it still yields a first-turn-working
+      # config.
       PROVIDERS = [
         {
           key: "openai",
@@ -35,7 +39,7 @@ module Rubino
           key: "minimax",
           label: "MiniMax (Anthropic-compatible)",
           provider: "minimax",
-          model: "MiniMax-M2.7",
+          model: "MiniMax-M3",
           env_var: "MINIMAX_API_KEY",
           config: {
             "anthropic_compatible" => true,
@@ -81,6 +85,16 @@ module Rubino
 
       # Drives the wizard. Returns true when a provider was configured, false
       # when the user skipped (empty/`s`/`skip` at the provider prompt).
+      #
+      # A Ctrl-C MID-wizard — after picking a provider, before pasting the key —
+      # used to escape as a raw `Interrupt` backtrace out of `gets`/`noecho`
+      # (H2). Catch it here and abort CLEANLY: print "Setup cancelled." and exit
+      # 130 (the conventional SIGINT code). Nothing is half-written — #persist!
+      # (the only writer of the provider's model.* / .env key) runs ONLY after a
+      # non-empty key is obtained, several lines below the interrupt point, so an
+      # abort leaves the config at the seeded defaults and re-running `setup`
+      # works. The base config.yml/.env `setup` materialized before onboarding
+      # are the intended seed files, not partial wizard state.
       def run
         @ui.blank_line
         @ui.info("Welcome to rubino — let's get you connected to a model.")
@@ -90,7 +104,10 @@ module Rubino
         choice = ask_provider
         return false unless choice
 
-        api_key = ask_api_key(choice)
+        # When the provider was just CONFIRMED via its already-present env key
+        # (F3), that key is the one to use — don't re-ask "use the detected key?"
+        # one line later. Otherwise prompt/paste as usual.
+        api_key = ask_api_key(choice, skip_env_prompt: @confirmed_env_key)
         return false if api_key.nil? || api_key.empty?
 
         base_url = ask_base_url(choice)
@@ -103,11 +120,34 @@ module Rubino
         @ui.status("Saved to #{config_loader.config_path} and #{config_loader.env_path}.")
         @ui.blank_line
         true
+      rescue Interrupt
+        @output.puts
+        @ui.warning("Setup cancelled.")
+        exit(130)
       end
 
       private
 
       def ask_provider
+        # F3: when EXACTLY ONE provider's key is already in the environment,
+        # CONFIRM that pick before dropping to the full menu — the choice stays
+        # VISIBLE (explicit-control theme) instead of being silently auto-selected,
+        # but a bare Enter accepts it so the smooth path stays one keystroke.
+        # Ambiguous (>1 key) or none falls straight through to the menu.
+        if (detected = single_env_provider)
+          @output.print "Detected #{detected[:env_var]} — use #{detected[:provider]}/#{detected[:model]}? " \
+                        "[Y/n, or n to pick another]: "
+          @output.flush
+          ans = read_line.to_s.strip.downcase
+          unless %w[n no].include?(ans)
+            # Confirmed: the detected env key is the one to use — the api-key step
+            # need not re-prompt to reuse it.
+            @confirmed_env_key = true
+            return detected
+          end
+          # An explicit "n" means "show me the others" — fall through to the menu.
+        end
+
         PROVIDERS.each_with_index do |p, i|
           @output.puts "  #{i + 1}) #{p[:label]}"
         end
@@ -128,7 +168,40 @@ module Rubino
         end
       end
 
-      def ask_api_key(choice)
+      # The one provider catalog entry whose env key is present in ENV, or nil
+      # when none — or MORE THAN ONE distinct key — is set (ambiguous, so the
+      # confirm would be guessing; show the full menu instead). Dedup by env_var
+      # so the gateway entry (which reuses OPENAI_API_KEY) doesn't make a lone
+      # OpenAI key look ambiguous.
+      def single_env_provider
+        present = PROVIDERS.select do |p|
+          val = ENV.fetch(p[:env_var], nil)
+          !val.nil? && !val.empty?
+        end
+        present.uniq! { |p| p[:env_var] }
+        present.one? ? present.first : nil
+      end
+
+      # Prompt for the provider's API key — but if it is ALREADY in the
+      # environment (e.g. OPENAI_API_KEY, or MINIMAX_API_KEY when the user picks
+      # MiniMax), DETECT it and offer to reuse it rather than forcing a paste
+      # (the smooth path; matches Hermes/Claude Code/Codex, which all prefer an
+      # already-present env key over re-prompting). A bare Enter at the "use it?"
+      # prompt accepts the detected key; typing "n" falls through to a manual
+      # paste. The returned value is what lands in .env, so reusing the env key
+      # also persists it durably for future runs.
+      def ask_api_key(choice, skip_env_prompt: false)
+        env_key = ENV.fetch(choice[:env_var], nil).to_s.strip
+        unless env_key.empty?
+          # Already confirmed at the provider step (F3) — reuse without re-asking.
+          return env_key if skip_env_prompt
+
+          @output.print "Detected #{choice[:env_var]} in your environment — use it? [Y/n]: "
+          @output.flush
+          ans = read_line.to_s.strip.downcase
+          return env_key unless %w[n no].include?(ans)
+        end
+
         @output.print "Paste your #{choice[:env_var]} (input hidden; Enter to skip): "
         @output.flush
         read_secret.to_s.strip

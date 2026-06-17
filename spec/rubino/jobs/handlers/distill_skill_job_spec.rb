@@ -15,9 +15,14 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
   let(:db) { db_connection.db }
   let(:aux_client) { instance_double(Rubino::LLM::AuxiliaryClient) }
 
+  # SK-1: distilled skills are written under the agent HOME skills dir, NOT the
+  # cwd-relative skills.paths. @home is the resolved home; @skills_dir is its
+  # skills/ subdir — where distill writes and the registry discovers.
   around do |example|
-    Dir.mktmpdir do |dir|
-      @skills_dir = dir
+    Dir.mktmpdir do |home|
+      @home = home
+      @skills_dir = File.join(home, "skills")
+      FileUtils.mkdir_p(@skills_dir)
       Rubino::Metrics.reset!
       example.run
       Rubino::Metrics.reset!
@@ -26,9 +31,12 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
 
   before do
     allow(Rubino).to receive(:database).and_return(db_connection)
+    # skills.paths points elsewhere (the legacy cwd-relative default) to prove
+    # distill ignores it and writes to the home dir resolved below.
     allow(Rubino).to receive(:configuration).and_return(
-      test_configuration("skills" => { "paths" => [@skills_dir] })
+      test_configuration("skills" => { "paths" => ["~/.rubino/skills"] })
     )
+    allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
     allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
   end
 
@@ -94,6 +102,21 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
       expect(Rubino::Metrics.render).to match(/^skills_created_total(\{\})? 1$/)
     end
 
+    # SK-1: a distill that fires while cwd is inside a repo must NOT drop a
+    # SKILL.md into the repo working tree — it writes to the agent HOME.
+    it "writes under the agent HOME, not the cwd repo, when distilling" do
+      sid = seed_session
+      seed_worthy_run(sid)
+      stub_distill(good_candidate_json)
+
+      Dir.mktmpdir do |repo|
+        Dir.chdir(repo) { job.perform(session_id: sid) }
+        expect(Dir.glob(File.join(repo, "**", "SKILL.md"))).to be_empty
+        expect(File).not_to exist(File.join(repo, ".rubino"))
+      end
+      expect(File).to exist(File.join(@skills_dir, "add-sinatra-post-endpoint", "SKILL.md"))
+    end
+
     it "does NOT fire on a trivial run: no aux call, no skill written" do
       sid = seed_session
       seed_trivial_run(sid)
@@ -135,6 +158,64 @@ RSpec.describe Rubino::Jobs::Handlers::DistillSkillJob do
       expect(aux_client).to have_received(:call).once
       expect(Dir.children(@skills_dir)).to be_empty
       expect(Rubino::Metrics.render).not_to match(/^skills_created_total/)
+    end
+  end
+
+  # Regression for #368: already_covered? used to return true on ANY single
+  # 4+-char word shared with a built-in skill's name/description — so the word
+  # "rails" sitting in ruby-expert's description suppressed an unrelated
+  # deploy-workflow task. Coverage now requires MEANINGFUL overlap (a name-level
+  # match or multiple salient stopword-filtered tokens past a Jaccard floor), so
+  # a lone common word can no longer gate a distinct task off.
+  describe "coverage gate is not tripped by a single shared word (#368)" do
+    def fake_skill(name, description)
+      instance_double(Rubino::Skills::Skill, name: name, description: description)
+    end
+
+    def stub_registry(skills)
+      registry = instance_double(Rubino::Skills::Registry, all: skills)
+      allow(Rubino::Skills::Registry).to receive(:new).and_return(registry)
+      allow(registry).to receive(:find).and_return(nil)
+    end
+
+    def seed_task(session_id, task)
+      add_message(session_id, "user", task)
+      6.times { |i| add_message(session_id, "tool", "step #{i}", tool_name: "bash") }
+      add_message(session_id, "assistant", "Done.")
+    end
+
+    let(:ruby_expert) do
+      fake_skill("ruby-expert",
+                 "Expert in Ruby, Rails, RSpec, ActiveRecord and idiomatic Ruby code.")
+    end
+
+    it "does NOT suppress 'deploy workflow for Rails' just because ruby-expert mentions Rails" do
+      sid = seed_session
+      seed_task(sid, "Add a deploy workflow for Rails to staging via Capistrano")
+      stub_registry([ruby_expert])
+      stub_distill(good_candidate_json)
+
+      job.perform(session_id: sid)
+
+      # Gate PASSED: the aux call ran and a skill was written (not suppressed).
+      expect(aux_client).to have_received(:call).once
+      expect(Dir.children(@skills_dir)).not_to be_empty
+    end
+
+    it "DOES suppress a genuinely duplicate task (name-level match)" do
+      sid = seed_session
+      seed_task(sid, "Add a validated POST endpoint to my Sinatra app for write routes")
+      stub_registry([
+                      fake_skill("add-sinatra-post-endpoint",
+                                 "Add a validated POST endpoint to a Sinatra app — when adding write routes.")
+                    ])
+      allow(aux_client).to receive(:call)
+
+      job.perform(session_id: sid)
+
+      # Gate SUPPRESSED: no aux call, no skill written — the work is already covered.
+      expect(aux_client).not_to have_received(:call)
+      expect(Dir.children(@skills_dir)).to be_empty
     end
   end
 

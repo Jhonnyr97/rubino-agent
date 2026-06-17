@@ -44,6 +44,18 @@ module Rubino
         @rows_above.positive?
       end
 
+      # Forget all on-screen geometry WITHOUT emitting any erase sequences. Used
+      # after a full-screen clear (Ctrl+L: \e[2J\e[H) has already blanked the
+      # terminal and homed the cursor — the per-row \e[1A\e[2K walk #clear would
+      # do is now wrong (it would march UP over scrollback from the home row), so
+      # the counters must simply be zeroed and the next frame drawn fresh from the
+      # top.
+      def reset_geometry!
+        @rows_above = 0
+        @input_above = 0
+        @input_below = 0
+      end
+
       # Record the input block's geometry for the frame just drawn (see
       # ivar docs above). Called by the composer at the end of #draw_input.
       def input_drawn(above:, below:)
@@ -128,6 +140,13 @@ module Rubino
         @output.print("\r\n") unless normalized.end_with?("\r\n")
       end
 
+      # A complete ANSI SGR escape (colour/dim/reset, \e[…m). The live-region
+      # frames are coloured (the red ◆ status ticker, dim tracks), and these
+      # escapes occupy NO display columns — width math strips them and the
+      # left-truncation walk treats each as one atomic, indivisible token so it
+      # can never be cut mid-sequence and leak a "[…m" literal (#426, Bug A).
+      ANSI_SGR = /\e\[[0-9;]*m/
+
       class << self
         # Clamp a single visible line to the terminal width (one row), left-
         # truncating with a leading "…" so a long line never wraps and desyncs
@@ -155,27 +174,71 @@ module Rubino
           "…#{take_last_columns(flat, cols - 1)}"
         end
 
-        # Terminal display columns for a string (wide glyphs count as 2).
+        # Terminal display columns for a string (wide glyphs count as 2). ANSI
+        # SGR escapes (\e[…m) occupy NO columns on screen, so they're stripped
+        # before measuring — counting them as visible (each \e[2m is 4 chars)
+        # made a coloured status frame measure far wider than it draws, so clamp
+        # left-truncated a frame that actually fit and re-clamping its stale wide
+        # copy on resize leaked the "…[2m" artifact (#426, Bug A).
         def display_width(str)
-          Unicode::DisplayWidth.of(str.to_s)
+          Unicode::DisplayWidth.of(str.to_s.gsub(ANSI_SGR, ""))
+        end
+
+        # The longest PREFIX of +str+ whose display width is <= +cols+. The
+        # mirror of {#take_last_columns}: walks from the FRONT over the same
+        # tokens (each ANSI SGR escape one zero-width token, every other char its
+        # own) so a wide trailing glyph that would overflow is dropped WHOLE
+        # rather than cut mid-cell, and an escape is never split. Used to fit a
+        # composer INPUT row to one physical line WITHOUT a leading "…" (the row
+        # is the user's live edit — truncating the head would hide what they just
+        # typed), so it right-truncates instead. Zero-width escapes that lead the
+        # row (color setup) are kept even at the boundary so styling isn't lost.
+        def take_first_columns(str, cols)
+          return "" if cols <= 0
+
+          used  = 0
+          taken = []
+          tokenize(str.to_s).each do |tok|
+            w = display_width(tok)
+            break if w.positive? && used + w > cols
+
+            taken << tok
+            used += w
+          end
+          taken.join
         end
 
         # The longest SUFFIX of +str+ whose display width is <= +cols+. Walks
-        # from the end so a wide trailing glyph is dropped whole (never
-        # half-rendered) rather than cut mid-cell.
+        # from the end over TOKENS — a whole ANSI SGR escape (\e[…m) is one
+        # zero-width token — so a wide trailing glyph is dropped whole (never
+        # half-rendered) rather than cut mid-cell, AND an escape sequence is
+        # never split mid-bytes (#426, Bug A). The status ticker frame is dim/red
+        # ANSI; on a mid-stream resize its STALE wide frame got re-clamped at the
+        # narrower width, and a per-CHAR walk could stop INSIDE a \e[2m run,
+        # dropping the leading \e and leaking the literal "[2m" right after the
+        # "…" left-truncation marker. Tokenising keeps each escape atomic and
+        # zero-width so the suffix is always a valid, renderable string.
         def take_last_columns(str, cols)
           return "" if cols <= 0
 
           used  = 0
           taken = []
-          str.to_s.chars.reverse_each do |ch|
-            w = display_width(ch)
+          tokenize(str.to_s).reverse_each do |tok|
+            w = display_width(tok)
             break if used + w > cols
 
-            taken << ch
+            taken << tok
             used += w
           end
           taken.reverse.join
+        end
+
+        # Split a string into render tokens: each ANSI SGR escape (\e[…m) is one
+        # atomic token, every other character is its own token. Lets the
+        # width-walk treat an escape as an indivisible zero-width unit so
+        # left-truncation can never cut one mid-sequence (#426, Bug A).
+        def tokenize(str)
+          str.scan(/#{ANSI_SGR}|./m)
         end
       end
     end

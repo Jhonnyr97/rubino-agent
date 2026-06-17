@@ -1,6 +1,90 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::Database::Connection do
+  # Concurrent first-boot: a losing racer that connects while another process
+  # holds a write lock mid-migration must WAIT the lock out (busy handler +
+  # bounded retry around the WAL-pragma write), never surface a raw
+  # `SQLite3::BusyException: database is locked` backtrace (#333/#359), and —
+  # if the lock outlives the retry budget — raise a CLEAN domain BusyError, not
+  # the raw driver exception. flock-based migration serialization (#440) keeps
+  # the DB consistent; this is purely the no-backtrace-escapes contract.
+  describe "concurrent-boot write-lock resilience (#333/#359)" do
+    # Hold a write lock (BEGIN IMMEDIATE) on +path+ in a fork for +hold+ seconds,
+    # signalling the parent (via a pipe) the instant the lock is taken so the
+    # window is deterministic, not timing-dependent.
+    def with_held_write_lock(path, hold:, level: "IMMEDIATE")
+      rd, wr = IO.pipe
+      pid = fork do
+        rd.close
+        holder = Sequel.sqlite(path, timeout: 10_000)
+        holder.run("BEGIN #{level}")
+        holder.run("INSERT INTO t VALUES (1)")
+        wr.puts("locked")
+        wr.close
+        sleep(hold)
+        holder.run("COMMIT")
+        exit!(0)
+      end
+      wr.close
+      rd.gets # block until the child actually holds the lock
+      rd.close
+      yield
+    ensure
+      Process.wait(pid) if pid
+    end
+
+    # Seed a real on-disk DELETE-journal DB and yield its path. connect!'s
+    # `PRAGMA journal_mode=WAL` is then a real write that contends with a held
+    # lock — the exact race the fix must absorb.
+    def with_seeded_db
+      skip "fork unavailable on this platform" unless Process.respond_to?(:fork)
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        # Seed as a PLAIN delete-journal DB (NOT via described_class, which would
+        # already flip it to WAL) so connect!'s `PRAGMA journal_mode=WAL` is a
+        # genuine write that contends with a held lock — the real race.
+        seed = Sequel.sqlite(path)
+        seed.run("CREATE TABLE t (a integer)")
+        seed.disconnect
+        yield path
+      end
+    end
+
+    it "waits out a transient lock during connect instead of leaking a backtrace" do
+      with_seeded_db do |path|
+        with_held_write_lock(path, hold: 0.4) do
+          conn = described_class.new(path)
+          # connect! runs `PRAGMA journal_mode=WAL` (a write) under
+          # with_busy_retry; without it this raises SQLite3::BusyException
+          # INSTANTLY.
+          expect { conn.db.fetch("SELECT 1").first }.not_to raise_error
+        ensure
+          conn&.close
+        end
+      end
+    end
+
+    it "raises a clean BusyError (never a raw SQLite3 backtrace) when the lock outlives the retry budget" do
+      stub_const("#{described_class}::CONNECT_RETRY_BUDGET", 0.2)
+      stub_const("#{described_class}::BUSY_TIMEOUT_MS", 50)
+      with_seeded_db do |path|
+        with_held_write_lock(path, hold: 1.0, level: "EXCLUSIVE") do
+          conn = described_class.new(path)
+          expect { conn.db }.to raise_error(Rubino::Database::BusyError, /locked by another rubino process/)
+        ensure
+          conn&.close
+        end
+      end
+    end
+
+    it "classifies a lock error as busy (not corruption)" do
+      conn = described_class.new(":memory:")
+      busy = Sequel::DatabaseError.new("SQLite3::BusyException: database is locked")
+      expect(conn.send(:busy_lock_error?, busy)).to be true
+      expect(conn.corruption_error?(busy)).to be false
+    end
+  end
+
   describe "in-memory connection" do
     let(:connection) { described_class.new(":memory:") }
 
@@ -95,6 +179,98 @@ RSpec.describe Rubino::Database::Connection do
         expect(File.stat(path).mode & 0o777).to eq(0o640)
       ensure
         conn&.close
+      end
+    end
+  end
+
+  # HIGH-2: a truncated/malformed on-disk DB must be DETECTABLE (so callers can
+  # offer recovery instead of crashing with a raw SQLite3::CorruptException) and
+  # QUARANTINABLE (rename aside, recreate fresh).
+  describe "corrupt-database detection & quarantine" do
+    # Build a real on-disk WAL DB then truncate it mid-file so the very first
+    # PRAGMA on connect raises SQLite3::CorruptException — the exact repro from
+    # the QA report (`truncate -s 20000 rubino.sqlite3`).
+    def corrupt_db_at(path)
+      conn = described_class.new(path)
+      conn.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| conn.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      conn.close
+      File.truncate(path, 20_000)
+    end
+
+    it "reports corrupt? => true for a malformed on-disk file" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        corrupt_db_at(path)
+        expect(described_class.new(path).corrupt?).to be true
+      end
+    end
+
+    # #377 (residual #359): a garbage/truncated HEADER raises
+    # SQLite3::NotADatabaseException ("file is not a database"), NOT
+    # CorruptException. corruption_error? matched only the malformed case, so the
+    # predicate missed and `chat` said "isn't set up" while user commands leaked a
+    # raw backtrace. A file SQLite can't even recognise as a DB is corrupt-but-
+    # present too and must route to the doctor / quarantine path.
+    it "reports corrupt? => true for a garbage-header file (#377)" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        File.binwrite(path, "this is not a sqlite database at all\x00\xFF")
+        expect(described_class.new(path).corrupt?).to be true
+      end
+    end
+
+    it "corruption_error? matches NotADatabaseException by class and message (#377)" do
+      conn = described_class.new(":memory:")
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "garbage.sqlite3")
+        File.binwrite(path, "definitely not sqlite")
+        raised =
+          begin
+            described_class.new(path).db.execute("SELECT 1")
+            nil
+          rescue StandardError => e
+            e
+          end
+        expect(raised).not_to be_nil
+        expect(conn.corruption_error?(raised)).to be true
+      end
+
+      # Also matches a hand-built error by message substring, independent of the
+      # sqlite3 gem constants being loaded.
+      msg_only = StandardError.new("file is not a database")
+      expect(conn.corruption_error?(msg_only)).to be true
+    end
+
+    it "reports corrupt? => false for a healthy DB and for an absent file" do
+      Dir.mktmpdir do |tmp|
+        healthy = File.join(tmp, "ok.sqlite3")
+        described_class.new(healthy).tap(&:db).close
+        expect(described_class.new(healthy).corrupt?).to be false
+        expect(described_class.new(File.join(tmp, "missing.sqlite3")).corrupt?).to be false
+      end
+    end
+
+    it "corrupt? => false for an in-memory DB (never on disk)" do
+      expect(described_class.new(":memory:").corrupt?).to be false
+    end
+
+    it "quarantine! renames the malformed file (and its WAL/SHM) aside" do
+      Dir.mktmpdir do |tmp|
+        path = File.join(tmp, "db.sqlite3")
+        corrupt_db_at(path)
+        File.write("#{path}-wal", "w")
+        File.write("#{path}-shm", "s")
+
+        moved = described_class.new(path).quarantine!
+
+        expect(File.exist?(path)).to be false
+        expect(moved).to match(/db\.sqlite3\.corrupt-\d{14}\z/)
+        expect(File.exist?(moved)).to be true
+        expect(Dir["#{path}.corrupt-*-wal"]).not_to be_empty
+        expect(Dir["#{path}.corrupt-*-shm"]).not_to be_empty
+        # A fresh connection at the original path is now healthy.
+        expect(described_class.new(path).healthy?).to be true
       end
     end
   end

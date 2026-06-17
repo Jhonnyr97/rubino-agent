@@ -45,12 +45,31 @@ module Rubino
       ].freeze
 
       # Mutating/executing flags that disqualify an otherwise-safe head.
-      # Matched as exact token or `flag=value`.
+      # Matched as exact token or `flag=value`. Heads that read by default but
+      # gain a WRITE or an EXEC through one of these flags: an allowlisted entry
+      # for the head pre-approves the read, never the smuggled write/exec.
+      #   sort -o FILE / --output=FILE         arbitrary write (SEC-R2-2)
+      # (sed/tar/tee/awk/... are handled by CODE_EXEC_HEADS below — their
+      # argument is itself a program / they pipe to a shell, so no flag list can
+      # make an arbitrary-arg invocation safe.)
       FORBIDDEN_FLAGS = {
         "find" => %w[-exec -execdir -ok -okdir -delete -fprintf -fprint -fprint0 -fls],
         "date" => %w[-s --set],
-        "tree" => %w[-o]
+        "tree" => %w[-o],
+        "sort" => %w[-o --output]
       }.freeze
+
+      # Heads whose very PURPOSE is to run arbitrary code (or whose argument is
+      # a program that can spawn a shell), so no flag inspection can make an
+      # arbitrary-arg invocation provably safe. An allowlist entry for one of
+      # these is DENIED auto-approval outright (default-deny): being on the
+      # allowlist must never pre-approve `awk 'BEGIN{system("…")}'`,
+      # `sed -n '…e cmd'`, `perl -e …`, `tee FILE`, etc. (SEC-R2-2). This is the
+      # convenience-layer floor; these still run after an explicit prompt.
+      CODE_EXEC_HEADS = %w[
+        awk gawk mawk sed perl python python2 python3 ruby node php pwsh
+        bash sh zsh ksh dash env xargs eval source tee tar dd
+      ].freeze
 
       # Leading `FOO=bar cmd` environment assignment — rejected, not stripped:
       # an assignment can change what the command resolves to (PATH=...) or
@@ -179,15 +198,136 @@ module Rubino
         end
       end
 
+      # Heads that are otherwise allowlistable but can still WRITE or EXEC
+      # through trailing flags (git --output, find -exec/-delete/-fprintf,
+      # date -s, tree -o, sort -o, tar --to-command). The user command allowlist
+      # reuses this to vet the flags of a matched entry, so an allowlisted head
+      # (e.g. `git diff`) can never smuggle an arbitrary write via `--output`.
+      FLAG_VETTED_HEADS = (["git"] + FORBIDDEN_FLAGS.keys).freeze
+
+      # True when `tokens` (a single already-split, non-chained segment whose
+      # head matched a user allowlist entry) must NOT be auto-approved because
+      # the head can WRITE or EXEC arbitrary code with these arguments. An
+      # allowlist entry pre-approves the EXACT read-only intent of a head, never
+      # a smuggled write/exec form. Pure inspection; it does NOT require the
+      # command to be read-only overall (an allowlist entry is user-chosen), it
+      # only rejects the forms that turn a read into a write/exec.
+      #
+      #   - CODE_EXEC_HEADS (awk/sed/perl/python/tar/tee/xargs/...) are
+      #     default-denied outright: their argument IS a program (or pipes to a
+      #     shell), so `awk 'BEGIN{system("…")}'`, `sed -e '…'`, `tar
+      #     --to-command=sh` can't be made provably safe by flag inspection
+      #     (SEC-R2-2);
+      #   - git is screened for BOTH global flags before the subcommand
+      #     (`-c alias.X=!cmd`, `-c core.sshCommand=…`, `-C dir`, `--exec-path`)
+      #     and a code-loading/writing subcommand (`apply`, `am`, hooks, …) and
+      #     the --output/-o write flag (SEC-R2-1);
+      #   - the remaining FORBIDDEN_FLAGS heads (find/date/tree/sort/...) are
+      #     screened for their specific write/exec flags.
+      def dangerous_flags?(tokens)
+        head = tokens.first
+        return true if CODE_EXEC_HEADS.include?(head)
+        return false unless FLAG_VETTED_HEADS.include?(head)
+
+        if head == "git"
+          dangerous_git?(tokens)
+        else
+          !safe_flags?(head, tokens)
+        end
+      end
+
+      # Git GLOBAL flags (between `git` and the subcommand) that load or run
+      # arbitrary code, and the dangerous subcommands an allowlisted bare `git`
+      # would otherwise pre-approve. None of these belong to a read-only git
+      # intent, so an allowlisted git head carrying any of them is rejected.
+      #
+      #   -c <name>=<val> / -c<name>=<val>   sets config for this invocation; the
+      #     load-bearing ones are alias.* (a `!cmd` alias = RCE), core.sshCommand,
+      #     core.pager, core.editor, core.hooksPath, core.fsmonitor,
+      #     uploadpack/receivepack.* — all run a command. We reject -c entirely
+      #     for an auto-approved git: a read-only git never needs per-call config.
+      #   --config-env=<name>=<envvar>       sets config like -c, sourcing the
+      #     VALUE from an environment variable (so `--config-env=alias.x=PWNVAR`
+      #     with PWNVAR='!cmd' is the same RCE as `-c alias.x='!cmd'`). Rejected
+      #     for the same reason as -c (SEC-R3-1).
+      #   --attr-source=<tree>               reads .gitattributes from an
+      #     arbitrary tree-ish; not config, but never part of a read-only intent,
+      #     so rejected too (SEC-R3-1).
+      #   -C <path> / --exec-path[=path]     changes the working dir / git's exec
+      #     path (which can point git at attacker binaries).
+      GIT_GLOBAL_EXEC_FLAGS = %w[
+        -c --config-env --exec-path --git-dir --work-tree --namespace --attr-source -C
+      ].freeze
+
+      # Subcommands that mutate the working tree / apply attacker-supplied data /
+      # run hooks, never part of a read-only intent. An allowlisted git head must
+      # not pre-approve them even though they don't start with `-`.
+      GIT_DANGEROUS_SUBCOMMANDS = %w[
+        apply am rebase merge cherry-pick revert reset checkout switch restore
+        clean stash push pull fetch clone commit hook filter-branch
+        update-index update-ref symbolic-ref config send-email daemon
+      ].freeze
+
+      # True when a git invocation whose head matched an allowlist entry carries
+      # a code-loading global flag, a dangerous subcommand, or an output-writing
+      # flag. Scans the GLOBAL flag region (before the subcommand) AND the rest.
+      def dangerous_git?(tokens)
+        rest = tokens.drop(1)
+        # Global flag region: everything up to the first non-flag token (the
+        # subcommand). `-c name=val` / `-C path` may consume the next token as
+        # their value, so a value that happens to look like a subcommand isn't
+        # mistaken for one.
+        i = 0
+        while i < rest.length
+          tok = rest[i]
+          break unless tok.start_with?("-")
+
+          return true if git_global_exec_flag?(tok)
+
+          # -c / -C / --exec-path take a value as the NEXT token when not glued.
+          i += 1 if %w[-c -C].include?(tok) && !rest[i + 1].nil?
+          i += 1
+        end
+
+        sub = rest[i]
+        return true if sub && GIT_DANGEROUS_SUBCOMMANDS.include?(sub)
+
+        git_write_flag?(rest.drop(i + 1))
+      end
+
+      # A global-flag token matches when it is the exact flag (`-c`,
+      # `--exec-path`), its `flag=value` form (`--exec-path=/x`), or a glued
+      # short form (`-cNAME=VAL`, `-Cpath`).
+      def git_global_exec_flag?(tok)
+        GIT_GLOBAL_EXEC_FLAGS.any? do |f|
+          tok == f ||
+            tok.start_with?("#{f}=") ||
+            (f.length == 2 && f.start_with?("-") && !f.start_with?("--") && tok.start_with?(f) && tok.length > 2)
+        end
+      end
+
+      # Git flags that write the output to an arbitrary file:
+      #   --output <file> / --output=<file>  (git diff/log/show/format-patch)
+      #   -o <file> / -o<file>               (short form, git log/format-patch)
+      # `-O<orderfile>` reads an orderfile (no write) but is rejected too, so a
+      # short-flag write form can never slip through ambiguity. Matched on the
+      # whole rest of the segment (token or `flag=value` / glued `-oFILE`).
+      def git_write_flag?(rest)
+        rest.any? do |t|
+          t == "--output" || t.start_with?("--output=", "-o", "-O")
+        end
+      end
+
       # Read-only git: a safe subcommand (no global flags before it — `git -C`
-      # falls to the prompt), never --output (git log/diff/show can write a
-      # file with it), branch/remote in their pure listing forms only.
+      # falls to the prompt), never an output-writing flag (git log/diff/show
+      # can write a file with --output/-o), branch/remote in their pure
+      # listing forms only.
       def safe_git?(tokens)
         sub = tokens[1]
         return false if sub.nil? || sub.start_with?("-")
 
         rest = tokens.drop(2)
-        return false if rest.any? { |t| t == "--output" || t.start_with?("--output=") }
+        return false if git_write_flag?(rest)
 
         case sub
         when *GIT_READONLY_SUBCOMMANDS then true

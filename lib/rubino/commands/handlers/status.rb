@@ -57,12 +57,17 @@ module Rubino
         # skills/AGENTS.md not loading" confusion. Only earns a line when there
         # is something to say (>1 root or any untrusted); nil otherwise.
         def status_dirs_line
-          roots     = Rubino::Workspace.canonical_roots
-          untrusted = roots.count { |d| !Rubino::Trust.trusted?(d) }
-          return nil if roots.size <= 1 && untrusted.zero?
+          roots = Rubino::Workspace.canonical_roots
+          # Only count a dir as "withheld" when it actually has context/skills
+          # the user declined (gateworthy + untrusted). A plain scratch dir has
+          # nothing to withhold, so it isn't flagged (MF-6).
+          withheld = roots.count do |d|
+            !Rubino::Trust.trusted?(d) && Rubino::CLI::TrustGate.gateworthy?(d)
+          end
+          return nil if roots.size <= 1 && withheld.zero?
 
           line = "#{roots.size} root#{"s" if roots.size != 1}"
-          untrusted.positive? ? "#{line} · #{untrusted} untrusted (context/skills withheld)" : line
+          withheld.positive? ? "#{line} · #{withheld} not trusted (context/skills not loaded)" : line
         rescue StandardError
           nil
         end

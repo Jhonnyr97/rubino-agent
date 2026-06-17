@@ -56,6 +56,21 @@ RSpec.describe Rubino::Commands::Loader do
     it "returns nil for non-slash input" do
       expect(loader.parse("hello")).to be_nil
     end
+
+    # H4: a bare `/` used to parse to [nil, ""] and fall through to a real LLM
+    # turn; `/ foo` parsed to ["", "foo"] and reported "unknown command: /".
+    # Both now map to the built-in `commands` listing so neither misfires.
+    it "maps a bare slash to the commands listing (not a real turn)" do
+      expect(loader.parse("/")).to eq(["commands", ""])
+    end
+
+    it "maps a slash followed by only whitespace to the commands listing" do
+      expect(loader.parse("/   ")).to eq(["commands", ""])
+    end
+
+    it "maps a slash + space + args to the commands listing (not 'unknown command')" do
+      expect(loader.parse("/ foo")).to eq(["commands", ""])
+    end
   end
 
   # -----------------------------------------------------------------------
@@ -280,6 +295,25 @@ RSpec.describe Rubino::Commands::Command do
       result = cmd.render("")
       expect(result).to include("file not found")
     end
+
+    # Regression #273: under a bare C/POSIX locale the default external encoding
+    # is US-ASCII, so a plain File.read tagged the @-file content ASCII and
+    # gsub!-ing it into the UTF-8 prompt raised Encoding::CompatibilityError on
+    # the first non-ASCII byte. The file is now read as UTF-8 explicitly,
+    # independent of the locale, so a UTF-8 prompt file reads successfully.
+    it "reads a UTF-8 @file under a simulated ASCII external encoding (#273)" do
+      file_path = File.join(tmp_dir, "ctx.txt")
+      File.write(file_path, "café — über naïve ✓", encoding: "UTF-8")
+      cmd = write_command("cmd.md", "---\nname: cmd\n---\nContext: @#{file_path}")
+
+      # Simulate LANG=C/POSIX: a locale-default read would come back US-ASCII.
+      allow(Encoding).to receive(:default_external).and_return(Encoding::US_ASCII)
+
+      result = nil
+      expect { result = cmd.render("") }.not_to raise_error
+      expect(result).to include("café — über naïve ✓")
+      expect(result.encoding).to eq(Encoding::UTF_8)
+    end
   end
 end
 
@@ -475,16 +509,19 @@ RSpec.describe Rubino::Commands::Executor do
     end
 
     it "includes agent and model from command" do
+      # A non-agent name: a custom command sharing a name with a registered
+      # agent (e.g. "plan") is intentionally shadowed by the agent (#320 — the
+      # `/<name>` agent channel is resolved before custom .md commands).
       cmd = instance_double(
         Rubino::Commands::Command,
-        name: "plan", description: "Plan",
+        name: "myplan", description: "Plan",
         agent: "plan", model: "claude-3-haiku"
       )
       allow(cmd).to receive(:render).and_return("plan prompt")
-      allow(loader).to receive(:parse).and_return(["plan", ""])
-      allow(loader).to receive(:find).with("plan").and_return(cmd)
+      allow(loader).to receive(:parse).and_return(["myplan", ""])
+      allow(loader).to receive(:find).with("myplan").and_return(cmd)
 
-      result = executor.try_execute("/plan")
+      result = executor.try_execute("/myplan")
       expect(result[:agent]).to eq("plan")
       expect(result[:model]).to eq("claude-3-haiku")
     end

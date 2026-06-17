@@ -2,6 +2,10 @@
 
 require "spec_helper"
 require "tmpdir"
+# Hash#to_yaml / YAML.safe_load_file are used directly in this spec's setup; load
+# yaml explicitly so the file passes IN ISOLATION (not only when an earlier spec
+# happens to require it first — an order-dependency the dry==real gate misses).
+require "yaml"
 
 RSpec.describe Rubino::Security::DenyPersister do
   around do |example|
@@ -74,7 +78,14 @@ RSpec.describe Rubino::Security::DenyPersister do
     end
 
     it "a fresh policy built from the reloaded config auto-denies the persisted pattern WITHOUT prompting" do
-      File.write(@config_path, { "approvals" => { "mode" => "manual" } }.to_yaml)
+      # confirm_all so an unrelated, non-read-only command (`make build`) resolves
+      # to :ask, letting us assert the persisted deny is NOT over-broad — without
+      # it the default dangerous_only policy auto-allows `make build` and the
+      # "unaffected" assertion below can't distinguish allow-by-policy from
+      # allow-by-deny-miss (item 7: confirm_policy is the sole source of truth).
+      File.write(@config_path,
+                 { "approvals" => { "mode" => "manual" },
+                   "security" => { "confirm_policy" => "confirm_all" } }.to_yaml)
       seed = Rubino::Config::Configuration.new(raw: YAML.safe_load_file(@config_path))
 
       # Before the deny is persisted, a fresh policy auto-allows this

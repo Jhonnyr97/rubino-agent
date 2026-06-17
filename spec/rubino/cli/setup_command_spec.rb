@@ -47,12 +47,35 @@ RSpec.describe Rubino::CLI::SetupCommand do
     ui.messages.select { |lvl, _| lvl == :success }.map(&:last)
   end
 
-  it "does NOT print a false 'Setup complete!' when no model is configured" do
+  it "does NOT print a false 'Setup complete!' when the credential is missing" do
     allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
 
     described_class.new.execute
 
     expect(success_lines).not_to include(a_string_matching(/Setup complete/))
+  end
+
+  # A model IS configured (the seeded default) but its credential is missing —
+  # the warning must name the MISSING KEY, not falsely claim "no model is
+  # configured" (that copy is reserved for a genuinely blank model.default).
+  it "reports the missing credential (not 'no model configured') when a model IS set" do
+    allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
+
+    described_class.new.execute
+
+    warning = ui.messages.find { |lvl, _| lvl == :warning }&.last
+    expect(warning).to match(/API key for .+ is missing/i)
+    expect(ui.messages).not_to include([:warning, a_string_matching(/no model is configured/i)])
+  end
+
+  # The genuine "no model is configured" copy is kept for the case where
+  # model.default is actually blank.
+  it "says 'no model is configured' only when model.default is blank" do
+    allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
+    allow_any_instance_of(Rubino::Config::Configuration).to receive(:model_default).and_return("")
+
+    described_class.new.execute
+
     expect(ui.messages).to include([:warning, a_string_matching(/no model is configured/i)])
   end
 
@@ -62,5 +85,128 @@ RSpec.describe Rubino::CLI::SetupCommand do
     described_class.new.execute
 
     expect(success_lines).to include(a_string_matching(/Setup complete/))
+  end
+
+  # `setup` is the documented repair path. A concurrent first-boot race (#race)
+  # can leave the DB with DUPLICATE schema_info version rows (and a partial
+  # schema); `setup` must REPAIR that without a manual `rm` — dedupe the
+  # migrator table to a single row and finish the migrations — never crash.
+  # NOTE: the old "repairs a raced/duplicate schema_info DB" example was removed
+  # with the migrator squash. setup now simply migrate!s under the cross-process
+  # flock; the single idempotent baseline + the side-effect-free up_to_date? fast
+  # path PREVENT the duplicate-schema_info race from forming, so there is no
+  # duplicate-row bookkeeping left for setup to dedupe (Migrator#repair! /
+  # duplicate_version_rows? were removed). A normal fresh-home `setup` still
+  # initializes the schema; that is covered by the examples above.
+
+  # #392a: a non-interactive `setup` can't prompt, so the seeded default
+  # (openai/gpt-4.1 → OPENAI_API_KEY) is a dead end when the only key in the
+  # env is another provider's. Auto-detect a single present provider key and point
+  # model.provider/model.default at it so a headless setup lands usable.
+  describe "non-interactive provider auto-detect (#392a)" do
+    before { allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true) }
+
+    def configured
+      Rubino.reload_configuration!
+      [Rubino.configuration.model_provider, Rubino.configuration.model_default]
+    end
+
+    it "defaults to minimax when ONLY MINIMAX_API_KEY is present" do
+      ENV["MINIMAX_API_KEY"] = "mm-test"
+
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("minimax")
+      expect(model).to eq("MiniMax-M3")
+      # The anthropic_compatible block must be written too, or the model is
+      # routed to a provider with no usable endpoint.
+      expect(Rubino.configuration.provider_config("minimax")["anthropic_compatible"]).to be true
+      expect(ui.messages).to include([:success, a_string_matching(/MINIMAX_API_KEY/)])
+    end
+
+    it "detects openai when ONLY OPENAI_API_KEY is present" do
+      ENV["OPENAI_API_KEY"] = "sk-openai-test"
+
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("openai")
+      expect(model).to eq("gpt-4.1")
+    end
+
+    it "keeps the seeded openai default when no provider key is present" do
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("auto").or eq("openai")
+      expect(model).to eq("openai/gpt-4.1")
+    end
+
+    it "keeps the seeded default (ambiguous) when more than one key is present" do
+      ENV["OPENAI_API_KEY"]    = "sk-openai-test"
+      ENV["ANTHROPIC_API_KEY"] = "an-test"
+
+      described_class.new.execute
+
+      _provider, model = configured
+      expect(model).to eq("openai/gpt-4.1")
+    end
+
+    # F9: a re-run of `setup` over an EXISTING config must never silently
+    # overwrite a model the user deliberately picked. With a custom
+    # model.default/provider already on disk, auto-detect PRESERVES it (the
+    # headless path can't prompt) and tells the user how to switch.
+    it "PRESERVES a user's custom model on re-run instead of clobbering it (F9)" do
+      loader = Rubino::Config::Loader.new
+      loader.create_default_config!
+      writer = Rubino::Config::Writer.new(config_path: loader.config_path)
+      writer.set("model.default", "claude-sonnet-4-5")
+      writer.set("model.provider", "anthropic")
+      Rubino.reload_configuration!
+
+      ENV["MINIMAX_API_KEY"] = "mm-test"
+
+      described_class.new.execute
+
+      provider, model = configured
+      expect(provider).to eq("anthropic")
+      expect(model).to eq("claude-sonnet-4-5")
+      expect(ui.messages).to include([:status, a_string_matching(/keeping your configured model/i)])
+    end
+  end
+
+  # HIGH-2: `setup` is the documented remedy for a broken install, so it must
+  # self-heal a corrupt/truncated DB rather than crashing with a raw
+  # SQLite3::CorruptException backtrace and leaving the file unrepaired.
+  describe "corrupt-database recovery" do
+    before { allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true) }
+
+    # Build a real WAL DB at the configured path, then truncate it mid-file so
+    # the next connect raises SQLite3::CorruptException (QA repro).
+    def write_corrupt_db!
+      path = Rubino.database.db_path
+      Rubino.database.db.run("CREATE TABLE t (a integer, b text)")
+      300.times { |i| Rubino.database.db.run("INSERT INTO t VALUES (#{i}, '#{"x" * 200}')") }
+      Rubino.database.close
+      File.truncate(path, 20_000)
+      Rubino.reset_database!
+      path
+    end
+
+    it "recovers without a backtrace: quarantines the corrupt file and recreates a working DB" do
+      path = write_corrupt_db!
+      expect(Rubino.database.corrupt?).to be true
+
+      expect { described_class.new.execute }.not_to raise_error
+
+      # Corrupt file moved aside; a fresh, healthy, migrated DB is in its place.
+      expect(Dir["#{path}.corrupt-*"]).not_to be_empty
+      Rubino.reset_database!
+      expect(Rubino.database.corrupt?).to be false
+      expect(Rubino.database.healthy?).to be true
+      expect(Rubino::Database::Migrator.new(Rubino.database).pending?).to be false
+      expect(ui.messages).to include([:warning, a_string_matching(/corrupt/i)])
+    end
   end
 end

@@ -40,13 +40,32 @@ module Rubino
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
-        expanded = File.expand_path(file_path)
+        expanded = expand_workspace_path(file_path)
+        # SECRET/credential writes (#446) are no longer HARD-refused here — they
+        # are gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask): an
+        # APPROVED write to your .env actually writes, a denied/headless one
+        # never reaches #call. The workspace sandbox below is unchanged.
         return workspace_violation_message(file_path) unless within_workspace?(expanded)
 
-        FileUtils.mkdir_p(File.dirname(expanded))
-
         existed = File.exist?(expanded)
-        File.write(expanded, content)
+        # Read-before-overwrite guard (r5 MF-2, Claude Code's rule): writing
+        # over an EXISTING file requires that the model read it this session, so
+        # a blind `write` can't silently clobber content the model never saw
+        # (the near-data-loss path). NEW files skip the guard. No tracker
+        # injected → no guard (single-tool unit tests / one-shot MCP).
+        if existed && (guard = overwrite_guard_error(expanded, file_path))
+          return guard
+        end
+
+        FileUtils.mkdir_p(File.dirname(expanded))
+        # Crash-safe write: temp-in-same-dir + fsync + atomic rename, so a
+        # SIGINT/SIGTERM/OOM-kill mid-write leaves the ORIGINAL file intact
+        # rather than a torn/truncated one (HIGH-1). The bare File.write here
+        # could be cut mid-flush, destroying the user's existing content.
+        Util::AtomicFile.write_atomic(expanded, content)
+        # Refresh-on-own-write so a later edit of this just-written file passes
+        # the read-gate (r5 B2) and a re-read sees it as authoritative.
+        @read_tracker&.note_write(expanded, content)
 
         verb  = existed ? "overwrote" : "created"
         bytes = content.to_s.bytesize

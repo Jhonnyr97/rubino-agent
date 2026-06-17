@@ -13,12 +13,17 @@ module Rubino
         true
       end
 
+      # Drop Thor's inherited `tree` so its banner doesn't render the doubled
+      # "rubino rubino memory tree" (#327); the top-level `rubino tree` covers it.
+      remove_command :tree
+
       desc "list", "List stored memories (live facts only; --all includes superseded)"
       option :kind, type: :string, desc: "Filter by memory kind"
       option :limit, type: :numeric, default: 20, desc: "Max results"
       option :all, type: :boolean, default: false,
                    desc: "Include superseded (soft-retired) facts"
       def list
+        guard_corrupt_database!
         Rubino.ensure_database_ready!
         memories = backend_store.list(kind: options[:kind], limit: options[:limit],
                                       include_retired: options[:all])
@@ -42,38 +47,56 @@ module Rubino
       def show(id)
         memory = backend_store.find(id)
 
-        if memory.nil?
-          Rubino.ui.error("memory not found: #{id}")
-          return
-        end
+        # Mirror SessionCommand (#20, P2-H1/H2): a not-found is a FAILURE, so
+        # raise Thor::Error — exit_on_failure? turns it into a non-zero exit with
+        # the message on stderr, so automation can detect the miss and a piped
+        # stdout stays clean. ui.error wrote to stdout and returned 0.
+        raise Thor::Error, "memory not found: #{id}" if memory.nil?
 
         self.class.render(memory, ui: Rubino.ui)
       end
 
       # ONE fact-details rendering for both surfaces (#184): the CLI verb
       # above and the in-chat `/memory show <id>` (Commands::Executor).
+      #
+      # Memory content (and, defensively, every other stored field) is
+      # attacker-influenceable — facts are EXTRACTED from conversation, so a
+      # raw `\e]0;…\a` / `\e[2J` in `content` would hijack the window title or
+      # clear the screen the moment `info` printed it (CWE-150, R4-N2). The
+      # `info`/`success` family does NOT sanitize (PrinterBase#puts_colored is
+      # the shared funnel and legitimately receives rubino's OWN pastel ANSI
+      # from other callers, e.g. the `/agents` watch view, so it can't strip
+      # escapes wholesale). We therefore neutralize the UNTRUSTED CONTENT here,
+      # before it is handed to the printer, into visible caret notation.
       def self.render(memory, ui:)
-        ui.info("ID: #{memory[:id]}")
-        ui.info("Kind: #{memory[:kind]}")
-        ui.info("Confidence: #{memory[:confidence]}")
-        ui.info("Created: #{memory[:created_at]}")
+        ui.info("ID: #{safe(memory[:id])}")
+        ui.info("Kind: #{safe(memory[:kind])}")
+        ui.info("Confidence: #{safe(memory[:confidence])}")
+        ui.info("Created: #{safe(memory[:created_at])}")
         # The temporal chain (#88): a soft-retired fact shows when it stopped
         # being true and which fact replaced it.
         if memory[:valid_to]
-          ui.info("Retired: #{memory[:valid_to]}")
-          ui.info("Superseded by: #{memory[:superseded_by]}") if memory[:superseded_by]
+          ui.info("Retired: #{safe(memory[:valid_to])}")
+          ui.info("Superseded by: #{safe(memory[:superseded_by])}") if memory[:superseded_by]
         end
         ui.separator
-        ui.info(memory[:content])
+        ui.info(safe(memory[:content]))
+      end
+
+      # Neutralize terminal-control bytes in untrusted stored text to visible
+      # caret/<XX> notation (CWE-150). Shared by every memory surface that
+      # prints a fact field through the non-sanitizing `info` funnel.
+      def self.safe(text)
+        Util::Output.sanitize_terminal(text)
       end
 
       desc "delete ID", "Delete a specific memory"
       def delete(id)
-        if backend_store.delete(id)
-          Rubino.ui.success("Memory deleted: #{id}")
-        else
-          Rubino.ui.error("memory not found: #{id}")
-        end
+        # Same not-found-is-failure contract as #show (P2-H1/H2): exit non-zero
+        # with the error on stderr instead of stdout-printing and returning 0.
+        raise Thor::Error, "memory not found: #{id}" unless backend_store.delete(id)
+
+        Rubino.ui.success("Memory deleted: #{id}")
       end
 
       desc "backend [NAME]", "Show the active memory backend, or switch to NAME"
@@ -81,10 +104,8 @@ module Rubino
         return show_backend if name.nil?
 
         unless Memory::Backends.registered?(name)
-          Rubino.ui.error(
-            "Unknown memory backend: #{name}. Available: #{Memory::Backends.names.join(", ")}"
-          )
-          return
+          raise Thor::Error,
+                "Unknown memory backend: #{name}. Available: #{Memory::Backends.names.join(", ")}"
         end
 
         Config::Writer.new(config_path: config_path).set("memory.backend", name)
@@ -129,6 +150,18 @@ module Rubino
 
       def config_path
         Config::Loader.new.config_path
+      end
+
+      # Turn a PRESENT-but-UNUSABLE on-disk DB (corrupt image, or the duplicate
+      # `schema_info` rows a concurrent first-boot race leaves, #race) into a
+      # clean, actionable diagnostic instead of leaking a raw Sequel/sqlite3
+      # backtrace (#333b / #race) — shares one detection with
+      # SessionCommand#guard_corrupt_database! via Rubino.database_repair_message.
+      # Thor prints a Thor::Error's message to stderr and exits non-zero with no
+      # backtrace.
+      def guard_corrupt_database!
+        message = Rubino.database_repair_message
+        raise Thor::Error, message if message
       end
     end
   end
