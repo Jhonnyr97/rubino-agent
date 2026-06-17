@@ -264,6 +264,54 @@ RSpec.describe Rubino::Session::Repository do
         expect(titles).to include("here")
       end
     end
+
+    # #498: a `--search` filter containing FTS/LIKE/tokenizer-hostile bytes (an
+    # em-dash, an apostrophe, a double-quote, LIKE wildcards) must NOT surface a
+    # raw SQLite3::SQLException — the value has to be bound/escaped, not inlined.
+    describe "title search robustness (#498)" do
+      it "filters titles containing punctuation without raising a SQL error" do
+        repo.create(source: "cli", title: "cost is 5 — 10 dollars")
+        repo.create(source: "cli", title: "unrelated")
+
+        results = nil
+        expect { results = repo.list(search: "5 — 10", cwd: nil) }.not_to raise_error
+        expect(results.map { |s| s[:title] }).to eq(["cost is 5 — 10 dollars"])
+      end
+
+      it "matches an apostrophe/double-quote substring literally" do
+        repo.create(source: "cli", title: %(it's a "quoted" plan))
+        expect(repo.list(search: %(it's a "quoted"), cwd: nil).size).to eq(1)
+      end
+
+      it "treats LIKE wildcards in the search as literal characters" do
+        repo.create(source: "cli", title: "50% off")
+        repo.create(source: "cli", title: "fifty percent")
+
+        # `%` must match a literal percent, not act as a wildcard that matches
+        # every row (the unescaped `Sequel.like("%#{search}%")` bug).
+        expect(repo.list(search: "%", cwd: nil).map { |s| s[:title] }).to eq(["50% off"])
+        expect(repo.list(search: "a_c", cwd: nil)).to be_empty
+      end
+    end
+
+    # #498: a title carrying a NUL byte (valid UTF-8, so it survives
+    # String#scrub) terminates SQLite's C string mid-literal and raised a raw
+    # `SQLite3::SQLException: unrecognized token` on INSERT. It is stripped at
+    # the persist seam so the session stores and round-trips cleanly.
+    describe "NUL-byte titles (#498)" do
+      it "stores a NUL-containing title without raising and strips the NUL" do
+        session = nil
+        expect { session = repo.create(source: "cli", title: "a b c") }
+          .not_to raise_error
+        expect(repo.find(session[:id])[:title]).to eq("abc")
+      end
+
+      it "scrubs a NUL out of a title set via #update" do
+        session = repo.create(source: "cli")
+        expect { repo.update(session[:id], title: "ti tle") }.not_to raise_error
+        expect(repo.find(session[:id])[:title]).to eq("title")
+      end
+    end
   end
 
   describe "#increment_message_count!" do

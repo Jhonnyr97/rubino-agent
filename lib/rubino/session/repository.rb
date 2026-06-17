@@ -83,7 +83,7 @@ module Rubino
           source: source,
           model: model,
           provider: provider,
-          title: title,
+          title: scrub_text(title),
           status: "active",
           owner_pid: Process.pid,
           cwd: cwd,
@@ -109,7 +109,7 @@ module Rubino
           source: source,
           model: model,
           provider: provider,
-          title: title,
+          title: scrub_text(title),
           status: "active",
           cwd: cwd,
           message_count: 0,
@@ -213,7 +213,7 @@ module Rubino
         dataset = @db[:sessions].order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
         dataset = dataset.where(status: status) if status
         dataset = dataset.exclude(source: "subagent") unless include_subagents
-        dataset = dataset.where(Sequel.like(:title, "%#{search}%")) if search && !search.empty?
+        dataset = dataset.where(title_substring_match(search)) if search && !search.empty?
 
         return dataset.limit(limit).all if cwd.nil?
 
@@ -225,6 +225,7 @@ module Rubino
 
       # Updates a session's attributes
       def update(id, **attrs)
+        attrs[:title] = scrub_text(attrs[:title]) if attrs.key?(:title)
         attrs[:updated_at] = Time.now.utc.iso8601
         @db[:sessions].where(id: id).update(attrs)
       end
@@ -405,15 +406,43 @@ module Rubino
       # only the trailing `%` we append stays a wildcard. `\` escapes itself
       # first so a literal backslash in the input can't smuggle past the escape.
       def id_prefix_match(query)
-        escaped = query.to_s
-                       .gsub(LIKE_ESCAPE, "#{LIKE_ESCAPE}#{LIKE_ESCAPE}")
-                       .gsub("%", "#{LIKE_ESCAPE}%")
-                       .gsub("_", "#{LIKE_ESCAPE}_")
         # `Sequel.like` in Sequel 5 emits no ESCAPE clause, so the escaped
-        # metacharacters above would still be treated as wildcards. Declare the
+        # metacharacters below would still be treated as wildcards. Declare the
         # escape character explicitly via a parameterized literal (placeholders,
         # not interpolation, so the value stays bound and injection-safe).
-        Sequel.lit("id LIKE ? ESCAPE ?", "#{escaped}%", LIKE_ESCAPE)
+        Sequel.lit("id LIKE ? ESCAPE ?", "#{escape_like(query)}%", LIKE_ESCAPE)
+      end
+
+      # SAFE title-substring LIKE condition for `list(search:)` (#498). The old
+      # form `Sequel.like(:title, "%#{search}%")` INLINED the raw user string
+      # into the SQL text instead of binding it (and left `%`/`_` as wildcards),
+      # so a title filter containing an em-dash/apostrophe/quote/control byte
+      # could surface a raw `SQLite3::SQLException: unrecognized token`. Mirror
+      # id_prefix_match: escape the wildcards and bind the value via placeholders
+      # with an explicit ESCAPE char.
+      def title_substring_match(search)
+        Sequel.lit("title LIKE ? ESCAPE ?", "%#{escape_like(search)}%", LIKE_ESCAPE)
+      end
+
+      # Escape the LIKE metacharacters (`%`, `_`, and the escape char itself) in
+      # user input so they are matched literally, not as wildcards. `\` escapes
+      # itself first so a literal backslash in the input can't smuggle past the
+      # escape. Pair with an explicit `ESCAPE ?` clause at the call site.
+      def escape_like(query)
+        query.to_s
+             .gsub(LIKE_ESCAPE, "#{LIKE_ESCAPE}#{LIKE_ESCAPE}")
+             .gsub("%", "#{LIKE_ESCAPE}%")
+             .gsub("_", "#{LIKE_ESCAPE}_")
+      end
+
+      # Strip persist-fatal bytes (NUL et al.) from a session title at the write
+      # seam (#498). A title is derived from the conversation, so it can carry a
+      # NUL the upstream model/paste emitted; NUL is valid UTF-8 (survives
+      # String#scrub) but terminates SQLite's C string mid-literal, raising a
+      # raw `unrecognized token`. nil is preserved (an untitled session stays
+      # untitled, not "").
+      def scrub_text(value)
+        value.nil? ? nil : Rubino::Util::Output.scrub_utf8(value)
       end
 
       # The full first user message of a session — what derive_title truncated
