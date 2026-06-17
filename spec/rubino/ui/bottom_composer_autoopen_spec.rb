@@ -204,4 +204,56 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.request_takeover { nil }).to be(false) # one at a time
     end
   end
+
+  # REGRESSION: the auto-open trigger must RE-ARM for every human-directed ask,
+  # not fire one-shot per session. The dropdown a takeover runs calls
+  # @ui.select/@ui.ask, which wrap themselves in BottomComposer.run_in_terminal;
+  # its ensure fires #suspend then #resume. Before the fix, that nested #resume
+  # — gated only on @suspended, which the reader-thread takeover had set — ran
+  # leave_takeover_mode + start_reader, spawning a SECOND reader and reassigning
+  # @wake_pipe MID-takeover, so the next ask's wake landed on a torn reader and
+  # the dropdown never auto-opened again. The fix neuters the nested
+  # suspend/resume while @in_takeover, so the takeover restores cleanly and the
+  # trigger re-arms.
+  describe "re-arm across a takeover whose dropdown nests run_in_terminal" do
+    before do
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, StringIO.new)
+      described_class.current = composer
+    end
+
+    after { described_class.current = nil }
+
+    it "does NOT spawn a second reader / leave the composer suspended" do
+      # The reader was never started in this unit (@reader stays nil); the only
+      # thing that could set it is the spurious nested #resume → #start_reader.
+      composer.request_takeover do
+        # exactly what @ui.select/@ui.ask do mid-takeover
+        described_class.run_in_terminal { :answered }
+      end
+      composer.run_pending_takeover
+
+      expect(composer.instance_variable_get(:@reader)).to be_nil         # no spurious reader
+      expect(suspended?).to be(false)                                    # cleanly restored
+      expect(composer.instance_variable_get(:@in_takeover)).to be(false) # guard cleared
+    end
+
+    it "ACCEPTS and runs a SECOND takeover after the first (every ask re-arms)" do
+      ran = 0
+      first = composer.request_takeover do
+        ran += 1
+        described_class.run_in_terminal { :answered } # nested, as the real dropdown does
+      end
+      expect(first).to be(true)
+      composer.run_pending_takeover
+      expect(ran).to eq(1)
+
+      # The SECOND human-directed ask, after the first resolved, must auto-open
+      # again — not be silently dropped (the one-shot-per-session defect).
+      second = composer.request_takeover { ran += 1 }
+      expect(second).to be(true)
+      composer.run_pending_takeover
+      expect(ran).to eq(2)
+    end
+  end
 end

@@ -306,6 +306,18 @@ module Rubino
         @parked_writes     = nil
         @pending_takeover  = nil
         @takeover_snapshot = nil
+        # True only while #run_pending_takeover owns the suspend/resume lifecycle
+        # on the reader thread. The dropdown it runs calls @ui.select/@ui.ask,
+        # which wrap themselves in BottomComposer.run_in_terminal — its ensure
+        # fires #suspend then #resume. With the reader-thread takeover ALREADY
+        # suspended-for-takeover (and intentionally NOT stopped — it is us), that
+        # nested #resume would spawn a SECOND reader thread and reassign @wake_pipe
+        # mid-takeover, leaving two readers contending for raw $stdin and the next
+        # #request_takeover wake signal landing on a torn reader — the auto-open
+        # then fires exactly ONCE per session. While this flag is set #suspend and
+        # #resume are no-ops, so run_in_terminal nests harmlessly inside the
+        # takeover the reader already drives.
+        @in_takeover = false
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -394,6 +406,7 @@ module Rubino
       # draft is preserved for #resume. Idempotent: a no-op once already
       # suspended (or never started).
       def suspend
+        return if @in_takeover # the reader-thread takeover already owns the lifecycle
         return unless @running && !@suspended
 
         stop_reader
@@ -405,6 +418,7 @@ module Rubino
       # RESUME after {suspend}: restore the StdoutProxy, re-enter raw mode,
       # restart the reader, and redraw the input line from the preserved buffer.
       def resume
+        return if @in_takeover # paired with #suspend: the takeover restores on its own
         return unless @suspended
 
         leave_takeover_mode
@@ -530,6 +544,13 @@ module Rubino
 
         drain_inflight_into_draft
         enter_takeover_mode
+        # The dropdown's @ui.select/@ui.ask nest BottomComposer.run_in_terminal,
+        # whose ensure would otherwise #suspend/#resume THIS composer and spawn a
+        # second reader mid-takeover (the one-shot-per-session corruption). The
+        # reader-thread takeover already owns the lifecycle, so neuter that nested
+        # suspend/resume for the duration of the block (cleared in the ensure,
+        # before our own leave_takeover_mode restores the terminal).
+        @in_takeover = true
         begin
           block.call
         rescue StandardError
@@ -537,6 +558,7 @@ module Rubino
           # draft — fall through to the restore in the ensure.
           nil
         ensure
+          @in_takeover = false
           restore_draft_snapshot
           leave_takeover_mode
         end
