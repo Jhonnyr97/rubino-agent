@@ -26,12 +26,11 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(tool.risk_level).to eq(:low)
   end
 
-  # #446: reading a secret is now gated UPSTREAM by Security::ApprovalPolicy
-  # (→ :ask / approval dropdown), NOT self-refused inside ReadTool. So at the
-  # tool level an APPROVED read returns the real bytes — the per-tool refusal
-  # is gone. The gate/approve/deny/headless matrix is covered end-to-end in
+  # #480: reading a secret is ALLOWED unprompted — there is no read-side gate
+  # and no per-tool refusal, matching the field norm (protection is on write/
+  # exec/network). The write-side gate is covered in
   # spec/rubino/security/secret_file_gate_spec.rb.
-  it "reads an APPROVED .env credential file (gate is upstream, #446)" do
+  it "reads a .env credential file (reads are allowed, #480)" do
     outside = Dir.mktmpdir("read_secret")
     path = File.join(outside, ".env")
     File.write(path, "API_KEY=supersecret\n")
