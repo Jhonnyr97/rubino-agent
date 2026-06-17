@@ -47,6 +47,20 @@ RSpec.describe Rubino::CLI::Commands do
       it "does NOT route a lone unknown word followed only by flags (#327 envelope still fires)" do
         expect(described_class.bare_prompt_args(%w[bogus --output-format json])).to be_nil
       end
+
+      # #483 sharp-edge: a 2-word TYPO of a real command (`confg show` for
+      # `config show`) used to slip past as a multi-word prompt, hiding the
+      # did-you-mean. A leading word that's a near-miss of a known command bails
+      # so the closest-match suggestion (#67/F2) fires instead.
+      it "does NOT route a 2-word TYPO of a real command (did-you-mean fires, #483)" do
+        expect(described_class.bare_prompt_args(%w[confg show])).to be_nil
+        expect(described_class.bare_prompt_args(%w[sessoins list])).to be_nil
+      end
+
+      it "STILL routes a genuine multi-word prompt whose lead is no near-command" do
+        expect(described_class.bare_prompt_args(%w[what is 2 plus 2]))
+          .to eq(["what is 2 plus 2"])
+      end
     end
 
     it "dispatches a bare prompt to the chat command (one-shot)" do
