@@ -306,6 +306,16 @@ module Rubino
         @parked_writes     = nil
         @pending_takeover  = nil
         @takeover_snapshot = nil
+        # An optional callable the CLI registers (UI::CLI#auto_open_human_ask) so
+        # that the SUBAGENT CARD block — whose last row is the aggregated
+        # `⛔N subagents waiting on you` hint — is REPAINTED from the live registry
+        # the instant the dropdown takeover ends. #enter_takeover_mode clears the
+        # live region (the cards with it) and #leave_takeover_mode only redraws the
+        # prompt, so without this the ⛔N count vanishes for the rest of the turn
+        # whenever ≥1 child is still awaiting_human after the takeover (the human
+        # answered one of several, or cancelled). Run AFTER resume (outside the
+        # render lock — it calls #set_cards, which re-takes it), then cleared.
+        @on_takeover_resume = nil
         # True only while #run_pending_takeover owns the suspend/resume lifecycle
         # on the reader thread. The dropdown it runs calls @ui.select/@ui.ask,
         # which wrap themselves in BottomComposer.run_in_terminal — its ensure
@@ -491,14 +501,18 @@ module Rubino
       # ONE takeover at a time: a second request while one is pending/running is
       # dropped here (the FIFO re-read after delivery picks up the newcomer), so
       # the snapshot is never overwritten mid-takeover.
-      def request_takeover(&block) # rubocop:disable Naming/PredicateMethod -- queues a takeover and reports whether it was accepted, not a pure query
+      def request_takeover(on_resume: nil, &block) # rubocop:disable Naming/PredicateMethod -- queues a takeover and reports whether it was accepted, not a pure query
         return false unless @running && !@suspended && @wake_pipe
 
         @render.synchronize do
           return false if @pending_takeover # one at a time; FIFO re-read gets the rest
 
-          @pending_takeover  = block
-          @takeover_snapshot = [@buffer.dup, @cursor]
+          @pending_takeover   = block
+          @takeover_snapshot  = [@buffer.dup, @cursor]
+          # Repaint hook run once the dropdown closes and the composer has resumed
+          # — see @on_takeover_resume. The cards (with the ⛔N hint) are wiped on
+          # suspend; this makes them come back from the live registry on resume.
+          @on_takeover_resume = on_resume
         end
         begin
           @wake_pipe.write("x")
@@ -514,8 +528,9 @@ module Rubino
       # Drops the queued takeover + its draft snapshot. Must be called under
       # @render (the same lock #request_takeover sets them under).
       def clear_pending_takeover
-        @pending_takeover  = nil
-        @takeover_snapshot = nil
+        @pending_takeover   = nil
+        @takeover_snapshot  = nil
+        @on_takeover_resume = nil
       end
 
       # Runs the queued mid-turn takeover ON the reader thread, between raw
@@ -552,6 +567,10 @@ module Rubino
         # before our own leave_takeover_mode restores the terminal).
         @in_takeover = true
         begin
+          # RESIDUAL B: catch keystrokes that accrued during the suspend
+          # transition (after the request-time drain) before the picker grabs
+          # $stdin, so they land in the draft, not the picker's filter.
+          final_drain_into_draft
           block.call
         rescue StandardError
           # A dropdown hiccup must never leave the terminal wedged or lose the
@@ -561,7 +580,26 @@ module Rubino
           @in_takeover = false
           restore_draft_snapshot
           leave_takeover_mode
+          repaint_after_takeover
         end
+      end
+
+      # Run the resume-repaint hook (set at #request_takeover time) once the
+      # composer has fully left takeover mode, so the SUBAGENT CARD block — and
+      # its aggregated `⛔N subagents waiting on you` last row — is repainted from
+      # the live registry. Run OUTSIDE the @render lock (the hook calls
+      # #set_cards, which re-takes @render) and only when the composer settled
+      # back un-suspended; cleared each time so it never fires for a later, hook-
+      # less takeover. Best-effort: a cosmetic repaint must never wedge the turn.
+      def repaint_after_takeover
+        hook = nil
+        @render.synchronize do
+          hook = @on_takeover_resume
+          @on_takeover_resume = nil
+        end
+        hook&.call unless @suspended
+      rescue StandardError
+        nil
       end
 
       # COMPLETE the request-time draft snapshot just before the dropdown opens,
@@ -595,6 +633,25 @@ module Rubino
           @buffer.replace(buf.to_s)
           @cursor = cur.to_i.clamp(0, @buffer.length)
         end
+        drain_pending_input
+        @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
+      end
+
+      # RESIDUAL B: a FINAL non-blocking drain run AFTER #enter_takeover_mode and
+      # immediately BEFORE the dropdown block reads $stdin. #drain_inflight_into_draft
+      # (above) catches the bytes queued at REQUEST time, but the human may keep
+      # typing during the suspend transition (cooked!/clear-region/dropdown setup) —
+      # those bytes land in the kernel TTY queue AFTER that first snapshot. This
+      # second pass drains whatever has ACCRUED since, onto the CURRENT draft (no
+      # baseline reset — the first drain's bytes stay), and re-snapshots so the
+      # restore still returns the full draft and the picker filter starts empty.
+      # Bounded/non-blocking exactly like the first pass (it shares
+      # #drain_pending_input). It NARROWS — does not eliminate — the window: the
+      # sub-instant between this drain and TTY::Prompt's own first getc is
+      # irreducible without blocking or pre-empting the picker's stdin grab.
+      def final_drain_into_draft
+        return unless @render.synchronize { @takeover_snapshot }
+
         drain_pending_input
         @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
       end
