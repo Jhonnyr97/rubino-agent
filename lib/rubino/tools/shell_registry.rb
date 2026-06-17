@@ -43,17 +43,32 @@ module Rubino
         # reparents to init as an orphan (MED-2). Tracking it here lets
         # #kill_all_groups SIGTERM/SIGKILL it synchronously on teardown.
         @fg_pgids = {}
+        # Lock-free, atomically-swapped snapshot of every live shell pgid
+        # (background entries + tracked foreground pgids). The SIGTERM/SIGHUP
+        # teardown trap (#478) reaps the child groups, but it CANNOT take the
+        # mutex above — Ruby forbids Mutex#synchronize from a trap context
+        # (ThreadError). The writers always rebuild this frozen Array UNDER the
+        # mutex; the trap reads it with a single, lock-free ivar read (an atomic
+        # reference load in MRI) and never iterates a structure another thread
+        # is mutating. See #kill_all_groups_trap_safe.
+        @pgid_snapshot = [].freeze
       end
 
       # Track a live foreground shell process group so teardown can reap it.
       def register_pgid(pgid)
-        @mutex.synchronize { @fg_pgids[pgid] = true }
+        @mutex.synchronize do
+          @fg_pgids[pgid] = true
+          refresh_pgid_snapshot
+        end
         pgid
       end
 
       # Drop a foreground shell process group once its own thread has reaped it.
       def unregister_pgid(pgid)
-        @mutex.synchronize { @fg_pgids.delete(pgid) }
+        @mutex.synchronize do
+          @fg_pgids.delete(pgid)
+          refresh_pgid_snapshot
+        end
       end
 
       # Spawns `command` detached in its own process group so a single kill
@@ -90,7 +105,10 @@ module Rubino
         )
         entry.reader_thr = Thread.new { drain_into(entry, rd) }
 
-        @mutex.synchronize { @entries[entry.id] = entry }
+        @mutex.synchronize do
+          @entries[entry.id] = entry
+          refresh_pgid_snapshot
+        end
         entry
       end
 
@@ -109,7 +127,11 @@ module Rubino
       end
 
       def remove(id)
-        entry = @mutex.synchronize { @entries.delete(id) }
+        entry = @mutex.synchronize do
+          e = @entries.delete(id)
+          refresh_pgid_snapshot
+          e
+        end
         close_stdin(entry) if entry
         entry
       end
@@ -170,8 +192,13 @@ module Rubino
       # edge (clean quit `ensure`, HUP/TERM trap, REPL break) reaps the child
       # shells the cooperative cancel token alone can't reach before the process
       # exits and the shells reparent to init. Returns the pgids it signalled.
+      #
+      # TRAP-SAFE (#478): reads the lock-free @pgid_snapshot — never
+      # Mutex#synchronize, which Ruby forbids from a signal-trap context
+      # (ThreadError). So the SIGTERM/SIGHUP teardown trap can call this
+      # directly. Process.kill and sleep are both async-signal-safe.
       def kill_all_groups(grace: 0.5)
-        pgids = @mutex.synchronize { (@entries.values.map(&:pgid) + @fg_pgids.keys).uniq }
+        pgids = @pgid_snapshot
         return pgids if pgids.empty?
 
         pgids.each { |pgid| signal_group("TERM", pgid) }
@@ -181,6 +208,15 @@ module Rubino
       end
 
       private
+
+      # Rebuild the lock-free pgid snapshot from the authoritative maps and swap
+      # it in with a single atomic ivar assignment. ALWAYS called UNDER @mutex by
+      # a writer, so it observes a consistent map and serializes against other
+      # writers; the trap-side reader in #kill_all_groups never locks. The new
+      # Array is frozen so a reader can't see a half-built collection.
+      def refresh_pgid_snapshot
+        @pgid_snapshot = (@entries.values.map(&:pgid) + @fg_pgids.keys).uniq.freeze
+      end
 
       def signal_group(sig, pgid)
         Process.kill(sig, -pgid)
