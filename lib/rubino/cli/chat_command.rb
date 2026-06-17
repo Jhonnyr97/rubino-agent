@@ -1134,15 +1134,19 @@ module Rubino
             # truthfully ("interrupted by external signal"), not "by user"
             # (#361b). Trap-safe — cancel! only flips lock-free booleans.
             runner.cancel!(reason: :external)
-            # The process is about to exit(0): cancel every live subagent so a
-            # child blocked on ask_parent(blocking) wakes and unwinds NOW instead
-            # of dying with its thread mid-park (and so its terminal :stopped
-            # ensure can run). #cancel_all only flips one-shot cancel tokens and
-            # pushes the gate's queue sentinel under the registry/gate mutexes —
-            # the same short, non-self-reentrant locking the adjacent
-            # end_session! DB update already does in this trap; no I/O. No-op when
-            # there are no children.
-            Tools::BackgroundTasks.instance.cancel_all
+            # The process is about to exit(0): reap every shell process group a
+            # subagent spawned (each its own pgid) so it does NOT reparent to
+            # init as a live orphan (MED-2 / #465). This MUST stay trap-safe:
+            # Ruby forbids Mutex#synchronize from a signal-trap context, so we do
+            # NOT route through BackgroundTasks#cancel_all here (its #running /
+            # #stop_entry / and the old #kill_all_groups all take a mutex →
+            # ThreadError, which killed the whole trap and left the shells
+            # orphaned, #478). #kill_all_groups now reads a lock-free pgid
+            # snapshot and only calls Process.kill/sleep — both async-signal-safe.
+            # The cooperative subagent-gate cancel #cancel_all also does is moot
+            # here: the threads die with this process at exit, and waking their
+            # gates would need the forbidden lock.
+            Tools::ShellRegistry.instance.kill_all_groups
             runner.end_session!
             exit(0)
           end
