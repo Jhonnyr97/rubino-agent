@@ -199,6 +199,16 @@ module Rubino
         last_chunk_at = monotonic_now
         stale_after   = stale_chunk_timeout
         chunks_seen   = 0
+        # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking ask_parent
+        # parked on a human answer for up to tasks.ask_parent_timeout = 900s)
+        # produces no chunks while it runs, so the stale watchdog below would
+        # otherwise count that legitimate tool runtime as stream-idle and fire at
+        # `stale_after` (300s default), pre-empting the configured ask timeout and
+        # making the "auto-resumes in 15m" banner a lie. While a tool is in flight
+        # the stream is intentionally paused, not stalled: suspend idle accrual for
+        # its duration. Set when a tool-use message closes (tools are about to
+        # run); cleared when the next message begins (tools returned).
+        tool_running = false
 
         # Each assistant message ruby_llm streams within this one ask() is a
         # distinct content block: on a multi-step tool turn the model emits
@@ -246,18 +256,32 @@ module Rubino
         # the consumer falls back to the legacy per-adjacency grouping. Use a
         # proc (not a lambda) for the close handler so it tolerates whatever
         # arity the callback invokes it with.
+        # A new message starting means any mid-stream tool from the previous
+        # message has returned (#488): resume idle accrual and restart the idle
+        # clock so the post-tool window is measured from now, not from the last
+        # pre-tool chunk.
+        bump_block = proc do
+          message_block_id += 1
+          tool_running  = false
+          last_chunk_at = monotonic_now
+        end
         if chat_instance.respond_to?(:before_message)
-          chat_instance.before_message { message_block_id += 1 }
+          chat_instance.before_message(&bump_block)
         elsif chat_instance.respond_to?(:on_new_message)
-          chat_instance.on_new_message { message_block_id += 1 }
+          chat_instance.on_new_message(&bump_block)
         end
 
-        close_block = proc do
+        close_block = proc do |msg|
           # Flush any tail the think-filter is still holding so it is emitted
           # with THIS block's id before we close the block (and before the
           # tool call that follows a tool-use message executes).
           flush_filter(think_filter, &emit)
           @event_bus&.emit(Interaction::Events::MESSAGE_COMPLETED, message_id: message_block_id)
+          # #488: a tool-use message just closed ⇒ ruby_llm is about to run those
+          # tools mid-stream. Suspend the stale watchdog's idle accrual for the
+          # tool's runtime so a long, legitimate tool (a blocking ask_parent
+          # waiting on the human) is not killed at `stale_after`.
+          tool_running = true if intermediate_tool_message?(msg)
         end
         if chat_instance.respond_to?(:after_message)
           chat_instance.after_message(&close_block)
@@ -276,8 +300,10 @@ module Rubino
         # streaming thread to break it out of the blocking socket read. The
         # rescue below then surfaces a clear "stream stalled" and lets the retry
         # ladder run. The closure reads `last_chunk_at`/`chunks_seen` live (they
-        # are reassigned in the callback) via a shared binding.
-        watchdog = start_stale_watchdog(stale_after) { last_chunk_at }
+        # are reassigned in the callback) via a shared binding. While a tool runs
+        # mid-stream (`tool_running`, #488) it reports "now" so the legitimate
+        # tool runtime is never counted as a stalled stream.
+        watchdog = start_stale_watchdog(stale_after) { tool_running ? monotonic_now : last_chunk_at }
 
         begin
           response = chat_instance.ask(last_user_content(messages), with: presence(image_paths)) do |chunk|
