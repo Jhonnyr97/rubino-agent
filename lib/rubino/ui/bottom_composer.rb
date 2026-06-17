@@ -506,12 +506,18 @@ module Rubino
 
       # Runs the queued mid-turn takeover ON the reader thread, between raw
       # sessions (the prior `@input.raw` block has already left cooked mode). The
-      # draft was SNAPSHOTTED at request time; here we enter takeover terminal
-      # mode (restore real $stdout, clear prompt rows — the reader is NOT stopped,
-      # it IS us), run the dropdown block (it reads the real $stdin and delivers
-      # the answer down the child's gate), then RESTORE the exact draft + cursor
-      # and leave takeover mode (flush parked stream lines, redraw the prompt).
-      # The caller's outer loop then re-enters a fresh raw session, so the human
+      # draft was SNAPSHOTTED at request time; here we first COMPLETE that
+      # snapshot — keystrokes the human typed but the dying raw session never
+      # +getc+'d are still sitting in the kernel TTY queue, so we drain them
+      # THROUGH the normal key handler into @buffer and re-snapshot (see
+      # #drain_inflight_into_draft) BEFORE the dropdown starts reading $stdin.
+      # Without that, those in-flight bytes leak into TTY::Prompt's filter field
+      # and the restored draft is short. Then we enter takeover terminal mode
+      # (restore real $stdout, clear prompt rows — the reader is NOT stopped, it
+      # IS us), run the dropdown block (it reads the real $stdin and delivers the
+      # answer down the child's gate), then RESTORE the exact draft + cursor and
+      # leave takeover mode (flush parked stream lines, redraw the prompt). The
+      # caller's outer loop then re-enters a fresh raw session, so the human
       # continues typing the preserved draft seamlessly. Every failure path still
       # restores terminal state + draft so raw mode never leaks past the dropdown.
       def run_pending_takeover
@@ -522,6 +528,7 @@ module Rubino
         end
         return unless block
 
+        drain_inflight_into_draft
         enter_takeover_mode
         begin
           block.call
@@ -535,10 +542,77 @@ module Rubino
         end
       end
 
-      # Restores the @buffer + @cursor captured at #request_takeover time, byte
-      # for byte, under @render — so the dropdown's keystrokes never touched the
-      # draft and the human's caret returns exactly where it was. A no-op when
-      # nothing was snapshotted.
+      # COMPLETE the request-time draft snapshot just before the dropdown opens,
+      # on the reader thread (the only thread allowed to +getc+ @input). Runs
+      # BETWEEN raw sessions, so @input is in cooked mode but the bytes the human
+      # typed before the auto-open raced in are still queued in the kernel TTY
+      # buffer — unread, because the wake-pipe branch in #reader_session breaks
+      # the loop without +getc+'ing a co-ready @input. We:
+      #
+      #   1. reset @buffer/@cursor to the request-time SNAPSHOT baseline, so a
+      #      programmatic edit made after the snapshot (the "can't tear it" race)
+      #      is discarded, exactly as before;
+      #   2. DRAIN the pending bytes through the normal #handle_key path so they
+      #      land in the draft like any other keystroke (a non-blocking
+      #      IO.select(0) gate + #getc loop — we only consume what is ALREADY
+      #      queued, never block waiting for more, and stop the instant the queue
+      #      is empty or a key submits/quits);
+      #   3. RE-SNAPSHOT the now-complete @buffer/@cursor under @render, so the
+      #      restore after the dropdown closes returns the FULL draft and the
+      #      dropdown starts with an empty input queue — no draft byte can leak
+      #      into TTY::Prompt's filter.
+      #
+      # The whole thing is a no-op when nothing was snapshotted or @input can't
+      # be drained (no fileno / closed) — the dropdown then just runs as before.
+      def drain_inflight_into_draft
+        baseline = @render.synchronize { @takeover_snapshot }
+        return unless baseline
+
+        @render.synchronize do
+          buf, cur = baseline
+          @buffer.replace(buf.to_s)
+          @cursor = cur.to_i.clamp(0, @buffer.length)
+        end
+        drain_pending_input
+        @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
+      end
+
+      # Feed every byte ALREADY queued on @input through #handle_key, then stop —
+      # a bounded, non-blocking drain. For a real TTY we gate each #getc on a
+      # zero-timeout #wait_readable: it reports readable ONLY while bytes are
+      # buffered, so the loop drains the in-flight keystrokes and exits the moment
+      # the queue empties — it never blocks for more input. A StringIO (tests /
+      # standalone) can't #wait_readable, but its #getc returns nil at the end
+      # without blocking, so we drain it with a plain #getc loop. A key that
+      # submits/quits ends the drain (the draft is gone anyway); any IO hiccup
+      # (non-tty / closed / EOF) just ends it quietly.
+      def drain_pending_input
+        selectable = real_io_input?
+        loop do
+          break if selectable && !@input.wait_readable(0)
+
+          ch = @input.getc
+          break if ch.nil?
+          break if handle_key(ch)
+        end
+      rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
+        nil
+      end
+
+      # True when @input is a real IO whose #wait_readable(0) can poll the queue
+      # without blocking — i.e. it exposes an integer fileno. A StringIO answers
+      # #fileno but raises NotImplementedError, so it falls to the plain #getc
+      # drain instead (its #getc is non-blocking and nil-terminated).
+      def real_io_input?
+        @input.fileno.is_a?(Integer)
+      rescue StandardError
+        false
+      end
+
+      # Restores the @buffer + @cursor captured at #request_takeover time (and
+      # COMPLETED by #drain_inflight_into_draft), byte for byte, under @render —
+      # so the dropdown's keystrokes never touched the draft and the human's
+      # caret returns exactly where it was. A no-op when nothing was snapshotted.
       def restore_draft_snapshot
         @render.synchronize do
           snap = @takeover_snapshot

@@ -114,6 +114,75 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "in-flight keystrokes pending in the TTY queue at takeover time" do
+    # The HEADLINE bug: the human is actively mid-typing when the dropdown
+    # auto-opens. The bytes already in the kernel TTY queue (typed but not yet
+    # read into @buffer by the reader, which broke its loop on the wake pipe
+    # WITHOUT a getc) must be DRAINED INTO the draft before the dropdown reads
+    # $stdin — never leak into the picker's filter and never leave the draft
+    # short. We simulate the in-flight bytes by leaving them unread on @input
+    # when request_takeover fires.
+
+    it "drains StringIO-queued bytes INTO the draft; picker filter gets none" do
+      "sto scrivendo una ".each_char { |c| composer.handle_key(c) }
+      expect(composer.buffer).to eq("sto scrivendo una ")
+
+      # Bytes still queued (typed but un-getc'd) when the auto-open races in.
+      input.string = "doman"
+      input.rewind
+
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, StringIO.new)
+
+      leaked = +""
+      composer.request_takeover { leaked << input.read.to_s }
+      composer.run_pending_takeover
+
+      # The draft is COMPLETE (in-flight bytes drained in) …
+      expect(composer.buffer).to eq("sto scrivendo una doman")
+      expect(cursor).to eq("sto scrivendo una doman".length)
+      # … and NOTHING leaked into the picker's filter.
+      expect(leaked).to eq("")
+    end
+
+    it "drains a real-pipe TTY queue via the select(0) gate without blocking" do
+      reader, writer = IO.pipe
+      pipe_composer = described_class.new(input_queue: queue, input: reader, output: output)
+      "ciao ".each_char { |c| pipe_composer.handle_key(c) }
+
+      # In-flight bytes sitting in the kernel pipe buffer, unread.
+      writer.write("mondo")
+
+      pipe_composer.instance_variable_set(:@running, true)
+      pipe_composer.instance_variable_set(:@wake_pipe, StringIO.new)
+
+      leaked = +""
+      pipe_composer.request_takeover do
+        # Whatever the drain left behind is what the picker would see.
+        leaked << reader.read_nonblock(64) if reader.wait_readable(0)
+      end
+      pipe_composer.run_pending_takeover
+
+      expect(pipe_composer.buffer).to eq("ciao mondo")
+      expect(leaked).to eq("") # the select-gated drain emptied the queue first
+    ensure
+      reader.close unless reader.closed?
+      writer.close unless writer.closed?
+    end
+
+    it "drains nothing (no block) when the TTY queue is empty at takeover time" do
+      "hola".each_char { |c| composer.handle_key(c) }
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, StringIO.new)
+
+      composer.request_takeover { nil }
+      composer.run_pending_takeover # must return promptly, draft intact
+
+      expect(composer.buffer).to eq("hola")
+      expect(cursor).to eq(4)
+    end
+  end
+
   describe "#request_takeover guards (one at a time)" do
     before do
       composer.instance_variable_set(:@running, true)
