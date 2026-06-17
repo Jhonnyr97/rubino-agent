@@ -244,6 +244,101 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.request_takeover { nil }).to be(true)
       expect(composer.request_takeover { nil }).to be(false) # one at a time
     end
+
+    # #486: two human-asks that arrive NEAR-SIMULTANEOUSLY (the 2nd lands while
+    # the 1st takeover's dropdown is mid-run — after run_pending_takeover cleared
+    # @pending_takeover but before the dropdown resolved) must NOT spawn a SECOND
+    # overlapping takeover loop. The @takeover_active guard rejects the 2nd while
+    # the 1st is running; the FIFO re-read surfaces it after.
+    it "REJECTS a second ask that races in BEFORE the first suspends (#486)" do
+      described_class.current = composer
+      second_accepted = nil
+      second_runs = 0
+
+      # The race window the @takeover_active guard closes: #run_pending_takeover
+      # has already cleared @pending_takeover but has NOT yet suspended (it is in
+      # #drain_inflight_into_draft). A second child blocking on the human RIGHT
+      # there would slip past the @pending_takeover / @suspended guards. Fire it
+      # from inside the drain to land in exactly that window.
+      allow(composer).to receive(:drain_inflight_into_draft).and_wrap_original do |orig, *args|
+        second_accepted = composer.request_takeover { second_runs += 1 }
+        orig.call(*args)
+      end
+
+      composer.request_takeover { nil }
+      composer.run_pending_takeover
+
+      expect(second_accepted).to be(false) # one dropdown loop at a time — no overlap
+      expect(second_runs).to eq(0)         # the second loop never ran concurrently
+    ensure
+      described_class.current = nil
+    end
+
+    it "REJECTS a second ask that arrives WHILE the dropdown is open (#486)" do
+      described_class.current = composer
+      second_accepted = nil
+
+      composer.request_takeover do
+        # The dropdown is open now (composer suspended). A second child blocking
+        # here must NOT spawn an overlapping loop.
+        second_accepted = composer.request_takeover { nil }
+      end
+      composer.run_pending_takeover
+
+      expect(second_accepted).to be(false)
+    ensure
+      described_class.current = nil
+    end
+
+    it "ACCEPTS the deferred ask once the first takeover has fully resolved (#486)" do
+      described_class.current = composer
+      runs = 0
+
+      composer.request_takeover { runs += 1 } # the first ask
+      composer.run_pending_takeover
+      expect(runs).to eq(1)
+
+      # The guard is released after the first resolves, so the sibling that was
+      # dropped during the dropdown now surfaces on the reader's next session.
+      expect(composer.instance_variable_get(:@takeover_active)).to be(false)
+      expect(composer.request_takeover { runs += 1 }).to be(true)
+      composer.run_pending_takeover
+      expect(runs).to eq(2)
+    ensure
+      described_class.current = nil
+    end
+  end
+
+  # #486 (Esc names the right child): the auto-open FIFO drain shows the CURRENT
+  # head and binds the cancel/"still waiting" message to the entry actually being
+  # shown — not an already-answered sibling. With the overlap removed, each pass
+  # re-reads awaiting_human.first, so the dropdown and its cancel message are
+  # always the same entry. This pins the handler-level binding directly.
+  describe "Esc-cancel binds the message to the OPEN child (#486)" do
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+
+    def blocked(id)
+      Struct.new(:id, :subagent, :status, :ask_question, :ask_options,
+                 keyword_init: true).new(
+                   id: id, subagent: "explore", status: :blocked_on_human,
+                   ask_question: "q?", ask_options: []
+                 )
+    end
+
+    it "names the child being shown, not a sibling, on a cancelled answer" do
+      messages = []
+      # A minimal UI: it has #info and #ask but NOT #select, so the free-text
+      # path runs and a blank #ask answer reads as a cancel.
+      ui = Object.new
+      ui.define_singleton_method(:info) { |m| messages << m }
+      ui.define_singleton_method(:ask) { |_prompt| "" } # Esc / blank == cancel
+
+      handler = Rubino::Commands::Handlers::Agents.new(ui: ui)
+      handler.send(:answer_one_human, blocked("sa_OPEN"))
+
+      cancel = messages.find { |m| m.include?("still waiting") }
+      expect(cancel).to include("sa_OPEN")
+    end
   end
 
   # REGRESSION: the auto-open trigger must RE-ARM for every human-directed ask,
@@ -304,6 +399,48 @@ RSpec.describe Rubino::UI::BottomComposer do
   # only redrew the prompt, so the count vanished for the rest of the turn
   # whenever a child stayed awaiting_human (several pending, or the human
   # cancelled). The fix repaints the cards from the live registry on resume.
+  # #485: a running-subagent card repaint must NOT disturb the idle composer
+  # input. The repaint serializes under @render (so it can't tear an in-flight
+  # keystroke) AND coalesces — an UNCHANGED card list is a no-op, so the idle
+  # ticker / per-event pokes don't re-run the clear→redraw cursor walk over the
+  # live region (the source of the dropped/garbled keystrokes + wedged submit on
+  # a real terminal). The CHANGED repaint still paints.
+  describe "card repaint does not clobber idle composer input (#485)" do
+    it "PRESERVES the buffer + cursor across a card repaint, and Enter still submits" do
+      "exit".each_char { |c| composer.handle_key(c) }
+      composer.set_cards(["  ▸ sa_1 · explore · running · 3 tools · 5s"])
+      expect(composer.buffer).to eq("exit")
+      expect(cursor).to eq(4)
+
+      # the repaint did not wedge submit
+      expect(composer.handle_key("\r")).to eq(:submit)
+      expect(queue.shift).to eq("exit")
+    end
+
+    it "PRESERVES a keystroke typed BETWEEN two repaints (no drop/garble)" do
+      composer.set_cards(["  ▸ sa_1 · running · 1s"])
+      "ex".each_char { |c| composer.handle_key(c) }
+      composer.set_cards(["  ▸ sa_1 · running · 2s"]) # repaint with new elapsed
+      "it".each_char { |c| composer.handle_key(c) }
+      composer.set_cards(["  ▸ sa_1 · running · 3s"])
+      expect(composer.buffer).to eq("exit")
+    end
+
+    it "COALESCES an UNCHANGED repaint into a no-op (no extra frame to race input)" do
+      composer.set_cards(["  ▸ sa_1 · running · 5s"])
+      before = output.string.dup
+      composer.set_cards(["  ▸ sa_1 · running · 5s"]) # identical rows
+      expect(output.string).to eq(before) # nothing re-emitted
+    end
+
+    it "still REPAINTS when the cards actually change" do
+      composer.set_cards(["  ▸ sa_1 · running · 5s"])
+      before = output.string.length
+      composer.set_cards(["  ▸ sa_1 · running · 6s"]) # changed elapsed
+      expect(output.string.length).to be > before
+    end
+  end
+
   describe "aggregated ⛔N count actually PAINTS to the live region (#475-A)" do
     # A minimal blocked-child entry the real SubagentCards formatter consumes.
     def blocked_entry(id)
