@@ -290,8 +290,44 @@ module Rubino
         @stop_pipe   = nil # self-pipe write end used to wake the reader's select
         @running     = false
         @suspended   = false
-        @saved_stdout = nil
+        init_takeover_state
         @cols = compute_cols
+      end
+
+      # Mid-turn auto-open (Option A) + R1 write-park state, factored out of
+      # #initialize. @parked_writes buffers committed stream lines #print_above
+      # receives while @suspended (flushed in order on resume); @pending_takeover
+      # is the dropdown block queued for the input thread and @takeover_snapshot
+      # the [@buffer, @cursor] draft captured when it was queued (restored
+      # verbatim after the dropdown closes).
+      def init_takeover_state
+        @saved_stdout      = nil # the real $stdout, parked while suspended for a takeover
+        @wake_pipe         = nil # self-pipe write end that asks the reader to run a takeover
+        @parked_writes     = nil
+        @pending_takeover  = nil
+        @takeover_snapshot = nil
+        # An optional callable the CLI registers (UI::CLI#auto_open_human_ask) so
+        # that the SUBAGENT CARD block — whose last row is the aggregated
+        # `⛔N subagents waiting on you` hint — is REPAINTED from the live registry
+        # the instant the dropdown takeover ends. #enter_takeover_mode clears the
+        # live region (the cards with it) and #leave_takeover_mode only redraws the
+        # prompt, so without this the ⛔N count vanishes for the rest of the turn
+        # whenever ≥1 child is still awaiting_human after the takeover (the human
+        # answered one of several, or cancelled). Run AFTER resume (outside the
+        # render lock — it calls #set_cards, which re-takes it), then cleared.
+        @on_takeover_resume = nil
+        # True only while #run_pending_takeover owns the suspend/resume lifecycle
+        # on the reader thread. The dropdown it runs calls @ui.select/@ui.ask,
+        # which wrap themselves in BottomComposer.run_in_terminal — its ensure
+        # fires #suspend then #resume. With the reader-thread takeover ALREADY
+        # suspended-for-takeover (and intentionally NOT stopped — it is us), that
+        # nested #resume would spawn a SECOND reader thread and reassign @wake_pipe
+        # mid-takeover, leaving two readers contending for raw $stdin and the next
+        # #request_takeover wake signal landing on a torn reader — the auto-open
+        # then fires exactly ONCE per session. While this flag is set #suspend and
+        # #resume are no-ops, so run_in_terminal nests harmlessly inside the
+        # takeover the reader already drives.
+        @in_takeover = false
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -380,16 +416,11 @@ module Rubino
       # draft is preserved for #resume. Idempotent: a no-op once already
       # suspended (or never started).
       def suspend
+        return if @in_takeover # the reader-thread takeover already owns the lifecycle
         return unless @running && !@suspended
 
-        @suspended = true
-        @saved_stdout = $stdout
-        $stdout = @output
         stop_reader
-        restore_winch_trap
-        restore_cont_trap
-        @input.cooked! if tty?
-        @render.synchronize { clear_live_region_to_clean_line }
+        enter_takeover_mode
       rescue IOError, Errno::ENOTTY, Errno::EIO
         nil
       end
@@ -397,21 +428,280 @@ module Rubino
       # RESUME after {suspend}: restore the StdoutProxy, re-enter raw mode,
       # restart the reader, and redraw the input line from the preserved buffer.
       def resume
+        return if @in_takeover # paired with #suspend: the takeover restores on its own
         return unless @suspended
 
-        @suspended = false
-        $stdout = @saved_stdout if @saved_stdout
+        leave_takeover_mode
+        @reader = start_reader
+        self
+      rescue IOError, Errno::ENOTTY, Errno::EIO
+        nil
+      end
+
+      # The TERMINAL-STATE half of #suspend, WITHOUT touching the reader thread's
+      # lifecycle (caller owns that): flip @suspended, restore the REAL $stdout
+      # (so tty-screen probes the real terminal, not the write-only StdoutProxy),
+      # leave raw mode, drop the WINCH/CONT traps, and clear the prompt rows. The
+      # typed @buffer draft is left untouched (preserved for the resume redraw).
+      # Shared by #suspend (which stops the reader first) AND the mid-turn
+      # auto-open running ON the reader thread (which cannot stop_reader without
+      # joining itself, so it breaks its own select loop instead and calls this).
+      def enter_takeover_mode
+        @suspended    = true
+        @saved_stdout = $stdout
+        $stdout       = @output
+        restore_winch_trap
+        restore_cont_trap
+        @input.cooked! if tty?
+        @render.synchronize { clear_live_region_to_clean_line }
+      end
+
+      # The TERMINAL-STATE half of #resume, WITHOUT restarting the reader (caller
+      # owns that): restore the StdoutProxy, re-arm the traps, FLUSH any stream
+      # lines parked while suspended (R1 write-park) so they land in scrollback in
+      # order, then redraw the prompt from the preserved @buffer. Re-entering raw
+      # mode is done by the caller's reader (its `@input.raw` block).
+      def leave_takeover_mode
+        @suspended    = false
+        $stdout       = @saved_stdout if @saved_stdout
         @saved_stdout = nil
         install_winch_trap
         install_cont_trap
         @render.synchronize do
           @output.print(PASTE_ON)
+          flush_parked_writes
           draw_input
         end
-        @reader = start_reader
-        self
-      rescue IOError, Errno::ENOTTY, Errno::EIO
+      end
+
+      # Replays the committed lines #print_above parked while @suspended, in
+      # arrival order, as one quiet batch before the prompt redraws — so a turn
+      # that kept streaming behind the dropdown shows its output the instant the
+      # dropdown closes, with no interleaving. Must be called under @render.
+      def flush_parked_writes
+        parked = @parked_writes
+        @parked_writes = nil
+        return unless parked && !parked.empty?
+
+        @partial = +""
+        parked.each { |str| render_frame(committed: str) }
+      end
+
+      # MID-TURN AUTO-OPEN (Option A) — request that +block+ runs as a takeover on
+      # the INPUT thread, by itself, while the parent turn keeps streaming. Called
+      # from ANOTHER thread (the child that just blocked on ask_parent): we record
+      # the block under @render — atomically against the keystroke handler's
+      # @buffer edits — SNAPSHOT the in-progress draft + cursor right there (so a
+      # keystroke in flight can't tear it), and signal the wake self-pipe. The
+      # reader's IO.select returns, sees the pending takeover, breaks its raw loop
+      # and runs #run_pending_takeover ON ITS OWN thread. No-op (returns false)
+      # when no composer is reading (not running / already suspended / no wake
+      # pipe) — the idle poll covers the not-in-a-turn case.
+      #
+      # ONE takeover at a time: a second request while one is pending/running is
+      # dropped here (the FIFO re-read after delivery picks up the newcomer), so
+      # the snapshot is never overwritten mid-takeover.
+      def request_takeover(on_resume: nil, &block) # rubocop:disable Naming/PredicateMethod -- queues a takeover and reports whether it was accepted, not a pure query
+        return false unless @running && !@suspended && @wake_pipe
+
+        @render.synchronize do
+          return false if @pending_takeover # one at a time; FIFO re-read gets the rest
+
+          @pending_takeover   = block
+          @takeover_snapshot  = [@buffer.dup, @cursor]
+          # Repaint hook run once the dropdown closes and the composer has resumed
+          # — see @on_takeover_resume. The cards (with the ⛔N hint) are wiped on
+          # suspend; this makes them come back from the live registry on resume.
+          @on_takeover_resume = on_resume
+        end
+        begin
+          @wake_pipe.write("x")
+        rescue Errno::EPIPE, IOError
+          # The reader already tore down between our guard and the signal; clear
+          # the pending state so it can't leak into the next reader.
+          @render.synchronize { clear_pending_takeover }
+          return false
+        end
+        true
+      end
+
+      # Drops the queued takeover + its draft snapshot. Must be called under
+      # @render (the same lock #request_takeover sets them under).
+      def clear_pending_takeover
+        @pending_takeover   = nil
+        @takeover_snapshot  = nil
+        @on_takeover_resume = nil
+      end
+
+      # Runs the queued mid-turn takeover ON the reader thread, between raw
+      # sessions (the prior `@input.raw` block has already left cooked mode). The
+      # draft was SNAPSHOTTED at request time; here we first COMPLETE that
+      # snapshot — keystrokes the human typed but the dying raw session never
+      # +getc+'d are still sitting in the kernel TTY queue, so we drain them
+      # THROUGH the normal key handler into @buffer and re-snapshot (see
+      # #drain_inflight_into_draft) BEFORE the dropdown starts reading $stdin.
+      # Without that, those in-flight bytes leak into TTY::Prompt's filter field
+      # and the restored draft is short. Then we enter takeover terminal mode
+      # (restore real $stdout, clear prompt rows — the reader is NOT stopped, it
+      # IS us), run the dropdown block (it reads the real $stdin and delivers the
+      # answer down the child's gate), then RESTORE the exact draft + cursor and
+      # leave takeover mode (flush parked stream lines, redraw the prompt). The
+      # caller's outer loop then re-enters a fresh raw session, so the human
+      # continues typing the preserved draft seamlessly. Every failure path still
+      # restores terminal state + draft so raw mode never leaks past the dropdown.
+      def run_pending_takeover
+        block = nil
+        @render.synchronize do
+          block = @pending_takeover
+          @pending_takeover = nil
+        end
+        return unless block
+
+        drain_inflight_into_draft
+        enter_takeover_mode
+        # The dropdown's @ui.select/@ui.ask nest BottomComposer.run_in_terminal,
+        # whose ensure would otherwise #suspend/#resume THIS composer and spawn a
+        # second reader mid-takeover (the one-shot-per-session corruption). The
+        # reader-thread takeover already owns the lifecycle, so neuter that nested
+        # suspend/resume for the duration of the block (cleared in the ensure,
+        # before our own leave_takeover_mode restores the terminal).
+        @in_takeover = true
+        begin
+          # RESIDUAL B: catch keystrokes that accrued during the suspend
+          # transition (after the request-time drain) before the picker grabs
+          # $stdin, so they land in the draft, not the picker's filter.
+          final_drain_into_draft
+          block.call
+        rescue StandardError
+          # A dropdown hiccup must never leave the terminal wedged or lose the
+          # draft — fall through to the restore in the ensure.
+          nil
+        ensure
+          @in_takeover = false
+          restore_draft_snapshot
+          leave_takeover_mode
+          repaint_after_takeover
+        end
+      end
+
+      # Run the resume-repaint hook (set at #request_takeover time) once the
+      # composer has fully left takeover mode, so the SUBAGENT CARD block — and
+      # its aggregated `⛔N subagents waiting on you` last row — is repainted from
+      # the live registry. Run OUTSIDE the @render lock (the hook calls
+      # #set_cards, which re-takes @render) and only when the composer settled
+      # back un-suspended; cleared each time so it never fires for a later, hook-
+      # less takeover. Best-effort: a cosmetic repaint must never wedge the turn.
+      def repaint_after_takeover
+        hook = nil
+        @render.synchronize do
+          hook = @on_takeover_resume
+          @on_takeover_resume = nil
+        end
+        hook&.call unless @suspended
+      rescue StandardError
         nil
+      end
+
+      # COMPLETE the request-time draft snapshot just before the dropdown opens,
+      # on the reader thread (the only thread allowed to +getc+ @input). Runs
+      # BETWEEN raw sessions, so @input is in cooked mode but the bytes the human
+      # typed before the auto-open raced in are still queued in the kernel TTY
+      # buffer — unread, because the wake-pipe branch in #reader_session breaks
+      # the loop without +getc+'ing a co-ready @input. We:
+      #
+      #   1. reset @buffer/@cursor to the request-time SNAPSHOT baseline, so a
+      #      programmatic edit made after the snapshot (the "can't tear it" race)
+      #      is discarded, exactly as before;
+      #   2. DRAIN the pending bytes through the normal #handle_key path so they
+      #      land in the draft like any other keystroke (a non-blocking
+      #      IO.select(0) gate + #getc loop — we only consume what is ALREADY
+      #      queued, never block waiting for more, and stop the instant the queue
+      #      is empty or a key submits/quits);
+      #   3. RE-SNAPSHOT the now-complete @buffer/@cursor under @render, so the
+      #      restore after the dropdown closes returns the FULL draft and the
+      #      dropdown starts with an empty input queue — no draft byte can leak
+      #      into TTY::Prompt's filter.
+      #
+      # The whole thing is a no-op when nothing was snapshotted or @input can't
+      # be drained (no fileno / closed) — the dropdown then just runs as before.
+      def drain_inflight_into_draft
+        baseline = @render.synchronize { @takeover_snapshot }
+        return unless baseline
+
+        @render.synchronize do
+          buf, cur = baseline
+          @buffer.replace(buf.to_s)
+          @cursor = cur.to_i.clamp(0, @buffer.length)
+        end
+        drain_pending_input
+        @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
+      end
+
+      # RESIDUAL B: a FINAL non-blocking drain run AFTER #enter_takeover_mode and
+      # immediately BEFORE the dropdown block reads $stdin. #drain_inflight_into_draft
+      # (above) catches the bytes queued at REQUEST time, but the human may keep
+      # typing during the suspend transition (cooked!/clear-region/dropdown setup) —
+      # those bytes land in the kernel TTY queue AFTER that first snapshot. This
+      # second pass drains whatever has ACCRUED since, onto the CURRENT draft (no
+      # baseline reset — the first drain's bytes stay), and re-snapshots so the
+      # restore still returns the full draft and the picker filter starts empty.
+      # Bounded/non-blocking exactly like the first pass (it shares
+      # #drain_pending_input). It NARROWS — does not eliminate — the window: the
+      # sub-instant between this drain and TTY::Prompt's own first getc is
+      # irreducible without blocking or pre-empting the picker's stdin grab.
+      def final_drain_into_draft
+        return unless @render.synchronize { @takeover_snapshot }
+
+        drain_pending_input
+        @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
+      end
+
+      # Feed every byte ALREADY queued on @input through #handle_key, then stop —
+      # a bounded, non-blocking drain. For a real TTY we gate each #getc on a
+      # zero-timeout #wait_readable: it reports readable ONLY while bytes are
+      # buffered, so the loop drains the in-flight keystrokes and exits the moment
+      # the queue empties — it never blocks for more input. A StringIO (tests /
+      # standalone) can't #wait_readable, but its #getc returns nil at the end
+      # without blocking, so we drain it with a plain #getc loop. A key that
+      # submits/quits ends the drain (the draft is gone anyway); any IO hiccup
+      # (non-tty / closed / EOF) just ends it quietly.
+      def drain_pending_input
+        selectable = real_io_input?
+        loop do
+          break if selectable && !@input.wait_readable(0)
+
+          ch = @input.getc
+          break if ch.nil?
+          break if handle_key(ch)
+        end
+      rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
+        nil
+      end
+
+      # True when @input is a real IO whose #wait_readable(0) can poll the queue
+      # without blocking — i.e. it exposes an integer fileno. A StringIO answers
+      # #fileno but raises NotImplementedError, so it falls to the plain #getc
+      # drain instead (its #getc is non-blocking and nil-terminated).
+      def real_io_input?
+        @input.fileno.is_a?(Integer)
+      rescue StandardError
+        false
+      end
+
+      # Restores the @buffer + @cursor captured at #request_takeover time (and
+      # COMPLETED by #drain_inflight_into_draft), byte for byte, under @render —
+      # so the dropdown's keystrokes never touched the draft and the human's
+      # caret returns exactly where it was. A no-op when nothing was snapshotted.
+      def restore_draft_snapshot
+        @render.synchronize do
+          snap = @takeover_snapshot
+          @takeover_snapshot = nil
+          next unless snap
+
+          buf, cur = snap
+          @buffer.replace(buf.to_s)
+          @cursor = cur.to_i.clamp(0, @buffer.length)
+        end
       end
 
       # Commits one block of output ABOVE the input line — it scrolls up into
@@ -425,6 +715,17 @@ module Rubino
       # deliberate blank row (the P3 rhythm gaps — see LiveRegion#commit).
       def print_above(str)
         @render.synchronize do
+          # R1 write-park: while SUSPENDED (an approval / ask / auto-open dropdown
+          # owns the real terminal) the agent thread may STILL be streaming. A raw
+          # render_frame here would paint the committed line + prompt rows straight
+          # OVER the interactive dropdown and interleave the two frames. So PARK the
+          # committed line in @parked_writes (the live #set_partial / #set_cards
+          # already drop their frames while suspended); #resume flushes the parked
+          # lines in order under @render, so the stream and the dropdown never mix.
+          if @suspended
+            (@parked_writes ||= []) << str
+            return
+          end
           @partial = +""
           render_frame(committed: str)
         end
@@ -1745,27 +2046,71 @@ module Rubino
       def start_reader
         stop_r, stop_w = IO.pipe
         @stop_pipe = stop_w
+        # The WAKE self-pipe (separate from the stop pipe): a child thread that
+        # needs the parent to auto-open a mid-turn dropdown sets @pending_takeover
+        # and signals THIS pipe (see #request_takeover), waking the select WITHOUT
+        # tearing the reader down — so the takeover runs ON the input thread (it
+        # owns the keyboard) at a clean select boundary, never mid-+getc+.
+        wake_r, wake_w = IO.pipe
+        @wake_pipe = wake_w
         Thread.new do
-          @input.raw(intr: true) do
-            loop do
-              ready, = IO.select([@input, stop_r])
-              break if ready.include?(stop_r) # stop signalled — don't read stdin
-              next unless ready.include?(@input)
+          # OUTER session loop: a raw-mode keystroke session, interrupted only to
+          # run a queued mid-turn takeover on THIS thread, then re-entered. The
+          # session returns :takeover when woken with a pending dropdown, :done on
+          # stop/EOF/quit. We run the takeover BETWEEN raw sessions (the prior
+          # `@input.raw` block has restored cooked mode) so the dropdown reads the
+          # real $stdin uncontended and we never join ourselves.
+          loop do
+            outcome = reader_session(stop_r, wake_r)
+            break unless outcome == :takeover
 
-              ch = @input.getc
-              break if ch.nil? # EOF / stdin closed
-
-              result = handle_key(ch)
-              break if result == :quit
-            end
+            run_pending_takeover
           end
         rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
           # stdin went away (closed/redirected mid-turn) or isn't a raw-capable
           # device — stop reading; the turn keeps running. Nothing to surface.
         ensure
           stop_r.close unless stop_r.closed?
+          wake_r.close unless wake_r.closed?
           @input.cooked! if tty?
         end
+      end
+
+      # One raw-mode keystroke session. Blocks in IO.select on $stdin, the stop
+      # pipe AND the wake pipe. Returns :takeover when the wake pipe fired with a
+      # pending mid-turn dropdown (the caller runs it then re-enters a session),
+      # else :done (stop signalled / EOF / :quit). We only +getc+ when $stdin is
+      # ready and neither control pipe is, so the handoff never races a byte.
+      def reader_session(stop_r, wake_r)
+        @input.raw(intr: true) do
+          loop do
+            ready, = IO.select([@input, stop_r, wake_r])
+            return :done if ready.include?(stop_r) # stop signalled — don't read stdin
+
+            if ready.include?(wake_r)
+              drain_pipe(wake_r)
+              # break the raw block to run the takeover on this thread, else loop
+              return :takeover if @pending_takeover
+
+              next
+            end
+            next unless ready.include?(@input)
+
+            ch = @input.getc
+            return :done if ch.nil? # EOF / stdin closed
+
+            result = handle_key(ch)
+            return :done if result == :quit
+          end
+        end
+      end
+
+      # Drains the bytes a self-pipe accumulated so the next select doesn't fire
+      # again on the same signal. Best-effort and non-blocking.
+      def drain_pipe(io)
+        io.read_nonblock(64)
+      rescue IO::WaitReadable, IOError # IOError already covers EOFError
+        nil
       end
 
       # Stop the raw reader thread deterministically (no kill race). Shared by
@@ -1799,6 +2144,10 @@ module Rubino
         @reader&.join
         @reader = nil
         @stop_pipe = nil
+        # The reader's `ensure` closes its READ end of the wake pipe; drop our
+        # write end so a stale signal can't reach the next reader's select.
+        @wake_pipe&.close unless @wake_pipe&.closed?
+        @wake_pipe = nil
       end
 
       # Clear the prompt row (and a live partial row above it, if any) and leave
