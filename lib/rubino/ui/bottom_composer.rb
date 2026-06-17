@@ -306,6 +306,7 @@ module Rubino
         @parked_writes     = nil
         @pending_takeover  = nil
         @takeover_snapshot = nil
+        @input_cols        = nil # width the on-screen input block was laid out at (#481)
         # An optional callable the CLI registers (UI::CLI#auto_open_human_ask) so
         # that the SUBAGENT CARD block — whose last row is the aggregated
         # `⛔N subagents waiting on you` hint — is REPAINTED from the live registry
@@ -1053,6 +1054,21 @@ module Rubino
         # transient zero/blank winsize from collapsing the budget (#95).
         fresh = live_winsize_cols
         @cols = fresh if fresh
+        # If the live width differs from the width the on-screen input block was
+        # laid out at, the terminal has REFLOWED that block: a line that fit on
+        # one logical row at the previous width now spans more physical rows (or
+        # fewer). #input_drawn recorded the OLD width's caret-row count, so the
+        # in-place #clear_input_block would walk up too few rows and leave the
+        # reflowed top fragment committed as a stale "❯" row — the #481 repro
+        # (a stale-width SIGWINCH redraw followed by keystrokes that wrap). #496
+        # refreshed @cols here so the NEW layout is correct, but did NOT clear
+        # the rows the line occupied at the previous width. Widen the clear to
+        # the MAX of the old-width and live-width caret-row counts so no stale
+        # row from the prior width survives, then lay out at the live width.
+        if @input_cols && @input_cols != @cols
+          @region.widen_input_above(rows_above_caret_at(row_budget_for(@input_cols)))
+          @region.widen_input_above(rows_above_caret_at(row_budget_for(@cols)))
+        end
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
 
@@ -1066,7 +1082,47 @@ module Rubino
         below = (rows.length - 1 - caret_row) + (status ? 1 : 0)
         park_caret(rows, caret_col, below)
         @region.input_drawn(above: caret_row, below: below)
+        # Remember the width this block was laid out at so the NEXT frame can
+        # detect a reflow and widen the clear (#481, see above).
+        @input_cols = @cols
         @output.flush
+      end
+
+      # The per-row display-column budget for an ARBITRARY width, mirroring
+      # #row_budget (which reads @cols) without disturbing @cols — used to count
+      # the on-screen block's reflowed rows at a width other than the live one.
+      def row_budget_for(cols)
+        [cols - 1, @prefix_width + 1].max
+      end
+
+      # The number of visual rows ABOVE the caret row when @buffer is wrapped at
+      # the given per-row +budget+, mirroring #layout_input / #caret_position's
+      # wrap math without rebuilding the rows (so it can cost-cheaply answer
+      # "how many physical rows does this block occupy at width X" for the
+      # reflow clear, #481). Continuation rows hang at @prefix_width like the
+      # real layout. Capped at @max_input_rows - 1, since the printed block is
+      # windowed to @max_input_rows and the clear walks only the printed rows.
+      def rows_above_caret_at(budget)
+        row = 0
+        caret_row = 0
+        width = @prefix_width
+        @buffer.each_char.with_index do |ch, i|
+          caret_row = row if i == @cursor # the row the caret's char sits on
+          if ch == "\n"
+            row += 1
+            width = @prefix_width
+            next
+          end
+          w = display_width(ch)
+          if width + w > budget
+            row += 1
+            width = @prefix_width
+          end
+          caret_row = row if i == @cursor # re-resolve after a wrap on this char
+          width += w
+        end
+        caret_row = row if @cursor >= @buffer.length # caret at end of buffer
+        [caret_row, @max_input_rows - 1].min
       end
 
       # Park the terminal cursor at the caret after the block is fully printed
@@ -1319,6 +1375,12 @@ module Rubino
           # seam Ctrl+L uses, {LiveRegion#reset_geometry!}) lets the redraw draw
           # ONE fresh frame over the reflowed copy instead of walking stale rows.
           @region.reset_geometry!
+          # The terminal reflows the bottom rows itself on a resize, so the
+          # geometry is deliberately forgotten (#401). Sync @input_cols to the
+          # new width too so the redraw below does NOT re-arm the keystroke-path
+          # reflow clear (#481) against geometry we just zeroed — that would
+          # over-clear and re-introduce the #401 stacking.
+          @input_cols = @cols
           # Repaint the FULL live region (cards + menu + partial + prompt) when
           # anything above the prompt is live, reusing the same atomic frame the
           # streaming writer uses; a bare draw_input would repaint only the

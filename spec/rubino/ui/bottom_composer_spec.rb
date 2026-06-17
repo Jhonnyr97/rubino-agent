@@ -1985,6 +1985,50 @@ RSpec.describe Rubino::UI::BottomComposer do
         net = s.scan("\r\n").length - s.scan("\e[1A").length
         expect(net).to eq(1)
       end
+
+      # ROOT CAUSE (#481, supersedes the insufficient part of #496): self-healing
+      # @cols in #draw_input fixes the NEW layout but NOT the rows the line
+      # occupied at the PREVIOUS width. When #resize records a STALE-WIDE @cols it
+      # repaints the line as ONE logical row AND zeroes the on-screen geometry
+      # (@input_above = 0, #401). The terminal, already narrow, REFLOWS that one
+      # row onto TWO physical rows. The next keystroke's in-place clear walks up
+      # only the recorded count (0 rows above) — so the reflowed TOP fragment is
+      # never erased and stays committed above the freshly repainted composer (the
+      # stale "❯" row). The fix widens the clear to cover the rows the block
+      # physically occupies at the live width, so the keystroke-path
+      # #clear_input_block walks UP at least one row before repainting.
+      it "clears the OLD width's reflowed rows on the keystroke path (no stale ❯ row)" do
+        # Type the whole line FIRST at width 80 — one logical row, no wrap.
+        line = (0...50).map { |i| (97 + (i % 26)).chr }.join
+        line.each_char { |ch| composer.handle_key(ch) }
+        region = composer.instance_variable_get(:@region)
+        expect(region.input_above).to eq(0) # single logical row at width 80
+
+        # Resize races: winsize still reports 80, so #resize records a stale @cols
+        # and (per #401) resets geometry — it repaints the line as ONE row with
+        # @input_above back to 0. The terminal is ALREADY 40 wide, so that one row
+        # is physically reflowed onto two rows on screen.
+        composer.resize
+        expect(composer.instance_variable_get(:@cols)).to eq(80) # stale
+        expect(region.input_above).to eq(0)                      # geometry forgotten
+
+        racy_out.cols = 40 # the true width finally readable
+        racy_out.truncate(0)
+        racy_out.rewind
+
+        # One more keystroke takes the cheap #draw_input path. It self-heals @cols
+        # to 40 AND must clear the previously-occupied (reflowed) region: a row
+        # that wrapped to two physical rows means at least one \e[1A\e[2K walk-up
+        # must precede the repaint, or the old top fragment survives as a stale
+        # committed "❯" row.
+        composer.handle_key("z")
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        # The clear walked UP over the reflowed row(s): the fix widened the clear
+        # count to the live-width row span. On the post-#496 code @input_above was
+        # 0, so NO walk-up was emitted and the stale row persisted.
+        expect(racy_out.string).to include("\e[1A\e[2K")
+      end
     end
 
     # Non-trigger (#481): narrow typing WITHOUT a prior resize stays correct —
