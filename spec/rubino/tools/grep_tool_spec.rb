@@ -95,9 +95,9 @@ RSpec.describe Rubino::Tools::GrepTool do
     expect(payload(result)).to include("Path not found")
   end
 
-  # #446: grepping a secret file DIRECTLY is gated UPSTREAM by ApprovalPolicy
-  # (→ :ask). At the tool level an APPROVED direct grep returns its lines.
-  it "greps an APPROVED .env credential file directly (gate is upstream, #446)" do
+  # #480: reading a secret is allowed unprompted (no read-side gate). A direct
+  # grep of a credential file returns its lines.
+  it "greps a .env credential file directly (reads are allowed, #480)" do
     outside = Dir.mktmpdir("grep_secret")
     File.write(File.join(outside, ".env"), "API_KEY=supersecret\n")
     result = payload(tool.call("pattern" => "KEY", "path" => File.join(outside, ".env")))
@@ -106,15 +106,15 @@ RSpec.describe Rubino::Tools::GrepTool do
     FileUtils.rm_rf(outside)
   end
 
-  # F2 (#446): a DIRECTORY grep with include:"*.env" must NOT leak the .env
-  # contents — rg's --glob overrides hidden-exclusion, so the secret hit is
-  # post-filtered out of the result set.
-  it "does NOT leak a .env via an include-glob over a directory (F2)" do
-    dir = Dir.mktmpdir("grep_include_leak")
+  # #480: the read-side secret gate (and its include-glob result redaction) was
+  # removed — a DIRECTORY grep with include:"*.env" returns the .env matches
+  # like any other file (field norm; protection is on write/exec/network).
+  it "returns a .env match via an include-glob over a directory (#480)" do
+    dir = Dir.mktmpdir("grep_include")
     File.write(File.join(dir, ".env"), "API_KEY=supersecret\n")
     File.write(File.join(dir, "app.rb"), "API_KEY = 'used'\n")
     result = payload(tool.call("pattern" => "API_KEY", "path" => dir, "include" => "*.env"))
-    expect(result).not_to include("supersecret")
+    expect(result).to include("supersecret")
   ensure
     FileUtils.rm_rf(dir)
   end
