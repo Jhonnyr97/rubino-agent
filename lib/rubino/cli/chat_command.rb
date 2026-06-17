@@ -302,6 +302,7 @@ module Rubino
         requested_session_id = session_resolver.resolve_session_id
         runner = build_runner(session_id: requested_session_id, ui: headless_ui)
         warn_if_resume_forked(requested_session_id, runner)
+        note_if_resuming_compacted_parent(runner)
 
         # Capture skills distilled during this turn (#369b). SKILL_CREATED is
         # emitted by an inline skill(create) call AND by the post-turn distill
@@ -498,6 +499,7 @@ module Rubino
         runner = build_runner(session_id: requested_session_id,
                               ui: headless_ui, announce_session: false)
         warn_if_resume_forked(requested_session_id, runner)
+        note_if_resuming_compacted_parent(runner)
 
         recorder = Output::TurnRecorder.new.attach!
         store    = ::Rubino::Session::Store.new
@@ -892,6 +894,7 @@ module Rubino
           # that we picked up their last session and how to start fresh —
           # otherwise the continuation is silent and looks like a fresh boot.
           session_resolver.print_auto_resume_line(ui, runner.session) if session_resolver.auto_resumed_session
+          note_if_resuming_compacted_parent(runner, ui: ui)
           session_resolver.print_session_history(ui, runner.session[:id])
         else
           # First-run welcome panel: the same assembler /status uses, trimmed.
@@ -2574,6 +2577,28 @@ module Rubino
 
         warn "rubino: session #{requested_session_id.to_s[0, 8]} is in use by another " \
              "rubino — resumed a forked copy: #{session[:id].to_s[0, 8]}"
+      end
+
+      # An EXPLICIT `--resume <id>` of a session that was later COMPACTED resumes
+      # the literal un-compacted parent (status "compacted") — intentional, since
+      # an explicit id means "this exact session". But a compacted continuation
+      # (a child carrying the summarised context) exists, and the user got no
+      # hint of it (#501). Print a note that the original was compacted and how
+      # to pick up the continuation instead; do NOT change which session loads.
+      # Only fires for explicit --resume (not --continue / auto-resume, which
+      # already land on the freshest resumable row) and only when the resolved
+      # session is itself a compacted parent. +ui+ surfaces it inline for the
+      # interactive REPL; the headless paths pass nil and it goes to STDERR,
+      # mirroring warn_if_resume_forked.
+      def note_if_resuming_compacted_parent(runner, ui: nil)
+        return unless opt(:resume) || opt(:r)
+
+        session = runner.session
+        return unless session && session[:status].to_s == "compacted"
+
+        msg = "session #{session[:id].to_s[0, 8]} was compacted — resuming the " \
+              "original; use --continue for the compacted continuation."
+        ui ? ui.info(msg) : warn("rubino: #{msg}")
       end
 
       # True when the model id resolves in ruby_llm's registry. A fake/* id (the
