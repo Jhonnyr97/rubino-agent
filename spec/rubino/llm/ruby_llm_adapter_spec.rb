@@ -634,6 +634,46 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
+  # Native-path model-id normalization (MED-1). The seeded public default is
+  # `openai/gpt-4.1` with provider: auto. On the NATIVE path (no explicit
+  # provider) ruby_llm derives the provider from its model registry, where the
+  # slash-prefixed `openai/gpt-4.1` matches an OpenRouter AGGREGATOR entry and
+  # routes to OpenRouter (→ "Missing configuration for OpenRouter:
+  # openrouter_api_key") instead of the OpenAI provider its prefix names. The
+  # adapter strips a `provider/` prefix that matches the already-resolved
+  # provider (Hermes' _strip_matching_provider_prefix) so the bare id routes to
+  # the native provider, while non-matching prefixes (genuine aggregator ids)
+  # stay verbatim.
+  # -----------------------------------------------------------------------
+  describe "#build_chat native model-id normalization (MED-1)" do
+    let(:cfg) { test_configuration }
+
+    it "strips the matching provider prefix so openai/gpt-4.1 routes to OpenAI, not OpenRouter" do
+      adapter = described_class.new(model_id: "openai/gpt-4.1", provider: "openai", config: cfg)
+      expect(RubyLLM).to receive(:chat).with(hash_including(model: "gpt-4.1"))
+                                       .and_return(double("chat", with_tool: nil))
+
+      adapter.send(:build_chat)
+    end
+
+    it "leaves a non-matching vendor prefix verbatim (genuine aggregator id)" do
+      adapter = described_class.new(model_id: "anthropic/claude-opus-4", provider: "openai", config: cfg)
+      expect(RubyLLM).to receive(:chat).with(hash_including(model: "anthropic/claude-opus-4"))
+                                       .and_return(double("chat", with_tool: nil))
+
+      adapter.send(:build_chat)
+    end
+
+    it "passes an unprefixed model id through unchanged" do
+      adapter = described_class.new(model_id: "gpt-4.1", provider: "openai", config: cfg)
+      expect(RubyLLM).to receive(:chat).with(hash_including(model: "gpt-4.1"))
+                                       .and_return(double("chat", with_tool: nil))
+
+      adapter.send(:build_chat)
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # anthropic_compatible provider — MiniMax native Anthropic-Messages endpoint.
   # Mirrors openai_compatible: route through ruby_llm's anthropic provider with
   # a custom base_url + api_key, assume_model_exists so an arbitrary model id is
