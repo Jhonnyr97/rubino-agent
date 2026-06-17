@@ -212,7 +212,6 @@ streaming:
   transport: "off"
   edit_interval: 0.3
   buffer_threshold: 40
-  cursor: " ▉"
 
 context:
   engine: "compressor"
@@ -291,7 +290,7 @@ tools:
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
                           # dangerous commands are still gated by security.confirm_policy
   ruby: true
-  web: false              # Gates BOTH the webfetch and websearch tools
+  web: true               # ON by default (keyless DuckDuckGo backend); gates BOTH the webfetch and websearch tools
   memory: true
 ```
 
