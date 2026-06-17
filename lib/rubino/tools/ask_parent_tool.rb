@@ -76,8 +76,20 @@ module Rubino
             },
             options: {
               type: "array",
-              items: { type: "string" },
-              description: "OPTIONAL concrete choices to pick from (e.g. [\"sqlite\", \"postgres\"]). " + "When given, the human picks one with the arrow keys (or still types a free " + "answer); omit for an open free-text question."
+              items: {
+                anyOf: [
+                  { type: "string" },
+                  {
+                    type: "object",
+                    properties: {
+                      label: { type: "string", description: "The choice text (this is what gets delivered as the answer)." },
+                      description: { type: "string", description: "OPTIONAL one-line hint shown beside the label." }
+                    },
+                    required: %w[label]
+                  }
+                ]
+              },
+              description: "OPTIONAL concrete choices to pick from. Either plain strings " + "(e.g. [\"sqlite\", \"postgres\"]) or {label, description} maps " + "(e.g. [{\"label\":\"sqlite\",\"description\":\"file-based, zero-setup\"}]). " + "When given, the human picks one with the arrow keys (or still types a free " + "answer); omit for an open free-text question."
             }
           },
           required: %w[question]
@@ -91,7 +103,10 @@ module Rubino
       def call(arguments)
         question = (arguments["question"] || arguments[:question]).to_s.strip
         blocking = blocking_arg(arguments)
-        options  = options_arg(arguments)
+        # The raw choices the model supplied (plain strings and/or
+        # {label, description} maps); BackgroundTasks#begin_ask is the single
+        # point that normalizes/validates them (#475-3), so we just pass through.
+        options  = arguments.key?("options") ? arguments["options"] : arguments[:options]
         return "Error: question is required" if question.empty?
 
         id = Rubino.current_subagent_id
@@ -117,16 +132,6 @@ module Rubino
       def blocking_arg(arguments)
         raw = arguments.key?("blocking") ? arguments["blocking"] : arguments[:blocking]
         [true, "true", 1, "1"].include?(raw)
-      end
-
-      # The OPTIONAL answer choices the model supplied. Coerced to a clean array
-      # of non-empty strings, or nil when absent — so begin_ask/the answer
-      # surface branch on "options present?" without re-validating. A bare
-      # ask_parent (no options) keeps the original free-text behaviour.
-      def options_arg(arguments)
-        raw = arguments.key?("options") ? arguments["options"] : arguments[:options]
-        opts = Array(raw).map { |o| o.to_s.strip }.reject(&:empty?)
-        opts.empty? ? nil : opts
       end
 
       def escalate(entry, question, blocking, options = nil)

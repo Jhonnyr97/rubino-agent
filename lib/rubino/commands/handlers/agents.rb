@@ -308,13 +308,36 @@ module Rubino
         def prompt_pick_option(options)
           return @ui.ask("✎ your answer › ").to_s unless @ui.respond_to?(:select)
 
-          choices = options.map { |o| [o, o] }
+          # An option is either a plain string (label==value) or a
+          # {label, description} map. Show the clean LABEL (with the description
+          # as a dim hint when present) and deliver the label STRING as the
+          # answer — never a raw hash literal (#475-3).
+          choices = options.map { |o| [option_label(o), option_value(o)] }
           choices << ["✎ Answer (type)…", :__free__]
           choice = @ui.select("Pick an answer for the subagent:", choices)
           return "" if choice.nil? # Esc / cancelled
           return @ui.ask("✎ your answer › ").to_s if choice == :__free__
 
           choice
+        end
+
+        # The display label for a picker option: the bare label for a string,
+        # or "label — description" (description dimmed) for a {label, description}
+        # map. The description rides the label since @ui.select takes only
+        # [label, value] pairs (no separate hint slot).
+        def option_label(opt)
+          return opt.to_s unless opt.is_a?(Hash)
+
+          label = opt["label"].to_s
+          desc  = opt["description"].to_s
+          desc.empty? ? label : "#{label} #{pastel.dim("— #{desc}")}"
+        end
+
+        # The value DELIVERED to the child for a picker option: always the label
+        # STRING (the description is presentational only), so the child's answer
+        # is clean text, never a hash literal.
+        def option_value(opt)
+          opt.is_a?(Hash) ? opt["label"].to_s : opt.to_s
         end
 
         # Routes the answer back DOWN to the child: decide the gate (unblocks a
