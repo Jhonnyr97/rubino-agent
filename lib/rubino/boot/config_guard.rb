@@ -25,7 +25,7 @@ module Rubino
       # defensive backstop: should any raw Psych/IO failure ever slip past the
       # loader (a new shape, a refactor), it still becomes a clean boot abort
       # rather than a double backtrace on every command (CFG-R2).
-      def self.load!(loader: Config::Loader.new, stderr: $stderr)
+      def self.load!(loader: Config::Loader.new, stderr: $stderr, argv: [])
         loader.load
         # LOAD-time schema validation (F8): a HAND-EDITED config.yml with an
         # unknown key or a wrong-typed value used to load SILENTLY (the validator
@@ -34,12 +34,23 @@ module Rubino
         # already passes through — so the user is told at startup instead of
         # discovering it as a runtime crash / provider 4xx. Never fatal: a
         # warning must not block a usable config, and a probe hiccup is ignored.
-        warn_config_issues(loader, stderr)
+        # Pure-meta commands (version/help) never need a configured model, so the
+        # config-issue warning is noise on `rubino --version`/`--help` — skip it.
+        warn_config_issues(loader, stderr) unless meta_command?(argv)
         nil
       rescue Config::ConfigError, Psych::Exception, SystemCallError, IOError => e
         stderr.puts "rubino: config error — #{e.message}"
         stderr.puts "rubino: fix #{loader.config_path}, restore a backup, or re-run 'rubino setup'."
         exit 1
+      end
+
+      # `--version`/`-v`/`version` and `--help`/`-h`/`help` are pure-meta: they
+      # print static text and exit, so a config-issue warning on them is pure
+      # noise. True when the invocation is one of those (the meta flag/word is the
+      # FIRST token, matching how Commands.start dispatches them).
+      def self.meta_command?(argv)
+        first = Array(argv).first.to_s
+        %w[--version -v version --help -h help].include?(first)
       end
 
       # Emits a one-line-per-issue config WARNING to stderr (F8), or nothing when
