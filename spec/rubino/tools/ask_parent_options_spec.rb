@@ -14,11 +14,16 @@ RSpec.describe Rubino::Tools::AskParentTool do
   after  { Rubino::Tools::BackgroundTasks.reset! }
 
   describe "input_schema" do
-    it "exposes an OPTIONAL `options` array of strings, not required" do
+    it "exposes an OPTIONAL `options` array (string OR {label, description}), not required" do
       props = tool.input_schema[:properties]
       expect(props).to have_key(:options)
       expect(props[:options][:type]).to eq("array")
-      expect(props[:options][:items]).to eq(type: "string")
+      # Both shapes are accepted: a plain string, or a {label, description} map.
+      shapes = props[:options][:items][:anyOf]
+      expect(shapes.map { |s| s[:type] }).to contain_exactly("string", "object")
+      map_shape = shapes.find { |s| s[:type] == "object" }
+      expect(map_shape[:properties]).to have_key(:label)
+      expect(map_shape[:required]).to eq(%w[label])
       expect(tool.input_schema[:required]).to eq(%w[question]) # options NOT required
     end
   end
@@ -47,6 +52,32 @@ RSpec.describe Rubino::Tools::AskParentTool do
         tool.call("question" => "q", "blocking" => false, "options" => ["  ", "yes", "", :no])
       end
       expect(registry.find(child.id).ask_options).to eq(%w[yes no])
+    end
+
+    # #475-3: a {label, description} map is normalized to {"label"=>, "description"=>}
+    # (NOT a Ruby hash literal), so the picker can show a clean label + hint and
+    # deliver the label string. A map with only a label collapses to that string.
+    it "keeps {label, description} maps structured (no hash-literal coercion)" do
+      child = registry.reserve(subagent: "explore", prompt: "x", owner_subagent_id: nil)
+      Rubino.with_current_subagent_id(child.id) do
+        tool.call("question" => "which db?", "blocking" => false, "options" => [
+                    { "label" => "SQLite", "description" => "file-based, zero-setup" },
+                    { "label" => "Postgres" }, # label-only collapses to a plain string
+                    "MySQL" # plain strings still work
+                  ])
+      end
+      sqlite = { "label" => "SQLite", "description" => "file-based, zero-setup" }
+      expect(registry.find(child.id).ask_options).to eq([sqlite, "Postgres", "MySQL"])
+    end
+
+    it "drops a map with a blank/missing label" do
+      child = registry.reserve(subagent: "explore", prompt: "x", owner_subagent_id: nil)
+      Rubino.with_current_subagent_id(child.id) do
+        tool.call("question" => "q", "blocking" => false, "options" => [
+                    { "description" => "no label here" }, { "label" => "  " }, "ok"
+                  ])
+      end
+      expect(registry.find(child.id).ask_options).to eq(%w[ok])
     end
   end
 

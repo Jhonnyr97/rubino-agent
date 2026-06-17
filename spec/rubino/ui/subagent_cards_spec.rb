@@ -81,6 +81,30 @@ RSpec.describe Rubino::UI::SubagentCards do
     end
   end
 
+  describe "aggregated ⛔N waiting-on-you count (#475-4)" do
+    it "shows ⛔1 (singular) for one child blocked on the human" do
+      e = entry(id: "sa_b", status: :blocked_on_human, ask_question: "sqlite or postgres?")
+      hint = plain(cards.card_lines([e])).last
+      expect(hint).to include("⛔1 subagent waiting on you")
+      expect(hint).to include("/reply <id> to answer")
+    end
+
+    it "aggregates the count (pluralized) across several blocked children" do
+      es = %w[sa_a sa_b].map { |id| entry(id: id, status: :blocked_on_human, ask_question: "q") }
+      hint = plain(cards.card_lines(es)).last
+      expect(hint).to include("⛔2 subagents waiting on you")
+    end
+
+    it "counts blocked children HIDDEN behind the MAX_CARDS overflow too" do
+      # More blocked children than fit as cards: the aggregated count must still
+      # reflect the TRUE total (counted over the full live list, not the shown cards).
+      n  = described_class::MAX_CARDS + 2
+      es = Array.new(n) { |i| entry(id: "sa_#{i}", status: :blocked_on_human, ask_question: "q") }
+      hint = plain(cards.card_lines(es)).last
+      expect(hint).to include("⛔#{n} subagents waiting on you")
+    end
+  end
+
   # #141: "· 1 tools ·" — the card must pluralize like the turn footer does.
   it "pluralizes the tool count (1 tool, 2 tools) (#141)" do
     one = plain(cards.card_lines([entry(tool_count: 1)])).first

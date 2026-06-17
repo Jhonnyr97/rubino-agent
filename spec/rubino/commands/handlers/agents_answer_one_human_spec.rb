@@ -18,13 +18,14 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
   # nil) so the options dropdown is driven deterministically with no TTY.
   let(:ui) do
     Class.new do
-      attr_reader :lines, :select_prompts
+      attr_reader :lines, :select_prompts, :select_choices
 
       def initialize(answers, selections)
-        @answers       = answers
-        @selections    = selections
-        @lines         = []
+        @answers        = answers
+        @selections     = selections
+        @lines          = []
         @select_prompts = []
+        @select_choices = []
       end
 
       def info(msg = "")    = @lines << msg.to_s
@@ -33,8 +34,9 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       def separator         = nil
       def ask(_prompt)      = @answers.shift
 
-      def select(prompt, _choices)
+      def select(prompt, choices)
         @select_prompts << prompt
+        @select_choices << choices
         @selections.shift
       end
 
@@ -110,6 +112,33 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
 
       handler.answer_one_human(entry)
       expect(registry.find(entry.id).status).to eq(:blocked_on_human)
+    end
+
+    # #475-3: a {label, description} option must render a CLEAN label (description
+    # as a dim hint), NOT a raw Ruby hash literal, and the value picked/delivered
+    # is the label STRING — never the hash.
+    it "renders the clean label (+ description hint), never a hash literal, and delivers the label string" do
+      entry, = stage_ask(options: [{ "label" => "SQLite", "description" => "file-based, zero-setup" }])
+      selections << "SQLite" # the real picker returns the VALUE (the label string)
+      expect(registry).to receive(:deliver_answer).with(entry.id, "SQLite").and_call_original
+
+      handler.answer_one_human(entry)
+
+      choices = ui.select_choices.first
+      labels  = choices.map(&:first).map { |l| l.gsub(/\e\[[0-9;]*m/, "") }
+      values  = choices.map(&:last)
+      expect(labels).to include("SQLite — file-based, zero-setup") # label + hint
+      expect(labels.join).not_to match(/\{.*=>/)                   # no hash literal
+      expect(values).to include("SQLite")                          # delivered value is the label string
+    end
+
+    it "renders a plain-string option as label==value (backward compatible)" do
+      entry, = stage_ask(options: %w[sqlite])
+      selections << "sqlite"
+      handler.answer_one_human(entry)
+
+      choices = ui.select_choices.first
+      expect(choices.first).to eq(%w[sqlite sqlite]) # [label, value], both the bare string
     end
   end
 
