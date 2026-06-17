@@ -45,22 +45,20 @@ module Rubino
       end
 
       # The native ENV credential a provider reads when no config key is set.
+      # Reads the SAME env var the guidance/wizard tells the user to set
+      # (provider_env_var_name) — single source of truth, so a non-native
+      # provider (deepseek, mistral, qwen, …) consults its own
+      # <PROVIDER>_API_KEY rather than silently falling back to OPENAI_API_KEY.
       def provider_env_key(provider)
-        case provider
-        when "openai"    then ENV.fetch("OPENAI_API_KEY", nil)
-        when "anthropic" then ENV.fetch("ANTHROPIC_API_KEY", nil)
-        when "google"    then ENV["GEMINI_API_KEY"] || ENV.fetch("GOOGLE_API_KEY", nil)
-        when "bedrock"   then ENV.fetch("BEDROCK_API_KEY", nil)
-        when "minimax"   then ENV.fetch("MINIMAX_API_KEY", nil)
-        else
-          # Unknown / self-hosted provider: no native ENV mapping. Fall back to
-          # the OpenAI key, which most openai-compatible backends accept.
-          ENV.fetch("OPENAI_API_KEY", nil)
-        end
+        value = ENV.fetch(provider_env_var_name(provider), nil)
+        # Google historically also accepted the legacy GOOGLE_API_KEY alias.
+        value || (provider == "google" ? ENV.fetch("GOOGLE_API_KEY", nil) : nil)
       end
 
-      # The ENV var NAME we'd suggest the user set for a given provider — used by
-      # the actionable error message and the wizard.
+      # The ENV var NAME we'd suggest the user set for a given provider — the
+      # single source of truth shared by the credential check, the actionable
+      # error message, and the wizard. Native providers map to their canonical
+      # var; any other provider follows the <PROVIDER>_API_KEY convention.
       def provider_env_var_name(provider)
         {
           "openai" => "OPENAI_API_KEY",
