@@ -37,6 +37,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
       def error(msg = "")   = @lines << msg.to_s
       def separator         = nil
       def ask(_prompt)      = @answers.shift
+      # The reply affordance's options-or-text dropdown (#select): default to
+      # :answer so the no-options [Answer/Dismiss] menu routes to the free-text
+      # @ask the existing tests drive.
+      def select(_prompt, _choices) = :answer
       def subagent_approval_choice = @decisions.shift
       def respond_to_missing?(_name, _priv = false) = true
       def method_missing(_name, *_args) = nil

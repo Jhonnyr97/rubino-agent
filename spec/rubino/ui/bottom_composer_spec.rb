@@ -2030,11 +2030,15 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       # First select call: report BOTH $stdin and the stop pipe ready at once
       # (the race window). The reader must check the stop pipe FIRST and break.
+      # The reader selects on [@input, stop_r, wake_r] (the wake pipe was added
+      # for the mid-turn auto-open). Report $stdin AND the stop pipe ready at
+      # once (the race window) — wake NOT ready — so the reader must check the
+      # stop pipe FIRST and break without reading $stdin.
       first = true
       allow(IO).to receive(:select).and_wrap_original do |orig, ios, *rest|
-        if first && ios.length == 2
+        if first && ios.length >= 2
           first = false
-          [ios, [], []] # both readable simultaneously
+          [[ios[0], ios[1]], [], []] # @input + stop pipe readable simultaneously
         else
           orig.call(ios, *rest)
         end
