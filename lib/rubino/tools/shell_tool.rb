@@ -213,6 +213,7 @@ module Rubino
       # from the same data, keeping the parse path single-sourced.
       def execute_foreground(command, cwd, timeout)
         rd = nil
+        pgid = nil
         rd, wr = IO.pipe
         # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
         # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
@@ -221,6 +222,12 @@ module Rubino
                             chdir: cwd, pgroup: true, out: wr, err: wr)
         pgid = pid
         wr.close
+        # Register the live process group so a parent-death teardown can reap it
+        # synchronously (MED-2). The foreground pgid otherwise lives only in this
+        # stack frame, so cancel_all's cooperative cancel can't reach it before
+        # the process exits and the shell reparents to init as an orphan. The
+        # `ensure` below drops it once THIS thread has reaped it normally.
+        ShellRegistry.instance.register_pgid(pgid)
 
         # Drain the merged stdout+stderr pipe line-by-line so each chunk can
         # be streamed to the UI/event stream as the subprocess writes it,
@@ -319,6 +326,7 @@ module Rubino
         { text: "Shell error: #{e.message}", exit_code: nil, timed_out: false,
           cancelled: false, shell_error: true, duration_ms: 0 }
       ensure
+        ShellRegistry.instance.unregister_pgid(pgid) if pgid
         rd.close if rd && !rd.closed?
       end
 
