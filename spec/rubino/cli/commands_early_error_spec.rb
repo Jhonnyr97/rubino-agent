@@ -206,6 +206,59 @@ RSpec.describe Rubino::CLI::Commands do
     end
   end
 
+  describe "MED — `config set`/`config unset` with RUBINO_HOME at a FILE (Errno::EEXIST)" do
+    # The config-write path (config_command -> Config::Writer -> Util::AtomicFile)
+    # reaches FileUtils.mkdir_p WITHOUT going through ensure_directories!'s
+    # file-vs-directory guard, so a careless RUBINO_HOME pointing at an existing
+    # file leaked a raw ~25-frame fileutils Errno::EEXIST backtrace + `bundler:
+    # failed to load command` — violating the release's "Errno cleaned / no raw
+    # backtrace" guarantee that chat/setup already honour. The SystemCallError
+    # chokepoint in Commands.start now normalizes EVERY such Errno into the SAME
+    # clean one-liner: `rubino: <cleaned reason>`, exit 1, no trace, no `@ syscall`.
+    around do |example|
+      Dir.mktmpdir do |dir|
+        file = File.join(dir, "not-a-dir")
+        File.write(file, "x")
+        prev = ENV.fetch("RUBINO_HOME", nil)
+        ENV["RUBINO_HOME"] = file
+        Rubino.reset!
+        example.run
+        ENV["RUBINO_HOME"] = prev
+        Rubino.reset!
+      end
+    end
+
+    it "surfaces a clean one-line error + exit 1 for `config set`, no Errno backtrace" do
+      r = run_cli(["config", "set", "display.theme", "dark"])
+      expect(r[:status]).to eq(1)
+      expect(r[:stderr]).to include("rubino: ")
+      expect(r[:stderr]).to include("File exists")
+      expect(r[:stderr]).not_to include("Errno::EEXIST")
+      expect(r[:stderr]).not_to match(/ @ \S+ - /)
+      expect(r[:stderr]).not_to include("bundler:")
+      expect(backtrace?(r[:stderr])).to be(false)
+      expect(backtrace?(r[:stdout])).to be(false)
+    end
+
+    it "surfaces a clean one-line error + exit 1 for `config unset`, no Errno backtrace" do
+      r = run_cli(["config", "unset", "display.theme"])
+      expect(r[:status]).to eq(1)
+      expect(r[:stderr]).to include("File exists")
+      expect(r[:stderr]).not_to include("Errno::EEXIST")
+      expect(backtrace?(r[:stderr])).to be(false)
+    end
+
+    it "emits the cleaned reason with NO ` @ <syscall> - <path>` errno artifact" do
+      # The chokepoint routes the raw SystemCallError message through
+      # Rubino.clean_errno_message, so Ruby's internal ` @ dir_s_mkdir - <path>`
+      # C-function tail is stripped — same as the F13 home-error path.
+      r = run_cli(["config", "set", "display.theme", "dark"])
+      expect(r[:stderr]).to include("File exists")
+      expect(r[:stderr]).not_to include("dir_s_mkdir")
+      expect(r[:stderr]).not_to match(/ @ \S+ - /)
+    end
+  end
+
   describe "Rubino.clean_errno_message" do
     it "drops the ` @ <syscall> - <path>` tail and keeps the plain reason" do
       expect(Rubino.clean_errno_message("Operation not permitted @ apply2files - /home/x"))
