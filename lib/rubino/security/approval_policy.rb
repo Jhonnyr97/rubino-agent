@@ -24,10 +24,13 @@ module Rubino
       # auto-edit / aider).
       STRUCTURED_EDIT_TOOLS = %w[edit write multi_edit apply_patch].freeze
 
-      # File tools whose TARGET path is run through the unified secret-file gate
-      # (#446). READ side resolves the path from `file_path`/`path`; WRITE side
-      # from `file_path` (apply_patch from its patch text, see #secret_file_access?).
-      SECRET_GATED_READ_TOOLS  = %w[read grep glob].freeze
+      # File tools whose WRITE TARGET path is run through the secret-file gate.
+      # WRITE side resolves the path from `file_path` (apply_patch from its patch
+      # text, see #secret_file_access?). The READ side (read/grep/glob) is NOT
+      # gated: reading a secret is allowed unprompted, matching the field norm
+      # (Claude Code / Codex / aider / Windsurf / LangChain all allow secret
+      # reads; protection is on write/exec/network, #480). Only writing/editing
+      # a secret still requires explicit approval.
       SECRET_GATED_WRITE_TOOLS = STRUCTURED_EDIT_TOOLS
 
       # Why the most recent #decide returned :deny — :hardline (the
@@ -142,18 +145,21 @@ module Rubino
         #    `read /path/.env: allow` is honored.
         return pattern_result if pattern_result
 
-        # 5b. UNIFIED SECRET-FILE GATE (#446). Reading (read/grep/glob) OR
-        #     writing/editing (write/edit/multi_edit/apply_patch) a SECRET path
-        #     requires EXPLICIT user approval — the maintainer decision: not a
-        #     silent allow, not a silent hard-block. Returns :ask, which the
-        #     ToolExecutor turns into the approval dropdown when interactive
-        #     (approved → the tool runs and reads/writes the secret; denied →
-        #     refused) and into a FAIL-CLOSED block when headless (:noninteractive).
-        #     Runs ABOVE the broad read/allow fast-paths (steps 6/6b/9) so a
-        #     secret read isn't silently auto-allowed, and BELOW yolo (step 3) so
-        #     a --yolo operator who opted into full file trust isn't re-prompted.
-        #     NON-secret reads stay broad (clone-and-inspect, #406) — only the
-        #     secret set is gated.
+        # 5b. SECRET-FILE WRITE GATE. WRITING/editing (write/edit/multi_edit/
+        #     apply_patch) a SECRET path requires EXPLICIT user approval — the
+        #     maintainer decision: not a silent allow, not a silent hard-block.
+        #     Returns :ask, which the ToolExecutor turns into the approval
+        #     dropdown when interactive (approved → the tool writes the secret;
+        #     denied → refused) and into a FAIL-CLOSED block when headless
+        #     (:noninteractive). Runs ABOVE the allow fast-paths (steps 6/6b/9)
+        #     and BELOW yolo (step 3) so a --yolo operator who opted into full
+        #     file trust isn't re-prompted.
+        #
+        #     READING a secret (read/grep/glob) is NOT gated: it is allowed
+        #     unprompted like any broad read (#406), matching the field norm
+        #     (Claude Code / Codex / aider / Windsurf / LangChain all allow
+        #     secret reads; #480). The threat model is exfil/clobber, not the
+        #     agent reading — so only the write side stays gated here.
         return :ask if secret_file_access?(tool, arguments)
 
         # 6. Config allowlist of pre-approved commands. Checked AFTER deny
@@ -271,21 +277,20 @@ module Rubino
         dangerous?(command_str) ? :ask : :allow
       end
 
-      # True when this call READS or WRITES a secret/credential path and so must
-      # be approval-gated (#446). For the path-arg tools (read/grep/glob/write/
-      # edit/multi_edit) the single target is resolved from file_path/path; for
-      # apply_patch every target file in the patch is checked, because one call
-      # can touch many files. Resolution is relative to the workspace primary
-      # root so a relative `.env` resolves to the same file the tool will open.
+      # True when this call WRITES a secret/credential path and so must be
+      # approval-gated. For write/edit/multi_edit the single target is resolved
+      # from file_path; for apply_patch every target file in the patch is
+      # checked, because one call can touch many files. Resolution is relative
+      # to the workspace primary root so a relative `.env` resolves to the same
+      # file the tool will open. (Reads are NOT gated — see #decide step 5b.)
       def secret_file_access?(tool, arguments)
-        return false unless SECRET_GATED_READ_TOOLS.include?(tool.name) ||
-                            SECRET_GATED_WRITE_TOOLS.include?(tool.name)
+        return false unless SECRET_GATED_WRITE_TOOLS.include?(tool.name)
 
         secret_targets(tool, arguments).any? { |p| SecretPath.secret?(p) }
       end
 
-      # The absolute path(s) a file tool will touch. apply_patch yields one per
-      # hunk target; every other gated tool yields its single file_path/path.
+      # The absolute path(s) a write tool will touch. apply_patch yields one per
+      # hunk target; every other gated tool yields its single file_path.
       def secret_targets(tool, arguments)
         args = arguments || {}
         if tool.name == "apply_patch"

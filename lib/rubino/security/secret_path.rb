@@ -2,13 +2,12 @@
 
 module Rubino
   module Security
-    # ONE "is this a secret/credential path?" predicate, shared by the tool
-    # layer (read/grep/glob refuse to leak; write/edit refuse to clobber) and
-    # the approval layer (Security::ApprovalPolicy#decide → :ask). Previously
-    # the read side and the write side carried two parallel denylists; the
-    # maintainer decision (#446) is that reading OR writing a secret both
-    # require the SAME explicit user approval over the SAME set — so the set
-    # and the predicate live here, once.
+    # ONE "is this a secret/credential path?" predicate for the WRITE-side
+    # approval gate (Security::ApprovalPolicy#decide → :ask when a write/edit/
+    # multi_edit/apply_patch targets a secret). Writing/clobbering a secret
+    # requires explicit user approval; READING one is allowed unprompted (the
+    # field norm, #480) and has no gate, so this predicate is no longer
+    # consulted on the read path.
     #
     # The gate itself is in ApprovalPolicy/ToolExecutor (interactive →
     # approval dropdown; approved → tool proceeds; denied → refused; headless →

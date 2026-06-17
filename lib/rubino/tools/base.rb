@@ -247,67 +247,6 @@ module Rubino
           error_code: :outside_workspace }
       end
 
-      # UNIFIED SECRET-PATH PREDICATE (#446). One "is this a secret/credential
-      # path?" question used by BOTH the read side (read/grep/glob) and the
-      # write side (write/edit/multi_edit/apply_patch). Previously the read
-      # denylist (#406) was a NARROW subset (.env*/.envrc + agent-home) and the
-      # write denylist (#413) the SUPERSET; the maintainer decision is that
-      # reading OR writing a secret both require EXPLICIT user approval, applied
-      # to the SAME set. So there is now ONE set — the (wider) write set — and
-      # ONE predicate: #secret_path_category. The approval gate lives in
-      # Security::ApprovalPolicy#decide (returns :ask for a secret target), which
-      # gives us the existing flow for free: interactive → approval dropdown
-      # auto-opens; approved → the tool proceeds; denied → refused; headless (no
-      # human) → fails CLOSED via ToolExecutor's :noninteractive floor. The tools
-      # therefore NO LONGER self-refuse a secret in #call — an approved read of
-      # your .env must actually return its bytes, and an approved write must
-      # actually write. The predicate is still consulted directly in ONE place:
-      # GrepTool post-filters its RESULTS through it so an include-glob
-      # (`include: "*.env"`) over a directory can't leak a secret the per-target
-      # gate never saw (F2).
-      #
-      # DELIBERATE DIVERGENCE FROM HERMES: Hermes' file_safety.get_read_block_error
-      # FLAT-DENIES reading project .env* (model-facing deny, no human in the
-      # loop, defense-in-depth only). rubino instead routes the read through an
-      # explicit user APPROVAL gate (ask, not deny) so the agent CAN read/update
-      # your .env when you say yes — stricter than Claude Code's default
-      # (ungated reads) and aider, more content-aware than Codex's OS-sandbox.
-      #
-      # Matches (by BASENAME, in any directory):
-      #   - project credential files: .env, .env.* (.env.local/.production), .envrc
-      #   - shell/credential dotfiles: .netrc, .pgpass, .npmrc, .pypirc,
-      #     .git-credentials, .bashrc, .zshrc, .profile, .bash_profile, .zprofile
-      # Matches (by absolute PATH / PREFIX):
-      #   - ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.docker, ~/.azure,
-      #     ~/.config/gh, ~/.config/gcloud  (the whole tree)
-      #   - /etc/sudoers, /etc/sudoers.d/*, /etc/passwd, /etc/shadow, /etc/systemd/*
-      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
-      #     the home .env, the sqlite DB, any *oauth* file, an mcp-tokens/ dir,
-      #     and *.key / *.pem material.
-      # Returns the matched category string (truthy) or nil when the path is not
-      # a secret. (Non-predicate: the truthy return carries the category string
-      # the approval question / block message interpolates.)
-      #
-      # The UNIFIED predicate (delegates to the single source of truth,
-      # Security::SecretPath.category). Returns the matched-secret category
-      # string (truthy) for a secret/credential path, or nil for a normal file.
-      def secret_path_category(expanded)
-        Security::SecretPath.category(expanded)
-      end
-
-      # Denial body for a secret hit that the GrepTool post-filter strips out of
-      # an include-glob result set (F2): the directory grep wasn't itself a
-      # secret target, so the per-call approval gate never saw it — we refuse the
-      # leaking RESULTS here instead. error_code stays :secret_denied for parity
-      # with the read side.
-      def secret_filtered_block_message(path, category)
-        { output: "Error: refusing to return secret content from '#{path}' — it is a #{category}. " \
-                  "The search matched a credential file via an include-glob; secrets are not " \
-                  "returned without explicit user approval. Ask the user, or read the file " \
-                  "directly (which prompts for approval).",
-          error_code: :secret_denied }
-      end
-
       # True when +expanded+ resolves under the Rubino home directory. Symlinks
       # are resolved on both sides so a link can't be used to claim home-ness.
       def under_agent_home?(expanded)
