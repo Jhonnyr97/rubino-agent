@@ -144,5 +144,25 @@ RSpec.describe Rubino::Boot::ConfigGuard do
       expect(out).to include("run `rubino doctor` for details)")
       expect(out).not_to include("for detail)")
     end
+
+    # The config-issue warning is NOISE on the pure-meta commands (version/help):
+    # they print static text and exit, never needing a configured model. With a
+    # problematic config present, `--version`/`version`/`--help`/`help` must emit
+    # NO config warning, while a normal command still does.
+    %w[--version -v version --help -h help].each do |meta|
+      it "suppresses the config-issue warning for `#{meta}`" do
+        expect do
+          described_class.load!(loader: loader, stderr: stderr, argv: [meta])
+        end.not_to raise_error
+        expect(stderr.string).to be_empty
+      end
+    end
+
+    it "STILL warns for a normal command (the gate is meta-only)" do
+      expect do
+        described_class.load!(loader: loader, stderr: stderr, argv: ["chat"])
+      end.not_to raise_error
+      expect(stderr.string).to include("config issue")
+    end
   end
 end
