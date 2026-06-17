@@ -14,6 +14,45 @@ module Rubino
       # the rest to the completion dropdown.
       MODEL_LIST_LIMIT = 12
 
+      # Local meta-commands SAFE to run IMMEDIATELY while a turn is active (the
+      # type-ahead QUEUE-by-default is overridden for these). Read-only/control
+      # only: they INSPECT or SIGNAL the running tree without mutating session /
+      # conversation / config / turn state, so they run on the composer's reader
+      # thread concurrently with the turn thread without a race (output routes
+      # through the SAME render-mutex-serialized UI). /stop reuses the cancel
+      # machinery Esc / `--stop` use (already concurrent-safe). /reply is kept
+      # BLOCKED: its interactive form `/reply <id>` (-> @ui.ask) can't be told
+      # apart by NAME from the safe inline form, and would steal the reader's
+      # stdin (default-to-blocked on a concurrency hazard). Single source of
+      # truth for the busy-time classification — #busy_disposition reads it.
+      IMMEDIATE_WHILE_BUSY = %w[agents tasks stop status jobs help commands dirs].freeze
+
+      # Classifies an input line for the BUSY (turn-active) input gate:
+      #   :immediate - a registered local meta-command in IMMEDIATE_WHILE_BUSY;
+      #                the composer dispatches it NOW (does not queue) via
+      #                #try_execute.
+      #   :blocked   - a registered local built-in NOT in the immediate set
+      #                (state-mutating / turn-affecting); the composer neither
+      #                queues nor runs it, and shows the not-available notice.
+      #   :pass      - not a recognized local built-in (free text, a `?` probe,
+      #                a `!` shell escape, an @file line, an agent name, a custom
+      #                .md command, an unknown slash): fall through to the normal
+      #                QUEUE-by-default behavior, handled by the post-turn path
+      #                exactly as today.
+      def busy_disposition(input)
+        return :pass unless @loader.slash_command?(input)
+
+        name, = @loader.parse(input)
+        return :pass unless name
+
+        return :immediate if IMMEDIATE_WHILE_BUSY.include?(name)
+        # Only a KNOWN local built-in is blocked; anything else passes through to
+        # queue so the existing post-turn dispatch handles it unchanged.
+        return :blocked if BuiltIns::NAMES.include?("/#{name}")
+
+        :pass
+      end
+
       def initialize(loader: nil, ui: nil, runner: nil)
         @loader = loader || Loader.new
         @ui = ui || Rubino.ui
