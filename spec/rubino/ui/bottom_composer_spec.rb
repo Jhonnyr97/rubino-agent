@@ -1985,6 +1985,112 @@ RSpec.describe Rubino::UI::BottomComposer do
         net = s.scan("\r\n").length - s.scan("\e[1A").length
         expect(net).to eq(1)
       end
+
+      # ROOT CAUSE (#481, supersedes the insufficient part of #496): self-healing
+      # @cols in #draw_input fixes the NEW layout but NOT the rows the line
+      # occupied at the PREVIOUS width. When #resize records a STALE-WIDE @cols it
+      # repaints the line as ONE logical row AND zeroes the on-screen geometry
+      # (@input_above = 0, #401). The terminal, already narrow, REFLOWS that one
+      # row onto TWO physical rows. The next keystroke's in-place clear walks up
+      # only the recorded count (0 rows above) — so the reflowed TOP fragment is
+      # never erased and stays committed above the freshly repainted composer (the
+      # stale "❯" row). The fix widens the clear to cover the rows the block
+      # physically occupies at the live width, so the keystroke-path
+      # #clear_input_block walks UP at least one row before repainting.
+      it "clears the OLD width's reflowed rows on the keystroke path (no stale ❯ row)" do
+        # Type the whole line FIRST at width 80 — one logical row, no wrap.
+        line = (0...50).map { |i| (97 + (i % 26)).chr }.join
+        line.each_char { |ch| composer.handle_key(ch) }
+        region = composer.instance_variable_get(:@region)
+        expect(region.input_above).to eq(0) # single logical row at width 80
+
+        # Resize races: winsize still reports 80, so #resize records a stale @cols
+        # and (per #401) resets geometry — it repaints the line as ONE row with
+        # @input_above back to 0. The terminal is ALREADY 40 wide, so that one row
+        # is physically reflowed onto two rows on screen.
+        composer.resize
+        expect(composer.instance_variable_get(:@cols)).to eq(80) # stale
+        expect(region.input_above).to eq(0)                      # geometry forgotten
+
+        racy_out.cols = 40 # the true width finally readable
+        racy_out.truncate(0)
+        racy_out.rewind
+
+        # One more keystroke takes the cheap #draw_input path. It self-heals @cols
+        # to 40 AND must clear the previously-occupied (reflowed) region: a row
+        # that wrapped to two physical rows means at least one \e[1A\e[2K walk-up
+        # must precede the repaint, or the old top fragment survives as a stale
+        # committed "❯" row.
+        composer.handle_key("z")
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        # The clear walked UP over the reflowed row(s): the fix widened the clear
+        # count to the live-width row span. On the post-#496 code @input_above was
+        # 0, so NO walk-up was emitted and the stale row persisted.
+        expect(racy_out.string).to include("\e[1A\e[2K")
+      end
+
+      # RESIDUAL ROOT CAUSE (#481, chained resize — supersedes the single-resize
+      # widen #497 added above): a SECOND consecutive SIGWINCH while a wrapping
+      # line is on screen still stranded ONE row. #497 widens the keystroke-path
+      # clear to max(old_width, live_width) using ONLY the immediately-previous
+      # @input_cols. On a 120→50→40 walk the 50-col frame's own under-clear left a
+      # row from the 120-col footprint above the block; the 50→40 clear walks only
+      # the 50/40 footprint and never reaches it. The case bites hardest with the
+      # caret HIGH in a tall block: the live and old-width above-caret counts are
+      # both ~0, so #497 emits ZERO walk-up while the block physically occupies
+      # several reflowed rows. The fix carries the WORST-CASE above-caret footprint
+      # the block has occupied across every width since the last clean full draw
+      # (@input_above_high_water) and clears up to it, so no stranded row survives
+      # the whole resize chain. PROVEN to fail on 63b78ed (walk-up = 0 here).
+      it "clears the WORST-CASE footprint across a chained resize (no stale ❯ row, #481)" do
+        region = composer.instance_variable_get(:@region)
+
+        # 1) Type a long line at width 120 (one logical row — no wrap).
+        (0...100).each { |i| composer.handle_key((97 + (i % 26)).chr) }
+        racy_out.cols = 120
+        composer.send(:redraw)
+
+        # 2) First SIGWINCH races (winsize still 120), real width is now 50. The
+        #    keystroke self-heals to 50 and lays the line out multi-row.
+        composer.resize
+        racy_out.cols = 50
+        composer.handle_key("x")
+        expect(composer.instance_variable_get(:@cols)).to eq(50)
+        expect(region.input_above).to be_positive # tall at 50
+
+        # 3) Keep typing so the block grows tall at 50 — the caret sits at the
+        #    BOTTOM, so the block now PHYSICALLY occupies several rows ABOVE it.
+        #    Record that peak above-caret footprint from the LiveRegion (the
+        #    observable count #draw_input recorded), then move the caret to the
+        #    TOP row. Now the above-caret count is ~0 — the count #497's
+        #    max(old, live) measures — while the reflowed rows physically remain.
+        (0...60).each { |i| composer.handle_key((97 + (i % 26)).chr) }
+        peak_above = region.input_above
+        expect(peak_above).to be > 1 # the block has occupied several rows above
+        composer.instance_variable_set(:@cursor, 0)
+        composer.send(:redraw)
+        expect(region.input_above).to eq(0) # caret on the top row now
+
+        # 4) Second SIGWINCH races (winsize still 50), real width is now 40. The
+        #    next keystroke reflows 50→40 with the caret still at the top.
+        composer.resize
+        racy_out.cols = 40
+        racy_out.truncate(0)
+        racy_out.rewind
+        composer.instance_variable_set(:@cursor, 0)
+        composer.handle_key("A")
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        # #497 (max of the old/live ABOVE-caret counts — BOTH ~0 with a top caret)
+        # emits NO walk-up here, so the tall block's reflowed rows above the caret
+        # stay stranded as ghost "❯" rows (the residual 1-row #481 repro). The
+        # worst-case clear walks UP over at least the PEAK footprint the block has
+        # occupied since the last clean full draw — so no stranded row survives the
+        # whole resize chain. PROVEN to fail on 63b78ed (walk-up = 0 < peak_above).
+        walkups = racy_out.string.scan("\e[1A\e[2K").length
+        expect(walkups).to be >= peak_above
+      end
     end
 
     # Non-trigger (#481): narrow typing WITHOUT a prior resize stays correct —

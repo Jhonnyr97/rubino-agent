@@ -63,6 +63,18 @@ module Rubino
         @input_below = below
       end
 
+      # Widen the recorded ABOVE-caret row count so the next #clear_input_block
+      # erases at least +rows+ physical rows above the caret. Used by the
+      # composer when the terminal width changed since the on-screen block was
+      # laid out: a stale-width frame the terminal has since REFLOWED occupies
+      # MORE physical rows than @input_above recorded, so the in-place clear
+      # would under-erase and leave the reflowed top fragment committed as a
+      # stale "❯" row (#481). Never SHRINKS the count (extra blank rows above
+      # clear harmlessly; under-clearing strands rows).
+      def widen_input_above(rows)
+        @input_above = rows if rows > @input_above
+      end
+
       # Erase the INPUT BLOCK in place (every wrapped input row + the status
       # bar) and park the cursor, column 0, on the block's TOP row — where the
       # next #draw_input begins. Walks DOWN from the caret row clearing the
