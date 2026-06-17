@@ -107,6 +107,27 @@ RSpec.configure do |config|
 
   config.before do
     Rubino.reset!
+    # RubyLLM keeps a PROCESS-GLOBAL config (RubyLLM.config) that Rubino.reset!
+    # does NOT clear. A spec building a non-isolated adapter (isolate_config:
+    # false) — e.g. an openai_compatible one — writes openai_api_base/key etc.
+    # into that global via RubyLLMAdapter#configure_ruby_llm!, and those leak
+    # into every later example under config.order = :random. The leaked
+    # openai_api_base="http://x" then makes a best-effort aux LLM POST raise
+    # WebMock::NetConnectNotAllowedError (< Exception, not StandardError, so it
+    # escapes the best-effort `rescue StandardError`), surfacing as the
+    # order-dependent #handle_rewind flake (seeds 111 / 11111). Null every
+    # provider base/key the adapter can set so no spec can pollute the next.
+    RubyLLM.configure do |c|
+      c.openai_api_key        = nil
+      c.openai_api_base       = nil
+      c.anthropic_api_key     = nil
+      c.anthropic_api_base    = nil
+      c.gemini_api_key        = nil
+      c.bedrock_api_key       = nil
+      c.bedrock_secret_key    = nil
+      c.bedrock_region        = nil
+      c.bedrock_session_token = nil
+    end
     # Modes is in-process state — without this, `/mode yolo` or `--yolo` in
     # one spec leaks into every spec that runs after it under
     # `config.order = :random`, surfacing as approval-policy false-passes.
