@@ -177,5 +177,15 @@ RSpec.describe Rubino::CLI::ConfigCommand do
       line = ui.messages.find { |m| m[:level] == :info }
       expect(line[:message]).to eq("model.api_key = ***")
     end
+
+    # A successful `config set` of a SECRET key must MASK the value the same way
+    # get/show do — never echo the raw credential into the scrollback.
+    it "masks the value in the `config set` success line for a secret key" do
+      described_class.new.set("providers.openai.api_key", "sk-SECRET12345")
+
+      line = ui.messages.find { |m| m[:level] == :success }
+      expect(line[:message]).not_to include("sk-SECRET12345")
+      expect(line[:message]).to eq("providers.openai.api_key = ***")
+    end
   end
 end

@@ -299,8 +299,7 @@ module Rubino
           "enabled" => true,
           "transport" => "off",
           "edit_interval" => 0.3,
-          "buffer_threshold" => 40,
-          "cursor" => " \u2589"
+          "buffer_threshold" => 40
         },
         "context" => {
           "engine" => "compressor",

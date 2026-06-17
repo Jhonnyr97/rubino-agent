@@ -87,7 +87,9 @@ module Rubino
       def set(key, value)
         writer = Config::Writer.new(config_path: config_path)
         writer.set(key, value)
-        Rubino.ui.success("#{key} = #{value}")
+        # Mask a secret-named value the SAME way `config get`/`show` do (#187):
+        # a successful SET must not echo a raw api_key/token into the scrollback.
+        Rubino.ui.success("#{key} = #{self.class.redact(value, key: key.split(".").last)}")
       rescue ConfigurationError => e
         Rubino.ui.error(e.message)
         exit(1)

@@ -16,6 +16,8 @@ require "rubino"
 # A malformed config.yml must NOT crash the process with a raw Ruby+Psych
 # backtrace (CFG-1) — ConfigGuard turns it into a clean boot abort so every
 # command (including `rubino doctor`) reports it gracefully.
-Rubino::Boot::ConfigGuard.load!
+# Pass ARGV so the config-issue warning is suppressed for the pure-meta
+# commands (version/help) that never need a configured model.
+Rubino::Boot::ConfigGuard.load!(argv: ARGV)
 
 Rubino::CLI::Commands.start(ARGV)

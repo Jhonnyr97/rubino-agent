@@ -47,12 +47,35 @@ RSpec.describe Rubino::CLI::SetupCommand do
     ui.messages.select { |lvl, _| lvl == :success }.map(&:last)
   end
 
-  it "does NOT print a false 'Setup complete!' when no model is configured" do
+  it "does NOT print a false 'Setup complete!' when the credential is missing" do
     allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
 
     described_class.new.execute
 
     expect(success_lines).not_to include(a_string_matching(/Setup complete/))
+  end
+
+  # A model IS configured (the seeded default) but its credential is missing —
+  # the warning must name the MISSING KEY, not falsely claim "no model is
+  # configured" (that copy is reserved for a genuinely blank model.default).
+  it "reports the missing credential (not 'no model configured') when a model IS set" do
+    allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
+
+    described_class.new.execute
+
+    warning = ui.messages.find { |lvl, _| lvl == :warning }&.last
+    expect(warning).to match(/API key for .+ is missing/i)
+    expect(ui.messages).not_to include([:warning, a_string_matching(/no model is configured/i)])
+  end
+
+  # The genuine "no model is configured" copy is kept for the case where
+  # model.default is actually blank.
+  it "says 'no model is configured' only when model.default is blank" do
+    allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
+    allow_any_instance_of(Rubino::Config::Configuration).to receive(:model_default).and_return("")
+
+    described_class.new.execute
+
     expect(ui.messages).to include([:warning, a_string_matching(/no model is configured/i)])
   end
 
