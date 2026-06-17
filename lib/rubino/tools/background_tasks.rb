@@ -574,6 +574,14 @@ module Rubino
       # gate/runner cancels.
       def cancel_all
         running.each { |entry| stop_entry(entry) }
+        # Logical cancel alone (above) only flips cancel tokens and trusts each
+        # child THREAD to observe the token and reap its own shell within a wake
+        # tick — but on parent-DEATH the process exits before the thread reaches
+        # that checkpoint, so any shell a child spawned (its own pgid) reparents
+        # to init as an orphan (MED-2). Reap the tracked shell process groups
+        # SYNCHRONOUSLY here so the same parent-death edges that call cancel_all
+        # (clean quit, HUP/TERM trap, REPL break) leave no surviving shell.
+        ShellRegistry.instance.kill_all_groups
       end
       alias shutdown! cancel_all
 
