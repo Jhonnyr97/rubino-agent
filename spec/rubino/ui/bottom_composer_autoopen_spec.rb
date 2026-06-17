@@ -181,6 +181,47 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("hola")
       expect(cursor).to eq(4)
     end
+
+    # RESIDUAL B: keystrokes the human types DURING the suspend transition — after
+    # the request-time drain snapshot, but before the picker grabs $stdin — must
+    # still be captured into the draft (the FINAL drain just before the block), not
+    # leak into the picker's filter. We simulate "typed during the transition" by
+    # enqueuing more bytes from inside #enter_takeover_mode (which runs between the
+    # first drain and the final drain).
+    it "captures bytes that ARRIVE during the suspend transition into the draft (not the picker)" do
+      # A composer that simulates the human typing DURING the suspend transition:
+      # #enter_takeover_mode (which runs BETWEEN the request-time drain and the
+      # final pre-picker drain) enqueues more bytes onto @input, exactly as a
+      # mid-keystroke human would land them in the kernel TTY queue then.
+      transition_io = StringIO.new
+      racey = Class.new(described_class) do
+        def initialize(*, transition_bytes:, transition_io:, **kwargs)
+          super(*, **kwargs)
+          @transition_bytes = transition_bytes
+          @transition_io    = transition_io
+        end
+
+        def enter_takeover_mode
+          super
+          @transition_io.string = @transition_bytes
+          @transition_io.rewind
+        end
+      end.new(input_queue: queue, input: transition_io, output: output,
+              transition_bytes: "ancora", transition_io: transition_io)
+
+      "sto scrivendo ".each_char { |c| racey.handle_key(c) }
+      racey.instance_variable_set(:@running, true)
+      racey.instance_variable_set(:@wake_pipe, StringIO.new)
+
+      leaked = +""
+      racey.request_takeover { leaked << transition_io.read.to_s } # what the picker WOULD see
+      racey.run_pending_takeover
+
+      # The transition-arrived bytes were drained INTO the draft …
+      expect(racey.buffer).to eq("sto scrivendo ancora")
+      # … and the picker filter received NONE of them.
+      expect(leaked).to eq("")
+    end
   end
 
   describe "#request_takeover guards (one at a time)" do
@@ -254,6 +295,78 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(second).to be(true)
       composer.run_pending_takeover
       expect(ran).to eq(2)
+    end
+  end
+
+  # RESIDUAL A: the aggregated `⛔N subagents waiting on you` count was UNIT-green
+  # (SubagentCards#hint_line computes it) but never actually surfaced — the
+  # auto-open takeover suspended the live region (clearing the cards) and resume
+  # only redrew the prompt, so the count vanished for the rest of the turn
+  # whenever a child stayed awaiting_human (several pending, or the human
+  # cancelled). The fix repaints the cards from the live registry on resume.
+  describe "aggregated ⛔N count actually PAINTS to the live region (#475-A)" do
+    # A minimal blocked-child entry the real SubagentCards formatter consumes.
+    def blocked_entry(id)
+      Struct.new(:id, :subagent, :status, :ask_question, :tool_count,
+                 :started_at, :finished_at, :last_activity, :approval_command,
+                 :approval_question, keyword_init: true).new(
+                   id: id, subagent: "explore", status: :blocked_on_human,
+                   ask_question: "sqlite or postgres?", tool_count: 0
+                 )
+    end
+
+    def card_lines(*ids)
+      Rubino::UI::SubagentCards.new.card_lines(ids.map { |i| blocked_entry(i) })
+    end
+
+    it "EMITS the ⛔N hint line to the terminal when a human-ask is registered mid-turn" do
+      # set_subagent_cards → set_cards on the live (un-suspended) composer: the
+      # count must be written to output, not merely computed.
+      composer.set_cards(card_lines("sa_1"))
+      expect(output.string).to include("⛔1 subagent waiting on you")
+    end
+
+    it "PLURALIZES and paints the aggregate when several children are blocked" do
+      composer.set_cards(card_lines("sa_1", "sa_2", "sa_3"))
+      expect(output.string).to include("⛔3 subagents waiting on you")
+    end
+
+    it "RE-EMITS the ⛔N hint after a takeover resume (it was wiped on suspend)" do
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, StringIO.new)
+
+      # Two children blocked; the takeover answers one, leaving ONE still waiting.
+      # The on_resume hook is what the CLI registers (set_subagent_cards); here it
+      # repaints from the post-answer registry shape (one child left).
+      remaining = ["sa_2"]
+      composer.request_takeover(on_resume: -> { composer.set_cards(card_lines(*remaining)) }) do
+        # the dropdown delivered sa_1's answer while suspended; the live-region
+        # repaint it tried then was DROPPED (composer suspended) — the defect.
+        composer.set_cards(card_lines("sa_2")) # no-op while suspended
+      end
+
+      before_resume = output.string.dup
+      composer.run_pending_takeover
+
+      painted = output.string[before_resume.length..]
+      # The aggregate for the STILL-blocked child comes back after resume …
+      expect(painted).to include("⛔1 subagent waiting on you")
+      expect(suspended?).to be(false)
+    end
+
+    it "does NOT fire a stale resume hook on a later hook-less takeover" do
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, StringIO.new)
+
+      calls = 0
+      composer.request_takeover(on_resume: -> { calls += 1 }) { nil }
+      composer.run_pending_takeover
+      expect(calls).to eq(1)
+
+      # A subsequent takeover with NO hook must not re-run the previous one.
+      composer.request_takeover { nil }
+      composer.run_pending_takeover
+      expect(calls).to eq(1)
     end
   end
 end

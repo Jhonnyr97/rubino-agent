@@ -835,7 +835,13 @@ module Rubino
         return false unless composer
 
         handler = Commands::Handlers::Agents.new(ui: self)
-        composer.request_takeover { handler.answer_all_human }
+        # on_resume repaints the subagent cards from the live registry once the
+        # dropdown closes and the composer has resumed — so the aggregated
+        # `⛔N subagents waiting on you` hint (the live region's last row, wiped
+        # when the takeover suspended it) RELIABLY comes back whenever children
+        # are still awaiting_human (several pending, or the human cancelled),
+        # instead of staying invisible for the rest of the turn (#475-A).
+        composer.request_takeover(on_resume: -> { set_subagent_cards }) { handler.answer_all_human }
       rescue StandardError
         false
       end
