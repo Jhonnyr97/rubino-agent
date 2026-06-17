@@ -1927,6 +1927,76 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(region).not_to receive(:reset_geometry!)
       composer.send(:redraw)
     end
+
+    # #481: after a SIGWINCH resize, typing a line long enough to WRAP re-committed
+    # the first visual row on every keystroke (12+ stair-stepped duplicates into
+    # scrollback). Root cause: the cheap keystroke path (#draw_input) reused a
+    # @cols that #resize could record STALE — a drag coalesces SIGWINCHes and the
+    # trap can read winsize BEFORE the pty commits the new size — so a wrapping
+    # line laid out as ONE logical row at the stale width while the physical
+    # terminal wrapped it onto a 2nd line the single-row clear never erased. The
+    # fix re-reads the live winsize in #draw_input (like #render_frame), so the
+    # wrap math matches the true width and the clear count is exact.
+    describe "wrapping after a resize whose recorded width went stale (#481)" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: racy_out)
+      end
+
+      # An output whose #winsize answer can drift from the @cols #resize last
+      # recorded — the SIGWINCH-race the duplication needs.
+      let(:racy_out) do
+        Class.new(StringIO) do
+          attr_writer :cols
+
+          def initialize
+            super
+            @cols = 80
+          end
+
+          def winsize = [24, @cols]
+        end.new
+      end
+
+      it "self-heals @cols on the keystroke path so a wrapping line is not duplicated" do
+        composer.send(:redraw) # initial draw at width 80
+        # Resize fires but winsize still reports the OLD 80 (the trap raced the
+        # pty commit), so #resize records a stale @cols = 80.
+        composer.resize
+        expect(composer.instance_variable_get(:@cols)).to eq(80)
+
+        # The terminal is ACTUALLY 40 wide now.
+        racy_out.cols = 40
+        region = composer.instance_variable_get(:@region)
+
+        # Type a 50-char line: at the stale 80 it would be one logical row (and
+        # physically wrap, stair-stepping); the fix re-reads 40 in #draw_input,
+        # so it wraps to TWO logical rows the clear tracks.
+        racy_out.truncate(0)
+        racy_out.rewind
+        50.times { |i| composer.handle_key((97 + (i % 26)).chr) }
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        expect(region.input_above).to be_positive                # laid out multi-row
+
+        # The line scrolls a row into scrollback EXACTLY ONCE (the single 1→2
+        # row transition), never once-per-keystroke. Net commits = CRLFs that are
+        # not matched by a preceding clear-up.
+        s = racy_out.string
+        net = s.scan("\r\n").length - s.scan("\e[1A").length
+        expect(net).to eq(1)
+      end
+    end
+
+    # Non-trigger (#481): narrow typing WITHOUT a prior resize stays correct —
+    # the width is right from the start, so a wrapping line clears in place.
+    it "does NOT duplicate when typing a wrapping line without any resize" do
+      region = composer.instance_variable_get(:@region)
+      50.times { |i| composer.handle_key((97 + (i % 26)).chr) } # width 40 (FakeTermIO)
+      expect(region.input_above).to be_positive
+      s = output.string
+      net = s.scan("\r\n").length - s.scan("\e[1A").length
+      expect(net).to eq(1) # one clean 1→2 row growth, not N duplicates
+    end
   end
 
   # #421: the stream FINALIZE / INTERRUPT / force-summary commit repaints run
