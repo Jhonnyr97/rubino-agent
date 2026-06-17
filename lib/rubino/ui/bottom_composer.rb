@@ -177,7 +177,8 @@ module Rubino
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
-                     on_double_esc: nil, on_agent_cycle: nil, on_escape: nil)
+                     on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
+                     on_busy_command: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -200,9 +201,13 @@ module Rubino
         # default; only read behind `&&` (the double-tap rewind chord window).
         @echo          = echo
         @on_interrupt  = on_interrupt
+        # @on_busy_command classifies a line typed mid-turn so a read-only/control
+        # meta-command runs NOW (Executor#busy_disposition); a state-mutating one
+        # gets a transient notice; free text queues. nil ⇒ legacy queue-all.
+        @on_busy_command = on_busy_command
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
-        @paste_store   = paste_store
+        @paste_store = paste_store
         # Shared (or private) stack of EXPLICITLY-queued messages, rendered as
         # "⏳ queued: <msg>" rows above the input while pending.
         @queued = QueuedIndicators.new(pending_queued || [])
@@ -230,9 +235,8 @@ module Rubino
         # input text starts in on EVERY row (rail + prompt on the first,
         # rail + hanging indent on continuations) — all caret/wrap math
         # anchors to it.
-        @rail_width   = @rail.gsub(ANSI_RE, "").length
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
-        @prefix_width = @rail_width + @prompt_width
+        @prefix_width = @rail.gsub(ANSI_RE, "").length + @prompt_width
         @buffer      = +""
         # Insertion point, measured in CHARACTERS (codepoints) into @buffer.
         # Always in 0..@buffer.length; the terminal cursor is parked here on
@@ -1103,13 +1107,26 @@ module Rubino
           @input_queue&.push(line)
           print_above("#{@prompt}#{echo_safe(line)}")
         elsif @turn_active || @content_streaming
-          # Queue-by-default (type-ahead): a line typed while a turn is active is
-          # PARKED behind any items already queued (FIFO via #push) and shown as
-          # a live "⏳ queued:" indicator above the input — it does NOT interrupt.
-          # The current turn keeps running; #commit_queued_prompt commits this
-          # line as a normal "<prompt><line>" message (and removes the indicator)
-          # when its turn actually runs. Esc is the interrupt now (#421).
-          queue_message(line)
+          # A line typed while a turn is active is normally PARKED behind any
+          # items already queued (FIFO via #push) under a live "⏳ queued:"
+          # indicator — it does NOT interrupt; #commit_queued_prompt commits it
+          # as a normal message when its turn runs (Esc is the interrupt, #421).
+          # EXCEPTION: local read-only/control meta-commands (/agents, /stop,
+          # /status, …) run IMMEDIATELY so they can do their job DURING the turn —
+          # watching a live subagent or cancelling one is useless once queued
+          # behind a long turn. State-mutating commands are NOT available
+          # mid-turn: a TRANSIENT live-region notice (the same #announce channel
+          # the Shift+Tab toast uses — never committed to scrollback) explains
+          # how to interrupt, and the line is discarded.
+          case @on_busy_command&.call(line)
+          when :immediate then nil # already dispatched by the hook; nothing to queue
+          when :blocked
+            cmd = line.strip.split(/\s+/).first
+            announce("⚠ #{cmd} is not available during an active turn — " \
+                     "press Esc to interrupt first")
+          else
+            queue_message(line)
+          end
         else
           # No active turn: a plain queued submit, echoed immediately as before.
           @input_queue&.push(line)
