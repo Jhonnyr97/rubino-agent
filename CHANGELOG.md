@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Mid-turn auto-open `ask_parent` answer dropdown.** When a sub-agent blocks
+  on `ask_parent`, the parent's chat input auto-opens an answer dropdown
+  **while the parent turn keeps streaming** — no need to interrupt or wait for
+  the turn to finish. Arrow-select one of the options the child supplied, or
+  type a free-text answer. Multiple blocked children are answered in **FIFO
+  order**, and a `⛔N` count shows how many sub-agents are waiting on you. Your
+  in-progress draft is snapshotted and restored byte-for-byte after you answer,
+  and committed stream lines that arrive while the dropdown is open are buffered
+  and flushed in order on resume.
+
 ## [0.5.0] - 2026-06-15
 
 ### Added
@@ -52,6 +66,51 @@
   `Ctrl-L` now clears the screen from the composer. Fixed a bug where resizing
   the terminal while typing reflowed and duplicated the in-progress input into
   the scrollback.
+- **Read-only meta-commands run immediately while a turn is active.** A small
+  set of non-mutating slash commands (`/agents`, `/tasks`, `/stop`, `/status`,
+  `/jobs`, `/help`, `/commands`, `/dirs`) now execute **immediately** mid-turn
+  instead of queuing — so you can drill into a sub-agent, stop the run, or check
+  status without interrupting. State-mutating commands (`/model`, `/clear`,
+  `/new`, `/config`, `/mode`, …) show a transient `⚠ <cmd> is not available
+  during an active turn — press Esc to interrupt first` notice; plain text still
+  queues, and `Esc` interrupts.
+- **Secret masking on `config set`.** `rubino config set` now masks the echoed
+  value when the key looks secret (`api_key`, `token`, `password`, `secret`,
+  `authorization`, …) and when the value itself contains inline credentials
+  (`key=value`, `Bearer …`, URL userinfo, `curl -u`, `mysql -p…`), so keys are
+  not printed in the clear to the terminal/scrollback.
+
+### Changed
+
+- **Provider auto-routing.** With `model.provider: "auto"` (the default), the
+  concrete provider is derived from the model id (`openai/*` → OpenAI); the
+  setup wizard / auto-detect write an explicit provider when a non-OpenAI
+  backend is chosen.
+- **Credential check uses provider-specific env vars.** The credential check
+  and key resolution now read the env var for the configured provider
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `BEDROCK_API_KEY`,
+  `MINIMAX_API_KEY`, and `<PROVIDER>_API_KEY` for anything else, e.g.
+  `DEEPSEEK_API_KEY`). A non-OpenAI provider no longer silently falls back to
+  `OPENAI_API_KEY` (only providers explicitly marked `openai_compatible` /
+  `anthropic_compatible` fall back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
+- **`security.confirm_policy` default is `dangerous_only`.** Safe shell commands
+  run unprompted; only commands matching a dangerous pattern prompt. Set
+  `confirm_policy: confirm_all` to restore prompt-on-everything. The
+  non-bypassable hardline floor and `permissions: deny` always run first
+  regardless of policy.
+- **Parent-death reaps child shells.** When the agent process dies, the
+  long-running child shells it spawned are reaped instead of being orphaned.
+- **Memory-flush best-effort boundary** made airtight (#471), so a failure
+  flushing memory at shutdown can't take down the run.
+- Cleaned up `Errno` error messages on the failure paths.
+
+### Removed
+
+- **`streaming.cursor` config key.** It was dead config (assigned, never read)
+  and is no longer accepted — remove it from any `config.yml`.
+- **`security.require_confirmation_for_shell` config key.** Replaced by
+  `security.confirm_policy` (`dangerous_only` | `confirm_all`); the old key is no
+  longer honored.
 
 ### Security
 

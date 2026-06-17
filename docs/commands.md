@@ -202,9 +202,10 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 
 You can keep typing while a turn is running — the pinned input stays live:
 
-- **Enter** interrupts the current turn and runs your line as the **next** turn (the partial answer is kept and marked `⎿ interrupted`).
-- **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does. At idle (no turn running) there is nothing to queue behind, so Alt+Enter submits the line immediately, same as Enter.
-- **`/queued <message>`** is the terminal-independent fallback for Alt+Enter (some terminals don't deliver the chord) — it queues the message the same way.
+- **Enter** queues the line **without** interrupting (the queue-by-default / type-ahead model, #421): the current turn keeps running, the line waits behind any earlier-queued items (FIFO) with a live `⏳ queued:` indicator above the input, and it is committed as a normal message when its turn runs. At idle (no turn running) Enter submits immediately.
+- **Esc** interrupts the current turn (the partial answer is kept and marked `⎿ interrupted`); any queued lines then run as the next turns.
+- **`/queued <message>`** queues a message explicitly — the terminal-independent way to enqueue without typing it into the live input.
+- **Read-only meta-commands run immediately, mid-turn.** A small set of non-mutating slash commands — `/agents` (and `/tasks`), `/stop`, `/status`, `/jobs`, `/help`, `/commands`, `/dirs` — execute **right away** while a turn is running, so you can drill into a sub-agent, stop the run, or check status without interrupting. State-mutating commands (`/model`, `/clear`, `/new`, `/config`, `/mode`, `/reasoning`, `/think`, …) are not available mid-turn: they show a transient `⚠ <cmd> is not available during an active turn — press Esc to interrupt first` notice instead of running.
 
 ### Keys: `Esc Esc` — rewind to an earlier message
 
