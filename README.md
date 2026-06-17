@@ -126,7 +126,7 @@ tools:
   git: true
   shell: true                 # ON by default; every command is still approval-gated
   ruby: true
-  web: false                  # gates BOTH webfetch and websearch
+  web: true                   # ON by default (keyless DuckDuckGo backend); gates BOTH webfetch and websearch
   memory: true
 ```
 
@@ -150,7 +150,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 
 ## Built-in tools
 
-The agent ships **27 built-in tools** (the set `rubino tools` lists): `read`, `read_attachment`, `summarize_file`, `write`, `edit`, `multi_edit`, `apply_patch`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `web`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`. A single `web` tool gates both fetching a URL and searching (config key `tools.web`, off by default). Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
+The agent ships **27 built-in tools** (the set `rubino tools` lists): `read`, `read_attachment`, `summarize_file`, `write`, `edit`, `multi_edit`, `apply_patch`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `web`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`. A single `web` tool gates both fetching a URL and searching (config key `tools.web`, on by default via the keyless DuckDuckGo backend; it degrades gracefully when no search backend is reachable). Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
 
 ## Skills
 
