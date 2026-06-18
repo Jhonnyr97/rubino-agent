@@ -1389,6 +1389,7 @@ module Rubino
       # untouched (the terminal reflows it natively).
       def resize
         @render.synchronize do
+          old_cols = @cols
           @cols = compute_cols
           # Forget the on-screen row geometry BEFORE redrawing (#401). The
           # @rows_above / @input_above / @input_below counts were recorded at the
@@ -1408,6 +1409,32 @@ module Rubino
           # reflow clear (#481) against geometry we just zeroed — that would
           # over-clear and re-introduce the #401 stacking.
           @input_cols = @cols
+          # CHEAP-PATH resize repaint (no live region above the prompt — the raw
+          # #503 repro: typing a wrapping line and dragging the window narrower).
+          # reset_geometry! zeroed @input_above, so the cheap draw_input below
+          # would clear ZERO rows above the caret — but the terminal has already
+          # REFLOWED the prior-width input block onto a DIFFERENT (usually taller)
+          # physical footprint, whose rows ABOVE the new caret survive as stale
+          # "❯" rows. A SECOND consecutive SIGWINCH (120→50→40) compounds it: the
+          # 50-col frame's own under-clear strands a 120-col row that neither the
+          # 50- nor the 40-col count reaches (#503). Re-arm the clear to the
+          # WORST-CASE above-caret footprint the block has occupied across the
+          # whole resize chain — the old-width reflow plus the carried high-water
+          # (#497) — so clear_input_block walks UP over every reflowed row before
+          # the fresh redraw. This is BOUNDED by the block's own row span
+          # (rows_above_caret_at caps at @max_input_rows - 1), so it never marches
+          # into committed scrollback the way the OLD geometry walk did (#401):
+          # the walk clears only the reflowed copy of THIS block, then one clean
+          # frame is drawn. The full-frame path (live_region?) is untouched —
+          # render_frame's #clear already erases the whole region (#401).
+          unless live_region?
+            @input_above_high_water = [
+              @input_above_high_water,
+              rows_above_caret_at(row_budget_for(old_cols)),
+              rows_above_caret_at(row_budget_for(@cols))
+            ].max
+            @region.widen_input_above(@input_above_high_water)
+          end
           # Repaint the FULL live region (cards + menu + partial + prompt) when
           # anything above the prompt is live, reusing the same atomic frame the
           # streaming writer uses; a bare draw_input would repaint only the
