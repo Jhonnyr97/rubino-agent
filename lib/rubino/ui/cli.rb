@@ -30,6 +30,19 @@ module Rubino
       # a cancelled picker's frame (#219).
       PICKER_PAGE_SIZE = 6
 
+      # Help line for the filterable approval menu. tty-prompt's default help
+      # ("(Press ↑/↓ arrow to move, Enter to select and letters to filter)")
+      # advertises typing-to-filter but NOT how to undo it, so a stray keystroke
+      # filters the rows and the user is stranded — Esc must NOT be bound here (it
+      # would read as a deny — hard constraint), and clearing the filter is
+      # otherwise undiscoverable. tty-prompt already binds the keys (list.rb:
+      # keydelete → @filter.clear, keybackspace → @filter.pop); we just surface
+      # them. Shown on the first render (the discoverable moment), the same place
+      # the default help renders (#513-filter).
+      FILTER_MENU_HELP =
+        "(Press ↑/↓ to move, Enter to select, letters to filter; " \
+        "Del clears the filter, Backspace one char)"
+
       # @param session_id [String] key for the session approval cache. One
       #   CLI process serves exactly one chat session, so a per-process id is
       #   the right granularity for "remember for this session" — the cache is
@@ -261,6 +274,7 @@ module Rubino
 
         BottomComposer.run_in_terminal do
           cancellable_prompt.select(prompt, cycle: false, filter: true) do |menu|
+            menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }
           end
         end
@@ -851,6 +865,13 @@ module Rubino
       def auto_open_human_ask(_entry = nil)
         composer = BottomComposer.current
         return false unless composer
+        # Belt-and-suspenders (#513): when the composer is ALREADY suspended the
+        # idle resolver (chat_command.rb) is mid-resolution and will surface the
+        # child itself — request_takeover would reject this anyway (returns false
+        # on @suspended), but bailing here makes it explicit that only ONE path
+        # claims the shared composer, so the two threads can't both report
+        # success and race the surface.
+        return false if composer.suspended?
 
         handler = Commands::Handlers::Agents.new(ui: self)
         # on_resume repaints the subagent cards from the live registry once the
@@ -859,13 +880,17 @@ module Rubino
         # when the takeover suspended it) RELIABLY comes back whenever children
         # are still awaiting_human (several pending, or the human cancelled),
         # instead of staying invisible for the rest of the turn (#475-A).
+        #
+        # RETURN THE REAL RESULT (#513): request_takeover returns false when NO
+        # takeover (and no snapshot/restore) happened — composer not running,
+        # suspended, no wake pipe, or the one-at-a-time guard. On the one-at-a-time
+        # case the ask is NOT lost (answer_all_human's FIFO re-read surfaces it),
+        # but on the OTHER rejections nothing surfaces it on-screen, so the caller
+        # must KEEP the scrollback banner + /reply affordance. Hardcoding true here
+        # suppressed that banner and stranded the user with only a bell. A
+        # redundant banner is strictly safer than a stranded user, so we report
+        # the actual takeover result.
         composer.request_takeover(on_resume: -> { set_subagent_cards }) { handler.answer_all_human }
-        # request_takeover returns false when a dropdown loop is ALREADY running
-        # (the one-at-a-time guard) — but the ask is NOT lost: answer_all_human's
-        # FIFO re-read surfaces it the moment the current head resolves. Either
-        # way it lands in a dropdown, so report "will be shown on screen" whenever
-        # a composer is present.
-        true
       rescue StandardError
         false
       end
@@ -1825,6 +1850,7 @@ module Rubino
       def approval_menu(prompt, choices)
         BottomComposer.run_in_terminal do
           approval_prompt.select(prompt, cycle: false, filter: true) do |menu|
+            menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }
           end
         end

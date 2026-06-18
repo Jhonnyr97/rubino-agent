@@ -1838,6 +1838,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -1859,6 +1860,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = {}
         allow(menu).to receive(:choice) { |label, sym| offered[sym] = label }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -1949,6 +1951,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -2057,6 +2060,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk&.call(menu)
         symbol
       end
@@ -2101,7 +2105,10 @@ RSpec.describe Rubino::UI::CLI do
       prompt = instance_double(TTY::Prompt)
       allow(prompt).to receive(:select) do |_q, **opts, &blk|
         captured_opts = opts
-        blk&.call(double("menu").tap { |m| allow(m).to receive(:choice) })
+        blk&.call(double("menu").tap do |m|
+          allow(m).to receive(:choice)
+          allow(m).to receive(:help)
+        end)
         :once
       end
       ui.instance_variable_set(:@approval_prompt, prompt)
@@ -2109,6 +2116,47 @@ RSpec.describe Rubino::UI::CLI do
 
       ui.send(:approval_menu, "approve?", [["Approve once", :once], ["Deny once", :no]])
       expect(captured_opts).to include(filter: true)
+    end
+
+    # Filter-hint discoverability (#513-filter): the menu advertises how to UNDO a
+    # filter, since clearing it is otherwise undiscoverable and Esc must NOT be
+    # bound here (it would read as a deny). tty-prompt already binds Delete →
+    # @filter.clear and Backspace → @filter.pop; we surface them in the help line.
+    it "sets a help line advertising Del clears the filter / Backspace one char" do
+      captured_help = nil
+      prompt = instance_double(TTY::Prompt)
+      allow(prompt).to receive(:select) do |_q, **_opts, &blk|
+        menu = double("menu")
+        allow(menu).to receive(:choice)
+        allow(menu).to receive(:help) { |h| captured_help = h }
+        blk&.call(menu)
+        :once
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+
+      ui.send(:approval_menu, "approve?", [["Approve once", :once], ["Deny once", :no]])
+      expect(captured_help).to be_a(String)
+      expect(captured_help).to match(/Del/i).and match(/filter/i)
+      expect(captured_help).to match(/Backspace/i)
+      expect(captured_help).not_to match(/Esc/i) # Esc stays a deny — never bound here
+    end
+
+    # Behavioral guard: the Delete key the hint advertises really clears the WHOLE
+    # filter in one keystroke (tty-prompt list.rb keydelete → @filter.clear).
+    it "Delete clears the whole filter (the key the hint advertises)" do
+      list = TTY::Prompt::List.new(TTY::Prompt.new, filter: true)
+      list.choice "Approve once", :once
+      list.choice "Deny", :no
+
+      "appr".each_char do |c|
+        list.send(:keypress, double("ev", value: c, key: double(name: nil)))
+      end
+      expect(list.instance_variable_get(:@filter)).not_to be_empty
+
+      list.send(:keydelete) # the Delete key
+      expect(list.instance_variable_get(:@filter)).to be_empty
+      expect(list.choices).not_to be_empty # all rows restored
     end
 
     # Behavioral guard at the tty-prompt boundary: a `/status` filter matches NO

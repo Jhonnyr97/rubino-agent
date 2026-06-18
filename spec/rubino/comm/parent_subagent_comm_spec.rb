@@ -441,6 +441,84 @@ RSpec.describe "parent <-> subagent communication" do
     end
   end
 
+  # --- #513: a REJECTED takeover must NOT suppress the banner -----------------
+  #
+  # The regression: #auto_open_human_ask used to hardcode `return true` after
+  # calling request_takeover, ignoring its real result. request_takeover returns
+  # FALSE when no takeover happened (composer suspended / no wake pipe), so a
+  # human-ask landing then surfaced NOTHING on screen yet the bogus `true` told
+  # #surface_and_notify to SUPPRESS the scrollback banner — the user got a bell
+  # and no /reply affordance, stranded. These drive the REAL #auto_open_human_ask
+  # (no stub) against a REAL composer in the rejecting states.
+  describe "rejected takeover keeps the banner (#513)" do
+    # A CLI subclass that records the banner/bell seams but runs the REAL
+    # #auto_open_human_ask (the method under test) and the REAL request_takeover.
+    def real_auto_open_cli
+      Class.new(Rubino::UI::CLI) do
+        attr_reader :banner_calls, :bell_calls
+
+        def initialize
+          super
+          @banner_calls = 0
+          @bell_calls = 0
+        end
+
+        def subagent_ask_banner(_id, _subagent, _question) = (@banner_calls += 1)
+        def ring_subagent_blocked(_id, _subagent) = (@bell_calls += 1)
+        def set_subagent_cards = nil
+      end.new
+    end
+
+    let(:entry) do
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "general", prompt: "x")
+    end
+
+    let(:composer) do
+      Rubino::UI::BottomComposer.new(
+        input_queue: Rubino::Interaction::InputQueue.new,
+        input: StringIO.new, output: StringIO.new
+      )
+    end
+
+    before { Rubino::UI::BottomComposer.current = composer }
+
+    after do
+      Rubino::UI::BottomComposer.current = nil
+      Rubino.instance_variable_set(:@ui, nil)
+    end
+
+    it "request_takeover => false AND auto_open_human_ask => false when SUSPENDED" do
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, StringIO.new)
+      composer.instance_variable_set(:@suspended, true)
+
+      ui = real_auto_open_cli
+      expect(composer.request_takeover { nil }).to be(false)
+      expect(ui.auto_open_human_ask(entry)).to be(false)
+    end
+
+    it "request_takeover => false AND auto_open_human_ask => false with NO wake pipe" do
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, nil)
+
+      ui = real_auto_open_cli
+      expect(composer.request_takeover { nil }).to be(false)
+      expect(ui.auto_open_human_ask(entry)).to be(false)
+    end
+
+    it "surface_and_notify then EMITS the banner (no suppression) on a rejected takeover" do
+      composer.instance_variable_set(:@running, true)
+      composer.instance_variable_set(:@wake_pipe, nil) # request_takeover will reject
+
+      ui = real_auto_open_cli
+      Rubino.instance_variable_set(:@ui, ui)
+      Rubino::Tools::AskParentTool.new.send(:surface_and_notify, entry, "Which database?")
+
+      expect(ui.banner_calls).to eq(1) # /reply affordance surfaces — user not stranded
+      expect(ui.bell_calls).to eq(0)   # the banner carries its own bell
+    end
+  end
+
   # --- blocked-state surfaces on the card ------------------------------------
   describe "blocked-state visibility" do
     it "renders the ⛔ waiting-on-you card + counts it as live" do
