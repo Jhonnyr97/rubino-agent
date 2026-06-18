@@ -1060,6 +1060,36 @@ RSpec.describe Rubino::UI::CLI do
     it "stringifies non-string content without raising" do
       expect { ui.replay_user_input(nil) }.not_to raise_error
     end
+
+    # CWE-150 (H1): the submit/echo sink must route USER-SUPPLIED input through
+    # Util::Output.sanitize_terminal so an embedded OSC title-set / screen-clear
+    # in the just-submitted line is neutralized to visible caret notation,
+    # instead of EXECUTING against the emulator when echoed back to scrollback.
+    it "neutralizes an OSC title-set escape in the echoed user input" do
+      payload = "pwn\e]0;HIJACKED\aafter"
+      out = capture_stdout { ui.replay_user_input(payload) }
+
+      # No raw OSC introducer (ESC ] / ESC ]0;) survives to the terminal.
+      expect(out).not_to include("\e]0;")
+      expect(out).not_to include("\e]")
+      # The escape is shown inertly as caret notation, and the literal text
+      # around it is preserved so the user still SEES what was submitted.
+      expect(out).to include("^[")
+      expect(out).to include("pwn")
+      expect(out).to include("after")
+    end
+
+    it "neutralizes a CSI screen-clear escape in the echoed user input" do
+      out = capture_stdout { ui.replay_user_input("a\e[2J\e[3J\e[Hb") }
+
+      # No raw clear-screen / cursor-home CSI reaches the terminal.
+      expect(out).not_to include("\e[2J")
+      expect(out).not_to include("\e[3J")
+      expect(out).not_to include("\e[H")
+      expect(out).to include("^[")
+      expect(out).to include("a")
+      expect(out).to include("b")
+    end
   end
 
   # #62: integration coverage for the CLI ↔ composer Ctrl+O reveal-deferral

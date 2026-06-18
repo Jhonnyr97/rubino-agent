@@ -79,8 +79,24 @@ module Rubino
       rescue SystemExit, Interrupt, SignalException
         raise
       rescue Exception => e # rubocop:disable Lint/RescueException
+        # Record an AUTH/credential failure so the interactive REPL can exit
+        # NON-ZERO on teardown (field standard: a CLI that surfaced an auth error
+        # must not report success — git/gh/Claude Code/Codex all exit non-zero).
+        # We do NOT exit here: the swallow-and-stay-in-the-REPL contract above is
+        # deliberate (the user can fix their key and retry without relaunching),
+        # so the failure is LATCHED and the process exits 1 at clean teardown
+        # instead of mid-turn. A subsequent successful turn does NOT clear it —
+        # the run as a whole still hit a credential error the caller should see.
+        @auth_error = true if auth_credential_error?(e)
         @ui.error(friendly_error_message(e))
         nil
+      end
+
+      # True when an AUTH/credential error was surfaced during this runner's
+      # lifetime (read by the interactive REPL to exit non-zero on teardown).
+      # Latched by #run; never reset.
+      def auth_error?
+        @auth_error == true
       end
 
       # Like +run+ but propagates exceptions to the caller. The HTTP
@@ -212,6 +228,15 @@ module Rubino
       end
 
       private
+
+      # True when +error+ is an AUTH/credential failure — a 401/unauthorized/
+      # invalid-key signal, OR the "Authentication failed (…)" wrapper
+      # ModelCallRunner#raise_with_auth_hint raises for a classified auth error.
+      # Matches the SAME signal #friendly_error_message keys its auth branch on,
+      # so the latched exit code and the displayed message never disagree.
+      def auth_credential_error?(error)
+        error.message.to_s.match?(/\b401\b|unauthorized|invalid[_ ]?api[_ ]?key|authentication failed/i)
+      end
 
       # Translates upstream errors into actionable messages instead of
       # bare stack-trace fragments. (issue #16)

@@ -13,7 +13,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # but stubbing keeps the example output clean).
     instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT",
                                            session: { id: "sess-oneshot", model: "fake-model" },
-                                           polishing: nil, end_session!: nil)
+                                           polishing: nil, end_session!: nil, auth_error?: false)
   end
 
   before do
@@ -554,6 +554,42 @@ RSpec.describe Rubino::CLI::ChatCommand do
       described_class.new({}).execute
 
       expect(fake_runner).to have_received(:end_session!)
+    end
+
+    # #154 — `/exit` must honour the SAME quit-guard as Ctrl+D: when a background
+    # subagent is running, the exit path lists it and confirms instead of a
+    # silent kill. The `cooked_input` above submits `/exit`, so this proves the
+    # `/exit` slash form flows through #confirm_quit? (which, off a terminal,
+    # prints the kill notice and proceeds — never a silent break).
+    it "/exit honours the quit-guard when a background subagent is running" do
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "general", prompt: "long job")
+
+      described_class.new({}).execute
+
+      notice = null_ui.messages.find { |m| m[:message].to_s.include?("still running — quitting stops") }
+      expect(notice).not_to be_nil
+      expect(notice[:message]).to include("background subagent")
+    end
+
+    # Field standard: a session that surfaced an AUTH/credential error exits
+    # NON-ZERO on teardown, even though the REPL stayed alive after the failed
+    # turn. The runner latches #auth_error?; the REPL defers exit(1) to teardown.
+    it "exits non-zero on teardown when the runner latched an auth error" do
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+      allow(fake_runner).to receive(:auth_error?).and_return(true)
+
+      expect { described_class.new({}).execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "keeps the normal exit 0 on a clean session with no auth error" do
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+      allow(fake_runner).to receive(:auth_error?).and_return(false)
+
+      expect { described_class.new({}).execute }.not_to raise_error
     end
   end
 
