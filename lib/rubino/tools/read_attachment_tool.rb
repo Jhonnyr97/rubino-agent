@@ -101,6 +101,15 @@ module Rubino
         # NEVER raise -- a missing gem must not break the turn.
         return Attachments::Preamble.document_shell_hint(cls) if markdown.nil?
 
+        # Redact credential values from the converted content before it enters
+        # context -- parity with the read/grep/shell seams (Security::Redactor).
+        # A document is untrusted DATA, not source, so use the FULL pattern set
+        # (code_file:false, like the shell seam): `API_KEY=sk-...` assignments in
+        # a csv/spreadsheet are real secrets and must be masked. Honors the
+        # `security.redact_secrets` opt-out internally (default ON). This single
+        # seam covers both return paths (frame + summarize) that emit content.
+        markdown = Security::Redactor.redact_sensitive_text(markdown, code_file: false)
+
         force = truthy?(arguments["summarize"] || arguments[:summarize])
         focus = (arguments["focus"] || arguments[:focus]).to_s
 
