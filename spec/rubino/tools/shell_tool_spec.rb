@@ -64,6 +64,35 @@ RSpec.describe Rubino::Tools::ShellTool do
       expect(out).to include("NORMAL=ok")
     end
 
+    # The LIVE stream seam must redact too. emit_chunk forwards each line to
+    # @ui.tool_chunk (CLI scrollback) AND the TOOL_PROGRESS event (SSE/API +
+    # persisted progress rows) as the subprocess writes it — independently of
+    # the end-of-command redaction in #foreground_result. So `cat .env` must
+    # mask the value on the live chunk, not just in the final model-facing
+    # output. (Regression: the streamed chunks leaked the raw secret.)
+    it "redacts secret values on the LIVE stream chunks, not just the final output" do
+      streamed = +""
+      tool.stream_chunk = ->(chunk) { streamed << chunk }
+      out = payload(tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\nNORMAL=ok\\n'"))
+
+      expect(streamed).not_to include("ghp_abcdefghijklmnop1234")
+      expect(streamed).to include("API_KEY=***")
+      expect(streamed).to include("NORMAL=ok")
+      # The final output stays masked too (whole-buffer pass unaffected).
+      expect(out).not_to include("ghp_abcdefghijklmnop1234")
+    end
+
+    # The opt-out must still bypass redaction on the stream seam, mirroring the
+    # final-output behaviour — so the toggle is honoured uniformly.
+    it "passes raw values through the stream when redaction is disabled" do
+      allow(Rubino::Security::Redactor).to receive(:enabled?).and_return(false)
+      streamed = +""
+      tool.stream_chunk = ->(chunk) { streamed << chunk }
+      tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\n'")
+
+      expect(streamed).to include("ghp_abcdefghijklmnop1234")
+    end
+
     it "includes exit code for non-zero exit commands" do
       expect(payload(tool.call("command" => "false", "cwd" => Dir.pwd))).to include("Exit code: 1")
     end
