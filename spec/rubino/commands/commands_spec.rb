@@ -585,7 +585,7 @@ RSpec.describe "ChatCommand slash command integration" do
     # end_session! is called on the clean teardown path (#100).
     instance_double(Rubino::Agent::Runner, run: "LLM response",
                                            session: { id: "spec-session-id" },
-                                           end_session!: nil)
+                                           end_session!: nil, auth_error?: false)
   end
 
   let(:fake_executor) do

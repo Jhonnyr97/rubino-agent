@@ -287,6 +287,30 @@ RSpec.describe Rubino::Agent::Runner do
       expect(null_ui.messages.any? { |m| m[:level] == :error }).to be true
     end
 
+    # Field standard: a turn that hit an AUTH/credential error must be observable
+    # so the interactive REPL can exit NON-ZERO on teardown (instead of swallowing
+    # the error and reporting success). The runner stays in the REPL (returns nil,
+    # does not exit) but LATCHES the failure for the caller's exit code.
+    it "latches #auth_error? when a turn fails with an authentication error" do
+      allow(fake_lifecycle).to receive(:execute)
+        .and_raise(Rubino::Error, "Authentication failed (401 invalid api key). Token may have expired.")
+
+      expect(runner.auth_error?).to be(false)
+      expect(runner.run("hello")).to be_nil
+      expect(runner.auth_error?).to be(true)
+    end
+
+    it "does NOT latch #auth_error? for a non-auth turn failure" do
+      allow(fake_lifecycle).to receive(:execute).and_raise(StandardError, "network timeout")
+      runner.run("hello")
+      expect(runner.auth_error?).to be(false)
+    end
+
+    it "keeps #auth_error? false for a clean turn" do
+      runner.run("hello")
+      expect(runner.auth_error?).to be(false)
+    end
+
     # Regression: Runner.run used to re-emit INTERACTION_FAILED here even
     # though Lifecycle had already emitted it before re-raising. That gave
     # the SSE stream two `run.failed` frames for the same failure (visible
