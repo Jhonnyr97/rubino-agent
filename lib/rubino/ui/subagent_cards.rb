@@ -4,17 +4,16 @@ require "pastel"
 
 module Rubino
   module UI
-    # Formats BackgroundTasks registry entries into the COLLAPSED LIVE CARDS the
-    # parent shows while one or more background subagents run (Variant A of the
-    # orchestration-UX blueprint). This is the single source of card text: the
-    # live region (UI::CLI#set_subagent_cards → BottomComposer) renders it while a
-    # turn runs, and the /agents drill-in reuses the same formatter for the
-    # expanded view. Pure formatting — it never touches the registry mutex itself
-    # (callers pass a snapshot) and writes nothing; the renderer decides where the
-    # lines go.
+    # Formats BackgroundTasks registry entries into the compact footer indicator
+    # the parent shows while one or more background subagents run. This is the
+    # single source of always-on indicator text: UI::CLI#set_subagent_cards feeds
+    # it into BottomComposer while a turn runs. Pure formatting — it never touches
+    # the registry mutex itself (callers pass a snapshot) and writes nothing; the
+    # renderer decides where the lines go.
     #
-    # Collapsed card (one row per running subagent, updates in place):
-    #   ▸ sa_9ae4 · explore · running · 14 tools · 38s · grep "def authenticate"
+    # Compact footer indicator:
+    #   2 subagents running · /agents <id> for detail
+    #   ▸ sa_9ae4 · explore · running · 14 tools · 38s
     # plus a single shared hint line under the block.
     #
     # An entry parked on a human approval shows the approval prominently instead:
@@ -24,7 +23,7 @@ module Rubino
     # "+N more" tail so the live region stays bounded (and the single-row clamp
     # in the composer never has to host an unbounded block).
     class SubagentCards
-      # Cap the live block so it never grows past the registry's own
+      # Cap the per-entry rows so the indicator never grows past the registry's own
       # MAX_CONCURRENT (3) live children — but defend against a stale/over-long
       # list anyway with an explicit overflow tail.
       MAX_CARDS = Tools::BackgroundTasks::MAX_CONCURRENT
@@ -40,7 +39,7 @@ module Rubino
         @pastel = pastel
       end
 
-      # Renders the live CARD BLOCK for the running (or approval-pending)
+      # Renders the live footer indicator for the running (or approval-pending)
       # children in +entries+ as an array of ready-to-print lines. Returns [] when
       # nothing is live, so the renderer can clear the region. +entries+ is a
       # snapshot (BackgroundTasks#running) taken under the registry mutex by the
@@ -51,7 +50,8 @@ module Rubino
 
         shown    = live.first(MAX_CARDS)
         overflow = live.size - shown.size
-        lines    = shown.map { |e| card_line(e) }
+        lines    = [summary_line(live)]
+        lines.concat(shown.map { |e| card_line(e) })
         lines << @pastel.dim("  + #{overflow} more · /agents") if overflow.positive?
         # Count blocked children over the FULL live list (pre-cap), not just the
         # shown cards, so the aggregated ⛔N is the true number waiting on the
@@ -72,7 +72,6 @@ module Rubino
           count = entry.tool_count.to_i
           body  = "#{entry.id} · #{entry.subagent} · #{state} · " \
                   "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
-          body += " · #{entry.last_activity}" unless entry.last_activity.to_s.empty?
           "  #{glyph} #{body}"
         end
       end
@@ -104,6 +103,12 @@ module Rubino
 
       def live?(entry)
         %i[running needs_approval blocked_on_human stopping].include?(entry.status)
+      end
+
+      def summary_line(live)
+        count = live.size
+        subagents = count == 1 ? "subagent" : "subagents"
+        @pastel.dim("  #{count} #{subagents} running · /agents <id> for detail")
       end
 
       # Shared hint under the block. When one or more children are blocked on the

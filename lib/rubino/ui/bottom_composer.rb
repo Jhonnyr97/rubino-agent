@@ -55,11 +55,11 @@ module Rubino
       PROMPT = "❯ "
       ANSI_RE = /\e\[[0-9;]*m/
 
-      # Hard ceiling on the subagent card block (rows ABOVE the partial + prompt).
+      # Hard ceiling on the subagent footer indicator.
       # The registry caps live children at MAX_CONCURRENT (3) and the formatter
       # adds an overflow + hint line, so 5 rows covers the worst case while
-      # guaranteeing the live region can never grow unbounded and push the prompt
-      # off-screen — a corrupt caller is clamped, not trusted.
+      # guaranteeing the footer can never grow unbounded and push the prompt
+      # geometry off-screen — a corrupt caller is clamped, not trusted.
       MAX_CARD_ROWS = 6
 
       # Hard ceiling on the live partial rows so a runaway caller can never push
@@ -267,8 +267,8 @@ module Rubino
         # once the stream ends so the `┊` aside renders cleanly AFTER the answer
         # instead of between chunks (D1). nil ⇒ nothing deferred.
         @deferred_reveal = false
-        # Subagent CARD block (Variant A): zero or more collapsed live rows shown
-        # ABOVE the streamed partial and the prompt, redrawn in place each frame.
+        # Subagent footer indicator: zero or more compact live rows shown with the
+        # status footer, below the editable input instead of above the timeline.
         # Driven by UI::CLI#set_subagent_cards from the BackgroundTasks registry.
         @cards = []
         # The live-region renderer: owns the count of rows currently drawn ABOVE
@@ -818,15 +818,15 @@ module Rubino
         end
       end
 
-      # Sets the SUBAGENT CARD block — a small list of collapsed live rows shown
-      # above the streamed partial and the prompt (Variant A). Each frame redraws
-      # them in place from this list, so concurrent background subagents appear as
-      # a calm stack of one-liners that update without scrolling. An empty/nil
-      # list clears the block. Redraws under the same render mutex every other
-      # live write uses, so a card update from the parent never interleaves a
-      # half-frame with a streamed token or a keystroke. The list is clamped to a
-      # sane bound by the caller (UI::SubagentCards), but we also cap it here so a
-      # buggy caller can never grow the live region past the screen.
+      # Sets the SUBAGENT footer indicator — a small list of compact live rows
+      # shown next to the status footer. Each frame redraws them in place from
+      # this list, so concurrent background subagents appear as calm one-liners
+      # that update without scrolling the timeline. An empty/nil list clears the
+      # indicator. Redraws under the same render mutex every other live write
+      # uses, so a card update from the parent never interleaves a half-frame with
+      # a streamed token or a keystroke. The list is clamped to a sane bound by
+      # the caller (UI::SubagentCards), but we also cap it here so a buggy caller
+      # can never grow the footer past the screen.
       def set_cards(lines)
         # While SUSPENDED (run_in_terminal: an approval/ask owns the real
         # terminal) a card repaint here would draw straight over the
@@ -1042,7 +1042,7 @@ module Rubino
         end
       end
 
-      # The card rows currently shown (test/inspection helper).
+      # The subagent footer rows currently shown (test/inspection helper).
       attr_reader :cards
 
       # The REAL terminal IO captured before the StdoutProxy swap. UI::Notifier
@@ -1109,15 +1109,23 @@ module Rubino
         end
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
+        footer = footer_card_rows
 
         @region.clear_input_block
         rows.each_with_index do |row, i|
           @output.print("\r\e[2K#{row}")
-          @output.print("\r\n") if i < rows.length - 1 || status
+          @output.print("\r\n") if i < rows.length - 1 || status || footer.any?
         end
-        @output.print("\r\e[2K#{status}") if status
+        if status
+          @output.print("\r\e[2K#{status}")
+          @output.print("\r\n") if footer.any?
+        end
+        footer.each_with_index do |row, i|
+          @output.print("\r\e[2K#{row}")
+          @output.print("\r\n") if i < footer.length - 1
+        end
 
-        below = (rows.length - 1 - caret_row) + (status ? 1 : 0)
+        below = (rows.length - 1 - caret_row) + (status ? 1 : 0) + footer.length
         park_caret(rows, caret_col, below)
         @region.input_drawn(above: caret_row, below: below)
         # Remember the width this block was laid out at so the NEXT frame can
@@ -1477,7 +1485,7 @@ module Rubino
       #
       #   [committed lines]   ← only when +committed+ is given; scroll into
       #                         scrollback and stay there
-      #   [live rows]         ← cards, completion menu, transient announce,
+      #   [live rows]         ← completion menu, transient announce,
       #                         "⏳ queued:" indicators, streamed partial —
       #                         redrawn in place every frame (do NOT scroll)
       #   [input block]       ← "▍❯ " + buffer (the rail leads every row),
@@ -1485,6 +1493,7 @@ module Rubino
       #                         rows; the cursor parks at the caret's
       #                         row/column
       #   [status bar]        ← the dim model + context line (when set/fits)
+      #   [subagent footer]   ← compact running-subagent indicator (when live)
       #
       # The +@buffer+ is redrawn on every frame, so it can never be lost across
       # a scroll. Must be called while holding @render.
@@ -1524,20 +1533,24 @@ module Rubino
         end
       end
 
-      # The live rows for this frame, top → bottom: the subagent cards; the
-      # completion menu (a navigable list redrawn in place each frame, so it
+      # The live rows for this frame, top → bottom: the completion menu (a
+      # navigable list redrawn in place each frame, so it
       # never scrolls or smears); the TRANSIENT announcement (mode confirmation
       # — one row, never committed, D2/D3); the EXPLICITLY-queued "⏳ queued:"
       # indicators (removed, and the item committed as a normal message, when
       # its turn runs); and the streamed partial (one row per line, capped, so
       # a rolling markdown tail can't push the prompt off-screen, #127).
       def live_rows
-        rows = @cards.dup
+        rows = []
         rows.concat(menu_rows)
         rows << @announce unless @announce.empty?
         rows.concat(@queued.rows)
         rows.concat(partial_rows)
         rows
+      end
+
+      def footer_card_rows
+        @cards.map { |row| fit_row(row) }
       end
 
       # The rendered completion-menu rows at the current width (also a spec
