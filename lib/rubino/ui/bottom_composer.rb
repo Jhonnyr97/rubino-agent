@@ -301,6 +301,11 @@ module Rubino
       # the [@buffer, @cursor] draft captured when it was queued (restored
       # verbatim after the dropdown closes).
       def init_takeover_state
+        # Set when the reader sees an EOF/quit (empty-buffer Ctrl+D or a closed
+        # stdin) so the idle poll loop can OBSERVE it and return nil (EOF),
+        # mirroring how #idle_interrupt surfaces a Ctrl+C. Without this the reader
+        # thread just stops and the idle loop spins forever (the Ctrl+D hang).
+        @quit_pending      = false
         @saved_stdout      = nil # the real $stdout, parked while suspended for a takeover
         @wake_pipe         = nil # self-pipe write end that asks the reader to run a takeover
         @parked_writes     = nil
@@ -1006,6 +1011,18 @@ module Rubino
         announce("(press Ctrl+C again to exit)")
         :hint
       end
+
+      # True once the reader has seen an EOF/quit (empty-buffer Ctrl+D or a
+      # closed stdin). The idle poll loop checks this alongside its Ctrl+C flag
+      # so a single Ctrl+D at the empty idle prompt returns nil (EOF) and the
+      # REPL's quit-guard runs — instead of spinning forever (the reader thread
+      # has already stopped). Observed once, then cleared by #clear_quit_pending.
+      def quit_pending? = @quit_pending
+
+      # Clears the EOF/quit flag (the idle loop consumes it once it has acted on
+      # the EOF). Lets a fresh composer session start clean if the same instance
+      # is reused.
+      def clear_quit_pending = (@quit_pending = false)
 
       # Replaces the editable buffer with +text+ — MULTILINE-SAFE: real
       # newlines stay in the buffer and render as real row breaks, exactly
@@ -2277,10 +2294,16 @@ module Rubino
             next unless ready.include?(@input)
 
             ch = @input.getc
-            return :done if ch.nil? # EOF / stdin closed
+            if ch.nil? # EOF / stdin closed
+              @quit_pending = true
+              return :done
+            end
 
             result = handle_key(ch)
-            return :done if result == :quit
+            if result == :quit # empty-buffer Ctrl+D — observable EOF for the idle loop
+              @quit_pending = true
+              return :done
+            end
           end
         end
       end

@@ -1479,6 +1479,19 @@ module Rubino
             break if composer.idle_interrupt(window: DOUBLE_TAP_SECONDS) == :exit
           end
 
+          # Single Ctrl+D at the empty idle prompt (or a closed stdin): the
+          # reader saw an EOF/quit and STOPPED — surface it here as nil (EOF) so
+          # #read_idle_line returns and the REPL quit-guard (#confirm_quit?)
+          # runs. Without this the loop would sleep-spin forever (the reader is
+          # gone and never pushes a line). Mirrors the Ctrl+C path above. A
+          # Ctrl+D on a NON-empty buffer is delete-forward, not quit, so it never
+          # sets the flag — that affordance is preserved.
+          if composer.quit_pending?
+            composer.clear_quit_pending
+            line = nil
+            break
+          end
+
           # Auto-open the EXISTING approval / reply prompt for a pending subagent
           # request (#421): a parked child needs a human decision, so the
           # affordance presents ITSELF here at idle instead of leaving a passive
