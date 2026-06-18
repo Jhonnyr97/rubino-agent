@@ -1900,24 +1900,31 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
-  describe "#set_cards (subagent card block, Variant A)" do
-    it "renders each card on its own row above the prompt, prompt redrawn last" do
+  describe "#set_cards (subagent footer indicator, below the input)" do
+    it "renders each card on its own row BELOW the prompt, footer drawn last" do
       composer.handle_key("x")
       composer.set_cards(["▸ sa_1 · explore · running", "▸ sa_2 · test · running"])
-      expect(output.string).to include("▸ sa_1 · explore · running\r\n")
-      expect(output.string).to include("▸ sa_2 · test · running\r\n")
-      expect(output.string).to end_with("#{PROMPT}x")
+      # The footer indicator now lives BELOW the editable input, next to the
+      # status footer — the prompt is drawn FIRST, then the card rows, then the
+      # caret parks back up on the input. So each card follows the "❯ x" row.
+      expect(output.string).to include("#{PROMPT}x\r\n")
+      expect(output.string).to include("▸ sa_1 · explore · running")
+      expect(output.string).to include("▸ sa_2 · test · running")
+      # The block ends on the LAST footer row, then the caret walks back up to
+      # the input (no trailing newline after the final footer row).
+      expect(output.string).to match(/▸ sa_2 · test · running\e\[\d+A/)
       expect(composer.cards.size).to eq(2)
     end
 
-    it "updates the block IN PLACE (walks up to clear the prior rows, no flood)" do
+    it "updates the block IN PLACE (clears the prior footer rows, no flood)" do
       composer.set_cards(["▸ sa_1 · running · 1 tool"])
       output.truncate(0)
       output.rewind
       composer.set_cards(["▸ sa_1 · running · 2 tools"])
-      # The prior card row is cleared via cursor-up (\e[1A\e[2K) rather than a
-      # fresh line scrolling the old one up — the in-place card contract.
-      expect(output.string).to include("\e[1A\e[2K")
+      # The footer block below the input is cleared in place (walk-down clear
+      # \e[1B\e[2K for the rows below the caret, then \e[2K for the input row)
+      # rather than a fresh line scrolling the old one up — the in-place contract.
+      expect(output.string).to include("\e[1B\e[2K")
       expect(output.string).to include("2 tools")
       # No duplication: the old "1 tool" text isn't re-emitted in this frame.
       expect(output.string).not_to include("1 tool")
@@ -1936,21 +1943,24 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.cards.size).to eq(described_class::MAX_CARD_ROWS)
     end
 
-    it "coexists with a live streamed partial (cards above, partial above prompt)" do
+    it "coexists with a live streamed partial (partial above the prompt, footer below)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.set_partial("streaming token")
-      expect(output.string).to include("▸ sa_1 · running\r\n")
+      # The streamed partial stays ABOVE the prompt (a live row); the card is the
+      # footer indicator BELOW the prompt. Both are present in the same frame.
       expect(output.string).to include("streaming token\r\n")
+      expect(output.string).to include("▸ sa_1 · running")
       expect(composer.cards.size).to eq(1)
       expect(composer.partial?).to be(true)
     end
 
-    it "a committed print_above repaints cards above the committed line + prompt" do
+    it "a committed print_above keeps the footer indicator below the prompt" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.print_above("a finished timeline row")
       expect(output.string).to include("a finished timeline row\r\n")
-      # The card survives a commit (it's persistent live-region state).
-      expect(output.string).to include("▸ sa_1 · running\r\n")
+      # The card survives a commit (it's persistent live-region state) and is
+      # re-emitted below the redrawn prompt.
+      expect(output.string).to include("▸ sa_1 · running")
     end
   end
 
