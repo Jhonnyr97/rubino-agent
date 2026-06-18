@@ -72,11 +72,12 @@ module Rubino
 
         expanded_path = expand_workspace_path(path)
         # Search is BROAD (#406): grep resolves any path like Hermes/Claude/
-        # Codex, INCLUDING secret/credential files. Reading a secret is allowed
-        # unprompted, matching the field norm (#480) — there is no read-side
-        # secret gate or result redaction, so an include-glob like `*.env` over
-        # a directory returns its matches like any other file. (Only WRITING a
-        # secret stays approval-gated; see Security::ApprovalPolicy#decide.)
+        # Codex, INCLUDING secret/credential files — it does NOT block them
+        # (only the structured `read` tool blocks the .env family; matches
+        # Hermes search_tool). Instead, credential VALUES in the matched lines
+        # are redacted before they enter context (Security::Redactor, like
+        # Hermes search_tool's code_file redaction). (Only WRITING a secret
+        # stays approval-gated; see Security::ApprovalPolicy#decide.)
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?
@@ -147,7 +148,11 @@ module Rubino
           more      = more_exist
           header    = "#{lines.size} match(es) shown" \
                       "#{" (more — raise max_results or narrow the pattern)" if more}"
-          full      = "#{header}:\n\n#{lines.join}"
+          # Redact credential values from matched lines before they enter
+          # context — matches Hermes search_tool (code_file:true, like read).
+          # grep does NOT block secret paths in Hermes; it redacts the hits.
+          body_text = Security::Redactor.redact_sensitive_text(lines.join, code_file: true)
+          full      = "#{header}:\n\n#{body_text}"
           { output: full,
             metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more}",
             body: Util::Output.preview(full),
@@ -234,7 +239,11 @@ module Rubino
           match_count  = results.count { |l| l.include?(":") && l !~ /:\d+- / && l != "--" }
           header       = "#{match_count} match(es) shown" \
                          "#{" (more may exist — raise max_results or narrow the pattern)" if capped}"
-          full = "#{header}:\n\n#{results.join("\n")}"
+          # Redact credential values from matched lines (Ruby fallback path) —
+          # matches Hermes search_tool (code_file:true). grep redacts, never
+          # blocks, the secret hits.
+          body_text = Security::Redactor.redact_sensitive_text(results.join("\n"), code_file: true)
+          full = "#{header}:\n\n#{body_text}"
           { output: full,
             metrics: "#{match_count} match#{"es" if match_count != 1}#{"+" if capped}",
             body: Util::Output.preview(full),
