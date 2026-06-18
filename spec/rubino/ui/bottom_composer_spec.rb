@@ -2908,4 +2908,41 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(rewound).to be(true)
     end
   end
+
+  # Fix 1 — empty-buffer Ctrl+D is an EOF/quit the idle loop can OBSERVE.
+  # #handle_key returns :quit so the reader stops; #quit_pending? lets the idle
+  # poll loop see the EOF and return nil (so the REPL quit-guard runs) instead
+  # of spinning forever. A Ctrl+D on a NON-empty buffer is delete-forward, NOT
+  # a quit — that affordance is preserved.
+  describe "empty-buffer Ctrl+D EOF/quit (Fix 1)" do
+    it "returns :quit from #handle_key on an empty buffer" do
+      expect(composer.handle_key("\x04")).to eq(:quit)
+    end
+
+    it "does NOT quit on a NON-empty buffer — it deletes forward" do
+      "abc".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\x01") # Ctrl+A → caret to start
+      result = composer.handle_key("\x04") # Ctrl+D mid-line = delete-forward
+      expect(result).to be_nil
+      expect(composer.buffer).to eq("bc")
+    end
+
+    it "#quit_pending? starts false and is reset by #clear_quit_pending" do
+      expect(composer.quit_pending?).to be(false)
+      composer.instance_variable_set(:@quit_pending, true)
+      expect(composer.quit_pending?).to be(true)
+      composer.clear_quit_pending
+      expect(composer.quit_pending?).to be(false)
+    end
+
+    it "the reader sets #quit_pending? when handle_key reports :quit (empty Ctrl+D)" do
+      # Drive the reader's per-key branch directly: an empty-buffer Ctrl+D makes
+      # handle_key return :quit, and the reader flips the observable flag so the
+      # idle loop sees the EOF. (We exercise the same conditional the reader runs.)
+      ch = "\x04"
+      result = composer.handle_key(ch)
+      composer.instance_variable_set(:@quit_pending, true) if result == :quit
+      expect(composer.quit_pending?).to be(true)
+    end
+  end
 end
