@@ -301,6 +301,11 @@ module Rubino
       # the [@buffer, @cursor] draft captured when it was queued (restored
       # verbatim after the dropdown closes).
       def init_takeover_state
+        # Set when the reader sees an EOF/quit (empty-buffer Ctrl+D or a closed
+        # stdin) so the idle poll loop can OBSERVE it and return nil (EOF),
+        # mirroring how #idle_interrupt surfaces a Ctrl+C. Without this the reader
+        # thread just stops and the idle loop spins forever (the Ctrl+D hang).
+        @quit_pending      = false
         @saved_stdout      = nil # the real $stdout, parked while suspended for a takeover
         @wake_pipe         = nil # self-pipe write end that asks the reader to run a takeover
         @parked_writes     = nil
@@ -1006,6 +1011,18 @@ module Rubino
         announce("(press Ctrl+C again to exit)")
         :hint
       end
+
+      # True once the reader has seen an EOF/quit (empty-buffer Ctrl+D or a
+      # closed stdin). The idle poll loop checks this alongside its Ctrl+C flag
+      # so a single Ctrl+D at the empty idle prompt returns nil (EOF) and the
+      # REPL's quit-guard runs — instead of spinning forever (the reader thread
+      # has already stopped). Observed once, then cleared by #clear_quit_pending.
+      def quit_pending? = @quit_pending
+
+      # Clears the EOF/quit flag (the idle loop consumes it once it has acted on
+      # the EOF). Lets a fresh composer session start clean if the same instance
+      # is reused.
+      def clear_quit_pending = (@quit_pending = false)
 
       # Replaces the editable buffer with +text+ — MULTILINE-SAFE: real
       # newlines stay in the buffer and render as real row breaks, exactly
@@ -2277,12 +2294,66 @@ module Rubino
             next unless ready.include?(@input)
 
             ch = @input.getc
-            return :done if ch.nil? # EOF / stdin closed
+            if ch.nil? # EOF / stdin closed
+              @quit_pending = true
+              return :done
+            end
+
+            # COALESCE a fast RAW burst of printable bytes (a long un-bracketed
+            # paste, an SSH/terminal without DEC-2004 framing, or a piped feed):
+            # absorb every printable char ALREADY queued on @input into ONE
+            # #insert (one redraw) instead of redrawing per byte, which is
+            # quadratic on the growing input block. Returns the first NON-printable
+            # char it read (a control byte / escape / Enter), which we then
+            # dispatch normally — so caret math, bracketed paste and submit are
+            # untouched; only consecutive printable bytes are batched.
+            ch = coalesce_printable_run(ch)
+            next if ch.nil? # the whole available run was printable — already inserted
 
             result = handle_key(ch)
-            return :done if result == :quit
+            if result == :quit # empty-buffer Ctrl+D — observable EOF for the idle loop
+              @quit_pending = true
+              return :done
+            end
           end
         end
+      end
+
+      # Given the first char already read, absorb every printable char that is
+      # ALREADY buffered on @input (a fast burst — long un-bracketed paste or a
+      # piped feed) and #insert the WHOLE run in one redraw, instead of one
+      # redraw per byte (which re-renders the growing input block per char ⇒
+      # O(n²) output and a TUI freeze). We only pull more bytes while
+      # #wait_readable(0) reports the fd readable, so a normal interactive
+      # keystroke (nothing else queued) inserts exactly its one char and returns
+      # nil — identical to the old per-key path. A non-printable char (control
+      # byte / ESC starting a CSI/bracketed-paste sequence / Enter) ENDS the run
+      # and is RETURNED for normal #handle_key dispatch, so bracketed paste,
+      # caret moves and submit are unchanged. The run is bounded by what is
+      # already queued, so it never blocks for more input.
+      #
+      # Returns the first non-printable char read (to be dispatched by the
+      # caller), or nil when the entire available run was printable and inserted.
+      def coalesce_printable_run(first)
+        return first unless printable?(first)
+
+        run = +first
+        pending = nil
+        if real_io_input?
+          while @input.wait_readable(0)
+            ch = @input.getc
+            break if ch.nil? # EOF mid-burst — insert what we have, loop sees it next
+
+            unless printable?(ch)
+              pending = ch # control byte ends the run; caller handles it
+              break
+            end
+            run << ch
+          end
+        end
+        clear_announce
+        insert(run)
+        pending
       end
 
       # Drains the bytes a self-pipe accumulated so the next select doesn't fire
