@@ -2091,6 +2091,50 @@ RSpec.describe Rubino::UI::BottomComposer do
         walkups = racy_out.string.scan("\e[1A\e[2K").length
         expect(walkups).to be >= peak_above
       end
+
+      # #503 (the resize-REPAINT residue, distinct from the keystroke path above):
+      # when the SIGWINCH does NOT race the pty (winsize reports the true new
+      # width immediately), #resize itself repaints via the cheap draw_input —
+      # but reset_geometry! zeroed @input_above (#401) and @input_cols is synced
+      # to the new width, so draw_input's own reflow-clear is disarmed and the
+      # resize repaint walks ZERO rows above the caret. The terminal has already
+      # reflowed the prior-width block onto a TALLER physical footprint, so its
+      # rows above the new caret survive as a stale "❯" row — and a SECOND
+      # consecutive non-racy SIGWINCH (120→50→40) compounds it. #resize must
+      # re-arm the clear to the worst-case above-caret footprint carried across
+      # the chain (@input_above_high_water) so the repaint walks UP over every
+      # reflowed row. PROVEN to fail on 6a26bf0 (resize emitted 0 walk-ups).
+      it "clears the worst-case footprint on the resize REPAINT path (no stale ❯ row, #503)" do
+        region = composer.instance_variable_get(:@region)
+
+        # Type a tall wrapping block at width 50 (winsize reports 50 — NOT racy),
+        # so the block physically occupies several rows above the caret.
+        racy_out.cols = 50
+        composer.send(:redraw)
+        (0...100).each { |i| composer.handle_key((97 + (i % 26)).chr) }
+        peak_above = region.input_above
+        expect(peak_above).to be > 1 # multi-row block on screen at 50
+
+        # Move the caret to the TOP row, so the live/old-width above-caret counts
+        # are ~0 — only the carried high-water covers the reflowed rows.
+        composer.instance_variable_set(:@cursor, 0)
+        composer.send(:redraw)
+        expect(region.input_above).to eq(0)
+
+        # First non-racy SIGWINCH: the terminal is truly 50→… nothing changes
+        # yet; now drop to 40 and fire resize with winsize reporting 40 directly.
+        racy_out.cols = 40
+        racy_out.truncate(0)
+        racy_out.rewind
+        composer.resize
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40)
+        # The resize repaint walked UP over the worst-case footprint the block
+        # occupied at the prior width. On 6a26bf0 the repaint emitted 0 walk-ups
+        # (reset_geometry! + @input_cols synced), stranding the reflowed rows.
+        walkups = racy_out.string.scan("\e[1A\e[2K").length
+        expect(walkups).to be >= peak_above
+      end
     end
 
     # Non-trigger (#481): narrow typing WITHOUT a prior resize stays correct —
