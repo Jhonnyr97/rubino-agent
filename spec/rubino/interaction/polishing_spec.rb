@@ -80,6 +80,43 @@ RSpec.describe Rubino::Interaction::Polishing do
     end
   end
 
+  # The post-turn memory extraction (ExtractMemoryJob) runs ON this detached
+  # worker, OFF the live turn (#319/#412), mirroring Hermes' best-effort
+  # background review (conversation_loop.py:4565-4575 spawns _spawn_background_review
+  # inside try/except: pass). A raise inside the extraction must therefore be
+  # SWALLOWED: it must not propagate out of the worker (crashing the thread /
+  # the REPL), the worker must still finish cleanly, and the failing row must be
+  # marked terminal so the queue stays honest — not left "queued" to busy-loop.
+  describe "background extraction error isolation (#319)" do
+    let(:handler_class) do
+      Class.new { define_method(:perform) { |_payload| raise "extraction blew up" } }
+    end
+
+    it "swallows a raise inside the background job without propagating it" do
+      queue.enqueue("PolishTestJob", {}, drain_inline: false)
+
+      # The detached worker must neither re-raise into the caller nor leave the
+      # thread alive: wait returns cleanly and the worker has stopped.
+      expect do
+        polishing.start(ui: ui, event_bus: bus)
+        polishing.wait(5)
+      end.not_to raise_error
+
+      expect(polishing.running?).to be(false)
+    end
+
+    it "marks the failing extraction row terminal (not left queued to spin)" do
+      job_id = queue.enqueue("PolishTestJob", {}, drain_inline: false)
+
+      polishing.start(ui: ui, event_bus: bus)
+      polishing.wait(5)
+
+      # Inline-mode Queue#fail! marks a failed row "failed" (terminal) rather
+      # than re-queuing it, so the drain doesn't pick the same poison row again.
+      expect(queue.find(job_id)[:status]).to eq("failed")
+    end
+  end
+
   describe "drain busy-loop guard (persistent row-scan failure)" do
     # Regression: the queue DB torn down at session end made next_polishing_row
     # raise on EVERY iteration. The old `rescue StandardError` skipped-and-
