@@ -95,26 +95,29 @@ RSpec.describe Rubino::Tools::GrepTool do
     expect(payload(result)).to include("Path not found")
   end
 
-  # #480: reading a secret is allowed unprompted (no read-side gate). A direct
-  # grep of a credential file returns its lines.
-  it "greps a .env credential file directly (reads are allowed, #480)" do
+  # Matches Hermes search_tool: grep does NOT block secret paths (only the
+  # structured `read` tool blocks the .env family). It returns the matched
+  # lines, with credential VALUES redacted (code_file mode, like read).
+  it "greps a .env credential file directly, redacting the secret value (Hermes-matched)" do
     outside = Dir.mktmpdir("grep_secret")
-    File.write(File.join(outside, ".env"), "API_KEY=supersecret\n")
+    File.write(File.join(outside, ".env"), "API_KEY=ghp_abcdefghijklmnop1234\n")
     result = payload(tool.call("pattern" => "KEY", "path" => File.join(outside, ".env")))
-    expect(result).to include("API_KEY=supersecret")
+    expect(result).to include("API_KEY=") # match still returned, not blocked
+    expect(result).not_to include("ghp_abcdefghijklmnop1234")
+    expect(result).to include("ghp_ab...1234")
   ensure
     FileUtils.rm_rf(outside)
   end
 
-  # #480: the read-side secret gate (and its include-glob result redaction) was
-  # removed — a DIRECTORY grep with include:"*.env" returns the .env matches
-  # like any other file (field norm; protection is on write/exec/network).
-  it "returns a .env match via an include-glob over a directory (#480)" do
+  # A DIRECTORY grep with include:"*.env" returns the .env matches like any
+  # other file (grep doesn't block), with the credential value redacted.
+  it "returns a .env match via an include-glob over a directory, value redacted" do
     dir = Dir.mktmpdir("grep_include")
-    File.write(File.join(dir, ".env"), "API_KEY=supersecret\n")
+    File.write(File.join(dir, ".env"), "API_KEY=ghp_abcdefghijklmnop1234\n")
     File.write(File.join(dir, "app.rb"), "API_KEY = 'used'\n")
     result = payload(tool.call("pattern" => "API_KEY", "path" => dir, "include" => "*.env"))
-    expect(result).to include("supersecret")
+    expect(result).to include("API_KEY=")
+    expect(result).not_to include("ghp_abcdefghijklmnop1234")
   ensure
     FileUtils.rm_rf(dir)
   end

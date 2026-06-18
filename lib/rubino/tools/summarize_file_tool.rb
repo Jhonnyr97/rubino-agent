@@ -133,6 +133,12 @@ module Rubino
           end
         end
         chunks << buf unless buf.empty?
+        # Redact credential values from every chunk BEFORE it leaves to the
+        # auxiliary LLM — so a secret in the file never egresses to the aux
+        # model in cleartext (the workspace boundary above stops out-of-tree
+        # exfil; this stops in-tree .env/key values). No code_file: the file
+        # may be any text, so the full ENV/JSON-assignment patterns apply.
+        chunks.map! { |c| Security::Redactor.redact_sensitive_text(c) }
         chunks
       end
 

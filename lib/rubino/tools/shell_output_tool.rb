@@ -52,6 +52,9 @@ module Rubino
         return "Error: no background shell with run_id=#{run_id}" unless entry
 
         body = mode == "all" ? registry.read_all(entry) : registry.read_new(entry)
+        # Redact credential values from background shell output too — same seam
+        # as foreground shell (Hermes terminal_tool redacts all command output).
+        body = Security::Redactor.redact_sensitive_text(body)
         status = registry.status(entry)
         exit_code = registry.exit_code(entry)
 

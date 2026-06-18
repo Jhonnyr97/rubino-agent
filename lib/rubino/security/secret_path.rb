@@ -24,6 +24,71 @@ module Rubino
         \A\.bashrc\z | \A\.zshrc\z | \A\.profile\z | \A\.bash_profile\z | \A\.zprofile\z
       /x
 
+      # Common secret-bearing project-local environment file basenames blocked
+      # on the structured READ path (read/grep), ported 1:1 from Hermes'
+      # `agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES`. Deliberately an
+      # EXACT set (not BASENAME_RE) so `.env.example` — the documented-shape
+      # substitute — is NOT blocked, matching Hermes.
+      BLOCKED_PROJECT_ENV_BASENAMES = [
+        ".env", ".env.local", ".env.development",
+        ".env.production", ".env.test", ".env.staging", ".envrc"
+      ].to_set.freeze
+
+      # Agent-home credential-store basenames blocked on the structured READ
+      # path, mirroring Hermes' `get_read_block_error` credential_file_names
+      # (auth.json / .anthropic_oauth.json / .env / mcp-tokens/ live under the
+      # agent home). rubino's token store is rubino.sqlite3.
+      BLOCKED_HOME_CREDENTIAL_BASENAMES = [
+        ".env", "auth.json", "auth.lock",
+        ".anthropic_oauth.json", "rubino.sqlite3"
+      ].to_set.freeze
+
+      # Returns a model-facing error string when a structured READ (read/grep)
+      # targets a denied secret/credential path, or nil when the read is
+      # allowed. Ported 1:1 from Hermes' `get_read_block_error`: blocks the
+      # project-local .env family ANYWHERE on disk plus the agent-home
+      # credential stores and the mcp-tokens/ tree.
+      #
+      # **NOT a security boundary** — the shell runs as the same OS user and
+      # can still `cat .env`, where the value is REDACTED (see Redactor).
+      # The read block is defense-in-depth: it returns a clear error that
+      # most models respect, and surfaces an audit trail. Mirrors the framing
+      # in Hermes' module docstring.
+      def read_block_error(path)
+        base   = File.basename(path.to_s)
+        target = canonical_path(path) || File.expand_path(path.to_s)
+
+        if under_agent_home?(path) && (BLOCKED_HOME_CREDENTIAL_BASENAMES.include?(base) ||
+             base.end_with?(".sqlite3") || target.downcase.include?("oauth") ||
+             target.downcase.include?("#{File::SEPARATOR}mcp-tokens#{File::SEPARATOR}") ||
+             under_path?(target, File.join(canonical_home, "mcp-tokens")))
+          return "Access denied: #{path} is a Rubino credential store and " \
+                 "cannot be read directly. Provider tools consume these " \
+                 "credentials through internal channels. (Defense-in-depth — " \
+                 "not a security boundary; the shell tool can still bypass.)"
+        end
+
+        if BLOCKED_PROJECT_ENV_BASENAMES.include?(base)
+          return "Access denied: #{path} is a secret-bearing environment file " \
+                 "and cannot be read to prevent credential leakage. If you need " \
+                 "to check the file structure, read .env.example instead. " \
+                 "(Defense-in-depth — not a security boundary; the shell tool " \
+                 "can still bypass.)"
+        end
+
+        nil
+      end
+
+      # Resolved Rubino home dir, for the mcp-tokens/ subtree match above.
+      def canonical_home
+        home = Rubino.home_path
+        return "" if home.nil? || home.to_s.empty?
+
+        (File.realpath(home) if File.exist?(home)) || File.expand_path(home)
+      rescue StandardError
+        ""
+      end
+
       # Home-relative credential subtrees (resolved against $HOME).
       HOME_PREFIXES = [
         ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure",

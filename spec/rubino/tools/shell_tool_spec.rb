@@ -52,6 +52,18 @@ RSpec.describe Rubino::Tools::ShellTool do
       expect(payload(tool.call("command" => "echo hello_shell"))).to include("hello_shell")
     end
 
+    # Matches Hermes terminal_tool: `cat .env` is NOT blocked — it runs and
+    # the credential VALUE in the output is redacted (full patterns, no
+    # code_file, so secret-named ENV assignments mask too).
+    it "redacts secret values in command output (cat .env masked)" do
+      out = payload(tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\nNORMAL=ok\\n'"))
+      expect(out).not_to include("ghp_abcdefghijklmnop1234")
+      # Shell output is full-mode (no code_file): the secret-named ENV
+      # assignment masks the whole value, like Hermes terminal_tool.
+      expect(out).to include("API_KEY=***")
+      expect(out).to include("NORMAL=ok")
+    end
+
     it "includes exit code for non-zero exit commands" do
       expect(payload(tool.call("command" => "false", "cwd" => Dir.pwd))).to include("Exit code: 1")
     end
