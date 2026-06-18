@@ -70,8 +70,10 @@ RSpec.describe "secret-file write approval gate (#480)" do
       expect(policy.decide(make_tool(name: "apply_patch"), arguments: { "patch" => patch })).to eq(:ask)
     end
 
-    # The read-side gate was REMOVED (#480): reading a secret auto-allows like
-    # any broad read — no approval menu, no redaction.
+    # The read-side APPROVAL gate stays removed (#480): reading a secret
+    # auto-allows at the policy level — NO approval menu. (The structured
+    # `read`/`grep` tools enforce the Hermes-matched block/redaction INSIDE
+    # the tool, not via an approval prompt — see read_tool_spec / grep_tool_spec.)
     {
       "read" => { "file_path" => ".env" },
       "grep" => { "pattern" => "K", "path" => ".env" },
@@ -140,21 +142,26 @@ RSpec.describe "secret-file write approval gate (#480)" do
       path
     end
 
-    it "reading a secret needs NO prompt and returns the real bytes (#480)" do
+    # No approval PROMPT (the menu stays removed, #480), but the `read` tool
+    # itself BLOCKS the .env family with a message and no content — matching
+    # Hermes get_read_block_error.
+    it "reading a secret needs NO prompt but the tool blocks it with a message" do
       ui = double("UI", interactive?: true)
       allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
       expect(ui).not_to receive(:confirm)
       result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c1")
-      expect(result.output).to include("API_KEY=supersecret")
+      expect(result.output).to include("Access denied")
+      expect(result.output).not_to include("supersecret")
     end
 
-    it "reading a secret HEADLESS also returns the bytes (no fail-closed on reads, #480)" do
+    it "reading a secret HEADLESS does not fail-closed; the tool blocks with a message" do
       ui = double("UI", interactive?: false)
       allow(ui).to receive_messages(warning: nil, tool_blocked: nil, tool_started: nil,
                                     tool_finished: nil, tool_body: nil)
       exec = executor(ui: ui)
       result = exec.execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c3")
-      expect(result.output).to include("API_KEY=supersecret")
+      expect(result.output).to include("Access denied")
+      expect(result.output).not_to include("supersecret")
       expect(exec.blocked_for_approval?).to be(false)
     end
 
@@ -203,15 +210,18 @@ RSpec.describe "secret-file write approval gate (#480)" do
   end
 
   # ----------------------------------------------------------------------------
-  # 3. include-glob grep RETURNS a secret's matches (read gate removed, #480)
+  # 3. include-glob grep RETURNS a secret's matches, value REDACTED (no block).
+  #    grep does not block (only `read` does); it redacts the credential value,
+  #    matching Hermes search_tool.
   # ----------------------------------------------------------------------------
   describe "grep include-glob over a directory" do
-    it "returns the .env hit for an include:'*.env' directory search (no redaction, #480)" do
-      File.write(File.join(tmp_dir, ".env"), "API_KEY=supersecret\n")
+    it "returns the .env hit for an include:'*.env' search with the value redacted" do
+      File.write(File.join(tmp_dir, ".env"), "API_KEY=ghp_abcdefghijklmnop1234\n")
       File.write(File.join(tmp_dir, "app.rb"), "API_KEY = 'used'\n")
       out = Rubino::Tools::GrepTool.new.call("pattern" => "API_KEY", "path" => tmp_dir, "include" => "*.env")
       text = out.is_a?(Hash) ? out[:output] : out
-      expect(text).to include("supersecret")
+      expect(text).to include("API_KEY=")
+      expect(text).not_to include("ghp_abcdefghijklmnop1234")
     end
   end
 end

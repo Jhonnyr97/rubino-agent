@@ -52,11 +52,15 @@ module Rubino
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = expand_workspace_path(file_path)
-        # Reads are BROAD (#406): like Hermes/Claude/Codex, read resolves any
-        # NON-secret path with no prompt (clone-and-inspect). A SECRET/credential
-        # path (#446) is NOT refused here anymore — it is gated UPSTREAM by
-        # Security::ApprovalPolicy#decide (→ :ask), so an APPROVED read returns
-        # the real bytes while a denied/headless read never reaches #call.
+        # Secret-file READ block, ported 1:1 from Hermes' get_read_block_error:
+        # the project-local .env family anywhere on disk, plus the agent-home
+        # credential stores, are blocked-with-message (no content). Checked
+        # BEFORE existence so we don't leak whether the secret file is present.
+        # Defense-in-depth, not a boundary — the shell can still `cat .env`,
+        # where the value is REDACTED (Security::Redactor).
+        if (block = Security::SecretPath.read_block_error(expanded))
+          return { output: block, error_code: :secret_read_blocked }
+        end
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
@@ -218,10 +222,18 @@ module Rubino
                    else
                      ""
                    end
-          full = out + footer
+          # Redact credential values from the read content before it enters
+          # context — matches Hermes file_tools.read_file_tool
+          # (code_file:true skips ENV/JSON assignment patterns that false-
+          # positive on source like MAX_TOKENS=*** constants).
+          full = Security::Redactor.redact_sensitive_text(out + footer, code_file: true)
           { output: full,
             metrics: "#{printed} line#{"s" if printed != 1}",
-            body: Util::Output.preview(display_gutter(out, last_shown) + footer),
+            body: Util::Output.preview(
+              Security::Redactor.redact_sensitive_text(
+                display_gutter(out, last_shown) + footer, code_file: true
+              )
+            ),
             body_kind: :plain }
         end
       end

@@ -345,7 +345,12 @@ module Rubino
 
       def foreground_result(stdout:, duration_ms:, suffix: nil,
                             exit_code: nil, timed_out: false, cancelled: false)
-        text = stdout.to_s
+        # Redact credential values from command output before it enters
+        # context — matches Hermes terminal_tool (catches `cat .env`,
+        # `printenv`, `env` leaking keys). No code_file: shell output is not
+        # source, so the full ENV/JSON-assignment patterns apply too. The
+        # exit/cancel/timeout suffix is appended AFTER so it is never mangled.
+        text = Security::Redactor.redact_sensitive_text(stdout.to_s)
         text = "#{text}\n#{suffix}" if suffix
         { text: text,
           exit_code: exit_code,
