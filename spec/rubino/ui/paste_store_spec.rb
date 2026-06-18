@@ -49,6 +49,35 @@ RSpec.describe Rubino::UI::PasteStore do
     end
   end
 
+  describe "#append_to_placeholder_before" do
+    it "replaces an adjacent registered placeholder with one combined token" do
+      first = lines(6)
+      second = lines(7)
+      old_token = store.register(first)
+
+      start, length, new_token = store.append_to_placeholder_before(old_token, old_token.length, second)
+
+      expect([start, length]).to eq([0, old_token.length])
+      expect(new_token).to eq("[Pasted text #1 +13 lines]")
+      expect(store.expand(new_token)).to eq("#{first}\n#{second}")
+    end
+
+    it "leaves non-adjacent placeholders alone" do
+      token = store.register(lines(6))
+
+      expect(store.append_to_placeholder_before("#{token}x", token.length + 1, lines(7))).to be_nil
+      expect(store.expand(token)).to eq(lines(6))
+    end
+
+    it "keeps whole-placeholder spans working after the token is replaced" do
+      old_token = store.register(lines(6))
+      _start, _length, new_token = store.append_to_placeholder_before(old_token, old_token.length, lines(7))
+
+      expect(store.placeholder_span(new_token, new_token.length)).to eq([0, new_token.length])
+      expect(store.placeholder_span(old_token, old_token.length)).to be_nil
+    end
+  end
+
   describe "#expand" do
     it "expands a registered placeholder to the verbatim pasted body" do
       body  = lines(10)

@@ -95,6 +95,12 @@ module Rubino
         @cache[tool_name] ||= build_class(tool_name)
       end
 
+      def self.result_from_tool_output(name, output)
+        return output if output.is_a?(Rubino::Tools::Result)
+
+        Rubino::Tools::Result.success(name: name, call_id: nil, output: output.to_s)
+      end
+
       # rubocop:disable Metrics/ParameterLists, Metrics/PerceivedComplexity
       def self.build_class(tool_name)
         klass = Class.new(::RubyLLM::Tool) do
@@ -165,9 +171,7 @@ module Rubino
 
               begin
                 output = @agent_tool.call(args)
-                result = Rubino::Tools::Result.success(
-                  name: name, call_id: nil, output: output.to_s
-                )
+                result = Rubino::LLM::ToolBridge.result_from_tool_output(name, output)
                 @event_bus&.emit(Rubino::Interaction::Events::TOOL_FINISHED, name: name)
                 @ui&.tool_finished(name, result: result)
                 result.output

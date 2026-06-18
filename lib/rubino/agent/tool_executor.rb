@@ -183,6 +183,24 @@ module Rubino
           end
         end
         raw = tool.call(arguments)
+        if raw.is_a?(Tools::Result)
+          raw = Tools::Result.new(
+            name: name,
+            call_id: call_id,
+            output: Util::Output.truncate(raw.output, max_bytes: @config.tool_output_max_bytes,
+                                                      max_lines: @config.tool_output_max_lines,
+                                                      spill: ->(full) { spill_full_output(full, call_id) }),
+            status: raw.status,
+            error: raw.error,
+            metrics: raw.metrics,
+            error_code: raw.error_code,
+            artifact: raw.artifact,
+            transcript_card: raw.transcript_card?
+          )
+          record_audit(name: name, call_id: call_id, arguments: arguments,
+                       result: raw, status: "completed")
+          return raw
+        end
         # Tools can return either a String (plain output) or a Hash carrying
         # {output:, metrics:, body:, body_kind:}. The Hash form lets a tool emit
         #   - a `metrics` one-liner for the done header ("42 lines · 0.1s")
