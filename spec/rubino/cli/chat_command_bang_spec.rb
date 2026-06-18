@@ -13,7 +13,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
   let(:fake_runner) do
     instance_double(Rubino::Agent::Runner,
                     session: session, run: "RESPONSE", run!: "RESPONSE",
-                    end_session!: nil, cancel!: nil)
+                    end_session!: nil, cancel!: nil, auth_error?: false)
   end
 
   let(:bang_shell) { instance_double(Rubino::CLI::Chat::BangShell) }

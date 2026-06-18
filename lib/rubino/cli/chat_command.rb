@@ -1026,7 +1026,20 @@ module Rubino
               commit_queued_dispatch
               result = cmd_executor.try_execute(input)
               case result
-              when :exit    then break
+              when :exit
+                # `/exit` / `/quit` dispatched through the slash executor must
+                # honour the SAME quit-guard as Ctrl+D / a bare `exit` (#154):
+                # confirm before killing in-flight background subagents instead
+                # of breaking silently. The idle pre-filter above (#exit_command?)
+                # already routes the bare/`/`-prefixed forms through
+                # #confirm_quit?, but a slash form that reaches the executor (e.g.
+                # an alias / a future quit verb that bypasses the pre-filter) must
+                # not be a silent-kill back door — gate it here too so EVERY quit
+                # path is consistent. Decline (live children + `n`) returns to the
+                # prompt instead of exiting.
+                break if confirm_quit?(ui)
+
+                next
               when :handled then next
               when Hash
                 if result[:probe]
@@ -1118,6 +1131,15 @@ module Rubino
         ui.blank_line
         ui.info("Session ended.")
         session_resolver.print_resume_hint(ui, runner.session) if interacted
+
+        # Field standard: a session that surfaced an AUTH/credential error must
+        # NOT report success on exit (git/gh/Claude Code/Codex all exit non-zero
+        # on a credential failure). The interactive REPL deliberately stays alive
+        # after a failed turn (the user can fix their key and retry), so the
+        # failure is latched on the runner and the NON-ZERO exit is deferred to
+        # here — after the clean teardown. A session that never hit an auth error
+        # keeps its normal exit 0, so clean-quit behaviour is unchanged.
+        exit(1) if runner.respond_to?(:auth_error?) && runner.auth_error?
       end
 
       # Best-effort: on a terminal close (SIGHUP) or kill (SIGTERM) mark the
