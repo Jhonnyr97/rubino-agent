@@ -44,7 +44,7 @@ RSpec.describe Rubino::Security::Redactor do
 
     it "redacts the password in a DB connection string, keeping user/host" do
       out = redactor.redact_sensitive_text("postgres://app:supersecret@db:5432/x")
-      expect(out).to eq("postgres://app:***@db:5432/x")
+      expect(out).to eq("postgres://app:‹redacted by rubino›@db:5432/x")
     end
 
     it "masks JWTs (eyJ…)" do
@@ -80,12 +80,36 @@ RSpec.describe Rubino::Security::Redactor do
   end
 
   describe ".mask_token" do
-    it "fully masks short tokens (< 18 chars)" do
-      expect(redactor.mask_token("short")).to eq("***")
+    it "fully masks short tokens (< 18 chars) with the explicit marker" do
+      expect(redactor.mask_token("short")).to eq("‹redacted by rubino›")
     end
 
-    it "preserves 6/4 for longer tokens" do
+    it "fully masks nil / empty with the explicit marker (not a bare ***)" do
+      expect(redactor.mask_token(nil)).to eq("‹redacted by rubino›")
+      expect(redactor.mask_token("")).to eq("‹redacted by rubino›")
+    end
+
+    it "preserves 6/4 for longer tokens (partial form unchanged)" do
       expect(redactor.mask_token("abcdefghijklmnopqrstuvwx")).to eq("abcdef...uvwx")
+    end
+  end
+
+  describe "full-mask marker (not a bare ***)" do
+    it "tags a short ENV-assignment value with the explicit marker" do
+      out = redactor.redact_sensitive_text("API_KEY=short")
+      expect(out).to eq("API_KEY=‹redacted by rubino›")
+      expect(out).not_to include("***")
+    end
+
+    it "tags a Telegram bot token tail with the explicit marker" do
+      out = redactor.redact_sensitive_text("bot12345678:#{"a" * 35}")
+      expect(out).to include("‹redacted by rubino›")
+      expect(out).not_to include(":***")
+    end
+
+    it "tags a sensitive query-string value with the explicit marker" do
+      out = redactor.redact_sensitive_text("access_token=abc&id=1")
+      expect(out).to eq("access_token=‹redacted by rubino›&id=1")
     end
   end
 end

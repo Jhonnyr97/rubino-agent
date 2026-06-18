@@ -603,6 +603,60 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         end
       end
     end
+
+    # Code-execution tool symmetry (step 8c). Under dangerous_only, arbitrary
+    # safe `shell` runs unprompted, so the dedicated run_tests/ruby tools must
+    # NOT be gated HARDER than the raw shell they would otherwise be driven
+    # through (the field norm: Claude Code auto-mode / Codex full-auto / aider
+    # auto-run test/lint). They are aligned AT MOST to the safe-shell tier.
+    context "code-execution tool symmetry (run_tests / ruby)" do
+      let(:run_tests) { make_tool(name: "run_tests", risk_level: :medium, risky: true) }
+      let(:ruby)      { make_tool(name: "ruby",      risk_level: :medium, risky: true) }
+
+      context "dangerous_only" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" }
+          ))
+        end
+
+        it "runs run_tests WITHOUT a prompt (lower-risk than safe shell)" do
+          expect(pol.decide(run_tests, arguments: {})).to eq(:allow)
+        end
+
+        it "runs ruby WITHOUT a prompt (aligned to the safe-shell tier)" do
+          expect(pol.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:allow)
+        end
+
+        it "still honors an explicit permissions:deny on run_tests (deny-class wins)" do
+          cfg = test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" },
+            "permissions" => { "run_tests *" => "deny" }
+          )
+          p = described_class.new(config: cfg)
+          expect(p.decide(run_tests, arguments: {})).to eq(:deny)
+        end
+      end
+
+      context "confirm_all (opt-in) keeps the prompt, unchanged" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "confirm_all" }
+          ))
+        end
+
+        it "asks for run_tests under confirm_all" do
+          expect(pol.decide(run_tests, arguments: {})).to eq(:ask)
+        end
+
+        it "asks for ruby under confirm_all" do
+          expect(pol.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:ask)
+        end
+      end
+    end
   end
 
   describe "#dangerous?" do
