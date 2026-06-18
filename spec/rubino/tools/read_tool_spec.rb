@@ -26,16 +26,39 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(tool.risk_level).to eq(:low)
   end
 
-  # #480: reading a secret is ALLOWED unprompted — there is no read-side gate
-  # and no per-tool refusal, matching the field norm (protection is on write/
-  # exec/network). The write-side gate is covered in
+  # Matches Hermes get_read_block_error: the structured `read` tool BLOCKS the
+  # secret-bearing .env family with a clear message (no content), defense-in-
+  # depth. The shell tool can still `cat .env` (value redacted there). The
+  # write-side approval gate is covered in
   # spec/rubino/security/secret_file_gate_spec.rb.
-  it "reads a .env credential file (reads are allowed, #480)" do
+  it "blocks reading a .env credential file with a message (Hermes-matched)" do
     outside = Dir.mktmpdir("read_secret")
     path = File.join(outside, ".env")
     File.write(path, "API_KEY=supersecret\n")
     out = payload(tool.call("file_path" => path))
-    expect(out).to include("API_KEY=supersecret")
+    expect(out).to include("Access denied")
+    expect(out).not_to include("supersecret")
+  ensure
+    FileUtils.rm_rf(outside)
+  end
+
+  it "allows reading .env.example (documented-shape substitute, not blocked)" do
+    outside = Dir.mktmpdir("read_envexample")
+    path = File.join(outside, ".env.example")
+    File.write(path, "API_KEY=your-key-here\n")
+    out = payload(tool.call("file_path" => path))
+    expect(out).to include("API_KEY=your-key-here")
+  ensure
+    FileUtils.rm_rf(outside)
+  end
+
+  it "redacts credential VALUES in non-blocked file content (code_file mode)" do
+    outside = Dir.mktmpdir("read_redact")
+    path = File.join(outside, "config.txt")
+    File.write(path, "key = ghp_abcdefghijklmnop1234\n")
+    out = payload(tool.call("file_path" => path))
+    expect(out).not_to include("ghp_abcdefghijklmnop1234")
+    expect(out).to include("ghp_ab...1234")
   ensure
     FileUtils.rm_rf(outside)
   end

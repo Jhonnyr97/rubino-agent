@@ -79,6 +79,9 @@ module Rubino
           sleep POLL_INTERVAL
         end
 
+        # Redact credential values from the tailed output — same seam as
+        # shell_output (Hermes terminal_tool redacts all command output).
+        body      = Security::Redactor.redact_sensitive_text(body)
         status    = registry.status(entry)
         exit_code = registry.exit_code(entry)
         registry.remove(run_id) unless status == :running

@@ -169,14 +169,15 @@ RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeCla
       expect(File).not_to exist(target)
     end
 
-    it "reads an APPROVED .env directly (secret gate moved upstream, #446)" do
-      # The per-tool secret refusal is gone; reading a secret is gated by
-      # Security::ApprovalPolicy (→ :ask). At the tool level an approved read
-      # returns the bytes. The gate matrix lives in secret_file_gate_spec.
+    it "BLOCKS reading a .env credential file with a message (Hermes-matched)" do
+      # Matches Hermes get_read_block_error: the structured `read` tool blocks
+      # the .env family (no content). No approval menu — it's a tool-internal
+      # block-with-message. The shell can still `cat .env` (value redacted).
       target = File.join(outside, ".env")
       File.write(target, "API_KEY=supersecret\n")
       out = reader.call("file_path" => target)
-      expect(text(out)).to include("API_KEY=supersecret")
+      expect(text(out)).to include("Access denied")
+      expect(text(out)).not_to include("supersecret")
     end
 
     it "still allows reading agent-internal files under the Rubino home dir" do
