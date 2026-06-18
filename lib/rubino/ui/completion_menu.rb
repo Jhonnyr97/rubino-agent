@@ -124,16 +124,25 @@ module Rubino
       # candidate exactly AND that match is the menu's current selection (or
       # the only candidate) — so a partial/ambiguous token (e.g. "/re" with
       # /reasoning + /reset) still accepts the highlight on Enter as before.
-      # An EMPTY argument token (`/agents sa_xxx ` with the verb dropdown
-      # open) also submits — the buffer is already a complete command and
-      # accepting would splice a verb the user never typed — UNLESS the user
-      # explicitly arrow-navigated onto a candidate, which is an accept
-      # intent. Tab-accept is untouched.
+      #
+      # An EMPTY token with the dropdown open (e.g. `/agents ` showing a
+      # subagent id, or `/agents sa_xxx ` showing steer/probe/--stop) is NOT
+      # an exact command: Enter ACCEPTS the highlighted candidate, matching
+      # the standard picker convention (fzf / VS Code / Claude Code) where a
+      # default-highlighted candidate is accepted on Enter without first
+      # arrowing onto it (#3). This supersedes the older #147 rule that
+      # submitted on an empty argument unless the user had arrow-navigated —
+      # under it the user could not pick the highlighted id/verb with a bare
+      # Enter ("lo prende come se fosse /agents"). To run the bare command
+      # instead, dismiss the dropdown with Esc first, then Enter (a closed
+      # menu never accept-splices). A FULLY-TYPED token that exactly equals
+      # the sole/selected candidate (`/agents sa_xxx`, `/new`) still submits
+      # — that path is non-empty, so it is unaffected. Tab-accept is untouched.
       def exact_command?(buffer)
         return false unless @state
 
         typed = Array(buffer.chars[@state[:start], @state[:token_len]]).join
-        return !@state[:navigated] if typed.empty?
+        return false if typed.empty?
 
         items = @state[:items]
         return false unless items.include?(typed)
