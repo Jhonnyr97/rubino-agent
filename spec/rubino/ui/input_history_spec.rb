@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::UI::InputHistory do
-  # A private store so the spec never touches Reline::HISTORY global state.
-  subject(:history) { described_class.new(store: store) }
+  # A private store so the spec never touches Reline::HISTORY global state, and
+  # path: nil so the navigation/dedup unit specs stay purely in-memory (no disk).
+  subject(:history) { described_class.new(store: store, path: nil) }
 
   let(:store) { [] }
 
@@ -36,11 +37,75 @@ RSpec.describe Rubino::UI::InputHistory do
       expect(store).to eq(["padded"])
     end
 
-    it "does not record slash commands (H1: ↑ surfaces prompts, not commands)" do
+    it "records slash commands too, so ↑ recalls them like bash/zsh/Claude Code (#2)" do
       history.remember("/new")
       history.remember("  /help  ")
       history.remember("a real prompt")
-      expect(store).to eq(["a real prompt"])
+      expect(store).to eq(["/new", "/help", "a real prompt"])
+    end
+
+    it "a submitted /help is recalled by ↑ (#2)" do
+      history.remember("/help")
+      expect(history.up("draft")).to eq("/help")
+    end
+  end
+
+  describe "disk persistence (#2 — survives a restart, mirrors Hermes .hermes_history)" do
+    let(:dir)  { Dir.mktmpdir }
+    let(:path) { File.join(dir, "history") }
+
+    after { FileUtils.remove_entry(dir) if File.directory?(dir) }
+
+    it "loads an existing history file into the ring at startup" do
+      File.write(path, "older prompt\n/agents\nnewer prompt\n")
+      ring = []
+      described_class.new(store: ring, path: path)
+      expect(ring).to eq(["older prompt", "/agents", "newer prompt"])
+    end
+
+    it "appends a submitted line to the file so it survives a restart" do
+      h = described_class.new(store: [], path: path)
+      h.remember("first prompt")
+      h.remember("/help")
+      expect(File.read(path)).to eq("first prompt\n/help\n")
+
+      # A fresh process (new instance) recalls the persisted lines.
+      reloaded = []
+      described_class.new(store: reloaded, path: path)
+      expect(reloaded).to eq(["first prompt", "/help"])
+    end
+
+    it "caps the on-disk file to the last N entries" do
+      h = described_class.new(store: [], path: path, cap: 3)
+      %w[a b c d e].each { |l| h.remember(l) }
+      expect(File.read(path).split("\n")).to eq(%w[c d e])
+    end
+
+    it "loads only the last N entries when the file is over the cap" do
+      File.write(path, (1..10).map { |i| "line#{i}" }.join("\n"))
+      ring = []
+      described_class.new(store: ring, path: path, cap: 2)
+      expect(ring).to eq(%w[line9 line10])
+    end
+
+    it "a missing history file does not crash startup" do
+      ring = []
+      expect { described_class.new(store: ring, path: path) }.not_to raise_error
+      expect(ring).to be_empty
+    end
+
+    it "an unwritable history path does not crash a turn" do
+      h = described_class.new(store: [], path: File.join(dir, "nope", "history"))
+      expect { h.remember("a prompt") }.not_to raise_error
+      # The in-memory ring still works even though the append failed.
+      expect(h.up("draft")).to eq("a prompt")
+    end
+
+    it "an unreadable/corrupt file does not crash startup (best-effort)" do
+      File.write(path, "ok\n")
+      allow(File).to receive(:foreach).and_raise(Errno::EACCES)
+      ring = []
+      expect { described_class.new(store: ring, path: path) }.not_to raise_error
     end
   end
 
@@ -84,7 +149,7 @@ RSpec.describe Rubino::UI::InputHistory do
     end
 
     it "↑ is a no-op (nil) on an empty store" do
-      empty = described_class.new(store: [])
+      empty = described_class.new(store: [], path: nil)
       expect(empty.up("d")).to be_nil
     end
   end
