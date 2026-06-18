@@ -22,6 +22,47 @@ RSpec.describe Rubino::CLI::SkillsCommand do
     ui.messages.select { |m| m[:level] == level }.map { |m| m[:message].to_s }
   end
 
+  # The `skills help` verb table must advertise AUTHORING (a skill is a
+  # Markdown file you write) — Thor routes the verb-table listing through
+  # .help with subcommand=true for a REGISTERED subcommand, so the note must
+  # not be gated on it (an earlier `return if subcommand` swallowed it for
+  # every reachable form). The per-verb page (`skills help install`) goes
+  # through #command_help and must NOT carry the note.
+  describe "help authoring note" do
+    def capture_skills_help(*argv)
+      original = $stdout
+      buffer   = StringIO.new
+      $stdout  = buffer
+      begin
+        described_class.start(argv)
+      rescue SystemExit
+        nil
+      ensure
+        $stdout = original
+      end
+      buffer.string
+    end
+
+    it "appends the create-a-skill note to the verb table (`skills help`)" do
+      out = capture_skills_help("help")
+      # The verb table rendered (program-name-agnostic: under `start` the
+      # prefix is the test runner's $0, not `rubino skills`).
+      expect(out).to include("List skills with enabled/disabled markers")
+      expect(out).to include("Create a skill")
+      expect(out).to include("SKILL.md")
+    end
+
+    it "appends it to the bare `skills` listing too" do
+      expect(capture_skills_help).to include("Create a skill")
+    end
+
+    it "does NOT append it to a per-verb help page (`skills help install`)" do
+      out = capture_skills_help("help", "install")
+      expect(out).to include("Install skills from a git repo") # the per-verb page
+      expect(out).not_to include("Create a skill")
+    end
+  end
+
   describe "#list" do
     it "renders the skills with their enabled/disabled status" do
       Rubino::Skills::StateRepository.new.set("legacy-flat", enabled: false)

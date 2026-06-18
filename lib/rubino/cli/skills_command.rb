@@ -30,19 +30,23 @@ module Rubino
       # How to AUTHOR a skill — the verb table only covers install/enable/etc,
       # so `rubino skills help` never told you a skill is just a Markdown file
       # you write yourself (QA: authoring under-discoverable). Append a short
-      # create note to the subcommand listing, mirroring the in-chat `/skills`
-      # authoring footer. Only decorate the verb table itself, not a per-verb
-      # help page (`rubino skills help install`), which super handles unchanged.
+      # create note to the verb-table listing, mirroring the in-chat `/skills`
+      # authoring footer.
       AUTHORING_NOTE = "Create a skill: add a Markdown file with name/description frontmatter " \
                        "to a skills dir\n(.rubino/skills/<name>/SKILL.md, or a flat .rubino/skills/<name>.md). " \
                        "See `rubino skills show <name>` for the format."
 
       # rubocop:disable Style/OptionalBooleanParameter -- overrides Thor's own
       # `def help(shell, subcommand = false)` positional signature.
+      #
+      # Thor only routes the VERB-TABLE listing through .help — a per-verb page
+      # (`skills help install`) goes through #command_help and never reaches
+      # here. For a REGISTERED subcommand the listing always arrives with
+      # subcommand=true (Thor#help line ~671 / `rubino help skills`), so the
+      # note must NOT be gated on it (the old `return if subcommand` swallowed it
+      # for every reachable form). Always append it after the table.
       def self.help(shell, subcommand = false)
         super
-        return if subcommand
-
         shell.say
         shell.say(AUTHORING_NOTE)
       end
