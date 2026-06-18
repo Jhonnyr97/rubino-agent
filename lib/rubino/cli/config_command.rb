@@ -91,7 +91,13 @@ module Rubino
         # a successful SET must not echo a raw api_key/token into the scrollback.
         Rubino.ui.success("#{key} = #{self.class.redact(value, key: key.split(".").last)}")
       rescue ConfigurationError => e
-        Rubino.ui.error(e.message)
+        # A validation failure is a FAILURE on the automation surface: route the
+        # ✗ line to STDERR (it used to print on stdout), keeping exit 1. For an
+        # array-typed key, append the accepted syntax — Writer.coerce_array only
+        # accepts an explicit JSON array literal — so the user isn't left
+        # guessing how to pass multiple values (e.g. `"git log"` was rejected).
+        warn "✗ #{e.message}"
+        warn array_syntax_hint(key) if e.message.include?("expected array")
         exit(1)
       end
 
@@ -144,6 +150,13 @@ module Rubino
       end
 
       private
+
+      # The accepted array syntax for `config set <array-key>`: a JSON array
+      # literal (Writer.coerce_array is JSON-only, so comma-separated values are
+      # NOT accepted). Shows the exact key the user was setting.
+      def array_syntax_hint(key)
+        %(Pass a JSON array literal, e.g.  rubino config set #{key} '["git log","ls"]')
+      end
 
       # Resolve through the Loader so config get/set/path operate on exactly
       # the file the server loads (RUBINO_HOME-aware), not a recomputed
