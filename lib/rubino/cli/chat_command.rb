@@ -1026,7 +1026,20 @@ module Rubino
               commit_queued_dispatch
               result = cmd_executor.try_execute(input)
               case result
-              when :exit    then break
+              when :exit
+                # `/exit` / `/quit` dispatched through the slash executor must
+                # honour the SAME quit-guard as Ctrl+D / a bare `exit` (#154):
+                # confirm before killing in-flight background subagents instead
+                # of breaking silently. The idle pre-filter above (#exit_command?)
+                # already routes the bare/`/`-prefixed forms through
+                # #confirm_quit?, but a slash form that reaches the executor (e.g.
+                # an alias / a future quit verb that bypasses the pre-filter) must
+                # not be a silent-kill back door — gate it here too so EVERY quit
+                # path is consistent. Decline (live children + `n`) returns to the
+                # prompt instead of exiting.
+                break if confirm_quit?(ui)
+
+                next
               when :handled then next
               when Hash
                 if result[:probe]
