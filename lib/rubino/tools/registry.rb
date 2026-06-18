@@ -133,12 +133,28 @@ module Rubino
           register(Rubino::Tools::AnswerChildTool.new)
         end
 
-        # Tools that ONLY make sense once a child SUBAGENT (a background `task`)
-        # exists this session — the parent->child comm channels. Before any task
-        # is spawned they are dead weight (a `steer`/`probe`/`answer_child` with
-        # no child just errors "not your child"; `task_result`/`task_stop` have
-        # nothing to poll). `task` itself (spawn) stays always-on. (#313)
-        TASK_DEPENDENT_TOOLS = %w[task_result task_stop steer probe answer_child].freeze
+        # The delegate+poll toolset that MUST travel with `task` (spawn). The
+        # `task` tool's own description tells the model it can "fetch the result
+        # anytime with `task_result(<id>)` or stop it with `task_stop(<id>)`",
+        # and `probe` is the read-only check-on-a-child companion. If we hid
+        # these behind `any_subagent?` (the #313 token-saving gate) the model
+        # would be PROMISED a tool that is absent from its function list — it
+        # then concludes "I have no way to poll/verify my subagents" and the
+        # delegate->poll->collect flow breaks. So we deliberately trade the
+        # ~2k-token saving on these poll tools for correctness: they are exposed
+        # whenever `task` itself is (i.e. only gated by `tools.task`, NOT by a
+        # live child). The model needs the full delegate+poll toolset present to
+        # plan delegation in the first place. (#313)
+        TASK_POLL_TOOLS = %w[task_result task_stop probe].freeze
+
+        # Tools that act ON a LIVE child and are NOT named in the `task`
+        # description — they only make sense once a child SUBAGENT exists, so
+        # they stay gated on `any_subagent?`. Before any task is spawned a
+        # `steer`/`answer_child` with no child just errors ("not your child" /
+        # "no waiting child"), so hiding them costs no promised capability and
+        # keeps the common-turn schema lean. `task` itself (spawn) stays
+        # always-on. (#313)
+        TASK_DEPENDENT_TOOLS = %w[steer answer_child].freeze
 
         # Tools that ONLY make sense once a background SHELL exists this session —
         # the shell-management channels. Before any `shell run_in_background:true`
@@ -158,9 +174,13 @@ module Rubino
         #     thread-local current_subagent_id is set ⇒ this run has a parent).
         #     Mirrors Definition#resolved_tools' SUBAGENT_ONLY gate so the base
         #     registry view is honest even outside an agent definition.
-        #   - task_* / steer / probe / answer_child: exposed only once ≥1 child
-        #     task exists in the BackgroundTasks registry (any state — live or
-        #     finished; a finished child can still be polled via task_result).
+        #   - task_result / task_stop / probe (TASK_POLL_TOOLS): NOT situationally
+        #     hidden — they ride with `task` (gated only by `tools.task`) because
+        #     the `task` description references task_result/task_stop and the
+        #     model must see the whole delegate+poll toolset to plan delegation.
+        #   - steer / answer_child (TASK_DEPENDENT_TOOLS): act on a LIVE child and
+        #     aren't named in the task description, so they're exposed only once
+        #     ≥1 child task exists in the BackgroundTasks registry.
         #   - shell_* management: exposed only once ≥1 background shell exists in
         #     the ShellRegistry.
         def situational_tool_hidden?(tool)
