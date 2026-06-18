@@ -2156,6 +2156,47 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # #501: an explicit `--resume <id>` of a session that was later COMPACTED
+  # resumes the literal un-compacted parent (status "compacted"). That's
+  # intended (explicit id = literal), but a compacted continuation exists and
+  # the user got no hint — so we print a note pointing at --continue, WITHOUT
+  # changing which session loads.
+  describe "#note_if_resuming_compacted_parent (#501)" do
+    let(:compacted_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "0123456789abcdef", status: "compacted" })
+    end
+    let(:plain_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "0123456789abcdef", status: "ended" })
+    end
+
+    it "prints the compaction note on an explicit --resume of a compacted parent" do
+      cmd = described_class.new("resume" => "0123")
+      expect { cmd.send(:note_if_resuming_compacted_parent, compacted_runner) }
+        .to output(/was compacted.*use --continue for the compacted continuation/m).to_stderr
+    end
+
+    it "routes the note through ui.info when one is given (interactive REPL)" do
+      cmd = described_class.new("resume" => "0123")
+      ui = instance_double(Rubino::UI::Null)
+      expect(ui).to receive(:info).with(/was compacted.*--continue/m)
+      cmd.send(:note_if_resuming_compacted_parent, compacted_runner, ui: ui)
+    end
+
+    it "stays silent when the resumed session is not a compacted parent" do
+      cmd = described_class.new("resume" => "0123")
+      expect { cmd.send(:note_if_resuming_compacted_parent, plain_runner) }
+        .not_to output.to_stderr
+    end
+
+    it "stays silent without an explicit --resume (e.g. --continue / auto-resume)" do
+      cmd = described_class.new("continue" => true)
+      expect { cmd.send(:note_if_resuming_compacted_parent, compacted_runner) }
+        .not_to output.to_stderr
+    end
+  end
+
   def capture_stdout
     old = $stdout
     $stdout = StringIO.new

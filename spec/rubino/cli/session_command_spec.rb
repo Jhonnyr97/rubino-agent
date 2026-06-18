@@ -273,6 +273,27 @@ RSpec.describe Rubino::CLI::SessionCommand do
       finished = ui.messages.find { |m| m[:level] == :compression_finished }
       expect(finished[:message][:saved_tokens]).to be_a(Integer)
     end
+
+    # #500: a no-op on a session with PLENTY of messages but under the token
+    # budget returns reason: :below_threshold — the CLI must explain THAT, not
+    # the catch-all "too few messages to summarize" it printed for every skip.
+    it "prints the below-threshold reason, not 'too few messages', for a :below_threshold no-op" do
+      repo.create(source: "cli", title: "below threshold")
+      session = repo.list(limit: 1).first
+
+      fake = instance_double(
+        Rubino::Context::Compressor,
+        compact!: { source_session_id: session[:id], saved_tokens: 0, skipped: true,
+                    reason: :below_threshold, minimum_messages: 28 }
+      )
+      allow(Rubino::Context::Compressor).to receive(:new).and_return(fake)
+
+      expect { described_class.new.compact(session[:id][0, 8]) }
+        .to raise_error(Thor::Error) { |e|
+          expect(e.message).to match(/below the compaction threshold/i)
+          expect(e.message).not_to match(/too few messages/i)
+        }
+    end
   end
 
   # Item 3: bare `rubino sessions` LISTS rather than printing subcommand help —
