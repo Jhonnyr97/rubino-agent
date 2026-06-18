@@ -386,6 +386,61 @@ RSpec.describe "parent <-> subagent communication" do
     end
   end
 
+  # --- #510: no double-draw of the ask on the mid-turn auto-open path --------
+  #
+  # When a child escalates a blocking ask_parent, #surface_and_notify both
+  # commits the ⛔ scrollback "a subagent needs you" banner AND fires the
+  # auto-open dropdown. On a live turn the dropdown's own `◆ … asks` header +
+  # picker already shows the question — so the scrollback banner is REDUNDANT
+  # and the human saw the same question drawn twice on open. The fix surfaces
+  # the dropdown first and, when a live composer owns the screen (auto-open
+  # WILL show it), rings ONLY the attention bell instead of re-printing the
+  # banner. The idle/no-composer path is unchanged: the full banner + /reply
+  # affordance still prints (the dropdown can't open then).
+  describe "auto-open does not double-draw the ask banner (#510)" do
+    # A CLI-typed stub: AskParentTool gates on parent_ui.is_a?(UI::CLI), so the
+    # stub subclasses the real CLI and only overrides the seam methods we assert.
+    def stub_cli(takes_over:)
+      Class.new(Rubino::UI::CLI) do
+        attr_reader :banner_calls, :bell_calls
+
+        def initialize(takes_over:)
+          super()
+          @takes_over = takes_over
+          @banner_calls = 0
+          @bell_calls = 0
+        end
+
+        def subagent_ask_banner(_id, _subagent, _question) = (@banner_calls += 1)
+        def ring_subagent_blocked(_id, _subagent) = (@bell_calls += 1)
+        def auto_open_human_ask(_entry = nil) = @takes_over
+        def set_subagent_cards = nil
+      end.new(takes_over: takes_over)
+    end
+
+    let(:entry) do
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "general", prompt: "x")
+    end
+
+    after { Rubino.instance_variable_set(:@ui, nil) }
+
+    it "SUPPRESSES the scrollback banner (rings the bell only) when the dropdown auto-opens" do
+      ui = stub_cli(takes_over: true)
+      Rubino.instance_variable_set(:@ui, ui)
+      Rubino::Tools::AskParentTool.new.send(:surface_and_notify, entry, "Which database?")
+      expect(ui.banner_calls).to eq(0) # no doubled question above the dropdown
+      expect(ui.bell_calls).to eq(1)   # attention still rings
+    end
+
+    it "STILL prints the full banner on the idle/no-composer path (unchanged)" do
+      ui = stub_cli(takes_over: false)
+      Rubino.instance_variable_set(:@ui, ui)
+      Rubino::Tools::AskParentTool.new.send(:surface_and_notify, entry, "Which database?")
+      expect(ui.banner_calls).to eq(1) # /reply affordance still surfaces
+      expect(ui.bell_calls).to eq(0)   # the banner rings its own bell internally
+    end
+  end
+
   # --- blocked-state surfaces on the card ------------------------------------
   describe "blocked-state visibility" do
     it "renders the ⛔ waiting-on-you card + counts it as live" do
