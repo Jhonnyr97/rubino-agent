@@ -233,13 +233,7 @@ module Rubino
         # too few to split) should say so plainly. Only a real compaction —
         # something was actually moved into a summary — renders the saved-tokens
         # line.
-        if result[:skipped]
-          threshold = result[:minimum_messages]
-          bar = threshold ? " (needs >= #{threshold} messages)" : ""
-          raise Thor::Error,
-                "nothing to compact in session #{session[:id][0..7]}: " \
-                "it has too few messages to summarize#{bar}."
-        end
+        raise Thor::Error, compact_skip_message(session[:id], result) if result[:skipped]
 
         after = estimate_session_tokens(store, result[:target_session_id], model_id: session[:model])
         delta = before - after
@@ -254,6 +248,27 @@ module Rubino
       end
 
       private
+
+      # The accurate no-op explanation, branched on the compressor's +reason+
+      # (#500). The CLI used to print the "too few messages" line for EVERY
+      # skip, but Compressor#compact! has two distinct no-op gates: a session
+      # below the protected-window floor (:too_few_messages) and one with plenty
+      # of messages but under the token budget (:below_threshold). Phrasing both
+      # as "too few messages" misled the user about why a manual compact was a
+      # no-op; branch on +reason+ so each states its real cause.
+      def compact_skip_message(session_id, result)
+        short = session_id[0..7]
+        case result[:reason]
+        when :below_threshold
+          "nothing to compact in session #{short}: it is already below the " \
+          "compaction threshold (compacting now would grow context, not shrink it)."
+        else
+          threshold = result[:minimum_messages]
+          bar = threshold ? " (needs >= #{threshold} messages)" : ""
+          "nothing to compact in session #{short}: " \
+            "it has too few messages to summarize#{bar}."
+        end
+      end
 
       # The same chars/4 estimate the compaction thresholds and the interactive
       # `/compact` (Commands::Executor) run on, over a session's stored messages

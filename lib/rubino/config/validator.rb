@@ -94,6 +94,18 @@ module Rubino
         "thinking.effort" => %w[off low medium high]
       }.freeze
 
+      # Leaves that MUST be a list (JSON/YAML array) when set. `mcp.servers` is
+      # an open map (defaults to {} with no per-server template), so its array
+      # leaves resolve to a :__absent__ default and check_type! skips them — a
+      # `config set mcp.servers.x.args "run server"` was accepted with a green ✓
+      # and stored as a scalar string, only rejected later at MCP startup
+      # (Manager#validate_stdio_args!, #499). Reject a non-array at set time so
+      # the user learns immediately to use the JSON-array syntax (#420), e.g.
+      # `config set mcp.servers.x.args '["run","server"]'`. Matched STRUCTURALLY
+      # (mcp.servers.<name>.<leaf>) since the server name is dynamic. A nil
+      # (clearing the key) is allowed. Keyed by the leaf name.
+      MCP_SERVER_ARRAY_LEAVES = %w[args].freeze
+
       # Config keys that were REMOVED and are no longer honored (item 7). A
       # config.yml that still carries one isn't an "unknown key" (its top-level
       # section is real) and isn't a type error, so the generic checks miss it —
@@ -111,6 +123,7 @@ module Rubino
         default = leaf_default(keys)
         reject_unknown_key!(key_path, keys) if default == :__absent__
         check_type!(key_path, keys, value, default) unless default == :__absent__
+        check_mcp_array!(key_path, keys, value)
         check_range!(key_path, keys, value)
         check_positive_int!(key_path, keys, value)
         check_enum!(key_path, keys, value)
@@ -294,6 +307,25 @@ module Rubino
         raise ConfigurationError,
               "invalid value for '#{key_path}': #{value.inspect} — must be a positive " \
               "integer (a 0 or negative cap would never let the turn run)"
+      end
+
+      # An `mcp.servers.<name>.args` leaf must be a list when set (#499).
+      # `mcp.servers` is an open map with no per-server template, so the leaf has
+      # a :__absent__ default and check_type! skips it — a scalar string was
+      # accepted with a green ✓ and only rejected later at MCP startup. Reject it
+      # HERE, at set time, pointing at the JSON-array syntax (#420). Matched
+      # structurally (mcp.servers.<name>.<leaf>) since the server name is
+      # dynamic. A nil (clearing the key) is allowed.
+      def check_mcp_array!(key_path, keys, value)
+        return unless keys.length >= 4 && keys[0] == "mcp" && keys[1] == "servers"
+        return unless MCP_SERVER_ARRAY_LEAVES.include?(keys.last.to_s)
+
+        coerced = Writer.coerce_value(value)
+        return if coerced.nil? || coerced.is_a?(Array)
+
+        raise ConfigurationError,
+              "invalid value for '#{key_path}': expected a list, got #{value.inspect}. " \
+              "Use a JSON array, e.g. config set #{key_path} '[\"run\", \"server\"]'"
       end
 
       # An ENUM leaf must be one of its known values when set. A garbage value

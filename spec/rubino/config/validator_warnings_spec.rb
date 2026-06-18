@@ -87,4 +87,29 @@ RSpec.describe Rubino::Config::Validator do
       end.to raise_error(Rubino::ConfigurationError, /not a config section/)
     end
   end
+
+  # #499: `mcp.servers` is an open map (defaults to {} with no per-server
+  # template), so its `args` leaf resolves to a :__absent__ default and
+  # check_type! skips it — a scalar string was accepted with a green ✓ and only
+  # rejected later at MCP startup. The set-time check now rejects a non-array,
+  # pointing at the #420 JSON-array syntax.
+  describe "#validate! mcp.servers.*.args" do
+    it "rejects a scalar string for mcp.servers.<name>.args at set time" do
+      expect do
+        described_class.validate!("mcp.servers.fs.args", %w[mcp servers fs args], "run server")
+      end.to raise_error(Rubino::ConfigurationError, /expected a list.*JSON array/m)
+    end
+
+    it "accepts a JSON-array args value (#420 syntax)" do
+      expect do
+        described_class.validate!("mcp.servers.fs.args", %w[mcp servers fs args], '["run", "server"]')
+      end.not_to raise_error
+    end
+
+    it "allows clearing args with nil" do
+      expect do
+        described_class.validate!("mcp.servers.fs.args", %w[mcp servers fs args], "nil")
+      end.not_to raise_error
+    end
+  end
 end

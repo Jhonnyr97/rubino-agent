@@ -233,6 +233,15 @@ module Rubino
         # IS a prompt (`what is 2+2`).
         positional_words = args.take_while { |a| !a.start_with?("-") }
         trailing_flags   = args.drop(positional_words.size)
+
+        # A LEADING word that is a near-miss of a known command (`confg show` for
+        # `config show`, #483) is a TYPO'd command, not a prompt — routing it to
+        # chat hid the did-you-mean suggestion. Bail so the unknown-command path
+        # fires its closest-match hint (#67/F2). Reuses the SAME SpellChecker as
+        # closest_command, so a genuine prompt word (`what`, no near command)
+        # still routes to chat.
+        return nil if closest_command(first.tr("-", "_"))
+
         multi_word    = positional_words.size > 1
         has_space     = first.match?(/\s/)
         sentence_like = first.match?(/[?!.]\z/)
