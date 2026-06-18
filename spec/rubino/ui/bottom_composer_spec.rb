@@ -3014,4 +3014,48 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(c.buffer).to eq("") # nothing inserted; caller dispatches the ESC
     end
   end
+
+  # Regression: the Backspace key sends DEL (0x7f) on most terminals. #printable?
+  # must classify DEL as NON-printable, otherwise #coalesce_printable_run swallows
+  # it and #insert puts a blank/space into the buffer instead of routing it to
+  # #handle_key's delete_back ("Backspace creates a space instead of deleting").
+  describe "#printable? (DEL 0x7f must stay non-printable)" do
+    let(:composer) { described_class.new(input_queue: queue, output: output) }
+
+    it "classifies DEL (0x7f) as NON-printable" do
+      expect(composer.send(:printable?, "\x7f")).to be(false)
+    end
+
+    it "still classifies normal, multibyte and 0x7e chars as printable" do
+      expect(composer.send(:printable?, "a")).to be(true)
+      expect(composer.send(:printable?, "à")).to be(true) # UTF-8 multibyte
+      expect(composer.send(:printable?, "~")).to be(true) # 0x7e
+      expect(composer.send(:printable?, " ")).to be(true) # 0x20
+    end
+
+    it "feeds DEL through the coalesce+handle_key path and DELETES (not inserts)" do
+      # Non-empty buffer; DEL (0x7f) must NOT be coalesced/inserted. It is a
+      # non-printable first char, so #coalesce_printable_run returns it untouched
+      # and #handle_key routes it to delete_back, removing the char before caret.
+      composer.send(:insert, "ab")
+      pending = composer.send(:coalesce_printable_run, "\x7f")
+      expect(pending).to eq("\x7f") # not swallowed by the coalesce run
+      composer.send(:handle_key, pending)
+      expect(composer.buffer).to eq("a") # delete_back ran; no space inserted
+    end
+
+    it "still coalesces a fast burst of normal printable chars (no #520 regression)" do
+      # A fake real-IO that hands out a fixed byte run (mirrors the coalesce
+      # describe's burst_io) so #real_io_input? is true and the run coalesces.
+      io = Object.new
+      queue_chars = %w[e l l o]
+      io.define_singleton_method(:fileno) { 3 }
+      io.define_singleton_method(:wait_readable) { |_t| !queue_chars.empty? }
+      io.define_singleton_method(:getc) { queue_chars.shift }
+      c = described_class.new(input_queue: queue, input: io, output: output)
+      pending = c.send(:coalesce_printable_run, "h")
+      expect(c.buffer).to eq("hello")
+      expect(pending).to be_nil
+    end
+  end
 end
