@@ -57,6 +57,19 @@ module Rubino
         new(include_project_local: project_local_trusted?, **)
       end
 
+      # Class-level twin of the private #resolve_path so callers that only need
+      # the path resolution (e.g. the /skills authoring footer) don't have to
+      # build a full registry instance. The stock "~/.rubino/..." entries follow
+      # the resolved home (RUBINO_HOME → else ~/.rubino); any other path expands
+      # verbatim.
+      def self.resolve_path_for(dir)
+        if dir.to_s == "~/.rubino" || dir.to_s.start_with?("~/.rubino/")
+          File.join(Config::Loader.default_home_path, dir.to_s.delete_prefix("~/.rubino"))
+        else
+          File.expand_path(dir)
+        end
+      end
+
       # Mirrors Context::PromptAssembler#project_local_trusted?: trust-gate the
       # cwd, but never let the check itself break discovery on a real error.
       def self.project_local_trusted?
@@ -194,11 +207,7 @@ module Rubino
       # home actually has its skills discovered (#135) instead of the literal
       # path expanding against the REAL home. Any other path expands verbatim.
       def resolve_path(dir)
-        if dir.to_s == "~/.rubino" || dir.to_s.start_with?("~/.rubino/")
-          File.join(Config::Loader.default_home_path, dir.to_s.delete_prefix("~/.rubino"))
-        else
-          File.expand_path(dir)
-        end
+        self.class.resolve_path_for(dir)
       end
 
       # Builds a Skill per path and indexes it by name. Called with flat paths
