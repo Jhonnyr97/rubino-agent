@@ -26,6 +26,27 @@ module Rubino
         true
       end
 
+      # How to AUTHOR a skill — the verb table only covers install/enable/etc,
+      # so `rubino skills help` never told you a skill is just a Markdown file
+      # you write yourself (QA: authoring under-discoverable). Append a short
+      # create note to the subcommand listing, mirroring the in-chat `/skills`
+      # authoring footer. Only decorate the verb table itself, not a per-verb
+      # help page (`rubino skills help install`), which super handles unchanged.
+      AUTHORING_NOTE = "Create a skill: add a Markdown file with name/description frontmatter " \
+                       "to a skills dir\n(.rubino/skills/<name>/SKILL.md, or a flat .rubino/skills/<name>.md). " \
+                       "See `rubino skills show <name>` for the format."
+
+      # rubocop:disable Style/OptionalBooleanParameter -- overrides Thor's own
+      # `def help(shell, subcommand = false)` positional signature.
+      def self.help(shell, subcommand = false)
+        super
+        return if subcommand
+
+        shell.say
+        shell.say(AUTHORING_NOTE)
+      end
+      # rubocop:enable Style/OptionalBooleanParameter
+
       # Drop Thor's inherited `tree` so its banner doesn't render the doubled
       # "rubino rubino skills tree" (#327); the top-level `rubino tree` covers it.
       remove_command :tree
