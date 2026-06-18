@@ -62,6 +62,7 @@ module Rubino
         @config         = config
         @session_source = session_source
         @entries        = {} # placeholder token => expansion text
+        @bodies         = {} # placeholder token => original pasted body
         @counter        = 0
       end
 
@@ -89,7 +90,33 @@ module Rubino
         n     = (@counter += 1)
         token = "[Pasted text ##{n} +#{body.lines.length} lines]"
         @entries[token] = oversize?(body) ? overflow_to_file(n, body) : body
+        @bodies[token] = body
         token
+      end
+
+      # Appends +body+ to the registered placeholder that ends exactly at
+      # +cursor+ in +buffer+, returning [start, old_length, new_token] for the
+      # caller to splice into the visible draft. Non-adjacent pastes return nil.
+      def append_to_placeholder_before(buffer, cursor, body)
+        return nil if @entries.empty? || buffer.nil?
+
+        span = placeholder_span(buffer, cursor)
+        return nil unless span && span[0] + span[1] == cursor
+
+        old_token = buffer.chars.slice(span[0], span[1]).join
+        old_body = @bodies[old_token]
+        return nil unless old_body
+
+        num = old_token[/#(\d+)/, 1].to_i
+        combined = [old_body, body.to_s].reject(&:empty?).join("\n")
+        new_token = "[Pasted text ##{num} +#{combined.lines.length} lines]"
+
+        @entries.delete(old_token)
+        @bodies.delete(old_token)
+        @entries[new_token] = oversize?(combined) ? overflow_to_file(num, combined) : combined
+        @bodies[new_token] = combined
+
+        [span[0], span[1], new_token]
       end
 
       # Expands every registered placeholder in +text+ to its stored body
@@ -99,7 +126,11 @@ module Rubino
       def expand(text)
         return text unless text.is_a?(String) && @entries.keys.any? { |t| text.include?(t) }
 
-        text.gsub(TOKEN_RE) { |token| @entries.delete(token) || token }
+        text.gsub(TOKEN_RE) do |token|
+          body = @entries.delete(token)
+          @bodies.delete(token) if body
+          body || token
+        end
       end
 
       # The registered [token, body] pairs whose placeholder appears in +text+,
@@ -112,6 +143,7 @@ module Rubino
 
         text.scan(TOKEN_RE).uniq.filter_map do |token|
           body = @entries.delete(token)
+          @bodies.delete(token) if body
           [token, body] if body
         end
       end
