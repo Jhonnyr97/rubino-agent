@@ -1494,6 +1494,7 @@ module Rubino
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
       def tool_finished(name, result: nil)
         return delegation_finished(result) if name == "task"
+        return status_back_to_thinking if result.respond_to?(:transcript_card?) && !result.transcript_card?
 
         failed = result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
         metric = if failed

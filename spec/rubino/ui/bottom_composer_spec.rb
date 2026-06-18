@@ -1699,6 +1699,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       )
     end
     let(:big) { Array.new(50) { |i| "line #{i + 1}" }.join("\n") }
+    let(:second_big) { Array.new(6) { |i| "extra #{i + 1}" }.join("\n") }
 
     def build(echo: :queued)
       described_class.new(input_queue: queue, input: input, output: output,
@@ -1725,8 +1726,49 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "numbers a second paste #2 in the same draft" do
       c = paste_into(build, big)
       c.handle_key(" ")
-      paste_into(c, Array.new(6) { "x" }.join("\n"))
+      paste_into(c, second_big)
       expect(c.buffer).to eq("[Pasted text #1 +50 lines] [Pasted text #2 +6 lines]")
+    end
+
+    it "coalesces two consecutive collapsed pastes into the first placeholder" do
+      c = paste_into(build, big)
+      paste_into(c, second_big)
+
+      expect(c.buffer).to eq("[Pasted text #1 +56 lines]")
+      expect(c.buffer.scan("[Pasted text").size).to eq(1)
+    end
+
+    it "expands a coalesced paste to both bodies in order for the model" do
+      c = paste_into(build, big)
+      paste_into(c, second_big)
+
+      token = c.buffer
+      pairs = store.expansions_in(token)
+      msg = Rubino::Session::Message.new(
+        session_id: "s1",
+        role: "user",
+        content: token,
+        metadata: { paste_expansions: pairs }
+      )
+
+      expect(msg.to_context[:content]).to eq("#{big}\n#{second_big}")
+    end
+
+    it "creates a second placeholder when typed text separates two pastes" do
+      c = paste_into(build, big)
+      c.handle_key("x")
+      paste_into(c, second_big)
+
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines]x[Pasted text #2 +6 lines]")
+    end
+
+    it "coalesces two identical consecutive collapsed pastes without losing either body" do
+      body = Array.new(6) { "same" }.join("\n")
+      c = paste_into(build, body)
+      paste_into(c, body)
+
+      expect(c.buffer).to eq("[Pasted text #1 +12 lines]")
+      expect(store.expand(c.buffer)).to eq("#{body}\n#{body}")
     end
 
     it "backspace deletes the placeholder WHOLE (never a half-eaten token)" do

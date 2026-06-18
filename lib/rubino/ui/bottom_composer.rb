@@ -2081,10 +2081,30 @@ module Rubino
         return if body.empty?
 
         if @paste_store&.collapse?(body)
-          insert(@paste_store.register(body))
+          merge_collapsed_paste(body) || insert(@paste_store.register(body))
         else
           insert(body) # at the cursor, like fast typing
         end
+      end
+
+      def merge_collapsed_paste(body)
+        return false unless @paste_store
+
+        merged = false
+        @render.synchronize do
+          if (span = @paste_store.append_to_placeholder_before(@buffer, @cursor, body))
+            start, length, token = span
+            chars = @buffer.chars
+            chars[start, length] = token.chars
+            @buffer.replace(chars.join)
+            @cursor = start + token.chars.length
+            @history.reset!
+            auto_update_menu
+            redraw
+            merged = true
+          end
+        end
+        merged
       end
 
       # Normalize a pasted body's line endings to "\n" (terminals deliver CR

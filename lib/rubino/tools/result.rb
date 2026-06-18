@@ -23,7 +23,8 @@ module Rubino
       # ARTIFACT_CREATED bus event so SSE consumers (the web UI, the CLI)
       # can offer a download.
       def initialize(name:, call_id:, output:, status:, error: nil,
-                     metrics: nil, error_code: nil, artifact: nil)
+                     metrics: nil, error_code: nil, artifact: nil,
+                     transcript_card: true)
         @name = name
         @call_id = call_id
         @output = output
@@ -32,6 +33,7 @@ module Rubino
         @metrics = metrics
         @error_code = error_code
         @artifact = artifact
+        @transcript_card = transcript_card
         @session_id = nil
       end
 
@@ -45,6 +47,10 @@ module Rubino
 
       def denied?
         @status == :denied
+      end
+
+      def transcript_card?
+        @transcript_card != false
       end
 
       # True when this result represents a failure for DISPLAY purposes, even
@@ -74,9 +80,11 @@ module Rubino
       EMPTY_OUTPUT_PLACEHOLDER = "(no output)"
 
       # Factory methods
-      def self.success(name:, call_id:, output:, metrics: nil, error_code: nil, artifact: nil)
+      def self.success(name:, call_id:, output:, metrics: nil, error_code: nil, artifact: nil,
+                       transcript_card: true)
         new(name: name, call_id: call_id, output: normalize_output(output),
-            status: :success, metrics: metrics, error_code: error_code, artifact: artifact)
+            status: :success, metrics: metrics, error_code: error_code, artifact: artifact,
+            transcript_card: transcript_card)
       end
 
       def self.error(name:, call_id:, error:, error_code: nil)
