@@ -2945,4 +2945,73 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.quit_pending?).to be(true)
     end
   end
+
+  # Fix 2 — a fast RAW burst of printable bytes coalesces into ONE redraw
+  # instead of one-per-byte (which re-renders the growing input block per char ⇒
+  # O(n²) terminal output). #coalesce_printable_run absorbs every printable byte
+  # already queued on the fd, inserts the whole run in a single #insert (one
+  # redraw), and returns the first non-printable char for normal dispatch.
+  describe "#coalesce_printable_run (Fix 2 burst coalescing)" do
+    # A fake real-IO that hands out a fixed byte run, reports readable while
+    # bytes remain, and exposes an integer #fileno so #real_io_input? is true.
+    def burst_io(chars)
+      io = Object.new
+      queue = chars.dup
+      io.define_singleton_method(:fileno) { 3 }
+      io.define_singleton_method(:wait_readable) { |_t| !queue.empty? }
+      io.define_singleton_method(:getc) { queue.shift }
+      io
+    end
+
+    it "inserts the WHOLE printable run into the buffer" do
+      c = described_class.new(input_queue: queue, input: burst_io(%w[e l l o]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "h")
+      expect(c.buffer).to eq("hello")
+      expect(pending).to be_nil # the whole run was printable
+    end
+
+    it "stops the run at the first NON-printable char and RETURNS it" do
+      # "hi" then Enter (\r): the run is "hi", Enter is returned for dispatch.
+      c = described_class.new(input_queue: queue, input: burst_io(["i", "\r", "x"]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "h")
+      expect(c.buffer).to eq("hi")
+      expect(pending).to eq("\r")
+    end
+
+    it "emits ONE redraw frame for an N-char burst (sub-quadratic, not N frames)" do
+      n = 200
+      chars = Array.new(n - 1) { "a" }
+      c = described_class.new(input_queue: queue, input: burst_io(chars),
+                              output: output)
+      before = output.string.length
+      c.send(:coalesce_printable_run, "a")
+      out = output.string[before..]
+      expect(c.buffer.length).to eq(n)
+      # One coalesced #insert ⇒ exactly one prompt frame for the whole burst.
+      frames = out.scan(/\r\e\[2K#{Regexp.escape(PROMPT)}/).length
+      expect(frames).to eq(1)
+      # Output is ~linear in n (one final frame), not ~n frames of growing size.
+      expect(out.length).to be < (n * 30)
+    end
+
+    it "passes a single interactive keystroke through unchanged (one char, no extra reads)" do
+      # Nothing else queued: wait_readable is false immediately, so it inserts
+      # just the one char and returns nil — identical to the old per-key path.
+      c = described_class.new(input_queue: queue, input: burst_io([]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "x")
+      expect(c.buffer).to eq("x")
+      expect(pending).to be_nil
+    end
+
+    it "returns a non-printable FIRST char untouched (no insert)" do
+      c = described_class.new(input_queue: queue, input: burst_io(["a"]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "\e") # ESC starts a CSI sequence
+      expect(pending).to eq("\e")
+      expect(c.buffer).to eq("") # nothing inserted; caller dispatches the ESC
+    end
+  end
 end

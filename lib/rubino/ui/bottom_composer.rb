@@ -2299,6 +2299,17 @@ module Rubino
               return :done
             end
 
+            # COALESCE a fast RAW burst of printable bytes (a long un-bracketed
+            # paste, an SSH/terminal without DEC-2004 framing, or a piped feed):
+            # absorb every printable char ALREADY queued on @input into ONE
+            # #insert (one redraw) instead of redrawing per byte, which is
+            # quadratic on the growing input block. Returns the first NON-printable
+            # char it read (a control byte / escape / Enter), which we then
+            # dispatch normally — so caret math, bracketed paste and submit are
+            # untouched; only consecutive printable bytes are batched.
+            ch = coalesce_printable_run(ch)
+            next if ch.nil? # the whole available run was printable — already inserted
+
             result = handle_key(ch)
             if result == :quit # empty-buffer Ctrl+D — observable EOF for the idle loop
               @quit_pending = true
@@ -2306,6 +2317,43 @@ module Rubino
             end
           end
         end
+      end
+
+      # Given the first char already read, absorb every printable char that is
+      # ALREADY buffered on @input (a fast burst — long un-bracketed paste or a
+      # piped feed) and #insert the WHOLE run in one redraw, instead of one
+      # redraw per byte (which re-renders the growing input block per char ⇒
+      # O(n²) output and a TUI freeze). We only pull more bytes while
+      # #wait_readable(0) reports the fd readable, so a normal interactive
+      # keystroke (nothing else queued) inserts exactly its one char and returns
+      # nil — identical to the old per-key path. A non-printable char (control
+      # byte / ESC starting a CSI/bracketed-paste sequence / Enter) ENDS the run
+      # and is RETURNED for normal #handle_key dispatch, so bracketed paste,
+      # caret moves and submit are unchanged. The run is bounded by what is
+      # already queued, so it never blocks for more input.
+      #
+      # Returns the first non-printable char read (to be dispatched by the
+      # caller), or nil when the entire available run was printable and inserted.
+      def coalesce_printable_run(first)
+        return first unless printable?(first)
+
+        run = +first
+        pending = nil
+        if real_io_input?
+          while @input.wait_readable(0)
+            ch = @input.getc
+            break if ch.nil? # EOF mid-burst — insert what we have, loop sees it next
+
+            unless printable?(ch)
+              pending = ch # control byte ends the run; caller handles it
+              break
+            end
+            run << ch
+          end
+        end
+        clear_announce
+        insert(run)
+        pending
       end
 
       # Drains the bytes a self-pipe accumulated so the next select doesn't fire
