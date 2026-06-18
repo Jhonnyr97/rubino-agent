@@ -143,7 +143,6 @@ module Rubino
           skills = registry.all
           if skills.empty?
             @ui.info("No skills found.")
-            @ui.info("Add .md files to .rubino/skills/ to create skills.")
           else
             active = Rubino::ActiveSkill.current
             skills.each do |skill|
@@ -157,6 +156,50 @@ module Rubino
               wrap_skill_line(head, skill.description.to_s).each { |line| @ui.info(line) }
             end
           end
+          explain_authoring(any: !skills.empty?)
+        end
+
+        # The authoring affordance, shown EVERY time (not just on an empty list),
+        # to bring /skills to parity with /commands' rich empty-state. A skill is
+        # a Markdown file with name/description frontmatter under a skills dir;
+        # name the REAL searched paths (RUBINO_HOME-aware), the SKILL.md format,
+        # and a concrete one-liner so authoring is discoverable in-app rather
+        # than only via the docs (QA: /skills under-discoverable vs /commands).
+        def explain_authoring(any:)
+          @ui.blank_line
+          intro = any ? "Add your own:" : "Create one:"
+          @ui.info("#{intro} a skill is a Markdown file with name/description frontmatter")
+          @ui.info("in a skills directory (a flat <name>.md, or <name>/SKILL.md for a directory skill).")
+          @ui.blank_line
+          @ui.info("Searched: #{skill_dirs.join(", ")}")
+          @ui.info("Create one, e.g. .rubino/skills/data-helper/SKILL.md:")
+          @ui.blank_line
+          @ui.info("    ---")
+          @ui.info("    name: data-helper")
+          @ui.info("    description: Helps wrangle CSV data. Use when cleaning or reshaping data.")
+          @ui.info("    ---")
+          @ui.info("    Step-by-step instructions the agent loads when the skill is active.")
+        end
+
+        # The directories the registry actually searches for skills, for the
+        # authoring copy. Mirrors Registry#skill_paths + #resolve_path so the
+        # "Searched:" line reports the real (RUBINO_HOME-aware) paths rather than
+        # a literal ~/.rubino never searched. Best-effort: a config hiccup falls
+        # back to the stock relative/home pair.
+        # The user-writable skills directories, for the "Searched:" line —
+        # resolved the SAME way the registry resolves them (RUBINO_HOME-aware),
+        # so the copy reports the real paths rather than a literal ~/.rubino
+        # never searched. Read straight from config/defaults (not via a registry
+        # instance) so the in-TUI list path stays decoupled from discovery. The
+        # read-only gem-bundled dir is intentionally NOT listed: authoring is
+        # about where the USER adds skills.
+        def skill_dirs
+          paths = Rubino.configuration.dig("skills", "paths")
+          paths = Rubino::Config::Defaults.to_hash.dig("skills", "paths") if paths.nil?
+          paths = [".rubino/skills", "~/.rubino/skills"] if paths.nil?
+          Array(paths).map { |dir| Rubino::Skills::Registry.resolve_path_for(dir) }.uniq
+        rescue StandardError
+          [".rubino/skills", "~/.rubino/skills"]
         end
 
         # Wraps "<head><description>" to the terminal width, breaking only on
