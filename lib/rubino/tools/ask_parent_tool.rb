@@ -232,15 +232,27 @@ module Rubino
         parent_ui = Rubino.instance_variable_get(:@ui)
         return unless parent_ui.is_a?(UI::CLI)
 
-        parent_ui.subagent_ask_banner(entry.id, entry.subagent, question) if parent_ui.respond_to?(:subagent_ask_banner)
-        parent_ui.set_subagent_cards if parent_ui.respond_to?(:set_subagent_cards)
         # Mid-turn AUTO-OPEN: if the parent turn is busy (a bottom composer owns
         # the screen) this asks the parent CLI to surface the answer dropdown by
         # ITSELF, without waiting for the next idle tick — the human answers the
         # child while the parent keeps streaming. Best-effort and no-op when no
         # turn is live (the idle poll covers that). The trigger runs on THIS (the
         # child's) thread; the CLI hands it to the input thread (see #auto_open_human_ask).
-        parent_ui.auto_open_human_ask(entry) if parent_ui.respond_to?(:auto_open_human_ask)
+        # Returns true when a live composer owns the screen (the dropdown WILL
+        # surface this ask), false on the idle path / error.
+        took_over = parent_ui.respond_to?(:auto_open_human_ask) && parent_ui.auto_open_human_ask(entry)
+        parent_ui.set_subagent_cards if parent_ui.respond_to?(:set_subagent_cards)
+        # The scrollback banner is the IDLE / between-turns affordance (the human
+        # answers via /reply). When the dropdown auto-opens mid-turn, its own
+        # `◆ … asks` header + picker IS the announcement — re-printing the banner
+        # above it just doubles the same question on open (#510). So on the
+        # auto-open path ring ONLY the attention bell; keep the full banner for
+        # the no-takeover (idle) path, where /reply is the only way to answer.
+        if took_over
+          parent_ui.ring_subagent_blocked(entry.id, entry.subagent) if parent_ui.respond_to?(:ring_subagent_blocked)
+        elsif parent_ui.respond_to?(:subagent_ask_banner)
+          parent_ui.subagent_ask_banner(entry.id, entry.subagent, question)
+        end
       rescue StandardError
         nil
       end
