@@ -2417,7 +2417,11 @@ module Rubino
       def printable?(ch)
         return false unless ch.respond_to?(:valid_encoding?) && ch.valid_encoding?
 
-        ch.bytesize > 1 || ch.ord >= 0x20
+        # Multi-byte (UTF-8) is always printable. For single bytes, printable is
+        # 0x20..0x7e — DEL (0x7f) is a control byte (the Backspace key sends it on
+        # most terminals), so it MUST stay non-printable or #coalesce_printable_run
+        # would swallow it instead of routing it to #handle_key's delete_back.
+        ch.bytesize > 1 || (ch.ord >= 0x20 && ch.ord != 0x7f)
       end
 
       # Terminal width in columns. winsize can report 0 (or a non-positive
