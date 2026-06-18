@@ -2,19 +2,12 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- **Tighten the `ruby_llm` floor to `>= 1.16` (#508).** The adapter wires
-  native providers through ruby_llm's generic `<provider>_api_base=` setters
-  (deepseek/mistral/etc., #482), which only exist from ruby_llm 1.16.0. The
-  gemspec previously allowed `~> 1.0`, so a fresh `gem install` could resolve
-  ruby_llm 1.15 and crash at runtime with `NoMethodError`. The dependency is
-  now `>= 1.16, < 2.0`.
+## [0.5.1] - 2026-06-18
 
 ### Added
 
-- **Mid-turn auto-open `ask_parent` answer dropdown.** When a sub-agent blocks
-  on `ask_parent`, the parent's chat input auto-opens an answer dropdown
+- **Mid-turn auto-open `ask_parent` answer dropdown (#474).** When a sub-agent
+  blocks on `ask_parent`, the parent's chat input auto-opens an answer dropdown
   **while the parent turn keeps streaming** — no need to interrupt or wait for
   the turn to finish. Arrow-select one of the options the child supplied, or
   type a free-text answer. Multiple blocked children are answered in **FIFO
@@ -22,6 +15,92 @@
   in-progress draft is snapshotted and restored byte-for-byte after you answer,
   and committed stream lines that arrive while the dropdown is open are buffered
   and flushed in order on resume.
+- **Read-only meta-commands run immediately while a turn is active.** A small
+  set of non-mutating slash commands (`/agents`, `/tasks`, `/stop`, `/status`,
+  `/jobs`, `/help`, `/commands`, `/dirs`) now execute **immediately** mid-turn
+  instead of queuing — so you can drill into a sub-agent, stop the run, or check
+  status without interrupting. State-mutating commands (`/model`, `/clear`,
+  `/new`, `/config`, `/mode`, …) show a transient `⚠ <cmd> is not available
+  during an active turn — press Esc to interrupt first` notice; plain text still
+  queues, and `Esc` interrupts.
+
+### Changed
+
+- **Provider auto-routing.** With `model.provider: "auto"` (the default), the
+  concrete provider is derived from the model id (`openai/*` → OpenAI); the
+  setup wizard / auto-detect write an explicit provider when a non-OpenAI
+  backend is chosen.
+- **Credential check uses provider-specific env vars.** The credential check
+  and key resolution now read the env var for the configured provider
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `BEDROCK_API_KEY`,
+  `MINIMAX_API_KEY`, and `<PROVIDER>_API_KEY` for anything else, e.g.
+  `DEEPSEEK_API_KEY`). A non-OpenAI provider no longer silently falls back to
+  `OPENAI_API_KEY` (only providers explicitly marked `openai_compatible` /
+  `anthropic_compatible` fall back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
+- **`security.confirm_policy` default is `dangerous_only`.** Safe shell commands
+  run unprompted; only commands matching a dangerous pattern prompt. Set
+  `confirm_policy: confirm_all` to restore prompt-on-everything. The
+  non-bypassable hardline floor and `permissions: deny` always run first
+  regardless of policy.
+- **Memory-flush best-effort boundary** made airtight (#471), so a failure
+  flushing memory at shutdown can't take down the run.
+
+### Removed
+
+- **`streaming.cursor` config key.** It was dead config (assigned, never read)
+  and is no longer accepted — remove it from any `config.yml`.
+- **`security.require_confirmation_for_shell` config key.** Replaced by
+  `security.confirm_policy` (`dangerous_only` | `confirm_all`); the old key is no
+  longer honored.
+
+### Security
+
+- **Hermes-style secret handling (#506).** Adopts the Hermes secret model across
+  the agent: the structured `read` tool blocks `.env` and credential files
+  outright, and secret **values** are redacted in the output of `read`, `grep`,
+  `shell` (including the live stream seam, not just the final buffer, #507),
+  `summarize`, and `read_attachment` (#511/#512). A `security.redact_secrets`
+  toggle (default **on**) controls redaction. The earlier per-read secret-file
+  approval gate was removed in favour of this block-list + redaction model
+  (#480).
+- **Tighten the `ruby_llm` floor to `>= 1.16` (#508).** The adapter wires native
+  providers through ruby_llm's generic `<provider>_api_base=` setters
+  (deepseek/mistral/etc., #482), which only exist from ruby_llm 1.16.0. The
+  gemspec previously allowed `~> 1.0`, so a fresh `gem install` could resolve
+  ruby_llm 1.15 and crash at runtime with `NoMethodError`. The dependency is now
+  `>= 1.16, < 2.0`.
+- **Secret masking on `config set`.** `rubino config set` now masks the echoed
+  value when the key looks secret (`api_key`, `token`, `password`, `secret`,
+  `authorization`, …) and when the value itself contains inline credentials
+  (`key=value`, `Bearer …`, URL userinfo, `curl -u`, `mysql -p…`), so keys are
+  not printed in the clear to the terminal/scrollback.
+
+### Fixed
+
+- **Non-native provider wiring (#482).** Fixed the preflight that falsely
+  reported non-native providers (deepseek/mistral/…) as ready; they are now
+  wired through the generic `<provider>_api_base=` setters and the run stops
+  on an unreachable endpoint instead of failing later.
+- **Parent-death reaps child shells (#478).** When the agent process dies, the
+  long-running child shells it spawned are reaped instead of being orphaned,
+  using a trap-safe SIGTERM/SIGHUP handler (no `Mutex` inside the signal trap).
+- **Compaction no-op loop (#484).** Stopped a busy-loop on an over-budget
+  session that has too few messages to compact.
+- **Composer resize/wrap repaint (#481/#485/#486/#499/#500/#501/#503).** Fixed
+  several composer render/input races and resize-while-typing reflows that
+  duplicated the in-progress input into the scrollback, including chained
+  resizes and the resize REPAINT path.
+- **`ask_parent` blocking timeout (#488).** A blocking `ask_parent` now honours
+  the configured 900s timeout instead of timing out at ~300s.
+- **CLI DX papercuts.** Fixed the bare-`rubino "prompt"` one-shot path, the
+  `ask_parent` escalation prompt, help-session clutter, and a bare-prompt
+  did-you-mean edge case.
+- **Input hardening.** Fixed a raw SQLite3 exception on session input with
+  hostile/NUL bytes (#498) and cleaned up `Errno` error messages on the failure
+  paths; tightened mcp args validation and assorted low-severity
+  config/sessions/resume/CLI papercuts.
+- **TUI: ask_parent dropdown double-draw (#510).** Stopped the mid-turn
+  auto-open `ask_parent` dropdown from drawing the ask twice.
 
 ## [0.5.0] - 2026-06-15
 
@@ -75,51 +154,6 @@
   `Ctrl-L` now clears the screen from the composer. Fixed a bug where resizing
   the terminal while typing reflowed and duplicated the in-progress input into
   the scrollback.
-- **Read-only meta-commands run immediately while a turn is active.** A small
-  set of non-mutating slash commands (`/agents`, `/tasks`, `/stop`, `/status`,
-  `/jobs`, `/help`, `/commands`, `/dirs`) now execute **immediately** mid-turn
-  instead of queuing — so you can drill into a sub-agent, stop the run, or check
-  status without interrupting. State-mutating commands (`/model`, `/clear`,
-  `/new`, `/config`, `/mode`, …) show a transient `⚠ <cmd> is not available
-  during an active turn — press Esc to interrupt first` notice; plain text still
-  queues, and `Esc` interrupts.
-- **Secret masking on `config set`.** `rubino config set` now masks the echoed
-  value when the key looks secret (`api_key`, `token`, `password`, `secret`,
-  `authorization`, …) and when the value itself contains inline credentials
-  (`key=value`, `Bearer …`, URL userinfo, `curl -u`, `mysql -p…`), so keys are
-  not printed in the clear to the terminal/scrollback.
-
-### Changed
-
-- **Provider auto-routing.** With `model.provider: "auto"` (the default), the
-  concrete provider is derived from the model id (`openai/*` → OpenAI); the
-  setup wizard / auto-detect write an explicit provider when a non-OpenAI
-  backend is chosen.
-- **Credential check uses provider-specific env vars.** The credential check
-  and key resolution now read the env var for the configured provider
-  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `BEDROCK_API_KEY`,
-  `MINIMAX_API_KEY`, and `<PROVIDER>_API_KEY` for anything else, e.g.
-  `DEEPSEEK_API_KEY`). A non-OpenAI provider no longer silently falls back to
-  `OPENAI_API_KEY` (only providers explicitly marked `openai_compatible` /
-  `anthropic_compatible` fall back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
-- **`security.confirm_policy` default is `dangerous_only`.** Safe shell commands
-  run unprompted; only commands matching a dangerous pattern prompt. Set
-  `confirm_policy: confirm_all` to restore prompt-on-everything. The
-  non-bypassable hardline floor and `permissions: deny` always run first
-  regardless of policy.
-- **Parent-death reaps child shells.** When the agent process dies, the
-  long-running child shells it spawned are reaped instead of being orphaned.
-- **Memory-flush best-effort boundary** made airtight (#471), so a failure
-  flushing memory at shutdown can't take down the run.
-- Cleaned up `Errno` error messages on the failure paths.
-
-### Removed
-
-- **`streaming.cursor` config key.** It was dead config (assigned, never read)
-  and is no longer accepted — remove it from any `config.yml`.
-- **`security.require_confirmation_for_shell` config key.** Replaced by
-  `security.confirm_policy` (`dangerous_only` | `confirm_all`); the old key is no
-  longer honored.
 
 ### Security
 
