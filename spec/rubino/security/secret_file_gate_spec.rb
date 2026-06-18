@@ -210,6 +210,66 @@ RSpec.describe "secret-file write approval gate (#480)" do
   end
 
   # ----------------------------------------------------------------------------
+  # 2b. Home credential-store READ block (ported from Hermes write-deny set:
+  #     file_safety.py:35-82). These leaked because they were only on the WRITE
+  #     denylist — a `read` of ~/.ssh/id_rsa etc. returned the key material.
+  #     We assert against a FAKE home dir so the spec is hermetic and does not
+  #     depend on the real ~ (also sidesteps the macOS /private realpath quirk).
+  # ----------------------------------------------------------------------------
+  describe "Security::SecretPath.read_block_error — home credential stores" do
+    let(:fake_home) { Dir.mktmpdir("fake_home_spec") }
+
+    around do |example|
+      orig = Dir.home
+      ENV["HOME"] = fake_home
+      example.run
+    ensure
+      ENV["HOME"] = orig
+      FileUtils.rm_rf(fake_home)
+    end
+
+    def write_under_home(*rel, content: "SECRET_MATERIAL\n")
+      path = File.join(fake_home, *rel)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, content)
+      path
+    end
+
+    {
+      "~/.ssh/id_rsa" => [".ssh", "id_rsa"],
+      "~/.ssh/id_ed25519" => [".ssh", "id_ed25519"],
+      "~/.ssh/authorized_keys" => [".ssh", "authorized_keys"],
+      "~/.ssh/config" => [".ssh", "config"],
+      "~/.aws/credentials" => [".aws", "credentials"],
+      "~/.netrc" => [".netrc"],
+      "~/.git-credentials" => [".git-credentials"]
+    }.each do |label, rel|
+      it "BLOCKS reading #{label} with a clear error and no content" do
+        path = write_under_home(*rel)
+        err = Rubino::Security::SecretPath.read_block_error(path)
+        expect(err).to include("Access denied")
+        expect(err).not_to include("SECRET_MATERIAL")
+      end
+    end
+
+    it "blocks ~/.aws/credentials even with a lowercase aws_secret_access_key body" do
+      path = write_under_home(".aws", "credentials",
+                              content: "aws_secret_access_key = AKIAIOSFODNN7EXAMPLE\n")
+      expect(Rubino::Security::SecretPath.read_block_error(path)).to include("Access denied")
+    end
+
+    it "does NOT block a non-credential file under the home dir" do
+      path = write_under_home("notes.md", content: "hello\n")
+      expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
+    end
+
+    it "does NOT block .env.example or an ordinary source file" do
+      expect(Rubino::Security::SecretPath.read_block_error(File.join(tmp_dir, ".env.example"))).to be_nil
+      expect(Rubino::Security::SecretPath.read_block_error(File.join(tmp_dir, "app.rb"))).to be_nil
+    end
+  end
+
+  # ----------------------------------------------------------------------------
   # 3. include-glob grep RETURNS a secret's matches, value REDACTED (no block).
   #    grep does not block (only `read` does); it redacts the credential value,
   #    matching Hermes search_tool.
