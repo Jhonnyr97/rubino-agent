@@ -61,8 +61,14 @@ module Rubino
       def render(entry)
         case entry.status
         when :running
-          "[#{entry.id}] status=running (subagent '#{entry.subagent}', " \
-          "started #{elapsed(entry)}s ago) — not finished yet; you'll be notified on completion."
+          Result.success(
+            name: name,
+            call_id: nil,
+            output: "[#{entry.id}] status=running (subagent '#{entry.subagent}', " \
+                    "started #{elapsed(entry)}s ago) — still running. Do NOT poll again now; " \
+                    "you will be auto-notified when it completes.",
+            transcript_card: false
+          )
         when :completed
           "[#{entry.id}] status=completed (subagent '#{entry.subagent}')\n#{entry.result}"
         when :failed
