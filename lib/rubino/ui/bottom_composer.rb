@@ -1169,6 +1169,12 @@ module Rubino
       # The current editable buffer (test/inspection helper).
       attr_reader :buffer
 
+      # True while the composer has yielded the screen (a takeover dropdown or a
+      # run_in_terminal block owns $stdin/$stdout). The auto-open trigger reads
+      # this to bail when the idle resolver is already mid-surface (#513), so only
+      # one path claims the shared composer.
+      def suspended? = @suspended
+
       # Lays out @buffer into wrapped VISUAL rows at the current width.
       # Returns [rows, caret_row, caret_col] where each row is
       # { chars:, start:, prompt: } — its codepoints, the buffer index of its
