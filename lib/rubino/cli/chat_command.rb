@@ -836,6 +836,15 @@ module Rubino
 
         ui = Rubino.ui
 
+        # Validate an EXPLICIT --resume/--session id BEFORE the boot banner
+        # (#resume-banner-order): a bad id used to print the rubino/workspace/
+        # branch/model banner on stdout and THEN the "Session not found" error on
+        # stderr — making a failed resume look like a session was starting. Fail
+        # cleanly first (stderr + exit 1, via the SessionError rescue in #chat)
+        # so no misleading banner is emitted. The happy path (valid id) is
+        # untouched: build_runner below does the authoritative resume.
+        validate_explicit_resume!
+
         # Capture git context before creating runner (session not yet available)
         git = git_context
 
@@ -2621,6 +2630,30 @@ module Rubino
         msg = "session #{session[:id].to_s[0, 8]} was compacted — resuming the " \
               "original; use --continue for the compacted continuation."
         ui ? ui.info(msg) : warn("rubino: #{msg}")
+      end
+
+      # Pre-flight existence check for an EXPLICIT --resume/-r/--session/-s id,
+      # run BEFORE the boot banner so a bad id errors cleanly with no misleading
+      # banner (#resume-banner-order). Mirrors the runner's own lookup
+      # (find_by_id_or_title) and raises the SAME SessionError when the id is
+      # unknown — the #chat rescue turns it into a stderr line + exit 1. A
+      # KNOWN id (or any non-explicit path: --continue / bare-chat auto-resume)
+      # is a no-op, so build_runner stays the authoritative resume and the happy
+      # path is unchanged. Best-effort: a repository hiccup falls through to the
+      # normal path rather than blocking a valid resume.
+      def validate_explicit_resume!
+        id = opt(:session) || opt(:resume) || opt(:r)
+        return if id.nil? || id.to_s.strip.empty?
+
+        return if Session::Repository.new.find_by_id_or_title(id)
+
+        raise Rubino::SessionError,
+              "Session not found: #{id}. " \
+              "Try `rubino sessions list`, or resume by id prefix."
+      rescue Rubino::SessionError
+        raise
+      rescue StandardError
+        nil
       end
 
       # True when the model id resolves in ruby_llm's registry. A fake/* id (the
