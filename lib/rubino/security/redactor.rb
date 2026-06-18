@@ -25,6 +25,17 @@ module Rubino
     module Redactor
       module_function
 
+      # Explicit marker for a FULLY-masked secret value. Hermes' `redact.py`
+      # emits a bare `***` here, which is indistinguishable from literal
+      # placeholder content (a `***` in a config sample, an empty-looking value)
+      # — it once made the agent read a redacted `.env` as "empty/placeholder".
+      # Following the labelled-marker convention of log scrubbers (Datadog et
+      # al.), a full-mask is tagged so a redacted value is never mistakable for
+      # absent/placeholder content. Display-only (no parser depends on it). The
+      # PARTIAL head…tail form (`sk-pro…7890`) is unchanged; only the full-mask
+      # placeholder uses this marker.
+      FULL_MASK = "‹redacted by rubino›"
+
       # Known API-key prefixes — match the prefix + contiguous token chars.
       # Ported verbatim from Hermes `_PREFIX_PATTERNS`.
       PREFIX_PATTERNS = [
@@ -121,8 +132,8 @@ module Rubino
       # Mask a secret token, preserving 6 leading / 4 trailing chars; values
       # shorter than 18 chars are fully masked. Mirrors Hermes `_mask_token`.
       def mask_token(token)
-        return "***" if token.nil? || token.empty?
-        return "***" if token.length < 18
+        return FULL_MASK if token.nil? || token.empty?
+        return FULL_MASK if token.length < 18
 
         "#{token[0, 6]}...#{token[-4, 4]}"
       end
@@ -174,10 +185,12 @@ module Rubino
         if text =~ /uthorization/i
           text = text.gsub(AUTH_HEADER_RE) { "#{::Regexp.last_match(1)}#{mask_token(::Regexp.last_match(2))}" }
         end
-        text = text.gsub(TELEGRAM_RE) { "#{::Regexp.last_match(1)}#{::Regexp.last_match(2)}:***" } if text.include?(":")
+        if text.include?(":")
+          text = text.gsub(TELEGRAM_RE) { "#{::Regexp.last_match(1)}#{::Regexp.last_match(2)}:#{FULL_MASK}" }
+        end
         text = text.gsub(PRIVATE_KEY_RE, "[REDACTED PRIVATE KEY]") if text.include?("BEGIN") && text.include?("-----")
         if text.include?("://")
-          text = text.gsub(DB_CONNSTR_RE) { "#{::Regexp.last_match(1)}***#{::Regexp.last_match(3)}" }
+          text = text.gsub(DB_CONNSTR_RE) { "#{::Regexp.last_match(1)}#{FULL_MASK}#{::Regexp.last_match(3)}" }
         end
         text = text.gsub(JWT_RE) { mask_token(::Regexp.last_match(0)) } if text.include?("eyJ")
         text = redact_form_body(text) if text.include?("&") && text.include?("=")
@@ -208,7 +221,7 @@ module Rubino
           next pair unless pair.include?("=")
 
           key, _, _value = pair.partition("=")
-          SENSITIVE_QUERY_PARAMS.include?(key.downcase) ? "#{key}=***" : pair
+          SENSITIVE_QUERY_PARAMS.include?(key.downcase) ? "#{key}=#{FULL_MASK}" : pair
         end.join("&")
       end
 

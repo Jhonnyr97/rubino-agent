@@ -61,7 +61,7 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
     # No code_file here (the file may be any text), so the ENV-assignment
     # pattern runs after the prefix pattern and fully masks the value —
     # byte-identical to Hermes' redact_sensitive_text on this input.
-    expect(sent).to include("API_KEY=***")
+    expect(sent).to include("API_KEY=‹redacted by rubino›")
   end
 
   it "map-reduces a multi-chunk file: a map per chunk, then one combine" do

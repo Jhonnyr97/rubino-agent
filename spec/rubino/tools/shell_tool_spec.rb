@@ -60,7 +60,7 @@ RSpec.describe Rubino::Tools::ShellTool do
       expect(out).not_to include("ghp_abcdefghijklmnop1234")
       # Shell output is full-mode (no code_file): the secret-named ENV
       # assignment masks the whole value, like Hermes terminal_tool.
-      expect(out).to include("API_KEY=***")
+      expect(out).to include("API_KEY=‹redacted by rubino›")
       expect(out).to include("NORMAL=ok")
     end
 
@@ -76,7 +76,7 @@ RSpec.describe Rubino::Tools::ShellTool do
       out = payload(tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\nNORMAL=ok\\n'"))
 
       expect(streamed).not_to include("ghp_abcdefghijklmnop1234")
-      expect(streamed).to include("API_KEY=***")
+      expect(streamed).to include("API_KEY=‹redacted by rubino›")
       expect(streamed).to include("NORMAL=ok")
       # The final output stays masked too (whole-buffer pass unaffected).
       expect(out).not_to include("ghp_abcdefghijklmnop1234")
