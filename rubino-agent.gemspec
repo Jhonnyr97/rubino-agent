@@ -46,7 +46,12 @@ Gem::Specification.new do |spec|
   spec.add_dependency "oauth2", "~> 2.0"
   spec.add_dependency "puma", "~> 6.4"
   spec.add_dependency "rack", "~> 3.1"
-  spec.add_dependency "ruby_llm", "~> 1.0"
+  # Floor is 1.16: the adapter wires native providers through ruby_llm's
+  # generic `<provider>_api_base=` setters (deepseek/mistral/etc., #482), which
+  # only exist from ruby_llm 1.16.0 ("api_base support for all providers"). On
+  # 1.15 those setters are absent and the call dies with NoMethodError at
+  # runtime, so a published-gem install must not resolve below 1.16.
+  spec.add_dependency "ruby_llm", ">= 1.16", "< 2.0"
   spec.add_dependency "ruby_llm-mcp", "~> 1.0"
   spec.add_dependency "rufus-scheduler", "~> 3.9"
   spec.add_dependency "sequel", "~> 5.0"

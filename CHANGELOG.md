@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tighten the `ruby_llm` floor to `>= 1.16` (#508).** The adapter wires
+  native providers through ruby_llm's generic `<provider>_api_base=` setters
+  (deepseek/mistral/etc., #482), which only exist from ruby_llm 1.16.0. The
+  gemspec previously allowed `~> 1.0`, so a fresh `gem install` could resolve
+  ruby_llm 1.15 and crash at runtime with `NoMethodError`. The dependency is
+  now `>= 1.16, < 2.0`.
+
 ### Added
 
 - **Mid-turn auto-open `ask_parent` answer dropdown.** When a sub-agent blocks
