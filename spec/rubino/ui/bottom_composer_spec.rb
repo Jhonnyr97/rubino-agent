@@ -1175,8 +1175,9 @@ RSpec.describe Rubino::UI::BottomComposer do
     # #147: the approval hint says "/agents sa_xxx to approve". Typing exactly
     # that pops the argument dropdown (the id, then the verb grammar), and
     # Enter used to be swallowed by it — the exact command the hint dictated
-    # did nothing. Enter with the buffer already a complete valid command must
-    # SUBMIT; accepting stays for partial tokens and arrow-navigated picks.
+    # did nothing. A FULLY-TYPED `/agents <id>` (non-empty token equal to the
+    # sole/selected candidate) must SUBMIT; accepting stays for partial tokens.
+    # (An EMPTY argument now accepts the highlight on Enter — see #3 below.)
     describe "Enter on a complete command with the argument dropdown open (#147)" do
       let(:source) do
         Rubino::UI::CompletionSource.new(
@@ -1199,12 +1200,17 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(queue.drain).to eq(["/agents sa_1855c6ef"])
       end
 
-      it "submits when the verb dropdown is open on an EMPTY argument (`/agents <id> `)" do
+      # #3: an EMPTY argument with the dropdown open now ACCEPTS the highlight
+      # on Enter (standard picker convention), superseding the old #147 rule
+      # that submitted unless the user had arrowed first. See the dropdown-Enter
+      # describe block below for the full rationale + the Esc-to-submit escape.
+      it "accepts the highlighted verb on Enter on an EMPTY argument (`/agents <id> `, #3)" do
         "/agents sa_1855c6ef ".each_char { |ch| composer.handle_key(ch) }
         expect(composer.menu_open?).to be(true) # steer/probe/--stop showing
         result = composer.handle_key("\r")
-        expect(result).to eq(:submit) # NOT a spliced "steer " the user never typed
-        expect(queue.drain).to eq(["/agents sa_1855c6ef "])
+        expect(result).to be_nil # accepted, not submitted
+        expect(composer.buffer).to eq("/agents sa_1855c6ef steer ")
+        expect(queue.drain).to eq([])
       end
 
       it "still accepts on Enter when the user arrow-navigated onto a verb" do
@@ -1221,6 +1227,60 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\r")
         expect(composer.buffer).to eq("/agents sa_1855c6ef steer ")
         expect(queue.drain).to eq([])
+      end
+    end
+
+    # #3: with the completion dropdown open on an EMPTY token, Enter ACCEPTS the
+    # highlighted candidate WITHOUT first arrowing — the standard picker
+    # convention (fzf / VS Code / Claude Code). The user hit: `/agents ` opens
+    # the subagent-id dropdown; a bare Enter used to submit `/agents ` ("lo
+    # prende come se fosse agents") instead of filling the highlighted id. To
+    # run the bare command, dismiss the dropdown with Esc first, then Enter.
+    describe "Enter accepts the highlighted candidate on an open dropdown (#3)" do
+      let(:source) do
+        Rubino::UI::CompletionSource.new(
+          commands: %w[/agents /help],
+          arg_sources: { "agents" => lambda { |args|
+            case args.length
+            when 0 then %w[sa_1855c6ef sa_99beef]
+            when 1 then ["steer", "probe", "--stop"]
+            else []
+            end
+          } }
+        )
+      end
+
+      it "(a) `/agents ` dropdown open, NO arrow, Enter → accepts the highlighted id" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true) # subagent ids showing
+        result = composer.handle_key("\r")
+        expect(result).to be_nil                      # accepted, not submitted
+        expect(composer.buffer).to eq("/agents sa_1855c6ef ") # highlighted id filled
+        expect(queue.drain).to eq([])                 # nothing submitted as a bare command
+      end
+
+      it "(b) Esc dismisses the dropdown, then Enter submits the bare command" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        esc(composer) # dismiss the dropdown (sticks for this token)
+        expect(composer.menu_open?).to be(false)
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit)
+        expect(queue.drain).to eq(["/agents "]) # the bare command is submitted as typed
+      end
+
+      it "(c) a fully-typed exact token still SUBMITS (no #147/#127 regression)" do
+        "/agents sa_1855c6ef".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true)
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit)
+        expect(queue.drain).to eq(["/agents sa_1855c6ef"])
+      end
+
+      it "(d) Tab-accept is unchanged on the empty-argument dropdown" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        expect(composer.buffer).to eq("/agents sa_1855c6ef ")
+        expect(composer.menu_open?).to be(false)
       end
     end
 
