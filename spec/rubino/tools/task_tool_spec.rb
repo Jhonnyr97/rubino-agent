@@ -969,7 +969,12 @@ RSpec.describe Rubino::Tools::TaskTool do
       task_id = out[/sa_[0-9a-f]+/]
 
       result_tool = Rubino::Tools::TaskResultTool.new
-      expect(result_tool.call("task_id" => task_id)).to include("running")
+      running = result_tool.call("task_id" => task_id)
+      expect(running).to be_a(Rubino::Tools::Result)
+      expect(running.output).to include("status=running")
+      expect(running.output).to include("Do NOT poll again now")
+      expect(running.output).to include("auto-notified when it completes")
+      expect(running.transcript_card?).to be false
 
       latch << :go
       wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).status == :completed }
