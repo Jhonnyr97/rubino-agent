@@ -17,29 +17,66 @@ module Rubino
     #
     # Like +LineInput#remember+, consecutive duplicates are de-duped on push so a
     # repeated command doesn't clutter the ring.
+    #
+    # PERSISTENCE (#2): like a shell (bash/zsh) and Hermes — which persists its
+    # input history to a +.hermes_history+ file (see hermes_cli/profiles.py /
+    # profile_distribution.py) — rubino persists submitted lines to a plain-text
+    # file under RUBINO_HOME (default +<RUBINO_HOME>/history+, one entry per
+    # line) so they survive a restart. The file is LOADED into the ring at
+    # construction (composer/REPL startup) and each remembered line is APPENDED,
+    # capped to the last {DEFAULT_CAP} entries. EVERYTHING submitted is recorded
+    # — real prompts AND slash commands (/help, /agents, …) — matching the field
+    # standard (bash/zsh/Claude Code) where ↑ recalls the whole input line. All
+    # disk access is best-effort: a missing, unreadable or unwritable history
+    # file must never crash startup or a turn, so every file op is rescued and
+    # the in-memory ring keeps working.
     class InputHistory
-      def initialize(store: Reline::HISTORY)
+      # Default number of most-recent entries kept on disk (and trimmed to on
+      # save). A shell-sized ring: large enough to recall across sessions,
+      # bounded so the file can't grow without limit.
+      DEFAULT_CAP = 1000
+
+      # Resolve the default history file under the SAME home the rest of rubino
+      # uses (RUBINO_HOME → ~/.rubino, via the config Loader), so an isolated or
+      # relocated home keeps its own history alongside config/.env/skills.
+      def self.default_path
+        File.join(Rubino::Config::Loader.default_home_path, "history")
+      rescue StandardError
+        nil
+      end
+
+      # @param store [#push, #to_a] the in-memory history ring (Reline::HISTORY
+      #   by default, for continuity with the old idle prompt).
+      # @param path [String, nil] the on-disk history file. Defaults to
+      #   <RUBINO_HOME>/history; pass nil to disable persistence entirely
+      #   (tests / standalone), in which case the ring is purely in-memory.
+      # @param cap [Integer] most-recent entries kept on disk.
+      def initialize(store: Reline::HISTORY, path: :default, cap: DEFAULT_CAP)
         @store  = store
+        @path   = path == :default ? self.class.default_path : path
+        @cap    = cap
         # Cursor into the history ring. nil = "on the live draft" (not navigating
         # history). 0 = most recent entry, increasing = older.
         @index  = nil
         @draft  = nil
+        load_from_disk
       end
 
       # Append a submitted line, de-duping a consecutive duplicate (matches
       # LineInput#remember). Blank lines are not recorded. Resets navigation so
-      # the next ↑ starts from the newest entry again.
+      # the next ↑ starts from the newest entry again. EVERYTHING typed is
+      # recorded — real prompts AND slash commands — so ↑ recalls the whole
+      # input line like bash/zsh/Claude Code (#2). Also appended to the on-disk
+      # history (best-effort) so it survives a restart.
       def remember(line)
         reset!
         return if line.nil?
 
         stripped = line.strip
         return if stripped.empty? || last == stripped
-        # Slash commands (/new, /help, …) are control input, not prompts — keep
-        # them out of recall so ↑ surfaces real messages, not commands (H1).
-        return if stripped.start_with?("/")
 
         @store.push(stripped)
+        append_to_disk(stripped)
       end
 
       # Move toward OLDER entries (↑). +current+ is the buffer the user is
@@ -95,6 +132,47 @@ module Rubino
       end
 
       private
+
+      # Load the persisted ring into the in-memory store at startup. Best-effort:
+      # a missing/unreadable file (or any read error) leaves the ring untouched
+      # and never raises. Only the last @cap lines are loaded; consecutive
+      # duplicates and blanks are skipped to mirror #remember's contract.
+      def load_from_disk
+        return unless @path && File.exist?(@path)
+
+        File.foreach(@path).map(&:chomp).last(@cap).each do |line|
+          stripped = line.strip
+          next if stripped.empty? || last == stripped
+
+          @store.push(stripped)
+        end
+      rescue StandardError
+        # Best-effort: a corrupt/unreadable history file must never block boot.
+        nil
+      end
+
+      # Append one submitted line to the on-disk history, then trim the file to
+      # the last @cap entries. Best-effort: an unwritable/missing-parent path (or
+      # any write error) is swallowed so a turn never crashes on history I/O.
+      def append_to_disk(line)
+        return unless @path
+
+        File.open(@path, "a") { |f| f.puts(line) }
+        trim_disk
+      rescue StandardError
+        nil
+      end
+
+      # Cap the on-disk file to the last @cap lines so it can't grow without
+      # bound. Rewrites only when over the cap; best-effort like the rest.
+      def trim_disk
+        lines = File.readlines(@path)
+        return if lines.size <= @cap
+
+        File.write(@path, lines.last(@cap).join)
+      rescue StandardError
+        nil
+      end
 
       def to_a
         @store.respond_to?(:to_a) ? @store.to_a : Array(@store)
