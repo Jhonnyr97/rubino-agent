@@ -741,6 +741,16 @@ module Rubino
         $stdout.flush
         # The ⛔ state is the loudest one — the whole subtree is parked on the
         # human — so it also rings the attention bell/hook.
+        ring_subagent_blocked(id, subagent)
+      end
+
+      # Rings ONLY the ⛔ attention bell/hook for a blocked child, WITHOUT the
+      # scrollback banner. Used by the mid-turn auto-open path: when the answer
+      # dropdown surfaces by itself, its own `◆ … asks` header + picker IS the
+      # on-screen banner, so re-printing #subagent_ask_banner above it just
+      # doubles the same question (#510). The attention bell still belongs on
+      # both paths — the subtree is parked on the human either way.
+      def ring_subagent_blocked(id, subagent)
         notifier.blocked("#{id} (#{subagent}) is waiting on your answer")
       end
 
@@ -830,6 +840,14 @@ module Rubino
       # CHILD thread (AskParentTool#surface_and_notify); the actual takeover runs
       # on the input thread. Best-effort — a hiccup here must never break the
       # child or the parent turn.
+      #
+      # Returns true when a live composer OWNS the screen — i.e. the ask WILL be
+      # surfaced in an on-screen dropdown, either now via this takeover OR via the
+      # FIFO re-read of an already-running dropdown loop (#486, one-at-a-time).
+      # The caller (#surface_and_notify) uses that to SUPPRESS the redundant
+      # scrollback ask-banner whose question the dropdown header already shows
+      # (#510). Returns false only when there is no composer (the idle path, where
+      # /reply is the affordance) or on error.
       def auto_open_human_ask(_entry = nil)
         composer = BottomComposer.current
         return false unless composer
@@ -842,6 +860,12 @@ module Rubino
         # are still awaiting_human (several pending, or the human cancelled),
         # instead of staying invisible for the rest of the turn (#475-A).
         composer.request_takeover(on_resume: -> { set_subagent_cards }) { handler.answer_all_human }
+        # request_takeover returns false when a dropdown loop is ALREADY running
+        # (the one-at-a-time guard) — but the ask is NOT lost: answer_all_human's
+        # FIFO re-read surfaces it the moment the current head resolves. Either
+        # way it lands in a dropdown, so report "will be shown on screen" whenever
+        # a composer is present.
+        true
       rescue StandardError
         false
       end
