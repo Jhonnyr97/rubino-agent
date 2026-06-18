@@ -1838,6 +1838,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -1859,6 +1860,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = {}
         allow(menu).to receive(:choice) { |label, sym| offered[sym] = label }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -1949,6 +1951,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -2057,6 +2060,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk&.call(menu)
         symbol
       end
@@ -2101,7 +2105,10 @@ RSpec.describe Rubino::UI::CLI do
       prompt = instance_double(TTY::Prompt)
       allow(prompt).to receive(:select) do |_q, **opts, &blk|
         captured_opts = opts
-        blk&.call(double("menu").tap { |m| allow(m).to receive(:choice) })
+        blk&.call(double("menu").tap do |m|
+          allow(m).to receive(:choice)
+          allow(m).to receive(:help)
+        end)
         :once
       end
       ui.instance_variable_set(:@approval_prompt, prompt)
