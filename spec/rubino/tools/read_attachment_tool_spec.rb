@@ -150,6 +150,39 @@ RSpec.describe Rubino::Tools::ReadAttachmentTool do
     end
   end
 
+  describe "secret redaction (#511) — parity with read/grep/shell seams" do
+    it "masks a credential value inside the converted content, keeping non-secret content intact" do
+      path = File.join(dir, "creds.csv")
+      File.write(path, "key,value\nAPI_KEY,sk-live-SECRET9988XYZ\nregion,eu-west-1\n")
+
+      out = output_of(tool.call("file_path" => path))
+
+      expect(out).not_to include("sk-live-SECRET9988XYZ")
+      # non-secret cells survive untouched
+      expect(out).to include("region")
+      expect(out).to include("eu-west-1")
+    end
+
+    it "masks a bare assignment-style secret (full pattern set, code_file:false)" do
+      path = File.join(dir, "config.csv")
+      File.write(path, "setting\nAPI_KEY=sk-live-SECRET9988XYZ\n")
+
+      out = output_of(tool.call("file_path" => path))
+      expect(out).not_to include("sk-live-SECRET9988XYZ")
+    end
+
+    it "leaves the content verbatim when security.redact_secrets is disabled" do
+      Rubino.configuration.set("security", "redact_secrets", false)
+      path = File.join(dir, "creds.csv")
+      File.write(path, "key,value\nAPI_KEY,sk-live-SECRET9988XYZ\n")
+
+      out = output_of(tool.call("file_path" => path))
+      expect(out).to include("sk-live-SECRET9988XYZ")
+    ensure
+      Rubino.configuration.set("security", "redact_secrets", true)
+    end
+  end
+
   describe "input validation" do
     it "errors when file_path is missing" do
       expect(output_of(tool.call({}))).to include("file_path is required")
