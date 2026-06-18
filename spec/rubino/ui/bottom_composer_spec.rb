@@ -1254,9 +1254,9 @@ RSpec.describe Rubino::UI::BottomComposer do
         "/agents ".each_char { |ch| composer.handle_key(ch) }
         expect(composer.menu_open?).to be(true) # subagent ids showing
         result = composer.handle_key("\r")
-        expect(result).to be_nil                      # accepted, not submitted
+        expect(result).to be_nil # accepted, not submitted
         expect(composer.buffer).to eq("/agents sa_1855c6ef ") # highlighted id filled
-        expect(queue.drain).to eq([])                 # nothing submitted as a bare command
+        expect(queue.drain).to eq([]) # nothing submitted as a bare command
       end
 
       it "(b) Esc dismisses the dropdown, then Enter submits the bare command" do
