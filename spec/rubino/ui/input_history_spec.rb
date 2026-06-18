@@ -149,7 +149,7 @@ RSpec.describe Rubino::UI::InputHistory do
     end
 
     it "↑ is a no-op (nil) on an empty store" do
-      empty = described_class.new(store: [])
+      empty = described_class.new(store: [], path: nil)
       expect(empty.up("d")).to be_nil
     end
   end

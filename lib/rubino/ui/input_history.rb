@@ -47,13 +47,20 @@ module Rubino
 
       # @param store [#push, #to_a] the in-memory history ring (Reline::HISTORY
       #   by default, for continuity with the old idle prompt).
-      # @param path [String, nil] the on-disk history file. Defaults to
-      #   <RUBINO_HOME>/history; pass nil to disable persistence entirely
-      #   (tests / standalone), in which case the ring is purely in-memory.
+      # @param path [String, nil, :default] the on-disk history file. When left
+      #   :default, persistence is tied to the DEFAULT global store: the real
+      #   chat ring (Reline::HISTORY) persists to <RUBINO_HOME>/history, while an
+      #   INJECTED private store (tests / standalone) stays purely in-memory — so
+      #   a private ring never reads/writes the shared file. Pass an explicit
+      #   path to force persistence, or nil to force it off.
       # @param cap [Integer] most-recent entries kept on disk.
       def initialize(store: Reline::HISTORY, path: :default, cap: DEFAULT_CAP)
         @store  = store
-        @path   = path == :default ? self.class.default_path : path
+        @path   = if path == :default
+                    store.equal?(Reline::HISTORY) ? self.class.default_path : nil
+                  else
+                    path
+                  end
         @cap    = cap
         # Cursor into the history ring. nil = "on the live draft" (not navigating
         # history). 0 = most recent entry, increasing = older.

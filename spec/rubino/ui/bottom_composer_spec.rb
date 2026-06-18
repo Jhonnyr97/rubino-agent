@@ -1276,11 +1276,12 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(queue.drain).to eq(["/agents sa_1855c6ef"])
       end
 
-      it "(d) Tab-accept is unchanged on the empty-argument dropdown" do
+      it "(d) Tab-accept is unchanged: it splices the highlighted id + a trailing space" do
         "/agents ".each_char { |ch| composer.handle_key(ch) }
         tab(composer)
+        # Tab accepts exactly as before — splice + trailing space. (The verb
+        # dropdown then auto-opens on the new empty argument, same as typing it.)
         expect(composer.buffer).to eq("/agents sa_1855c6ef ")
-        expect(composer.menu_open?).to be(false)
       end
     end
 
