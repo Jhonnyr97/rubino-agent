@@ -249,7 +249,19 @@ module Rubino
               # streamed chunk are both clean before anything copies them.
               line = Util::Output.scrub_utf8(line)
               output_buf << line
-              emit_chunk(line)
+              # Redact credential VALUES from the live chunk BEFORE it streams
+              # to the UI / SSE-API / persisted progress rows. The end-of-
+              # command redaction in #foreground_result only masks the
+              # accumulated buffer (the model-facing copy + preview); the
+              # intermediate chunks emitted here reach @ui.tool_chunk and the
+              # TOOL_PROGRESS event independently, so `cat .env` would otherwise
+              # leak the raw value on the live stream. Per-line redaction
+              # catches every single-line secret (ENV assignment, prefix token,
+              # JSON field, DB conn-string…); a multi-line PEM block streams
+              # raw mid-flight but is still masked in the final buffer. The RAW
+              # line stays in output_buf so that whole-buffer pass can catch
+              # such cross-line shapes for the model-facing output.
+              emit_chunk(Security::Redactor.redact_sensitive_text(line))
             end
           rescue IOError, Errno::EBADF
             # pipe closed under us — process exited
