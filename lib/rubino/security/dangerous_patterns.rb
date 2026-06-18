@@ -51,6 +51,17 @@ module Rubino
         [%r{\b(?:curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)}, "pipe remote content to shell"],
         [/\b(?:bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(?:curl|wget)\b/, "execute remote script via process substitution"],
 
+        # --- Pipe DECODED/EMITTED content to a shell (echo … | base64 -d | sh) ---
+        # The curl|sh pattern only fires when the literal upstream is curl/wget,
+        # so `echo <b64> | base64 -d | sh` (decoding to e.g. `rm -rf …`) slipped
+        # through as :allow and auto-ran headless. Flag a pipe into a shell
+        # interpreter (sh/bash/zsh/dash) whose upstream is a decoder/emitter
+        # (base64 -d/--decode, xxd -r, openssl … -d, echo, printf, cat). This
+        # closes the demonstrated obfuscation vector; pattern-matching is not
+        # exhaustive — confirm_all stays the belt-and-suspenders fail-closed.
+        [%r{\b(?:base64\s+(?:-\S*\s+)*(?:-d|--decode)|xxd\s+-\S*r|openssl\b.*\s-d\b|echo\b|printf\b|cat\b)[^|\n]*\|\s*(?:[/\w]*/)?(?:ba|da|z)?sh(?:\s|$|-c)},
+         "pipe decoded/emitted content to shell"],
+
         # --- Write / overwrite into system or credential files ---
         [/>>?\s*["']?#{SENSITIVE_WRITE_TARGET}/, "overwrite system file via redirection"],
         [/\btee\b.*["']?#{SENSITIVE_WRITE_TARGET}/, "overwrite system file via tee"],

@@ -43,11 +43,38 @@ module Rubino
         ".anthropic_oauth.json", "rubino.sqlite3"
       ].to_set.freeze
 
+      # $HOME-relative credential FILES blocked on the structured READ path.
+      # Ported from Hermes' `build_write_denied_paths` (file_safety.py:35-58):
+      # the SSH key/identity files (`~/.ssh/{id_rsa,id_ed25519,authorized_keys,
+      # config}`), `~/.netrc`, and `~/.git-credentials`. QA finding: these
+      # leaked because they were only on the WRITE denylist, so a `read` of
+      # `~/.ssh/id_rsa` etc. returned the key material — and the redactor's
+      # uppercase-only ENV_ASSIGN_RE misses lowercase `aws_secret_access_key`.
+      # rubino has no Anthropic PKCE store; its OAuth/credential equivalents
+      # live under the agent home (~/.rubino) and are already covered above.
+      BLOCKED_HOME_CREDENTIAL_FILES = [
+        File.join(".ssh", "id_rsa"),
+        File.join(".ssh", "id_ed25519"),
+        File.join(".ssh", "authorized_keys"),
+        File.join(".ssh", "config"),
+        ".netrc",
+        ".git-credentials"
+      ].freeze
+
+      # $HOME-relative credential DIRECTORIES blocked on the structured READ
+      # path (anything inside is treated as secret). Ported from Hermes'
+      # `build_write_denied_prefixes` (file_safety.py:66-82): `~/.ssh` and
+      # `~/.aws`. This is what blocks `~/.aws/credentials` (the lowercase
+      # `aws_secret_access_key` the redactor doesn't mask).
+      BLOCKED_HOME_CREDENTIAL_DIRS = [".ssh", ".aws"].freeze
+
       # Returns a model-facing error string when a structured READ (read/grep)
       # targets a denied secret/credential path, or nil when the read is
-      # allowed. Ported 1:1 from Hermes' `get_read_block_error`: blocks the
-      # project-local .env family ANYWHERE on disk plus the agent-home
-      # credential stores and the mcp-tokens/ tree.
+      # allowed. Ported 1:1 from Hermes' `get_read_block_error` plus the
+      # home credential files/dirs Hermes write-denies (file_safety.py:35-82):
+      # the project-local .env family ANYWHERE on disk, the agent-home
+      # credential stores and the mcp-tokens/ tree, and the user's SSH/AWS/
+      # netrc/git-credentials stores under $HOME.
       #
       # **NOT a security boundary** — the shell runs as the same OS user and
       # can still `cat .env`, where the value is REDACTED (see Redactor).
@@ -76,7 +103,25 @@ module Rubino
                  "can still bypass.)"
         end
 
+        if home_credential_path?(target)
+          return "Access denied: #{path} is a private credential store " \
+                 "(SSH key, AWS credentials, netrc, or git-credentials) and " \
+                 "cannot be read to prevent credential leakage. (Defense-in-depth " \
+                 "— not a security boundary; the shell tool can still bypass.)"
+        end
+
         nil
+      end
+
+      # True when the symlink-resolved +target+ is one of the $HOME-relative
+      # credential files, or sits inside one of the blocked credential
+      # directories (~/.ssh, ~/.aws). Mirrors Hermes' write-deny exact-path +
+      # prefix split, applied here to the READ gate.
+      def home_credential_path?(target)
+        home = File.expand_path("~")
+        return true if BLOCKED_HOME_CREDENTIAL_FILES.any? { |rel| target == File.join(home, rel) }
+
+        BLOCKED_HOME_CREDENTIAL_DIRS.any? { |rel| under_path?(target, File.join(home, rel)) }
       end
 
       # Resolved Rubino home dir, for the mcp-tokens/ subtree match above.
