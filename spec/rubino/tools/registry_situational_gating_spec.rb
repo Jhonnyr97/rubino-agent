@@ -25,9 +25,18 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
       end
     end
 
-    it "hides the child-management tools until ≥1 child task exists" do
+    it "exposes the poll tools (task_result/task_stop/probe) with task even with no child" do
+      # These ride with `task` (the description references task_result/task_stop),
+      # so the function list must match the description regardless of any child.
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([])
-      %w[task_result task_stop steer probe answer_child].each do |t|
+      %w[task_result task_stop probe task].each do |t|
+        expect(enabled_names).to include(t)
+      end
+    end
+
+    it "hides the live-child tools (steer/answer_child) until ≥1 child task exists" do
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([])
+      %w[steer answer_child].each do |t|
         expect(enabled_names).not_to include(t)
       end
     end
@@ -37,10 +46,20 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
       expect(enabled_names).to include("task")
     end
 
-    it "exposes the child-management tools once a child task exists" do
+    it "exposes the live-child tools once a child task exists" do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([Object.new])
       %w[task_result task_stop steer probe answer_child].each do |t|
         expect(enabled_names).to include(t)
+      end
+    end
+
+    it "drops task AND its poll tools when tools.task is disabled" do
+      cfg = Marshal.load(Marshal.dump(Rubino.configuration))
+      cfg.set("tools", "task", false)
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([])
+      %w[task task_result task_stop probe].each do |t|
+        expect(enabled_names).not_to include(t)
       end
     end
   end
@@ -68,7 +87,10 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
   describe "token savings on the common turn" do
     it "drops the situational defs from a normal turn (no child, no bg shell)" do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([])
-      situational = %w[ask_parent task_result task_stop steer probe answer_child
+      # task_result/task_stop/probe intentionally STAY (they ride with `task`,
+      # whose description names them); only the live-child and shell-management
+      # tools are situationally dropped on a normal turn.
+      situational = %w[ask_parent steer answer_child
                        shell_input shell_output shell_tail shell_kill]
       expect(enabled_names & situational).to be_empty
     end
