@@ -4,6 +4,7 @@ require "ruby_llm"
 require "faraday"
 require "net/http"
 require_relative "tool_bridge"
+require_relative "cache_breakpoint_middleware"
 require_relative "inline_think_filter"
 require_relative "provider_resolver"
 require_relative "reasoning_manager"
@@ -680,7 +681,47 @@ module Rubino
                                         cache_tools: tool_cache_breakpoint?,
                                         budget_exhausted: budget_exhausted,
                                         production: true)
+        install_cache_middleware(chat)
         chat
+      end
+
+      # Insert the conversation-tail prompt-cache breakpoint middleware on this
+      # chat's Anthropic Faraday connection (#311 growing-conversation tail).
+      # Same gate as the static breakpoints (anthropic-family path + prompt_cache
+      # on); a no-op on openai/ollama. The middleware sits BEFORE Faraday's JSON
+      # serializer so it mutates the request Hash directly, and is idempotent —
+      # registering it more than once on a reused connection is guarded by the
+      # builder-handler check so we never stack duplicates.
+      def install_cache_middleware(chat)
+        return unless tool_cache_breakpoint?
+
+        faraday = chat_faraday(chat)
+        return unless faraday
+
+        builder = faraday.builder
+        return if builder.handlers.any? { |h| h.klass == CacheBreakpointMiddleware }
+
+        builder.insert_before(::Faraday::Request::Json, CacheBreakpointMiddleware)
+      rescue StandardError
+        # Caching is a latency optimization, never a correctness requirement: if
+        # ruby_llm's connection internals shift, fall back to the static
+        # breakpoints rather than breaking the request path.
+        nil
+      end
+
+      # Reach the live Faraday::Connection behind a RubyLLM::Chat without a
+      # monkey-patch: Chat holds the Provider, Provider exposes its
+      # RubyLLM::Connection (public attr_reader), whose #connection is the
+      # Faraday object. Returns nil if any link is absent (defensive).
+      def chat_faraday(chat)
+        provider = chat.instance_variable_get(:@provider)
+        return nil unless provider.respond_to?(:connection)
+
+        rc = provider.connection
+        return nil unless rc.respond_to?(:connection)
+
+        faraday = rc.connection
+        faraday.respond_to?(:builder) ? faraday : nil
       end
 
       # The model id handed to RubyLLM.chat. On the NATIVE path (no explicit
