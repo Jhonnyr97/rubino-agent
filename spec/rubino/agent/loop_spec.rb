@@ -338,30 +338,46 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 
+  # Hermes-parity stream recovery: a stream that ends with no finish signal is
+  # RECOVERED, not failed. Text already shown → keep-and-continue; nothing shown
+  # yet → discard-and-retry. Only fail after the budget is spent.
   describe "interrupted (truncated) stream response" do
-    it "raises StreamInterruptedError instead of returning the partial as completed" do
-      fake_llm.enqueue_interrupted("indice.")
-      expect do
-        build_loop.run(messages: user_messages, tools: [])
-      end.to raise_error(Rubino::StreamInterruptedError, /ended before completion/)
+    # ---- (A) text already shown → keep-and-continue --------------------------
+    it "CONTINUES an interrupted partial instead of failing the turn" do
+      fake_llm.enqueue_interrupted("indice.")          # text shown, stream cut
+      fake_llm.enqueue_text(" e il resto del testo.")  # the model continues
+      answer = build_loop.run(messages: user_messages, tools: [])
+      expect(answer).to eq(" e il resto del testo.")
     end
 
-    it "does NOT keep iterating after an interrupted response" do
-      fake_llm.enqueue_interrupted("partial")
-      fake_llm.enqueue_text("should never be reached")
-      expect { build_loop.run(messages: user_messages, tools: []) }
-        .to raise_error(Rubino::StreamInterruptedError)
-      expect(fake_llm.call_count).to eq(1)
-    end
-
-    it "persists the buffered partial so the transcript keeps what streamed" do
+    it "persists the shown partial as an interim assistant turn before continuing" do
       fake_llm.enqueue_interrupted("half a thought")
-      expect { build_loop.run(messages: user_messages, tools: []) }
-        .to raise_error(Rubino::StreamInterruptedError)
+      fake_llm.enqueue_text(" completed.")
+      build_loop.run(messages: user_messages, tools: [])
+      stored = message_store.for_session(session[:id]).select { |m| m.role == "assistant" }
+      expect(stored.map(&:content)).to include("half a thought")
+    end
 
-      stored = message_store.for_session(session[:id])
-      assistant_msgs = stored.select { |m| m.role == "assistant" }
-      expect(assistant_msgs.last&.content).to eq("half a thought")
+    it "returns the recovered partial after exhausting continuations (no hard fail)" do
+      4.times { fake_llm.enqueue_interrupted("still truncated") } # > STREAM_CONTINUATION_MAX
+      answer = build_loop.run(messages: user_messages, tools: [])
+      expect(answer).to eq("still truncated") # last partial handed back, not raised
+    end
+
+    # ---- (B) nothing shown yet → discard-and-retry ---------------------------
+    it "recovers when an EMPTY interrupted stream succeeds on a retry" do
+      fake_llm.enqueue_interrupted("")               # cut before any output
+      fake_llm.enqueue_text("recovered answer")      # the retry succeeds
+      answer = build_loop.run(messages: user_messages, tools: [])
+      expect(answer).to eq("recovered answer")
+      expect(fake_llm.call_count).to eq(2)           # initial + 1 retry
+    end
+
+    it "raises StreamInterruptedError only after the empty-stream retry budget" do
+      3.times { fake_llm.enqueue_interrupted("") }   # no output on every attempt
+      expect { build_loop.run(messages: user_messages, tools: []) }
+        .to raise_error(Rubino::StreamInterruptedError, /no output/)
+      expect(fake_llm.call_count).to eq(3)           # initial + 2 retries (empty_response_max_retries)
     end
   end
 
