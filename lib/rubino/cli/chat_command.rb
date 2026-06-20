@@ -974,12 +974,21 @@ module Rubino
             # Treat these aliases as the slash command so they dispatch locally.
             input = help_alias_to_command(input)
 
+            # Return to the main session — from the ← back-out, the picker's "◂
+            # main" row, or a typed /detach: detach if attached, a harmless no-op
+            # at the main prompt. Handled before the attached-input intercept so it
+            # works in both states.
+            if %w[/detach /back].include?(input)
+              detach_agent_view(runner, ui) if attached_to_agent?
+              next
+            end
+
             # While ATTACHED to a subagent (the agent-view), the prompt is scoped
-            # to it: the line NEVER runs a parent turn. `/detach` returns to the
-            # main timeline; a `/`-line is an agent-scoped command; anything else
-            # steers the child (or answers it when it is blocked on you). The
-            # `--attach` command that ENTERS this mode arrives while @attached_id
-            # is still nil, so it falls through to normal dispatch below.
+            # to it: the line NEVER runs a parent turn. A `/`-line is an
+            # agent-scoped command; anything else steers the child (or answers it
+            # when it is blocked on you). The `--attach` command that ENTERS this
+            # mode (from the main prompt) arrives while @attached_id is still nil,
+            # so it falls through to normal dispatch below.
             if attached_to_agent?
               handle_attached_input(input, runner, ui, cmd_executor)
               next
@@ -1465,8 +1474,8 @@ module Rubino
           # the rewind chord. Trap-safe — flips the polishing cancel token only.
           on_escape: idle_polishing_escape(runner),
           # While attached to a subagent, ← on the empty scoped prompt detaches to
-          # the main timeline (Claude-style — arrows + Enter only). Routed through
-          # the input queue so the idle loop's #handle_attached_input runs it the
+          # the main timeline (arrows + Enter only — the picker's "◂ main" row does
+          # the same). Routed through the input queue so the idle loop runs it the
           # same way a typed /detach would. nil when not attached.
           on_back: (attached_to_agent? ? -> { input_queue.push("/detach") } : nil)
         )
@@ -2769,7 +2778,7 @@ module Rubino
         build_runner(session_id: nil, ui: ui)
       end
 
-      # --- agent-attach view (Claude-style timeline switch) --------------------
+      # --- agent-attach view (timeline switch + scoped input) ------------------
 
       # True while the prompt is scoped to a background subagent: the on-screen
       # timeline IS that agent's and typed input steers/answers it.
@@ -2824,10 +2833,12 @@ module Rubino
         # containing a quote). /stop carries no free text, so its command form is
         # fine.
         case input
-        when "/detach", "/back"
-          detach_agent_view(runner, ui)
         when "/stop"
           cmd_executor.try_execute("/agents #{id} --stop")
+        when %r{\A/agents\s+(\S+)\s+--attach\z}
+          # The picker is a switcher while attached: selecting another subagent
+          # SWITCHES the view to it (re-clear + replay) rather than steering.
+          attach_agent_view(Regexp.last_match(1), ui)
         when %r{\A/(?:reply|answer)\s+(.+)\z}m
           agents_request_handler.deliver_reply(entry, Regexp.last_match(1))
         when %r{\A/probe\s+(.+)\z}m

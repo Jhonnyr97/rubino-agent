@@ -207,8 +207,8 @@ module Rubino
         @on_busy_command = on_busy_command
         # Optional "back out" gesture: ← (or Ctrl+B) on an EMPTY prompt fires this
         # instead of a no-op cursor move. The agent-attach view wires it to detach
-        # to the main timeline, Claude-style — arrows + Enter only, no typed
-        # /detach. nil ⇒ ← stays a plain cursor move.
+        # to the main timeline, so going back is a single keypress (or the picker's
+        # "◂ main" row) rather than a typed /detach. nil ⇒ ← stays a plain cursor move.
         @on_back = on_back
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
@@ -1859,8 +1859,8 @@ module Rubino
       # Move the cursor by +delta+ codepoints, clamped to the buffer.
       def move_by(delta)
         # ← (or Ctrl+B) on an EMPTY prompt is the "back out" gesture when one is
-        # wired (the agent-attach view detaches to the main timeline — Claude-style,
-        # no typed /detach). Only when there's nothing to move over, so it never
+        # wired (the agent-attach view detaches to the main timeline — no typed
+        # /detach needed). Only when there's nothing to move over, so it never
         # steals a real cursor move within typed text.
         if delta.negative? && @on_back && buffer.empty?
           @on_back.call
@@ -2118,7 +2118,15 @@ module Rubino
           entry = @agent_menu.accept
           redraw
         end
-        submit_agent_attach(entry) if entry
+        return unless entry
+
+        if AgentMenu.main_row?(entry)
+          # The "◂ main" row: leave an attached agent (the REPL detaches, or it's
+          # a harmless no-op at the main prompt). Routed like the ← back-out.
+          @input_queue&.push("/detach")
+        else
+          submit_agent_attach(entry)
+        end
       end
 
       # Handle a bracketed-paste body. The paste is inserted into the editable

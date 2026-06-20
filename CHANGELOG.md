@@ -4,15 +4,16 @@
 
 ### Added
 
-- **Agent-attach view (Claude-style).** At the idle prompt, `↓` opens the
-  subagent picker and `Enter` now **attaches** to the highlighted background
-  subagent: the screen switches to that agent's OWN full timeline (its tool calls
-  and what it said, replayed from its session) and the input prompt becomes scoped
-  — `sa_xxxx ❯`. While attached, typed text steers the running child (or answers
-  it when it's blocked on you); `←` on the empty prompt (or `/detach`) returns to
-  the main timeline. This replaces the bounded registry snapshot the picker's
-  Enter used to show with the agent's real conversation, and makes the global
-  `/agents <id> steer/probe` and `/reply <id>` forms redundant while attached.
+- **Agent-attach view.** At the idle prompt, `↓` opens the subagent picker and
+  `Enter` now **attaches** to the highlighted background subagent: the screen
+  switches to that agent's OWN full timeline (its tool calls and what it said,
+  replayed from its session) and the input prompt becomes scoped — `sa_xxxx ❯`.
+  While attached, typed text steers the running child (or answers it when it's
+  blocked on you); `←` on the empty prompt (or the picker's `◂ main` row) returns
+  to the main timeline, and the picker doubles as a switcher between agents. This
+  replaces the bounded registry snapshot the picker's Enter used to show with the
+  agent's real conversation, and makes the global `/agents <id> steer/probe` and
+  `/reply <id>` forms redundant while attached.
 
 ## [0.5.1] - 2026-06-18
 
