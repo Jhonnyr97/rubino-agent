@@ -61,10 +61,12 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "#handle_attached_input routing" do
     before { attach! }
 
-    it "/detach returns to the main session and drops the scope" do
-      expect(cmd.send(:session_resolver)).to receive(:replay_session).with(ui, "main-sess")
-      cmd.send(:handle_attached_input, "/detach", runner, ui, cmd_executor)
-      expect(cmd.send(:attached_to_agent?)).to be(false)
+    it "switches to ANOTHER agent when the picker re-attaches while attached" do
+      other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                              id: "sa_2", subagent: "build", status: :running, messages: [])
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
+      cmd.send(:handle_attached_input, "/agents sa_2 --attach", runner, ui, cmd_executor)
+      expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
     end
 
     it "steers a RUNNING child with the RAW plain text (no command re-serialization)" do
