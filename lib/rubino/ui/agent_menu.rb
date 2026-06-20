@@ -98,7 +98,7 @@ module Rubino
           rows << row(entry, selected: selected_entry, cols: cols)
           rows << activity_row(entry, cols) if selected_entry && !entry.last_activity.to_s.empty?
         end
-        rows << @pastel.dim("┄ #{selected + 1}/#{items.size} · Enter opens snapshot ┄") if items.size > MAX_ROWS
+        rows << @pastel.dim("┄ #{selected + 1}/#{items.size} · Enter attaches · ← back ┄") if items.size > MAX_ROWS
         rows
       end
 

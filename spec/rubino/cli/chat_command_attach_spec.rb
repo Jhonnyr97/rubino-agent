@@ -13,6 +13,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
   let(:ui)           { Rubino::UI::Null.new }
   let(:cmd_executor) { instance_double(Rubino::Commands::Executor) }
   let(:runner)       { instance_double(Rubino::Agent::Runner, session: { id: "main-sess" }) }
+  let(:agents_handler) do
+    instance_double(Rubino::Commands::Handlers::Agents,
+                    steer_agent: nil, probe_agent: nil, deliver_reply: nil)
+  end
   let(:entry) do
     instance_double(Rubino::Tools::BackgroundTasks::Entry,
                     id: "sa_1", subagent: "explore", status: :running, messages: [])
@@ -21,6 +25,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
   before do
     allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_1").and_return(entry)
     allow(cmd).to receive(:clear_terminal) # never blast the test terminal
+    allow(cmd).to receive(:agents_request_handler).and_return(agents_handler)
     allow(cmd_executor).to receive(:try_execute)
   end
 
@@ -62,15 +67,17 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(cmd.send(:attached_to_agent?)).to be(false)
     end
 
-    it "steers a RUNNING child with plain text" do
-      cmd.send(:handle_attached_input, "focus on the parser", runner, ui, cmd_executor)
-      expect(cmd_executor).to have_received(:try_execute).with('/agents sa_1 steer "focus on the parser"')
+    it "steers a RUNNING child with the RAW plain text (no command re-serialization)" do
+      cmd.send(:handle_attached_input, 'make it say "hi"', runner, ui, cmd_executor)
+      # Direct call keeps the embedded quotes intact — the old string round-trip
+      # mangled them.
+      expect(agents_handler).to have_received(:steer_agent).with("sa_1", 'make it say "hi"')
     end
 
-    it "ANSWERS a blocked child with plain text" do
+    it "ANSWERS a blocked child with the raw plain text" do
       allow(entry).to receive(:status).and_return(:blocked_on_human)
       cmd.send(:handle_attached_input, "use postgres", runner, ui, cmd_executor)
-      expect(cmd_executor).to have_received(:try_execute).with("/reply sa_1 use postgres")
+      expect(agents_handler).to have_received(:deliver_reply).with(entry, "use postgres")
     end
 
     it "/stop cancels the agent" do
