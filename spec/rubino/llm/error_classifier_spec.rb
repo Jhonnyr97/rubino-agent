@@ -196,10 +196,11 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
   # "any ConnectionFailed is retryable" classified it as transient. Now a DNS
   # failure phrasing fails fast.
   describe ".classify — unresolvable host fails fast (#361a)" do
+    # PERMANENT resolver errors (EAI_NONAME — the host genuinely doesn't exist,
+    # e.g. a typo'd base_url) fail fast: every retry re-runs the same lookup.
     [
       "Failed to open TCP connection: getaddrinfo: Name or service not known",
-      "getaddrinfo: nodename nor servname provided, or not known",
-      "Temporary failure in name resolution"
+      "getaddrinfo: nodename nor servname provided, or not known"
     ].each do |message|
       it "#{message[0, 30].inspect}… -> not retryable" do
         err = Faraday::ConnectionFailed.new(message)
@@ -211,6 +212,16 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
 
     it "a bare SocketError-style getaddrinfo message also fails fast" do
       expect(described_class.retryable?(SocketError.new("getaddrinfo: Name or service not known"))).to be false
+    end
+
+    # TRANSIENT resolver error (EAI_AGAIN) — the resolver was momentarily
+    # unavailable (a getaddrinfo storm when several subagents dial the same host
+    # at once). The next lookup usually works, so it MUST retry, not fail fast.
+    it "a TEMPORARY name-resolution failure is retryable (EAI_AGAIN, not a typo'd host)" do
+      err = Faraday::ConnectionFailed.new("getaddrinfo: Temporary failure in name resolution")
+      c = described_class.classify(err)
+      expect(c.retryable).to be true
+      expect(described_class.retryable?(SocketError.new("Temporary failure in name resolution"))).to be true
     end
 
     it "a genuine transient transport blip still retries (no over-broadening)" do

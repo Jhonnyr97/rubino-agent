@@ -200,22 +200,24 @@ module Rubino
                    retryable: false, should_rotate_credential: true, should_fallback: true)
       end
 
-      # An UNRESOLVABLE host is a PERMANENT misconfiguration, not a transient
-      # transport blip: every retry re-runs the same DNS lookup and fails
-      # identically, so retrying burns the whole budget (~81s) on a typo'd
-      # base_url (#361a). faraday-net_http wraps the underlying SocketError
-      # ("getaddrinfo: Name or service not known" / "nodename nor servname
-      # provided" / "Temporary failure in name resolution") in a
-      # Faraday::ConnectionFailed, so we match on the literal resolver phrasings
-      # rather than the wrapper class. Kept narrow so a genuine connection
-      # reset/refused (transient) still retries via classify_transport below.
+      # A PERMANENTLY unresolvable host is a misconfiguration, not a transient
+      # blip: every retry re-runs the same DNS lookup and fails identically, so
+      # retrying burns the whole budget (~81s) on a typo'd base_url (#361a).
+      # faraday-net_http wraps the underlying SocketError in a
+      # Faraday::ConnectionFailed, so we match on the literal resolver phrasings.
+      #
+      # CRUCIAL distinction: only the PERMANENT resolver errors (EAI_NONAME — the
+      # host genuinely does not exist) belong here. "Temporary failure in name
+      # resolution" (EAI_AGAIN) is the TRANSIENT case — the resolver was
+      # momentarily unavailable, e.g. a getaddrinfo storm when several background
+      # subagents dial the SAME provider host at once — and the next lookup
+      # usually succeeds. It must NOT be marked permanent: left out of this list
+      # it falls through to #classify_transport (Faraday::ConnectionFailed →
+      # retryable) and recovers, matching Hermes' transport-retry behaviour.
       DNS_FAILURE_PATTERNS = [
-        "getaddrinfo",
         "name or service not known",
         "nodename nor servname provided",
-        "temporary failure in name resolution",
-        "no address associated with hostname",
-        "failure in name resolution"
+        "no address associated with hostname"
       ].freeze
 
       def classify_unresolvable_host(error)
