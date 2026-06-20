@@ -379,6 +379,17 @@ module Rubino
         dig("tool_output", "max_lines")
       end
 
+      # Deterministic, reversible compression of tool-read results (whole-file
+      # Ruby reads → skeleton). OFF by default: when false the read tool is
+      # byte-for-byte unchanged. See Compression::Compressor.
+      def tool_output_compression_enabled?
+        dig("tool_output_compression", "enabled") == true
+      end
+
+      def tool_output_compression_code
+        dig("tool_output_compression", "code") || {}
+      end
+
       # -- Security section --
       def approvals_mode
         dig("approvals", "mode")
