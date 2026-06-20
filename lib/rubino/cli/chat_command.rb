@@ -1766,6 +1766,19 @@ module Rubino
         # flushed, after the footer) in the ensure below.
         composer.begin_turn if composer.respond_to?(:begin_turn)
 
+        # Keep the collapsed subagent panel painted for the WHOLE turn, not just
+        # at idle. When the user submits a new prompt WHILE background subagents
+        # are still live, run_turn starts a FRESH composer (empty @cards) and the
+        # idle ticker that had been repainting the panel died when the idle read
+        # returned — so without this the panel vanishes through the thinking
+        # phase and only reappears when the first child tap (a tool start/finish
+        # repaint) fires. Paint the registry snapshot onto the new composer now
+        # and run the SAME low-frequency ticker the idle prompt uses, so the
+        # cards stay visible and their elapsed time advances until the turn ends.
+        # Killed in the ensure below.
+        idle_cards.paint
+        card_ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
+
         # If this turn's prompt came off the input queue (interrupt-by-default
         # Enter, Alt+Enter, or "/queued" during the previous turn), commit it now
         # as a NORMAL "<prompt><line>" message above the input — the same echo an
@@ -1825,6 +1838,10 @@ module Rubino
         # time the runner returns, so the facet has already landed in the
         # footer and the engine thread must not outlive the turn.
         ui.turn_finished if ui.respond_to?(:turn_finished)
+        # Stop the during-turn panel ticker before tearing the composer down, so
+        # it can't repaint over the next idle prompt (the idle read starts its
+        # own ticker). Idempotent if it already exited on its own (no live child).
+        card_ticker&.kill
         composer.end_turn if composer.respond_to?(:end_turn)
         # Refresh the status bar (model + context saturation) now that the
         # turn's messages are persisted — the "after each footer" boundary.
