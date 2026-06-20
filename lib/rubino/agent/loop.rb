@@ -20,6 +20,16 @@ module Rubino
         "[background notices — acknowledge briefly; the user's message AFTER " \
         "these notices is the instruction to act on]"
 
+      # Stream-recovery (Hermes parity): a stream that ends with no finish signal
+      # is RECOVERED, not failed. If text was already shown, persist the partial
+      # and ask the model to CONTINUE from exactly where it stopped (no restart,
+      # no repeat) — up to STREAM_CONTINUATION_MAX rounds. If nothing was shown
+      # yet, the call is simply retried (discard-and-restart), bounded by
+      # agent.empty_response_max_retries.
+      STREAM_CONTINUATION_MAX = 3
+      STREAM_CONTINUE_PROMPT =
+        "Continue exactly where you left off. Do not restart or repeat any prior text."
+
       def initialize(session:, llm_adapter:, tool_executor:, message_store:,
                      budget:, ui:, event_bus:, config:, cancel_token: nil,
                      initial_image_paths: [], input_queue: nil)
@@ -134,6 +144,11 @@ module Rubino
         # interrupted (#338b). Reset per turn — a one-shot CancelToken plus a
         # fresh buffer means a stale partial can never attach to a later turn.
         @interrupt_partial = +""
+        # Stream-recovery budgets (Hermes parity) — reset per turn. A no-finish
+        # stream end is retried (empty partial → discard-and-restart) or continued
+        # (partial shown → keep-and-continue) instead of failing the turn.
+        @stream_retry_count = 0
+        @continuation_count = 0
         # True once any denial this turn was a headless fail-closed block ("needs
         # approval but no interactive session", #260) — lets the binding guard
         # point at `--yolo` (F2) instead of "approve it" in the honest message.
@@ -223,21 +238,44 @@ module Rubino
 
           if response.interrupted?
             # The upstream stream was cut before a clean completion (no
-            # finish_reason / [DONE]); `response` carries only a buffered partial
-            # with no tool call. Returning it would end the run as "completed"
-            # with truncated/empty output — the silent-completion bug. Persist
-            # whatever streamed so the transcript keeps it, close the stream box,
-            # then raise: Lifecycle maps this to INTERACTION_FAILED → run.failed,
-            # the same path every other turn error already takes.
-            persist_assistant_message(response) unless response.content.to_s.empty?
-            finalize_stream(response)
+            # finish_reason / [DONE]). Rather than failing the turn, RECOVER it the
+            # way Hermes does (chat_completion_helpers.py:2394-2452 + the
+            # conversation-loop continuation) — split on whether any text was shown:
+            finalize_stream(response) # close the partial stream box (shown live)
+
+            if response.content.to_s.empty?
+              # (B) Nothing streamed yet — DISCARD and re-call the model. A slow or
+              # flaky provider (large-context TTFT past its stream idle timeout)
+              # usually succeeds on a fresh attempt, and since nothing was shown a
+              # retry can't duplicate output. Only fail once the budget is spent.
+              if @stream_retry_count < stream_recovery_retries
+                @stream_retry_count += 1
+                @ui.warning("the model stream ended before any output — " \
+                            "retrying (#{@stream_retry_count}/#{stream_recovery_retries})")
+                next
+              end
+              emit_turn_summary(turn_started_at, token_total)
+              raise Rubino::StreamInterruptedError,
+                    "stream ended before completion with no output after " \
+                    "#{@stream_retry_count} retr#{@stream_retry_count == 1 ? "y" : "ies"} — " \
+                    "the provider kept closing the stream before the first token."
+            end
+
+            # (A) Text was already streamed/shown — KEEP it and ask the model to
+            # CONTINUE exactly where it left off (no restart, no duplication). The
+            # partial is persisted as an interim assistant turn so the next call
+            # sees what it already said; capped at STREAM_CONTINUATION_MAX rounds.
+            persist_assistant_message(response)
+            if @continuation_count < STREAM_CONTINUATION_MAX
+              @continuation_count += 1
+              messages << { role: "assistant", content: response.content.to_s }
+              messages << { role: "user", content: STREAM_CONTINUE_PROMPT }
+              next
+            end
+            # Continuations exhausted — hand back the recovered partial as the
+            # (truncated) final answer: truthful and resumable, not a hard failure.
             emit_turn_summary(turn_started_at, token_total)
-            raise Rubino::StreamInterruptedError,
-                  "stream ended before completion after " \
-                  "#{response.content.to_s.bytesize} buffered byte(s) with no finish signal — " \
-                  "the model did not finish (run marked failed, not completed). " \
-                  "Often caused by a very large context pushing time-to-first-token past the " \
-                  "provider's stream idle timeout."
+            return response.content
           end
 
           if response.text_only?
@@ -933,6 +971,13 @@ module Rubino
         return false if @stream_round_trips.zero?
 
         !@budget.can_continue?(@stream_round_trips)
+      end
+
+      # Hermes parity: a no-finish-signal stream end with NO output yet is retried
+      # (discard-and-restart) up to this budget before failing — the same knob the
+      # ModelCallRunner uses for empty responses (default 2 → 3 attempts total).
+      def stream_recovery_retries
+        @config.dig("agent", "empty_response_max_retries") || 2
       end
 
       def persist_assistant_message(response)
