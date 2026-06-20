@@ -4,8 +4,8 @@ module Rubino
   module Memory
     # Registry of pluggable memory backends, mirroring Tools::Registry: a
     # name => class map with register/build. The active backend is selected by
-    # the `memory.backend` config key (default "sqlite" — the tiny-Zep FTS5/
-    # graph-lite backend). DEFAULT_NAME below is the registry fallback used only
+    # the `memory.backend` config key (default "sqlite" — the FTS5/
+    # graph-lite SQLite backend). DEFAULT_NAME below is the registry fallback used only
     # when the configured name is BLANK/unset. An explicitly-set UNKNOWN name is
     # a misconfiguration (a typo silently degrading memory) → rejected.
     module Backends

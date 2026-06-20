@@ -315,7 +315,7 @@ Sequel.migration do
       END;
     SQL
 
-    # ---- memory_facts (tiny-Zep store + FTS5) -------------------------------
+    # ---- memory_facts (SQLite memory store + FTS5) --------------------------
     create_table?(:memory_facts) do
       String  :id, primary_key: true
       Text    :text, null: false

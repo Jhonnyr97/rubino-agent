@@ -243,7 +243,7 @@ compression:
 ```yaml
 memory:
   enabled: true
-  backend: "sqlite"          # tiny-Zep FTS5/BM25 + graph-lite recall (default). "default" = legacy non-ranked store
+  backend: "sqlite"          # SQLite FTS5/BM25 + graph-lite recall (default). "default" = legacy non-ranked store
   auto_extract: true
   auto_save: true
   user_profile_enabled: true

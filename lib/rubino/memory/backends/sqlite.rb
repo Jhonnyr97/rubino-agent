@@ -7,10 +7,10 @@ require "time"
 module Rubino
   module Memory
     module Backends
-      # "Tiny-Zep" memory backend on embedded SQLite (Zep/Graphiti-inspired,
-      # minus the graph DB, the server, and the six-LLM-call pipeline).
+      # LLM-extracted, bi-temporal fact store on embedded SQLite with hybrid
+      # recall — minus a graph DB, a server, or a multi-LLM-call pipeline.
       #
-      # Three ideas are kept from Zep:
+      # Three ideas drive the design:
       #   * ATOMIC LLM-extracted facts (one declarative fact per row), via a
       #     single aux-LLM call per turn that both ADDs new facts and SUPERSEDES
       #     contradicted ones (Graphiti edge-invalidation, collapsed to 1 call).
@@ -637,7 +637,7 @@ module Rubino
           k = kind.to_s
           return USER_KIND if k.empty?
 
-          # Map legacy/default-backend kinds onto the tiny-Zep vocabulary so the
+          # Map legacy/default-backend kinds onto the fact-store vocabulary so the
           # backend tolerates store() calls from the existing MemoryTool/job.
           case k
           when "user_profile", "preference", "fact", "env" then k

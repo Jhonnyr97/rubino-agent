@@ -190,7 +190,7 @@ module Rubino
           "(unavailable)"
         end
 
-        # Resolve the *configured* memory backend (default: sqlite tiny-Zep) for
+        # Resolve the *configured* memory backend (default: sqlite) for
         # the fact count — the same store the agent loop and /memory read.
         def memory_backend
           @memory_backend ||= Rubino::Memory::Backends.build

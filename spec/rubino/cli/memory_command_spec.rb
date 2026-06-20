@@ -10,7 +10,7 @@ RSpec.describe Rubino::CLI::MemoryCommand do
 
   # Regression for #94: the CLI memory subcommands must read/write the SAME
   # active backend the agent loop and the HTTP /v1/memory ops use (the
-  # configured sqlite tiny-Zep backend), not the legacy `:memories` table that
+  # configured sqlite backend), not the legacy `:memories` table that
   # `Memory::Store` is hardwired to. A fact stored through the active backend
   # must therefore be visible to `memory list`/`show` and removable by
   # `memory delete`.

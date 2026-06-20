@@ -61,7 +61,7 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(JSON.parse(stored[:entities_json])).to eq(%w[user style])
     end
 
-    it "maps legacy default-backend kinds onto the tiny-Zep vocabulary" do
+    it "maps legacy default-backend kinds onto the fact-store vocabulary" do
       expect(backend.store(kind: "project_context", content: "x")[:kind]).to eq("project")
       expect(backend.store(kind: "technical_decision", content: "y")[:kind]).to eq("fact")
     end
