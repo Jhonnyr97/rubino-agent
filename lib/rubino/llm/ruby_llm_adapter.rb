@@ -873,9 +873,12 @@ module Rubino
       end
 
       def stale_chunk_timeout
-        @config.dig("providers", @provider, "stale_timeout_seconds") ||
-          @config.dig("providers", "openai", "stale_timeout_seconds") ||
-          300
+        explicit = @config.dig("providers", @provider, "stale_timeout_seconds")
+        return explicit if explicit
+
+        return 30 if openai_compatible_provider? || anthropic_compatible_provider?
+
+        @config.dig("providers", "openai", "stale_timeout_seconds") || 300
       end
 
       def check_stream_stale!(last_chunk_at, stale_after)
@@ -903,6 +906,11 @@ module Rubino
         Thread.new do
           loop do
             sleep(tick)
+            if @cancel_token&.cancelled?
+              target.raise(Rubino::Interrupted.new(reason: @cancel_token.reason))
+              break
+            end
+
             idle = monotonic_now - last_chunk_at_reader.call
             next if idle <= stale_after
 

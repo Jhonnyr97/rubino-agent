@@ -79,14 +79,14 @@ module Rubino
 
       # A card for a child parked on an escalated ask_parent — the ⛔ "tree is
       # blocked on YOU" row, the loudest state. Leads with the red ⛔ glyph and
-      # the question, and points at /reply <id> (the answer verb), distinct from
-      # the approval row's /agents <id>.
+      # the question. The reply prompt AUTO-OPENS (#510/#513); the card just
+      # signals the state and points at the same arrow navigation (↓).
       def blocked_card_line(entry)
         glyph    = @pastel.red(BLOCKED)
         question = entry.ask_question.to_s
         "  #{glyph} #{entry.id} · #{entry.subagent} · " +
           @pastel.red("waiting on you") + ": #{first_line(question, 60)} " \
-                                          "· /reply #{entry.id}"
+                                          "· ↓ to answer"
       end
 
       # A card for a child parked on a human approval — the approval is the most
@@ -97,7 +97,7 @@ module Rubino
         command = entry.approval_question.to_s if command.empty?
         "  #{glyph} #{entry.id} · #{entry.subagent} · " +
           @pastel.yellow("needs approval") + ": #{first_line(command, 60)} " \
-                                             "· /agents #{entry.id}"
+                                             "· ↓ to approve"
       end
 
       private
@@ -114,11 +114,11 @@ module Rubino
         blocked = live.count { |e| e.status == :blocked_on_human }
         if blocked.positive?
           subagents = blocked == 1 ? "subagent" : "subagents"
-          @pastel.red("    \u26d4#{blocked} #{subagents} waiting on you · /reply <id> to answer")
+          @pastel.red("    \u26d4#{blocked} #{subagents} waiting on you · ↓ to navigate")
         elsif live.any? { |e| e.status == :needs_approval }
-          @pastel.dim("    └ /agents <id> to approve · --stop to cancel")
+          @pastel.dim("    └ ⚠ approval pending · ↓ to navigate · --stop to cancel")
         else
-          @pastel.dim("    └ /agents <id> to watch · --stop to cancel")
+          @pastel.dim("    └ ↓ to navigate · Enter to view · --stop to cancel")
         end
       end
 
