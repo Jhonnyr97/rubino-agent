@@ -33,7 +33,7 @@ RSpec.describe Rubino::UI::BottomComposer do
   let(:output) { term_io_class.new }
   let(:input)  { StringIO.new }
 
-  def cursor = composer.instance_variable_get(:@cursor)
+  def cursor = composer.send(:cursor)
   def suspended? = composer.instance_variable_get(:@suspended)
   def parked = composer.instance_variable_get(:@parked_writes)
 
