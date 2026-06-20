@@ -101,4 +101,33 @@ RSpec.describe Rubino::CLI::Chat::SessionResolver, "#print_session_history" do
       expect(txt).to match(/that text\.\n\s*\n\s*Created hello\.txt/)
     end
   end
+
+  # The reusable public entry the agent-attach view switch replays through (it
+  # clears the screen and replays the SELECTED agent's own session).
+  # #print_session_history now delegates to it, so the parity specs above already
+  # exercise the render loop.
+  describe "#replay_session" do
+    # Mirrors the file's #replay helper but drives the new public entry point.
+    def replay_via_session(session_id, messages = nil)
+      stub_session(messages) if messages
+      old = $stdout
+      $stdout = StringIO.new
+      resolver.replay_session(ui, session_id)
+      $stdout.string
+    ensure
+      $stdout = old
+    end
+
+    it "is a public no-op for a nil session id" do
+      expect(replay_via_session(nil)).to eq("")
+    end
+
+    it "replays the session's messages through the live UI hooks" do
+      out = replay_via_session(
+        "sess-1",
+        [msg(role: "user", content: "hello there", metadata: {}, created_at: Time.now)]
+      )
+      expect(plain(out)).to include("hello there")
+    end
+  end
 end
