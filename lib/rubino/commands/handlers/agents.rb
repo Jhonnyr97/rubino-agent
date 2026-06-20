@@ -732,6 +732,12 @@ module Rubino
           s = text.to_s.gsub(/\s+/, " ").strip
           s.length > max ? "#{s[0, max - 1]}…" : s
         end
+
+        # Direct entry points for the REPL's agent-attach view: it calls these with
+        # the user's RAW text, so a steer/probe/reply note keeps embedded quotes
+        # intact instead of being serialized into a "steer \"…\"" command string
+        # and mangled by the executor's whitespace-split + single-pair dequote.
+        public :steer_agent, :probe_agent, :deliver_reply
       end
     end
   end

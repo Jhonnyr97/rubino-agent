@@ -2818,22 +2818,27 @@ module Rubino
         # fall back to the main view so the user is never stranded on a dead scope.
         return detach_agent_view(runner, ui) if entry.nil?
 
+        # Call the agent handlers DIRECTLY with the raw text (not by serializing a
+        # `/agents <id> steer "…"` string and re-parsing it through the executor,
+        # which whitespace-splits + single-pair dequotes and so mangles any note
+        # containing a quote). /stop carries no free text, so its command form is
+        # fine.
         case input
         when "/detach", "/back"
           detach_agent_view(runner, ui)
         when "/stop"
           cmd_executor.try_execute("/agents #{id} --stop")
-        when %r{\A/reply\s+(.+)\z}m
-          cmd_executor.try_execute("/reply #{id} #{Regexp.last_match(1)}")
+        when %r{\A/(?:reply|answer)\s+(.+)\z}m
+          agents_request_handler.deliver_reply(entry, Regexp.last_match(1))
         when %r{\A/probe\s+(.+)\z}m
-          cmd_executor.try_execute(%(/agents #{id} probe "#{Regexp.last_match(1)}"))
+          agents_request_handler.probe_agent(id, Regexp.last_match(1))
         else
           if %i[needs_approval blocked_on_human].include?(entry.status)
             # The child is blocked on YOU → the line is the answer.
-            cmd_executor.try_execute("/reply #{id} #{input}")
+            agents_request_handler.deliver_reply(entry, input)
           else
             # The child is running → the line is a steer note folded at its next turn.
-            cmd_executor.try_execute(%(/agents #{id} steer "#{input}"))
+            agents_request_handler.steer_agent(id, input)
           end
         end
       end

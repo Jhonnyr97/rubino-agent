@@ -823,22 +823,6 @@ module Rubino
         end
       end
 
-      # Swap the prompt label at the start of the input line. The agent-attach
-      # view sets it to e.g. "sa_1c82 ❯ " to signal the input is now SCOPED to
-      # that subagent (typing steers/answers it); nil or "" restores the default
-      # "❯ ". Recomputes the prefix widths that all caret/wrap math anchors to
-      # (@prompt_width / @prefix_width), then redraws so the change shows at once.
-      # State is updated even while suspended (it converges on the resume redraw);
-      # the repaint itself is dropped while suspended, like every other live write.
-      def set_prompt_label(label)
-        @render.synchronize do
-          @prompt       = label.to_s.empty? ? PROMPT : label.to_s
-          @prompt_width = @prompt.gsub(ANSI_RE, "").length
-          @prefix_width = @rail.gsub(ANSI_RE, "").length + @prompt_width
-          redraw unless @suspended
-        end
-      end
-
       # Sets the SUBAGENT CARD block — a small list of collapsed live rows shown
       # above the streamed partial and the prompt (Variant A). Each frame redraws
       # them in place from this list, so concurrent background subagents appear as
