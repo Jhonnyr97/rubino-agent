@@ -566,6 +566,20 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(text).to include("grep current_user") # the live last_activity ● line
     end
 
+    it "renders a one-frame subagent snapshot without starting the live watch loop" do
+      e = reg.reserve(subagent: "explore", prompt: "do a thing")
+      reg.record_tool_started(e.id, "read lib/foo.rb")
+
+      exec.try_execute("/agents #{e.id} --snapshot")
+
+      text = info_lines.join("\n")
+      expect(text).to include(e.id)
+      expect(text).to include("recent:")
+      expect(text).to include("read lib/foo.rb")
+      expect(text).not_to include("watching live")
+      expect(text).not_to include("stopped watching")
+    end
+
     # #5: while the running tool streams, the drill-in frame grows an output:
     # block tailing the registry's output_tail (fed by the child's tool_chunk),
     # each line behind a │ gutter; with no mid-run output the block is absent.

@@ -18,7 +18,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       "providers" => { "openai" => { "stale_timeout_seconds" => 0.3 } }
     )
   end
-  let(:adapter) { described_class.new(model_id: "gpt-4o", config: config) }
+  let(:cancel_token) { nil }
+  let(:adapter) { described_class.new(model_id: "gpt-4o", config: config, cancel_token: cancel_token) }
   let(:noop_sink) { ->(_) {} }
 
   # A chat double whose #ask simulates a stream that OPENS then goes idle: it
@@ -85,5 +86,63 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     # Give a beat for teardown, then assert no watchdog thread lingers.
     sleep 0.2
     expect(Thread.list.size).to be <= before_threads
+  end
+
+  it "uses a shorter default stale timeout for custom compatible providers" do
+    cfg = test_configuration(
+      "model" => { "provider" => "minimax", "default" => "MiniMax-M3" },
+      "providers" => {
+        "openai" => { "stale_timeout_seconds" => 300 },
+        "minimax" => {
+          "anthropic_compatible" => true,
+          "base_url" => "https://api.minimax.io/anthropic",
+          "api_key" => "test"
+        }
+      }
+    )
+    custom = described_class.new(model_id: "MiniMax-M3", config: cfg)
+
+    expect(custom.send(:stale_chunk_timeout)).to eq(30)
+  end
+
+  it "honors explicit stale timeout on custom compatible providers" do
+    cfg = test_configuration(
+      "model" => { "provider" => "minimax", "default" => "MiniMax-M3" },
+      "providers" => {
+        "minimax" => {
+          "anthropic_compatible" => true,
+          "base_url" => "https://api.minimax.io/anthropic",
+          "api_key" => "test",
+          "stale_timeout_seconds" => 7
+        }
+      }
+    )
+    custom = described_class.new(model_id: "MiniMax-M3", config: cfg)
+
+    expect(custom.send(:stale_chunk_timeout)).to eq(7)
+  end
+
+  it "keeps the configured OpenAI stale timeout for native OpenAI" do
+    expect(adapter.send(:stale_chunk_timeout)).to eq(0.3)
+  end
+
+  context "when the user interrupts while the provider is silent" do
+    let(:cancel_token) { Rubino::Interaction::CancelToken.new }
+
+    it "breaks the blocked stream immediately instead of waiting for stale_timeout" do
+      chat = idle_chat(block_for: 30)
+      allow(adapter).to receive(:build_chat).and_return(chat)
+
+      Thread.new do
+        sleep 0.1
+        cancel_token.cancel!
+      end
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { run_idle_stream(&noop_sink) }.to raise_error(Rubino::Interrupted)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(elapsed).to be < 1
+    end
   end
 end

@@ -221,11 +221,11 @@ module Rubino
         @history       = history || InputHistory.new
         # The /command + @file dropdown: open/refine/accept/dismiss state and
         # the rendered rows (see CompletionMenu). Inert without a source.
-        @menu          = CompletionMenu.new(completion_source)
+        @menu, @agent_menu = build_menus(completion_source)
         # Escape-sequence reader: consumes the byte tail of an ESC keystroke
         # from @input and returns the semantic action (see EscapeReader). The
         # callable indirection keeps it on the composer's CURRENT input.
-        @escapes       = EscapeReader.new(-> { @input })
+        @escapes = EscapeReader.new(-> { @input })
         @prompt = prompt.to_s.empty? ? PROMPT : prompt
         # The brand rail (red "▍"): the first column of EVERY input row.
         # Empty ⇒ railless, the exact legacy geometry.
@@ -1056,6 +1056,14 @@ module Rubino
         @menu.open?
       end
 
+      def build_menus(completion_source)
+        [CompletionMenu.new(completion_source), AgentMenu.new]
+      end
+
+      def agent_menu_open?
+        @agent_menu.open?
+      end
+
       # Redraws the INPUT BLOCK — the wrapped buffer rows plus the status bar —
       # and parks the terminal cursor at the insertion point (@cursor). The
       # buffer WRAPS at the terminal width (a real newline forces a row break),
@@ -1360,6 +1368,10 @@ module Rubino
         when nil
           return :quit
         when "\r", "\n"
+          if agent_menu_open?
+            accept_agent_menu
+            return nil
+          end
           # Enter while a completion menu is open ACCEPTS the highlighted
           # candidate rather than submitting (matches the old Reline dropdown) —
           # UNLESS the buffer is ALREADY an exact, complete command, in which
@@ -1534,6 +1546,7 @@ module Rubino
       def live_rows
         rows = @cards.dup
         rows.concat(menu_rows)
+        rows.concat(agent_menu_rows)
         rows << @announce unless @announce.empty?
         rows.concat(@queued.rows)
         rows.concat(partial_rows)
@@ -1544,6 +1557,10 @@ module Rubino
       # inspection seam).
       def menu_rows
         @menu.rows(@cols)
+      end
+
+      def agent_menu_rows
+        @agent_menu.rows(@cols)
       end
 
       # The partial as drawn: its last MAX_PARTIAL_ROWS lines, one row each.
@@ -1629,6 +1646,18 @@ module Rubino
           @input_queue&.push(line)
           print_above("queued ▸ #{echo_safe(line)}")
         end
+      end
+
+      def submit_agent_snapshot(entry)
+        line = "/agents #{entry.id} --snapshot"
+        @history.remember(line)
+        if (@turn_active || @content_streaming) && @on_busy_command &&
+           @on_busy_command.call(line) == :immediate
+          return
+        end
+
+        @input_queue&.push(line)
+        print_above("#{@prompt}#{echo_safe(line)}") if @echo == :prompt
       end
 
       # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
@@ -1722,7 +1751,7 @@ module Rubino
       # the two drifted apart (one omitted the open menu) into a latent render
       # bug (#62).
       def live_region?
-        @region.live? || @menu.open? || @cards.any? || !@partial.empty? ||
+        @region.live? || @menu.open? || @agent_menu.open? || @cards.any? || !@partial.empty? ||
           !@announce.empty? || @queued.any?
       end
 
@@ -1859,6 +1888,7 @@ module Rubino
       # FIRST row does ↑ fall back to walking history to an older entry, the
       # readline/Claude Code convention. No-op when there's nothing older.
       def history_up
+        return agent_menu_up if agent_menu_open?
         return menu_up if menu_open?
         return if move_caret_row(-1)
 
@@ -1877,12 +1907,18 @@ module Rubino
       # walking history forward (newer entry, or back to the stashed draft).
       # No-op when not navigating history.
       def history_down
+        return agent_menu_down if agent_menu_open?
         return menu_down if menu_open?
         return if move_caret_row(1)
 
         @render.synchronize do
           entry = @history.down(@buffer)
-          next if entry.nil?
+          if entry.nil?
+            next unless @buffer.strip.empty? && @agent_menu.open!
+
+            redraw
+            next
+          end
 
           @buffer.replace(entry)
           @cursor = @buffer.length
@@ -2045,6 +2081,29 @@ module Rubino
         end
       end
 
+      def agent_menu_up
+        @render.synchronize do
+          @agent_menu.up!
+          redraw
+        end
+      end
+
+      def agent_menu_down
+        @render.synchronize do
+          @agent_menu.down
+          redraw
+        end
+      end
+
+      def accept_agent_menu
+        entry = nil
+        @render.synchronize do
+          entry = @agent_menu.accept
+          redraw
+        end
+        submit_agent_snapshot(entry) if entry
+      end
+
       # Handle a bracketed-paste body. The paste is inserted into the editable
       # buffer at the cursor like fast typing — still editable before submit.
       # A MULTI-LINE paste keeps its REAL newlines in the buffer (and so in the
@@ -2162,6 +2221,11 @@ module Rubino
           @render.synchronize do
             @menu.dismiss!
             redraw # repaint to CLEAR the now-closed menu rows above the prompt
+          end
+        elsif agent_menu_open?
+          @render.synchronize do
+            @agent_menu.close!
+            redraw
           end
         # Esc = INTERRUPT (Claude-Code type-ahead model, #421): with a turn
         # active (thinking OR streaming) and no menu to dismiss, a lone Esc
