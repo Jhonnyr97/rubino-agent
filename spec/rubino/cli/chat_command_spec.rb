@@ -952,6 +952,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       # transient row on the next finalize frame.
       composer = instance_double(Rubino::UI::BottomComposer)
       allow(composer).to receive(:announce_pending)
+      # run_turn now paints the live subagent panel onto the current composer for
+      # the whole turn (the panel-during-turn fix), which pokes #set_cards.
+      allow(composer).to receive(:set_cards)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
       raw = nil
       allow($stderr).to receive(:write) { |s| raw = s }
