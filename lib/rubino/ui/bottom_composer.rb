@@ -18,7 +18,7 @@ module Rubino
     # writer and the keystroke handler never interleave a half-frame.
     #
     # Responsibilities:
-    #   * own the editable +@buffer+ and draw it ({#draw_input})
+    #   * own the editable +buffer+ and draw it ({#draw_input})
     #   * funnel all turn output through {#print_above} so it never clobbers the
     #     input line (the {StdoutProxy} swaps +$stdout+ for the turn so the ~30
     #     existing +$stdout.print/puts+ call sites need zero changes)
@@ -237,11 +237,11 @@ module Rubino
         # anchors to it.
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
         @prefix_width = @rail.gsub(ANSI_RE, "").length + @prompt_width
-        @buffer      = +""
-        # Insertion point, measured in CHARACTERS (codepoints) into @buffer.
-        # Always in 0..@buffer.length; the terminal cursor is parked here on
-        # every redraw. Replaces the old append-only model.
-        @cursor      = 0
+        # The editable input line — text + cursor + the pure codepoint editing
+        # math — extracted into Composer::InputLine so it lives in one unit-tested
+        # model instead of the composer. Read via #buffer/#cursor; every mutation
+        # goes through @input_line under the @render mutex, then a #redraw.
+        @input_line  = Composer::InputLine.new
         @partial     = +"" # live, un-committed streamed line shown above the prompt
         # TRANSIENT announcement row (e.g. the Shift+Tab mode confirmation):
         # rendered in the live region directly above the partial/prompt, redrawn
@@ -298,7 +298,7 @@ module Rubino
       # #initialize. @parked_writes buffers committed stream lines #print_above
       # receives while @suspended (flushed in order on resume); @pending_takeover
       # is the dropdown block queued for the input thread and @takeover_snapshot
-      # the [@buffer, @cursor] draft captured when it was queued (restored
+      # the [buffer, cursor] draft captured when it was queued (restored
       # verbatim after the dropdown closes).
       def init_takeover_state
         # Set when the reader sees an EOF/quit (empty-buffer Ctrl+D or a closed
@@ -435,7 +435,7 @@ module Rubino
       # (see {run_in_terminal}). Stops the raw reader and leaves cooked mode so
       # TTY::Prompt can read $stdin uncontended, restores the REAL $stdout (the
       # composer's @output — built BEFORE the StdoutProxy swap) so tty-screen
-      # probes the real terminal, and clears the prompt rows. The typed @buffer
+      # probes the real terminal, and clears the prompt rows. The typed buffer
       # draft is preserved for #resume. Idempotent: a no-op once already
       # suspended (or never started).
       def suspend
@@ -465,7 +465,7 @@ module Rubino
       # lifecycle (caller owns that): flip @suspended, restore the REAL $stdout
       # (so tty-screen probes the real terminal, not the write-only StdoutProxy),
       # leave raw mode, drop the WINCH/CONT traps, and clear the prompt rows. The
-      # typed @buffer draft is left untouched (preserved for the resume redraw).
+      # typed buffer draft is left untouched (preserved for the resume redraw).
       # Shared by #suspend (which stops the reader first) AND the mid-turn
       # auto-open running ON the reader thread (which cannot stop_reader without
       # joining itself, so it breaks its own select loop instead and calls this).
@@ -482,7 +482,7 @@ module Rubino
       # The TERMINAL-STATE half of #resume, WITHOUT restarting the reader (caller
       # owns that): restore the StdoutProxy, re-arm the traps, FLUSH any stream
       # lines parked while suspended (R1 write-park) so they land in scrollback in
-      # order, then redraw the prompt from the preserved @buffer. Re-entering raw
+      # order, then redraw the prompt from the preserved buffer. Re-entering raw
       # mode is done by the caller's reader (its `@input.raw` block).
       def leave_takeover_mode
         @suspended    = false
@@ -514,7 +514,7 @@ module Rubino
       # the INPUT thread, by itself, while the parent turn keeps streaming. Called
       # from ANOTHER thread (the child that just blocked on ask_parent): we record
       # the block under @render — atomically against the keystroke handler's
-      # @buffer edits — SNAPSHOT the in-progress draft + cursor right there (so a
+      # buffer edits — SNAPSHOT the in-progress draft + cursor right there (so a
       # keystroke in flight can't tear it), and signal the wake self-pipe. The
       # reader's IO.select returns, sees the pending takeover, breaks its raw loop
       # and runs #run_pending_takeover ON ITS OWN thread. No-op (returns false)
@@ -540,7 +540,7 @@ module Rubino
           return false if @pending_takeover || @takeover_active
 
           @pending_takeover   = block
-          @takeover_snapshot  = [@buffer.dup, @cursor]
+          @takeover_snapshot  = [buffer.dup, cursor]
           # Repaint hook run once the dropdown closes and the composer has resumed
           # — see @on_takeover_resume. The cards (with the ⛔N hint) are wiped on
           # suspend; this makes them come back from the live registry on resume.
@@ -570,7 +570,7 @@ module Rubino
       # draft was SNAPSHOTTED at request time; here we first COMPLETE that
       # snapshot — keystrokes the human typed but the dying raw session never
       # +getc+'d are still sitting in the kernel TTY queue, so we drain them
-      # THROUGH the normal key handler into @buffer and re-snapshot (see
+      # THROUGH the normal key handler into buffer and re-snapshot (see
       # #drain_inflight_into_draft) BEFORE the dropdown starts reading $stdin.
       # Without that, those in-flight bytes leak into TTY::Prompt's filter field
       # and the restored draft is short. Then we enter takeover terminal mode
@@ -651,7 +651,7 @@ module Rubino
       # buffer — unread, because the wake-pipe branch in #reader_session breaks
       # the loop without +getc+'ing a co-ready @input. We:
       #
-      #   1. reset @buffer/@cursor to the request-time SNAPSHOT baseline, so a
+      #   1. reset buffer/cursor to the request-time SNAPSHOT baseline, so a
       #      programmatic edit made after the snapshot (the "can't tear it" race)
       #      is discarded, exactly as before;
       #   2. DRAIN the pending bytes through the normal #handle_key path so they
@@ -659,7 +659,7 @@ module Rubino
       #      IO.select(0) gate + #getc loop — we only consume what is ALREADY
       #      queued, never block waiting for more, and stop the instant the queue
       #      is empty or a key submits/quits);
-      #   3. RE-SNAPSHOT the now-complete @buffer/@cursor under @render, so the
+      #   3. RE-SNAPSHOT the now-complete buffer/cursor under @render, so the
       #      restore after the dropdown closes returns the FULL draft and the
       #      dropdown starts with an empty input queue — no draft byte can leak
       #      into TTY::Prompt's filter.
@@ -672,11 +672,10 @@ module Rubino
 
         @render.synchronize do
           buf, cur = baseline
-          @buffer.replace(buf.to_s)
-          @cursor = cur.to_i.clamp(0, @buffer.length)
+          @input_line.replace(buf.to_s).move_to(cur.to_i)
         end
         drain_pending_input
-        @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
+        @render.synchronize { @takeover_snapshot = [buffer.dup, cursor] }
       end
 
       # RESIDUAL B: a FINAL non-blocking drain run AFTER #enter_takeover_mode and
@@ -695,7 +694,7 @@ module Rubino
         return unless @render.synchronize { @takeover_snapshot }
 
         drain_pending_input
-        @render.synchronize { @takeover_snapshot = [@buffer.dup, @cursor] }
+        @render.synchronize { @takeover_snapshot = [buffer.dup, cursor] }
       end
 
       # Feed every byte ALREADY queued on @input through #handle_key, then stop —
@@ -730,7 +729,7 @@ module Rubino
         false
       end
 
-      # Restores the @buffer + @cursor captured at #request_takeover time (and
+      # Restores the buffer + cursor captured at #request_takeover time (and
       # COMPLETED by #drain_inflight_into_draft), byte for byte, under @render —
       # so the dropdown's keystrokes never touched the draft and the human's
       # caret returns exactly where it was. A no-op when nothing was snapshotted.
@@ -741,8 +740,7 @@ module Rubino
           next unless snap
 
           buf, cur = snap
-          @buffer.replace(buf.to_s)
-          @cursor = cur.to_i.clamp(0, @buffer.length)
+          @input_line.replace(buf.to_s).move_to(cur.to_i)
         end
       end
 
@@ -993,12 +991,11 @@ module Rubino
       def idle_interrupt(window: 2.0)
         now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        unless @buffer.empty?
+        unless buffer.empty?
           @last_idle_int_at = nil
           @render.synchronize do
             @menu.close!
-            @buffer.clear
-            @cursor = 0
+            @input_line.clear
             @announce = +""
             redraw
           end
@@ -1035,8 +1032,7 @@ module Rubino
       def prefill(text)
         @render.synchronize do
           @menu.close!
-          @buffer.replace(text.to_s)
-          @cursor = @buffer.length
+          @input_line.replace(text.to_s)
           @history.reset!
           redraw
         end
@@ -1065,7 +1061,7 @@ module Rubino
       end
 
       # Redraws the INPUT BLOCK — the wrapped buffer rows plus the status bar —
-      # and parks the terminal cursor at the insertion point (@cursor). The
+      # and parks the terminal cursor at the insertion point (cursor). The
       # buffer WRAPS at the terminal width (a real newline forces a row break),
       # growing the block downward up to @max_input_rows visual rows; past the
       # cap a vertical window keeps the caret row in view. The block manages
@@ -1147,7 +1143,7 @@ module Rubino
         [cols - 1, @prefix_width + 1].max
       end
 
-      # The number of visual rows ABOVE the caret row when @buffer is wrapped at
+      # The number of visual rows ABOVE the caret row when buffer is wrapped at
       # the given per-row +budget+, mirroring #layout_input / #caret_position's
       # wrap math without rebuilding the rows (so it can cost-cheaply answer
       # "how many physical rows does this block occupy at width X" for the
@@ -1158,8 +1154,8 @@ module Rubino
         row = 0
         caret_row = 0
         width = @prefix_width
-        @buffer.each_char.with_index do |ch, i|
-          caret_row = row if i == @cursor # the row the caret's char sits on
+        buffer.each_char.with_index do |ch, i|
+          caret_row = row if i == cursor # the row the caret's char sits on
           if ch == "\n"
             row += 1
             width = @prefix_width
@@ -1170,10 +1166,10 @@ module Rubino
             row += 1
             width = @prefix_width
           end
-          caret_row = row if i == @cursor # re-resolve after a wrap on this char
+          caret_row = row if i == cursor # re-resolve after a wrap on this char
           width += w
         end
-        caret_row = row if @cursor >= @buffer.length # caret at end of buffer
+        caret_row = row if cursor >= buffer.length # caret at end of buffer
         [caret_row, @max_input_rows - 1].min
       end
 
@@ -1191,8 +1187,9 @@ module Rubino
         @output.print("\e[#{caret_col}C") if caret_col.positive?
       end
 
-      # The current editable buffer (test/inspection helper).
-      attr_reader :buffer
+      # The current editable text (test/inspection helper + the draft accessor
+      # chat_command reads). Delegates to the input-line model.
+      def buffer = @input_line.text
 
       # True while the composer has yielded the screen (a takeover dropdown or a
       # run_in_terminal block owns $stdin/$stdout). The auto-open trigger reads
@@ -1200,7 +1197,7 @@ module Rubino
       # one path claims the shared composer.
       def suspended? = @suspended
 
-      # Lays out @buffer into wrapped VISUAL rows at the current width.
+      # Lays out buffer into wrapped VISUAL rows at the current width.
       # Returns [rows, caret_row, caret_col] where each row is
       # { chars:, start:, prompt: } — its codepoints, the buffer index of its
       # first char, and whether it carries the prompt prefix (only the first) —
@@ -1221,7 +1218,7 @@ module Rubino
         rows   = [{ chars: [], start: 0, prompt: true }]
         width  = @prefix_width
 
-        @buffer.each_char.with_index do |ch, i|
+        buffer.each_char.with_index do |ch, i|
           if ch == "\n"
             rows << { chars: [], start: i + 1, prompt: false }
             width = @prefix_width
@@ -1239,18 +1236,18 @@ module Rubino
       end
 
       # The caret's [visual_row, display_col] within a layout. The owning row
-      # is the LAST one starting at-or-before @cursor: a caret exactly on a
+      # is the LAST one starting at-or-before cursor: a caret exactly on a
       # WRAP boundary therefore lands on the wrapped row (where the next char
       # will print), while a caret on a "\n" stays at the END of the broken
       # row (the next row starts one past the newline) — the readline feel.
       def caret_position(rows)
-        idx = rows.rindex { |r| @cursor >= r[:start] } || 0
+        idx = rows.rindex { |r| cursor >= r[:start] } || 0
         row = rows[idx]
         # Every row's text hangs at the prefix width (P12), so the caret
         # column starts there on continuation rows too.
         col = @prefix_width
         row[:chars].each_with_index do |ch, j|
-          break if row[:start] + j >= @cursor
+          break if row[:start] + j >= cursor
 
           col += display_width(ch)
         end
@@ -1357,7 +1354,7 @@ module Rubino
       # tests can drive editing without a live raw read. Returns :submit when the
       # key committed a line, :quit on EOF/empty-Ctrl+D, otherwise nil.
       #
-      # The buffer is edited at @cursor (a codepoint index), so insert/delete and
+      # The buffer is edited at cursor (a codepoint index), so insert/delete and
       # the arrow/Home/End/word-jump moves all act mid-line, not just at the end.
       def handle_key(ch)
         # The transient mode announcement is a one-shot toast: any keystroke
@@ -1377,7 +1374,7 @@ module Rubino
           # UNLESS the buffer is ALREADY an exact, complete command, in which
           # case Enter SUBMITS it directly instead of splicing a trailing space
           # and requiring a second Enter (D5).
-          if menu_open? && !@menu.exact_command?(@buffer)
+          if menu_open? && !@menu.exact_command?(buffer)
             accept_completion
             return nil
           end
@@ -1388,11 +1385,11 @@ module Rubino
         when "", "\b" # DEL / Backspace: delete the char BEFORE the cursor.
           delete_back
         when "\x04" # Ctrl+D: delete forward; on an empty buffer it's EOF/quit.
-          return :quit if @buffer.empty?
+          return :quit if buffer.empty?
 
           delete_forward
         when "\x01" then move_to(0)              # Ctrl+A → line start
-        when "\x05" then move_to(@buffer.length) # Ctrl+E → line end
+        when "\x05" then move_to(buffer.length) # Ctrl+E → line end
         when "\x02" then move_by(-1)             # Ctrl+B → left
         when "\x06" then move_by(1)              # Ctrl+F → right
         when "\x0b" then kill_to_end             # Ctrl+K → delete to end of line
@@ -1498,7 +1495,7 @@ module Rubino
       #                         row/column
       #   [status bar]        ← the dim model + context line (when set/fits)
       #
-      # The +@buffer+ is redrawn on every frame, so it can never be lost across
+      # The +buffer+ is redrawn on every frame, so it can never be lost across
       # a scroll. Must be called while holding @render.
       def render_frame(committed:)
         # Refresh the width from the live terminal every frame. @cols was only
@@ -1700,9 +1697,7 @@ module Rubino
         line = nil
         @render.synchronize do
           @menu.close!
-          line = @buffer.dup
-          @buffer.clear
-          @cursor = 0
+          line = @input_line.take
           redraw # clears any open-menu rows above the prompt on submit
         end
         line
@@ -1756,7 +1751,7 @@ module Rubino
       end
 
       # --- Cursor-aware editing primitives -------------------------------------
-      # All mutate @buffer at @cursor (a codepoint index, 0..length) under the
+      # All mutate buffer at cursor (a codepoint index, 0..length) under the
       # render mutex and redraw. The completion menu is auto-opened/updated/closed
       # after any buffer change (see #auto_update_menu) so it tracks the typed
       # token the way the old Reline autocompletion did — typing a leading `/` or
@@ -1764,12 +1759,14 @@ module Rubino
       # edit so a fresh ↑ starts from the newest entry.
 
       # Insert printable text at the cursor (typed char or single-line paste).
+      # The cursor position (codepoint index), delegated to the input-line model.
+      # The composer never mutates buffer/cursor directly — every edit goes
+      # through @input_line under @render (the methods below), then a #redraw.
+      def cursor = @input_line.cursor
+
       def insert(str)
         @render.synchronize do
-          chars = @buffer.chars
-          chars.insert(@cursor, *str.chars)
-          @buffer.replace(chars.join)
-          @cursor += str.chars.length
+          @input_line.insert(str)
           @history.reset!
           auto_update_menu
           redraw
@@ -1783,16 +1780,10 @@ module Rubino
       # the user typed deletes char-by-char as usual.
       def delete_back
         @render.synchronize do
-          if @cursor.positive?
-            chars = @buffer.chars
-            if (span = @paste_store&.placeholder_span(@buffer, @cursor))
-              chars.slice!(span[0], span[1])
-              @cursor = span[0]
-            else
-              chars.delete_at(@cursor - 1)
-              @cursor -= 1
-            end
-            @buffer.replace(chars.join)
+          if cursor.positive? && (span = @paste_store&.placeholder_span(buffer, cursor))
+            @input_line.delete_span(span[0], span[1])
+          else
+            @input_line.delete_back
           end
           @history.reset!
           auto_update_menu
@@ -1803,11 +1794,7 @@ module Rubino
       # Delete-forward (Ctrl+D / the Delete key): remove the char AT the cursor.
       def delete_forward
         @render.synchronize do
-          chars = @buffer.chars
-          if @cursor < chars.length
-            chars.delete_at(@cursor)
-            @buffer.replace(chars.join)
-          end
+          @input_line.delete_forward
           @history.reset!
           auto_update_menu
           redraw
@@ -1817,7 +1804,7 @@ module Rubino
       # Delete from the cursor to the end of the line (Ctrl+K).
       def kill_to_end
         @render.synchronize do
-          @buffer.replace(@buffer.chars.first(@cursor).join)
+          @input_line.kill_to_end
           @history.reset!
           auto_update_menu
           redraw
@@ -1831,8 +1818,7 @@ module Rubino
       # so a fresh command (or a slash completion) starts from an empty line.
       def kill_to_start
         @render.synchronize do
-          @buffer.replace("")
-          @cursor = 0
+          @input_line.clear
           @history.reset!
           auto_update_menu
           redraw
@@ -1842,7 +1828,7 @@ module Rubino
       # Move the cursor by +delta+ codepoints, clamped to the buffer.
       def move_by(delta)
         @render.synchronize do
-          @cursor = (@cursor + delta).clamp(0, @buffer.length)
+          @input_line.move_by(delta)
           auto_update_menu # moving off the token closes the menu
           redraw
         end
@@ -1851,7 +1837,7 @@ module Rubino
       # Move the cursor to an absolute codepoint index, clamped.
       def move_to(index)
         @render.synchronize do
-          @cursor = index.clamp(0, @buffer.length)
+          @input_line.move_to(index)
           auto_update_menu # moving off the token closes the menu
           redraw
         end
@@ -1861,11 +1847,7 @@ module Rubino
       # the word characters, landing at the start of the previous word.
       def word_left
         @render.synchronize do
-          chars = @buffer.chars
-          i = @cursor
-          i -= 1 while i.positive? && chars[i - 1] =~ /\s/
-          i -= 1 while i.positive? && chars[i - 1] !~ /\s/
-          @cursor = i
+          @input_line.word_left
           redraw
         end
       end
@@ -1874,11 +1856,7 @@ module Rubino
       # whitespace, landing at the start of the next word.
       def word_right
         @render.synchronize do
-          chars = @buffer.chars
-          i = @cursor
-          i += 1 while i < chars.length && chars[i] !~ /\s/
-          i += 1 while i < chars.length && chars[i] =~ /\s/
-          @cursor = i
+          @input_line.word_right
           redraw
         end
       end
@@ -1893,11 +1871,10 @@ module Rubino
         return if move_caret_row(-1)
 
         @render.synchronize do
-          entry = @history.up(@buffer)
+          entry = @history.up(buffer)
           next if entry.nil?
 
-          @buffer.replace(entry)
-          @cursor = @buffer.length
+          @input_line.replace(entry)
           redraw
         end
       end
@@ -1912,16 +1889,15 @@ module Rubino
         return if move_caret_row(1)
 
         @render.synchronize do
-          entry = @history.down(@buffer)
+          entry = @history.down(buffer)
           if entry.nil?
-            next unless @buffer.strip.empty? && @agent_menu.open!
+            next unless buffer.strip.empty? && @agent_menu.open!
 
             redraw
             next
           end
 
-          @buffer.replace(entry)
-          @cursor = @buffer.length
+          @input_line.replace(entry)
           redraw
         end
       end
@@ -1938,7 +1914,7 @@ module Rubino
           target = caret_row + delta
           next unless rows.length > 1 && target.between?(0, rows.length - 1)
 
-          @cursor = char_index_at(rows[target], caret_col)
+          @input_line.move_to(char_index_at(rows[target], caret_col))
           auto_update_menu # moving off the token closes the menu
           redraw
           moved = true
@@ -1992,7 +1968,7 @@ module Rubino
       # The dropdown itself — open/refine/accept/dismiss state, candidate
       # resolution and row rendering — lives in the {CompletionMenu}; here is
       # only the keystroke plumbing and the buffer splice (the menu never
-      # touches @buffer or the render mutex).
+      # touches buffer or the render mutex).
 
       # Tab: with the menu open, accept the highlighted candidate; otherwise try
       # to open the menu for the token under the cursor (an explicit Tab always
@@ -2001,9 +1977,9 @@ module Rubino
       def handle_tab
         if menu_open?
           accept_completion
-        elsif @menu.open(@buffer, @cursor)
+        elsif @menu.open(buffer, cursor)
           @render.synchronize { redraw }
-        elsif @buffer.strip.empty?
+        elsif buffer.strip.empty?
           # Nothing to complete (empty input, no menu): Tab cycles the active
           # PRIMARY agent instead of being a dead key. A buffer with text still
           # falls through to a no-op (we never insert a literal tab), so command
@@ -2031,7 +2007,7 @@ module Rubino
       # Track the menu to the token under the cursor after any buffer edit or
       # cursor move (Reline parity — see CompletionMenu#auto_update).
       def auto_update_menu
-        @menu.auto_update(@buffer, @cursor)
+        @menu.auto_update(buffer, cursor)
       end
 
       # ↑/↓ within the menu (routed from history_up/down when the menu is open).
@@ -2060,7 +2036,7 @@ module Rubino
 
         @render.synchronize do
           start, len, replacement = @menu.accept_splice
-          chars = @buffer.chars
+          chars = buffer.chars
           # The menu measures the token only up to the cursor. If the cursor sits
           # mid-token (or there's residual text right after it — e.g. `/mem|ory`
           # or a leftover `memory`), the un-measured tail would survive the
@@ -2069,8 +2045,7 @@ module Rubino
           # contiguous non-space run so accepting replaces the WHOLE token.
           len += 1 while chars[start + len] && !chars[start + len].match?(/\s/)
           chars[start, len] = replacement.chars
-          @buffer.replace(chars.join)
-          @cursor = start + replacement.chars.length
+          @input_line.replace(chars.join).move_to(start + replacement.chars.length)
           # Re-run the menu refresh for the spliced buffer (#63): accepting a
           # command name lands the cursor in its ARGUMENT position (`/skills `),
           # so the next-context dropdown (skill names, /agents ids…) opens
@@ -2151,12 +2126,11 @@ module Rubino
 
         merged = false
         @render.synchronize do
-          if (span = @paste_store.append_to_placeholder_before(@buffer, @cursor, body))
+          if (span = @paste_store.append_to_placeholder_before(buffer, cursor, body))
             start, length, token = span
-            chars = @buffer.chars
+            chars = buffer.chars
             chars[start, length] = token.chars
-            @buffer.replace(chars.join)
-            @cursor = start + token.chars.length
+            @input_line.replace(chars.join).move_to(start + token.chars.length)
             @history.reset!
             auto_update_menu
             redraw
@@ -2198,7 +2172,7 @@ module Rubino
         when :word_left      then word_left
         when :word_right     then word_right
         when :move_home      then move_to(0)
-        when :move_end       then move_to(@buffer.length)
+        when :move_end       then move_to(buffer.length)
         when :delete_forward then delete_forward
         end
       end

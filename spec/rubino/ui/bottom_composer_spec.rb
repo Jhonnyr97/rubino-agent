@@ -821,7 +821,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       str.each_char { |ch| c.handle_key(ch) }
     end
 
-    def cursor(c) = c.instance_variable_get(:@cursor)
+    def cursor(c) = c.send(:cursor)
 
     def esc_seq(c, bytes)
       c.instance_variable_set(:@input, StringIO.new(bytes))
@@ -2229,7 +2229,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         (0...60).each { |i| composer.handle_key((97 + (i % 26)).chr) }
         peak_above = region.input_above
         expect(peak_above).to be > 1 # the block has occupied several rows above
-        composer.instance_variable_set(:@cursor, 0)
+        composer.instance_variable_get(:@input_line).move_to(0)
         composer.send(:redraw)
         expect(region.input_above).to eq(0) # caret on the top row now
 
@@ -2239,7 +2239,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         racy_out.cols = 40
         racy_out.truncate(0)
         racy_out.rewind
-        composer.instance_variable_set(:@cursor, 0)
+        composer.instance_variable_get(:@input_line).move_to(0)
         composer.handle_key("A")
 
         expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
@@ -2278,7 +2278,7 @@ RSpec.describe Rubino::UI::BottomComposer do
 
         # Move the caret to the TOP row, so the live/old-width above-caret counts
         # are ~0 — only the carried high-water covers the reflowed rows.
-        composer.instance_variable_set(:@cursor, 0)
+        composer.instance_variable_get(:@input_line).move_to(0)
         composer.send(:redraw)
         expect(region.input_above).to eq(0)
 
@@ -2644,14 +2644,14 @@ RSpec.describe Rubino::UI::BottomComposer do
         escape("[A")
         # Row 0 col 25 → 2 prompt cols → buffer index 23. Buffer untouched.
         expect(composer.buffer).to eq("a" * 60)
-        expect(composer.instance_variable_get(:@cursor)).to eq(23)
+        expect(composer.send(:cursor)).to eq(23)
       end
 
       it "↓ moves back down a visual row, preserving the column" do
         type("a" * 60)
         escape("[A")
         escape("[B")
-        expect(composer.instance_variable_get(:@cursor)).to eq(60) # row 1 col 23
+        expect(composer.send(:cursor)).to eq(60) # row 1 col 23
         expect(composer.buffer).to eq("a" * 60)
       end
 
@@ -2681,7 +2681,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\e") # caret at end of "second" (row 1, screen col 8)
         escape("[A")
         # Row 0, screen column preserved: col 8 clamps to the end of "first" → index 5.
-        expect(composer.instance_variable_get(:@cursor)).to eq(5)
+        expect(composer.send(:cursor)).to eq(5)
         expect(composer.buffer).to eq("first\nsecond")
       end
     end
