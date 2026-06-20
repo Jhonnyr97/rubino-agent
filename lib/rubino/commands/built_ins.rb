@@ -20,7 +20,7 @@ module Rubino
         "/export" => "Write the session transcript as markdown (/export [path])",
         "/memory" => "Inspect/search/forget what the agent remembers (show ID, backend, --all)",
         "/agent" => "Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles)",
-        "/agents" => "List background subagents; steer/probe a running one, or view output",
+        "/agents" => "List background subagents; ↓+Enter to attach & steer one live, or steer/probe/view by id",
         "/tasks" => "Alias for /agents",
         "/reply" => "Answer a subagent that is blocked waiting on you (ask_parent)",
         "/stop" => "Stop a running subagent (/stop <id>; alias for /agents <id> --stop)",

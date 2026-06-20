@@ -175,7 +175,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/export` | Write the session transcript as markdown (/export [path]) |
 | `/memory` | Inspect/search/forget what the agent remembers (show ID, backend, --all) |
 | `/agent` | Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles) |
-| `/agents` | List background subagents; steer/probe a running one, or view output |
+| `/agents` | List background subagents; ↓+Enter to attach & steer one live, or steer/probe/view by id |
 | `/tasks` | Alias for /agents |
 | `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
 | `/stop` | Stop a running subagent (/stop <id>; alias for /agents <id> --stop) |
@@ -330,6 +330,15 @@ The agent spawns background subagents with its `task` tool; these commands are t
 ```
 
 `/tasks` is an alias for `/agents`.
+
+**Attach to a subagent (agent-view).** Instead of typing ids, press `↓` at the
+idle prompt to open the subagent picker, arrow to one, and `Enter` to **attach**:
+the screen switches to that agent's own full timeline (its tool calls and what it
+said, replayed) and the prompt becomes scoped — `sa_xxxx ❯`. While attached, just
+type to steer the running child (or answer it if it's blocked on you); `←` on the
+empty prompt (or `/detach`) returns to the main timeline. The scoped prompt makes
+the global `/agents <id> steer/probe` and `/reply <id>` forms redundant — they're
+the same operations, by id, from anywhere.
 
 ### Workspace roots: `/add-dir` and `/dirs`
 

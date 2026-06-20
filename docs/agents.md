@@ -93,6 +93,25 @@ A `⛔ N subagent waiting on you` marker persists until you `/reply`.
 `/tasks` is an alias for `/agents`. Stopping a node cancels its descendants'
 ask-gates too, so a blocking question anywhere in the subtree unwinds at once.
 
+#### Attach to a subagent (agent-view)
+
+The typed forms above work by id from anywhere, but the fastest way to focus on
+one running child is to **attach**. At the idle prompt press `↓` to open the
+subagent picker, arrow to one, and `Enter`:
+
+- the screen switches to that agent's **own full timeline** — its tool calls and
+  what it said, replayed from its session (not the bounded activity snapshot the
+  picker used to show);
+- the prompt becomes **scoped** to it: `sa_xxxx ❯`;
+- while attached, just **type** to steer the running child (or answer it if it's
+  blocked on you) — no id needed; `←` on the empty prompt (or `/detach`) returns
+  to the main timeline.
+
+So attaching makes `/agents <id> steer/probe` and `/reply <id>` redundant for the
+focused child — they're the same operations, just addressed by id. Attach is a
+between-turns action (it owns the screen): while a parent turn is still streaming
+the picker's `Enter` toasts "attach when the turn ends" — attach once it's idle.
+
 **steer** is a persistent course-correction: the note enters the child's context
 at its next turn boundary and changes its trajectory.
 **probe** is ephemeral: a read-only side-inference over a snapshot of the

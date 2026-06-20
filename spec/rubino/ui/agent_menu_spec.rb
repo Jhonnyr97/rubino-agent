@@ -50,12 +50,22 @@ RSpec.describe Rubino::UI::AgentMenu do
     end
   end
 
-  it "#down clamps at the last entry" do
+  it "#down walks past the subagents to the '◂ main' row at the bottom, then clamps" do
     menu.down # sa_1
     menu.down # sa_2
     menu.down # sa_3
-    menu.down # clamps
-    expect(menu.selected.id).to eq("sa_3")
+    menu.down # ◂ main (the synthetic bottom row)
+    expect(described_class.main_row?(menu.selected)).to be(true)
+    menu.down # clamps on main
+    expect(described_class.main_row?(menu.selected)).to be(true)
+  end
+
+  it "shows a '◂ main session' row at the bottom and accepts it" do
+    menu.down
+    rows = menu.rows(80).map { |r| r.gsub(/\e\[[0-9;]*m/, "") }
+    expect(rows.any? { |r| r.include?("main session") }).to be(true)
+    3.times { menu.down } # to the main row
+    expect(described_class.main_row?(menu.accept)).to be(true)
   end
 
   it "#accept returns the selected entry and closes" do

@@ -9,6 +9,15 @@ module Rubino
     class AgentMenu
       MAX_ROWS = 5
 
+      # The synthetic "return to the main session" row, shown at the BOTTOM of the
+      # picker so the list is a switcher: pick a subagent to attach/switch to it,
+      # or pick "main" to leave an attached agent (a no-op at the main prompt). A
+      # tiny struct so it answers #id like a real row (the refresh re-selection
+      # finds it by id). Identity-compared via .main_row?.
+      MAIN_ROW = Struct.new(:id).new("__main__").freeze
+
+      def self.main_row?(entry) = entry.equal?(MAIN_ROW)
+
       def initialize(entries: -> { Tools::BackgroundTasks.instance.running }, pastel: Pastel.new)
         @entries = entries
         @pastel = pastel
@@ -20,10 +29,20 @@ module Rubino
       end
 
       def open!
-        items = live_entries
+        items = menu_items
         return if items.empty?
 
         @state = { items: items, selected: 0, top: 0 }
+      end
+
+      # The picker rows: the live subagents, then the "◂ main" row at the bottom.
+      # Empty (so the picker stays closed) when no subagent is live — there is
+      # nothing to switch between and "main" alone would be a pointless prompt.
+      def menu_items
+        live = live_entries
+        return [] if live.empty?
+
+        live + [MAIN_ROW]
       end
 
       def close!
@@ -72,7 +91,7 @@ module Rubino
         return unless open?
 
         previous = selected&.id
-        items = live_entries
+        items = menu_items
         if items.empty?
           close!
           return
@@ -96,9 +115,11 @@ module Rubino
         slice.each_with_index do |entry, i|
           selected_entry = top + i == selected
           rows << row(entry, selected: selected_entry, cols: cols)
-          rows << activity_row(entry, cols) if selected_entry && !entry.last_activity.to_s.empty?
+          if selected_entry && !self.class.main_row?(entry) && !entry.last_activity.to_s.empty?
+            rows << activity_row(entry, cols)
+          end
         end
-        rows << @pastel.dim("┄ #{selected + 1}/#{items.size} · Enter opens snapshot ┄") if items.size > MAX_ROWS
+        rows << @pastel.dim("┄ #{selected + 1}/#{items.size} · Enter attaches · ← back ┄") if items.size > MAX_ROWS
         rows
       end
 
@@ -116,7 +137,11 @@ module Rubino
 
       def row(entry, selected:, cols:)
         marker = selected ? @pastel.cyan("❯") : @pastel.dim("┊")
-        label = "#{entry.id} · #{entry.subagent} · #{status_label(entry.status)}"
+        label = if self.class.main_row?(entry)
+                  @pastel.dim("◂ main session")
+                else
+                  "#{entry.id} · #{entry.subagent} · #{status_label(entry.status)}"
+                end
         LiveRegion.take_first_columns("#{marker} #{label}", cols)
       end
 

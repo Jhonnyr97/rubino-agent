@@ -26,18 +26,24 @@ RSpec.describe Rubino::UI::BottomComposer do
   # Convenience: the prompt prefix the composer draws.
   PROMPT = Rubino::UI::BottomComposer::PROMPT
 
-  describe "#set_prompt_label" do
-    it "swaps the prompt prefix the input line draws (agent-attach scope)" do
-      composer.handle_key("h")
-      composer.set_prompt_label("sa_1c82 ❯ ")
-      expect(output.string).to end_with("\r\e[2Ksa_1c82 ❯ h")
+  describe "#move_by back-out gesture (on_back)" do
+    it "fires on_back on ← / Ctrl+B when the prompt is EMPTY (Claude-style detach)" do
+      fired = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_back: -> { fired = true })
+      c.handle_key("\x02") # Ctrl+B = move left, same path as the ← arrow
+      expect(fired).to be(true)
     end
 
-    it "restores the default prompt on a nil/empty label" do
-      composer.handle_key("h")
-      composer.set_prompt_label("sa_1c82 ❯ ")
-      composer.set_prompt_label(nil)
-      expect(output.string).to end_with("\r\e[2K#{PROMPT}h")
+    it "moves the cursor (does NOT fire on_back) when there is typed text" do
+      fired = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_back: -> { fired = true })
+      c.handle_key("h")
+      c.handle_key("i")
+      c.handle_key("\x02") # ← over text just moves the cursor
+      expect(fired).to be(false)
+      expect(c.send(:cursor)).to eq(1)
     end
   end
 
@@ -1514,7 +1520,7 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     after { Rubino::Tools::BackgroundTasks.reset! }
 
-    it "opens from Down on an empty prompt and selects a snapshot command with Enter" do
+    it "opens from Down on an empty prompt and ATTACHES to the selected agent with Enter" do
       entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
       reg.record_tool_started(entry.id, "read parser.rb")
 
@@ -1526,8 +1532,10 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       composer.handle_key("\r")
       expect(composer.agent_menu_open?).to be(false)
-      expect(queue.shift).to eq("/agents #{entry.id} --snapshot")
-      expect(output.string).to include("#{PROMPT}/agents #{entry.id} --snapshot")
+      # Enter queues the internal attach command; it is NOT echoed (the REPL
+      # clears+replays on attach, so an echo would only flash then vanish).
+      expect(queue.shift).to eq("/agents #{entry.id} --attach")
+      expect(output.string).not_to include("--attach")
     end
 
     it "navigates live subagents with arrows while preserving normal history Up" do
@@ -1538,7 +1546,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.send(:history_down)
       composer.handle_key("\r")
 
-      expect(queue.shift).to eq("/agents #{second.id} --snapshot")
+      expect(queue.shift).to eq("/agents #{second.id} --attach")
       expect(output.string).to include(first.id)
       expect(output.string).to include(second.id)
 
@@ -1546,6 +1554,17 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.handle_key("\r")
       composer.send(:history_up)
       expect(composer.buffer).to eq("hello")
+    end
+
+    it "during a turn, Enter on the picker toasts instead of silently queuing attach" do
+      reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      composer.begin_turn # a parent turn now owns the screen
+
+      composer.send(:history_down)
+      composer.handle_key("\r")
+
+      expect(queue.shift).to be_nil # NOT queued as silent type-ahead
+      expect(output.string).to include("attach when the turn ends") # the toast
     end
 
     it "dismisses the subagent picker with Esc without interrupting idle input" do
