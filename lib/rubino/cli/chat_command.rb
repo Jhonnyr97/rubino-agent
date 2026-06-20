@@ -974,6 +974,17 @@ module Rubino
             # Treat these aliases as the slash command so they dispatch locally.
             input = help_alias_to_command(input)
 
+            # While ATTACHED to a subagent (the agent-view), the prompt is scoped
+            # to it: the line NEVER runs a parent turn. `/detach` returns to the
+            # main timeline; a `/`-line is an agent-scoped command; anything else
+            # steers the child (or answers it when it is blocked on you). The
+            # `--attach` command that ENTERS this mode arrives while @attached_id
+            # is still nil, so it falls through to normal dispatch below.
+            if attached_to_agent?
+              handle_attached_input(input, runner, ui, cmd_executor)
+              next
+            end
+
             # Image-input commands manipulate the pending-attachment state local
             # to this REPL (not the agent), so they're handled here before the
             # slash dispatcher. `/paste` grabs a clipboard image; `/clear-images`
@@ -1064,6 +1075,13 @@ module Rubino
                   # SWITCH into it, leaving the original intact.
                   runner = branch_runner(ui, runner, result[:title])
                   cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  next
+                end
+                if result[:attach_agent]
+                  # Enter on the subagent picker: switch the whole timeline to
+                  # that agent's (clear + replay) and scope the input to it. No
+                  # turn runs; subsequent input is intercepted above until detach.
+                  attach_agent_view(result[:attach_agent], ui)
                   next
                 end
                 if result[:resume_session_id]
@@ -2482,6 +2500,12 @@ module Rubino
       # rail itself (#composer_rail), so committed echoes built from this
       # ("❯ <line>") stay rail-free in scrollback.
       def build_prompt
+        # While attached to a subagent the prompt is SCOPED to it, so the next
+        # idle composer signals "you're talking to this agent" (the input steers
+        # /answers it, never runs a parent turn). build_prompt is the single place
+        # the idle composer's label comes from, so the scope rides every rebuild.
+        return "#{@attached_id} #{PROMPT_CARET} " if @attached_id
+
         "#{PROMPT_CARET} "
       end
 
@@ -2738,6 +2762,84 @@ module Rubino
       # passing any session_id so the runner creates a fresh one.
       def fresh_runner(ui)
         build_runner(session_id: nil, ui: ui)
+      end
+
+      # --- agent-attach view (Claude-style timeline switch) --------------------
+
+      # True while the prompt is scoped to a background subagent: the on-screen
+      # timeline IS that agent's and typed input steers/answers it.
+      def attached_to_agent?
+        !@attached_id.nil?
+      end
+
+      # Switch the view to a background subagent: clear the screen and replay ITS
+      # OWN full transcript (each child runs its own runner+session), then scope
+      # the prompt to it (build_prompt picks up @attached_id on the next idle
+      # composer). This replaces the bounded registry snapshot the old `/agents
+      # <id>` drill-in showed with the agent's REAL conversation — its tool calls
+      # and what it said.
+      def attach_agent_view(id, ui)
+        entry = Tools::BackgroundTasks.instance.find(id)
+        return ui.error("no background subagent with id #{id}") unless entry
+
+        @attached_id = id
+        clear_terminal
+        ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
+                pastel.dim(" — type to steer · /detach to go back"))
+        session_resolver.replay_messages(ui, entry.messages)
+      end
+
+      # Leave the agent-view and return to the main session: clear the screen,
+      # replay the main timeline, drop the scope (build_prompt returns the default
+      # ❯ again on the next idle composer).
+      def detach_agent_view(runner, ui)
+        @attached_id = nil
+        clear_terminal
+        ui.info(pastel.dim("◀ back to the main session"))
+        session_resolver.replay_session(ui, runner.session[:id])
+      end
+
+      # Route a line typed while attached. `/detach` (or the child being gone)
+      # returns to the main view; a `/`-line is an agent-scoped command; plain
+      # text answers a blocked child or steers a running one. Everything reuses
+      # the existing /agents + /reply handlers via the executor, so no new command
+      # surface is introduced — it just makes the global `/agents <id> ...` forms
+      # redundant inside this view.
+      def handle_attached_input(input, runner, ui, cmd_executor)
+        id    = @attached_id
+        entry = Tools::BackgroundTasks.instance.find(id)
+
+        # The child finished/stopped while attached: nothing left to talk to —
+        # fall back to the main view so the user is never stranded on a dead scope.
+        return detach_agent_view(runner, ui) if entry.nil?
+
+        case input
+        when "/detach", "/back"
+          detach_agent_view(runner, ui)
+        when "/stop"
+          cmd_executor.try_execute("/agents #{id} --stop")
+        when %r{\A/reply\s+(.+)\z}m
+          cmd_executor.try_execute("/reply #{id} #{Regexp.last_match(1)}")
+        when %r{\A/probe\s+(.+)\z}m
+          cmd_executor.try_execute(%(/agents #{id} probe "#{Regexp.last_match(1)}"))
+        else
+          if %i[needs_approval blocked_on_human].include?(entry.status)
+            # The child is blocked on YOU → the line is the answer.
+            cmd_executor.try_execute("/reply #{id} #{input}")
+          else
+            # The child is running → the line is a steer note folded at its next turn.
+            cmd_executor.try_execute(%(/agents #{id} steer "#{input}"))
+          end
+        end
+      end
+
+      # Hard screen clear (clear + scrollback + home) for the attach/detach view
+      # switch — the "whole timeline changes" effect. Printed straight to the real
+      # terminal: the idle composer is torn down between reads, so $stdout is the
+      # bare TTY here (the same point resume_runner replays into).
+      def clear_terminal
+        $stdout.print("\e[2J\e[3J\e[H")
+        $stdout.flush
       end
 
       # Resolves the yolo (skip-all-approvals) mode for this invocation (#260).

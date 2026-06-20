@@ -131,11 +131,15 @@ module Rubino
           return show_agents_list if args.empty?
 
           tokens = args.split(/\s+/)
-          stop, snapshot = %w[--stop --snapshot].map { |flag| tokens.delete(flag) }
+          stop, snapshot, attach = %w[--stop --snapshot --attach].map { |flag| tokens.delete(flag) }
           id = tokens.shift
 
           return show_agents_list if id.nil? || id.empty?
           return stop_agent(id) if stop
+          # `--attach` is the menu's Enter action: hand the id back to the REPL,
+          # which switches the whole timeline to that agent's (clear + replay) and
+          # scopes the input to it. Internal — not a typed grammar candidate.
+          return { attach_agent: id } if attach
           return show_agent_detail(id, snapshot: true) if snapshot
 
           if tokens.first == "steer"

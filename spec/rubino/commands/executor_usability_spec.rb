@@ -553,6 +553,11 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(cells).to include("explore")
     end
 
+    it "hands the id back to the REPL on --attach (the picker's Enter action)" do
+      e = reg.reserve(subagent: "explore", prompt: "do a thing")
+      expect(exec.try_execute("/agents #{e.id} --attach")).to eq({ attach_agent: e.id })
+    end
+
     it "drills into a running subagent with a live recent-activity snapshot (#71)" do
       e = reg.reserve(subagent: "explore", prompt: "do a thing")
       reg.record_tool_started(e.id, "read lib/foo.rb")
