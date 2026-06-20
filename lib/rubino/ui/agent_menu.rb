@@ -30,12 +30,18 @@ module Rubino
         @state = nil
       end
 
-      # Move the highlight up one. Returns false when already at the TOP (nothing
-      # to move to) so the caller can CLOSE the menu and hand focus back to the
-      # input — ↑ off the top of the list exits the picker.
+      # Move the highlight up one. ↑ off the TOP of the list EXITS the picker:
+      # the menu closes itself (it owns its own lifecycle) so focus returns to the
+      # input — no stranded ❯ marker. Returns true while it stayed open and moved,
+      # false when it closed (or was already closed), so the caller can just
+      # `up!; redraw` without re-implementing the focus hand-off.
       def up!
         return false unless open?
-        return false if @state[:selected].zero?
+
+        if @state[:selected].zero?
+          close!
+          return false
+        end
 
         @state[:selected] -= 1
         sync_top

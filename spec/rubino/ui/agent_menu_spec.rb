@@ -39,10 +39,10 @@ RSpec.describe Rubino::UI::AgentMenu do
       expect(menu.selected.id).to eq("sa_1")
     end
 
-    it "returns FALSE at the top so the caller can close + return focus to the input" do
+    it "EXITS the picker at the top — closes itself, returns false, focus to input" do
       menu.down # selected sa_1 (top)
       expect(menu.up!).to be(false)
-      expect(menu.selected.id).to eq("sa_1") # unchanged — caller closes the menu
+      expect(menu).not_to be_open # owns its own focus hand-off — no stranded marker
     end
 
     it "returns false when closed" do
