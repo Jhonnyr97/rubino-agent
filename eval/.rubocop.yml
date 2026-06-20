@@ -1,0 +1,23 @@
+# RuboCop config for the eval/ A/B harness.
+#
+# The harness is standalone tooling (not shipped in the gem) that runs rubino
+# as a black box. It inherits the project house style but relaxes a couple of
+# rules that fight the A/B vocabulary: "on"/"off" are the two ARM names and "n"
+# is the repeats count — first-class domain words here, like the project
+# already allows "db"/"id"/"ui".
+inherit_from: ../.rubocop.yml
+
+AllCops:
+  Exclude:
+    # Fixtures are deliberately tiny/imperfect sample projects the agent edits
+    # at eval time (a class with a `def add(a, b)`, a module missing a doc
+    # comment). They are INPUT, not harness source — never lint them, same as
+    # the project already excludes spec/fixtures.
+    - "fixtures/**/*"
+    - "results/**/*"
+
+Naming/MethodParameterName:
+  # "on"/"off" are quoted because bare on/off are YAML booleans (true/false).
+  AllowedNames: ["as", "at", "by", "cc", "db", "id", "if", "in", "io", "ip",
+                 "of", "on", "off", "os", "pp", "to", "ui", "n", "o"]
+
