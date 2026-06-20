@@ -1463,7 +1463,12 @@ module Rubino
           # ONE Esc cancels the detached post-turn polishing (#319): only when
           # it's actually in flight, so a stray idle Esc still falls through to
           # the rewind chord. Trap-safe — flips the polishing cancel token only.
-          on_escape: idle_polishing_escape(runner)
+          on_escape: idle_polishing_escape(runner),
+          # While attached to a subagent, ← on the empty scoped prompt detaches to
+          # the main timeline (Claude-style — arrows + Enter only). Routed through
+          # the input queue so the idle loop's #handle_attached_input runs it the
+          # same way a typed /detach would. nil when not attached.
+          on_back: (attached_to_agent? ? -> { input_queue.push("/detach") } : nil)
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -2785,7 +2790,7 @@ module Rubino
         @attached_id = id
         clear_terminal
         ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
-                pastel.dim(" — type to steer · /detach to go back"))
+                pastel.dim(" — type to steer · ← to go back"))
         session_resolver.replay_messages(ui, entry.messages)
       end
 

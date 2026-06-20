@@ -41,6 +41,27 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "#move_by back-out gesture (on_back)" do
+    it "fires on_back on ← / Ctrl+B when the prompt is EMPTY (Claude-style detach)" do
+      fired = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_back: -> { fired = true })
+      c.handle_key("\x02") # Ctrl+B = move left, same path as the ← arrow
+      expect(fired).to be(true)
+    end
+
+    it "moves the cursor (does NOT fire on_back) when there is typed text" do
+      fired = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_back: -> { fired = true })
+      c.handle_key("h")
+      c.handle_key("i")
+      c.handle_key("\x02") # ← over text just moves the cursor
+      expect(fired).to be(false)
+      expect(c.send(:cursor)).to eq(1)
+    end
+  end
+
   describe ".active?" do
     it "is false when stdin is not a tty" do
       i = instance_double(IO, tty?: false)
