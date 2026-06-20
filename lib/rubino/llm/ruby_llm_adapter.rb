@@ -970,6 +970,15 @@ module Rubino
         history = messages[0..-2]
         return if history.empty?
 
+        # #311 (conversation tail): the breakpoint rides the LAST message ruby_llm
+        # appends here — i.e. the last history row before the new turn's ask().
+        # Anthropic matches the LONGEST cached prefix, so caching up to the moving
+        # tail makes turn N+1 a cache READ of every prior turn. Snapshot the count
+        # before the loop so the early-`next` skips (empty rows) don't shift the
+        # index; we stamp the row that actually lands LAST in chat.messages.
+        cache_tail   = conversation_cache_breakpoint?
+        base_count   = chat_instance.messages.size
+
         history.each do |msg|
           role         = (msg[:role] || msg["role"]).to_sym
           content      = msg[:content] || msg["content"]
@@ -1006,6 +1015,62 @@ module Rubino
             )
           end
         end
+
+        stamp_conversation_cache_breakpoint(chat_instance, base_count) if cache_tail
+      end
+
+      # Stamps the prompt-cache breakpoint (#311) on the LAST message appended by
+      # load_history — the moving conversation tail. Mirrors how the system block
+      # (PromptAssembler#system_content) and the last tool (ToolBridge) carry a
+      # cache_control: ruby_llm 1.16's Anthropic provider forwards a per-message
+      # cache_control verbatim when the message content is a RubyLLM::Content::Raw
+      # (Media.format_content / Tools.format_tool_result return content.value as-is).
+      # So we rewrap the tail message's content as a one-block Raw carrying the
+      # cache_control, leaving every earlier message and the new ask() turn
+      # untouched. This is the THIRD breakpoint (tools → system → tail); Anthropic
+      # allows 4, so we stay within budget.
+      #
+      # SKIPPED for an assistant row that carries tool_calls: that message's wire
+      # form is built by the formatter from msg.tool_calls (it appends tool_use
+      # blocks); a Content::Raw would BYPASS that and drop the tool_use blocks.
+      # In a well-formed transcript such a row is always followed by its tool
+      # result(s), so it is never the tail — skipping it costs no cache, never
+      # corrupts the wire.
+      #
+      # A TOOL-RESULT tail is wrapped differently: its wire form is a
+      # `{type: tool_result, tool_use_id:, content:}` block (Tools.format_tool_result
+      # returns content.value verbatim for a Raw), so the cache_control must ride
+      # the tool_result block ITSELF — a bare text block would drop the
+      # tool_use_id wrapper and orphan the preceding tool_use (provider 400).
+      def stamp_conversation_cache_breakpoint(chat_instance, base_count)
+        tail = chat_instance.messages[base_count..]&.last
+        return if tail.nil?
+        return if tail.role == :assistant && tail.tool_calls && !tail.tool_calls.empty?
+
+        text = tail.content
+        # Only a plain String tail is wrapped — a Content/Content::Raw tail is an
+        # attachment/structured payload we leave alone (no String to re-key, and
+        # the tail is the model-facing history, not media).
+        return unless text.is_a?(String) && !text.empty?
+
+        block =
+          if tail.tool_result?
+            { type: "tool_result", tool_use_id: tail.tool_call_id,
+              content: [{ type: "text", text: text }],
+              cache_control: { type: "ephemeral" } }
+          else
+            { type: "text", text: text, cache_control: { type: "ephemeral" } }
+          end
+
+        tail.content = ::RubyLLM::Content::Raw.new([block])
+      end
+
+      # True when the conversation-tail breakpoint should be emitted: same gate as
+      # the tool/system breakpoints — the anthropic-family path AND prompt caching
+      # enabled (prompts.prompt_cache, default on). cache_control is an Anthropic
+      # concept, so it never rides the openai path.
+      def conversation_cache_breakpoint?
+        tool_cache_breakpoint?
       end
 
       # Prefill-to-continue (Slice 5, rung 4): seat the model's own interim text
