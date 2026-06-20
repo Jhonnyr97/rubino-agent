@@ -2076,7 +2076,10 @@ module Rubino
 
       def agent_menu_up
         @render.synchronize do
-          @agent_menu.up!
+          # ↑ off the TOP of the picker closes it and returns focus to the input,
+          # so the selection marker disappears and it's unambiguous you're back in
+          # the prompt (vs being stuck on the first row with the marker showing).
+          @agent_menu.close! unless @agent_menu.up!
           redraw
         end
       end
