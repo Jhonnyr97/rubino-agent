@@ -413,6 +413,27 @@ module Rubino
           "max_lines" => 2000,
           "max_line_length" => 2000
         },
+        # Deterministic, REVERSIBLE compression of tool-read results (Phase 1:
+        # Ruby code → skeleton). When enabled, a WHOLE-file read of a large Ruby
+        # file returns a skeleton (requires + signatures + small bodies verbatim,
+        # large bodies elided behind a pointer that IS a targeted `read
+        # offset/limit` of the original lines). A targeted (offset/limit) read is
+        # NEVER compressed — that's the drill-in path that returns exact bytes so
+        # the edit-gate's string match still works. OFF by default: with this
+        # flag false the read tool is byte-for-byte unchanged (Phase 1 lands
+        # inert, then we measure before flipping it on).
+        "tool_output_compression" => {
+          "enabled" => false,
+          "code" => {
+            "strategy" => "skeleton",
+            # Don't bother skeletonising a file shorter than this many lines —
+            # the pointer indirection isn't worth it on small files.
+            "min_lines" => 150,
+            # Method bodies up to this many lines are kept VERBATIM; only larger
+            # bodies are elided behind a pointer.
+            "keep_method_body_max_lines" => 8
+          }
+        },
         "file_read" => {
           "max_chars" => 100_000
         },

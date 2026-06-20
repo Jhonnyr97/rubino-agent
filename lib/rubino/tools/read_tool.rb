@@ -45,9 +45,15 @@ module Rubino
       end
 
       def call(arguments)
-        file_path = arguments["file_path"] || arguments[:file_path]
-        offset    = (arguments["offset"]   || arguments[:offset]   || 1).to_i
-        limit     = (arguments["limit"]    || arguments[:limit]    || DEFAULT_LIMIT).to_i
+        file_path  = arguments["file_path"] || arguments[:file_path]
+        raw_offset = arguments["offset"] || arguments[:offset]
+        raw_limit  = arguments["limit"]  || arguments[:limit]
+        offset     = (raw_offset || 1).to_i
+        limit      = (raw_limit  || DEFAULT_LIMIT).to_i
+        # A WHOLE-file read (no offset AND no limit supplied) is exploration and
+        # the ONLY thing compression touches. A read carrying EITHER is a
+        # targeted window — the drill-in path — which always returns verbatim.
+        full_file = raw_offset.nil? && raw_limit.nil?
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
@@ -94,12 +100,110 @@ module Rubino
                    metrics: "duplicate" }
         end
 
+        # A TARGETED read of a file we previously skeletonised that lands inside
+        # an elided range is a DRILL-IN: the model needed a body the skeleton
+        # hid. Log it (the "did the skeleton hide what was needed" signal) — the
+        # verbatim windowed bytes are then served unchanged below.
+        if !full_file && @read_tracker&.drill_in?(expanded, offset, limit)
+          Rubino.logger&.info(event: "compression.drill_in", path: file_path,
+                              offset: offset, limit: limit)
+        end
+
+        # WHOLE-file read of a Ruby file, compression enabled → try the skeleton.
+        # Inert when the flag is off (default): falls straight through to render.
+        if full_file && (skeleton = maybe_skeleton(expanded, file_path))
+          return skeleton
+        end
+
         render(expanded, file_path, offset, limit)
       rescue StandardError => e
         "Error reading #{file_path}: #{e.message}"
       end
 
       private
+
+      # Returns a skeleton result Hash when compression is enabled, the file is
+      # Ruby, and the Compressor actually applied; nil otherwise (read normally).
+      # The original file is one targeted read away via the pointer lines, so the
+      # model loses no fidelity — only the cheap whole-file exploration is elided.
+      def maybe_skeleton(expanded, display_path)
+        return nil unless Rubino.configuration.tool_output_compression_enabled?
+        return nil unless ruby_file?(expanded)
+
+        cfg = Rubino.configuration.tool_output_compression_code
+        return nil unless cfg["strategy"].to_s == "skeleton"
+
+        content = File.read(expanded, encoding: "UTF-8")
+        return nil unless content.valid_encoding?
+
+        compressor = Compression::Compressor.new(
+          min_lines: cfg.fetch("min_lines", 150),
+          keep_method_body_max_lines: cfg.fetch("keep_method_body_max_lines", 8)
+        )
+        result = compressor.compress(content, source_path: display_path,
+                                              content_type: :code, full_file: true)
+        return nil unless result.applied?
+
+        @read_tracker&.note_skeleton(expanded, compressor.elided_ranges, result.saved_tokens_est)
+        emit_compression_telemetry(display_path, content, result)
+        skeleton_payload(display_path, result)
+      rescue StandardError => e
+        # Never let a compression bug break a plain read — fall back to the
+        # original file (render below) and leave a trace.
+        Rubino.logger&.warn(event: "compression.failed", path: display_path,
+                            error: e.message, error_class: e.class.name)
+        nil
+      end
+
+      RUBY_EXTENSIONS = %w[.rb .rake .gemspec].freeze
+      RUBY_FILENAMES  = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
+
+      def ruby_file?(path)
+        ext = File.extname(path)
+        return true if RUBY_EXTENSIONS.include?(ext)
+
+        RUBY_FILENAMES.include?(File.basename(path))
+      end
+
+      # The model-facing skeleton output: a one-line header naming the file and
+      # how to get the full content, then the skeleton itself. The header makes
+      # the compression explicit so the model knows bodies were elided (and that
+      # the pointer lines are real `read` calls it can issue).
+      def skeleton_payload(display_path, result)
+        header = "[skeleton of #{display_path} — large method bodies elided to save tokens. " \
+                 "Each `# … N lines elided — read …` line is a real read call: issue it to get " \
+                 "those exact lines verbatim (e.g. before editing). For the whole file, read with " \
+                 "an explicit offset/limit.]\n"
+        redacted = Security::Redactor.redact_sensitive_text(header + result.text, code_file: true)
+        { output: redacted,
+          metrics: "skeleton · −#{(result.ratio * 100).round}%",
+          body: Util::Output.preview(redacted),
+          body_kind: :plain }
+      end
+
+      # DIM, non-spammy user notice on a meaningful save, via the same `note`
+      # channel tool activity uses. Emitted only when a skeleton was applied.
+      def emit_compression_telemetry(display_path, original, result)
+        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+        skel_lines = result.text.count("\n") + (result.text.end_with?("\n") ? 0 : 1)
+        Rubino.logger&.info(event: "compression.applied", path: display_path,
+                            ratio: result.ratio.round(3),
+                            original_bytes: result.original_bytes,
+                            compressed_bytes: result.compressed_bytes,
+                            saved_tokens_est: result.saved_tokens_est)
+        orig_tok = humanize_tokens(result.original_bytes / 4.0)
+        new_tok  = humanize_tokens(result.compressed_bytes / 4.0)
+        Rubino.ui&.note(
+          "⚡ compressed #{display_path} · #{orig_lines}→#{skel_lines} lines · " \
+          "~#{orig_tok}→#{new_tok} tok (−#{(result.ratio * 100).round}%)"
+        )
+      end
+
+      # "6.4k" / "850" — compact token count for the notice.
+      def humanize_tokens(tokens)
+        t = tokens.round
+        t >= 1000 ? "#{(t / 1000.0).round(1)}k" : t.to_s
+      end
 
       BINARY_SAMPLE_BYTES = 1024
       BINARY_NONPRINTABLE_THRESHOLD = 0.30

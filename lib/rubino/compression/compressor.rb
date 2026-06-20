@@ -1,0 +1,93 @@
+# frozen_string_literal: true
+
+module Rubino
+  module Compression
+    # Entry point that routes a piece of tool-read content to a compression
+    # STRATEGY by content type and returns a CompressionResult. Phase 1 handles
+    # exactly one type — Ruby source (`:code`) via the Prism skeletoner; every
+    # other content type is a deterministic no-op (`applied? == false`), so the
+    # caller sends the original.
+    #
+    # Conservative GUARDS (all must hold to attempt a skeleton):
+    #   - full_file:  only a WHOLE-file read is compressible — a targeted
+    #                 offset/limit read is a drill-in and stays VERBATIM.
+    #   - content_type == :code AND the source parses as Ruby.
+    #   - total lines >= min_lines (small files aren't worth the indirection).
+    #   - the skeleton actually saves >= MIN_SAVING_RATIO of the bytes; below
+    #     that the pointers cost more than they save, so we send the original.
+    #
+    # On any guard miss (or a Prism parse failure) we return a no-op result whose
+    # `strategy` records the reason — never a misleading/partial skeleton.
+    class Compressor
+      # Below this fractional byte saving the skeleton isn't worth the drill-in
+      # round-trips it forces; send the original instead.
+      MIN_SAVING_RATIO = 0.25
+
+      # The exact (1-based first line, line count) ranges the skeleton elided.
+      # Carried OUT of #compress via an attr so the caller can record them for
+      # drill-in detection without threading another return value.
+      attr_reader :elided_ranges
+
+      def initialize(min_lines:, keep_method_body_max_lines:)
+        @min_lines = min_lines.to_i
+        @keep_method_body_max_lines = keep_method_body_max_lines.to_i
+        @elided_ranges = []
+      end
+
+      # content        — the raw file text (NOT line-numbered)
+      # source_path     — display path embedded in pointer lines (`read <path> ...`)
+      # content_type    — :code (Ruby) is the only compressible type in Phase 1
+      # full_file       — true only for a whole-file read (no offset/limit)
+      def compress(content, source_path:, content_type:, full_file:)
+        original_bytes = content.bytesize
+
+        return CompressionResult.noop(strategy: :not_full_file, original_bytes: original_bytes) unless full_file
+        return CompressionResult.noop(strategy: :not_code, original_bytes: original_bytes) unless content_type == :code
+
+        line_count = content.count("\n") + (content.end_with?("\n") ? 0 : 1)
+        return CompressionResult.noop(strategy: :too_small, original_bytes: original_bytes) if line_count < @min_lines
+
+        skeletonise(content, source_path, original_bytes)
+      end
+
+      private
+
+      def skeletonise(content, source_path, original_bytes)
+        @elided_ranges = []
+        strategy = RubyCodeSkeleton.new(keep_method_body_max_lines: @keep_method_body_max_lines)
+        skeleton = strategy.build(content, pointer_path: source_path) do |first_line, count|
+          @elided_ranges << [first_line, count]
+        end
+
+        # nil → Prism could not parse; identical text → nothing was elided.
+        return CompressionResult.noop(strategy: :parse_error, original_bytes: original_bytes) if skeleton.nil?
+
+        compressed_bytes = skeleton.bytesize
+        saved = original_bytes - compressed_bytes
+        ratio = original_bytes.zero? ? 0.0 : saved.fdiv(original_bytes)
+
+        if ratio < MIN_SAVING_RATIO
+          @elided_ranges = []
+          return CompressionResult.noop(strategy: :insufficient_saving, original_bytes: original_bytes)
+        end
+
+        CompressionResult.new(
+          text: skeleton,
+          original_bytes: original_bytes,
+          compressed_bytes: compressed_bytes,
+          saved_tokens_est: estimate_tokens(saved),
+          ratio: ratio,
+          strategy: :skeleton,
+          applied: true
+        )
+      end
+
+      # chars/4 token estimate, the same cheap heuristic rubino uses for budgeting
+      # (Context::TokenEstimate / TokenBudget). `saved` is a byte delta; for the
+      # mostly-ASCII source we skeletonise, bytes ≈ chars.
+      def estimate_tokens(saved_bytes)
+        (saved_bytes / 4.0).round
+      end
+    end
+  end
+end
