@@ -116,6 +116,14 @@ module Rubino
         # and tool messages through the existing UI methods so the scrolled-back
         # transcript matches what the user originally saw.
         def print_session_history(ui, session_id)
+          replay_session(ui, session_id)
+        end
+
+        # Replay a session's persisted transcript through the live UI render hooks
+        # so the scrolled-back history matches what the user originally saw. Shared
+        # by --resume (#print_session_history) and the agent-attach view switch,
+        # which clears the screen and replays the SELECTED agent's own session.
+        def replay_session(ui, session_id)
           return unless session_id
 
           messages = ::Rubino::Session::Store.new.for_session(session_id)
@@ -123,37 +131,40 @@ module Rubino
 
           ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
           ui.separator
-
-          messages.each do |msg|
-            at = parse_msg_timestamp(msg.created_at)
-            case msg.role.to_s
-            when "user"
-              # A `!` bang command persisted its <bash-input>/<bash-stdout>
-              # context messages as user rows; replay them as the `! <cmd>`
-              # echo + dim output block, never the raw tags.
-              next if BangShell.replay(ui, msg.content, at: at)
-
-              ui.replay_user_input(msg.content, at: at)
-            when "assistant"
-              next if msg.content.nil? || msg.content.to_s.empty?
-
-              # Render the prior assistant turn as markdown, same as a live reply —
-              # not the old box (which the M2 redesign repurposed into a "● running"
-              # tool-style row, so resume showed assistant turns as fake tool runs
-              # with raw markdown).
-              ui.assistant_text(msg.content)
-            when "tool"
-              name      = msg.tool_name || "tool"
-              arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
-              ui.tool_started(name, arguments: arguments, at: at)
-              ui.tool_finished(name, result: replay_tool_result(msg, name))
-            end
-          end
-
+          messages.each { |msg| replay_message(ui, msg) }
           ui.separator
         end
 
         private
+
+        # Replay ONE persisted message through the matching live UI render hook.
+        # Extracted from #replay_session so a single message renders identically
+        # whether it comes from a resumed main session or an attached agent's.
+        def replay_message(ui, msg)
+          at = parse_msg_timestamp(msg.created_at)
+          case msg.role.to_s
+          when "user"
+            # A `!` bang command persisted its <bash-input>/<bash-stdout> context
+            # messages as user rows; replay them as the `! <cmd>` echo + dim output
+            # block, never the raw tags.
+            return if BangShell.replay(ui, msg.content, at: at)
+
+            ui.replay_user_input(msg.content, at: at)
+          when "assistant"
+            return if msg.content.nil? || msg.content.to_s.empty?
+
+            # Render the prior assistant turn as markdown, same as a live reply —
+            # not the old box (which the M2 redesign repurposed into a "● running"
+            # tool-style row, so resume showed assistant turns as fake tool runs
+            # with raw markdown).
+            ui.assistant_text(msg.content)
+          when "tool"
+            name      = msg.tool_name || "tool"
+            arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
+            ui.tool_started(name, arguments: arguments, at: at)
+            ui.tool_finished(name, result: replay_tool_result(msg, name))
+          end
+        end
 
         # Rebuilds the stored tool message as a Tools::Result carrying its
         # ORIGINAL outcome, so #tool_finished replays the SAME glyph the live
