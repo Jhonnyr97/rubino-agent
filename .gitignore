@@ -42,3 +42,6 @@ Thumbs.db
 # ignore .rubino/ defensively so a runtime-written skill can never be committed
 # into a user's repo again.
 /.rubino/
+
+# Claude Code local state (skills, transient agent worktrees)
+.claude/
