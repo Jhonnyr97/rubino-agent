@@ -5,7 +5,7 @@ A coding & automation **agent** — small, self-contained, and built to run *whe
 ## Why rubino
 
 - **Runs where the work is** — a single gem on the machine (or VM) that holds the code, not a remote service you pipe files to.
-- **Persistent memory** — a tiny SQLite "Zep"-style fact store that learns about you and the project across sessions.
+- **Persistent memory** — a tiny SQLite fact store that learns about you and the project across sessions.
 - **Context compaction** — automatic compression with session lineage when the conversation outgrows the window.
 - **CLI *and* HTTP API** — an interactive terminal session for humans, a bearer-protected JSON + SSE API for programs.
 - **Real tools, gated** — read/write/edit, shell, ruby, git/github, grep/glob, a structured test runner, vision, and more, behind an approval model with a non-bypassable hardline floor.
@@ -111,7 +111,7 @@ agent:
 
 memory:
   enabled: true
-  backend: "sqlite"           # tiny-Zep FTS5 + graph-lite recall (default)
+  backend: "sqlite"           # SQLite FTS5 + graph-lite recall (default)
   auto_extract: true
 
 compression:
@@ -142,7 +142,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 - **[Configuration](docs/configuration.md)** — full config + env vars + precedence
 - **[Tools](docs/tools.md)** — the built-in tool set and approval behavior
 - **[Skills](docs/skills.md)** — reusable instruction packs, the 3-level disclosure, and `SKILL_LOADED` observability
-- **[Memory](docs/memory.md)** — the SQLite tiny-Zep backend
+- **[Memory](docs/memory.md)** — the SQLite memory backend
 - **[Security](docs/security.md)** — approval model, hardline floor, TLS
 - **[Troubleshooting](docs/troubleshooting.md)** — keyed on the exact error strings
 - **[HTTP API](docs/api/v1.md)** · **[Jobs & cron](docs/jobs.md)** · **[OAuth providers](docs/oauth-providers.md)** · **[Architecture](docs/architecture.md)**

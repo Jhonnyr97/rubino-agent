@@ -108,7 +108,7 @@ events:
   - type: delay_seconds
     value: 0.30
   - type: content
-    text: "| Core 🔄 | SQLite tiny-Zep 🔄 "
+    text: "| Core 🔄 | SQLite memory 🔄 "
   - type: delay_seconds
     value: 0.30
   - type: content

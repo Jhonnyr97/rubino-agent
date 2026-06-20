@@ -344,7 +344,7 @@ module Rubino
           # before giving up, and the per-session cursor re-feeds the turn next
           # time even then — so memory isn't lost to a transient rate limit.
           "extract_max_retries" => 3,
-          # tiny-Zep SQLite backend tuning. `vector` enables best-effort
+          # SQLite memory backend tuning. `vector` enables best-effort
           # sqlite-vec/RubyLLM.embed KNN on top of the always-on FTS5 hybrid;
           # off by default so the stock install needs no extra deps. `graph`
           # is the graph-lite 1-hop entity/edge blend (on by default).

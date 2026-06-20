@@ -143,7 +143,7 @@ module Rubino
           @ui.success(%(Forgot #{safe(memory[:id][0..7])} "#{safe(truncate(memory[:content], 60))}"))
         end
 
-        # Resolve the *configured* memory backend (default: sqlite tiny-Zep), the
+        # Resolve the *configured* memory backend (default: sqlite), the
         # same store the agent loop, the `rubino memory` CLI and the HTTP
         # `/v1/memory` ops use. The old `Memory::Store.new` was hardwired to the
         # legacy `:memories` table and ignored `memory.backend`, so in-chat
