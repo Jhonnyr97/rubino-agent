@@ -1686,13 +1686,17 @@ module Rubino
       # flash then vanish). Just queue "/agents <id> --attach"; if a turn is
       # mid-flight, route it through the busy classifier so it runs now.
       def submit_agent_attach(entry)
-        line = "/agents #{entry.id} --attach"
-        if (@turn_active || @content_streaming) && @on_busy_command &&
-           @on_busy_command.call(line) == :immediate
+        # Attach is a BETWEEN-TURNS view switch (it clears the screen, replays the
+        # agent's transcript and scopes the input), so it cannot run while a parent
+        # turn owns the screen. During a turn, say so with a transient toast rather
+        # than silently queuing it — the child's activity is already live in the
+        # panel, and the user attaches from the idle prompt once the turn ends.
+        if @turn_active || @content_streaming
+          announce("⚠ attach when the turn ends")
           return
         end
 
-        @input_queue&.push(line)
+        @input_queue&.push("/agents #{entry.id} --attach")
       end
 
       # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
