@@ -118,7 +118,7 @@ module Rubino
         elsif live.any? { |e| e.status == :needs_approval }
           @pastel.dim("    └ /agents <id> to approve · --stop to cancel")
         else
-          @pastel.dim("    └ /agents <id> to watch · --stop to cancel")
+          @pastel.dim("    └ ↓ to navigate · Enter to view · --stop to cancel")
         end
       end
 
