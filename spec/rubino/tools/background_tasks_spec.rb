@@ -339,4 +339,19 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       expect(reserve).to be_nil
     end
   end
+
+  describe "#messages (child transcript)" do
+    it "is empty when no runner/session is wired (sync/foreground/headless)" do
+      expect(reserve.messages).to eq([])
+    end
+
+    it "returns the child runner session's full transcript from the store" do
+      entry = reserve
+      entry.runner = instance_double(Rubino::Agent::Runner, session: { id: "child-sess" })
+      store = instance_double(Rubino::Session::Store)
+      allow(Rubino::Session::Store).to receive(:new).and_return(store)
+      allow(store).to receive(:for_session).with("child-sess").and_return(%i[m1 m2])
+      expect(entry.messages).to eq(%i[m1 m2])
+    end
+  end
 end

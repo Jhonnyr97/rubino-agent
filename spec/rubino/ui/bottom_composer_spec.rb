@@ -26,6 +26,21 @@ RSpec.describe Rubino::UI::BottomComposer do
   # Convenience: the prompt prefix the composer draws.
   PROMPT = Rubino::UI::BottomComposer::PROMPT
 
+  describe "#set_prompt_label" do
+    it "swaps the prompt prefix the input line draws (agent-attach scope)" do
+      composer.handle_key("h")
+      composer.set_prompt_label("sa_1c82 ❯ ")
+      expect(output.string).to end_with("\r\e[2Ksa_1c82 ❯ h")
+    end
+
+    it "restores the default prompt on a nil/empty label" do
+      composer.handle_key("h")
+      composer.set_prompt_label("sa_1c82 ❯ ")
+      composer.set_prompt_label(nil)
+      expect(output.string).to end_with("\r\e[2K#{PROMPT}h")
+    end
+  end
+
   describe ".active?" do
     it "is false when stdin is not a tty" do
       i = instance_double(IO, tty?: false)
