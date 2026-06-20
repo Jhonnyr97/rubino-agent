@@ -84,7 +84,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     end
 
     it "is aliased as #shutdown!" do
-      expect(registry.method(:shutdown!).original_name).to eq(:cancel_all)
+      expect(registry).to respond_to(:shutdown!)
     end
 
     it "REPRODUCES the deadlock + PROVES the fix: a blocking-ask child unwinds " \
@@ -132,6 +132,49 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       registry.cancel_all
       expect(thread.join(2)).to be_truthy
       expect { registry.cancel_all }.not_to raise_error
+    end
+
+    it "keeps #cancel_all cooperative and does not kill a non-cooperative child thread" do
+      entry = registry.reserve(subagent: "explore", prompt: "stuck")
+      thread = Thread.new { sleep }
+      registry.attach(entry, thread: thread, runner: fake_runner)
+
+      registry.cancel_all
+
+      expect(thread).to be_alive
+      expect(registry.find(entry.id).status).to eq(:stopping)
+    ensure
+      thread&.kill
+      thread&.join
+    end
+  end
+
+  describe "#shutdown! — process-exit teardown" do
+    it "joins cooperative children after cancelling them" do
+      entry = registry.reserve(subagent: "explore", prompt: "do it")
+      registry.attach(entry, thread: Thread.current, runner: fake_runner)
+      thread, = block_child_on_ask(entry)
+      registry.attach(entry, thread: thread, runner: entry.runner)
+
+      registry.shutdown!(grace: 0.5)
+
+      expect(thread).not_to be_alive
+      expect(registry.find(entry.id).status).to eq(:stopped)
+    end
+
+    it "force-kills a child thread that ignores cooperative cancellation" do
+      entry = registry.reserve(subagent: "explore", prompt: "stuck")
+      thread = Thread.new { sleep }
+      registry.attach(entry, thread: thread, runner: fake_runner)
+
+      registry.shutdown!(grace: 0.01)
+
+      expect(thread).not_to be_alive
+      expect(registry.find(entry.id).status).to eq(:stopped)
+      expect(registry.find(entry.id).error).to eq("forced shutdown")
+    ensure
+      thread&.kill
+      thread&.join
     end
   end
 

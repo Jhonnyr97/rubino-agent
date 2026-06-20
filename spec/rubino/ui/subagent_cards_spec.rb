@@ -37,7 +37,7 @@ RSpec.describe Rubino::UI::SubagentCards do
     lines = plain(cards.card_lines(es))
     # MAX_CARDS card rows + 1 hint row.
     expect(lines.size).to eq(described_class::MAX_CARDS + 1)
-    expect(lines.last).to include("/agents <id> to watch")
+    expect(lines.last).to include("↓ to navigate")
   end
 
   it "collapses overflow beyond MAX_CARDS into a +N more tail" do
@@ -59,13 +59,13 @@ RSpec.describe Rubino::UI::SubagentCards do
       e = entry(id: "sa_x", status: :needs_approval, approval_command: "rm -rf build")
       line = plain(cards.card_lines([e])).first
       expect(line).to include("● sa_x · explore · needs approval: rm -rf build")
-      expect(line).to include("/agents sa_x")
+      expect(line).to include("↓ to approve")
     end
 
     it "switches the hint to the approve affordance when something needs approval" do
       e = entry(id: "sa_x", status: :needs_approval, approval_command: "c")
       hint = plain(cards.card_lines([e])).last
-      expect(hint).to include("/agents <id> to approve")
+      expect(hint).to include("↓ to navigate")
     end
 
     # #141: a multi-line ruby/shell command often STARTS with a blank line —
@@ -86,7 +86,7 @@ RSpec.describe Rubino::UI::SubagentCards do
       e = entry(id: "sa_b", status: :blocked_on_human, ask_question: "sqlite or postgres?")
       hint = plain(cards.card_lines([e])).last
       expect(hint).to include("⛔1 subagent waiting on you")
-      expect(hint).to include("/reply <id> to answer")
+      expect(hint).to include("↓ to navigate")
     end
 
     it "aggregates the count (pluralized) across several blocked children" do

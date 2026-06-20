@@ -821,7 +821,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       str.each_char { |ch| c.handle_key(ch) }
     end
 
-    def cursor(c) = c.instance_variable_get(:@cursor)
+    def cursor(c) = c.send(:cursor)
 
     def esc_seq(c, bytes)
       c.instance_variable_set(:@input, StringIO.new(bytes))
@@ -1488,6 +1488,64 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "subagent picker from the bottom composer" do
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output, echo: :prompt)
+    end
+
+    let(:reg) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+
+    after { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "opens from Down on an empty prompt and selects a snapshot command with Enter" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      reg.record_tool_started(entry.id, "read parser.rb")
+
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      expect(output.string).to include("subagents")
+      expect(output.string).to include(entry.id)
+      expect(output.string).to include("read parser.rb")
+
+      composer.handle_key("\r")
+      expect(composer.agent_menu_open?).to be(false)
+      expect(queue.shift).to eq("/agents #{entry.id} --snapshot")
+      expect(output.string).to include("#{PROMPT}/agents #{entry.id} --snapshot")
+    end
+
+    it "navigates live subagents with arrows while preserving normal history Up" do
+      first = reg.reserve(subagent: "explore", prompt: "first")
+      second = reg.reserve(subagent: "build", prompt: "second")
+
+      composer.send(:history_down)
+      composer.send(:history_down)
+      composer.handle_key("\r")
+
+      expect(queue.shift).to eq("/agents #{second.id} --snapshot")
+      expect(output.string).to include(first.id)
+      expect(output.string).to include(second.id)
+
+      "hello".each_char { |ch| composer.handle_key(ch) }
+      composer.handle_key("\r")
+      composer.send(:history_up)
+      expect(composer.buffer).to eq("hello")
+    end
+
+    it "dismisses the subagent picker with Esc without interrupting idle input" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+
+      composer.instance_variable_set(:@input, StringIO.new(""))
+      composer.handle_key("\e")
+
+      expect(composer.agent_menu_open?).to be(false)
+      expect(queue.shift).to be_nil
+    end
+  end
+
   describe "#handle_key Shift+Tab (mode cycle)" do
     # Shift+Tab arrives as ESC[Z: preload the bytes after ESC, then trigger the
     # escape consumer via handle_key("\e") — the same way the paste specs drive it.
@@ -1901,12 +1959,14 @@ RSpec.describe Rubino::UI::BottomComposer do
   end
 
   describe "#set_cards (subagent card block, Variant A)" do
-    it "renders each card on its own row above the prompt, prompt redrawn last" do
+    it "renders each subagent on its own row BELOW the input (the panel)" do
       composer.handle_key("x")
       composer.set_cards(["▸ sa_1 · explore · running", "▸ sa_2 · test · running"])
-      expect(output.string).to include("▸ sa_1 · explore · running\r\n")
-      expect(output.string).to include("▸ sa_2 · test · running\r\n")
-      expect(output.string).to end_with("#{PROMPT}x")
+      s = output.string
+      expect(s).to include("▸ sa_1 · explore · running")
+      expect(s).to include("▸ sa_2 · test · running")
+      # The panel renders BELOW the input: the prompt+text comes before the cards.
+      expect(s.index("#{PROMPT}x")).to be < s.index("▸ sa_1")
       expect(composer.cards.size).to eq(2)
     end
 
@@ -1915,9 +1975,10 @@ RSpec.describe Rubino::UI::BottomComposer do
       output.truncate(0)
       output.rewind
       composer.set_cards(["▸ sa_1 · running · 2 tools"])
-      # The prior card row is cleared via cursor-up (\e[1A\e[2K) rather than a
-      # fresh line scrolling the old one up — the in-place card contract.
-      expect(output.string).to include("\e[1A\e[2K")
+      # In place: the panel row below the input is cleared (\e[2K) and repainted,
+      # never a fresh line scrolling the old one up — the no-flood contract. (The
+      # walk is now DOWNWARD, \e[1B, since the panel sits below the input.)
+      expect(output.string).to include("\e[2K")
       expect(output.string).to include("2 tools")
       # No duplication: the old "1 tool" text isn't re-emitted in this frame.
       expect(output.string).not_to include("1 tool")
@@ -1936,21 +1997,24 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.cards.size).to eq(described_class::MAX_CARD_ROWS)
     end
 
-    it "coexists with a live streamed partial (cards above, partial above prompt)" do
+    it "coexists with a live streamed partial (partial above the input, panel below)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.set_partial("streaming token")
-      expect(output.string).to include("▸ sa_1 · running\r\n")
-      expect(output.string).to include("streaming token\r\n")
+      s = output.string
+      expect(s).to include("▸ sa_1 · running")
+      expect(s).to include("streaming token")
+      # The streamed partial renders above the input; the subagent panel below it.
+      expect(s.index("streaming token")).to be < s.rindex("▸ sa_1 · running")
       expect(composer.cards.size).to eq(1)
       expect(composer.partial?).to be(true)
     end
 
-    it "a committed print_above repaints cards above the committed line + prompt" do
+    it "a committed print_above keeps the subagent panel (persistent live-region state)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.print_above("a finished timeline row")
       expect(output.string).to include("a finished timeline row\r\n")
-      # The card survives a commit (it's persistent live-region state).
-      expect(output.string).to include("▸ sa_1 · running\r\n")
+      # The panel survives a commit (it's persistent live-region state).
+      expect(output.string).to include("▸ sa_1 · running")
     end
   end
 
@@ -2171,7 +2235,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         (0...60).each { |i| composer.handle_key((97 + (i % 26)).chr) }
         peak_above = region.input_above
         expect(peak_above).to be > 1 # the block has occupied several rows above
-        composer.instance_variable_set(:@cursor, 0)
+        composer.instance_variable_get(:@input_line).move_to(0)
         composer.send(:redraw)
         expect(region.input_above).to eq(0) # caret on the top row now
 
@@ -2181,7 +2245,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         racy_out.cols = 40
         racy_out.truncate(0)
         racy_out.rewind
-        composer.instance_variable_set(:@cursor, 0)
+        composer.instance_variable_get(:@input_line).move_to(0)
         composer.handle_key("A")
 
         expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
@@ -2220,7 +2284,7 @@ RSpec.describe Rubino::UI::BottomComposer do
 
         # Move the caret to the TOP row, so the live/old-width above-caret counts
         # are ~0 — only the carried high-water covers the reflowed rows.
-        composer.instance_variable_set(:@cursor, 0)
+        composer.instance_variable_get(:@input_line).move_to(0)
         composer.send(:redraw)
         expect(region.input_above).to eq(0)
 
@@ -2586,14 +2650,14 @@ RSpec.describe Rubino::UI::BottomComposer do
         escape("[A")
         # Row 0 col 25 → 2 prompt cols → buffer index 23. Buffer untouched.
         expect(composer.buffer).to eq("a" * 60)
-        expect(composer.instance_variable_get(:@cursor)).to eq(23)
+        expect(composer.send(:cursor)).to eq(23)
       end
 
       it "↓ moves back down a visual row, preserving the column" do
         type("a" * 60)
         escape("[A")
         escape("[B")
-        expect(composer.instance_variable_get(:@cursor)).to eq(60) # row 1 col 23
+        expect(composer.send(:cursor)).to eq(60) # row 1 col 23
         expect(composer.buffer).to eq("a" * 60)
       end
 
@@ -2623,7 +2687,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\e") # caret at end of "second" (row 1, screen col 8)
         escape("[A")
         # Row 0, screen column preserved: col 8 clamps to the end of "first" → index 5.
-        expect(composer.instance_variable_get(:@cursor)).to eq(5)
+        expect(composer.send(:cursor)).to eq(5)
         expect(composer.buffer).to eq("first\nsecond")
       end
     end

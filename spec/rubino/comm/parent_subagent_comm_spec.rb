@@ -536,7 +536,9 @@ RSpec.describe "parent <-> subagent communication" do
       joined = lines.join("\n")
       expect(joined).to include("⛔")
       expect(joined).to include("waiting on you")
-      expect(joined).to include("/reply #{entry.id}")
+      # The card moved to arrow-nav: the reply prompt auto-opens and the card
+      # advertises "↓ to answer" instead of the old typed "/reply <id>" hint.
+      expect(joined).to include("↓ to answer")
     end
   end
 
