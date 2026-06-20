@@ -128,21 +128,17 @@ module Rubino
 
         def handle_agents(arguments)
           args = arguments.to_s.strip
-
-          if args.empty?
-            show_agents_list
-            return
-          end
+          return show_agents_list if args.empty?
 
           tokens = args.split(/\s+/)
-          stop   = tokens.delete("--stop") ? true : false
-          id     = tokens.shift
+          stop, snapshot = %w[--stop --snapshot].map { |flag| tokens.delete(flag) }
+          id = tokens.shift
 
-          if id.nil? || id.empty?
-            show_agents_list
-          elsif stop
-            stop_agent(id)
-          elsif tokens.first == "steer"
+          return show_agents_list if id.nil? || id.empty?
+          return stop_agent(id) if stop
+          return show_agent_detail(id, snapshot: true) if snapshot
+
+          if tokens.first == "steer"
             steer_agent(id, dequote(tokens[1..].join(" ")))
           elsif tokens.first == "probe"
             probe_agent(id, dequote(tokens[1..].join(" ")))
@@ -404,12 +400,11 @@ module Rubino
           @ui.info("/agents <id> for output   ·   /agents <id> --stop to cancel")
         end
 
-        def show_agent_detail(id)
+        def show_agent_detail(id, snapshot: false)
           entry = Tools::BackgroundTasks.instance.find(id)
-          unless entry
-            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
-            return
-          end
+          return @ui.error("no background subagent with id #{id}. #{RESET_HINT}") unless entry
+
+          return show_agent_snapshot(entry) if snapshot
 
           case entry.status
           when :needs_approval
@@ -423,6 +418,14 @@ module Rubino
           else
             show_agent_result(entry)
           end
+        end
+
+        def show_agent_snapshot(entry)
+          return render_agent_watch(entry) if %i[
+            running stopping blocked_on_human blocked_on_parent needs_approval
+          ].include?(entry.status)
+
+          show_agent_result(entry)
         end
 
         # Static detail for a finished (done/failed) task — the full result/error,

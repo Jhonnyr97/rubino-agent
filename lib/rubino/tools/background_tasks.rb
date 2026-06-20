@@ -588,7 +588,8 @@ module Rubino
       # (outside the per-entry work) so we don't hold the registry mutex across the
       # gate/runner cancels.
       def cancel_all
-        running.each { |entry| stop_entry(entry) }
+        live = running
+        live.each { |entry| stop_entry(entry) }
         # Logical cancel alone (above) only flips cancel tokens and trusts each
         # child THREAD to observe the token and reap its own shell within a wake
         # tick — but on parent-DEATH the process exits before the thread reaches
@@ -598,7 +599,19 @@ module Rubino
         # (clean quit, HUP/TERM trap, REPL break) leave no surviving shell.
         ShellRegistry.instance.kill_all_groups
       end
-      alias shutdown! cancel_all
+
+      # Process-exit teardown: first do the cooperative cancel above, then give
+      # child threads a short chance to finish and finally kill non-cooperative
+      # survivors. Background subagents are Ruby threads, not OS child processes;
+      # if a child is stuck in a provider read that never observes its cancel
+      # token, a plain #cancel_all leaves the process alive waiting on that
+      # non-daemon thread. This method is for chat shutdown only, not normal
+      # per-task stops.
+      def shutdown!(grace: 1.0)
+        live = running
+        cancel_all
+        join_or_kill_threads(live, grace: grace)
+      end
 
       # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
       # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
@@ -692,6 +705,41 @@ module Rubino
 
       def new_id
         "sa_#{SecureRandom.hex(4)}"
+      end
+
+      def join_or_kill_threads(entries, grace:)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + [grace.to_f, 0.0].max
+        entries.each do |entry|
+          thread = entry.thread
+          next unless joinable_thread?(thread)
+
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          thread.join(remaining) if remaining.positive?
+        end
+
+        entries.each do |entry|
+          thread = entry.thread
+          next unless joinable_thread?(thread)
+
+          thread.kill
+          thread.join(0.2)
+          force_stop(entry)
+        end
+      end
+
+      def joinable_thread?(thread)
+        thread && thread != Thread.current && thread.alive?
+      end
+
+      def force_stop(entry)
+        @mutex.synchronize do
+          return if terminal_status?(entry.status)
+
+          entry.status = :stopped
+          entry.error = "forced shutdown"
+          entry.finished_at = Time.now
+          entry.steer_queue&.drain
+        end
       end
     end
   end

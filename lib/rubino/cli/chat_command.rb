@@ -1125,10 +1125,12 @@ module Rubino
           # before we return. Without this a child blocked on ask_parent(blocking)
           # stays parked on its gate for the full ask_parent_timeout (~900s) — the
           # parent that owed it an answer is gone, but nothing wakes its gate.
-          # #cancel_all wakes each within one WAKE_TICK so it unwinds via its
-          # `rescue Rubino::Interrupted` with the clean "cancelled" message. No-op
+          # #shutdown! wakes each within one WAKE_TICK so it unwinds via its
+          # `rescue Rubino::Interrupted` with the clean "cancelled" message. If a
+          # child is stuck in a provider read and never observes the cancel token,
+          # it force-kills the Ruby thread so the REPL can actually exit. No-op
           # when there are no children.
-          Tools::BackgroundTasks.instance.cancel_all
+          Tools::BackgroundTasks.instance.shutdown!
           restore_signal_traps(prev_signal_traps)
           restore_logger(prev_log_io)
         end

@@ -1488,6 +1488,64 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  describe "subagent picker from the bottom composer" do
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output, echo: :prompt)
+    end
+
+    let(:reg) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+
+    after { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "opens from Down on an empty prompt and selects a snapshot command with Enter" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      reg.record_tool_started(entry.id, "read parser.rb")
+
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      expect(output.string).to include("subagents")
+      expect(output.string).to include(entry.id)
+      expect(output.string).to include("read parser.rb")
+
+      composer.handle_key("\r")
+      expect(composer.agent_menu_open?).to be(false)
+      expect(queue.shift).to eq("/agents #{entry.id} --snapshot")
+      expect(output.string).to include("#{PROMPT}/agents #{entry.id} --snapshot")
+    end
+
+    it "navigates live subagents with arrows while preserving normal history Up" do
+      first = reg.reserve(subagent: "explore", prompt: "first")
+      second = reg.reserve(subagent: "build", prompt: "second")
+
+      composer.send(:history_down)
+      composer.send(:history_down)
+      composer.handle_key("\r")
+
+      expect(queue.shift).to eq("/agents #{second.id} --snapshot")
+      expect(output.string).to include(first.id)
+      expect(output.string).to include(second.id)
+
+      "hello".each_char { |ch| composer.handle_key(ch) }
+      composer.handle_key("\r")
+      composer.send(:history_up)
+      expect(composer.buffer).to eq("hello")
+    end
+
+    it "dismisses the subagent picker with Esc without interrupting idle input" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+
+      composer.instance_variable_set(:@input, StringIO.new(""))
+      composer.handle_key("\e")
+
+      expect(composer.agent_menu_open?).to be(false)
+      expect(queue.shift).to be_nil
+    end
+  end
+
   describe "#handle_key Shift+Tab (mode cycle)" do
     # Shift+Tab arrives as ESC[Z: preload the bytes after ESC, then trigger the
     # escape consumer via handle_key("\e") — the same way the paste specs drive it.

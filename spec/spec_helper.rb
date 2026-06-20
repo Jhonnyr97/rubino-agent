@@ -28,6 +28,7 @@ end
 
 require "tmpdir"
 require "rubino"
+require "ruby_llm"
 require "fileutils"
 require "securerandom"
 # Rubino's CLI commands subclass Thor and are loaded lazily by Zeitwerk, so the

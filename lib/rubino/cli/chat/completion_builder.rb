@@ -16,7 +16,7 @@ module Rubino
       class CompletionBuilder
         # The /agents subcommand grammar offered by the dropdown (#39): first an
         # id, then what you can do to it.
-        AGENTS_SUBCOMMANDS = ["steer", "probe", "--stop"].freeze
+        AGENTS_SUBCOMMANDS = ["steer", "probe", "--stop", "--snapshot"].freeze
 
         # The /mcp subcommand grammar (#182): configured server names + reload
         # first, then the on/off verbs for a named server.
