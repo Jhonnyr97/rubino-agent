@@ -15,6 +15,19 @@
   agent's real conversation, and makes the global `/agents <id> steer/probe` and
   `/reply <id>` forms redundant while attached.
 
+### Fixed
+
+- **MiniMax-M3 pre-tool-call "freeze".** Thinking/reasoning now defaults ON for
+  every provider (it was deliberately off for MiniMax-family ids). On the
+  anthropic-compatible path rubino now sends `thinking: {type: enabled,
+  budget_tokens: …}` and streams the model's reasoning deltas — so the multi-
+  second window where M3 reasons toward a tool-call is filled with visible
+  streamed reasoning instead of dead air (the symptom that read as the agent
+  "freezing" when it spawned subagents). Matches the reference agent's default
+  `reasoning_effort: medium`. A backend that rejects the budget is caught and
+  retried once without it (#75), so default-on is safe; set
+  `providers.<name>.supports_thinking: false` to opt out.
+
 ## [0.5.1] - 2026-06-18
 
 ### Added
