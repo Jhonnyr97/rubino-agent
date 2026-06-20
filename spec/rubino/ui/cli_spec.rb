@@ -233,6 +233,58 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("done")
     end
 
+    # In :full the reasoning STREAMS live during the thinking window: a completed
+    # reasoning block is committed (dim `┊` aside) as it finishes — BEFORE the
+    # answer arrives — instead of being dumped only at collapse, so the
+    # pre-tool-call window fills with flowing thought (matches Hermes).
+    it "streams reasoning live in full mode (committed during the phase, not only at collapse)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "full")
+      mid = capture_stdout do
+        ui.thinking_started
+        # A blank line completes the first prose block, so it commits LIVE while
+        # the model is still thinking (no content token has arrived yet).
+        ui.stream(type: :thinking, text: "First I will read the file.\n\n")
+      end
+      # The opening rail and the first reasoning line are already on screen DURING
+      # the thinking phase — proof it streamed live, not buffered to collapse.
+      expect(mid).to include("┄ thinking ┄")
+      expect(mid).to include("┊  First I will read the file.")
+      # The aside is NOT double-rendered when the answer arrives: the close rail
+      # appears once, the first line is not re-emitted.
+      after = capture_stdout do
+        ui.stream(type: :thinking, text: "Then I will reply.\n")
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(after).to include("┊  Then I will reply.")
+      expect(after).to match(/┄ thought for \d+s ┄/)
+      expect(after).not_to include("First I will read the file.") # not re-rendered
+      expect(after).to include("answer")
+    end
+
+    # :collapsed (the DEFAULT) does NOT stream reasoning: nothing reasoning-shaped
+    # appears during the phase — only the one-liner cue lands at collapse.
+    it "does NOT stream reasoning live in collapsed mode (cue only at the end)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "collapsed")
+      mid = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "musing one.\n\nmusing two.\n")
+      end
+      # No reasoning rail/body/text during the phase — just the (live) spinner.
+      expect(mid).not_to include("┄ thinking ┄")
+      expect(mid).not_to include("┊")
+      expect(mid).not_to include("musing")
+      end_out = capture_stdout do
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(end_out).to match(/┄ ✻ thought for \d+s · ctrl-o to show ┄/)
+      expect(end_out).not_to include("musing")
+      expect(end_out).to include("answer")
+    end
+
     it "commits nothing for reasoning in hidden mode" do
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
       Rubino.configuration.set("display", "reasoning", "hidden")
