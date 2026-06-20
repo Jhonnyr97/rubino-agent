@@ -1,0 +1,74 @@
+# Eval task suite for the rubino A/B harness.
+#
+# Each task is a spec with:
+#   id      — unique short name (used in the report + result filenames).
+#   kind    — "edit" (the agent changes files; strong deterministic check) or
+#             "find" (read-only navigation; the agent's final ANSWER is checked
+#             by keyword — a WEAKER, lower-confidence signal).
+#   fixture — name of a directory under eval/fixtures/ copied fresh into a temp
+#             workspace before each run (so runs never pollute each other or the
+#             repo). Use ~ (nil) for a task that needs no fixture.
+#   prompt  — the instruction sent to rubino via `chat -q`.
+#   check   — a shell command run IN the workspace after the turn. Exit 0 = PASS.
+#             For find-tasks the runner writes the agent's final answer to
+#             RESULT.txt in the workspace, so the check can grep it.
+#
+# Add a task: drop a fixture dir under eval/fixtures/, append an entry here.
+
+- id: add_method
+  kind: edit
+  fixture: add_method
+  prompt: >
+    The file lib/calculator.rb defines a Calculator class with an `add` method.
+    The test test/calculator_test.rb expects a `multiply(a, b)` method that
+    returns a * b, but it does not exist yet. Add the `multiply` method to
+    lib/calculator.rb so the tests pass. Do not change the tests.
+  check: "ruby -Itest -Ilib test/calculator_test.rb"
+
+- id: fix_bug
+  kind: edit
+  fixture: fix_bug
+  prompt: >
+    The method Strings.reverse_words in lib/strings.rb is supposed to reverse
+    the ORDER OF WORDS in a sentence (so "hello world there" becomes
+    "there world hello"), but it currently reverses the characters instead.
+    Fix lib/strings.rb so the tests in test/strings_test.rb pass. Do not change
+    the tests.
+  check: "ruby -Itest -Ilib test/strings_test.rb"
+
+- id: add_constant
+  kind: edit
+  fixture: add_constant
+  prompt: >
+    In lib/config.rb there is a module AppConfig. Add a new constant named
+    MAX_CONNECTIONS set to the integer 100, alongside the existing constants.
+  check: "grep -Eq 'MAX_CONNECTIONS\\s*=\\s*100' lib/config.rb"
+
+- id: write_helper
+  kind: edit
+  fixture: ~
+  prompt: >
+    Create a new file named greeter.rb in the current directory containing a
+    Ruby class named Greeter with an instance method `greet(name)` that returns
+    the string "Hello, " followed by the name and a "!" (for example
+    greet("Sam") returns "Hello, Sam!"). Then create a file greeter_test.rb
+    with a minitest test that asserts this behaviour.
+  check: "ruby -I. greeter_test.rb"
+
+- id: find_slider
+  kind: find
+  fixture: find_def
+  prompt: >
+    This project is under lib/. Which file defines the Slider class? Answer with
+    the file path relative to the project root and nothing else.
+  # Weak check (find-task): the model may answer "widgets/slider.rb" or
+  # "lib/widgets/slider.rb" — accept either by matching the path SUFFIX.
+  check: "grep -Eq '(^|/)widgets/slider\\.rb' RESULT.txt"
+
+- id: find_button_render
+  kind: find
+  fixture: find_def
+  prompt: >
+    Which file defines the `render` method of the Button widget? Give the file
+    path relative to the project root.
+  check: "grep -Eq '(^|/)widgets/button\\.rb' RESULT.txt"
