@@ -126,7 +126,15 @@ module Rubino
         def replay_session(ui, session_id)
           return unless session_id
 
-          messages = ::Rubino::Session::Store.new.for_session(session_id)
+          replay_messages(ui, ::Rubino::Session::Store.new.for_session(session_id))
+        end
+
+        # Replay an ALREADY-FETCHED message list (the attach view passes the
+        # child's `entry.messages` straight through, no second store hit). A no-op
+        # on an empty list, framed by the same "Loaded N" status + separators the
+        # resume path shows.
+        def replay_messages(ui, messages)
+          messages = Array(messages)
           return if messages.empty?
 
           ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")

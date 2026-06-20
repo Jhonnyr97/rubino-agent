@@ -172,13 +172,13 @@ module Rubino
       #   over a menu reads dismiss-then-rewind. The hook runs on the reader
       #   thread — callers must only flip a flag, never block or take the
       #   composer's locks (the idle loop drains it, like the Ctrl+C trap).
-      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
+      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, # rubocop:disable Metrics/MethodLength -- one assignment per injected collaborator/hook; a wide DI constructor, not a complex body
                      rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
                      on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
-                     on_busy_command: nil)
+                     on_busy_command: nil, on_back: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -189,7 +189,7 @@ module Rubino
         # — the agent counterpart of @on_mode_cycle (Shift+Tab). nil ⇒ Tab stays
         # a plain completion key.
         @on_agent_cycle = on_agent_cycle
-        @on_double_esc = on_double_esc
+        @on_double_esc  = on_double_esc
         # Invoked on a LONE Esc at the idle prompt with no menu open, BEFORE the
         # Esc-Esc rewind chord arms (#319). Returns truthy to CONSUME the Esc
         # (the idle "polishing… (Esc to skip)" cancel): a single Esc then cancels
@@ -205,6 +205,11 @@ module Rubino
         # meta-command runs NOW (Executor#busy_disposition); a state-mutating one
         # gets a transient notice; free text queues. nil ⇒ legacy queue-all.
         @on_busy_command = on_busy_command
+        # Optional "back out" gesture: ← (or Ctrl+B) on an EMPTY prompt fires this
+        # instead of a no-op cursor move. The agent-attach view wires it to detach
+        # to the main timeline, so going back is a single keypress (or the picker's
+        # "◂ main" row) rather than a typed /detach. nil ⇒ ← stays a plain cursor move.
+        @on_back = on_back
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
         @paste_store = paste_store
@@ -815,22 +820,6 @@ module Rubino
         @render.synchronize do
           @partial = (str || "").to_s
           render_frame(committed: nil)
-        end
-      end
-
-      # Swap the prompt label at the start of the input line. The agent-attach
-      # view sets it to e.g. "sa_1c82 ❯ " to signal the input is now SCOPED to
-      # that subagent (typing steers/answers it); nil or "" restores the default
-      # "❯ ". Recomputes the prefix widths that all caret/wrap math anchors to
-      # (@prompt_width / @prefix_width), then redraws so the change shows at once.
-      # State is updated even while suspended (it converges on the resume redraw);
-      # the repaint itself is dropped while suspended, like every other live write.
-      def set_prompt_label(label)
-        @render.synchronize do
-          @prompt       = label.to_s.empty? ? PROMPT : label.to_s
-          @prompt_width = @prompt.gsub(ANSI_RE, "").length
-          @prefix_width = @rail.gsub(ANSI_RE, "").length + @prompt_width
-          redraw unless @suspended
         end
       end
 
@@ -1679,16 +1668,24 @@ module Rubino
         end
       end
 
-      def submit_agent_snapshot(entry)
-        line = "/agents #{entry.id} --snapshot"
-        @history.remember(line)
-        if (@turn_active || @content_streaming) && @on_busy_command &&
-           @on_busy_command.call(line) == :immediate
+      # Enter on the subagent picker ATTACHES to that agent: the REPL switches the
+      # whole timeline to the agent's (clear + replay) and scopes the input to it.
+      # Unlike a typed command this is an internal action — no input-history entry
+      # and no echo (the REPL clears the screen on attach, so an echo would only
+      # flash then vanish). Just queue "/agents <id> --attach"; if a turn is
+      # mid-flight, route it through the busy classifier so it runs now.
+      def submit_agent_attach(entry)
+        # Attach is a BETWEEN-TURNS view switch (it clears the screen, replays the
+        # agent's transcript and scopes the input), so it cannot run while a parent
+        # turn owns the screen. During a turn, say so with a transient toast rather
+        # than silently queuing it — the child's activity is already live in the
+        # panel, and the user attaches from the idle prompt once the turn ends.
+        if @turn_active || @content_streaming
+          announce("⚠ attach when the turn ends")
           return
         end
 
-        @input_queue&.push(line)
-        print_above("#{@prompt}#{echo_safe(line)}") if @echo == :prompt
+        @input_queue&.push("/agents #{entry.id} --attach")
       end
 
       # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
@@ -1861,6 +1858,15 @@ module Rubino
 
       # Move the cursor by +delta+ codepoints, clamped to the buffer.
       def move_by(delta)
+        # ← (or Ctrl+B) on an EMPTY prompt is the "back out" gesture when one is
+        # wired (the agent-attach view detaches to the main timeline — no typed
+        # /detach needed). Only when there's nothing to move over, so it never
+        # steals a real cursor move within typed text.
+        if delta.negative? && @on_back && buffer.empty?
+          @on_back.call
+          return
+        end
+
         @render.synchronize do
           @input_line.move_by(delta)
           auto_update_menu # moving off the token closes the menu
@@ -2112,7 +2118,15 @@ module Rubino
           entry = @agent_menu.accept
           redraw
         end
-        submit_agent_snapshot(entry) if entry
+        return unless entry
+
+        if AgentMenu.main_row?(entry)
+          # The "◂ main" row: leave an attached agent (the REPL detaches, or it's
+          # a harmless no-op at the main prompt). Routed like the ← back-out.
+          @input_queue&.push("/detach")
+        else
+          submit_agent_attach(entry)
+        end
       end
 
       # Handle a bracketed-paste body. The paste is inserted into the editable
