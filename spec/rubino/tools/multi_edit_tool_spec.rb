@@ -147,4 +147,33 @@ RSpec.describe Rubino::Tools::MultiEditTool do
       expect(File.read(path)).to eq("hello world") # untouched (atomic)
     end
   end
+
+  # FUZZY fallback (ported from pi): each edit first tries a byte-exact match
+  # against the CURRENT working buffer (which reflects prior edits), then a
+  # normalized fuzzy match on a miss. The span maps back to original bytes.
+  describe "fuzzy fallback (#edit-fuzzy)" do
+    it "applies a fuzzy (smart-quote) edit when the exact bytes don't match" do
+      File.write(path, %(a = "x"\nb = "y"\n))
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [
+          { "old_string" => %(“x”), "new_string" => %("1") },
+          { "old_string" => %(“y”), "new_string" => %("2") }
+        ]
+      )
+      expect(out).to be_a(Hash)
+      expect(File.read(path)).to eq(%(a = "1"\nb = "2"\n))
+    end
+
+    it "fails the whole call atomically on an ambiguous fuzzy match" do
+      File.write(path, %("a" "a"))
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [{ "old_string" => %(“a”), "new_string" => %("b") }]
+      )
+      expect(out).to be_a(String)
+      expect(out).to include("matches")
+      expect(File.read(path)).to eq(%("a" "a")) # untouched (atomic)
+    end
+  end
 end
