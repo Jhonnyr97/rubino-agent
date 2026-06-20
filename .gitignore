@@ -45,3 +45,7 @@ Thumbs.db
 
 # Claude Code local state (skills, transient agent worktrees)
 .claude/
+
+# Eval harness: raw per-run result JSON is generated output, not source.
+# Keep the directory (via .gitkeep) but ignore the timestamped result files.
+/eval/results/*.json
