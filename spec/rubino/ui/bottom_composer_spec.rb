@@ -1514,7 +1514,7 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     after { Rubino::Tools::BackgroundTasks.reset! }
 
-    it "opens from Down on an empty prompt and selects a snapshot command with Enter" do
+    it "opens from Down on an empty prompt and ATTACHES to the selected agent with Enter" do
       entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
       reg.record_tool_started(entry.id, "read parser.rb")
 
@@ -1526,8 +1526,10 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       composer.handle_key("\r")
       expect(composer.agent_menu_open?).to be(false)
-      expect(queue.shift).to eq("/agents #{entry.id} --snapshot")
-      expect(output.string).to include("#{PROMPT}/agents #{entry.id} --snapshot")
+      # Enter queues the internal attach command; it is NOT echoed (the REPL
+      # clears+replays on attach, so an echo would only flash then vanish).
+      expect(queue.shift).to eq("/agents #{entry.id} --attach")
+      expect(output.string).not_to include("--attach")
     end
 
     it "navigates live subagents with arrows while preserving normal history Up" do
@@ -1538,7 +1540,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.send(:history_down)
       composer.handle_key("\r")
 
-      expect(queue.shift).to eq("/agents #{second.id} --snapshot")
+      expect(queue.shift).to eq("/agents #{second.id} --attach")
       expect(output.string).to include(first.id)
       expect(output.string).to include(second.id)
 

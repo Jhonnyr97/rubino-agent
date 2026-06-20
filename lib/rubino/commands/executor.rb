@@ -201,10 +201,13 @@ module Rubino
           # signal the REPL applies to the live runner + Rubino::ActiveAgent.
           agent_switch_handler.handle_picker(arguments)
         when "agents", "tasks"
-          # handle_agents returns nil (puts-based UI); the explicit :handled
-          # stops try_execute falling through to unknown-command (#34).
-          agents_handler.handle_agents(arguments)
-          :handled
+          # handle_agents returns nil (puts-based UI) for the list/drill-in/steer
+          # forms, so we report :handled to stop try_execute falling through to
+          # unknown-command (#34). The `--attach` form instead returns a
+          # {attach_agent:} signal for the REPL (switch the whole timeline to that
+          # agent) — pass it straight through when present.
+          result = agents_handler.handle_agents(arguments)
+          result.is_a?(Hash) ? result : :handled
         when "stop" # `/stop <id>` → `/agents <id> --stop` alias (FRICTION-4)
           agents_handler.handle_stop_alias(arguments) # returns :handled
         when "reply"

@@ -1679,16 +1679,20 @@ module Rubino
         end
       end
 
-      def submit_agent_snapshot(entry)
-        line = "/agents #{entry.id} --snapshot"
-        @history.remember(line)
+      # Enter on the subagent picker ATTACHES to that agent: the REPL switches the
+      # whole timeline to the agent's (clear + replay) and scopes the input to it.
+      # Unlike a typed command this is an internal action — no input-history entry
+      # and no echo (the REPL clears the screen on attach, so an echo would only
+      # flash then vanish). Just queue "/agents <id> --attach"; if a turn is
+      # mid-flight, route it through the busy classifier so it runs now.
+      def submit_agent_attach(entry)
+        line = "/agents #{entry.id} --attach"
         if (@turn_active || @content_streaming) && @on_busy_command &&
            @on_busy_command.call(line) == :immediate
           return
         end
 
         @input_queue&.push(line)
-        print_above("#{@prompt}#{echo_safe(line)}") if @echo == :prompt
       end
 
       # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
@@ -2112,7 +2116,7 @@ module Rubino
           entry = @agent_menu.accept
           redraw
         end
-        submit_agent_snapshot(entry) if entry
+        submit_agent_attach(entry) if entry
       end
 
       # Handle a bracketed-paste body. The paste is inserted into the editable
