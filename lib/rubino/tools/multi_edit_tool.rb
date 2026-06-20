@@ -96,26 +96,39 @@ module Rubino
           old_b = to_match_bytes(old_s)
           new_b = to_match_bytes(new_s)
 
-          unless working.include?(old_b)
-            # Mental model was wrong — let the model's next read of this path
-            # bypass dedup and fetch fresh bytes for recovery (r5 B3).
-            @read_tracker&.note_edit_failure(expanded)
-            return "Error: edit ##{idx + 1}: old_string not found (check whitespace; " \
-                   "remember edits see the result of prior edits)"
-          end
+          if working.include?(old_b)
+            count = working.scan(old_b).size
+            if count > 1 && !replace_all
+              return "Error: edit ##{idx + 1}: #{count} matches for old_string. " \
+                     "Add surrounding context to disambiguate, or set replace_all: true."
+            end
 
-          count = working.scan(old_b).size
-          if count > 1 && !replace_all
-            return "Error: edit ##{idx + 1}: #{count} matches for old_string. " \
-                   "Add surrounding context to disambiguate, or set replace_all: true."
-          end
+            working = if replace_all
+                        working.gsub(old_b) { new_b }
+                      else
+                        working.sub(old_b) { new_b }
+                      end
+            applied_count += replace_all ? count : 1
+          else
+            # EXACT miss → FUZZY fallback. Matches against the CURRENT working
+            # buffer (which already reflects prior edits in this call), located
+            # in original bytes, normalized text never written.
+            spans = FuzzyMatch.find_spans(working, old_b)
+            if spans.nil? || spans.empty?
+              # Mental model was wrong — let the model's next read of this path
+              # bypass dedup and fetch fresh bytes for recovery (r5 B3).
+              @read_tracker&.note_edit_failure(expanded)
+              return "Error: edit ##{idx + 1}: old_string not found (check whitespace; " \
+                     "remember edits see the result of prior edits)"
+            end
+            if spans.size > 1 && !replace_all
+              return "Error: edit ##{idx + 1}: #{spans.size} matches for old_string. " \
+                     "Add surrounding context to disambiguate, or set replace_all: true."
+            end
 
-          working = if replace_all
-                      working.gsub(old_b) { new_b }
-                    else
-                      working.sub(old_b) { new_b }
-                    end
-          applied_count += replace_all ? count : 1
+            working = FuzzyMatch.splice(working, spans, new_b)
+            applied_count += spans.size
+          end
         end
 
         # Crash-safe write: temp-in-same-dir + fsync + atomic rename. The tool's
