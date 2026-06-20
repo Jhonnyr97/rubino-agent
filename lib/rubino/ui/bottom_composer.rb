@@ -267,10 +267,12 @@ module Rubino
         # once the stream ends so the `┊` aside renders cleanly AFTER the answer
         # instead of between chunks (D1). nil ⇒ nothing deferred.
         @deferred_reveal = false
-        # Subagent CARD block (Variant A): zero or more collapsed live rows shown
-        # ABOVE the streamed partial and the prompt, redrawn in place each frame.
-        # Driven by UI::CLI#set_subagent_cards from the BackgroundTasks registry.
+        # Subagent CARD rows, fed by UI::CLI#set_subagent_cards from the
+        # BackgroundTasks registry. Now rendered BELOW the input (next to the
+        # status footer) by @subagent_panel — the single live representation of
+        # running children, no longer a duplicate block above the timeline.
         @cards = []
+        @subagent_panel = Composer::SubagentPanel.new(agent_menu: @agent_menu, cards: -> { @cards })
         # The live-region renderer: owns the count of rows currently drawn ABOVE
         # the prompt and the scroll-safe erase→commit→redraw frame discipline
         # (see LiveRegion).
@@ -1113,15 +1115,28 @@ module Rubino
         end
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
+        # Rows drawn BELOW the input, top→bottom: the subagent panel (one calm
+        # representation of the running children) then the status footer. A fresh
+        # array so appending the status never mutates the panel's own rows.
+        below_rows = below_input_rows
+        below_rows += [status] if status
 
         @region.clear_input_block
         rows.each_with_index do |row, i|
           @output.print("\r\e[2K#{row}")
-          @output.print("\r\n") if i < rows.length - 1 || status
+          @output.print("\r\n") if i < rows.length - 1 || !below_rows.empty?
         end
-        @output.print("\r\e[2K#{status}") if status
+        # Clamp each below-row to one column SHORT of the width (#fit_row): a glyph
+        # in the final column arms the terminal's deferred auto-wrap, and the
+        # trailing CRLF then double-scrolls — which slides the block out from under
+        # the next frame's relative clear and strands a ghost ❯ row. Same rule
+        # LiveRegion#emit_row uses for the rows above the input.
+        below_rows.each_with_index do |row, i|
+          @output.print("\r\e[2K#{fit_row(row)}")
+          @output.print("\r\n") if i < below_rows.length - 1
+        end
 
-        below = (rows.length - 1 - caret_row) + (status ? 1 : 0)
+        below = (rows.length - 1 - caret_row) + below_rows.length
         park_caret(rows, caret_col, below)
         @region.input_drawn(above: caret_row, below: below)
         # Remember the width this block was laid out at so the NEXT frame can
@@ -1541,13 +1556,16 @@ module Rubino
       # its turn runs); and the streamed partial (one row per line, capped, so
       # a rolling markdown tail can't push the prompt off-screen, #127).
       def live_rows
-        rows = @cards.dup
-        rows.concat(menu_rows)
-        rows.concat(agent_menu_rows)
+        rows = menu_rows
         rows << @announce unless @announce.empty?
         rows.concat(@queued.rows)
         rows.concat(partial_rows)
         rows
+      end
+
+      # The single subagent panel, drawn BELOW the input (see Composer::SubagentPanel).
+      def below_input_rows
+        @subagent_panel.rows(@cols)
       end
 
       # The rendered completion-menu rows at the current width (also a spec

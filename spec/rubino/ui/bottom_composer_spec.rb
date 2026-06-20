@@ -1959,12 +1959,14 @@ RSpec.describe Rubino::UI::BottomComposer do
   end
 
   describe "#set_cards (subagent card block, Variant A)" do
-    it "renders each card on its own row above the prompt, prompt redrawn last" do
+    it "renders each subagent on its own row BELOW the input (the panel)" do
       composer.handle_key("x")
       composer.set_cards(["▸ sa_1 · explore · running", "▸ sa_2 · test · running"])
-      expect(output.string).to include("▸ sa_1 · explore · running\r\n")
-      expect(output.string).to include("▸ sa_2 · test · running\r\n")
-      expect(output.string).to end_with("#{PROMPT}x")
+      s = output.string
+      expect(s).to include("▸ sa_1 · explore · running")
+      expect(s).to include("▸ sa_2 · test · running")
+      # The panel renders BELOW the input: the prompt+text comes before the cards.
+      expect(s.index("#{PROMPT}x")).to be < s.index("▸ sa_1")
       expect(composer.cards.size).to eq(2)
     end
 
@@ -1973,9 +1975,10 @@ RSpec.describe Rubino::UI::BottomComposer do
       output.truncate(0)
       output.rewind
       composer.set_cards(["▸ sa_1 · running · 2 tools"])
-      # The prior card row is cleared via cursor-up (\e[1A\e[2K) rather than a
-      # fresh line scrolling the old one up — the in-place card contract.
-      expect(output.string).to include("\e[1A\e[2K")
+      # In place: the panel row below the input is cleared (\e[2K) and repainted,
+      # never a fresh line scrolling the old one up — the no-flood contract. (The
+      # walk is now DOWNWARD, \e[1B, since the panel sits below the input.)
+      expect(output.string).to include("\e[2K")
       expect(output.string).to include("2 tools")
       # No duplication: the old "1 tool" text isn't re-emitted in this frame.
       expect(output.string).not_to include("1 tool")
@@ -1994,21 +1997,24 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.cards.size).to eq(described_class::MAX_CARD_ROWS)
     end
 
-    it "coexists with a live streamed partial (cards above, partial above prompt)" do
+    it "coexists with a live streamed partial (partial above the input, panel below)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.set_partial("streaming token")
-      expect(output.string).to include("▸ sa_1 · running\r\n")
-      expect(output.string).to include("streaming token\r\n")
+      s = output.string
+      expect(s).to include("▸ sa_1 · running")
+      expect(s).to include("streaming token")
+      # The streamed partial renders above the input; the subagent panel below it.
+      expect(s.index("streaming token")).to be < s.rindex("▸ sa_1 · running")
       expect(composer.cards.size).to eq(1)
       expect(composer.partial?).to be(true)
     end
 
-    it "a committed print_above repaints cards above the committed line + prompt" do
+    it "a committed print_above keeps the subagent panel (persistent live-region state)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.print_above("a finished timeline row")
       expect(output.string).to include("a finished timeline row\r\n")
-      # The card survives a commit (it's persistent live-region state).
-      expect(output.string).to include("▸ sa_1 · running\r\n")
+      # The panel survives a commit (it's persistent live-region state).
+      expect(output.string).to include("▸ sa_1 · running")
     end
   end
 
