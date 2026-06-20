@@ -3,16 +3,16 @@
 require "spec_helper"
 
 RSpec.describe Rubino::UI::AgentMenu do
-  Entry = Struct.new(:id, :subagent, :status, :last_activity, keyword_init: true) do
-    def initialize(**) = super
+  subject(:menu) { described_class.new(entries: -> { entries }) }
+
+  let(:entry_struct) do
+    Struct.new(:id, :subagent, :status, :last_activity, keyword_init: true)
   end
+  let(:entries) { [entry(id: "sa_1"), entry(id: "sa_2"), entry(id: "sa_3")] }
 
   def entry(id:, status: :running, last_activity: "")
-    Entry.new(id: id, subagent: "explore", status: status, last_activity: last_activity)
+    entry_struct.new(id: id, subagent: "explore", status: status, last_activity: last_activity)
   end
-
-  let(:entries) { [entry(id: "sa_1"), entry(id: "sa_2"), entry(id: "sa_3")] }
-  subject(:menu) { described_class.new(entries: -> { entries }) }
 
   it "starts closed" do
     expect(menu).not_to be_open

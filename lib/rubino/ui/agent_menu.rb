@@ -35,7 +35,7 @@ module Rubino
       # input — no stranded ❯ marker. Returns true while it stayed open and moved,
       # false when it closed (or was already closed), so the caller can just
       # `up!; redraw` without re-implementing the focus hand-off.
-      def up!
+      def up! # rubocop:disable Naming/PredicateMethod -- a bang mutator that also reports whether it stayed open, not a pure query
         return false unless open?
 
         if @state[:selected].zero?

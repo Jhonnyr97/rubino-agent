@@ -1403,7 +1403,7 @@ module Rubino
           return :quit if buffer.empty?
 
           delete_forward
-        when "\x01" then move_to(0)              # Ctrl+A → line start
+        when "\x01" then move_to(0) # Ctrl+A → line start
         when "\x05" then move_to(buffer.length) # Ctrl+E → line end
         when "\x02" then move_by(-1)             # Ctrl+B → left
         when "\x06" then move_by(1)              # Ctrl+F → right

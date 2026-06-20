@@ -715,9 +715,7 @@ module Rubino
 
           remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
           thread.join(remaining) if remaining.positive?
-        end
 
-        entries.each do |entry|
           thread = entry.thread
           next unless joinable_thread?(thread)
 
