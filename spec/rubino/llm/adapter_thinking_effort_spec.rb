@@ -42,11 +42,11 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     end
   end
 
-  # #2 — capability gate. A provider that ACCEPTS a thinking budget but lacks a
-  # separate reasoning channel dumps its chain-of-thought as plain content
-  # deltas (observed live on MiniMax). providers.<name>.supports_thinking
-  # gates the budget at the source; unset, MiniMax-family model ids default
-  # to off and everything else stays on.
+  # #2 — capability gate. providers.<name>.supports_thinking gates the budget at
+  # the source. Unset, thinking now defaults ON for every provider (including
+  # MiniMax-family): on the anthropic-compatible path M3 streams the reasoning as
+  # proper thinking deltas, filling the pre-tool-call window that otherwise reads
+  # as a multi-second freeze. An explicit `false` opts a backend out.
   describe "#thinking_budget — supports_thinking capability gate (#2)" do
     def minimax_adapter(supports_thinking: :unset, effort: nil)
       overrides = {}
@@ -58,12 +58,12 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       described_class.new(model_id: "MiniMax-M2.7", config: test_configuration(overrides))
     end
 
-    it "defaults MiniMax-family model ids to no thinking budget" do
-      expect(minimax_adapter.send(:thinking_budget)).to eq(0)
+    it "defaults MiniMax-family model ids to thinking ON (fills the pre-tool-call window)" do
+      expect(minimax_adapter.send(:thinking_budget)).to eq(8_000)
     end
 
-    it "beats an explicit thinking.effort (capability over request)" do
-      expect(minimax_adapter(effort: "high").send(:thinking_budget)).to eq(0)
+    it "lets an explicit supports_thinking: false beat a thinking.effort request" do
+      expect(minimax_adapter(supports_thinking: false, effort: "high").send(:thinking_budget)).to eq(0)
     end
 
     it "re-enables the budget chain with supports_thinking: true" do
