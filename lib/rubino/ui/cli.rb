@@ -77,9 +77,16 @@ module Rubino
         @turn_tok_chars     = 0
         @thinking_started_at = nil
         @reasoning_buffer   = +""
+        # :full-mode LIVE reasoning stream state. @reasoning_md splits the streamed
+        # thinking deltas into prose blocks (committed as dim `┊` lines as they
+        # finish), and @reasoning_streaming latches true once the opening
+        # `┄ thinking ┄` rail has been painted so the close rail / live-tail
+        # teardown run exactly once. Both are nil/false outside :full streaming.
+        @reasoning_md       = nil
+        @reasoning_streaming = false
         # The last retained reasoning block (committed/collapsed), revealable via
         # ctrl-o even after the answer has streamed. Reset per turn.
-        @last_reasoning     = nil
+        @last_reasoning = nil
         @last_reasoning_seconds = nil
         @activity_open      = false
         @activity_name      = nil
@@ -672,6 +679,11 @@ module Rubino
       def clear_stream_region
         @stream_md = nil
         @stream_type = nil
+        # An interrupt mid-:full-reasoning leaves the live tail painted and the
+        # latch set; drop both so the torn-down region can't leak a stale aside
+        # latch into the next turn's reasoning phase.
+        @reasoning_md = nil
+        @reasoning_streaming = false
         show_live_tail("")
       end
 
@@ -1099,18 +1111,11 @@ module Rubino
 
         @turn_tok_chars += text.length if @turn_active
 
-        # Reasoning deltas are NEVER raw-printed (that dumped unstyled reasoning
-        # indistinguishable from the answer). Buffer them so the collapse cue /
-        # full aside / ctrl-o reveal can render them in house style instead. The
-        # status row keeps animating (label "thinking") while reasoning
-        # accumulates — and RESUMES if a tool/content block hid it (P4).
+        # Reasoning deltas are handled by #handle_thinking_delta: ALWAYS buffered
+        # (for the collapse cue / ctrl-o reveal), and in :full ALSO streamed live
+        # as a dim aside; :collapsed/:hidden just keep the spinner animating.
         if type == :thinking
-          @reasoning_buffer << text
-          @thinking_started_at ||= monotonic_now
-          if @turn_active && thinking_painter
-            @thinking_indicator = true
-            status_ensure("thinking", phase: :thinking)
-          end
+          handle_thinking_delta(text)
           return
         end
 
@@ -1143,6 +1148,26 @@ module Rubino
         # commits still land cleanly above.
         mark_content_streaming(true)
         stream_content(text)
+      end
+
+      # A reasoning delta. The text is ALWAYS buffered (the collapse cue / ctrl-o
+      # reveal render it in house style off @reasoning_buffer). In :full mode it
+      # is ADDITIONALLY streamed live as a dim `┊` aside so the pre-tool-call
+      # window fills with flowing thought instead of a bare spinner (Hermes'
+      # _fire_reasoning_delta); the live tail owns the transient row, so the
+      # status spinner is NOT animated here. :collapsed/:hidden keep the original
+      # spinner-only behaviour — the status row animates ("thinking"), RESUMING if
+      # a tool/content block hid it (P4); no reasoning text is shown.
+      def handle_thinking_delta(text)
+        @reasoning_buffer << text
+        @thinking_started_at ||= monotonic_now
+
+        if reasoning_mode == :full
+          stream_reasoning_live(text)
+        elsif @turn_active && thinking_painter
+          @thinking_indicator = true
+          status_ensure("thinking", phase: :thinking)
+        end
       end
 
       def stream_end
@@ -1989,6 +2014,58 @@ module Rubino
         clear_line
       end
 
+      # :full mode — stream a reasoning delta LIVE as a dim `┊` aside, reusing the
+      # SAME live-tail discipline as #stream_content so the in-flight thought
+      # rolls in a bounded region and committed lines snap above the prompt in ONE
+      # frame (no stranded raw tail, #265). The committed scrollback is byte-for-
+      # byte the body #commit_reasoning_aside would have printed — just streamed
+      # incrementally instead of dumped at collapse — so #collapse_reasoning only
+      # has to paint the closing rail (no double-render).
+      #
+      # The status spinner is hidden the first time we take over the row: the live
+      # tail and the ticker both paint the one transient row, so they must not run
+      # at once. The reasoning here is DIM (clearly NOT the answer) — solving the
+      # original "raw reasoning indistinguishable from the answer" defect with
+      # style, not by buffering.
+      def stream_reasoning_live(text)
+        unless @reasoning_streaming
+          # First reasoning delta of this phase: drop the spinner, open the rail.
+          clear_thinking_indicator
+          @reasoning_md = StreamingMarkdown.new
+          @reasoning_streaming = true
+          commit_block_atomic(["", @pastel.dim("┄ thinking ┄#{"─" * 50}")])
+        end
+
+        completed = @reasoning_md.feed(text)
+        clear_plain_tail if completed.any?
+        completed.each { |block| commit_block_atomic(reasoning_aside_lines(block)) }
+        # Bounded dim rolling window over the in-flight (un-committed) thought.
+        show_reasoning_tail(@reasoning_md.live_tail(LIVE_TAIL_ROWS))
+      end
+
+      # The streamed-aside body for a completed reasoning block: each line on the
+      # dim 2-space `┊` rail — the SAME shape #commit_reasoning_aside commits, so
+      # the live-streamed scrollback matches the all-at-once aside exactly.
+      def reasoning_aside_lines(block)
+        block.to_s.split("\n", -1).map { |line| @pastel.dim("┊  #{line}") }
+      end
+
+      # The DIM live tail for the in-flight reasoning line — same wrap/clamp
+      # geometry as #show_live_tail (so it can't push the prompt off-screen), but
+      # styled dim on the `┊` rail so it reads as reasoning, never the answer.
+      def show_reasoning_tail(tail)
+        text = Util::Output.sanitize_terminal(tail.to_s)
+        if text.empty?
+          paint_live("")
+          return
+        end
+
+        budget = terminal_cols - MD_MARGIN.length - 1
+        rows = text.split("\n", -1).flat_map { |line| wrap_tail_row(line, budget) }
+        framed = rows.last(LIVE_TAIL_ROWS).map { |row| @pastel.dim("┊  #{row}") }.join("\n")
+        paint_live(framed)
+      end
+
       # Flush on stream end: render+commit the final block. If a fence is still
       # open (the model never sent the closing ```), the buffered text is emitted
       # as PLAIN lines so nothing is lost (markdown of a half-open fence would be
@@ -2299,12 +2376,22 @@ module Rubino
 
         clear_thinking_indicator
 
-        unless buffered.strip.empty?
+        # :full mode already streamed the body live (#stream_reasoning_live): the
+        # `┄ thinking ┄` rail and `┊` lines are committed scrollback. Finalize the
+        # live tail ONCE (commit any in-flight remainder, clear the transient row,
+        # paint the closing rail) — re-rendering the whole aside here would double
+        # it. Falls through to the retention bookkeeping below.
+        if @reasoning_streaming
+          finalize_reasoning_stream(seconds)
+        elsif !buffered.strip.empty?
           if mode == :full
             commit_reasoning_aside(buffered, seconds)
           elsif mode == :collapsed
             commit_reasoning_cue(seconds)
           end
+        end
+
+        unless buffered.strip.empty?
           @last_reasoning = buffered
           @last_reasoning_seconds = seconds
           # A new thought is retained — reset the reveal guard so the first
@@ -2316,6 +2403,25 @@ module Rubino
 
         @reasoning_buffer = +""
         @thinking_started_at = nil
+      end
+
+      # Finalize a :full LIVE reasoning stream (#stream_reasoning_live) at the
+      # answer/tool boundary: flush the StreamingMarkdown remainder as the last
+      # dim `┊` block (committed in ONE live-region frame that ALSO tears down the
+      # transient tail, #265), then paint the closing `┄ thought for <N>s ┄` rail
+      # and a trailing blank — the same close #commit_reasoning_aside ends on. The
+      # body was already shown live, so NOTHING here re-renders it. Idempotent via
+      # the @reasoning_streaming latch the caller already checked.
+      def finalize_reasoning_stream(seconds)
+        remaining = @reasoning_md&.flush
+        if remaining && !remaining.empty?
+          commit_block_atomic(reasoning_aside_lines(remaining))
+        else
+          show_live_tail("") # clear the transient tail row even with no remainder
+        end
+        commit_block_atomic([@pastel.dim("┄ thought for #{seconds}s ┄"), ""])
+        @reasoning_md = nil
+        @reasoning_streaming = false
       end
 
       # The dim one-liner committed in :collapsed mode:
