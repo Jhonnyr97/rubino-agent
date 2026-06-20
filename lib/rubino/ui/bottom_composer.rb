@@ -172,13 +172,13 @@ module Rubino
       #   over a menu reads dismiss-then-rewind. The hook runs on the reader
       #   thread — callers must only flip a flag, never block or take the
       #   composer's locks (the idle loop drains it, like the Ctrl+C trap).
-      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
+      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, # rubocop:disable Metrics/MethodLength -- one assignment per injected collaborator/hook; a wide DI constructor, not a complex body
                      rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
                      on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
-                     on_busy_command: nil)
+                     on_busy_command: nil, on_back: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -189,7 +189,7 @@ module Rubino
         # — the agent counterpart of @on_mode_cycle (Shift+Tab). nil ⇒ Tab stays
         # a plain completion key.
         @on_agent_cycle = on_agent_cycle
-        @on_double_esc = on_double_esc
+        @on_double_esc  = on_double_esc
         # Invoked on a LONE Esc at the idle prompt with no menu open, BEFORE the
         # Esc-Esc rewind chord arms (#319). Returns truthy to CONSUME the Esc
         # (the idle "polishing… (Esc to skip)" cancel): a single Esc then cancels
@@ -205,6 +205,11 @@ module Rubino
         # meta-command runs NOW (Executor#busy_disposition); a state-mutating one
         # gets a transient notice; free text queues. nil ⇒ legacy queue-all.
         @on_busy_command = on_busy_command
+        # Optional "back out" gesture: ← (or Ctrl+B) on an EMPTY prompt fires this
+        # instead of a no-op cursor move. The agent-attach view wires it to detach
+        # to the main timeline, Claude-style — arrows + Enter only, no typed
+        # /detach. nil ⇒ ← stays a plain cursor move.
+        @on_back = on_back
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
         @paste_store = paste_store
@@ -1869,6 +1874,15 @@ module Rubino
 
       # Move the cursor by +delta+ codepoints, clamped to the buffer.
       def move_by(delta)
+        # ← (or Ctrl+B) on an EMPTY prompt is the "back out" gesture when one is
+        # wired (the agent-attach view detaches to the main timeline — Claude-style,
+        # no typed /detach). Only when there's nothing to move over, so it never
+        # steals a real cursor move within typed text.
+        if delta.negative? && @on_back && buffer.empty?
+          @on_back.call
+          return
+        end
+
         @render.synchronize do
           @input_line.move_by(delta)
           auto_update_menu # moving off the token closes the menu
