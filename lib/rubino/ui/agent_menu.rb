@@ -30,11 +30,16 @@ module Rubino
         @state = nil
       end
 
+      # Move the highlight up one. Returns false when already at the TOP (nothing
+      # to move to) so the caller can CLOSE the menu and hand focus back to the
+      # input — ↑ off the top of the list exits the picker.
       def up!
-        return unless open?
+        return false unless open?
+        return false if @state[:selected].zero?
 
-        @state[:selected] = [@state[:selected] - 1, 0].max
+        @state[:selected] -= 1
         sync_top
+        true
       end
 
       def down
