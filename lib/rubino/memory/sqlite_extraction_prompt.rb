@@ -3,7 +3,7 @@
 module Rubino
   module Memory
     # The single aux-LLM extraction prompt for the Sqlite backend. Collapses
-    # Zep's six-step ingestion (entity/fact/temporal extraction + invalidation)
+    # a multi-step ingestion (entity/fact/temporal extraction + invalidation)
     # into ONE structured call: given the latest turn and the currently-live
     # facts, the model returns durable atomic facts to `add` and contradicted
     # facts to `supersede`. The doctrine ("durable declarative facts, not

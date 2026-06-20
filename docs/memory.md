@@ -1,6 +1,6 @@
 # Memory
 
-rubino remembers facts about you and the project across sessions. The default backend is a small SQLite "tiny-Zep" store — Zep/Graphiti-inspired, minus the graph database, the server, and the multi-call pipeline.
+rubino remembers facts about you and the project across sessions. The default backend is a small SQLite fact store — an LLM-extracted, bi-temporal fact store with hybrid recall, minus the graph database, the server, and the multi-call pipeline.
 
 ## Backends
 
@@ -8,7 +8,7 @@ Memory backends are pluggable (registered like tools). Two ship:
 
 | `memory.backend` | What it is |
 |---|---|
-| `sqlite` (**default**) | tiny-Zep: LLM-extracted atomic facts, bi-temporal supersession, hybrid FTS5/BM25 (+ optional vector) ranked recall, graph-lite 1-hop blend |
+| `sqlite` (**default**) | LLM-extracted atomic facts, bi-temporal supersession, hybrid FTS5/BM25 (+ optional vector) ranked recall, graph-lite 1-hop blend |
 | `default` | the legacy non-ranked store (kept for back-compat) |
 
 Switch backends:
@@ -20,7 +20,7 @@ rubino memory backend sqlite   # switch (writes memory.backend to config.yml)
 
 The agent loop, the in-chat `/memory` view, the `/status` panel, the `rubino memory` CLI, and the HTTP `/v1/memory` operations all use the **active** backend (fixed in #94/#106/#83 — these surfaces previously read a hardwired legacy table and never saw the facts the agent actually persists).
 
-## The sqlite tiny-Zep backend
+## The sqlite memory backend
 
 ### What's stored
 

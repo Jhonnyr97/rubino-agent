@@ -496,7 +496,7 @@ Rubino.loader.setup
 # existing Store/Retriever/Extractor, so an unset `memory.backend` is
 # byte-identical to the pre-pluggable behavior.
 Rubino::Memory::Backends.register(Rubino::Memory::Backends::Default)
-# The "tiny-Zep" SQLite backend: LLM-extracted atomic facts, bi-temporal
+# The SQLite memory backend: LLM-extracted atomic facts, bi-temporal
 # supersession, and hybrid FTS5 + recency recall. Switch with
 # `rubino memory backend sqlite`.
 Rubino::Memory::Backends.register(Rubino::Memory::Backends::Sqlite)

@@ -259,7 +259,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
   # -----------------------------------------------------------------------
   # Regression for #106: the in-chat `/memory` handler must read/write the SAME
   # active backend the agent loop, the `rubino memory` CLI (#94) and the
-  # HTTP /v1/memory ops use (the configured sqlite tiny-Zep backend), not the
+  # HTTP /v1/memory ops use (the configured sqlite backend), not the
   # legacy `:memories` table that `Memory::Store` is hardwired to. Facts stored
   # through the active backend must be visible to `/memory` / `/memory <query>`
   # and removable by `/memory forget`.
