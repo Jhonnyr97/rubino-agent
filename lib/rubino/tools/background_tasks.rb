@@ -97,7 +97,17 @@ module Rubino
         # (sync/foreground spawn, headless).
         :parent_sink,
         keyword_init: true
-      )
+      ) do
+        # The child subagent's FULL persisted transcript. A background child runs
+        # its own Agent::Runner with its own session, so its complete message
+        # history (its tool calls + what it said) lives in the session store under
+        # `runner.session[:id]` — the agent-attach view replays exactly this.
+        # Empty when no runner/session is wired (sync/foreground/headless spawn).
+        def messages
+          session_id = runner&.session&.dig(:id)
+          session_id ? ::Rubino::Session::Store.new.for_session(session_id) : []
+        end
+      end
 
       # How many recent activity lines the drill-in shows (the live `recent:` ring).
       ACTIVITY_LOG_MAX = 6
