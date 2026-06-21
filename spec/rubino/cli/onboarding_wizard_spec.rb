@@ -91,6 +91,23 @@ RSpec.describe Rubino::CLI::OnboardingWizard do
     expect(Rubino::LLM::CredentialCheck.usable?(config)).to be true
   end
 
+  # #541 (honesty): the wizard SAVES the key but does not validate it (no live
+  # auth probe). A bogus key got a confident "Configured … ✓" that read as
+  # "validated" and only broke on the first turn. The success line must say it
+  # was SAVED and point at the verify step — never claim it is "Configured" in a
+  # way that implies the key works.
+  it "reports the saved key as 'Saved … run a prompt to verify', not 'Configured'" do
+    ui = Rubino::UI::Null.new
+    wizard = described_class.new(ui: ui, input: StringIO.new("1\nsk-fake-invalid-xyz\n"), output: output)
+    expect(wizard.run).to be true
+
+    success = ui.messages.find { |m| m[:level] == :success }
+    expect(success).not_to be_nil
+    expect(success[:message]).to start_with("Saved")
+    expect(success[:message]).to match(/verify/i)
+    expect(success[:message]).not_to start_with("Configured")
+  end
+
   it "detects an already-present env key and reuses it instead of forcing a paste" do
     # Smooth path (industry norm): when the chosen provider's env var is already
     # set, the wizard offers to use it; a bare Enter accepts the detected key.
