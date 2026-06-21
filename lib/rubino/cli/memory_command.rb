@@ -29,7 +29,18 @@ module Rubino
                                       include_retired: options[:all])
 
         if memories.empty?
-          Rubino.ui.info("No memories found.")
+          # Don't dead-end an empty list (#559): point the user at how memories
+          # come to exist (extracted from chat), matching the actionable empty
+          # state `sessions list` gives. With a `--kind` filter active the set may
+          # just be narrowed, so say so; `--all` surfaces superseded facts.
+          hint =
+            if options[:kind]
+              "No memories found for kind '#{options[:kind]}' (drop --kind to see all)."
+            else
+              "No memories yet — rubino remembers facts from your chats. " \
+                "Start a `rubino chat` and they'll show up here (use --all for superseded ones)."
+            end
+          Rubino.ui.info(hint)
           return
         end
 

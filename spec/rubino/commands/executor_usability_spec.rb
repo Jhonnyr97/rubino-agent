@@ -114,6 +114,30 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to include("rubino")
     end
 
+    # #559: the welcome chrome opens with the ONE shared tagline and stays in a
+    # non-conversational voice — no first-person "I" leaks into menus/hints.
+    describe "welcome chrome voice + tagline (#559)" do
+      before { Rubino::Commands::Executor.welcome(runner: nil, ui: ui) }
+
+      it "uses the single shared tagline (Rubino::TAGLINE)" do
+        expect(info_lines.join("\n")).to include(Rubino::TAGLINE)
+      end
+
+      it "does not say the old second tagline variant" do
+        expect(info_lines.join("\n")).not_to include("ask in plain language")
+      end
+
+      it "has no first-person 'I' in the chrome copy" do
+        chrome = info_lines.join("\n")
+        expect(chrome).not_to match(/\bI\b/)
+        expect(chrome).not_to include("what I recall")
+      end
+
+      it "phrases the /memory hint without first person" do
+        expect(info_lines.join("\n")).to include("what rubino remembers about you")
+      end
+    end
+
     # #82: /status is the at-a-glance STATE panel — it earns its place with
     # the things a status check wants beyond the boot header.
     it "adds approval-policy, provider, and tool-roster lines (#82)" do
