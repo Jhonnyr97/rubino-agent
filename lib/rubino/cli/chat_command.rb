@@ -163,6 +163,35 @@ module Rubino
         nil # the idle completion affordance is cosmetic — never break the prompt.
       end
 
+      # True when the idle input buffer holds nothing the user is mid-typing, so
+      # an autonomous background-subagent resume (#561) is safe to start without
+      # pre-empting a half-written line. A composer-less path (piped / -q) has no
+      # buffer to protect, so it's treated as empty. Best-effort: any hiccup
+      # reading the buffer defers the resume (returns false) rather than risking
+      # stomping a draft.
+      def idle_buffer_empty?(composer)
+        return true unless composer
+
+        composer.buffer.to_s.strip.empty?
+      rescue StandardError
+        false
+      end
+
+      # Builds the SINGLE coalesced follow-up prompt that the autonomous resume
+      # (#561) hands back at idle when one or more background subagents finished
+      # after the parent's turn ended. All parked `[background-task]` completion
+      # notices are joined into one turn (never one turn per child) and framed as
+      # an instruction to act — fold in the results and deliver the combined
+      # summary the parent owed the user. Mirrors Loop::NOTICES_PREAMBLE's intent
+      # (notices are context to act on), shaped for a turn whose ONLY content is
+      # the notices (there is no trailing user message to defer to here).
+      def coalesced_resume_prompt(notices)
+        "[background subagents finished — the work you delegated is done. " \
+          "Fold in the results below and deliver the combined answer/summary " \
+          "you owe the user; do not re-delegate or wait further.]\n\n" \
+          "#{notices.join("\n\n")}"
+      end
+
       # Emits a single warn for each distinct swallowed auto-resolve error so a
       # programming bug (NameError on every idle tick) is visible without spamming
       # the log once per 50ms poll. Transient runtime errors still degrade quietly.
@@ -1581,6 +1610,34 @@ module Rubino
             @input_from_queue = pending_queued.include?(queued) ? [queued] : nil
             line = queued
             break
+          end
+
+          # AUTONOMOUS background-subagent resume (#561): no typed line is
+          # waiting, but one or more children finished AFTER the parent's turn
+          # ended and parked their `[background-task]` completion notices. The
+          # mid-turn fold-in (Loop#inject_steered_input) only fires while the
+          # parent is still iterating, so two children + "wait for both" left the
+          # parent idle forever — the combined result never delivered. Here we
+          # COALESCE every parked notice into ONE follow-up turn and return it as
+          # the next prompt, so the parent resumes on its own and summarises the
+          # results. Guards:
+          # - notices_pending? is false the moment a typed line exists (it wins
+          #   via #shift above and folds the notices in on its own turn), so an
+          #   in-progress prompt is never pre-empted;
+          # - the buffer guard defers while the user is mid-line (the notice stays
+          #   parked, never discarded, and rides the line the user submits);
+          # - the drain is atomic and one-shot, so the same completions can't
+          #   re-trigger a second turn.
+          if input_queue.notices_pending? && idle_buffer_empty?(composer)
+            notices = input_queue.drain_notices
+            unless notices.empty?
+              line = coalesced_resume_prompt(notices)
+              # Synthetic resume, not a user submission: do NOT echo it as a typed
+              # message (no @input_from_queue), the notices are already surfaced
+              # above the prompt by #surface_finished_subagents.
+              @input_from_queue = nil
+              break
+            end
           end
 
           # Drain an Esc-Esc the reader recorded: open the rewind picker (it
