@@ -270,8 +270,8 @@ module Eval
 
     # Turn the log channel on in the workspace config the same way `setup` does
     # for a real opt-in (the master flag alone leaves logs.enabled=false).
-    def enable_log_channel!(ws)
-      path = File.join(ws.home, "config.yml")
+    def enable_log_channel!(workspace)
+      path = File.join(workspace.home, "config.yml")
       cfg = YAML.safe_load_file(path, permitted_classes: [Symbol]) || {}
       cfg["tool_output_compression"] ||= {}
       cfg["tool_output_compression"]["logs"] ||= {}
