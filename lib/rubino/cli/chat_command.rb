@@ -1454,6 +1454,13 @@ module Rubino
         # Declared BEFORE the composer so the lambda captures this local.
         # Without a runner there is no session to rewind, so no hook.
         rewind_pending = false
+        # Idle Ctrl+C (#551): the composer reads \x03 as a BYTE and calls this
+        # hook (raw(intr: true) does NOT reliably keep ISIG on — on Darwin Ctrl+C
+        # is swallowed without raising SIGINT, so the in-band byte is the only
+        # dependable signal). It just flips the flag the poll loop below drains
+        # to run the clear/two-tap-exit through #idle_interrupt — declared here so
+        # the lambda captures it.
+        int_pending = false
         composer = UI::BottomComposer.new(
           input_queue: input_queue,
           prompt: build_prompt,
@@ -1469,6 +1476,7 @@ module Rubino
           max_input_rows: Rubino.configuration.display_input_max_rows,
           paste_store: paste_store,
           on_double_esc: runner ? -> { rewind_pending = true } : nil,
+          on_idle_interrupt: -> { int_pending = true },
           # ONE Esc cancels the detached post-turn polishing (#319): only when
           # it's actually in flight, so a stray idle Esc still falls through to
           # the rewind chord. Trap-safe — flips the polishing cancel token only.
@@ -1493,16 +1501,16 @@ module Rubino
         idle_cards.paint
         ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
 
-        # Gate idle Ctrl+C through the composer (BH-2): the composer runs under
-        # raw(intr: true), so a single Ctrl+C still raises SIGINT — which would
-        # otherwise hit the session-end / default handler and quit, silently
-        # discarding a typed draft. Trap INT here so a draft is never nuked: the
-        # trap body stays trap-safe (flip a flag only — Mutex#lock is forbidden
-        # in a trap, Ruby #14222), and the poll loop below performs the actual
-        # clear/hint/exit through the composer OUTSIDE trap context. Restored in
-        # the ensure so the trap never leaks past the idle read.
-        int_pending = false
-        prev_int    = trap_idle_int { int_pending = true }
+        # SIGINT trap as a FALLBACK only (BH-2 / #551): the dependable idle Ctrl+C
+        # path is now the in-band \x03 byte (on_idle_interrupt above), because
+        # raw(intr: true) does NOT reliably raise SIGINT (Darwin swallows it). On
+        # the platforms where the signal DOES still arrive we keep this trap so a
+        # stray SIGINT flips the SAME int_pending flag (the poll loop drains it
+        # via #idle_interrupt) instead of hitting the default handler and quitting,
+        # silently discarding a typed draft. Trap-safe (flip a flag only — Mutex
+        # is forbidden in a trap, Ruby #14222); restored in the ensure so it never
+        # leaks past the idle read.
+        prev_int = trap_idle_int { int_pending = true }
 
         # Non-blocking "polishing… (Esc to skip)" indicator (#319): the detached
         # post-turn polishing is still running while THIS idle prompt is live, so

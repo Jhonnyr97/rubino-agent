@@ -571,6 +571,64 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
+    # Ctrl+C = INTERRUPT (#551): raw(intr: true) does NOT reliably raise SIGINT
+    # (Darwin swallows Ctrl+C without a signal AND without a byte the trap could
+    # see), so the dependable path is the in-band \x03 BYTE read here, routed to
+    # the SAME on_interrupt hook Esc uses — NOT to the exit-confirm, and the byte
+    # NEVER re-enters the buffer (no double-run). At idle it drives on_idle_
+    # interrupt (the two-tap clear/exit) instead.
+    context "Ctrl+C (\\x03) interrupts the active turn (#551)" do
+      it "fires on_interrupt while STREAMING and does not re-enter the buffer" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn
+        c.begin_content_stream
+        c.handle_key("\x03")
+        expect(fired).to eq(1)
+        expect(c.buffer).to eq("") # \x03 is consumed, never inserted (no double-run)
+      end
+
+      it "fires on_interrupt during the THINKING phase" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn # thinking, not yet streaming
+        c.handle_key("\x03")
+        expect(fired).to eq(1)
+      end
+
+      it "interrupts (not exit) and the queue HEAD runs next — no double-run" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        "msg B".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r") # type-ahead queues
+        c.handle_key("\x03") # interrupt the turn
+        expect(queue.shift).to eq("msg B") # runs next, exactly once
+        expect(queue.shift).to be_nil      # not double-submitted
+      end
+
+      it "routes to on_idle_interrupt (NOT on_interrupt) when idle" do
+        turn_int = 0
+        idle_int = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { turn_int += 1 },
+                                on_idle_interrupt: -> { idle_int += 1 })
+        # NO begin_turn: idle. Ctrl+C must drive the idle two-tap, not the turn cancel.
+        c.handle_key("\x03")
+        expect(turn_int).to eq(0)
+        expect(idle_int).to eq(1)
+      end
+
+      it "is a quiet no-op with neither hook wired (standalone/tests)" do
+        c = described_class.new(input_queue: queue, input: input, output: output)
+        expect { c.handle_key("\x03") }.not_to raise_error
+        expect(c.buffer).to eq("")
+      end
+    end
+
     # H1 (CWE-150): a typed/pasted line carrying terminal control/escape
     # sequences must be NEUTRALIZED at the echo/commit render boundary — the
     # same defense the approval card already applies — so an OSC title-set
