@@ -242,10 +242,31 @@ RSpec.describe "secret-file write approval gate (#480)" do
       "~/.ssh/config" => [".ssh", "config"],
       "~/.aws/credentials" => [".aws", "credentials"],
       "~/.netrc" => [".netrc"],
-      "~/.git-credentials" => [".git-credentials"]
+      "~/.git-credentials" => [".git-credentials"],
+      # #537 — READ block widened to the same home-credential stores the
+      # WRITE-side detector already treats as secret (defense-in-depth).
+      "~/.kube/config" => [".kube", "config"],
+      "~/.docker/config.json" => [".docker", "config.json"],
+      "~/.config/gh/hosts.yml" => [".config", "gh", "hosts.yml"],
+      "~/.gnupg/private-keys-v1.d/key" => [".gnupg", "private-keys-v1.d", "key"],
+      "~/.azure/accessTokens.json" => [".azure", "accessTokens.json"]
     }.each do |label, rel|
       it "BLOCKS reading #{label} with a clear error and no content" do
         path = write_under_home(*rel)
+        err = Rubino::Security::SecretPath.read_block_error(path)
+        expect(err).to include("Access denied")
+        expect(err).not_to include("SECRET_MATERIAL")
+      end
+    end
+
+    # #537 — `.netrc`/`.git-credentials` were only blocked at their exact
+    # $HOME path; a project-local copy was read-allowed and unredacted. Now
+    # blocked by basename wherever they sit. Asserted via tmp_dir (NOT $HOME)
+    # so the check is project-local and hermetic (no dependence on real ~).
+    %w[.netrc .git-credentials].each do |base|
+      it "BLOCKS reading a project-local #{base} with a clear error and no content" do
+        path = File.join(tmp_dir, base)
+        File.write(path, "SECRET_MATERIAL\n")
         err = Rubino::Security::SecretPath.read_block_error(path)
         expect(err).to include("Access denied")
         expect(err).not_to include("SECRET_MATERIAL")
