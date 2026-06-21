@@ -76,14 +76,20 @@ module Rubino
         prompt = build_summary_prompt(content, previous_summary)
         @config.compression_max_summary_tokens
 
-        # Use the auxiliary compression model if configured
-        model = compression_model
-        adapter = LLM::RubyLLMAdapter.new(model_id: model)
-
-        response = adapter.chat(messages: [
-                                  { role: "system", content: summary_system_prompt },
-                                  { role: "user", content: prompt }
-                                ])
+        # Route through AuxiliaryClient so the WHOLE `auxiliary.compression` block
+        # is honored — provider, model AND base_url — exactly like the other aux
+        # tasks (vision/approval/summarize). The summary used to build the adapter
+        # directly from only `auxiliary.compression.model`, silently ignoring
+        # provider/base_url, so a configured summary endpoint did nothing. At the
+        # defaults (provider:"main", model:"") AuxiliaryClient resolves to the
+        # primary model, so existing behaviour is unchanged.
+        response = LLM::AuxiliaryClient.new(config: @config).call(
+          task: "compression",
+          messages: [
+            { role: "system", content: summary_system_prompt },
+            { role: "user", content: prompt }
+          ]
+        )
 
         body = response&.content || fallback_summary(messages, previous_summary)
         with_summary_prefix(body)
@@ -150,17 +156,6 @@ module Rubino
           content = msg.respond_to?(:content) ? msg.content : msg[:content]
           "[#{role}] #{content}"
         end.join("\n\n")
-      end
-
-      def compression_model
-        aux_config = @config.auxiliary_compression_config
-        model = aux_config["model"]
-
-        if model && !model.empty?
-          model
-        else
-          @config.model_default
-        end
       end
 
       def summary_store
