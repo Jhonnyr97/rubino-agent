@@ -390,6 +390,17 @@ module Rubino
         dig("tool_output_compression", "code") || {}
       end
 
+      # LOG/command-output compression config. Independently gated from `code`
+      # via its own `enabled` flag, so we can flip the high-ROI log channel on
+      # without touching the code-skeleton channel.
+      def tool_output_compression_logs
+        dig("tool_output_compression", "logs") || {}
+      end
+
+      def tool_output_compression_logs_enabled?
+        tool_output_compression_logs["enabled"] == true
+      end
+
       # -- Security section --
       def approvals_mode
         dig("approvals", "mode")

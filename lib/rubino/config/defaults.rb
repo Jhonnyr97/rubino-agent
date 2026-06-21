@@ -432,6 +432,25 @@ module Rubino
             # Method bodies up to this many lines are kept VERBATIM; only larger
             # bodies are elided behind a pointer.
             "keep_method_body_max_lines" => 8
+          },
+          # LOG/command-output compression (test runs, linters, build/shell
+          # dumps). The high-ROI channel: the agent reads command output WHOLE,
+          # and the signal (failures + the final tally) is a tiny fraction of the
+          # bytes. Keeps every error/failure + summary VERBATIM, drops passing/
+          # info noise, appends a pointer to retrieve the original. OFF by default
+          # (own flag, independent of `code`) — we measure before flipping it on.
+          "logs" => {
+            "enabled" => false,
+            # Outputs shorter than this pass through UNCHANGED.
+            "min_lines" => 40,
+            # Hard cap on kept lines.
+            "max_total_lines" => 100,
+            # Keep every error/failure up to this many (first & last always).
+            "max_errors" => 10,
+            "max_warnings" => 5,
+            "max_stack_traces" => 3,
+            # Lines of surrounding context kept around each failure.
+            "context_lines" => 4
           }
         },
         "file_read" => {
