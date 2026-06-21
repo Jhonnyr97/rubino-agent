@@ -43,6 +43,8 @@ Gem::Specification.new do |spec|
   spec.add_dependency "dry-schema", "~> 1.13"
   spec.add_dependency "faraday", "~> 2.9"
   spec.add_dependency "faraday-retry", "~> 2.2"
+  # Readability-style main-content extraction in the webfetch tool.
+  spec.add_dependency "nokogiri", "~> 1.18"
   spec.add_dependency "oauth2", "~> 2.0"
   spec.add_dependency "puma", "~> 6.4"
   spec.add_dependency "rack", "~> 3.1"
