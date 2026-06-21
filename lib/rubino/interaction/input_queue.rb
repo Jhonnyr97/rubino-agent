@@ -102,6 +102,17 @@ module Rubino
         @mutex.synchronize { !@lines.empty? || !@notices.empty? }
       end
 
+      # True when one or more background notices are parked AND no typed line is
+      # waiting. The idle prompt uses this to decide whether to AUTONOMOUSLY
+      # resume into a follow-up turn (#561): a background subagent that finished
+      # after the parent's turn ended leaves its `[background-task]` notice here
+      # with nothing to carry it. Gated on @lines being empty so a typed line
+      # always wins — it consumes via #shift and the notices fold in on that
+      # turn through the normal turn-start drain (#13), never pre-empted.
+      def notices_pending?
+        @mutex.synchronize { @lines.empty? && !@notices.empty? }
+      end
+
       private
 
       # Normalizes a pushed line: nil → nil; blank → nil (dropped so a stray

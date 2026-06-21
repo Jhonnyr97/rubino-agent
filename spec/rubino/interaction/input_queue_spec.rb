@@ -125,6 +125,57 @@ RSpec.describe Rubino::Interaction::InputQueue do
     end
   end
 
+  # #561: the idle prompt uses #notices_pending? to decide whether to start an
+  # AUTONOMOUS follow-up turn when a background child finished after the parent's
+  # turn ended. It must be true ONLY when notices are parked AND no typed line is
+  # waiting — a typed line always wins (it consumes via #shift and the notices
+  # fold in on THAT turn), so an in-progress prompt is never pre-empted.
+  describe "#notices_pending? (#561 autonomous resume gate)" do
+    it "is false on a fresh queue" do
+      expect(queue.notices_pending?).to be(false)
+    end
+
+    it "is true when only notices are parked" do
+      queue.push_notice("[background-task] sa_1 completed")
+      expect(queue.notices_pending?).to be(true)
+    end
+
+    it "is false when a typed line is also waiting (the line wins)" do
+      queue.push_notice("[background-task] sa_1 completed")
+      queue.push("typed line")
+      expect(queue.notices_pending?).to be(false)
+    end
+
+    it "is false when only a typed line is waiting" do
+      queue.push("typed line")
+      expect(queue.notices_pending?).to be(false)
+    end
+
+    it "becomes true again once the blocking line is consumed by #shift" do
+      queue.push_notice("[background-task] sa_1 completed")
+      queue.push("typed line")
+      expect(queue.notices_pending?).to be(false)
+      queue.shift # consume the typed line
+      expect(queue.notices_pending?).to be(true)
+    end
+
+    it "is false after the notices are drained (one-shot, no re-trigger)" do
+      queue.push_notice("[background-task] sa_1 completed")
+      queue.drain_notices
+      expect(queue.notices_pending?).to be(false)
+    end
+
+    it "coalesces several parked notices — still ONE drain serves them all" do
+      queue.push_notice("[background-task] sa_1 completed")
+      queue.push_notice("[background-task] sa_2 completed")
+      expect(queue.notices_pending?).to be(true)
+      expect(queue.drain_notices).to eq(
+        ["[background-task] sa_1 completed", "[background-task] sa_2 completed"]
+      )
+      expect(queue.notices_pending?).to be(false)
+    end
+  end
+
   describe "#pending?" do
     it "is false on a fresh queue" do
       expect(queue.pending?).to be(false)
