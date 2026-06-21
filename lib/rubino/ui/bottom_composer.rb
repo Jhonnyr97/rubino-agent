@@ -178,7 +178,7 @@ module Rubino
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
                      on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
-                     on_busy_command: nil, on_back: nil)
+                     on_busy_command: nil, on_back: nil, on_idle_interrupt: nil)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -201,6 +201,16 @@ module Rubino
         # default; only read behind `&&` (the double-tap rewind chord window).
         @echo          = echo
         @on_interrupt  = on_interrupt
+        # Invoked when Ctrl+C (\x03) is read at the IDLE prompt (#551). The raw
+        # reader runs under +raw(intr: true)+, but on Darwin/macOS (and other
+        # platforms) that does NOT reliably keep ISIG on — Ctrl+C is swallowed by
+        # the terminal discipline WITHOUT raising SIGINT and WITHOUT delivering a
+        # byte the loop could act on. So we no longer depend on a SIGINT trap for
+        # the in-band interrupt: \x03 is read as a byte here (ISIG-off raw still
+        # delivers it) and routed to this hook, which drives the existing idle
+        # two-tap clear/exit. nil ⇒ the legacy ignore (the in-turn composer uses
+        # @on_interrupt instead). Runs on the reader thread — flip a flag only.
+        @on_idle_interrupt = on_idle_interrupt
         # @on_busy_command classifies a line typed mid-turn so a read-only/control
         # meta-command runs NOW (Executor#busy_disposition); a state-mutating one
         # gets a transient notice; free text queues. nil ⇒ legacy queue-all.
@@ -1418,14 +1428,14 @@ module Rubino
           request_reveal
         when "\x0c" # Ctrl+L: clear the screen and redraw the prompt in place.
           clear_screen
+        when "\x03" then handle_ctrl_c # Ctrl+C: interrupt the turn / idle two-tap (#551)
         when "\e"
           # ESC: start of a CSI/SS3 escape (arrows, Home/End, word-jump,
           # Shift+Tab, bracketed paste) OR a lone ESC that dismisses the menu.
           consume_escape_sequence
         else
           insert(ch) if printable?(ch)
-          # Other control bytes (incl. \x03 Ctrl+C, which the kernel turns into
-          # SIGINT before it reaches here under raw(intr: true)) are ignored.
+          # Other control bytes are ignored.
         end
         nil
       end
@@ -2282,6 +2292,31 @@ module Rubino
         @last_esc_at = now
       end
 
+      # Ctrl+C (\x03) read as a BYTE (#551). The reader runs under
+      # +raw(intr: true)+, but ISIG is NOT honoured reliably across platforms
+      # (Darwin/macOS swallows Ctrl+C without raising SIGINT), so we no longer
+      # rely on the SIGINT trap installed by the chat command for the in-band
+      # interrupt — we act on the byte here, the SAME way Esc does.
+      #
+      # MID-TURN (a turn is thinking OR streaming) with @on_interrupt wired:
+      # cancel the in-flight turn through the EXACT cancel-token machinery Esc
+      # uses (#421) — the chat loop then runs the head of the queue or unwinds to
+      # a clean idle prompt. No double-run (the byte never re-enters the input
+      # buffer), no exit-confirm, and the per-turn cancel token resets on the
+      # NEXT turn (Runner#run! builds a fresh one), so there is no poisoned-token
+      # carry-over (B1).
+      #
+      # IDLE (no turn) with @on_idle_interrupt wired: drive the existing idle
+      # two-tap clear/exit (clear a non-empty draft, else arm "press Ctrl+C again
+      # to exit"). With neither hook wired (standalone/tests) it is a quiet no-op.
+      def handle_ctrl_c
+        if (@turn_active || @content_streaming) && @on_interrupt
+          fire_interrupt(nil)
+        elsif @on_idle_interrupt
+          @on_idle_interrupt.call
+        end
+      end
+
       # True when a prior lone Esc armed the chord within the window and the
       # composer may fire it: a hook is wired AND the prompt is idle (no turn
       # running, no content streaming) — rewind is an idle-only gesture.
@@ -2335,10 +2370,12 @@ module Rubino
         end
       end
 
-      # Spawns the raw keystroke loop. raw(intr: true) keeps ISIG on so Ctrl+C
-      # still generates SIGINT and reaches the double-tap trap installed by the
-      # chat command — we never read or swallow \x03. The block form restores
-      # the prior termios on exit; #stop additionally forces cooked mode.
+      # Spawns the raw keystroke loop. raw(intr: true) is requested, but ISIG is
+      # NOT honoured reliably across platforms (on Darwin/macOS Ctrl+C is
+      # swallowed by the raw discipline WITHOUT raising SIGINT), so we do NOT rely
+      # on a SIGINT trap for the in-band interrupt: \x03 arrives here as a byte
+      # and #handle_ctrl_c routes it to the SAME cancel path Esc uses (#551). The
+      # block form restores the prior termios on exit; #stop forces cooked mode.
       #
       # The loop blocks in IO.select on BOTH $stdin AND a self-pipe "stop"
       # channel, never in a bare blocking +getc+. {#stop_reader} signals the
