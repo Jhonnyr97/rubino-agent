@@ -62,11 +62,29 @@ module Rubino
       ].freeze
 
       # $HOME-relative credential DIRECTORIES blocked on the structured READ
-      # path (anything inside is treated as secret). Ported from Hermes'
+      # path (anything inside is treated as secret). Started from Hermes'
       # `build_write_denied_prefixes` (file_safety.py:66-82): `~/.ssh` and
       # `~/.aws`. This is what blocks `~/.aws/credentials` (the lowercase
       # `aws_secret_access_key` the redactor doesn't mask).
-      BLOCKED_HOME_CREDENTIAL_DIRS = [".ssh", ".aws"].freeze
+      #
+      # Extended (#537) so the READ deny-set covers the same home-credential
+      # stores the WRITE-side detector (HOME_PREFIXES) already treats as secret:
+      # `~/.kube` (bearer tokens in config), `~/.docker` (registry auth in
+      # config.json), `~/.config/gh` (GitHub tokens in hosts.yml), `~/.gnupg`
+      # (private keyrings) and `~/.azure` (cloud creds). Previously read-allowed
+      # and unredacted, so those secrets reached the model. Defense-in-depth
+      # layered on the trust model — NOT a complete boundary (the shell tool
+      # runs as the same OS user and can still read them).
+      BLOCKED_HOME_CREDENTIAL_DIRS = [
+        ".ssh", ".aws", ".kube", ".docker", ".gnupg", ".azure",
+        File.join(".config", "gh")
+      ].freeze
+
+      # Credential BASENAMES blocked on the structured READ path wherever they
+      # sit — HOME or project-local (#537). `.netrc`/`.git-credentials` were
+      # only blocked at their exact $HOME path, so a project-local copy was
+      # read-allowed and unredacted. Defense-in-depth, not a boundary.
+      BLOCKED_CREDENTIAL_BASENAMES = [".netrc", ".git-credentials"].to_set.freeze
 
       # Returns a model-facing error string when a structured READ (read/grep)
       # targets a denied secret/credential path, or nil when the read is
@@ -74,7 +92,8 @@ module Rubino
       # home credential files/dirs Hermes write-denies (file_safety.py:35-82):
       # the project-local .env family ANYWHERE on disk, the agent-home
       # credential stores and the mcp-tokens/ tree, and the user's SSH/AWS/
-      # netrc/git-credentials stores under $HOME.
+      # kube/docker/gnupg/azure/gh credential stores under $HOME (#537), plus
+      # `.netrc`/`.git-credentials` wherever they sit (HOME or project-local).
       #
       # **NOT a security boundary** — the shell runs as the same OS user and
       # can still `cat .env`, where the value is REDACTED (see Redactor).
@@ -103,11 +122,12 @@ module Rubino
                  "can still bypass.)"
         end
 
-        if home_credential_path?(target)
+        if BLOCKED_CREDENTIAL_BASENAMES.include?(base) || home_credential_path?(target)
           return "Access denied: #{path} is a private credential store " \
-                 "(SSH key, AWS credentials, netrc, or git-credentials) and " \
-                 "cannot be read to prevent credential leakage. (Defense-in-depth " \
-                 "— not a security boundary; the shell tool can still bypass.)"
+                 "(SSH key, cloud/kube/docker/gh credentials, gnupg keyring, " \
+                 "netrc, or git-credentials) and cannot be read to prevent " \
+                 "credential leakage. (Defense-in-depth — not a security " \
+                 "boundary; the shell tool can still bypass.)"
         end
 
         nil
