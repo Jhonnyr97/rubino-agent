@@ -102,6 +102,80 @@ RSpec.describe Rubino::CLI::Chat::SessionResolver, "#print_session_history" do
     end
   end
 
+  # #542: some tool-loop providers (MiniMax-M3) return a FINAL assistant message
+  # whose content is the WHOLE turn's text accumulated across tool rounds — every
+  # earlier "pre-tool" segment concatenated with NO separator
+  # (`…which prints 2.Output is 2…`). Those earlier segments were ALSO persisted
+  # as their own intermediate assistant rows (replayed above), so re-rendering the
+  # final message verbatim both GLUED them and DUPLICATED them — while the live
+  # turn showed each segment once, on its own line. Replay must render only the
+  # genuinely-new tail of a restated final message, through #assistant_text (which
+  # supplies the live blank-line separator).
+  describe "restated final message (the #542 glue)" do
+    it "does not glue or duplicate a final message that restates earlier segments" do
+      t = Time.now
+      pre = "The file contains a single line: puts 1+1, which prints 2."
+      post = "Output is 2, as expected."
+      out = replay([
+                     msg(role: "user", content: "read calc.rb then run it",
+                         metadata: {}, created_at: t),
+                     # intermediate pre-tool text (its own persisted row)
+                     msg(role: "assistant", content: pre,
+                         metadata: { tool_calls: [{}] }, created_at: t + 1),
+                     msg(role: "tool", content: "2", tool_name: "shell",
+                         tool_call_id: "x", metadata: { status: "success" },
+                         created_at: t + 2),
+                     # FINAL message restates the pre-tool text glued to the new tail
+                     msg(role: "assistant", content: "#{pre}#{post}",
+                         metadata: {}, created_at: t + 3)
+                   ])
+      # Collapse render whitespace so a narrow-terminal hard-wrap in the markdown
+      # renderer doesn't split a sentence across lines and fool the substring math.
+      txt  = plain(out)
+      flat = txt.gsub(/\s+/, " ")
+      # The verbatim #542 glue must NOT appear…
+      expect(txt).not_to include("prints 2.Output is 2")
+      # …each segment is shown exactly ONCE (no duplication from the restatement)…
+      expect(flat.scan("which prints 2.").size).to eq(1)
+      expect(flat.scan("Output is 2, as expected.").size).to eq(1)
+      # …and the new tail still renders (separated by the live answer_gap).
+      expect(flat).to include(post)
+    end
+
+    it "renders the new tail as its own block when the model restates two segments" do
+      t = Time.now
+      a = "Reading the file now."
+      b = "It prints 2."
+      out = replay([
+                     msg(role: "assistant", content: a,
+                         metadata: { tool_calls: [{}] }, created_at: t),
+                     msg(role: "tool", content: "ok", tool_name: "read",
+                         tool_call_id: "r", metadata: { status: "success" },
+                         created_at: t + 1),
+                     # final restates "a" then adds "b", glued
+                     msg(role: "assistant", content: "#{a}#{b}",
+                         metadata: {}, created_at: t + 2)
+                   ])
+      flat = plain(out).gsub(/\s+/, " ")
+      expect(plain(out)).not_to include("now.It prints")
+      expect(flat.scan(a).size).to eq(1)
+      expect(flat).to include(b)
+    end
+
+    it "resets the restatement window at a new user turn" do
+      t = Time.now
+      # Same text in two SEPARATE turns must both render — the second is not a
+      # restatement of the first (the user boundary resets the accumulator).
+      out = replay([
+                     msg(role: "user", content: "turn one", metadata: {}, created_at: t),
+                     msg(role: "assistant", content: "Done.", metadata: {}, created_at: t + 1),
+                     msg(role: "user", content: "turn two", metadata: {}, created_at: t + 2),
+                     msg(role: "assistant", content: "Done.", metadata: {}, created_at: t + 3)
+                   ])
+      expect(plain(out).scan("Done.").size).to eq(2)
+    end
+  end
+
   # The reusable public entry the agent-attach view switch replays through (it
   # clears the screen and replays the SELECTED agent's own session).
   # #print_session_history now delegates to it, so the parity specs above already
