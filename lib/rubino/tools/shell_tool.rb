@@ -164,6 +164,9 @@ module Rubino
         return "Error: cannot access working directory: #{cwd.inspect}" unless working_dir
 
         if background
+          # Background shells are detached and outlive the turn; the persistent
+          # session cwd (a per-call carry-over) deliberately does NOT apply to
+          # them — they run in the explicitly resolved cwd, like before (#544/#545).
           spawn_background(command, working_dir)
         else
           run = execute_foreground(command, working_dir, timeout)
@@ -230,14 +233,106 @@ module Rubino
         Security::HardlineGuard.block_reason(command)
       end
 
-      # Resolves cwd via realpath so symlinks and "../" are fully expanded;
-      # returns nil if the directory does not exist or is unreadable.
+      # Resolves the cwd a foreground call should run in (#544/#545).
+      #
+      # Persistent, workspace-confined working directory — matching Claude Code:
+      #   - With NO `cwd:` param, the command runs in the SESSION cwd, which
+      #     starts at the workspace root and carries over a prior `cd` (so a bare
+      #     `cd subdir` persists to the next call).
+      #   - With a `cwd:` param, it is resolved against the SESSION cwd when
+      #     relative (so `cwd: "subdir"` is relative to wherever we are now), and
+      #     absolute paths pass straight through. Either way it updates the
+      #     session cwd for the next call.
+      # realpath fully expands symlinks and "../"; returns nil if the directory
+      # does not exist or is unreadable.
       def resolve_cwd(cwd)
-        candidate = cwd || Rubino::Workspace.primary_root
-        path = File.realpath(File.expand_path(candidate))
-        File.directory?(path) ? path : nil
+        base = session_cwd
+        candidate = if cwd.nil? || cwd.to_s.empty?
+                      base
+                    else
+                      File.expand_path(cwd.to_s, base)
+                    end
+        path = File.realpath(candidate)
+        return nil unless File.directory?(path)
+
+        # NB: we deliberately do NOT update the session cwd here. The new cwd is
+        # persisted post-run from the command's ACTUAL final $PWD (which equals
+        # this dir unless the command cd'd further) by #persist_session_cwd, and
+        # only after the workspace-confinement check. That way a `cwd:` outside
+        # the workspace doesn't leak into the next call even if the command
+        # `exit`s before the sentinel prints — the prior (in-workspace) cwd holds.
+        path
       rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
         nil
+      end
+
+      # The process/session-scoped current working directory for foreground
+      # shells. Stored THREAD-LOCAL on purpose: the parent agent loop runs on
+      # one thread (its cwd persists across calls), while every subagent runs in
+      # its own Thread (TaskTool#thread) — so a subagent thread reads a fresh nil
+      # and starts at the workspace root, never inheriting the parent's cwd
+      # (#544/#545 subagent isolation). The ShellTool instance itself is a
+      # process-wide singleton (Registry), so an instance var would WRONGLY share
+      # one cwd across the parent and all concurrent subagents.
+      def session_cwd
+        return Rubino::Workspace.primary_root unless carry_over_enabled?
+
+        Thread.current[:rubino_shell_session_cwd] ||= workspace_root_real
+      end
+
+      def session_cwd=(path)
+        return unless carry_over_enabled?
+
+        Thread.current[:rubino_shell_session_cwd] = path
+      end
+
+      # Canonical (realpath) workspace root — the home the session cwd starts
+      # at and resets to when a command wanders outside the workspace.
+      def workspace_root_real
+        File.realpath(File.expand_path(Rubino::Workspace.primary_root))
+      rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+        Rubino::Workspace.primary_root
+      end
+
+      # Carry-over is ON by default (matches the reference). A config opt-out
+      # (tools.shell_cwd_carryover: false) makes every foreground call default
+      # to the workspace root, like the pre-#545 behaviour.
+      def carry_over_enabled?
+        Rubino.configuration.dig("tools", "shell_cwd_carryover") != false
+      rescue StandardError
+        true
+      end
+
+      # After a foreground command runs, persist its final $PWD as the session
+      # cwd (so a bare `cd subdir` carries to the next call) and confine it to
+      # the workspace (#544/#545):
+      #   - captured_pwd nil  → command `exit`ed before writing fd 3, or
+      #     carry-over off; keep the prior session cwd, no note (best-effort).
+      #   - inside workspace  → adopt it as the session cwd, no note.
+      #   - OUTSIDE workspace → SOFT boundary: do not block (the command already
+      #     ran), RESET the session cwd to the workspace root, return a note so
+      #     the model knows subsequent calls realign. Honours tools.workspace_strict
+      #     (false ⇒ outside is allowed, the cwd is adopted, no note).
+      # Returns the note string to append, or nil.
+      def persist_session_cwd(captured_pwd)
+        return nil unless carry_over_enabled?
+
+        captured_pwd = captured_pwd.to_s.strip
+        return nil if captured_pwd.empty?
+
+        # Canonicalise; if it has vanished (rare: cd into a dir then rm it), keep
+        # the prior cwd rather than corrupting the session.
+        real = canonical_path(captured_pwd)
+        return nil unless real && File.directory?(real)
+
+        if workspace_strict? && !within_workspace?(real)
+          root = workspace_root_real
+          self.session_cwd = root
+          "Shell cwd was reset to #{root}"
+        else
+          self.session_cwd = real
+          nil
+        end
       end
 
       def spawn_background(command, cwd)
@@ -259,14 +354,39 @@ module Rubino
       def execute_foreground(command, cwd, timeout)
         rd = nil
         pgid = nil
+        cwd_rd = nil
+        cwd_wr = nil
         rd, wr = IO.pipe
+
+        # Persist `cd` across calls (#545): after the user's command runs, write
+        # its final $PWD to a DEDICATED fd 3 (not stdout/stderr), so a bare
+        # `cd subdir` carries to the next call WITHOUT ever appearing in the
+        # captured output or the live stream — the model/user see byte-identical
+        # output, no sentinel to strip. fd 3 is a private channel only this code
+        # reads. Off ⇒ spawned byte-identically to before (#545 opt-out).
+        #
+        # The user command's exit status is captured into __rc and re-raised as
+        # the script's exit code AFTER the cwd is written, so wrapping never
+        # masks a non-zero exit (`false` still reports exit 1); pipefail still
+        # governs the user command (the trailing printf is a separate statement).
+        # If the command calls `exit` (which terminates the whole `bash -c`)
+        # nothing is written to fd 3 — best-effort: we capture no cwd and KEEP
+        # the prior session cwd, never crashing or corrupting it.
+        wrapped    = command
+        spawn_opts = { chdir: cwd, pgroup: true, out: wr, err: wr }
+        if carry_over_enabled?
+          cwd_rd, cwd_wr = IO.pipe
+          wrapped = "#{command}\n__rc=$?; printf %s \"$PWD\" >&3; exit $__rc"
+          spawn_opts[3] = cwd_wr
+        end
+
         # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
         # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
         # of being masked by an innocuous last stage (#156).
-        pid = Process.spawn(GIT_HARDENED_ENV, "bash", "-o", "pipefail", "-c", command,
-                            chdir: cwd, pgroup: true, out: wr, err: wr)
+        pid = Process.spawn(GIT_HARDENED_ENV, "bash", "-o", "pipefail", "-c", wrapped, **spawn_opts)
         pgid = pid
         wr.close
+        cwd_wr&.close
         # Register the live process group so a parent-death teardown can reap it
         # synchronously (MED-2). The foreground pgid otherwise lives only in this
         # stack frame, so cancel_all's cooperative cancel can't reach it before
@@ -293,6 +413,18 @@ module Rubino
         capture     = CappedCapture.new(capture_cap)
         capped_hit  = false
         line_buf    = +""
+        # Drain fd 3 (the private cwd channel) in its OWN thread so a never-read
+        # pipe can't deadlock the subprocess: bash blocks on `printf … >&3` once
+        # the pipe buffer fills. A path is tiny so this returns one short read,
+        # but the dedicated reader keeps it correct regardless. nil/empty ⇒ the
+        # command `exit`ed before writing ⇒ keep the prior session cwd.
+        cwd_thr = cwd_rd && Thread.new do
+          cwd_rd.read
+        rescue IOError, Errno::EBADF
+          nil
+        ensure
+          cwd_rd.close unless cwd_rd.closed?
+        end
         output_thr = Thread.new do
           begin
             loop do
@@ -403,8 +535,17 @@ module Rubino
           end
 
           code = status&.exitstatus
-          foreground_result(stdout: output_thr.value,
-                            suffix: exit_suffix(code),
+          stdout = output_thr.value
+          # Persist `cd` + confine to the workspace (#544/#545). Only on the
+          # normal-exit path: the cancel/timeout paths KILLED the group, so fd 3
+          # was never written and captured_pwd is nil ⇒ prior cwd kept. The reset
+          # note (when the command wandered outside) rides the suffix slot,
+          # appended after the exit suffix so neither mangles the other.
+          captured_pwd = cwd_thr&.value
+          cwd_note     = persist_session_cwd(captured_pwd)
+          suffix       = [exit_suffix(code), cwd_note].compact.join("\n")
+          foreground_result(stdout: stdout,
+                            suffix: (suffix unless suffix.empty?),
                             exit_code: code,
                             duration_ms: elapsed_ms(started_at))
         rescue Errno::ECHILD
@@ -417,6 +558,12 @@ module Rubino
       ensure
         ShellRegistry.instance.unregister_pgid(pgid) if pgid
         rd.close if rd && !rd.closed?
+        # fd 3 ends: cwd_wr is closed right after spawn; cwd_rd is drained+closed
+        # by its own reader thread on EOF (the write end goes away when the
+        # process group exits or is killed). Close both defensively in case we
+        # bailed before either ran.
+        cwd_wr.close if cwd_wr && !cwd_wr.closed?
+        cwd_rd.close if cwd_rd && !cwd_rd.closed?
       end
 
       # nil for a clean exit; an honest [Exit code: N] otherwise. 141 keeps

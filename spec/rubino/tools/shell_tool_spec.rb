@@ -124,6 +124,84 @@ RSpec.describe Rubino::Tools::ShellTool do
     end
   end
 
+  # Persistent, workspace-confined working directory (#544/#545), matching
+  # Claude Code: a `cd` carries to the next call, but if the cwd lands OUTSIDE
+  # the workspace it resets to the root (soft boundary — the command still runs).
+  describe "persistent session cwd (#544/#545)" do
+    # Each example runs on its own thread so the thread-local session cwd starts
+    # fresh at the workspace root and never bleeds into a sibling example.
+    def on_fresh_thread(&) = Thread.new(&).value
+
+    around do |example|
+      Dir.mkdir(File.join(Dir.pwd, "cwd_persist_subdir")) unless Dir.exist?("cwd_persist_subdir")
+      example.run
+    end
+
+    it "persists a `cd subdir` to the next call" do
+      on_fresh_thread do
+        tool.call("command" => "cd cwd_persist_subdir")
+        out = payload(tool.call("command" => "pwd")).strip
+        expect(out).to end_with("cwd_persist_subdir")
+      end
+    end
+
+    it "resets to the workspace root and notes it when cwd lands OUTSIDE" do
+      on_fresh_thread do
+        res = tool.call("command" => "cd /tmp")
+        expect(payload(res)).to include("Shell cwd was reset to")
+        # Next call is back at the root, not /tmp.
+        out = payload(tool.call("command" => "pwd")).strip
+        expect(out).not_to start_with("/tmp\n")
+        expect(out).not_to eq("/tmp")
+      end
+    end
+
+    it "resolves a RELATIVE cwd: param against the session cwd" do
+      on_fresh_thread do
+        out = payload(tool.call("command" => "pwd", "cwd" => "cwd_persist_subdir")).strip
+        expect(out).to end_with("cwd_persist_subdir")
+      end
+    end
+
+    it "does NOT leak the sentinel into a normal command's output" do
+      on_fresh_thread do
+        out = payload(tool.call("command" => "echo plain_output_xyz"))
+        expect(out).to include("plain_output_xyz")
+        expect(out).not_to include("RUBINO_CWD_")
+      end
+    end
+
+    it "keeps the prior cwd (no crash) when the command exits before the sentinel" do
+      on_fresh_thread do
+        tool.call("command" => "cd cwd_persist_subdir")
+        res = tool.call("command" => "echo mid; exit 7")
+        expect(res[:exit_code]).to eq(7)
+        expect(payload(res)).to include("mid")
+        # Prior cwd survived the early exit.
+        out = payload(tool.call("command" => "pwd")).strip
+        expect(out).to end_with("cwd_persist_subdir")
+      end
+    end
+
+    it "still reports a non-zero exit code through the sentinel wrapper" do
+      on_fresh_thread do
+        res = tool.call("command" => "false")
+        expect(res[:exit_code]).to eq(1)
+      end
+    end
+
+    it "allows a cwd outside the workspace with workspace_strict=false (no reset)" do
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig).with("tools", "workspace_strict").and_return(false)
+      on_fresh_thread do
+        res = tool.call("command" => "cd /tmp")
+        expect(payload(res)).not_to include("Shell cwd was reset")
+        out = payload(tool.call("command" => "pwd")).strip
+        expect(out).to match(%r{/tmp\z})
+      end
+    end
+  end
+
   # Regression: a Ctrl+C during a long-running shell (sleep 10, network
   # hang) used to wait out the full execution because the loop in
   # execute_foreground never polled @cancel_token. ToolExecutor now wires
