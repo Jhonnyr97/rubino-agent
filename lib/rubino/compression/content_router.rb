@@ -11,7 +11,8 @@ module Rubino
     #   :log   → LogCompressor      (test/build/lint/shell dumps)
     #   :code  → Compressor(:code)  (Ruby source from a WHOLE-file read → skeleton)
     #   :diff  → DiffCompressor     (unified diff → trimmed context + lock elision)
-    #   :grep / :short / :json / :other → PASSTHROUGH (no compression)
+    #   :json  → JsonCompressor     (whole-output JSON → schema-fold / row select)
+    #   :grep / :short / :other → PASSTHROUGH (no compression)
     #
     # The DIFF channel is special: a diff is the "show me the diff" view, and the
     # human sees the FULL coloured diff in the tool `:body` (scrollback), which is
@@ -19,9 +20,14 @@ module Rubino
     # `:output` reaches this seam. The DiffCompressor trims far context and elides
     # generated/lock files but keeps every +/- line and every file/hunk header;
     # behind its saving guard a small/tight diff passes through BYTE-IDENTICAL, so
-    # the common "show me" case is untouched. Grep / short / json still pass
-    # through verbatim (their value is exact-string anchors edit/grep rely on);
-    # JSON is a deliberate future extension point.
+    # the common "show me" case is untouched. Grep / short still pass through
+    # verbatim (their value is exact-string anchors edit/grep rely on).
+    #
+    # JSON is special: a tool output whose WHOLE content parses as a JSON
+    # array/object routes to the JsonCompressor — and that detection runs BEFORE
+    # the log channel, so a `shell` JSON dump (`kubectl get -o json`, `gh api`)
+    # is folded as a table, never mis-compressed as a log. Small JSON passes
+    # through byte-identical via the compressor's own saving guard.
     #
     # The router NEVER raises into the caller: any strategy error falls back to a
     # no-op result whose `text` is meaningless, so the executor sends the
@@ -111,6 +117,7 @@ module Rubino
         when :log  then run_log(text)
         when :code then run_code(text, hint)
         when :diff then run_diff(text)
+        when :json then run_json(text)
         else Result.passthrough(type)
         end
       end
@@ -130,16 +137,19 @@ module Rubino
         hits >= (lines.length * 0.6)
       end
 
-      # A whole document that parses as a JSON object/array. Cheap guard first
-      # (starts with { or [) so we don't JSON.parse every shell dump. Detected,
-      # but routed to passthrough today — the future JSON compressor's seam.
+      # A whole document that parses as a JSON object/array — routed to the
+      # JsonCompressor. Cheap guard first (starts with { or [) so we don't
+      # JSON.parse every shell dump. This runs BEFORE the log channel in
+      # `detect`, so a `shell` JSON dump folds as a table and is never
+      # mis-compressed as a log. A line inside a log that merely starts with `{`
+      # does NOT match — the WHOLE output must parse.
       def json_like?(text)
-        head = text.lstrip
+        head = text.strip
         return false unless head.start_with?("{", "[")
 
         require "json"
-        JSON.parse(text)
-        true
+        parsed = JSON.parse(head)
+        parsed.is_a?(Array) || parsed.is_a?(Hash)
       rescue StandardError
         false
       end
@@ -177,6 +187,18 @@ module Rubino
         return Result.passthrough(:diff) unless result.applied?
 
         Result.new(applied: true, text: result.text, content_type: :diff,
+                   strategy: result.strategy, saved_tokens_est: result.saved_tokens_est)
+      end
+
+      # Compress a whole-output JSON dump (array of uniform objects → schema-fold,
+      # large arrays → lossy row selection, single large object → big-string
+      # elision). The compressor's saving + size guards return a noop for small
+      # JSON the model wants verbatim, so it passes through byte-identical.
+      def run_json(text)
+        result = JsonCompressor.new(@config.tool_output_compression_json).compress(text)
+        return Result.passthrough(:json) unless result.applied?
+
+        Result.new(applied: true, text: result.text, content_type: :json,
                    strategy: result.strategy, saved_tokens_est: result.saved_tokens_est)
       end
 

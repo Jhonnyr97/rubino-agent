@@ -405,6 +405,14 @@ module Rubino
         dig("tool_output_compression", "logs") || {}
       end
 
+      # JSON compression config. Like `code`/`diff`, it has NO own `enabled`
+      # sub-flag: it is active whenever the master `tool_output_compression.enabled`
+      # is on. The JsonCompressor's saving + size guards are the real gate — small
+      # JSON the model wants verbatim passes through byte-identical on its own.
+      def tool_output_compression_json
+        dig("tool_output_compression", "json") || {}
+      end
+
       def tool_output_compression_logs_enabled?
         tool_output_compression_logs["enabled"] == true
       end

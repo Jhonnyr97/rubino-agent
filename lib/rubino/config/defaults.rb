@@ -482,6 +482,37 @@ module Rubino
               *.lock Gemfile.lock package-lock.json yarn.lock pnpm-lock.yaml
               composer.lock *.min.js *.min.css dist/ build/ *.snap vendor/
             ]
+          },
+          # JSON compression (a whole-output JSON dump from a tool — `curl | jq`,
+          # `kubectl get -o json`, `gh api`, `docker inspect`, `aws --output
+          # json`, or an MCP/custom-tool JSON result). Modelled on headroom's
+          # SmartCrusher: an array of UNIFORM objects folds LOSSLESSLY to a
+          # schema header + one compact row per item (the repeated key names are
+          # emitted once); a large array whose fold is too thin falls back to
+          # LOSSY row selection where error-bearing rows and statistical outliers
+          # always survive and dropped rows collapse to an `{"_elided": N}`
+          # sentinel; a single large object elides only big string values and
+          # never drops a key. No own `enabled` flag (like `code`/`diff`): active
+          # when the master flag is on; the saving guard below is the real gate,
+          # so small JSON the model wants verbatim passes through byte-identical.
+          # Detection runs BEFORE the log channel — a whole-output JSON dump from
+          # `shell` routes here, never to the log compressor.
+          "json" => {
+            # Arrays with fewer than this many items (and text shorter than
+            # min_lines) pass through UNCHANGED — small JSON stays verbatim.
+            "min_items" => 8,
+            # Objects / text shorter than this many lines pass through unchanged.
+            "min_lines" => 40,
+            # Only apply when the compressed result is at least this much smaller;
+            # otherwise byte-identical passthrough.
+            "min_saving" => 0.25,
+            # A numeric field more than this many standard deviations from its
+            # column mean marks a row as a statistical outlier (kept in the lossy
+            # fallback).
+            "outlier_sigma" => 3.0,
+            # In a single large object, string values longer than this collapse
+            # to a `<elided N chars>` placeholder (the key is always kept).
+            "max_string_chars" => 400
           }
         },
         "file_read" => {
