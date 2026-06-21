@@ -217,6 +217,17 @@ module Rubino
         # chat and left without sending a message, #144) — there's no row.
         return if @session.nil? || (@session[:persisted] == false && !@session_repo.persisted?(@session[:id]))
 
+        # End-of-session memory flush (#554): the turn-based auto-extract gate
+        # only fires when the turn counter lands on memory.auto_extract_interval
+        # (default 10), so a session that ends with FEWER turns than the interval
+        # — and never compacted — never extracted its facts. This is the
+        # catch-all that mines any un-extracted turns once on a clean close,
+        # bounded by the same per-session extraction watermark (so it never
+        # double-extracts what the interval/compaction flush already mined) and
+        # gated on memory.enabled + memory.auto_extract. Mirrors Hermes'
+        # MemoryProvider#on_session_end. Best-effort: never breaks the exit.
+        flush_memory_on_session_end!
+
         @session_repo.end_session!(@session[:id])
       rescue StandardError
         nil
@@ -234,6 +245,18 @@ module Rubino
       end
 
       private
+
+      # Mine any un-extracted turns before the session row is marked ended
+      # (#554). Routes through Memory::Flusher#flush_on_session_end!, which
+      # honours the memory config gates and the per-session extraction watermark
+      # (so it's a no-op when memory/auto_extract is off and never re-mines what
+      # the interval/compaction flush already extracted). Fully rescued so a
+      # memory hiccup never crashes the exit path.
+      def flush_memory_on_session_end!
+        Memory::Flusher.new(config: @config).flush_on_session_end!(@session[:id])
+      rescue StandardError
+        nil
+      end
 
       # True when +error+ is an AUTH/credential failure — a 401/unauthorized/
       # invalid-key signal, OR the "Authentication failed (…)" wrapper
