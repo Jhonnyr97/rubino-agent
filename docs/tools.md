@@ -13,6 +13,21 @@ Several tools share one config gate, so `rubino tools` shows **27 rows** (config
 - **Approval** — see [security.md](security.md). Shell commands are confirmation-gated by default; a non-bypassable hardline floor blocks catastrophic commands regardless of mode.
 - **Workspace sandbox** — with `tools.workspace_strict: true` (default), write/edit/delete tools are confined to the workspace root (`terminal.cwd` or `Dir.pwd`).
 
+## Output compression
+
+When `tool_output_compression.enabled` is on (off by default; `rubino setup`
+offers it), every tool's output passes through a deterministic content router
+before it reaches the model: test/build/lint **logs** are reduced to their
+failures + summary, a **whole-file source read** can come back as a skeleton, and
+**diffs / grep results / JSON / short output pass through byte-identical**. The
+full original is always recoverable (it is spilled to `tool-results/<call_id>.txt`
+and the compressed output points the model there). While enabled, `read` and
+`shell` advertise an extra `compress` boolean parameter (default `true`) so the
+model can pass `compress:false` to get one call's output verbatim. See
+[configuration.md](configuration.md#tool_output_compression) for the full key
+reference. Compression is OFF in the default registry, so the parameter lists
+below describe the shipped (uncompressed) behaviour.
+
 ## Built-in Tools
 
 ### read
