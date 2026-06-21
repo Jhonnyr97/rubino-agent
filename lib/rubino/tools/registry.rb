@@ -37,8 +37,8 @@ module Rubino
 
         # Returns only enabled tools based on configuration AND the active
         # mode (Modes.current). Plan mode pares the registry down to its
-        # read-only whitelist so the model literally has no `edit`/`shell`/
-        # `git` definition in the request — it can't even propose a mutating
+        # read-only whitelist so the model literally has no `edit`/`shell`
+        # definition in the request — it can't even propose a mutating
         # tool call. Yolo and default leave everything through; their
         # difference is on the approval path, not the registry.
         def enabled_tools
@@ -76,7 +76,6 @@ module Rubino
           register(Rubino::Tools::MultiEditTool.new)
           register(Rubino::Tools::GrepTool.new)
           register(Rubino::Tools::GlobTool.new)
-          register(Rubino::Tools::GitTool.new)
           register(Rubino::Tools::GitHubTool.new)
           register(Rubino::Tools::ShellTool.new)
           register(Rubino::Tools::ShellOutputTool.new)
