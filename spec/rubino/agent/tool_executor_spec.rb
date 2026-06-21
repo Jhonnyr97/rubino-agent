@@ -404,4 +404,86 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(result.output).to include("truncated at 10 bytes")
     end
   end
+
+  # The unified content-routed compression seam. The executor runs every tool
+  # output through Compression::ContentRouter around the truncate call: a hit
+  # spills the FULL original to tool-results/<call_id>.txt and appends a read
+  # pointer; a passthrough (diff/grep/short/opt-out) stays byte-identical.
+  describe "compression seam (ContentRouter)" do
+    before do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(ui).to receive(:tool_body)
+    end
+
+    def enable_compression!
+      config.set("tool_output_compression", "enabled", true)
+      config.set("tool_output_compression", "logs",
+                 "enabled" => true, "min_lines" => 10, "max_total_lines" => 100,
+                 "max_errors" => 10, "max_warnings" => 5, "max_stack_traces" => 3,
+                 "context_lines" => 4)
+    end
+
+    # A tool that returns a Hash with a log payload + a plain stream_kind hint,
+    # like ShellTool does.
+    let(:log_tool) do
+      noisy = "#{(1..60).map { |i| "INFO line #{i}" }.join("\n")}\nERROR boom happened\nDone."
+      Class.new(Rubino::Tools::Base) do
+        define_method(:name) { "shell" }
+        def description = "fake shell"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+        define_method(:call) do |_args|
+          { output: noisy, body: "preview", body_kind: :plain,
+            compress_hint: { stream_kind: :plain } }
+        end
+      end.new
+    end
+
+    it "compresses a log output, spills the original, and appends a read pointer" do
+      enable_compression!
+      allow(registry).to receive(:find).and_return(log_tool)
+      result = executor.execute(name: "shell", arguments: {}, call_id: "log1")
+
+      expect(result.output).to include("ERROR boom happened")
+      expect(result.output.scan("INFO line").length).to be < 60
+      expect(result.output).to include("hidden by output compression")
+      spill = File.join(spill_home, "tool-results", "log1.txt")
+      expect(result.output).to include("read #{spill}")
+      # the FULL original is on disk, retrievable with a normal read
+      expect(File.read(spill)).to include("INFO line 30")
+    end
+
+    it "honors compress:false (per-call opt-out) — byte-identical passthrough" do
+      enable_compression!
+      allow(registry).to receive(:find).and_return(log_tool)
+      result = executor.execute(name: "shell", arguments: { "compress" => false }, call_id: "log2")
+      expect(result.output).to include("INFO line 30")
+      expect(result.output).not_to include("hidden by output compression")
+    end
+
+    it "passes a diff through byte-identical (compress_hint stream_kind: :diff)" do
+      enable_compression!
+      diff = "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n#{"context\n" * 40}"
+      diff_tool = Class.new(Rubino::Tools::Base) do
+        define_method(:name) { "shell" }
+        def description = "fake"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+        define_method(:call) do |_a|
+          { output: diff, compress_hint: { stream_kind: :diff } }
+        end
+      end.new
+      allow(registry).to receive(:find).and_return(diff_tool)
+      result = executor.execute(name: "shell", arguments: {}, call_id: "d1")
+      expect(result.output).to eq(diff)
+      expect(result.output).not_to include("hidden by output compression")
+    end
+
+    it "leaves output untouched when compression is disabled (default)" do
+      allow(registry).to receive(:find).and_return(log_tool)
+      result = executor.execute(name: "shell", arguments: {}, call_id: "log3")
+      expect(result.output).to include("INFO line 30")
+      expect(result.output).not_to include("hidden by output compression")
+    end
+  end
 end

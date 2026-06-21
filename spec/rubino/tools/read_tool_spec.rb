@@ -182,122 +182,74 @@ RSpec.describe Rubino::Tools::ReadTool do
     end
   end
 
-  # Whole-file Ruby reads can be compressed to a SKELETON when
-  # tool_output_compression.enabled — OFF by default, so the read tool is
-  # byte-for-byte unchanged unless the flag is flipped. A targeted (offset/limit)
-  # read is NEVER compressed — that's the drill-in path returning exact bytes.
-  describe "code compression (tool_output_compression)" do
-    let(:tracker) { Rubino::Tools::ReadTracker.new }
-
-    # A Ruby file over the (lowered, for the test) min_lines with one big method
-    # body, so the skeletoner has something meaningful to elide.
+  # Compression now lives at the ToolExecutor seam (Compression::ContentRouter),
+  # not in the tool. The read tool's only compression responsibility is to emit
+  # a `compress_hint` for the ONE compressible shape — a whole-file Ruby read —
+  # carrying the raw source + paths the router needs. A targeted (offset/limit)
+  # read, a non-Ruby read, and the disabled path emit NO hint, so the router
+  # passes through. (The actual skeletonising + reversibility is covered in the
+  # router and tool_executor specs.)
+  describe "compress_hint (routing context for the compression seam)" do
     let(:ruby_path) { File.join(tmp_dir, "calc.rb") }
     let(:ruby_src) do
-      big_body = (1..40).map { |i| "    v#{i} = #{i}" }.join("\n")
       <<~RUBY
         # frozen_string_literal: true
         require "json"
 
         class Calc
-          MAX = 10
-
-          def small
-            MAX + 1
-          end
-
           def big(a)
-        #{big_body}
-            a
+            a + 1
           end
         end
       RUBY
     end
 
-    before do
-      File.write(ruby_path, ruby_src)
-      tool.read_tracker = tracker
-    end
+    before { File.write(ruby_path, ruby_src) }
 
-    def enable_compression!(min_lines: 5, keep: 8)
+    def enable_compression!
       Rubino.configuration.set("tool_output_compression", "enabled", true)
       Rubino.configuration.set("tool_output_compression", "code",
-                               "strategy" => "skeleton",
-                               "min_lines" => min_lines,
-                               "keep_method_body_max_lines" => keep)
+                               "strategy" => "skeleton", "min_lines" => 5,
+                               "keep_method_body_max_lines" => 8)
     end
 
     context "with the flag OFF (default)" do
-      it "returns the full verbatim file — no skeleton, no behavior change" do
-        out = payload(tool.call("file_path" => ruby_path))
-        expect(out).to include("v20 = 20") # full big body present
-        expect(out).not_to include("elided")
-        expect(out).not_to include("skeleton of")
+      it "emits NO compress_hint — the read tool is byte-for-byte unchanged" do
+        result = tool.call("file_path" => ruby_path)
+        expect(result[:compress_hint]).to be_nil
+        expect(payload(result)).to include("a + 1")
+      end
+
+      it "advertises no `compress` param when the feature is off" do
+        expect(tool.input_schema[:properties]).not_to have_key(:compress)
       end
     end
 
     context "with the flag ON" do
       before { enable_compression! }
 
-      it "returns a skeleton: signatures kept, large body elided behind a pointer" do
-        result = tool.call("file_path" => ruby_path)
-        out = payload(result)
-        expect(out).to include("[skeleton of")
-        expect(out).to include('require "json"')
-        expect(out).to include("def small")
-        expect(out).to include("MAX + 1") # small body kept
-        expect(out).to include("def big(a)")        # signature kept
-        expect(out).not_to include("v20 = 20")      # big body elided
-        expect(out).to match(/offset=\d+ limit=\d+/)
-        expect(result[:metrics]).to match(/skeleton · −\d+%/)
+      it "emits a code compress_hint on a whole-file Ruby read (raw source + paths)" do
+        hint = tool.call("file_path" => ruby_path)[:compress_hint]
+        expect(hint).to include(full_file: true, content_type: :code)
+        expect(hint[:source_path]).to eq(ruby_path)
+        expect(hint[:tracker_path]).to eq(File.expand_path(ruby_path))
+        expect(hint[:raw_source]).to eq(ruby_src)
       end
 
-      it "reads the EXACT original body when the model follows the pointer (drill-in)" do
-        out = payload(tool.call("file_path" => ruby_path))
-        pointer = out.lines.find { |l| l =~ /offset=\d+ limit=\d+/ && l.include?("read") && !l.start_with?("[") }
-        m = pointer.match(/offset=(\d+) limit=(\d+)/)
-        offset = m[1].to_i
-        limit  = m[2].to_i
-
-        drill = payload(tool.call("file_path" => ruby_path, "offset" => offset, "limit" => limit))
-        body = drill.scan(/^\s*\d+\t(.*)$/).map { |x| x[0] }.join("\n")
-        expected = ruby_src.lines[(offset - 1), limit].join.chomp
-        expect(body).to eq(expected)
-        expect(body).to include("v20 = 20")         # the hidden body, verbatim
+      it "emits NO hint on a TARGETED (offset/limit) read — the drill-in path" do
+        hint = tool.call("file_path" => ruby_path, "offset" => 1, "limit" => 3)[:compress_hint]
+        expect(hint).to be_nil
       end
 
-      it "emits a dim ⚡ compression notice and accumulates session token savings" do
-        ui = Rubino::UI::Null.new
-        notices = []
-        allow(ui).to receive(:note) { |t| notices << t }
-        Rubino.ui = ui
-
-        tool.call("file_path" => ruby_path)
-        expect(notices).to include(a_string_matching(/⚡ compressed .*calc\.rb · \d+→\d+ lines · .*−\d+%/))
-        expect(tracker.compression_saved_tokens).to be > 0
-      end
-
-      it "logs compression.drill_in when a targeted read hits an elided range" do
-        out = payload(tool.call("file_path" => ruby_path))
-        pointer = out.lines.find { |l| l =~ /offset=\d+ limit=\d+/ && l.include?("read") && !l.start_with?("[") }
-        m = pointer.match(/offset=(\d+) limit=(\d+)/)
-
-        expect(Rubino.logger).to receive(:info).with(hash_including(event: "compression.drill_in"))
-        tool.call("file_path" => ruby_path, "offset" => m[1].to_i, "limit" => m[2].to_i)
-      end
-
-      it "does NOT compress a non-Ruby whole-file read" do
+      it "emits NO hint on a non-Ruby whole-file read" do
         txt = File.join(tmp_dir, "notes.txt")
-        File.write(txt, (1..200).map { |i| "line #{i}" }.join("\n"))
-        out = payload(tool.call("file_path" => txt))
-        expect(out).not_to include("skeleton of")
-        expect(out).to include("line 100")
+        File.write(txt, (1..50).map { |i| "line #{i}" }.join("\n"))
+        expect(tool.call("file_path" => txt)[:compress_hint]).to be_nil
       end
 
-      it "does NOT compress a small Ruby file (under min_lines)" do
-        enable_compression!(min_lines: 500)
-        out = payload(tool.call("file_path" => ruby_path))
-        expect(out).not_to include("skeleton of")
-        expect(out).to include("v20 = 20")
+      it "advertises the `compress` opt-out param when the feature is on" do
+        expect(tool.input_schema[:properties]).to have_key(:compress)
+        expect(tool.description).to include("compress:false")
       end
     end
   end

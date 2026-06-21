@@ -1,69 +1,64 @@
 # frozen_string_literal: true
 
-# Wiring of LogCompressor into ShellTool's model-facing :output, gated by
-# tool_output_compression.logs.enabled (default false). The human :body preview
-# is NEVER compressed, and a diff command is never compressed.
+# Compression now lives at the ToolExecutor seam (Compression::ContentRouter),
+# not in ShellTool. The shell tool's only compression responsibility is to emit
+# a `compress_hint` carrying the `stream_kind` so the router can send a diff
+# through its own +/- channel UNTOUCHED while routing a plain dump to the log
+# compressor. The tool itself NEVER compresses its :output or :body. (The actual
+# log compression + reversibility pointer is covered in the tool_executor spec.)
 RSpec.describe Rubino::Tools::ShellTool do
   subject(:tool) { described_class.new }
 
-  def enable_logs!(min_lines: 10)
+  def enable_compression!
+    Rubino.configuration.set("tool_output_compression", "enabled", true)
     Rubino.configuration.set("tool_output_compression", "logs",
-                             "enabled" => true, "min_lines" => min_lines,
+                             "enabled" => true, "min_lines" => 10,
                              "max_total_lines" => 100, "max_errors" => 10,
                              "max_warnings" => 5, "max_stack_traces" => 3,
                              "context_lines" => 4)
   end
 
-  # Emit a long output with one ERROR line so compression has signal to keep
-  # and noise to drop.
   let(:noisy_command) do
     'for i in $(seq 1 60); do echo "INFO line $i"; done; echo "ERROR boom happened"'
   end
 
-  context "with logs compression OFF (default)" do
-    it "returns the full verbatim output — no marker, no pointer" do
-      out = tool.call("command" => noisy_command)[:output]
-      expect(out).to include("INFO line 30")
-      expect(out).not_to include("hidden by log compression")
+  context "with compression OFF (default)" do
+    it "returns the full verbatim output and emits a plain stream_kind hint" do
+      result = tool.call("command" => noisy_command)
+      expect(result[:output]).to include("INFO line 30")
+      expect(result[:output]).not_to include("hidden by")
+      expect(result[:compress_hint]).to eq(stream_kind: :plain)
+    end
+
+    it "advertises no `compress` param when the feature is off" do
+      expect(tool.input_schema[:properties]).not_to have_key(:compress)
     end
   end
 
-  context "with logs compression ON" do
-    before { enable_logs! }
+  context "with compression ON" do
+    before { enable_compression! }
 
-    it "compresses the model-facing :output: keeps the ERROR, drops INFO noise, appends a retrieve pointer" do
+    it "does NOT compress its own :output — that is the executor seam's job" do
       result = tool.call("command" => noisy_command)
-      out = result[:output]
-      expect(out).to include("ERROR boom happened")
-      expect(out).to match(/Full output via retrieve_output hash=[0-9a-f]{64}/)
-      expect(out.scan("INFO line").length).to be < 60
+      # The raw output still carries every INFO line; the seam (not the tool)
+      # compresses it before it reaches the model.
+      expect(result[:output]).to include("INFO line 30")
+      expect(result[:output]).not_to include("hidden by")
     end
 
-    it "leaves the human :body preview built from the REAL (uncompressed) output" do
+    it "tags a diff command with stream_kind: :diff so the router passes it through" do
+      result = tool.call("command" => "git diff --no-index /etc/hostname /etc/hostname || true")
+      expect(result[:compress_hint]).to eq(stream_kind: :diff)
+    end
+
+    it "tags a plain command with stream_kind: :plain (log channel)" do
       result = tool.call("command" => noisy_command)
-      # body is the preview of the real scrollback — it must NOT carry the
-      # compression pointer.
-      expect(result[:body]).not_to include("hidden by log compression")
+      expect(result[:compress_hint]).to eq(stream_kind: :plain)
     end
 
-    it "stashes the original so retrieve_output round-trips by the pointer's hash" do
-      out = tool.call("command" => noisy_command)[:output]
-      hash = out[/hash=([0-9a-f]{64})/, 1]
-      original = Rubino::Compression::OutputStore.instance.get(hash)
-      expect(original).to include("INFO line 30")
-      expect(original).to include("ERROR boom happened")
-    end
-
-    it "does NOT compress a diff command (its own channel)" do
-      out = tool.call(
-        "command" => "git diff --no-index /etc/hostname /etc/hostname || true"
-      )[:output]
-      expect(out).not_to include("hidden by log compression")
-    end
-
-    it "leaves a short output unchanged (below min_lines)" do
-      out = tool.call("command" => "echo one; echo two; echo three")[:output]
-      expect(out).not_to include("hidden by log compression")
+    it "advertises the `compress` opt-out param when the feature is on" do
+      expect(tool.input_schema[:properties]).to have_key(:compress)
+      expect(tool.description).to include("compress:false")
     end
   end
 end

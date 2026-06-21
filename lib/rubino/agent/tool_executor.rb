@@ -208,12 +208,13 @@ module Rubino
         #   - a `body_kind` (:diff | :plain) selecting the CLI coloring for body
         # without having to reverse-engineer them from the formatted output.
         if raw.is_a?(Hash)
-          text       = raw[:output]     || raw["output"]
-          metrics    = raw[:metrics]    || raw["metrics"]
-          body       = raw[:body]       || raw["body"]
-          body_kind  = raw[:body_kind]  || raw["body_kind"] || :plain
-          error_code = raw[:error_code] || raw["error_code"]
-          artifact   = raw[:artifact]   || raw["artifact"]
+          text         = raw[:output]     || raw["output"]
+          metrics      = raw[:metrics]    || raw["metrics"]
+          body         = raw[:body]       || raw["body"]
+          body_kind    = raw[:body_kind]  || raw["body_kind"] || :plain
+          error_code   = raw[:error_code] || raw["error_code"]
+          artifact     = raw[:artifact]   || raw["artifact"]
+          compress_hint = raw[:compress_hint] || raw["compress_hint"]
         else
           text = raw
           metrics = nil
@@ -221,6 +222,7 @@ module Rubino
           body_kind = :plain
           error_code = nil
           artifact = nil
+          compress_hint = nil
         end
         # Skip the body block when the tool already streamed its output line by
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
@@ -228,6 +230,13 @@ module Rubino
         # would duplicate every line in the timeline. Tools that don't stream
         # (read, grep, edit, glob, github) still render their body here.
         @ui.tool_body(body, kind: body_kind.to_sym) if body && !body.to_s.empty? && !streamed
+        # Content-routed compression of the MODEL-FACING text only (never the
+        # human `body` preview). The router detects the type and dispatches; a
+        # diff/grep/short output passes through byte-identical. On a hit the FULL
+        # original is spilled and a pointer appended so the model can read it back.
+        text, metrics = maybe_compress(text, metrics: metrics, name: name,
+                                             arguments: arguments, compress_hint: compress_hint,
+                                             call_id: call_id)
         result = Tools::Result.success(
           name: name,
           call_id: call_id,
@@ -531,6 +540,97 @@ module Rubino
         # coding bug here doesn't silently disable the multi_edit diff preview.
         Rubino.logger&.warn(event: "tool_executor.multi_edit_preview_failed",
                             error: e.message, error_class: e.class.name)
+        nil
+      end
+
+      # Routes the model-facing tool output through the single ContentRouter
+      # seam and, when a strategy COMPRESSED it, spills the full original to
+      # tool-results/<call_id>.txt and appends a pointer so the model can read it
+      # back with the normal `read` tool (the same recovery path truncation
+      # already uses). Returns [text, metrics] — unchanged when nothing applied,
+      # so a passthrough output is byte-identical. Never raises: the router
+      # itself swallows strategy errors into a passthrough result.
+      def maybe_compress(text, metrics:, name:, arguments:, compress_hint:, call_id:)
+        return [text, metrics] if text.nil? || text.empty?
+
+        compress = compress_requested?(arguments)
+        router = compression_router
+        result = router.route(text, tool_name: name, compress_hint: compress_hint, compress: compress)
+        return [text, metrics] unless result.applied?
+
+        spill_path = spill_full_output(text, call_id)
+        # Read drill-in telemetry: record the elided ranges so a later targeted
+        # read inside one is logged as a drill-in (the read tool's skeleton
+        # behavior, now driven from this seam rather than inside the tool).
+        note_code_skeleton(compress_hint, router, result) if result.content_type == :code
+
+        emit_compression_event(name, result, text)
+        compressed = append_recovery_pointer(result.text, text, spill_path, result.content_type)
+        [compressed, compression_metrics(result, metrics)]
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "compression.seam_failed", tool: name,
+                            error: e.message, error_class: e.class.name)
+        [text, metrics]
+      end
+
+      def compression_router
+        @compression_router ||= Compression::ContentRouter.new(@config)
+      end
+
+      # The per-call opt-out: `compress: false` on read/shell forces passthrough.
+      # Defaults to true (advertised only when the feature is enabled).
+      def compress_requested?(arguments)
+        return true unless arguments.is_a?(Hash)
+
+        value = arguments.key?("compress") ? arguments["compress"] : arguments[:compress]
+        value != false
+      end
+
+      # For a :code skeleton, register the elided ranges + token saving on the
+      # read tracker so a later targeted read into an elided body is flagged as a
+      # drill-in (the "did the skeleton hide what was needed" signal). Keyed on
+      # the EXPANDED path the read tool stamped into the compress_hint.
+      def note_code_skeleton(compress_hint, router, result)
+        return unless @read_tracker && compress_hint.is_a?(Hash)
+
+        expanded = compress_hint[:tracker_path] || compress_hint["tracker_path"]
+        return unless expanded
+
+        @read_tracker.note_skeleton(expanded, router.last_elided_ranges, result.saved_tokens_est)
+      rescue StandardError
+        nil # telemetry only — never break the tool call
+      end
+
+      # The reversibility pointer: a single line stating how much was hidden, that
+      # failures/summary (logs) or large bodies (code) are kept, and the spill
+      # path the model can `read` to get the original verbatim. Falls back to a
+      # path-less note if the spill failed.
+      def append_recovery_pointer(compressed, original, spill_path, content_type)
+        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+        kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
+        hidden = [orig_lines - kept_lines, 0].max
+        kept_note = content_type == :code ? "signatures + small bodies kept" : "failures + summary kept"
+        recover = spill_path ? "Full output: read #{spill_path}" : "Full output unavailable (spill failed) — re-run."
+        "#{compressed}\n[… #{hidden} line(s) hidden by output compression (#{kept_note}). #{recover}]"
+      end
+
+      def compression_metrics(result, existing)
+        tag = result.content_type == :code ? "skeleton" : "compressed"
+        note = "⚡ #{tag} −#{result.saved_tokens_est} tok"
+        existing && !existing.to_s.empty? ? "#{existing} · #{note}" : note
+      end
+
+      # Unified compression telemetry: one event for every applied compression,
+      # tagged with the content_type so the log distinguishes log vs code.
+      def emit_compression_event(name, result, original)
+        orig_bytes = original.bytesize
+        comp_bytes = result.text.bytesize
+        ratio = orig_bytes.zero? ? 0.0 : (orig_bytes - comp_bytes).fdiv(orig_bytes)
+        Rubino.logger&.info(event: "compression.applied", tool: name,
+                            content_type: result.content_type, strategy: result.strategy,
+                            ratio: ratio.round(3), original_bytes: orig_bytes,
+                            compressed_bytes: comp_bytes, saved_tokens_est: result.saved_tokens_est)
+      rescue StandardError
         nil
       end
 
