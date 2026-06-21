@@ -434,6 +434,25 @@ RSpec.describe Rubino::Session::Repository do
       # ...while a 0-message NON-compaction session is still skipped (the
       # "returns nil on a true first run" case above covers the cli source).
     end
+
+    # #540: a `task`-tool subagent session (source="subagent") is internal
+    # machinery, EXCLUDED from `sessions list` — so a bare `chat`/`--continue`
+    # must never auto-resume one either, or the user lands inside a background
+    # subagent transcript a `sessions list` won't even show. Resume and list
+    # must agree on the subagent exclusion.
+    it "never resumes a subagent session even when it is the most recent" do
+      user = repo.create(source: "cli")
+      repo.increment_message_count!(user[:id])
+      sub = repo.create(source: "subagent") # newer, internal
+      repo.increment_message_count!(sub[:id])
+      expect(repo.latest_resumable[:id]).to eq(user[:id])
+    end
+
+    it "returns nil when the ONLY session is a subagent one (nothing to resume)" do
+      sub = repo.create(source: "subagent")
+      repo.increment_message_count!(sub[:id])
+      expect(repo.latest_resumable).to be_nil
+    end
   end
 
   # r5 MF-4 / C-1: every session is stamped with the dir it was launched in so
@@ -533,6 +552,22 @@ RSpec.describe Rubino::Session::Repository do
       child = repo.create(source: "compaction", cwd: "/home/dev/api")
       expect(child[:message_count]).to eq(0)
       expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(child[:id])
+    end
+
+    # #540: a bare `chat`/`--continue` in this dir must skip a source="subagent"
+    # session and pick the real USER session, never drop the user inside an
+    # internal subagent transcript — matching `sessions list`'s exclusion.
+    it "resumes the USER session, never a newer subagent one in this dir" do
+      user = resumable_in("/home/dev/api")
+      sub = repo.create(source: "subagent", cwd: "/home/dev/api") # newer, internal
+      repo.increment_message_count!(sub[:id])
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:id]).to eq(user[:id])
+    end
+
+    it "returns nil when the only session in this dir is a subagent one" do
+      sub = repo.create(source: "subagent", cwd: "/home/dev/api")
+      repo.increment_message_count!(sub[:id])
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")).to be_nil
     end
   end
 
