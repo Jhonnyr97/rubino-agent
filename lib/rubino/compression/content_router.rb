@@ -166,13 +166,17 @@ module Rubino
         cfg = @config.tool_output_compression_code
         return Result.passthrough(:code) unless cfg["strategy"].to_s == "skeleton"
 
+        # The skeletoner needs RAW Ruby source (Prism-parseable), NOT the read
+        # tool's line-numbered render. The read tool stamps the raw bytes into
+        # the hint as `raw_source`; fall back to `text` for a direct caller.
+        source = hint[:raw_source] || hint["raw_source"] || text
         source_path = hint[:source_path] || hint["source_path"]
         compressor = Compressor.new(
           min_lines: cfg.fetch("min_lines", 150),
           keep_method_body_max_lines: cfg.fetch("keep_method_body_max_lines", 8)
         )
-        result = compressor.compress(text, source_path: source_path,
-                                           content_type: :code, full_file: true)
+        result = compressor.compress(source, source_path: source_path,
+                                             content_type: :code, full_file: true)
         return Result.passthrough(:code) unless result.applied?
 
         # elided_ranges live on the Compressor; expose them via a side-channel

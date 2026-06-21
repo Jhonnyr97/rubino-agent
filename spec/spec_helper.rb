@@ -146,7 +146,6 @@ RSpec.configure do |config|
     Rubino::Tools::BackgroundTasks.reset! if defined?(Rubino::Tools::BackgroundTasks)
     Rubino::Tools::ShellRegistry.reset! if defined?(Rubino::Tools::ShellRegistry)
     Rubino::Run::GateRegistry.reset! if defined?(Rubino::Run::GateRegistry)
-    Rubino::Compression::OutputStore.reset! if defined?(Rubino::Compression::OutputStore)
     # Use null UI and in-memory SQLite for tests
     Rubino.ui = Rubino::UI::Null.new
   end

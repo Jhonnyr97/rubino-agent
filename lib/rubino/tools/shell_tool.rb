@@ -60,38 +60,58 @@ module Rubino
       end
 
       def description
-        "Execute a shell command. " \
-          "Foreground: blocks until the command exits or `timeout` seconds elapse " \
-          "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
-          "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
-          "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
-          "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
-          "and `shell_kill` to terminate it."
+        base = "Execute a shell command. " \
+               "Foreground: blocks until the command exits or `timeout` seconds elapse " \
+               "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
+               "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
+               "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
+               "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
+               "and `shell_kill` to terminate it."
+        base + compression_note
+      end
+
+      # Advertised only when the feature is on: explains command-output
+      # compression, the opt-out, and that the original is retrievable.
+      def compression_note
+        return "" unless compression_enabled?
+
+        " Long command output (test/build/lint dumps) may be COMPRESSED — every failure + " \
+          "the summary kept, passing noise dropped — to save tokens; the full output is always " \
+          "retrievable via the appended pointer. Pass compress:false to force verbatim output."
+      end
+
+      def compression_enabled?
+        Rubino.configuration.tool_output_compression_enabled?
+      rescue StandardError
+        false
       end
 
       def input_schema
-        {
-          type: "object",
-          properties: {
-            command: {
-              type: "string",
-              description: "The shell command to execute"
-            },
-            cwd: {
-              type: "string",
-              description: "Working directory (defaults to current)"
-            },
-            timeout: {
-              type: "integer",
-              description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
-            },
-            run_in_background: {
-              type: "boolean",
-              description: "If true, start the command detached and return a run_id immediately."
-            }
+        props = {
+          command: {
+            type: "string",
+            description: "The shell command to execute"
           },
-          required: %w[command]
+          cwd: {
+            type: "string",
+            description: "Working directory (defaults to current)"
+          },
+          timeout: {
+            type: "integer",
+            description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
+          },
+          run_in_background: {
+            type: "boolean",
+            description: "If true, start the command detached and return a run_id immediately."
+          }
         }
+        if compression_enabled?
+          props[:compress] = {
+            type: "boolean",
+            description: "Set false to skip output compression and return verbatim output (default true)."
+          }
+        end
+        { type: "object", properties: props, required: %w[command] }
       end
 
       def risk_level
@@ -133,14 +153,20 @@ module Rubino
           # `[Exit code: N]` out of free-form text to know whether the
           # command succeeded. The text suffix stays for visual continuity
           # in the scrollback and for tests that grep for it.
-          { output: maybe_compress_log(run[:text]),
+          { output: run[:text],
             metrics: foreground_metric(run),
             body: Util::Output.preview(run[:text]),
             body_kind: @stream_kind || :plain,
             exit_code: run[:exit_code],
             timed_out: run[:timed_out],
             cancelled: run[:cancelled],
-            error_code: shell_error_code(run) }
+            error_code: shell_error_code(run),
+            # Routing context for the compression seam: the stream_kind lets the
+            # router send a diff (`git diff`) through UNTOUCHED — its own +/-
+            # channel — while a test/build/lint dump routes to LogCompressor. The
+            # human `body` preview above is the REAL scrollback and is never
+            # compressed.
+            compress_hint: { stream_kind: @stream_kind } }
         end
       end
 
@@ -176,56 +202,6 @@ module Rubino
       end
 
       private
-
-      # Compresses the MODEL-FACING output of a foreground command (test runs,
-      # linters, build/shell dumps) when log compression is enabled. Never the
-      # human `:body` preview (that stays the real scrollback) and NEVER a diff
-      # (`@stream_kind == :diff` is its own +/- channel). The original is stashed
-      # in OutputStore so the appended pointer's `retrieve_output` round-trips.
-      # Any failure falls back to the uncompressed text — compression must never
-      # break a command's output.
-      def maybe_compress_log(text)
-        return text if text.nil? || text.empty?
-        return text if @stream_kind == :diff
-        return text unless Rubino.configuration.tool_output_compression_logs_enabled?
-
-        compressor = Compression::LogCompressor.new(
-          Rubino.configuration.tool_output_compression_logs
-        )
-        result = compressor.compress(text)
-        return text unless result.applied?
-
-        emit_log_compression_telemetry(text, result)
-        with_retrieve_pointer(result.text, text)
-      rescue StandardError => e
-        Rubino.logger&.warn(event: "compression.log_failed",
-                            error: e.message, error_class: e.class.name)
-        text
-      end
-
-      # Appends the explicit reversibility pointer: how many lines were hidden,
-      # that failures + summary were kept, and the sha256 to retrieve the full
-      # original. Never claims recoverability it can't back — the hash is the key
-      # OutputStore was just keyed by.
-      def with_retrieve_pointer(compressed, original)
-        hash = Compression::OutputStore.instance.put(original)
-        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
-        kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
-        hidden = [orig_lines - kept_lines, 0].max
-        "#{compressed}\n# … #{hidden} passing/info lines hidden by log compression " \
-          "(failures + summary kept). Full output via retrieve_output hash=#{hash}"
-      end
-
-      def emit_log_compression_telemetry(original, result)
-        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
-        new_lines  = result.text.count("\n") + (result.text.end_with?("\n") ? 0 : 1)
-        Rubino.logger&.info(event: "compression.log_applied",
-                            ratio: result.ratio.round(3),
-                            original_lines: orig_lines, compressed_lines: new_lines,
-                            original_bytes: result.original_bytes,
-                            compressed_bytes: result.compressed_bytes,
-                            saved_tokens_est: result.saved_tokens_est)
-      end
 
       # Defense-in-depth: the ApprovalPolicy already denies hardline commands
       # before we get here, but the tool re-checks against the SAME single

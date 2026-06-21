@@ -413,15 +413,21 @@ module Rubino
           "max_lines" => 2000,
           "max_line_length" => 2000
         },
-        # Deterministic, REVERSIBLE compression of tool-read results (Phase 1:
-        # Ruby code → skeleton). When enabled, a WHOLE-file read of a large Ruby
-        # file returns a skeleton (requires + signatures + small bodies verbatim,
-        # large bodies elided behind a pointer that IS a targeted `read
-        # offset/limit` of the original lines). A targeted (offset/limit) read is
-        # NEVER compressed — that's the drill-in path that returns exact bytes so
-        # the edit-gate's string match still works. OFF by default: with this
-        # flag false the read tool is byte-for-byte unchanged (Phase 1 lands
-        # inert, then we measure before flipping it on).
+        # Deterministic, REVERSIBLE compression of tool output, routed through
+        # the single Compression::ContentRouter seam in the ToolExecutor. The
+        # master `enabled` flag gates the whole seam; the per-type sub-config
+        # (`code`, `logs`) tunes each strategy. When on, the router DETECTS the
+        # content type and dispatches: a test/build/lint dump → LogCompressor
+        # (every failure + summary kept, passing noise dropped); a WHOLE-file
+        # Ruby read → skeleton (signatures + small bodies verbatim, large bodies
+        # elided behind a pointer that IS a targeted `read offset/limit`). A
+        # diff, a grep/search result, and short output PASS THROUGH byte-
+        # identical, so exact-string anchors edit/grep rely on are never touched.
+        # On any compression the full original is spilled to
+        # tool-results/<call_id>.txt and the output ends with a pointer the model
+        # can `read` back. OFF by default: with this flag false every tool output
+        # is byte-for-byte unchanged. Per-call `compress:false` on read/shell
+        # forces verbatim output even when enabled.
         "tool_output_compression" => {
           "enabled" => false,
           "code" => {

@@ -22,22 +22,43 @@ module Rubino
       end
 
       def description
-        "Read a text file from the filesystem with line numbers (cat -n style). " \
-          "Supports offset (1-based start line) and limit (max lines returned). " \
-          "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
-          "Default window: first #{DEFAULT_LIMIT} lines."
+        base = "Read a text file from the filesystem with line numbers (cat -n style). " \
+               "Supports offset (1-based start line) and limit (max lines returned). " \
+               "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
+               "Default window: first #{DEFAULT_LIMIT} lines."
+        base + compression_note
       end
 
       def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: { type: "string", description: "Absolute or relative file path" },
-            offset: { type: "integer", description: "1-based line to start at (default 1)" },
-            limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
-          },
-          required: %w[file_path]
+        props = {
+          file_path: { type: "string", description: "Absolute or relative file path" },
+          offset: { type: "integer", description: "1-based line to start at (default 1)" },
+          limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
         }
+        props[:compress] = compress_param if compression_enabled?
+        { type: "object", properties: props, required: %w[file_path] }
+      end
+
+      # Advertised only when the feature is on: a one-line note explaining that a
+      # whole-file Ruby read may be skeletonised, how to opt out, and that the
+      # full file is always retrievable.
+      def compression_note
+        return "" unless compression_enabled?
+
+        " A whole-file Ruby read may be returned as a SKELETON (signatures kept, " \
+          "large bodies elided behind a pointer) to save tokens; the original is always " \
+          "retrievable via the read pointer. Pass compress:false to force the verbatim file."
+      end
+
+      def compress_param
+        { type: "boolean",
+          description: "Set false to skip compression and read the verbatim file (default true)." }
+      end
+
+      def compression_enabled?
+        Rubino.configuration.tool_output_compression_enabled?
+      rescue StandardError
+        false
       end
 
       def risk_level
@@ -109,49 +130,28 @@ module Rubino
                               offset: offset, limit: limit)
         end
 
-        # WHOLE-file read of a Ruby file, compression enabled → try the skeleton.
-        # Inert when the flag is off (default): falls straight through to render.
-        if full_file && (skeleton = maybe_skeleton(expanded, file_path))
-          return skeleton
-        end
-
-        render(expanded, file_path, offset, limit)
+        render(expanded, file_path, offset, limit, full_file: full_file)
       rescue StandardError => e
         "Error reading #{file_path}: #{e.message}"
       end
 
       private
 
-      # Returns a skeleton result Hash when compression is enabled, the file is
-      # Ruby, and the Compressor actually applied; nil otherwise (read normally).
-      # The original file is one targeted read away via the pointer lines, so the
-      # model loses no fidelity — only the cheap whole-file exploration is elided.
-      def maybe_skeleton(expanded, display_path)
-        return nil unless Rubino.configuration.tool_output_compression_enabled?
-        return nil unless ruby_file?(expanded)
-
-        cfg = Rubino.configuration.tool_output_compression_code
-        return nil unless cfg["strategy"].to_s == "skeleton"
+      # Light routing context for the compression seam. The tool stays thin: it
+      # only DECLARES that this is a whole-file Ruby read (the one compressible
+      # shape) and hands the RAW source + display/tracker paths; the
+      # ContentRouter decides whether to skeletonise. Nil (no hint) for any read
+      # that isn't a compressible whole-file Ruby read, so the router passes
+      # through. Best-effort: a read of binary/huge content just yields no hint.
+      def compress_hint(expanded, display_path, full_file)
+        return nil unless full_file && compression_enabled? && ruby_file?(expanded)
 
         content = File.read(expanded, encoding: "UTF-8")
         return nil unless content.valid_encoding?
 
-        compressor = Compression::Compressor.new(
-          min_lines: cfg.fetch("min_lines", 150),
-          keep_method_body_max_lines: cfg.fetch("keep_method_body_max_lines", 8)
-        )
-        result = compressor.compress(content, source_path: display_path,
-                                              content_type: :code, full_file: true)
-        return nil unless result.applied?
-
-        @read_tracker&.note_skeleton(expanded, compressor.elided_ranges, result.saved_tokens_est)
-        emit_compression_telemetry(display_path, content, result)
-        skeleton_payload(display_path, result)
-      rescue StandardError => e
-        # Never let a compression bug break a plain read — fall back to the
-        # original file (render below) and leave a trace.
-        Rubino.logger&.warn(event: "compression.failed", path: display_path,
-                            error: e.message, error_class: e.class.name)
+        { full_file: true, content_type: :code, source_path: display_path,
+          tracker_path: expanded, raw_source: content }
+      rescue StandardError
         nil
       end
 
@@ -163,46 +163,6 @@ module Rubino
         return true if RUBY_EXTENSIONS.include?(ext)
 
         RUBY_FILENAMES.include?(File.basename(path))
-      end
-
-      # The model-facing skeleton output: a one-line header naming the file and
-      # how to get the full content, then the skeleton itself. The header makes
-      # the compression explicit so the model knows bodies were elided (and that
-      # the pointer lines are real `read` calls it can issue).
-      def skeleton_payload(display_path, result)
-        header = "[skeleton of #{display_path} — large method bodies elided to save tokens. " \
-                 "Each `# … N lines elided — read …` line is a real read call: issue it to get " \
-                 "those exact lines verbatim (e.g. before editing). For the whole file, read with " \
-                 "an explicit offset/limit.]\n"
-        redacted = Security::Redactor.redact_sensitive_text(header + result.text, code_file: true)
-        { output: redacted,
-          metrics: "skeleton · −#{(result.ratio * 100).round}%",
-          body: Util::Output.preview(redacted),
-          body_kind: :plain }
-      end
-
-      # DIM, non-spammy user notice on a meaningful save, via the same `note`
-      # channel tool activity uses. Emitted only when a skeleton was applied.
-      def emit_compression_telemetry(display_path, original, result)
-        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
-        skel_lines = result.text.count("\n") + (result.text.end_with?("\n") ? 0 : 1)
-        Rubino.logger&.info(event: "compression.applied", path: display_path,
-                            ratio: result.ratio.round(3),
-                            original_bytes: result.original_bytes,
-                            compressed_bytes: result.compressed_bytes,
-                            saved_tokens_est: result.saved_tokens_est)
-        orig_tok = humanize_tokens(result.original_bytes / 4.0)
-        new_tok  = humanize_tokens(result.compressed_bytes / 4.0)
-        Rubino.ui&.note(
-          "⚡ compressed #{display_path} · #{orig_lines}→#{skel_lines} lines · " \
-          "~#{orig_tok}→#{new_tok} tok (−#{(result.ratio * 100).round}%)"
-        )
-      end
-
-      # "6.4k" / "850" — compact token count for the notice.
-      def humanize_tokens(tokens)
-        t = tokens.round
-        t >= 1000 ? "#{(t / 1000.0).round(1)}k" : t.to_s
       end
 
       BINARY_SAMPLE_BYTES = 1024
@@ -269,7 +229,7 @@ module Rubino
 
       # Streams the file line-by-line so we never load a 2 GB log into memory
       # just to print 50 lines from the middle.
-      def render(expanded, display_path, offset, limit)
+      def render(expanded, display_path, offset, limit, full_file: false)
         out         = +""
         total_lines = 0
         printed     = 0
@@ -338,7 +298,12 @@ module Rubino
                 display_gutter(out, last_shown) + footer, code_file: true
               )
             ),
-            body_kind: :plain }
+            body_kind: :plain,
+            # Routing context for the compression seam — present only for a
+            # whole-file Ruby read (the one compressible shape), nil otherwise so
+            # the router passes through. The ContentRouter skeletonises the RAW
+            # source carried here, not this line-numbered render.
+            compress_hint: compress_hint(expanded, display_path, full_file) }
         end
       end
     end
