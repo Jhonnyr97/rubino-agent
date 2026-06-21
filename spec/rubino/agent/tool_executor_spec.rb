@@ -439,7 +439,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       end.new
     end
 
-    it "compresses a log output, spills the original, and appends a read pointer" do
+    it "compresses a log output, spills the original, and appends a PASSIVE recovery pointer" do
       enable_compression!
       allow(registry).to receive(:find).and_return(log_tool)
       result = executor.execute(name: "shell", arguments: {}, call_id: "log1")
@@ -447,8 +447,15 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(result.output).to include("ERROR boom happened")
       expect(result.output.scan("INFO line").length).to be < 60
       expect(result.output).to include("hidden by output compression")
+      expect(result.output).to include("failures + summary kept")
+      expect(result.output).to include("normally sufficient")
       spill = File.join(spill_home, "tool-results", "log1.txt")
-      expect(result.output).to include("read #{spill}")
+      # the spill path is still surfaced for recoverability …
+      expect(result.output).to include(spill)
+      # … but NOT as an imperative "read" that bait-drills a small model in
+      expect(result.output).not_to include("Full output: read")
+      expect(result.output).not_to match(/read #{Regexp.escape(spill)}/)
+      expect(result.output).to include("if a hidden line is specifically needed")
       # the FULL original is on disk, retrievable with a normal read
       expect(File.read(spill)).to include("INFO line 30")
     end
