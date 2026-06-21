@@ -2,6 +2,7 @@
 
 require "net/http"
 require "uri"
+require "nokogiri"
 
 module Rubino
   module Tools
@@ -9,6 +10,22 @@ module Rubino
     class WebFetchTool < Base
       MAX_BODY_SIZE = 100_000
       TIMEOUT = 30
+
+      # Safety-fallback thresholds for readability extraction. If the main-content
+      # extraction yields suspiciously little text relative to the whole document
+      # (RATIO) or below an absolute floor (FLOOR), we assume the heuristic
+      # over-trimmed and fall back to the full-page legacy strip so we never hand
+      # back a near-empty page.
+      READABILITY_MIN_RATIO = 0.30
+      READABILITY_MIN_CHARS = 200
+
+      # Elements that are never main content. Dropped wholesale before extraction.
+      BOILERPLATE_TAGS = %w[
+        script style noscript nav header footer aside form svg iframe button template
+      ].freeze
+
+      # ARIA landmark roles that mark page chrome rather than content.
+      BOILERPLATE_ROLES = %w[navigation banner contentinfo search complementary].freeze
 
       def name
         "webfetch"
@@ -151,7 +168,126 @@ module Rubino
           "or an image-aware model) for binary assets."
       end
 
+      # Convert an HTML document to readable text. Tries a readability-style
+      # main-content extraction (nokogiri); if that over-trims or nokogiri can't
+      # parse the input, falls back to the full-page legacy regex strip so a
+      # fetch never crashes and never returns a near-empty page.
       def strip_html(html)
+        readability_extract(html)
+      rescue StandardError
+        # Malformed input or any nokogiri failure: never crash a fetch.
+        legacy_strip_html(html)
+      end
+
+      # Readability-style extraction. Drops page chrome, prefers the main-content
+      # container, and serializes the kept subtree to markdown-ish text. Applies a
+      # safety fallback to the full-page strip when the result looks over-trimmed.
+      def readability_extract(html)
+        doc = Nokogiri::HTML(html)
+
+        # Full-document text is our reference for "did we trim too much?".
+        full = legacy_strip_html(html)
+
+        strip_boilerplate(doc)
+        root = main_container(doc)
+        return full if root.nil?
+
+        extracted = collapse_blank_lines(serialize_node(root).strip)
+
+        # Safety fallback: if extraction looks suspiciously small relative to the
+        # whole document (or below an absolute floor), prefer the full strip.
+        if over_trimmed?(extracted, full)
+          full
+        else
+          maybe_annotate(extracted, full)
+        end
+      end
+
+      # True when the extracted main content is too small to trust — either below
+      # an absolute character floor or a fraction of the full page text.
+      def over_trimmed?(extracted, full)
+        return true if extracted.length < READABILITY_MIN_CHARS && full.length >= READABILITY_MIN_CHARS
+
+        full.length.positive? && extracted.length.to_f / full.length < READABILITY_MIN_RATIO
+      end
+
+      # When extraction dropped a lot of the page, append a one-liner pointing the
+      # model at the raw escape hatch so it knows it can re-fetch the full page.
+      def maybe_annotate(extracted, full)
+        return extracted unless full.length.positive?
+        return extracted if extracted.length.to_f / full.length > 0.85
+
+        "#{extracted}\n\n[Trimmed to main content. Re-fetch with format:\"html\" for the full raw page.]"
+      end
+
+      # Remove non-content elements (chrome) from the document in place.
+      def strip_boilerplate(doc)
+        doc.css(BOILERPLATE_TAGS.join(",")).each(&:remove)
+        doc.css("[role]").each do |el|
+          el.remove if BOILERPLATE_ROLES.include?(el["role"].to_s.strip.downcase)
+        end
+      end
+
+      # Pick the main-content subtree: first <main>, [role=main], or <article>;
+      # otherwise the <body> (or the whole doc if there's no body).
+      def main_container(doc)
+        doc.at_css("main") ||
+          doc.at_css("[role=main]") ||
+          doc.at_css("article") ||
+          doc.at_css("body") ||
+          doc.root
+      end
+
+      # Serialize a kept subtree to markdown-ish text: headings as "## ", list
+      # items as "- ", paragraphs separated by blank lines. nokogiri's #text
+      # already decodes entities.
+      def serialize_node(node)
+        out = +""
+        node.children.each { |child| render_child(child, out) }
+        out
+      end
+
+      BLOCK_SEPARATORS = {
+        "p" => "\n\n", "div" => "\n", "section" => "\n\n", "article" => "\n\n",
+        "br" => "\n", "tr" => "\n", "ul" => "\n", "ol" => "\n",
+        "blockquote" => "\n\n", "pre" => "\n\n", "table" => "\n\n"
+      }.freeze
+
+      def render_child(node, out)
+        case node.type
+        when Nokogiri::XML::Node::TEXT_NODE
+          out << node.text.gsub(/[ \t]*\n[ \t]*/, " ")
+        when Nokogiri::XML::Node::ELEMENT_NODE
+          render_element(node, out)
+        end
+      end
+
+      def render_element(node, out)
+        name = node.name.downcase
+        case name
+        when /\Ah[1-6]\z/
+          out << "\n\n## #{node.text.strip}\n\n"
+        when "li"
+          out << "\n- #{collapse_inline(node.text)}"
+        when "br"
+          out << "\n"
+        else
+          serialize_node(node).then { |inner| out << inner }
+          out << (BLOCK_SEPARATORS[name] || "")
+        end
+      end
+
+      def collapse_inline(text)
+        text.gsub(/\s+/, " ").strip
+      end
+
+      def collapse_blank_lines(text)
+        text.gsub(/^[ \t]+/, "").gsub(/[ \t]+\n/, "\n").gsub(/\n{3,}/, "\n\n")
+      end
+
+      # The original naive full-page strip. Retained as the safety-fallback path
+      # and for malformed input that nokogiri can't handle.
+      def legacy_strip_html(html)
         # Basic HTML to text conversion
         text = html.dup
 
