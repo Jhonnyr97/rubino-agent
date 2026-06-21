@@ -660,8 +660,16 @@ module Rubino
         "privacy" => {
           "redact_pii" => false
         },
+        # #552: how long an interactive `question`/clarify waits for the human
+        # before it EXPIRES CLEANLY (the agent proceeds with its best judgement),
+        # mirroring tasks.ask_parent_timeout and Hermes' agent.clarify_timeout.
+        # Generous (10 min) — long enough to read a multi-option menu and answer,
+        # short enough that an abandoned prompt eventually unblocks the run. This
+        # is the BLOCKING-tool wait bound; the stale-chunk watchdog is separately
+        # suspended for the tool's whole runtime (RubyLLMAdapter#stream_once), so
+        # it never pre-empts this timeout.
         "clarify" => {
-          "timeout" => 120
+          "timeout" => 600
         },
         "worktree" => {
           "enabled" => false

@@ -234,6 +234,17 @@ module Rubino
         dig("tasks", "ask_parent_timeout") || Defaults.dig("tasks", "ask_parent_timeout")
       end
 
+      # Bound (seconds) an interactive `question`/clarify waits for the human to
+      # answer before it EXPIRES CLEANLY and the agent proceeds with its best
+      # judgement (#552). Mirrors the ask_parent / Hermes clarify_timeout
+      # convention — a generous upper bound (default 600s = 10 min, well above
+      # human reading/deliberation time), never the 30s stale-chunk window and
+      # never "forever". An abandoned clarify self-heals into the NO_ANSWER
+      # outcome instead of hanging the run or being killed by the stale watchdog.
+      def clarify_timeout
+        dig("clarify", "timeout") || Defaults.dig("clarify", "timeout")
+      end
+
       # -- Prompts section --
       # The customer-facing preamble prepended to every assembled system
       # prompt. nil/empty disables the layer.
