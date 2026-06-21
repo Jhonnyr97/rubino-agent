@@ -54,7 +54,11 @@ module Rubino
         # The read allowlist was never the data-loss boundary (that's on the
         # WRITE path); glob only lists file PATHS (no content), so there is
         # nothing to denylist here — secret protection lives on read/grep.
-        expanded_path = File.expand_path(path, workspace_root)
+        # A RELATIVE base anchors at the SESSION cwd (Workspace.current_cwd, via
+        # the shared seam) so a `cd subdir` is honoured here too (#544/#545); an
+        # absolute base passes through. WHERE we anchor changed, not the broad
+        # semantics.
+        expanded_path = expand_workspace_path(path)
         full_pattern  = resolve_pattern(pattern, path, expanded_path)
         return full_pattern if full_pattern.is_a?(String) && full_pattern.start_with?("Error:")
 

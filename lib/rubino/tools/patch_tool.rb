@@ -38,7 +38,13 @@ module Rubino
 
       def call(arguments)
         patch     = arguments["patch"]     || arguments[:patch]
-        base_path = arguments["base_path"] || arguments[:base_path] || Dir.pwd
+        # Anchor relative patch paths at the SESSION cwd (Workspace.current_cwd
+        # via the shared seam), not Dir.pwd: a `cd subdir` in the shell is then
+        # honoured by apply_patch too (#544/#545). An explicit base_path is
+        # resolved relative to the same seam (absolute passes through); with no
+        # base_path the hunk paths anchor straight at the session cwd.
+        raw_base  = arguments["base_path"] || arguments[:base_path]
+        base_path = raw_base.nil? || raw_base.to_s.empty? ? Workspace.current_cwd : expand_workspace_path(raw_base)
 
         hunks = parse_patch(patch)
         return "No changes applied" if hunks.empty?
