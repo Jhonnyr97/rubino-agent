@@ -90,15 +90,25 @@ md << "Router: `Rubino::Compression::ContentRouter` (the unified seam).\n\n"
 md << "| Output | Routed → | Correct? | Full tok | Routed tok | Reduction | Passthrough byte-identical |\n"
 md << "|---|---|---|---:|---:|---:|---|\n"
 rows.each do |r|
-  pt = r[:applied] ? "—" : (r[:identical] ? "YES ✅" : "NO ❌")
+  pt = if r[:applied]
+         "—"
+       else
+         (r[:identical] ? "YES ✅" : "NO ❌")
+       end
   md << format("| %s | %s | %s | %d | %d | %.1f%% | %s |\n",
                r[:label], "#{r[:got]} (#{r[:strategy]})", r[:type_ok] ? "✅" : "❌ (#{r[:expected]})",
                r[:full], r[:comp], r[:reduction], pt)
 end
 all_routed = rows.all? { |r| r[:type_ok] }
 pass_identical = rows.reject { |r| r[:applied] }.all? { |r| r[:identical] }
-md << "\nRouting: #{all_routed ? "every fixture routed to the expected strategy. ✅" : "MISROUTE — see table. ❌"}\n"
-md << "Passthrough fidelity: #{pass_identical ? "every passthrough output is byte-identical to its input. ✅" : "BROKEN — see table. ❌"}\n"
+routing_note = all_routed ? "every fixture routed to the expected strategy. ✅" : "MISROUTE — see table. ❌"
+fidelity_note = if pass_identical
+                  "every passthrough output is byte-identical to its input. ✅"
+                else
+                  "BROKEN — see table. ❌"
+                end
+md << "\nRouting: #{routing_note}\n"
+md << "Passthrough fidelity: #{fidelity_note}\n"
 
 out = File.join(__dir__, "results", "router_per_type.md")
 File.write(out, md)
