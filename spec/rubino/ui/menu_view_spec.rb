@@ -90,6 +90,66 @@ RSpec.describe Rubino::UI::MenuView do
       out = described_class.render([{ label: "x" * 200 }], 10, window: { selected: 0, top: 0, max_rows: 8 })
       expect(Rubino::UI::LiveRegion.display_width(out.first)).to be <= 10
     end
+
+    # CWE-150 (#563): menu LABELS are untrusted — the `@file` palette feeds raw
+    # workspace filenames straight in, so a file named with embedded terminal
+    # escapes used to be rendered VERBATIM to the TTY the instant the picker
+    # opened (pre-tool, no approval, no gesture: typing `@evil` cleared the
+    # screen and set the window title). The render sink must neutralize every
+    # dangerous control byte before it reaches the terminal. Mirrors the
+    # tool-output / approval-card escape-injection sink tests.
+    describe "terminal-escape injection (CWE-150)" do
+      # The `@file` candidate path: a workspace filename carrying the full
+      # exploit chain — clear-screen, OSC title-set (BEL-terminated),
+      # alt-screen-enter, CR (line-rewind spoof), bare BEL.
+      let(:evil) { "@evil\e[2J\e]0;PWNED\a\e[?1049h\rrest\a.txt" }
+
+      # No raw control byte that can repaint, move the cursor, set the title, or
+      # rewind the line may survive to the terminal.
+      matcher :have_no_raw_escapes do
+        match do |str|
+          ["\e", "\a", "\r", "\e]"].none? { |seq| str.include?(seq) }
+        end
+        failure_message { |str| "expected no raw escapes, got #{str.inspect}" }
+      end
+
+      it "neutralizes raw escapes in a SELECTED row label (the @file picker sink)" do
+        out = described_class.render([{ label: evil }], 80, window: { selected: 0, top: 0, max_rows: 8 })
+        expect(out.join("\n")).to have_no_raw_escapes
+        expect(out.join).to include("^[") # ESC rendered as visible caret notation
+      end
+
+      it "neutralizes raw escapes in an UNSELECTED row label" do
+        out = described_class.render(
+          [{ label: "safe" }, { label: evil }], 80, window: { selected: 0, top: 0, max_rows: 8 }
+        )
+        expect(out.join("\n")).to have_no_raw_escapes
+      end
+
+      it "neutralizes raw escapes in a row :desc column" do
+        out = described_class.render(
+          [{ label: "cmd", desc: "do\e]0;PWNED\athing" }], 80, window: { selected: 0, top: 0, max_rows: 8 }
+        )
+        expect(out.join("\n")).to have_no_raw_escapes
+      end
+
+      it "neutralizes raw escapes in a selected row :sub line" do
+        out = described_class.render(
+          [{ label: "agent", sub: "busy\e[2J\a" }], 80, window: { selected: 0, top: 0, max_rows: 8 }
+        )
+        expect(out.join("\n")).to have_no_raw_escapes
+      end
+
+      it "still renders a NORMAL filename label and rubino's OWN SGR color intact" do
+        pastel  = Pastel.new(enabled: true)
+        colored = pastel.cyan("@src/app.rb")
+        out = described_class.render([{ label: colored }], 80, window: { selected: 1, top: 0, max_rows: 8 })
+        # rubino's own coloring survives (caller pre-coloured the token)…
+        expect(out.first).to include("\e[36m")
+        # …and the legible filename text is still present.
+        expect(out.first.gsub(/\e\[[0-9;]*m/, "")).to include("@src/app.rb")
+      end
+    end
   end
 
   describe ".window_top" do
