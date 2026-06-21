@@ -211,6 +211,76 @@ RSpec.describe Rubino::Agent::Runner do
       expect(second.session[:parent_session_id]).to eq(parent[:id])
       expect(first.session[:id]).not_to eq(second.session[:id])
     end
+
+    # -----------------------------------------------------------------------
+    # #543: per-session advisory lock closes the pid-CAS TOCTOU window.
+    #
+    # The pid-CAS only serialises ONCE owner_pid has been stamped; two
+    # concurrent `--continue` both resolve the same latest session while
+    # owner_pid is STILL nil and the loser forks a COPY of a transcript the
+    # winner is already writing — duplicating/interleaving rows across the two
+    # sessions (the #543 repro). A real OS flock is atomic with no
+    # check-then-act window, so it serialises the "open this session" decision
+    # itself: the second open can't take the lock and forks BEFORE any of its
+    # rows can land in the first session's history. These specs drive that lock
+    # path WITHOUT stubbing the CAS, simulating the second live process by
+    # holding the per-session lock from this process.
+    # -----------------------------------------------------------------------
+    it "forks (does not interleave) when the per-session lock is held — #543" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      # Another live process already holds the per-session lock (the realistic
+      # 'second terminal tab in the same folder' case). Acquire it here so the
+      # Runner's try_acquire returns nil and it must fork.
+      held = Rubino::Session::Lock.try_acquire(parent[:id])
+      expect(held).not_to be_nil # we hold it; the Runner will fail to acquire
+
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      # A SEPARATE row with lineage back to the parent — the second opener forked
+      # rather than writing into the locked session's history.
+      expect(runner.session[:id]).not_to eq(parent[:id])
+      expect(runner.session[:parent_session_id]).to eq(parent[:id])
+
+      # The locked parent's own transcript is untouched: its two messages stay in
+      # their original order, no interleaved/duplicated rows from the fork.
+      parent_msgs = store.for_session(parent[:id])
+      expect(parent_msgs.map(&:role)).to eq(%w[user assistant])
+      expect(parent_msgs.map(&:content)).to eq(["hello", "hi there"])
+    ensure
+      held&.release
+    end
+
+    it "first opener holds the lock so a second open of the same id forks — #543" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      # The REAL path, no stubs: the first Runner claims the row AND holds the
+      # per-session lock for its lifetime.
+      first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(first.session[:id]).to eq(parent[:id])
+
+      # A SECOND concurrent open of the SAME id cannot take the lock the first
+      # still holds, so it forks instead of stomping/interleaving — even though
+      # the pid-CAS alone could have raced. Distinct rows ⇒ no interleave.
+      second = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(second.session[:id]).not_to eq(parent[:id])
+      expect(second.session[:parent_session_id]).to eq(parent[:id])
+      expect(first.session[:id]).not_to eq(second.session[:id])
+    end
+
+    it "releases the per-session lock on end_session! so a later resume can claim it — #543" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(first.session[:id]).to eq(parent[:id])
+      first.end_session! # drops the lock (and the kernel would on exit anyway)
+
+      # The lock is free again: a later resume can take it (and would claim the
+      # row). We just assert the lock is re-acquirable here.
+      reacquired = Rubino::Session::Lock.try_acquire(parent[:id])
+      expect(reacquired).not_to be_nil
+      reacquired&.release
+    end
   end
 
   # -----------------------------------------------------------------------
