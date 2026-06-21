@@ -197,6 +197,27 @@ Risk: low
 Parameters: url, format (text|html)
 ```
 
+`format: "text"` (default) runs a readability-style **main-content extraction**
+(nokogiri): page chrome — `script`, `style`, `noscript`, `nav`, `header`,
+`footer`, `aside`, `form`, `svg`, `iframe`, `button`, plus ARIA landmark roles
+(`navigation`, `banner`, `contentinfo`, `search`, `complementary`) — is dropped,
+the main container is preferred (`<main>` → `[role=main]` → `<article>` →
+`<body>`), and the kept subtree is serialized to markdown-ish text (`## `
+headings, `- ` list items, blank-line-separated paragraphs, entities decoded).
+This strips nav menus/footers/cookie banners and typically cuts tokens
+substantially on article and docs pages.
+
+Two guarantees so capability is never lost:
+
+- **Safety fallback** — if the extracted text is under ~30% of the full page
+  text (or below a small char floor), the tool returns the full-page strip
+  instead, so a page whose content isn't in a clean `<main>`/`<article>` is never
+  over-trimmed. Malformed HTML that nokogiri can't parse also falls back (a fetch
+  never crashes). When extraction trims a lot, a one-line note points back at the
+  raw escape hatch.
+- **Raw escape hatch** — `format: "html"` returns the full raw HTML **verbatim**,
+  completely unprocessed, for when the model wants the original page.
+
 ### websearch
 
 Search the web. Supports Tavily (best), SearXNG, or DuckDuckGo fallback.
