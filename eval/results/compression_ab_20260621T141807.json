@@ -1,0 +1,647 @@
+{
+  "flag": "tool_output_compression.enabled",
+  "n": 3,
+  "generated_at": "2026-06-21T14:18:07+02:00",
+  "summary": {
+    "off": {
+      "runs": 15,
+      "success_rate": 1.0,
+      "input_tokens": {
+        "mean": 31111.533333333333,
+        "min": 18631.0,
+        "max": 113127.0,
+        "stddev": 22191.846045688846
+      },
+      "output_tokens": {
+        "mean": 176.73333333333332,
+        "min": 74.0,
+        "max": 772.0,
+        "stddev": 177.23034603463242
+      },
+      "cache_read": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stddev": 0.0
+      },
+      "tool_calls": {
+        "mean": 1.2666666666666666,
+        "min": 1.0,
+        "max": 5.0,
+        "stddev": 0.9977753031397177
+      },
+      "num_turns": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "stddev": 0.0
+      },
+      "wall_clock_s": {
+        "mean": 18.672666666666665,
+        "min": 11.905,
+        "max": 52.927,
+        "stddev": 9.48798912075449
+      }
+    },
+    "on": {
+      "runs": 15,
+      "success_rate": 1.0,
+      "input_tokens": {
+        "mean": 37669.4,
+        "min": 18952.0,
+        "max": 113992.0,
+        "stddev": 32635.05514790295
+      },
+      "output_tokens": {
+        "mean": 208.86666666666667,
+        "min": 73.0,
+        "max": 829.0,
+        "stddev": 227.87419531155538
+      },
+      "cache_read": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stddev": 0.0
+      },
+      "tool_calls": {
+        "mean": 1.5333333333333334,
+        "min": 1.0,
+        "max": 4.0,
+        "stddev": 1.0873004286866728
+      },
+      "num_turns": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "stddev": 0.0
+      },
+      "wall_clock_s": {
+        "mean": 23.420866666666665,
+        "min": 11.853,
+        "max": 77.142,
+        "stddev": 19.729526697707563
+      }
+    }
+  },
+  "compression": {
+    "applied": 10,
+    "drill_in": 0,
+    "failed": 0,
+    "tokens_saved": 155153,
+    "drill_in_rate": 0.0,
+    "by_type": {
+      "log": {
+        "count": 1,
+        "saved": 116723
+      },
+      "diff": {
+        "count": 3,
+        "saved": 21474
+      },
+      "json": {
+        "count": 3,
+        "saved": 9753
+      },
+      "code": {
+        "count": 3,
+        "saved": 7203
+      }
+    },
+    "off_arm_applied": 0
+  },
+  "events_on": [
+    {
+      "ts": "2026-06-21T14:10:48+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "log",
+      "strategy": "log",
+      "ratio": 0.97,
+      "original_bytes": 481255,
+      "compressed_bytes": 14363,
+      "saved_tokens_est": 116723
+    },
+    {
+      "ts": "2026-06-21T14:13:04+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "diff",
+      "strategy": "diff",
+      "ratio": 0.429,
+      "original_bytes": 66690,
+      "compressed_bytes": 38059,
+      "saved_tokens_est": 7158
+    },
+    {
+      "ts": "2026-06-21T14:13:23+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "diff",
+      "strategy": "diff",
+      "ratio": 0.429,
+      "original_bytes": 66690,
+      "compressed_bytes": 38059,
+      "saved_tokens_est": 7158
+    },
+    {
+      "ts": "2026-06-21T14:13:40+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "diff",
+      "strategy": "diff",
+      "ratio": 0.429,
+      "original_bytes": 66690,
+      "compressed_bytes": 38059,
+      "saved_tokens_est": 7158
+    },
+    {
+      "ts": "2026-06-21T14:14:47+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "json",
+      "strategy": "json",
+      "ratio": 0.626,
+      "original_bytes": 20768,
+      "compressed_bytes": 7765,
+      "saved_tokens_est": 3251
+    },
+    {
+      "ts": "2026-06-21T14:15:01+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "json",
+      "strategy": "json",
+      "ratio": 0.626,
+      "original_bytes": 20768,
+      "compressed_bytes": 7765,
+      "saved_tokens_est": 3251
+    },
+    {
+      "ts": "2026-06-21T14:15:14+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "shell",
+      "content_type": "json",
+      "strategy": "json",
+      "ratio": 0.626,
+      "original_bytes": 20768,
+      "compressed_bytes": 7765,
+      "saved_tokens_est": 3251
+    },
+    {
+      "ts": "2026-06-21T14:16:18+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "read",
+      "content_type": "code",
+      "strategy": "skeleton",
+      "ratio": 0.361,
+      "original_bytes": 39642,
+      "compressed_bytes": 25335,
+      "saved_tokens_est": 2401
+    },
+    {
+      "ts": "2026-06-21T14:16:32+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "read",
+      "content_type": "code",
+      "strategy": "skeleton",
+      "ratio": 0.361,
+      "original_bytes": 39642,
+      "compressed_bytes": 25335,
+      "saved_tokens_est": 2401
+    },
+    {
+      "ts": "2026-06-21T14:16:47+02:00",
+      "level": "info",
+      "event": "compression.applied",
+      "tool": "read",
+      "content_type": "code",
+      "strategy": "skeleton",
+      "ratio": 0.361,
+      "original_bytes": 39642,
+      "compressed_bytes": 25335,
+      "saved_tokens_est": 2401
+    }
+  ],
+  "runs": [
+    {
+      "task": "ab_testlog",
+      "arm": "off",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 52.927,
+      "num_turns": 1,
+      "tool_calls": 5,
+      "input_tokens": 113127,
+      "output_tokens": 772,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_testlog",
+      "arm": "off",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 14.66,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 28043,
+      "output_tokens": 262,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_testlog",
+      "arm": "off",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 16.012,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 28044,
+      "output_tokens": 374,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_testlog",
+      "arm": "on",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 39.71,
+      "num_turns": 1,
+      "tool_calls": 3,
+      "input_tokens": 83397,
+      "output_tokens": 384,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_testlog",
+      "arm": "on",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 63.693,
+      "num_turns": 1,
+      "tool_calls": 4,
+      "input_tokens": 113992,
+      "output_tokens": 829,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_testlog",
+      "arm": "on",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 77.142,
+      "num_turns": 1,
+      "tool_calls": 4,
+      "input_tokens": 107741,
+      "output_tokens": 679,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_diff",
+      "arm": "off",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 19.55,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 28116,
+      "output_tokens": 150,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_diff",
+      "arm": "off",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 19.485,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 28112,
+      "output_tokens": 131,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_diff",
+      "arm": "off",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 19.688,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 28108,
+      "output_tokens": 135,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_diff",
+      "arm": "on",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 18.237,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 25583,
+      "output_tokens": 161,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_diff",
+      "arm": "on",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 17.312,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 25577,
+      "output_tokens": 98,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_diff",
+      "arm": "on",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 17.135,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 25588,
+      "output_tokens": 99,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_json",
+      "arm": "off",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 17.039,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 25457,
+      "output_tokens": 112,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_json",
+      "arm": "off",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 16.786,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 25457,
+      "output_tokens": 97,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_json",
+      "arm": "off",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 16.652,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 25466,
+      "output_tokens": 99,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_json",
+      "arm": "on",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 13.532,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 20312,
+      "output_tokens": 111,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_json",
+      "arm": "on",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 13.291,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 20312,
+      "output_tokens": 91,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_json",
+      "arm": "on",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 13.354,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 20311,
+      "output_tokens": 102,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_code_rb",
+      "arm": "off",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 17.145,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 26942,
+      "output_tokens": 78,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_rb",
+      "arm": "off",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 16.98,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 26944,
+      "output_tokens": 74,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_rb",
+      "arm": "off",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 17.162,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 26949,
+      "output_tokens": 78,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_rb",
+      "arm": "on",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 13.464,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 21789,
+      "output_tokens": 73,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_code_rb",
+      "arm": "on",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 14.571,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 21782,
+      "output_tokens": 161,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_code_rb",
+      "arm": "on",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 13.937,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 21793,
+      "output_tokens": 91,
+      "cache_read_input_tokens": 0,
+      "compression_events": [
+        "compression.applied"
+      ]
+    },
+    {
+      "task": "ab_code_py",
+      "arm": "off",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 12.017,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 18639,
+      "output_tokens": 97,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_py",
+      "arm": "off",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 11.905,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 18631,
+      "output_tokens": 91,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_py",
+      "arm": "off",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 12.082,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 18638,
+      "output_tokens": 101,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_py",
+      "arm": "on",
+      "repeat": 0,
+      "passed": true,
+      "wall_clock_s": 12.004,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 18952,
+      "output_tokens": 89,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_py",
+      "arm": "on",
+      "repeat": 1,
+      "passed": true,
+      "wall_clock_s": 12.078,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 18953,
+      "output_tokens": 91,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    },
+    {
+      "task": "ab_code_py",
+      "arm": "on",
+      "repeat": 2,
+      "passed": true,
+      "wall_clock_s": 11.853,
+      "num_turns": 1,
+      "tool_calls": 1,
+      "input_tokens": 18959,
+      "output_tokens": 74,
+      "cache_read_input_tokens": 0,
+      "compression_events": []
+    }
+  ]
+}
