@@ -281,6 +281,17 @@ RSpec.describe Rubino::Agent::Runner do
       expect(reacquired).not_to be_nil
       reacquired&.release
     end
+
+    it "flushes un-extracted memory on end_session! so short sessions are mined — #554" do
+      parent = seed_session_with_history(owner_pid: nil)
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      flusher = instance_double(Rubino::Memory::Flusher)
+      allow(Rubino::Memory::Flusher).to receive(:new).and_return(flusher)
+      expect(flusher).to receive(:flush_on_session_end!).with(parent[:id])
+
+      runner.end_session!
+    end
   end
 
   # -----------------------------------------------------------------------
