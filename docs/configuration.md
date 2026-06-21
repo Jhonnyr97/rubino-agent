@@ -329,8 +329,9 @@ output *is*, not by which tool produced it:
 | test / build / lint / shell logs (rspec, pytest, jest, cargo, npm, make, generic) | `LogCompressor` | keep every error/failure + the summary tally + context, drop passing/info noise (≈97% fewer tokens on a failing suite) |
 | a **whole-file** source read (Ruby) | code `skeleton` | keep signatures, elide large method bodies behind a `read offset:/limit:` pointer |
 | a unified diff (`git diff`, `diff`) | `DiffCompressor` | keep every `+`/`-` line and every file/hunk header; trim far unchanged context to ±N lines; collapse a generated/lock file to a one-line summary. A small/tight diff (the "show me the diff" case) passes through **byte-identical** via the saving guard. The human view is the tool's separate scrollback diff (`body`), which is **never** compressed |
+| a **whole-output** JSON dump (`curl \| jq`, `kubectl get -o json`, `gh api`, `docker inspect`, `aws --output json`, MCP/custom-tool JSON) | `JsonCompressor` | an array of **uniform** objects folds **losslessly** to a schema header + one compact row per item (repeated key names emitted once); a large array whose fold is too thin falls back to lossy row selection where **error-bearing rows and statistical outliers always survive** and dropped rows collapse to an `{"_elided": N}` sentinel; a single large object elides only **big string values** (never drops a key). Detected **before** the log channel, so a JSON shell dump folds as a table and is never log-compressed. Small JSON passes through **byte-identical** via the saving guard |
 | grep / search results (`path:line:`) | passthrough | **byte-identical** |
-| short output, or JSON | passthrough | unchanged (JSON is a reserved future strategy) |
+| short output | passthrough | unchanged |
 
 ```yaml
 tool_output_compression:
@@ -366,11 +367,18 @@ tool_output_compression:
       - build/
       - "*.snap"
       - vendor/
+  json:                       # whole-output JSON dumps (kubectl/gh/docker/aws/jq)
+    min_items: 8              # arrays with fewer items (and < min_lines) pass through unchanged
+    min_lines: 40             # objects / text shorter than this pass through unchanged
+    min_saving: 0.25          # only apply when ≥25% smaller; else byte-identical passthrough
+    outlier_sigma: 3.0        # a numeric field > N σ from its column mean = a kept outlier row (lossy)
+    max_string_chars: 400     # in a single object, string values longer than this collapse to `<elided N chars>` (key kept)
 ```
 
-> `diff` has **no** own `enabled` sub-gate (like `code`): it is active whenever
-> the master flag is on, and the saving guard (`min_lines` + `min_saving`) is the
-> real gate — small/tight diffs the user wants to see stay verbatim automatically.
+> `diff` and `json` have **no** own `enabled` sub-gate (like `code`): they are
+> active whenever the master flag is on, and the saving guard (`min_lines`/
+> `min_items` + `min_saving`) is the real gate — small/tight diffs and small JSON
+> the user wants to see stay verbatim automatically.
 
 **Reversibility.** When the router compresses, the executor spills the *full
 original* to `<home>/tool-results/<call_id>.txt` and the compressed output ends
