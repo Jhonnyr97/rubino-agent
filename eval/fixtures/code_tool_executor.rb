@@ -4,12 +4,6 @@ require "securerandom"
 
 module Rubino
   module Agent
-    # The "what survived" phrase in a compression recovery pointer, per content
-    # type (anything else — logs — keeps the failures + summary).
-    COMPRESSION_KEPT_NOTES = { code: "signatures + small bodies kept",
-                               diff: "all +/- changes + headers kept",
-                               json: "schema + error/outlier rows kept" }.freeze
-
     # Executes tool calls with approval checks and result formatting.
     class ToolExecutor
       # The Loop registers its count+persist sink here after construction (the
@@ -615,7 +609,7 @@ module Rubino
         orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
         kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
         hidden = [orig_lines - kept_lines, 0].max
-        kept_note = COMPRESSION_KEPT_NOTES[content_type] || "failures + summary kept"
+        kept_note = content_type == :code ? "signatures + small bodies kept" : "failures + summary kept"
         recover = spill_path ? "Full output: read #{spill_path}" : "Full output unavailable (spill failed) — re-run."
         "#{compressed}\n[… #{hidden} line(s) hidden by output compression (#{kept_note}). #{recover}]"
       end

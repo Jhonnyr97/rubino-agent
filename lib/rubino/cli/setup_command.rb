@@ -72,6 +72,14 @@ module Rubino
         # none keeps the seeded default untouched.
         maybe_autodetect_provider(ui)
 
+        # Offer command + file output compression (test/build/lint dumps and
+        # whole-file Ruby reads) — routed through the single ContentRouter seam.
+        # Interactive only, idempotent (skips when already on), recommended
+        # default. The shipped config keeps it off so existing and headless
+        # installs are untouched; this is the "activate from setup" path. The
+        # original is always recoverable via the appended read pointer.
+        maybe_offer_log_compression(ui)
+
         ui.blank_line
         # Tell the truth about the end state (#31). A green "Setup complete!" is
         # only honest when a usable credential is actually configured — printing
@@ -116,6 +124,50 @@ module Rubino
         return if LLM::CredentialCheck.usable?
 
         OnboardingWizard.new(ui: ui).run
+      end
+
+      # Interactive "activate from setup" step for command + file output
+      # compression. Skipped on headless setup (no prompt) and when the master
+      # flag is already on, so a re-run never nags. A bare Enter accepts
+      # (recommended on). Writing the unified `enabled` flag is the ONLY
+      # persistence; a decline leaves the seeded default (off). The per-type
+      # `logs.enabled` sub-flag is turned on too so the log channel is active.
+      def maybe_offer_log_compression(ui)
+        return unless interactive?
+        return if Rubino.configuration.tool_output_compression_enabled?
+
+        ui.blank_line
+        ui.info("Command + file output compression")
+        ui.status("  Compresses test/build/shell output AND whole-file Ruby reads before they reach")
+        ui.status("  the model — keeps every failure + summary (and code signatures), drops passing")
+        ui.status("  noise. ~97% fewer tokens on a test suite. The full output stays one `read` away.")
+        return unless prompt_enable?("Enable it?")
+
+        loader = Config::Loader.new
+        loader.create_default_config! unless loader.config_exists?
+        writer = Config::Writer.new(config_path: loader.config_path)
+        writer.set("tool_output_compression.enabled", true)
+        writer.set("tool_output_compression.logs.enabled", true)
+        Rubino.reload_configuration!
+        ui.success("Command + file output compression enabled.")
+      rescue StandardError => e
+        # A convenience toggle must never fail setup.
+        Rubino.logger.warn(event: "setup.log_compression_offer_failed",
+                           error: e.class.name, message: e.message)
+        nil
+      end
+
+      # Y/n prompt with a recommended-yes default (bare Enter ⇒ true). Only an
+      # explicit n/no declines; EOF (piped) declines too so non-TTY never blocks.
+      def prompt_enable?(question)
+        $stdout.print "#{question} [Y/n]: "
+        $stdout.flush
+        ans = $stdin.gets
+        return false if ans.nil?
+
+        !%w[n no].include?(ans.strip.downcase)
+      rescue StandardError
+        false
       end
 
       # Non-interactive provider auto-detect (#392a). Only the headless path

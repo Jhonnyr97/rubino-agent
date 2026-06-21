@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Tool-output compression (deterministic, off by default).** A no-LLM content
+  router at the single `Agent::ToolExecutor` seam compresses high-volume tool
+  output before it reaches the model: test/build/lint logs are reduced to their
+  failures + summary (≈97% fewer tokens on a failing suite, every failure kept),
+  and a whole-file source read can be returned as a skeleton (signatures kept,
+  large bodies elided behind a `read offset:/limit:` pointer). Diffs, grep/search
+  results, JSON, and short output pass through **byte-identical**. Reversibility
+  reuses the existing spill: the full original is written to
+  `tool-results/<call_id>.txt` and the compressed output points the model there —
+  no separate store/tool. When enabled, `read` and `shell` expose a `compress`
+  parameter (default true) so the model can opt a single call out and get the
+  verbatim output. Master switch `tool_output_compression.enabled` (default
+  `false`); `rubino setup` offers to turn it on. See
+  [configuration.md](docs/configuration.md#tool_output_compression).
 - **Agent-attach view.** At the idle prompt, `↓` opens the subagent picker and
   `Enter` now **attaches** to the highlighted background subagent: the screen
   switches to that agent's OWN full timeline (its tool calls and what it said,

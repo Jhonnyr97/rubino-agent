@@ -1,0 +1,1342 @@
+diff --git a/lib/rubino/agent/tool_executor.rb b/lib/rubino/agent/tool_executor.rb
+index 24dc7c32..7e5f1efd 100644
+--- a/lib/rubino/agent/tool_executor.rb
++++ b/lib/rubino/agent/tool_executor.rb
+@@ -186,70 +186,79 @@ module Rubino
+         if raw.is_a?(Tools::Result)
+           raw = Tools::Result.new(
+             name: name,
+             call_id: call_id,
+             output: Util::Output.truncate(raw.output, max_bytes: @config.tool_output_max_bytes,
+                                                       max_lines: @config.tool_output_max_lines,
+                                                       spill: ->(full) { spill_full_output(full, call_id) }),
+             status: raw.status,
+             error: raw.error,
+             metrics: raw.metrics,
+             error_code: raw.error_code,
+             artifact: raw.artifact,
+             transcript_card: raw.transcript_card?
+           )
+           record_audit(name: name, call_id: call_id, arguments: arguments,
+                        result: raw, status: "completed")
+           return raw
+         end
+         # Tools can return either a String (plain output) or a Hash carrying
+         # {output:, metrics:, body:, body_kind:}. The Hash form lets a tool emit
+         #   - a `metrics` one-liner for the done header ("42 lines · 0.1s")
+         #   - a `body` block (diff, preview) printed inside the tool box
+         #   - a `body_kind` (:diff | :plain) selecting the CLI coloring for body
+         # without having to reverse-engineer them from the formatted output.
+         if raw.is_a?(Hash)
+-          text       = raw[:output]     || raw["output"]
+-          metrics    = raw[:metrics]    || raw["metrics"]
+-          body       = raw[:body]       || raw["body"]
+-          body_kind  = raw[:body_kind]  || raw["body_kind"] || :plain
+-          error_code = raw[:error_code] || raw["error_code"]
+-          artifact   = raw[:artifact]   || raw["artifact"]
++          text         = raw[:output]     || raw["output"]
++          metrics      = raw[:metrics]    || raw["metrics"]
++          body         = raw[:body]       || raw["body"]
++          body_kind    = raw[:body_kind]  || raw["body_kind"] || :plain
++          error_code   = raw[:error_code] || raw["error_code"]
++          artifact     = raw[:artifact]   || raw["artifact"]
++          compress_hint = raw[:compress_hint] || raw["compress_hint"]
+         else
+           text = raw
+           metrics = nil
+           body = nil
+           body_kind = :plain
+           error_code = nil
+           artifact = nil
++          compress_hint = nil
+         end
+         # Skip the body block when the tool already streamed its output line by
+         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
+         # Util::Output.preview of the captured stdout), so rendering it again
+         # would duplicate every line in the timeline. Tools that don't stream
+         # (read, grep, edit, glob, github) still render their body here.
+         @ui.tool_body(body, kind: body_kind.to_sym) if body && !body.to_s.empty? && !streamed
++        # Content-routed compression of the MODEL-FACING text only (never the
++        # human `body` preview). The router detects the type and dispatches; a
++        # diff/grep/short output passes through byte-identical. On a hit the FULL
++        # original is spilled and a pointer appended so the model can read it back.
++        text, metrics = maybe_compress(text, metrics: metrics, name: name,
++                                             arguments: arguments, compress_hint: compress_hint,
++                                             call_id: call_id)
+         result = Tools::Result.success(
+           name: name,
+           call_id: call_id,
+           output: Util::Output.truncate(text, max_bytes: @config.tool_output_max_bytes,
+                                               max_lines: @config.tool_output_max_lines,
+                                               spill: ->(full) { spill_full_output(full, call_id) }),
+           metrics: metrics,
+           error_code: error_code&.to_sym,
+           artifact: artifact
+         )
+         record_audit(name: name, call_id: call_id, arguments: arguments,
+                      result: result, status: "completed")
+         result
+       rescue StandardError => e
+         result = Tools::Result.error(name: name, call_id: call_id, error: e.message)
+         record_audit(name: name, call_id: call_id, arguments: arguments,
+                      result: result, status: "failed", error: e.message)
+         result
+       ensure
+         tool.cancel_token = nil if tool.respond_to?(:cancel_token=)
+         tool.read_tracker = nil if tool.respond_to?(:read_tracker=)
+         tool.stream_chunk = nil if tool.respond_to?(:stream_chunk=)
+       end
+ 
+       # Cap on per-event size we forward to SSE consumers (the web UI timeline,
+@@ -512,50 +521,141 @@ module Rubino
+         path  = arguments["file_path"] || arguments[:file_path]
+         lines = ["multi_edit wants: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
+         body  = []
+         edits.each_with_index do |edit, idx|
+           old_s = edit["old_string"] || edit[:old_string]
+           new_s = edit["new_string"] || edit[:new_string]
+           body << "" unless idx.zero?
+           body.concat(Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" })
+           body.concat(Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" })
+         end
+         if body.size > MULTI_EDIT_PREVIEW_LINES
+           dropped = body.size - MULTI_EDIT_PREVIEW_LINES
+           body    = body.first(MULTI_EDIT_PREVIEW_LINES)
+           body << "  [… #{dropped} more line(s)]"
+         end
+         (lines + body).join("\n")
+       rescue StandardError => e
+         # A preview is cosmetic — fall back to the generic per-key formatter
+         # rather than crash the approval prompt. Log it so a malformed-shape
+         # coding bug here doesn't silently disable the multi_edit diff preview.
+         Rubino.logger&.warn(event: "tool_executor.multi_edit_preview_failed",
+                             error: e.message, error_class: e.class.name)
+         nil
+       end
+ 
++      # Routes the model-facing tool output through the single ContentRouter
++      # seam and, when a strategy COMPRESSED it, spills the full original to
++      # tool-results/<call_id>.txt and appends a pointer so the model can read it
++      # back with the normal `read` tool (the same recovery path truncation
++      # already uses). Returns [text, metrics] — unchanged when nothing applied,
++      # so a passthrough output is byte-identical. Never raises: the router
++      # itself swallows strategy errors into a passthrough result.
++      def maybe_compress(text, metrics:, name:, arguments:, compress_hint:, call_id:)
++        return [text, metrics] if text.nil? || text.empty?
++
++        compress = compress_requested?(arguments)
++        router = compression_router
++        result = router.route(text, tool_name: name, compress_hint: compress_hint, compress: compress)
++        return [text, metrics] unless result.applied?
++
++        spill_path = spill_full_output(text, call_id)
++        # Read drill-in telemetry: record the elided ranges so a later targeted
++        # read inside one is logged as a drill-in (the read tool's skeleton
++        # behavior, now driven from this seam rather than inside the tool).
++        note_code_skeleton(compress_hint, router, result) if result.content_type == :code
++
++        emit_compression_event(name, result, text)
++        compressed = append_recovery_pointer(result.text, text, spill_path, result.content_type)
++        [compressed, compression_metrics(result, metrics)]
++      rescue StandardError => e
++        Rubino.logger&.warn(event: "compression.seam_failed", tool: name,
++                            error: e.message, error_class: e.class.name)
++        [text, metrics]
++      end
++
++      def compression_router
++        @compression_router ||= Compression::ContentRouter.new(@config)
++      end
++
++      # The per-call opt-out: `compress: false` on read/shell forces passthrough.
++      # Defaults to true (advertised only when the feature is enabled).
++      def compress_requested?(arguments)
++        return true unless arguments.is_a?(Hash)
++
++        value = arguments.key?("compress") ? arguments["compress"] : arguments[:compress]
++        value != false
++      end
++
++      # For a :code skeleton, register the elided ranges + token saving on the
++      # read tracker so a later targeted read into an elided body is flagged as a
++      # drill-in (the "did the skeleton hide what was needed" signal). Keyed on
++      # the EXPANDED path the read tool stamped into the compress_hint.
++      def note_code_skeleton(compress_hint, router, result)
++        return unless @read_tracker && compress_hint.is_a?(Hash)
++
++        expanded = compress_hint[:tracker_path] || compress_hint["tracker_path"]
++        return unless expanded
++
++        @read_tracker.note_skeleton(expanded, router.last_elided_ranges, result.saved_tokens_est)
++      rescue StandardError
++        nil # telemetry only — never break the tool call
++      end
++
++      # The reversibility pointer: a single line stating how much was hidden, that
++      # failures/summary (logs) or large bodies (code) are kept, and the spill
++      # path the model can `read` to get the original verbatim. Falls back to a
++      # path-less note if the spill failed.
++      def append_recovery_pointer(compressed, original, spill_path, content_type)
++        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
++        kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
++        hidden = [orig_lines - kept_lines, 0].max
++        kept_note = content_type == :code ? "signatures + small bodies kept" : "failures + summary kept"
++        recover = spill_path ? "Full output: read #{spill_path}" : "Full output unavailable (spill failed) — re-run."
++        "#{compressed}\n[… #{hidden} line(s) hidden by output compression (#{kept_note}). #{recover}]"
++      end
++
++      def compression_metrics(result, existing)
++        tag = result.content_type == :code ? "skeleton" : "compressed"
++        note = "⚡ #{tag} −#{result.saved_tokens_est} tok"
++        existing && !existing.to_s.empty? ? "#{existing} · #{note}" : note
++      end
++
++      # Unified compression telemetry: one event for every applied compression,
++      # tagged with the content_type so the log distinguishes log vs code.
++      def emit_compression_event(name, result, original)
++        orig_bytes = original.bytesize
++        comp_bytes = result.text.bytesize
++        ratio = orig_bytes.zero? ? 0.0 : (orig_bytes - comp_bytes).fdiv(orig_bytes)
++        Rubino.logger&.info(event: "compression.applied", tool: name,
++                            content_type: result.content_type, strategy: result.strategy,
++                            ratio: ratio.round(3), original_bytes: orig_bytes,
++                            compressed_bytes: comp_bytes, saved_tokens_est: result.saved_tokens_est)
++      rescue StandardError
++        nil
++      end
++
+       # Persists the complete (pre-truncation) output to a per-call file under
+       # the rubino home so the model can read back whatever the inline
+       # head+tail elided (the spill seam Util::Output.truncate calls back into
+       # on overflow — Util keeps the pure shaping, the executor keeps the IO).
+       # Best-effort: a write failure just yields no path and the marker falls
+       # back to its grep/head hint. Returns the path or nil.
+       def spill_full_output(text, call_id)
+         id = call_id.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")
+         return nil if id.empty?
+ 
+         dir = File.join(Rubino.home_path, "tool-results")
+         FileUtils.mkdir_p(dir)
+         path = File.join(dir, "#{id}.txt")
+         # Write ATOMICALLY (temp + rename): a plain File.write can be cut MID-
+         # WRITE by an Interrupt (Ctrl+C) — which is NOT a StandardError, so the
+         # rescue below never catches it — leaving a TRUNCATED recovery file the
+         # marker still points the model at, so it reads back a silently partial
+         # output. rename(2) on the same filesystem is atomic, so a reader sees
+         # either the old file or the complete new one, never a torn one; the temp
+         # is cleaned up if the interrupt lands before the rename.
+         tmp = "#{path}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
+         begin
+           File.write(tmp, text)
+           File.rename(tmp, path)
+         rescue Exception # rubocop:disable Lint/RescueException
+diff --git a/lib/rubino/cli/setup_command.rb b/lib/rubino/cli/setup_command.rb
+index 2352efd4..d7017425 100644
+--- a/lib/rubino/cli/setup_command.rb
++++ b/lib/rubino/cli/setup_command.rb
+@@ -50,124 +50,128 @@ module Rubino
+         # `setup` is the documented repair path. The schema is a single,
+         # fully-idempotent baseline migration (`create_table?` / `IF NOT EXISTS`
+         # throughout) applied under the cross-process flock, so this is safe to
+         # run on a fresh, partial, or already-migrated home alike — a healthy DB
+         # just no-ops, a partial one finishes, and a re-run never collides.
+         migrator.migrate!(lock_path: Rubino.migration_lock_path)
+         ui.success("Database initialized: #{connection.db_path}")
+ 
+         # First-run onboarding: if no usable key is configured yet AND we're on
+         # a real TTY, guide the user to a working model (provider/model/key)
+         # right here so `setup` ends in a usable config — not a dead-end that
+         # still needs hand-editing config.yml (#93). Non-interactive setup keeps
+         # the old behaviour (files created, no prompts).
+         maybe_run_onboarding(ui)
+ 
+         # Non-interactive provider auto-detect (#392a): a headless `setup` can't
+         # prompt, so the seeded default (openai/gpt-4.1 → OPENAI_API_KEY) is a
+         # dead end when the only key in the env is, say, MINIMAX_API_KEY — doctor
+         # then fails "No credentials found for provider 'openai'". When EXACTLY
+         # ONE provider's key is present in the env, point model.provider /
+         # model.default (and any required providers.<name> block) at it so a
+         # CI/container `setup` lands on a usable config. Ambiguous (>1 key) or
+         # none keeps the seeded default untouched.
+         maybe_autodetect_provider(ui)
+ 
+-        # Offer command-output compression (logs/test/build) — the high-ROI,
+-        # ~100%-trigger channel. Interactive only, idempotent (skips when already
+-        # on), recommended default. The shipped config keeps it off so existing
+-        # and headless installs are untouched; this is the "activate from setup"
+-        # path. Original output is always recoverable via the retrieve_output tool.
++        # Offer command + file output compression (test/build/lint dumps and
++        # whole-file Ruby reads) — routed through the single ContentRouter seam.
++        # Interactive only, idempotent (skips when already on), recommended
++        # default. The shipped config keeps it off so existing and headless
++        # installs are untouched; this is the "activate from setup" path. The
++        # original is always recoverable via the appended read pointer.
+         maybe_offer_log_compression(ui)
+ 
+         ui.blank_line
+         # Tell the truth about the end state (#31). A green "Setup complete!" is
+         # only honest when a usable credential is actually configured — printing
+         # it after a skipped/abandoned onboarding (no provider, no key) directly
+         # contradicts the state. Re-check the credential after onboarding so the
+         # final line reflects reality on both the interactive and the
+         # non-interactive (files-only) paths.
+         if LLM::CredentialCheck.usable?
+           ui.success("Setup complete! Run 'rubino doctor' to verify.")
+         elsif (model = Rubino.configuration.model_default.to_s).empty?
+           ui.warning("Setup files created, but no model is configured yet.")
+           ui.status("Run 'rubino setup' again or add an API key, then 'rubino doctor' to verify.")
+         else
+           # A model IS configured (#31) — what's missing is its CREDENTIAL (only a
+           # different provider's key is present), so the old "no model configured"
+           # copy was wrong. Name the model and point at the guided setup.
+           provider = LLM::CredentialCheck.resolved_provider
+           ui.warning("Setup files created, but the API key for #{model} (provider '#{provider}') is missing.")
+           ui.status("Run 'rubino setup' to add it, then 'rubino doctor' to verify.")
+         end
+       end
+ 
+       private
+ 
+       # Detect a corrupt on-disk DB and recover it. Returns a usable connection:
+       # the existing one when the file is healthy/absent, or a fresh connection
+       # after the malformed file has been renamed to `<name>.corrupt-<ts>`.
+       def recover_corrupt_database(ui)
+         connection = Rubino.database
+         return connection unless connection.corrupt?
+ 
+         moved = connection.quarantine!
+         ui.warning("Existing database was corrupt (malformed image).")
+         ui.status("Quarantined to: #{moved}") if moved
+         # Drop the memoized connection so the next access opens a brand-new file.
+         Rubino.reset_database!
+         Rubino.database
+       end
+ 
+       def maybe_run_onboarding(ui)
+         return unless interactive?
+         return if LLM::CredentialCheck.usable?
+ 
+         OnboardingWizard.new(ui: ui).run
+       end
+ 
+-      # Interactive "activate from setup" step for command-output compression.
+-      # Skipped on headless setup (no prompt) and when the flag is already on, so
+-      # a re-run never nags. A bare Enter accepts (recommended on). Writing the
+-      # flag is the ONLY persistence; a decline leaves the seeded default (off).
++      # Interactive "activate from setup" step for command + file output
++      # compression. Skipped on headless setup (no prompt) and when the master
++      # flag is already on, so a re-run never nags. A bare Enter accepts
++      # (recommended on). Writing the unified `enabled` flag is the ONLY
++      # persistence; a decline leaves the seeded default (off). The per-type
++      # `logs.enabled` sub-flag is turned on too so the log channel is active.
+       def maybe_offer_log_compression(ui)
+         return unless interactive?
+-        return if Rubino.configuration.tool_output_compression_logs_enabled?
++        return if Rubino.configuration.tool_output_compression_enabled?
+ 
+         ui.blank_line
+-        ui.info("Command-output compression")
+-        ui.status("  Compresses test/build/shell output before it reaches the model — keeps every")
+-        ui.status("  failure + summary, drops passing noise. ~97% fewer tokens on a test suite.")
+-        ui.status("  Full output stays one `retrieve_output` away.")
++        ui.info("Command + file output compression")
++        ui.status("  Compresses test/build/shell output AND whole-file Ruby reads before they reach")
++        ui.status("  the model — keeps every failure + summary (and code signatures), drops passing")
++        ui.status("  noise. ~97% fewer tokens on a test suite. The full output stays one `read` away.")
+         return unless prompt_enable?("Enable it?")
+ 
+         loader = Config::Loader.new
+         loader.create_default_config! unless loader.config_exists?
+         writer = Config::Writer.new(config_path: loader.config_path)
++        writer.set("tool_output_compression.enabled", true)
+         writer.set("tool_output_compression.logs.enabled", true)
+         Rubino.reload_configuration!
+-        ui.success("Command-output compression enabled.")
++        ui.success("Command + file output compression enabled.")
+       rescue StandardError => e
+         # A convenience toggle must never fail setup.
+         Rubino.logger.warn(event: "setup.log_compression_offer_failed",
+                            error: e.class.name, message: e.message)
+         nil
+       end
+ 
+       # Y/n prompt with a recommended-yes default (bare Enter ⇒ true). Only an
+       # explicit n/no declines; EOF (piped) declines too so non-TTY never blocks.
+       def prompt_enable?(question)
+         $stdout.print "#{question} [Y/n]: "
+         $stdout.flush
+         ans = $stdin.gets
+         return false if ans.nil?
+ 
+         !%w[n no].include?(ans.strip.downcase)
+       rescue StandardError
+         false
+       end
+ 
+       # Non-interactive provider auto-detect (#392a). Only the headless path
+       # (no TTY) reaches here — interactive setup uses the wizard, which already
+       # resolves provider/key explicitly. Picks the provider whose .env key is
+       # the single one present in the environment and rewrites the model
+       # provider/default + its required config block to match, so a fresh
+diff --git a/lib/rubino/compression/content_router.rb b/lib/rubino/compression/content_router.rb
+index 93e000c3..0ff95a5f 100644
+--- a/lib/rubino/compression/content_router.rb
++++ b/lib/rubino/compression/content_router.rb
+@@ -144,51 +144,55 @@ module Rubino
+         tool_name.to_s == "read" &&
+           (hint[:full_file] || hint["full_file"]) == true &&
+           (hint[:content_type] || hint["content_type"] || :code).to_sym == :code
+       end
+ 
+       def log_channel?(tool_name)
+         LOG_TOOLS.include?(tool_name.to_s)
+       end
+ 
+       # --- strategy runners ----------------------------------------------------
+ 
+       def run_log(text)
+         return Result.passthrough(:log) unless @config.tool_output_compression_logs_enabled?
+ 
+         result = LogCompressor.new(@config.tool_output_compression_logs).compress(text)
+         return Result.passthrough(:log) unless result.applied?
+ 
+         Result.new(applied: true, text: result.text, content_type: :log,
+                    strategy: result.strategy, saved_tokens_est: result.saved_tokens_est)
+       end
+ 
+       def run_code(text, hint)
+         cfg = @config.tool_output_compression_code
+         return Result.passthrough(:code) unless cfg["strategy"].to_s == "skeleton"
+ 
++        # The skeletoner needs RAW Ruby source (Prism-parseable), NOT the read
++        # tool's line-numbered render. The read tool stamps the raw bytes into
++        # the hint as `raw_source`; fall back to `text` for a direct caller.
++        source = hint[:raw_source] || hint["raw_source"] || text
+         source_path = hint[:source_path] || hint["source_path"]
+         compressor = Compressor.new(
+           min_lines: cfg.fetch("min_lines", 150),
+           keep_method_body_max_lines: cfg.fetch("keep_method_body_max_lines", 8)
+         )
+-        result = compressor.compress(text, source_path: source_path,
+-                                           content_type: :code, full_file: true)
++        result = compressor.compress(source, source_path: source_path,
++                                             content_type: :code, full_file: true)
+         return Result.passthrough(:code) unless result.applied?
+ 
+         # elided_ranges live on the Compressor; expose them via a side-channel
+         # accessor the caller reads right after route() so the read tool's
+         # drill-in telemetry still works without threading another return value.
+         @last_elided_ranges = compressor.elided_ranges
+         Result.new(applied: true, text: result.text, content_type: :code,
+                    strategy: result.strategy, saved_tokens_est: result.saved_tokens_est)
+       end
+ 
+       public
+ 
+       # The elided (first_line, count) ranges from the most recent :code route,
+       # so the read tool can record them for drill-in detection without the
+       # router threading another return value. Cleared to [] on every route().
+       attr_reader :last_elided_ranges
+     end
+   end
+ end
+diff --git a/lib/rubino/compression/output_store.rb b/lib/rubino/compression/output_store.rb
+deleted file mode 100644
+index 2059466e..00000000
+--- a/lib/rubino/compression/output_store.rb
++++ /dev/null
+@@ -1,64 +0,0 @@
+-# frozen_string_literal: true
+-
+-require "digest"
+-require "monitor"
+-
+-module Rubino
+-  module Compression
+-    # Process-singleton stash of ORIGINAL command outputs that were compressed
+-    # for the model. The compressed `:output` ends with a pointer line carrying
+-    # the sha256 key; `retrieve_output` (or any future seam) hands the full bytes
+-    # back. So compression is never silent loss — every dropped line is one
+-    # retrieve away.
+-    #
+-    # LRU-capped (~50 entries) so a long session can't grow the stash without
+-    # bound; the original output also still lives in the human scrollback (the
+-    # tool `:body`), so eviction only costs the model a re-run, never the human.
+-    class OutputStore
+-      include MonitorMixin
+-
+-      DEFAULT_CAPACITY = 50
+-
+-      def self.instance
+-        @instance ||= new
+-      end
+-
+-      # Test seam: drop the singleton so a spec starts from an empty store.
+-      def self.reset!
+-        @instance = nil
+-      end
+-
+-      def initialize(capacity: DEFAULT_CAPACITY)
+-        super()
+-        @capacity = capacity
+-        @store = {} # sha => text; Ruby Hash preserves insertion order for LRU.
+-      end
+-
+-      # Stash `text`, return its sha256 key. Re-stashing identical text just
+-      # refreshes its LRU position (no duplicate entry).
+-      def put(text)
+-        key = Digest::SHA256.hexdigest(text)
+-        synchronize do
+-          @store.delete(key) # move-to-end on re-put / refresh
+-          @store[key] = text
+-          @store.shift while @store.size > @capacity
+-        end
+-        key
+-      end
+-
+-      # Original bytes for `key`, or nil if evicted / never stored. A hit
+-      # refreshes LRU position (a retrieve means the model still cares).
+-      def get(key)
+-        synchronize do
+-          text = @store.delete(key)
+-          @store[key] = text if text
+-          text
+-        end
+-      end
+-
+-      def size
+-        synchronize { @store.size }
+-      end
+-    end
+-  end
+-end
+diff --git a/lib/rubino/config/defaults.rb b/lib/rubino/config/defaults.rb
+index 794f9a83..403e8df2 100644
+--- a/lib/rubino/config/defaults.rb
++++ b/lib/rubino/config/defaults.rb
+@@ -391,59 +391,65 @@ module Rubino
+           # approval flow alone.
+           "workspace_strict" => true,
+           "git" => true,
+           # Default ON: the agent ships to run inside an isolated per-customer
+           # VM where running shell commands is the whole point. The blast radius
+           # is the VM, and security.confirm_policy (default dangerous_only) still
+           # routes any DangerousPattern command through an approval prompt while
+           # safe commands run unprompted (set confirm_policy: confirm_all to gate
+           # every command).
+           "shell" => true,
+           "ruby" => true,
+ 
+           # Default ON, matching Hermes (web tools ship in the default toolset,
+           # keyless via the DuckDuckGo backend) (#411). Gated at runtime on
+           # backend reachability in Registry#web_backend_available? so an
+           # unreachable network DEGRADES gracefully (the tool is hidden / its
+           # call returns an error string) rather than crashing a turn.
+           "web" => true,
+           "memory" => true
+         },
+         "tool_output" => {
+           "max_bytes" => 50_000,
+           "max_lines" => 2000,
+           "max_line_length" => 2000
+         },
+-        # Deterministic, REVERSIBLE compression of tool-read results (Phase 1:
+-        # Ruby code → skeleton). When enabled, a WHOLE-file read of a large Ruby
+-        # file returns a skeleton (requires + signatures + small bodies verbatim,
+-        # large bodies elided behind a pointer that IS a targeted `read
+-        # offset/limit` of the original lines). A targeted (offset/limit) read is
+-        # NEVER compressed — that's the drill-in path that returns exact bytes so
+-        # the edit-gate's string match still works. OFF by default: with this
+-        # flag false the read tool is byte-for-byte unchanged (Phase 1 lands
+-        # inert, then we measure before flipping it on).
++        # Deterministic, REVERSIBLE compression of tool output, routed through
++        # the single Compression::ContentRouter seam in the ToolExecutor. The
++        # master `enabled` flag gates the whole seam; the per-type sub-config
++        # (`code`, `logs`) tunes each strategy. When on, the router DETECTS the
++        # content type and dispatches: a test/build/lint dump → LogCompressor
++        # (every failure + summary kept, passing noise dropped); a WHOLE-file
++        # Ruby read → skeleton (signatures + small bodies verbatim, large bodies
++        # elided behind a pointer that IS a targeted `read offset/limit`). A
++        # diff, a grep/search result, and short output PASS THROUGH byte-
++        # identical, so exact-string anchors edit/grep rely on are never touched.
++        # On any compression the full original is spilled to
++        # tool-results/<call_id>.txt and the output ends with a pointer the model
++        # can `read` back. OFF by default: with this flag false every tool output
++        # is byte-for-byte unchanged. Per-call `compress:false` on read/shell
++        # forces verbatim output even when enabled.
+         "tool_output_compression" => {
+           "enabled" => false,
+           "code" => {
+             "strategy" => "skeleton",
+             # Don't bother skeletonising a file shorter than this many lines —
+             # the pointer indirection isn't worth it on small files.
+             "min_lines" => 150,
+             # Method bodies up to this many lines are kept VERBATIM; only larger
+             # bodies are elided behind a pointer.
+             "keep_method_body_max_lines" => 8
+           },
+           # LOG/command-output compression (test runs, linters, build/shell
+           # dumps). The high-ROI channel: the agent reads command output WHOLE,
+           # and the signal (failures + the final tally) is a tiny fraction of the
+           # bytes. Keeps every error/failure + summary VERBATIM, drops passing/
+           # info noise, appends a pointer to retrieve the original. OFF by default
+           # (own flag, independent of `code`) — we measure before flipping it on.
+           "logs" => {
+             "enabled" => false,
+             # Outputs shorter than this pass through UNCHANGED.
+             "min_lines" => 40,
+             # Hard cap on kept lines.
+             "max_total_lines" => 100,
+             # Keep every error/failure up to this many (first & last always).
+             "max_errors" => 10,
+diff --git a/lib/rubino/tools/read_tool.rb b/lib/rubino/tools/read_tool.rb
+index f343d23e..b4e759a4 100644
+--- a/lib/rubino/tools/read_tool.rb
++++ b/lib/rubino/tools/read_tool.rb
+@@ -1,65 +1,86 @@
+ # frozen_string_literal: true
+ 
+ require "digest"
+ 
+ module Rubino
+   module Tools
+     # Reads a file with `cat -n` style line numbers, offset/limit windowing,
+     # and a hard cap on per-line length. Line numbers let the LLM cite or
+     # edit exact lines instead of "the second occurrence of X"; offset/limit
+     # let it page through files that would otherwise blow the context.
+     class ReadTool < Base
+       DEFAULT_LIMIT  = 2000
+       MAX_LINE_WIDTH = 2000
+       # Hard cap on the bytes a single read returns (~25k tokens at 4 bytes/tok,
+       # matching Claude Code's read gate). A window of 2000 lines × 2000 chars
+       # could otherwise build multiple MB in memory and blow up prefill/TTFT;
+       # past this we stop and tell the model to narrow the range or grep.
+       MAX_OUTPUT_BYTES = 100_000
+ 
+       def name
+         "read"
+       end
+ 
+       def description
+-        "Read a text file from the filesystem with line numbers (cat -n style). " \
+-          "Supports offset (1-based start line) and limit (max lines returned). " \
+-          "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
+-          "Default window: first #{DEFAULT_LIMIT} lines."
++        base = "Read a text file from the filesystem with line numbers (cat -n style). " \
++               "Supports offset (1-based start line) and limit (max lines returned). " \
++               "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
++               "Default window: first #{DEFAULT_LIMIT} lines."
++        base + compression_note
+       end
+ 
+       def input_schema
+-        {
+-          type: "object",
+-          properties: {
+-            file_path: { type: "string", description: "Absolute or relative file path" },
+-            offset: { type: "integer", description: "1-based line to start at (default 1)" },
+-            limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
+-          },
+-          required: %w[file_path]
++        props = {
++          file_path: { type: "string", description: "Absolute or relative file path" },
++          offset: { type: "integer", description: "1-based line to start at (default 1)" },
++          limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
+         }
++        props[:compress] = compress_param if compression_enabled?
++        { type: "object", properties: props, required: %w[file_path] }
++      end
++
++      # Advertised only when the feature is on: a one-line note explaining that a
++      # whole-file Ruby read may be skeletonised, how to opt out, and that the
++      # full file is always retrievable.
++      def compression_note
++        return "" unless compression_enabled?
++
++        " A whole-file Ruby read may be returned as a SKELETON (signatures kept, " \
++          "large bodies elided behind a pointer) to save tokens; the original is always " \
++          "retrievable via the read pointer. Pass compress:false to force the verbatim file."
++      end
++
++      def compress_param
++        { type: "boolean",
++          description: "Set false to skip compression and read the verbatim file (default true)." }
++      end
++
++      def compression_enabled?
++        Rubino.configuration.tool_output_compression_enabled?
++      rescue StandardError
++        false
+       end
+ 
+       def risk_level
+         :low
+       end
+ 
+       def call(arguments)
+         file_path  = arguments["file_path"] || arguments[:file_path]
+         raw_offset = arguments["offset"] || arguments[:offset]
+         raw_limit  = arguments["limit"]  || arguments[:limit]
+         offset     = (raw_offset || 1).to_i
+         limit      = (raw_limit  || DEFAULT_LIMIT).to_i
+         # A WHOLE-file read (no offset AND no limit supplied) is exploration and
+         # the ONLY thing compression touches. A read carrying EITHER is a
+         # targeted window — the drill-in path — which always returns verbatim.
+         full_file = raw_offset.nil? && raw_limit.nil?
+ 
+         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
+ 
+         expanded = expand_workspace_path(file_path)
+         # Secret-file READ block, ported 1:1 from Hermes' get_read_block_error:
+         # the project-local .env family anywhere on disk, plus the agent-home
+         # credential stores, are blocked-with-message (no content). Checked
+         # BEFORE existence so we don't leak whether the secret file is present.
+         # Defense-in-depth, not a boundary — the shell can still `cat .env`,
+@@ -87,146 +108,85 @@ module Rubino
+         # source of truth the edit-gate and dedup both consult.
+         mtime  = File.mtime(expanded)
+         digest = Digest::SHA256.hexdigest(File.binread(expanded))
+         @read_tracker&.register(expanded, mtime, digest)
+ 
+         # Re-reading the exact same window of UNCHANGED bytes just re-injects
+         # content already in context. Skip the work with a nudge — but only when
+         # the file still hashes the same, the TTL holds, and no edit-failure
+         # recovery is pending (those serve fresh content). See ReadTracker.
+         if @read_tracker&.duplicate_read?(expanded, offset, limit, digest)
+           return { output: "[DUPLICATE READ] Exact repeat of an earlier read of #{file_path} " \
+                            "(lines #{offset}-#{offset + limit - 1}) — reuse that result " \
+                            "instead of re-reading.",
+                    metrics: "duplicate" }
+         end
+ 
+         # A TARGETED read of a file we previously skeletonised that lands inside
+         # an elided range is a DRILL-IN: the model needed a body the skeleton
+         # hid. Log it (the "did the skeleton hide what was needed" signal) — the
+         # verbatim windowed bytes are then served unchanged below.
+         if !full_file && @read_tracker&.drill_in?(expanded, offset, limit)
+           Rubino.logger&.info(event: "compression.drill_in", path: file_path,
+                               offset: offset, limit: limit)
+         end
+ 
+-        # WHOLE-file read of a Ruby file, compression enabled → try the skeleton.
+-        # Inert when the flag is off (default): falls straight through to render.
+-        if full_file && (skeleton = maybe_skeleton(expanded, file_path))
+-          return skeleton
+-        end
+-
+-        render(expanded, file_path, offset, limit)
++        render(expanded, file_path, offset, limit, full_file: full_file)
+       rescue StandardError => e
+         "Error reading #{file_path}: #{e.message}"
+       end
+ 
+       private
+ 
+-      # Returns a skeleton result Hash when compression is enabled, the file is
+-      # Ruby, and the Compressor actually applied; nil otherwise (read normally).
+-      # The original file is one targeted read away via the pointer lines, so the
+-      # model loses no fidelity — only the cheap whole-file exploration is elided.
+-      def maybe_skeleton(expanded, display_path)
+-        return nil unless Rubino.configuration.tool_output_compression_enabled?
+-        return nil unless ruby_file?(expanded)
+-
+-        cfg = Rubino.configuration.tool_output_compression_code
+-        return nil unless cfg["strategy"].to_s == "skeleton"
++      # Light routing context for the compression seam. The tool stays thin: it
++      # only DECLARES that this is a whole-file Ruby read (the one compressible
++      # shape) and hands the RAW source + display/tracker paths; the
++      # ContentRouter decides whether to skeletonise. Nil (no hint) for any read
++      # that isn't a compressible whole-file Ruby read, so the router passes
++      # through. Best-effort: a read of binary/huge content just yields no hint.
++      def compress_hint(expanded, display_path, full_file)
++        return nil unless full_file && compression_enabled? && ruby_file?(expanded)
+ 
+         content = File.read(expanded, encoding: "UTF-8")
+         return nil unless content.valid_encoding?
+ 
+-        compressor = Compression::Compressor.new(
+-          min_lines: cfg.fetch("min_lines", 150),
+-          keep_method_body_max_lines: cfg.fetch("keep_method_body_max_lines", 8)
+-        )
+-        result = compressor.compress(content, source_path: display_path,
+-                                              content_type: :code, full_file: true)
+-        return nil unless result.applied?
+-
+-        @read_tracker&.note_skeleton(expanded, compressor.elided_ranges, result.saved_tokens_est)
+-        emit_compression_telemetry(display_path, content, result)
+-        skeleton_payload(display_path, result)
+-      rescue StandardError => e
+-        # Never let a compression bug break a plain read — fall back to the
+-        # original file (render below) and leave a trace.
+-        Rubino.logger&.warn(event: "compression.failed", path: display_path,
+-                            error: e.message, error_class: e.class.name)
++        { full_file: true, content_type: :code, source_path: display_path,
++          tracker_path: expanded, raw_source: content }
++      rescue StandardError
+         nil
+       end
+ 
+       RUBY_EXTENSIONS = %w[.rb .rake .gemspec].freeze
+       RUBY_FILENAMES  = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
+ 
+       def ruby_file?(path)
+         ext = File.extname(path)
+         return true if RUBY_EXTENSIONS.include?(ext)
+ 
+         RUBY_FILENAMES.include?(File.basename(path))
+       end
+ 
+-      # The model-facing skeleton output: a one-line header naming the file and
+-      # how to get the full content, then the skeleton itself. The header makes
+-      # the compression explicit so the model knows bodies were elided (and that
+-      # the pointer lines are real `read` calls it can issue).
+-      def skeleton_payload(display_path, result)
+-        header = "[skeleton of #{display_path} — large method bodies elided to save tokens. " \
+-                 "Each `# … N lines elided — read …` line is a real read call: issue it to get " \
+-                 "those exact lines verbatim (e.g. before editing). For the whole file, read with " \
+-                 "an explicit offset/limit.]\n"
+-        redacted = Security::Redactor.redact_sensitive_text(header + result.text, code_file: true)
+-        { output: redacted,
+-          metrics: "skeleton · −#{(result.ratio * 100).round}%",
+-          body: Util::Output.preview(redacted),
+-          body_kind: :plain }
+-      end
+-
+-      # DIM, non-spammy user notice on a meaningful save, via the same `note`
+-      # channel tool activity uses. Emitted only when a skeleton was applied.
+-      def emit_compression_telemetry(display_path, original, result)
+-        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+-        skel_lines = result.text.count("\n") + (result.text.end_with?("\n") ? 0 : 1)
+-        Rubino.logger&.info(event: "compression.applied", path: display_path,
+-                            ratio: result.ratio.round(3),
+-                            original_bytes: result.original_bytes,
+-                            compressed_bytes: result.compressed_bytes,
+-                            saved_tokens_est: result.saved_tokens_est)
+-        orig_tok = humanize_tokens(result.original_bytes / 4.0)
+-        new_tok  = humanize_tokens(result.compressed_bytes / 4.0)
+-        Rubino.ui&.note(
+-          "⚡ compressed #{display_path} · #{orig_lines}→#{skel_lines} lines · " \
+-          "~#{orig_tok}→#{new_tok} tok (−#{(result.ratio * 100).round}%)"
+-        )
+-      end
+-
+-      # "6.4k" / "850" — compact token count for the notice.
+-      def humanize_tokens(tokens)
+-        t = tokens.round
+-        t >= 1000 ? "#{(t / 1000.0).round(1)}k" : t.to_s
+-      end
+-
+       BINARY_SAMPLE_BYTES = 1024
+       BINARY_NONPRINTABLE_THRESHOLD = 0.30
+ 
+       # Magic-byte signatures for files whose first 1024 bytes can look
+       # text-ish under the NUL + non-printable heuristic. PDFs in particular
+       # have a "%PDF-1.x" header and a stream of mostly-ASCII operators
+       # before the first NUL, which slipped past the old detection and
+       # crashed the run when raw bytes hit JSON.generate.
+       BINARY_MAGIC_BYTES = [
+         "%PDF-".b,                              # PDF
+         "\x89PNG\r\n\x1A\n".b,                  # PNG
+         "GIF87a".b, "GIF89a".b,                 # GIF
+         "\xFF\xD8\xFF".b,                       # JPEG
+         "PK\x03\x04".b, "PK\x05\x06".b,         # ZIP / docx / xlsx / pptx / jar
+         "PK\x07\x08".b,
+         "\x1F\x8B".b,                           # gzip
+         "BZh".b,                                # bzip2
+         "7z\xBC\xAF\x27\x1C".b,                 # 7z
+         "Rar!\x1A\x07".b,                       # RAR
+         "\x7FELF".b,                            # ELF
+         "\xCA\xFE\xBA\xBE".b,                   # Java class / Mach-O fat
+         "\xCF\xFA\xED\xFE".b,                   # Mach-O 64-bit LE
+         "\xFE\xED\xFA\xCF".b,                   # Mach-O 64-bit BE
+         "MZ".b,                                 # Windows PE
+         "SQLite format 3\x00".b,                # sqlite
+@@ -247,51 +207,51 @@ module Rubino
+         return true if BINARY_MAGIC_BYTES.any? { |sig| sample.start_with?(sig) }
+         return true if sample.byteslice(4, 4) == "ftyp" # mp4/mov family
+         return true if sample.include?("\x00")
+ 
+         nonprintable = sample.each_byte.count do |b|
+           b < 9 || (b > 13 && b < 32) || b == 127
+         end
+         nonprintable.fdiv(sample.bytesize) > BINARY_NONPRINTABLE_THRESHOLD
+       rescue Errno::ENOENT, Errno::EACCES
+         false
+       end
+ 
+       # Compact gutter for the TRANSCRIPT body only: line numbers right-aligned
+       # to the widest number shown, then two spaces (` 1  # Calc`), instead of
+       # the model-facing cat -n gutter (6-wide + tab ≈ 14 columns of padding).
+       # The model output keeps the cat -n shape unchanged.
+       def display_gutter(out, last_shown)
+         width = last_shown.to_s.length
+         out.lines.map do |line|
+           line.sub(/\A\s*(\d+)\t/) { "#{::Regexp.last_match(1).rjust(width)}  " }
+         end.join
+       end
+ 
+       # Streams the file line-by-line so we never load a 2 GB log into memory
+       # just to print 50 lines from the middle.
+-      def render(expanded, display_path, offset, limit)
++      def render(expanded, display_path, offset, limit, full_file: false)
+         out         = +""
+         total_lines = 0
+         printed     = 0
+         last_line   = offset + limit - 1
+         last_shown  = offset - 1
+         byte_capped = false
+ 
+         # Open as UTF-8 regardless of the process locale (#273): under a bare
+         # C/POSIX locale the default external encoding is US-ASCII, which would
+         # tag every line ASCII and force the scrub below to mangle perfectly
+         # valid UTF-8 file content. Pinning UTF-8 reads it correctly.
+         File.open(expanded, "r:UTF-8") do |io|
+           io.each_line do |line|
+             total_lines += 1
+             next if total_lines < offset
+             break if total_lines > last_line
+ 
+             # A single non-UTF-8 byte (e.g. a Latin-1 `é` in a legacy/EU
+             # source comment) would otherwise blow up `chomp`/`format` with
+             # "invalid byte sequence in UTF-8". Scrub it to the replacement
+             # char so the model can still read (and then edit) the file —
+             # lossy but graceful, instead of a blind read failure.
+             line = line.scrub unless line.valid_encoding?
+             chomped = line.chomp
+             chomped = chomped.byteslice(0, MAX_LINE_WIDTH) + "… [line truncated]" if chomped.bytesize > MAX_LINE_WIDTH
+@@ -316,31 +276,36 @@ module Rubino
+         else
+           footer = if byte_capped
+                      "\n[window capped at ~#{MAX_OUTPUT_BYTES / 1000}KB after #{printed} line(s) " \
+                        "(lines #{offset}-#{last_shown} of #{total_lines}); continue with " \
+                        "offset=#{last_shown + 1}, or grep to target what you need]"
+                    elsif total_lines > last_line
+                      "\n[showing lines #{offset}-#{last_line} of #{total_lines}; " \
+                        "call again with offset=#{last_line + 1} for more]"
+                    elsif offset > 1
+                      "\n[showing lines #{offset}-#{total_lines} of #{total_lines}]"
+                    else
+                      ""
+                    end
+           # Redact credential values from the read content before it enters
+           # context — matches Hermes file_tools.read_file_tool
+           # (code_file:true skips ENV/JSON assignment patterns that false-
+           # positive on source like MAX_TOKENS=*** constants).
+           full = Security::Redactor.redact_sensitive_text(out + footer, code_file: true)
+           { output: full,
+             metrics: "#{printed} line#{"s" if printed != 1}",
+             body: Util::Output.preview(
+               Security::Redactor.redact_sensitive_text(
+                 display_gutter(out, last_shown) + footer, code_file: true
+               )
+             ),
+-            body_kind: :plain }
++            body_kind: :plain,
++            # Routing context for the compression seam — present only for a
++            # whole-file Ruby read (the one compressible shape), nil otherwise so
++            # the router passes through. The ContentRouter skeletonises the RAW
++            # source carried here, not this line-numbered render.
++            compress_hint: compress_hint(expanded, display_path, full_file) }
+         end
+       end
+     end
+   end
+ end
+diff --git a/lib/rubino/tools/registry.rb b/lib/rubino/tools/registry.rb
+index 5ad49d0f..00ddda7d 100644
+--- a/lib/rubino/tools/registry.rb
++++ b/lib/rubino/tools/registry.rb
+@@ -58,54 +58,50 @@ module Rubino
+         def tool_definitions
+           enabled_tools.map(&:to_tool_definition)
+         end
+ 
+         # Clears all registered tools (useful for testing)
+         def reset!
+           @tools = {}
+           # Drop the memoized web-capability probe (#411) so a fresh test run
+           # re-evaluates it rather than inheriting a prior process's verdict.
+           @web_backend_available = nil
+         end
+ 
+         # Registers all default tools
+         def register_defaults!
+           register(Rubino::Tools::ReadTool.new)
+           register(Rubino::Tools::SummarizeFileTool.new)
+           register(Rubino::Tools::WriteTool.new)
+           register(Rubino::Tools::EditTool.new)
+           register(Rubino::Tools::MultiEditTool.new)
+           register(Rubino::Tools::GrepTool.new)
+           register(Rubino::Tools::GlobTool.new)
+           register(Rubino::Tools::GitTool.new)
+           register(Rubino::Tools::GitHubTool.new)
+           register(Rubino::Tools::ShellTool.new)
+           register(Rubino::Tools::ShellOutputTool.new)
+-          # Reversibility seam for log compression: hands back the original,
+-          # uncompressed command output by sha256 (Compression::OutputStore).
+-          # Inert unless tool_output_compression.logs.enabled produced a pointer.
+-          register(Rubino::Tools::RetrieveOutputTool.new)
+           register(Rubino::Tools::ShellTailTool.new)
+           register(Rubino::Tools::ShellInputTool.new)
+           register(Rubino::Tools::ShellKillTool.new)
+           register(Rubino::Tools::RubyTool.new)
+           # Structured test-runner (issue #101): auto-detects rspec/minitest/
+           # rake, prefers `bundle exec` (falls back when the bundle is broken),
+           # and returns pass/fail counts + parsed failing examples instead of
+           # the raw toolchain firehose the `shell` tool would dump.
+           register(Rubino::Tools::TestTool.new)
+           register(Rubino::Tools::PatchTool.new)
+           register(Rubino::Tools::WebFetchTool.new)
+           register(Rubino::Tools::WebSearchTool.new)
+           register(Rubino::Tools::QuestionTool.new)
+           register(Rubino::Tools::TodoTool.new)
+           register(Rubino::Tools::MemoryTool.new)
+           register(Rubino::Tools::SessionSearchTool.new)
+           register(Rubino::Tools::AttachFileTool.new)
+           # Gated, on-demand attachment reader (#6): converts a document to
+           # Markdown IN-PROCESS (Rubino::Documents) and frames it as untrusted
+           # data, so attachment bytes enter context only when the model asks.
+           register(Rubino::Tools::ReadAttachmentTool.new)
+           register(Rubino::Tools::VisionTool.new)
+           # Skills tool: loads a skill body (Level 2) and bundled files
+           # (Level 3) on demand. Gated like any tool via `tools.skill`.
+           register(Rubino::Skills::SkillTool.new)
+diff --git a/lib/rubino/tools/retrieve_output_tool.rb b/lib/rubino/tools/retrieve_output_tool.rb
+deleted file mode 100644
+index 2a90c225..00000000
+--- a/lib/rubino/tools/retrieve_output_tool.rb
++++ /dev/null
+@@ -1,56 +0,0 @@
+-# frozen_string_literal: true
+-
+-module Rubino
+-  module Tools
+-    # Returns the ORIGINAL, uncompressed command output that the log compressor
+-    # stashed (Compression::OutputStore), keyed by the sha256 the compressed
+-    # output's pointer line carries. This is the reversibility seam: the model
+-    # drops passing/info noise from context cheaply, but the full bytes are one
+-    # `retrieve_output` away when it actually needs them.
+-    class RetrieveOutputTool < Base
+-      def name
+-        "retrieve_output"
+-      end
+-
+-      def config_key
+-        # Gated by the same flag that produced the pointer in the first place;
+-        # with log compression off, no pointer is ever emitted, so the tool is
+-        # inert. Falls under the `shell` toolset for enable/disable.
+-        "shell"
+-      end
+-
+-      def description
+-        "Retrieve the full, uncompressed output of an earlier command that was " \
+-          "shortened by log compression. Pass the `hash` from the pointer line " \
+-          "(`… hidden by log compression … hash=<sha>`)."
+-      end
+-
+-      def input_schema
+-        {
+-          type: "object",
+-          properties: {
+-            hash: {
+-              type: "string",
+-              description: "The sha256 from the compressed output's pointer line."
+-            }
+-          },
+-          required: %w[hash]
+-        }
+-      end
+-
+-      def risk_level
+-        :low
+-      end
+-
+-      def call(arguments)
+-        hash = (arguments["hash"] || arguments[:hash]).to_s.strip
+-        return "Error: hash is required" if hash.empty?
+-
+-        text = Compression::OutputStore.instance.get(hash)
+-        return "Error: no stored output for hash=#{hash} (it may have been evicted; re-run the command)." if text.nil?
+-
+-        text
+-      end
+-    end
+-  end
+-end
+diff --git a/lib/rubino/tools/shell_tool.rb b/lib/rubino/tools/shell_tool.rb
+index 3448ae05..eeb7efcd 100644
+--- a/lib/rubino/tools/shell_tool.rb
++++ b/lib/rubino/tools/shell_tool.rb
+@@ -38,217 +38,193 @@ module Rubino
+       def self.success_exit?(code)
+         code.zero? || code == SIGPIPE_EXIT
+       end
+ 
+       # True when the command's primary output is a unified diff the dev is
+       # asking to SEE — `git diff`, `git show`, `git log -p`, or plain `diff`.
+       # Matched on the FIRST stage of the command only (anything piped into a
+       # pager/`head`/grep is the user already reshaping it, so don't force
+       # diff-render on that). Word-boundary anchored so `gitdiff`/`diffstat`
+       # don't false-positive, and `git difftool` (opens an editor) is excluded.
+       DIFF_COMMAND = /\A\s*
+         (?:git\s+(?:diff|show|whatchanged)(?!\w)(?!\S*tool)
+           |git\s+log\b[^|&;]*\s-p\b
+           |diff\s)
+       /x
+ 
+       def self.diff_command?(command)
+         DIFF_COMMAND.match?(command.to_s)
+       end
+ 
+       def name
+         "shell"
+       end
+ 
+       def description
+-        "Execute a shell command. " \
+-          "Foreground: blocks until the command exits or `timeout` seconds elapse " \
+-          "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
+-          "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
+-          "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
+-          "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
+-          "and `shell_kill` to terminate it."
++        base = "Execute a shell command. " \
++               "Foreground: blocks until the command exits or `timeout` seconds elapse " \
++               "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
++               "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
++               "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
++               "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
++               "and `shell_kill` to terminate it."
++        base + compression_note
++      end
++
++      # Advertised only when the feature is on: explains command-output
++      # compression, the opt-out, and that the original is retrievable.
++      def compression_note
++        return "" unless compression_enabled?
++
++        " Long command output (test/build/lint dumps) may be COMPRESSED — every failure + " \
++          "the summary kept, passing noise dropped — to save tokens; the full output is always " \
++          "retrievable via the appended pointer. Pass compress:false to force verbatim output."
++      end
++
++      def compression_enabled?
++        Rubino.configuration.tool_output_compression_enabled?
++      rescue StandardError
++        false
+       end
+ 
+       def input_schema
+-        {
+-          type: "object",
+-          properties: {
+-            command: {
+-              type: "string",
+-              description: "The shell command to execute"
+-            },
+-            cwd: {
+-              type: "string",
+-              description: "Working directory (defaults to current)"
+-            },
+-            timeout: {
+-              type: "integer",
+-              description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
+-            },
+-            run_in_background: {
+-              type: "boolean",
+-              description: "If true, start the command detached and return a run_id immediately."
+-            }
++        props = {
++          command: {
++            type: "string",
++            description: "The shell command to execute"
++          },
++          cwd: {
++            type: "string",
++            description: "Working directory (defaults to current)"
+           },
+-          required: %w[command]
++          timeout: {
++            type: "integer",
++            description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
++          },
++          run_in_background: {
++            type: "boolean",
++            description: "If true, start the command detached and return a run_id immediately."
++          }
+         }
++        if compression_enabled?
++          props[:compress] = {
++            type: "boolean",
++            description: "Set false to skip output compression and return verbatim output (default true)."
++          }
++        end
++        { type: "object", properties: props, required: %w[command] }
+       end
+ 
+       def risk_level
+         :high
+       end
+ 
+       def call(arguments)
+         command    = arguments["command"]           || arguments[:command]
+         cwd        = arguments["cwd"]               || arguments[:cwd]
+         background = arguments["run_in_background"] || arguments[:run_in_background] || false
+         timeout    = arguments["timeout"]           || arguments[:timeout] || DEFAULT_TIMEOUT
+         timeout    = [[timeout.to_i, 1].max, MAX_TIMEOUT].min
+ 
+         return "Error: command is required" if command.nil? || command.to_s.empty?
+ 
+         # "show me the diff" DX: when the command's job is to PRODUCE a diff
+         # (`git diff`, `git show`, `diff …`), render its output as a real diff —
+         # +/- coloring AND full hunks (no 3-line collapse) — instead of dimming
+         # and truncating it like any other shell dump (G3). The streaming lambda
+         # and the end-of-call body both read this hint.
+         @stream_kind = self.class.diff_command?(command) ? :diff : :plain
+ 
+         if (denied = destructive_pattern_match(command))
+           return { output: "Error: refusing to run #{denied} — this is hardcoded as " \
+                            "destructive and not overridable by --yolo. " \
+                            "If you genuinely need this, run it manually outside the agent.",
+                    error_code: :denied_command }
+         end
+ 
+         working_dir = resolve_cwd(cwd)
+         return "Error: cannot access working directory: #{cwd.inspect}" unless working_dir
+ 
+         if background
+           spawn_background(command, working_dir)
+         else
+           run = execute_foreground(command, working_dir, timeout)
+           # exit_code / timed_out / cancelled are surfaced as structured
+           # keys so downstream code (and the model) doesn't have to parse
+           # `[Exit code: N]` out of free-form text to know whether the
+           # command succeeded. The text suffix stays for visual continuity
+           # in the scrollback and for tests that grep for it.
+-          { output: maybe_compress_log(run[:text]),
++          { output: run[:text],
+             metrics: foreground_metric(run),
+             body: Util::Output.preview(run[:text]),
+             body_kind: @stream_kind || :plain,
+             exit_code: run[:exit_code],
+             timed_out: run[:timed_out],
+             cancelled: run[:cancelled],
+-            error_code: shell_error_code(run) }
++            error_code: shell_error_code(run),
++            # Routing context for the compression seam: the stream_kind lets the
++            # router send a diff (`git diff`) through UNTOUCHED — its own +/-
++            # channel — while a test/build/lint dump routes to LogCompressor. The
++            # human `body` preview above is the REAL scrollback and is never
++            # compressed.
++            compress_hint: { stream_kind: @stream_kind } }
+         end
+       end
+ 
+       def shell_error_code(run)
+         return :timeout       if run[:timed_out]
+         return :cancelled     if run[:cancelled]
+         return :shell_error   if run[:shell_error]
+         return :exit_nonzero  if run[:exit_code] && !self.class.success_exit?(run[:exit_code])
+ 
+         nil
+       end
+ 
+       # One-liner for the `done · shell` header. Reads the structured run
+       # fields directly — no regex archaeology on the text suffix.
+       def foreground_metric(run)
+         status = if run[:timed_out]            then "timeout"
+                  elsif run[:cancelled]         then "cancelled"
+                  elsif run[:shell_error]       then "shell error"
+                  elsif run[:exit_code].nil?    then "no exit"
+                  elsif run[:exit_code].zero?   then "exit 0"
+                  else                               "exit #{run[:exit_code]}"
+                  end
+         "#{status} · #{format_ms(run[:duration_ms])}"
+       end
+ 
+       def format_ms(ms)
+         if ms < 1000      then "#{ms}ms"
+         elsif ms < 60_000 then "#{(ms / 1000.0).round(1)}s"
+         else
+           mins, rem = ms.divmod(60_000)
+           "#{mins}m#{(rem / 1000.0).round}s"
+         end
+       end
+ 
+       private
+ 
+-      # Compresses the MODEL-FACING output of a foreground command (test runs,
+-      # linters, build/shell dumps) when log compression is enabled. Never the
+-      # human `:body` preview (that stays the real scrollback) and NEVER a diff
+-      # (`@stream_kind == :diff` is its own +/- channel). The original is stashed
+-      # in OutputStore so the appended pointer's `retrieve_output` round-trips.
+-      # Any failure falls back to the uncompressed text — compression must never
+-      # break a command's output.
+-      def maybe_compress_log(text)
+-        return text if text.nil? || text.empty?
+-        return text if @stream_kind == :diff
+-        return text unless Rubino.configuration.tool_output_compression_logs_enabled?
+-
+-        compressor = Compression::LogCompressor.new(
+-          Rubino.configuration.tool_output_compression_logs
+-        )
+-        result = compressor.compress(text)
+-        return text unless result.applied?
+-
+-        emit_log_compression_telemetry(text, result)
+-        with_retrieve_pointer(result.text, text)
+-      rescue StandardError => e
+-        Rubino.logger&.warn(event: "compression.log_failed",
+-                            error: e.message, error_class: e.class.name)
+-        text
+-      end
+-
+-      # Appends the explicit reversibility pointer: how many lines were hidden,
+-      # that failures + summary were kept, and the sha256 to retrieve the full
+-      # original. Never claims recoverability it can't back — the hash is the key
+-      # OutputStore was just keyed by.
+-      def with_retrieve_pointer(compressed, original)
+-        hash = Compression::OutputStore.instance.put(original)
+-        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+-        kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
+-        hidden = [orig_lines - kept_lines, 0].max
+-        "#{compressed}\n# … #{hidden} passing/info lines hidden by log compression " \
+-          "(failures + summary kept). Full output via retrieve_output hash=#{hash}"
+-      end
+-
+-      def emit_log_compression_telemetry(original, result)
+-        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+-        new_lines  = result.text.count("\n") + (result.text.end_with?("\n") ? 0 : 1)
+-        Rubino.logger&.info(event: "compression.log_applied",
+-                            ratio: result.ratio.round(3),
+-                            original_lines: orig_lines, compressed_lines: new_lines,
+-                            original_bytes: result.original_bytes,
+-                            compressed_bytes: result.compressed_bytes,
+-                            saved_tokens_est: result.saved_tokens_est)
+-      end
+-
+       # Defense-in-depth: the ApprovalPolicy already denies hardline commands
+       # before we get here, but the tool re-checks against the SAME single
+       # source (Security::HardlineGuard) so a future caller that bypasses the
+       # policy still can't wipe the host. No divergent inline list.
+       def destructive_pattern_match(command)
+         Security::HardlineGuard.block_reason(command)
+       end
+ 
+       # Resolves cwd via realpath so symlinks and "../" are fully expanded;
+       # returns nil if the directory does not exist or is unreadable.
+       def resolve_cwd(cwd)
+         candidate = cwd || Rubino::Workspace.primary_root
+         path = File.realpath(File.expand_path(candidate))
+         File.directory?(path) ? path : nil
+       rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+         nil
+       end
+ 
+       def spawn_background(command, cwd)
+         entry = ShellRegistry.instance.spawn(command: command, cwd: cwd)
+         "Started background shell #{entry.id} (pid #{entry.pid})\n  " \
+           "command: #{command}\n  " \
+           "cwd:     #{cwd}\n" \
+           "Read output:  shell_output run_id=#{entry.id}\n" \
+           "Send input:   shell_input  run_id=#{entry.id} text=...\n" \
