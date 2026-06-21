@@ -97,6 +97,14 @@ auxiliary:
     timeout: 300
 ```
 
+Each block routes through `LLM::AuxiliaryClient`, so `provider`/`model`/`base_url`
+are all honored: `provider: "main"` (or empty) reuses the primary provider, an empty
+`model` falls back to `model.default`, and a `base_url` points that task at a
+different endpoint. `auxiliary.compression` is the **context-compaction summary**
+model — at the defaults it is the primary model (e.g. MiniMax-M3), unchanged; set
+`provider`/`model`/`base_url` to run compaction summaries on a different
+(OpenAI-compatible) endpoint.
+
 ### agent
 
 ```yaml
