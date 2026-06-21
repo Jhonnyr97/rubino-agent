@@ -608,16 +608,18 @@ module Rubino
       end
 
       # The reversibility pointer: a single line stating how much was hidden, that
-      # failures/summary (logs) or large bodies (code) are kept, and the spill
-      # path the model can `read` to get the original verbatim. Falls back to a
-      # path-less note if the spill failed.
+      # failures/summary (logs) or large bodies (code) are kept and normally
+      # sufficient, and — passively, only "if a hidden line is specifically needed"
+      # — the spill path holding the original verbatim. The conditional framing
+      # avoids baiting a small model into a reflexive drill-in on the raw output.
+      # Falls back to a path-less note if the spill failed.
       def append_recovery_pointer(compressed, original, spill_path, content_type)
         orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
         kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
         hidden = [orig_lines - kept_lines, 0].max
         kept_note = COMPRESSION_KEPT_NOTES[content_type] || "failures + summary kept"
-        recover = spill_path ? "Full output: read #{spill_path}" : "Full output unavailable (spill failed) — re-run."
-        "#{compressed}\n[… #{hidden} line(s) hidden by output compression (#{kept_note}). #{recover}]"
+        recover = spill_path ? "full output at #{spill_path} if a hidden line is specifically needed" : "full output unavailable (spill failed)" # rubocop:disable Layout/LineLength
+        "#{compressed}\n[… #{hidden} lower-signal line(s) hidden by output compression — #{kept_note}, normally sufficient; #{recover}.]" # rubocop:disable Layout/LineLength
       end
 
       def compression_metrics(result, existing)
