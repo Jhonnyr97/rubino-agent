@@ -18,6 +18,9 @@ RSpec.describe Rubino::Compression::ContentRouter do
                              "context_lines" => 3, "min_lines" => 10, "min_saving" => 0.25,
                              "generated_patterns" =>
                                Rubino::Compression::DiffCompressor::DEFAULT_GENERATED)
+    Rubino.configuration.set("tool_output_compression", "json",
+                             "min_items" => 8, "min_lines" => 40, "min_saving" => 0.25,
+                             "outlier_sigma" => 3.0, "max_string_chars" => 100)
     return unless logs
 
     Rubino.configuration.set("tool_output_compression", "logs",
@@ -75,6 +78,32 @@ RSpec.describe Rubino::Compression::ContentRouter do
   let(:lockfile_diff) do
     body = (1..40).map { |i| i.even? ? "+    gem-#{i} (1.0)" : "-    gem-#{i} (0.9)" }.join("\n")
     "diff --git a/Gemfile.lock b/Gemfile.lock\n--- a/Gemfile.lock\n+++ b/Gemfile.lock\n@@ -1,40 +1,40 @@\n#{body}\n"
+  end
+
+  # A LARGE uniform JSON array (a `kubectl get -o json`-style shell dump) — folds
+  # losslessly to a schema header + compact rows.
+  let(:json_array) do
+    require "json"
+    arr = (0...30).map do |i|
+      { "name" => "pod-#{i}", "namespace" => "default", "phase" => "Running", "restarts" => 0 }
+    end
+    JSON.pretty_generate(arr)
+  end
+
+  # A SMALL JSON array — over the SHORT_MAX_LINES floor (so detect reaches :json)
+  # but under the json size gate, so the JsonCompressor passes it through.
+  let(:small_json) do
+    require "json"
+    JSON.pretty_generate((0...3).map { |i| { "id" => i, "ok" => true } })
+  end
+
+  # A plain log that happens to contain a JSON-looking LINE — the WHOLE output
+  # does not parse as JSON, so it must still route to :log, never :json.
+  let(:log_with_json_line) do
+    lines = (1..50).map { |i| "INFO processing item #{i}" }
+    lines << '{"event": "done", "count": 50}'
+    lines << "ERROR something failed"
+    lines.join("\n")
   end
 
   context "when compression is disabled (default)" do
@@ -154,9 +183,30 @@ RSpec.describe Rubino::Compression::ContentRouter do
       expect(result.content_type).to eq(:short)
     end
 
-    it "DETECTS JSON and routes to passthrough (future extension point)" do
-      json = "{\n#{(1..10).map { |i| %(  "key#{i}": #{i}) }.join(",\n")}\n}"
-      result = router.route(json, tool_name: "shell")
+    it "COMPRESSES a large uniform JSON shell dump → :json schema-fold" do
+      result = router.route(json_array, tool_name: "shell")
+      expect(result.applied?).to be true
+      expect(result.content_type).to eq(:json)
+      expect(result.strategy).to eq(:json)
+      expect(result.text).to include("keys: name | namespace | phase | restarts")
+      expect(result.text).to include("pod-0 | default | Running | 0")
+    end
+
+    it "JSON detection runs BEFORE :log — a JSON shell dump never log-compresses" do
+      # Same `shell` tool that would otherwise route to :log: the whole-output
+      # JSON parse wins, so it routes to :json.
+      result = router.route(json_array, tool_name: "shell")
+      expect(result.content_type).to eq(:json)
+    end
+
+    it "a JSON-looking LINE inside a log still routes to :log (whole output must parse)" do
+      result = router.route(log_with_json_line, tool_name: "shell")
+      expect(result.content_type).to eq(:log)
+      expect(result.text).to include("ERROR something failed")
+    end
+
+    it "PASSES THROUGH a SMALL JSON byte-identical (saving guard)" do
+      result = router.route(small_json, tool_name: "shell")
       expect(result.applied?).to be false
       expect(result.content_type).to eq(:json)
     end

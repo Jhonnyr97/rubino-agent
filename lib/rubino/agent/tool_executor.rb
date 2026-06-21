@@ -7,7 +7,8 @@ module Rubino
     # The "what survived" phrase in a compression recovery pointer, per content
     # type (anything else — logs — keeps the failures + summary).
     COMPRESSION_KEPT_NOTES = { code: "signatures + small bodies kept",
-                               diff: "all +/- changes + headers kept" }.freeze
+                               diff: "all +/- changes + headers kept",
+                               json: "schema + error/outlier rows kept" }.freeze
 
     # Executes tool calls with approval checks and result formatting.
     class ToolExecutor
