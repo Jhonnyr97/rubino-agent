@@ -101,29 +101,39 @@ module Rubino
         @state = { items: items, selected: selected, top: window_top(selected, items.size) }
       end
 
+      # The rendered picker rows, or [] when closed. Delegates the look — the
+      # `┄ subagents ┄` header, the scroll-window slice, the cyan ❯ + inverse
+      # highlight, the dim ┊ rest, the selected row's live-activity sub-line, and
+      # the overflow footer — to the shared {MenuView}, so this picker and the
+      # `/` command palette render alike (#562). This menu still owns its rows:
+      # the status-coloured `id · subagent · status` label, the `◂ main` row, and
+      # which entry carries an activity sub-line.
       def rows(cols)
         return [] unless open?
 
         refresh!
         return [] unless open?
 
-        items = @state[:items]
-        top = @state[:top]
-        selected = @state[:selected]
-        slice = items[top, MAX_ROWS] || []
-        rows = [@pastel.dim("┄ subagents ┄")]
-        slice.each_with_index do |entry, i|
-          selected_entry = top + i == selected
-          rows << row(entry, selected: selected_entry, cols: cols)
-          if selected_entry && !self.class.main_row?(entry) && !entry.last_activity.to_s.empty?
-            rows << activity_row(entry, cols)
-          end
-        end
-        rows << @pastel.dim("┄ #{selected + 1}/#{items.size} · Enter attaches · ← back ┄") if items.size > MAX_ROWS
-        rows
+        descriptors = @state[:items].map { |entry| descriptor(entry) }
+        MenuView.render(descriptors, cols,
+                        window: { selected: @state[:selected], top: @state[:top], max_rows: MAX_ROWS },
+                        header: "subagents", hints: "Enter attaches · ← back")
       end
 
       private
+
+      # A {MenuView} row descriptor for one picker entry: the label is the
+      # status-coloured `id · subagent · status` (or the dim `◂ main session`
+      # row), and a live subagent's last-activity rides along as the sub-line
+      # MenuView draws under it when selected.
+      def descriptor(entry)
+        if self.class.main_row?(entry)
+          { label: @pastel.dim("◂ main session") }
+        else
+          { label: "#{entry.id} · #{entry.subagent} · #{status_label(entry.status)}",
+            sub: entry.last_activity.to_s }
+        end
+      end
 
       def live_entries
         Array(@entries.call).select { |entry| live?(entry) }
@@ -133,20 +143,6 @@ module Rubino
 
       def live?(entry)
         %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
-      end
-
-      def row(entry, selected:, cols:)
-        marker = selected ? @pastel.cyan("❯") : @pastel.dim("┊")
-        label = if self.class.main_row?(entry)
-                  @pastel.dim("◂ main session")
-                else
-                  "#{entry.id} · #{entry.subagent} · #{status_label(entry.status)}"
-                end
-        LiveRegion.take_first_columns("#{marker} #{label}", cols)
-      end
-
-      def activity_row(entry, cols)
-        LiveRegion.take_first_columns(@pastel.dim("  #{entry.last_activity}"), cols)
       end
 
       def status_label(status)
@@ -164,15 +160,7 @@ module Rubino
       end
 
       def window_top(selected, size)
-        return 0 if size <= MAX_ROWS
-
-        if selected < @state[:top]
-          selected
-        elsif selected >= @state[:top] + MAX_ROWS
-          selected - MAX_ROWS + 1
-        else
-          @state[:top]
-        end
+        MenuView.window_top(selected, size, @state[:top], MAX_ROWS)
       end
     end
   end
