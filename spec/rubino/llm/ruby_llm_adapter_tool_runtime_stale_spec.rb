@@ -72,8 +72,42 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     chat
   end
 
+  # #552: a chat double whose ONLY suspend signal is before_tool_call (the
+  # authoritative "a tool is about to execute" callback ruby_llm fires right
+  # before #execute_tool). It does NOT fire after_message for a tool-use turn —
+  # mimicking the anthropic-compatible streaming path where intermediate_tool_message?
+  # does not flip `tool_running` in time, so a blocking interactive `question`/clarify
+  # would otherwise be killed at the 30s stale-chunk window before the human can answer.
+  def before_tool_call_chat(tool_block:)
+    chat = double("chat")
+    befores = []
+    on_tool = []
+    allow(chat).to receive(:before_message) { |&b| befores << b }
+    allow(chat).to receive(:after_message) # registered but never fired for a tool-use turn
+    allow(chat).to receive(:before_tool_call) { |&b| on_tool << b }
+    allow(chat).to receive(:ask) do |*_args, **_kw, &blk|
+      befores.each(&:call) # message #1 begins
+      blk.call(double("chunk", content: "let me ask the human…", thinking: nil)) # a real chunk
+      on_tool.each(&:call) # ruby_llm is about to dispatch the blocking `question` tool
+      sleep(tool_block)    # the human reads the menu / deliberates (no chunk meanwhile)
+      befores.each(&:call) # next message begins ⇒ tool returned with the answer
+      final_message
+    end
+    chat
+  end
+
   it "does NOT raise StreamStaleError while a mid-stream tool runs past the idle bound (#488)" do
     chat = mid_stream_tool_chat(tool_block: 1.5) # 5x the 0.3s idle bound
+    allow(adapter).to receive(:build_chat).and_return(chat)
+
+    expect { run_stream(&noop_sink) }.not_to raise_error
+  end
+
+  it "does NOT kill a run parked on a blocking interactive tool — suspend keys off before_tool_call (#552)" do
+    # The human "deliberates" for 1.5s — 5x the 0.3s stale bound (stands in for
+    # the real 30s window vs a human reading a 5-option clarify menu). Without
+    # the before_tool_call suspend the watchdog would raise StreamStaleError.
+    chat = before_tool_call_chat(tool_block: 1.5)
     allow(adapter).to receive(:build_chat).and_return(chat)
 
     expect { run_stream(&noop_sink) }.not_to raise_error

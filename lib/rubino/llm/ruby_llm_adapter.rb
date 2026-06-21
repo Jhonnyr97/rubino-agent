@@ -290,6 +290,22 @@ module Rubino
           chat_instance.on_end_message(&close_block)
         end
 
+        # #552: the AUTHORITATIVE suspend signal. ruby_llm fires before_tool_call
+        # immediately before it dispatches each tool mid-stream (chat.rb:375,
+        # right before #execute_tool blocks). The after_message heuristic above
+        # only flips `tool_running` when the tool-use assistant message closes
+        # AND intermediate_tool_message?(msg) recognises it — which is unreliable
+        # on the anthropic-compatible streaming path (MiniMax /anthropic), where
+        # a blocking interactive tool (`question`/clarify parked on stdin, or
+        # ask_parent) starts running while the watchdog still sees
+        # tool_running == false and fires at `stale_after` (30s for the
+        # anthropic-compatible provider) before the human can answer. Keying the
+        # suspend off before_tool_call closes that window: the instant ANY tool
+        # is about to execute, idle accrual is suspended for its full runtime,
+        # exactly as a blocking human-input tool needs. before_message clears it
+        # again when the next assistant message opens (tool returned).
+        chat_instance.before_tool_call { tool_running = true } if chat_instance.respond_to?(:before_tool_call)
+
         # #360: the per-chunk check_stream_stale! only fires WHEN a chunk
         # arrives — so if the upstream opens the stream then goes silent (a
         # stalled SSE / a 200 that never sends an event), nothing inside the
