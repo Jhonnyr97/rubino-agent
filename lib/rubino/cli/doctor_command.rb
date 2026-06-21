@@ -279,6 +279,20 @@ module Rubino
           return { name: "model", status: :fail }
         end
 
+        # Honest pre-setup copy (#546): a non-empty `model.default` is NOT a
+        # working model. A never-setup install carries a seeded placeholder under
+        # an assume-exists provider, so `model` is present and the registry/
+        # compatible branch below would print a green "Model configured: …" that
+        # contradicts the real state — nothing is configured yet. With NO usable
+        # credential the model can't be called, so say so and point at setup (a
+        # warning, not a green success). Mirrors the #541 present-vs-verified
+        # honesty in check_provider_keys; the credential verdict is scored there,
+        # so this stays a non-blocking :warn rather than double-counting a :fail.
+        unless model_usable?
+          ui.warning("Model '#{model}' set, but no usable credential yet — run 'rubino setup'")
+          return { name: "model", status: :warn }
+        end
+
         # Validate the model actually EXISTS, not just that a non-empty string is
         # present (#327): a typo'd `model.default` used to pass doctor and only
         # fail at the first model call with a 4xx. A custom/assume-exists provider
@@ -298,6 +312,17 @@ module Rubino
         # with a scalar — fail gracefully (check_config already explained why).
         ui.error("model check skipped — config corrupt: #{e.message}")
         { name: "model", status: :fail }
+      end
+
+      # True when the configured model has a usable credential — the same
+      # source-of-truth check_provider_keys scores (#546). Used here so the model
+      # line stays honest pre-setup: no usable credential ⇒ don't print a green
+      # "Model configured". Any resolution hiccup degrades to "not usable" so a
+      # broken/unconfigured install can never earn a false green.
+      def model_usable?
+        LLM::CredentialCheck.usable?
+      rescue StandardError
+        false
       end
 
       # True when the configured provider deliberately accepts arbitrary model

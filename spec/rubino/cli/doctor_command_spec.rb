@@ -199,6 +199,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "is :ok for a real registry model id" do
       with_config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
+      allow(doctor).to receive(:model_usable?).and_return(true)
       allow(doctor).to receive(:assume_exists_provider?).and_return(false)
       allow(doctor).to receive(:model_in_catalog?).with("gpt-4.1").and_return(true)
       expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
@@ -206,6 +207,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "is :warn for a typo'd model id on a registry provider" do
       with_config("model" => { "default" => "gpt-4o-typooo", "provider" => "openai" })
+      allow(doctor).to receive(:model_usable?).and_return(true)
       allow(doctor).to receive(:assume_exists_provider?).and_return(false)
       allow(doctor).to receive(:model_in_catalog?).with("gpt-4o-typooo").and_return(false)
 
@@ -220,7 +222,60 @@ RSpec.describe Rubino::CLI::DoctorCommand do
         "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
         "providers" => { "minimax" => { "anthropic_compatible" => true } }
       )
+      allow(doctor).to receive(:model_usable?).and_return(true)
       expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
+    end
+  end
+
+  # #546 (pre-setup honesty): before `setup` has run, a never-setup install
+  # carries a seeded placeholder `model.default` under an assume-exists provider
+  # but NO usable credential. Doctor used to print a green "Model configured: …"
+  # there — an all-green line that contradicts the unconfigured state. With no
+  # usable credential the model line must be an actionable warning pointing at
+  # setup, never a green success. A genuinely configured+usable setup still
+  # reports the green success. Consistent with the #541 present-vs-verified fix.
+  describe "#check_model_configured (pre-setup honesty, #546)" do
+    def with_config(raw)
+      config = Rubino::Config::Configuration.new(raw: raw, home_path: nil)
+      allow(Rubino).to receive(:configuration).and_return(config)
+    end
+
+    it "does NOT print a green 'Model configured' when no usable credential exists" do
+      with_config(
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "providers" => { "minimax" => { "anthropic_compatible" => true } }
+      )
+      allow(doctor).to receive(:model_usable?).and_return(false)
+
+      result = doctor.send(:check_model_configured)
+
+      expect(result).to eq(name: "model", status: :warn)
+      last = ui.messages.last
+      expect(last[:level]).to eq(:warning)
+      expect(last[:message]).not_to include("Model configured")
+    end
+
+    it "surfaces the actionable 'run setup' guidance when no usable credential exists" do
+      with_config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
+      allow(doctor).to receive(:model_usable?).and_return(false)
+
+      doctor.send(:check_model_configured)
+
+      expect(ui.messages.last[:message]).to include("rubino setup")
+      expect(ui.messages.none? { |m| m[:level] == :success }).to be(true)
+    end
+
+    it "still reports the green success for a configured+usable setup" do
+      with_config(
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "providers" => { "minimax" => { "anthropic_compatible" => true, "api_key" => "mm-key" } }
+      )
+
+      result = doctor.send(:check_model_configured)
+
+      expect(result).to eq(name: "model", status: :ok)
+      expect(ui.messages.last[:level]).to eq(:success)
+      expect(ui.messages.last[:message]).to include("Model configured")
     end
   end
 
