@@ -314,6 +314,59 @@ file_read:
   max_chars: 100000
 ```
 
+### tool_output_compression
+
+Deterministic (no-LLM) compression of a tool's output **before it reaches the
+model**, to spend fewer context tokens on high-volume, low-signal output. This is
+distinct from [`compression`](#compression) (which summarises the *conversation
+history* when the window fills) and from `display.tool_output_preview_lines`
+(scrollback-only). It runs at a single seam — every tool's output passes through
+`Agent::ToolExecutor` — so a content **router** picks the strategy by what the
+output *is*, not by which tool produced it:
+
+| Output detected as | Strategy | Effect |
+| --- | --- | --- |
+| test / build / lint / shell logs (rspec, pytest, jest, cargo, npm, make, generic) | `LogCompressor` | keep every error/failure + the summary tally + context, drop passing/info noise (≈97% fewer tokens on a failing suite) |
+| a **whole-file** source read (Ruby) | code `skeleton` | keep signatures, elide large method bodies behind a `read offset:/limit:` pointer |
+| a unified diff (`git diff`, `diff`) | passthrough | **byte-identical** — diffs are their own channel |
+| grep / search results (`path:line:`) | passthrough | **byte-identical** |
+| short output, or JSON | passthrough | unchanged (JSON is a reserved future strategy) |
+
+```yaml
+tool_output_compression:
+  enabled: false              # MASTER switch — off ships by default; the whole
+                              # router is bypassed when false. `rubino setup`
+                              # offers to turn this (and logs.enabled) on.
+  code:                       # whole-file source reads → skeleton
+    strategy: skeleton        # only "skeleton" is implemented; any other value = passthrough
+    min_lines: 150            # files shorter than this are never skeletonised
+    keep_method_body_max_lines: 8  # bodies up to N lines are kept inline; larger ones are elided
+  logs:
+    enabled: false            # sub-gate: log compression only runs when BOTH this and the master are on
+    min_lines: 40             # outputs shorter than this pass through unchanged
+    max_total_lines: 100      # cap on kept lines
+    max_errors: 10            # keep up to N errors/failures (first and last always kept)
+    max_warnings: 5
+    max_stack_traces: 3
+    context_lines: 4          # lines of surrounding context kept around each failure
+```
+
+**Reversibility.** When the router compresses, the executor spills the *full
+original* to `<home>/tool-results/<call_id>.txt` and the compressed output ends
+with a pointer (`… N line(s) hidden … Full output: read <path>`). The model
+recovers the original with the normal `read` tool — there is no separate store or
+retrieve tool. **Fidelity:** a failure or summary line is never dropped; only
+passing/info noise is.
+
+**Per-call opt-out.** When the feature is on, `read` and `shell` advertise a
+`compress` boolean parameter (default `true`); the model can pass `compress:false`
+to receive the verbatim output for that one call (returned byte-identical).
+
+**Telemetry.** Compression events are logged as `compression.applied` /
+`compression.drill_in` / `compression.failed` with a `content_type` field; a
+strategy error always falls back to the uncompressed text, so compression can
+never break a tool call.
+
 ### terminal
 
 ```yaml
