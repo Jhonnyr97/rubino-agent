@@ -329,10 +329,25 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(executor.send(:approval_question, tool, nil)).to eq("#{tool.name} wants to run")
     end
 
-    # P7: the common one-short-arg case inlines onto the header.
-    it "inlines a single short argument onto the 'wants:' header (P7)" do
+    # P7 + #558: the common one-short-arg case inlines onto the ONE consistent
+    # "wants to run:" header (not the old dangling "wants:").
+    it "inlines a single short argument onto the 'wants to run:' header (P7/#558)" do
       question = executor.send(:approval_question, tool, { "command" => "touch hello.txt" })
-      expect(question).to eq("#{tool.name} wants: touch hello.txt")
+      expect(question).to eq("#{tool.name} wants to run: touch hello.txt")
+    end
+
+    # #558: every header variant uses the SAME verb phrasing ("wants to run"),
+    # never the inconsistent dangling "wants:" colon.
+    it "uses the single consistent 'wants to run' header across every shape (#558)" do
+      no_args   = executor.send(:approval_question, tool, {})
+      one_arg   = executor.send(:approval_question, tool, { "command" => "ls" })
+      multi_arg = executor.send(:approval_question, tool, { "a" => "1", "b" => "2" })
+
+      [no_args, one_arg, multi_arg].each do |q|
+        expect(q).to start_with("#{tool.name} wants to run")
+        # No dangling "wants:" (the colon must only follow the full verb phrase).
+        expect(q).not_to match(/\bwants:/)
+      end
     end
 
     it "lays each argument on its own line" do
@@ -379,7 +394,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
                                      { "old_string" => "def median(nums):\n  s = sorted(nums)",
                                        "new_string" => "def median(nums):\n  s = sorted(nums)\n  n = len(s)" }
                                    ] })
-        expect(question).to include("multi_edit wants: stats.py (1 edit)")
+        expect(question).to include("multi_edit wants to run: stats.py (1 edit)")
         expect(question).to include("  - def median(nums):")
         expect(question).to include("  + def median(nums):")
         expect(question).to include("+   n = len(s)")

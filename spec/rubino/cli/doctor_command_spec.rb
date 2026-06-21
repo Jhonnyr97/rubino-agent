@@ -312,13 +312,19 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(ui.messages.none? { |m| m[:level] == :warning && m[:message].to_s.match?(%r{\d/\d}) }).to be(true)
     end
 
-    it "warns and exits non-zero when a REQUIRED check fails (#67)" do
+    # #557: a failed required check is a genuine FAILURE — the headline verdict
+    # must render the red ✗ (level :error), not the soft yellow ⚠ (level
+    # :warning) that understated an all-broken install as a mild caution.
+    it "renders the failure verdict as ✗ (error) and exits non-zero when a REQUIRED check fails (#67/#557)" do
       allow(doctor).to receive(:check_model_configured).and_return(name: "model", status: :fail)
 
       expect { doctor.execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
 
-      warning = ui.messages.find { |m| m[:level] == :warning && m[:message].to_s.include?("required checks passed") }
-      expect(warning[:message]).to include("5/6 required checks passed")
+      verdict = ui.messages.find { |m| m[:message].to_s.include?("required checks passed") }
+      expect(verdict[:level]).to eq(:error)
+      expect(verdict[:message]).to include("5/6 required checks passed")
+      # The verdict must NOT be a soft warning anymore.
+      expect(ui.messages.none? { |m| m[:level] == :warning && m[:message].to_s.match?(%r{\d/\d}) }).to be(true)
     end
 
     # #67: scripts/CI gate on doctor, so the all-green path must stay exit 0
