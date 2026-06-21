@@ -116,7 +116,12 @@ module Rubino
         Rubino.reload_configuration!
 
         @ui.blank_line
-        @ui.success("Configured #{choice[:label]} with model #{choice[:model]}.")
+        # Honest copy (#541): the wizard SAVES the key — it does not validate it
+        # (no live auth probe; offline/rate-limit safe, matches the norm). A
+        # confident "Configured … ✓" read as "validated", so a bogus pasted key
+        # got a false green and only broke on the first real turn. Say "Saved"
+        # and point at the verify step so the green means "written", not "works".
+        @ui.success("Saved #{choice[:label]} with model #{choice[:model]} — run a prompt to verify the key.")
         @ui.status("Saved to #{config_loader.config_path} and #{config_loader.env_path}.")
         @ui.blank_line
         true
