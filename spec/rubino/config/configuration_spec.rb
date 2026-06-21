@@ -106,7 +106,7 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "tool accessors" do
     it "returns tool enabled status" do
-      expect(config.tool_enabled?("git")).to be true
+      expect(config.tool_enabled?("ruby")).to be true
       # shell ships ON by default: the agent runs in an isolated per-customer
       # VM where running commands is the whole point. Dangerous commands stay
       # gated behind the approval prompt via security.confirm_policy.

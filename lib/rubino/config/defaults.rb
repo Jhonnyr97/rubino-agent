@@ -390,7 +390,6 @@ module Rubino
           # process can reach — only do this if you trust the model + the
           # approval flow alone.
           "workspace_strict" => true,
-          "git" => true,
           # Default ON: the agent ships to run inside an isolated per-customer
           # VM where running shell commands is the whole point. The blast radius
           # is the VM, and security.confirm_policy (default dangerous_only) still
