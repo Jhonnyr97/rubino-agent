@@ -532,7 +532,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: nil)
       )
-      welcome = null_ui.messages.find { |m| m[:message].to_s.include?("ask in plain language") }
+      # #559: the welcome opens with the ONE shared tagline (Rubino::TAGLINE),
+      # not a second hand-written variant.
+      welcome = null_ui.messages.find { |m| m[:message].to_s.include?(Rubino::TAGLINE) }
       expect(welcome).not_to be_nil
     end
 

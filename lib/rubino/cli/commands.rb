@@ -23,7 +23,9 @@ module Rubino
       # (F-help). Wrap Thor's #help to print a tagline above the listing and a
       # "Getting started: run `rubino setup`" hint below it, so a brand-new user
       # lands on the first action instead of a bare verb table.
-      TAGLINE = "rubino — an AI coding agent that reads, edits, and runs code."
+      # Single source of truth lives on the Rubino module (#559) so the help
+      # banner and the chat welcome can't drift into two different taglines.
+      TAGLINE = Rubino::TAGLINE
       GETTING_STARTED = "Getting started: run `rubino setup` to configure a model, " \
                         "then `rubino chat` (or `rubino \"your prompt\"`)."
 

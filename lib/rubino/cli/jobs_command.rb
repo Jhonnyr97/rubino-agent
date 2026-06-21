@@ -21,20 +21,23 @@ module Rubino
       option :status, type: :string, desc: "Filter by status (queued, running, completed, failed)"
       option :limit, type: :numeric, default: 20, desc: "Max results"
       def list
-        # A present-but-unusable DB (corrupt image, or the duplicate
-        # `schema_info` rows a concurrent first-boot race leaves, #race) must
-        # surface a clean error, not a raw `no such table: jobs` backtrace —
-        # same guard the sessions/memory read CLIs use (#333/#race).
-        if (message = Rubino.database_repair_message)
-          raise Thor::Error, message
-        end
-
-        Rubino.ensure_database_ready!
+        ensure_jobs_database!
         queue = Jobs::Queue.new
         jobs = queue.list(status: options[:status], limit: options[:limit])
 
         if jobs.empty?
-          Rubino.ui.info("No jobs found.")
+          # Don't dead-end an empty queue (#559): say how jobs get here (enqueued
+          # automatically during a chat) instead of a bare "No jobs found.",
+          # matching the actionable empty state `sessions list` gives. A `--status`
+          # filter may just be hiding rows, so name that case.
+          msg =
+            if options[:status]
+              "No #{options[:status]} jobs (drop --status to see every job)."
+            else
+              "No jobs yet — rubino queues background work (e.g. memory polishing) " \
+                "as you chat. Run `rubino chat`, and jobs will appear here."
+            end
+          Rubino.ui.info(msg)
           return
         end
 
@@ -54,6 +57,7 @@ module Rubino
       desc "process", "Run pending jobs now (manual mode)"
       option :limit, type: :numeric, default: 10, desc: "Max jobs to process"
       def process
+        ensure_jobs_database!
         runner = Jobs::Runner.new
         processed = runner.run_pending(limit: options[:limit])
         Rubino.ui.success("Processed #{processed} job(s)")
@@ -61,11 +65,34 @@ module Rubino
 
       desc "worker", "Start a background worker loop"
       def worker
+        ensure_jobs_database!
         Rubino.ui.info("Starting job worker (poll every #{Rubino.configuration.jobs_poll_interval}s)...")
         Rubino.ui.info("Press Ctrl+C to stop.")
 
         worker = Jobs::Worker.new
         worker.start
+      end
+
+      private
+
+      # First-run / unusable-DB guard shared by every `jobs` verb that touches
+      # the queue table (#560). Without it `process`/`worker` hit the `jobs`
+      # table directly on a brand-new or un-migrated RUBINO_HOME and dump a raw
+      # `SQLite3::SQLException: no such table: jobs` backtrace + the SQL to the
+      # user. This mirrors the sessions/memory read CLIs (#333/#race):
+      #   1. a PRESENT-but-unusable image (corrupt, #race) → clean repair message;
+      #   2. a brand-new home → `ensure_database_ready!` migrates it idempotently;
+      #   3. an init that genuinely fails → a clean "not initialized, run setup"
+      #      Thor::Error (stderr, non-zero exit, NO backtrace), never raw SQL.
+      def ensure_jobs_database!
+        if (message = Rubino.database_repair_message)
+          raise Thor::Error, message
+        end
+
+        return if Rubino.ensure_database_ready!
+
+        raise Thor::Error,
+              "database not initialized — run `rubino setup` to configure rubino first."
       end
     end
   end

@@ -635,12 +635,14 @@ module Rubino
       # only other accent (they're actionable pointers); descriptions plain.
       def show_welcome
         @ui.separator
-        @ui.info("rubino — ask in plain language; it reads, edits, and runs things for you.")
+        # ONE tagline across the chrome (#559): the same identity line `rubino
+        # --help` opens with, not a second hand-written variant.
+        @ui.info(Rubino::TAGLINE)
         @ui.blank_line
         @ui.status("  Ask anything, or try:")
         @ui.hint_row("/status", "what's going on right now")
         @ui.hint_row("/sessions", "resume past work")
-        @ui.hint_row("/memory", "what I recall about you")
+        @ui.hint_row("/memory", "what rubino remembers about you")
         @ui.hint_row("/help", "all commands and keys")
         @ui.separator
       end
