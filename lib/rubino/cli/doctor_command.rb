@@ -246,7 +246,14 @@ module Rubino
         provider = LLM::CredentialCheck.resolved_provider
 
         if LLM::CredentialCheck.usable?
-          ui.success("API key configured (#{provider})")
+          # Honest copy (#541): doctor checks that a key is PRESENT for the
+          # configured provider, NOT that it actually authenticates — no live
+          # auth probe is made (offline/rate-limit safe, matches the industry
+          # norm). "configured" read as "validated", so a bogus pasted key got a
+          # false green and only broke on the first real turn. Say "present" and
+          # name the verify step so the user knows the green means "found", not
+          # "works".
+          ui.success("API key present (#{provider}) — not verified; first prompt confirms it")
           { name: "provider_keys", status: :ok }
         else
           # A missing key for the CONFIGURED provider is a hard ✗, not a soft ⚠

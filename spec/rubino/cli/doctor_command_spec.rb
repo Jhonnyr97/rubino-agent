@@ -89,6 +89,24 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(result).to eq(name: "provider_keys", status: :ok)
     end
 
+    # #541 (honesty): a PRESENT key is reported as present-and-unverified, never
+    # as "configured" — doctor makes no live auth probe, so a bogus key must not
+    # earn a green that implies it was validated. The check still passes (a key
+    # IS present), but the copy says "present", "not verified", and names the
+    # verify step so the green can't be misread as "works".
+    it "reports a present key as 'present — not verified', not 'configured'" do
+      with_config("model" => { "default" => "anthropic/claude-3-5-sonnet", "provider" => "auto" })
+      ENV["ANTHROPIC_API_KEY"] = "sk-fake-invalid-xyz"
+
+      doctor.send(:check_provider_keys)
+
+      msg = ui.messages.last
+      expect(msg).to include(level: :success)
+      expect(msg[:message]).to include("present")
+      expect(msg[:message]).to match(/not verified/i)
+      expect(msg[:message]).not_to match(/\bconfigured\b/)
+    end
+
     # The core finding: a tenant on an openai_compatible provider configures its
     # key under providers.<name>.api_key in config.yml. The old hardcoded ENV
     # allowlist ignored that and warned "No API keys found" on a healthy tenant.
