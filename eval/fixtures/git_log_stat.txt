@@ -1,0 +1,362 @@
+commit 7dce1258959936da55c462c64ec418a3dbb4b247
+Merge: 9a996826 c62de17a
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:14:14 2026 +0200
+
+    Merge feat/cache-middleware into test (PR #535)
+
+commit 9a99682601287ee457d77be7d3448768a78560ad
+Merge: 569ad31a a10a0b14
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:12:04 2026 +0200
+
+    Merge feat/eval-harness into test (PR #534)
+
+commit 569ad31a1f33847cab16be2d91ba469434caa980
+Merge: 91a3b617 c0f23c32
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:10:33 2026 +0200
+
+    Merge feat/code-compression into test (PR #533)
+
+commit 91a3b617a1a85eebcaa93c474eb1cc5db59343b2
+Merge: afec4ec9 3e49169c
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:08:25 2026 +0200
+
+    Merge feat/edit-fuzzy-fallback into test (PR #531)
+
+commit afec4ec90ff7c8dbf7a7470f881c73f88801b116
+Merge: ebbf1207 d55f9301
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:06:50 2026 +0200
+
+    Merge fix/minimax-thinking-default into test (PR #530)
+    
+    # Conflicts:
+    #       CHANGELOG.md
+
+commit ebbf12077eb437075cf46131af683c123fa1b679
+Merge: 300a53ad a08c1a08
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:04:02 2026 +0200
+
+    Merge feat/agent-attach-view into test (PR #529)
+
+commit 300a53ad1b59d153d79d36f1c94739b91e5847b4
+Merge: f872513a a10a4892
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sun Jun 21 01:02:16 2026 +0200
+
+    Merge refactor/agent-view-seams into test (PR #528)
+
+commit c62de17a089c050998d9ba97788a93e9cf4215ba
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 20:32:22 2026 +0200
+
+    feat(llm): cache the growing conversation across tool round-trips via Faraday middleware (#311)
+    
+    ruby_llm 1.16 runs the whole model<->tool loop inside one ask(), so the
+    intermediate tool round-trips never re-enter rubino's per-turn code. The
+    only seam that sees every actual outgoing request — including those
+    intermediate round-trips — is a Faraday request middleware on the
+    Anthropic connection.
+    
+    CacheBreakpointMiddleware stamps cache_control: {type: ephemeral} on the
+    last content block of the last message of EVERY /messages request, so the
+    moving conversation tail is cached and read back turn after turn
+    (Anthropic longest-cached-prefix). On a tool turn the tail block is a
+    tool_use or tool_result; it is stamped unconditionally as a wire-valid
+    sibling key, never restructured. A bare-string tail is skipped.
+    
+    The 4-breakpoint cap is honored: static tools+system breakpoints are
+    never evicted; the oldest message-level breakpoint is evicted first. A
+    long turn (>20 content blocks) earns an optional second leapfrog
+    breakpoint ~15 blocks behind the tail. Any parse/shape surprise leaves
+    the body byte-identical (defensive rescue).
+    
+    Wired only on the anthropic-family path and only when prompts.prompt_cache
+    is on (same gate as the existing system-prefix and last-tool
+    breakpoints); openai/ollama connections never carry it. The middleware is
+    inserted into the live Faraday builder via the public
+    Provider#connection seam — no monkey-patch — and is idempotent across
+    reused connections.
+    
+    Live wire check against MiniMax /anthropic through a logging proxy: a
+    tool-heavy turn issued 4 requests; all 4, including the 3 intermediate
+    tool round-trips whose tail is a tool_result, carried the tail breakpoint
+    (3 total: tools+system+tail), and cache_read climbed across round-trips —
+    exactly the round-trips a per-ask() tail stamp would miss.
+
+ lib/rubino/llm/cache_breakpoint_middleware.rb      | 194 +++++++++++++++++++++
+ lib/rubino/llm/ruby_llm_adapter.rb                 |  41 +++++
+ .../rubino/llm/cache_breakpoint_middleware_spec.rb | 156 +++++++++++++++++
+ spec/rubino/llm/cache_middleware_wiring_spec.rb    |  68 ++++++++
+ 4 files changed, 459 insertions(+)
+
+commit a10a0b14121b936989dc19e0cbdb5fc9ae12e361
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 19:59:53 2026 +0200
+
+    Add A/B evaluation harness for feature-flag validation
+    
+    A self-contained, generic harness under eval/ that proves whether any
+    feature toggle (a dotted config key) helps, by running a fixed task suite
+    N times with the flag OFF vs ON and comparing success + cost.
+    
+    - Treats rubino as a black box: runs exe/rubino --output-format stream-json
+      and parses the result/assistant frames; never touches runtime code.
+    - Isolated, reversible: each run gets a throwaway RUBINO_HOME with a config
+      cloned from the user's (flag deep-set per arm) + a fresh fixture workdir.
+      The user's ~/.rubino config is never mutated.
+    - 6 tasks: 4 strong edit/fix tasks (deterministic shell checks) + 2 weaker
+      find tasks (answer-keyword checks against RESULT.txt).
+    - Captures success, num_turns, tool-calls, output tokens, wall-clock; input/
+      cache tokens surfaced when the provider reports them (MiniMax does not).
+    - Report: per-arm mean/min/max/stddev, A/B delta, per-metric verdict; raw
+      per-run JSON saved to eval/results/.
+    - rubocop-clean (eval/.rubocop.yml); fixtures excluded from lint.
+
+ .gitignore                                       |   4 +
+ eval/.rubocop.yml                                |  23 ++++
+ eval/README.md                                   | 166 +++++++++++++++++++++++
+ eval/fixtures/add_constant/lib/config.rb         |   7 +
+ eval/fixtures/add_method/lib/calculator.rb       |   8 ++
+ eval/fixtures/add_method/test/calculator_test.rb |  14 ++
+ eval/fixtures/find_def/lib/app.rb                |  11 ++
+ eval/fixtures/find_def/lib/widgets/button.rb     |  10 ++
+ eval/fixtures/find_def/lib/widgets/slider.rb     |  10 ++
+ eval/fixtures/fix_bug/lib/strings.rb             |  10 ++
+ eval/fixtures/fix_bug/test/strings_test.rb       |  14 ++
+ eval/lib/eval/checker.rb                         |  19 +++
+ eval/lib/eval/report.rb                          | 128 +++++++++++++++++
+ eval/lib/eval/rubino_runner.rb                   | 161 ++++++++++++++++++++++
+ eval/lib/eval/task.rb                            |  37 +++++
+ eval/lib/eval/workspace.rb                       |  90 ++++++++++++
+ eval/results/.gitkeep                            |   0
+ eval/run.rb                                      | 156 +++++++++++++++++++++
+ eval/tasks/tasks.yml                             |  74 ++++++++++
+ 19 files changed, 942 insertions(+)
+
+commit c0f23c320baa90d98770c33d5a4a038750a3461d
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 19:32:16 2026 +0200
+
+    feat(compression): reversible Ruby code skeleton for whole-file reads (off by default)
+    
+    Phase 1 of deterministic, reversible compression of tool-read results to cut
+    tokens when the agent reads large Ruby files for exploration. OFF by default —
+    lands inert (zero behaviour change) so it can be measured before flipping on.
+    
+    New module Rubino::Compression (Zeitwerk-autoloaded):
+    - CompressionResult: immutable value object (text, byte/token deltas, ratio,
+      strategy, applied?).
+    - Compressor: entry point that routes by content type (Phase 1: :code Ruby →
+      skeleton; everything else a no-op) and enforces conservative guards
+      (whole-file only, >= min_lines, >= 25% saving, parse must succeed).
+    - RubyCodeSkeleton: Prism-based AST walk. Keeps requires, comments, constants,
+      attr_*, module/class structure, signatures and small method bodies verbatim;
+      elides each large method body behind a single pointer line that IS a targeted
+      read of the exact original lines:
+        # … 14 lines elided — read path offset=120 limit=14
+    
+    Drill-in invariant (the safety story): a whole-file read (no offset/limit) is
+    exploration and may be skeletonised; a targeted offset/limit read is NEVER
+    compressed and returns verbatim bytes. The pointer's offset/limit are exact
+    1-based line numbers into the original file, so following a pointer returns the
+    elided body byte-for-byte — the edit tool's exact-string match still works.
+    
+    Wiring (ReadTool, gated on tool_output_compression.enabled, default false):
+    - whole-file Ruby read → skeleton + dim "⚡ compressed …" notice via the tool
+      activity channel + per-session saved-token total on ReadTracker.
+    - targeted read into a previously-elided range → logs compression.drill_in
+      (the "did the skeleton hide what was needed" signal).
+    - a skeleton apply logs compression.applied with ratio/bytes/tokens.
+    - any compression error falls back to the verbatim read (logged).
+    
+    Config: tool_output_compression.{enabled:false, code:{strategy, min_lines:150,
+    keep_method_body_max_lines:8}} + Configuration accessors.
+    
+    Specs: skeleton correctness, pointer offset/limit returns the exact body,
+    small/non-Ruby/parse-error/insufficient-saving no-ops, off-by-default read tool
+    unchanged, telemetry numbers, drill-in logging. rubocop clean.
+
+ lib/rubino/compression/compression_result.rb |  37 ++++++
+ lib/rubino/compression/compressor.rb         |  93 +++++++++++++++
+ lib/rubino/compression/ruby_code_skeleton.rb | 135 +++++++++++++++++++++
+ lib/rubino/config/configuration.rb           |  11 ++
+ lib/rubino/config/defaults.rb                |  21 ++++
+ lib/rubino/tools/read_tool.rb                | 110 ++++++++++++++++-
+ lib/rubino/tools/read_tracker.rb             |  46 ++++++++
+ spec/rubino/compression/compressor_spec.rb   | 169 +++++++++++++++++++++++++++
+ spec/rubino/tools/read_tool_spec.rb          | 120 +++++++++++++++++++
+ 9 files changed, 739 insertions(+), 3 deletions(-)
+
+commit 3e49169cf73593ce9b2a8b219ad0bd655331870c
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 18:45:29 2026 +0200
+
+    feat(tools): add fuzzy-match fallback to edit and multi_edit
+    
+    When a byte-exact old_string match fails, the model has usually retyped
+    the snippet with cosmetic drift: smart quotes for ASCII quotes, en/em
+    dashes for hyphens, exotic spaces for plain spaces, dropped trailing
+    whitespace, or a different Unicode form. Port pi's edit-diff concept: on
+    an exact miss, normalize both the file content and old_string (NFKC,
+    smart quotes -> ASCII, dashes -> '-', exotic spaces -> space, strip
+    trailing whitespace per line) and locate the normalized needle in the
+    normalized content.
+    
+    Normalization is used ONLY to locate the span: matches map back to the
+    ORIGINAL byte range via a normalized-char -> original-byte offset map and
+    the replacement splices into the untouched original bytes, so normalized
+    text is never written to disk. Matches must align to original-character
+    boundaries, so a length-changing normalization (e.g. NFKC ligature
+    expansion) can never splice mid-character. Uniqueness is still enforced:
+    an ambiguous fuzzy match returns the same duplicate-context error;
+    replace_all applies to all fuzzy matches.
+    
+    The byte-exact path and all its outputs are unchanged - the fuzzy path
+    is a pure fallback on miss. Normalization and splice live in one shared
+    Rubino::Tools::FuzzyMatch module used by both tools.
+    
+    Adds specs for smart quotes, em dash, trailing whitespace, ambiguous
+    fuzzy match, length-changing NFKC offset mapping, and confirms the exact
+    path is untouched.
+
+ lib/rubino/tools/edit_tool.rb             |  68 +++++++---
+ lib/rubino/tools/fuzzy_match.rb           | 206 ++++++++++++++++++++++++++++++
+ lib/rubino/tools/multi_edit_tool.rb       |  51 +++++---
+ spec/rubino/tools/edit_tool_spec.rb       |  73 +++++++++++
+ spec/rubino/tools/fuzzy_match_spec.rb     |  77 +++++++++++
+ spec/rubino/tools/multi_edit_tool_spec.rb |  29 +++++
+ 6 files changed, 466 insertions(+), 38 deletions(-)
+
+commit d55f93011b5a08d965a34585ca40b81594edd834
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 18:05:10 2026 +0200
+
+    Stream :full reasoning live (dim aside) instead of buffering to collapse
+    
+    In :full mode the model's reasoning now streams live, incrementally, during
+    the thinking window as a DIM `┊` aside — so the pre-tool-call wait fills with
+    flowing thought instead of a bare spinner (matches Hermes' reasoning-delta
+    behaviour). The live tail reuses the existing content-stream discipline
+    (StreamingMarkdown block splitter + commit_block_atomic single-frame
+    clear→commit + bounded rolling tail), so no parallel raw-print path and no
+    stranded tail rows above the prompt (#265).
+    
+    - handle_thinking_delta: always buffers (for ctrl-o / collapse cue), and in
+      :full also calls stream_reasoning_live; :collapsed/:hidden keep the
+      spinner-only behaviour unchanged. Extracted from #stream to keep its
+      complexity under the cop limit.
+    - stream_reasoning_live: opens the dim `┄ thinking ┄` rail on the first delta
+      (dropping the spinner so it can't fight the live tail for the row), commits
+      each completed reasoning block as dim `┊` lines, shows a dim rolling tail.
+    - finalize_reasoning_stream: at the answer/tool boundary, flushes the
+      remainder, clears the tail, and paints the closing `┄ thought for Ns ┄` rail
+      ONCE — the body was already shown live, so collapse no longer re-renders it
+      (no duplicate). @last_reasoning retention / ctrl-o reveal unchanged.
+    - clear_stream_region resets the reasoning-stream latch so an interrupt mid
+      thinking can't leak stale state into the next turn.
+    
+    :collapsed and :hidden paths and their specs are unchanged. Adds specs for
+    :full streaming live (committed during the phase) and :collapsed NOT streaming.
+
+ lib/rubino/ui/cli.rb       | 132 ++++++++++++++++++++++++++++++++++++++++-----
+ spec/rubino/ui/cli_spec.rb |  52 ++++++++++++++++++
+ 2 files changed, 171 insertions(+), 13 deletions(-)
+
+commit 1ad604a5294d3fa2ab10d63edd96a2a80ead435b
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 17:41:39 2026 +0200
+
+    Default thinking ON so MiniMax-M3 streams reasoning (kills the pre-tool-call freeze)
+    
+    Root cause of the ~10s 'freeze' when M3 spawns subagents: rubino sent NO
+    thinking param to MiniMax, so during the window where M3 reasons toward a
+    tool-call there were no bytes to stream — the main thread just blocked on the
+    socket read (confirmed by sampling: net wait_readable, zero rubino hog). The
+    reference agent (Hermes) sends thinking: {type: enabled, budget_tokens: N} by
+    default (reasoning_effort: medium) and streams the reasoning deltas, so that
+    window is filled with visible text and never looks frozen. Endpoint, client,
+    max_tokens, tool format were all already identical — thinking was the only diff.
+    
+    ThinkingSupport.supports? now defaults ON for every provider (was off for
+    MiniMax-family ids, a stale workaround that predated the with_params injection
+    path); budget_via_params? follows the same default so M3 (no registry
+    reasoning_option) routes the block via with_params. A backend that genuinely
+    rejects the budget is caught by the #75 rejection detector and retried once
+    without it, so default-on is safe; providers.<name>.supports_thinking: false
+    opts out.
+
+ CHANGELOG.md                                    | 13 ++++++++++-
+ lib/rubino/llm/thinking_support.rb              | 29 +++++++++++++++----------
+ spec/rubino/llm/adapter_thinking_effort_spec.rb | 18 +++++++--------
+ 3 files changed, 38 insertions(+), 22 deletions(-)
+
+commit a08c1a084bc5e3c42eab033162d4ff6d94f4edca
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 17:06:41 2026 +0200
+
+    Add '◂ main' picker row + make the picker a switcher; stop calling it Claude-style
+    
+    The detach-with-← is OUR design, not Claude's (Claude uses a 'main' list entry,
+    not an arrow), so:
+    - Add a synthetic '◂ main session' row at the BOTTOM of the subagent picker.
+      Selecting it returns to the main timeline — a discoverable, navigable way back
+      that complements the ← back-out (which stays). At the main prompt it's a no-op.
+    - The picker now doubles as a SWITCHER: selecting another subagent while attached
+      switches the view to it (re-clear + replay) instead of steering the current one
+      (which the old code would have done with the literal command string — a latent
+      bug). Return-to-main (← / '◂ main' / typed /detach) is handled once in the REPL,
+      before the attached-input intercept, so it works from either state.
+    - Drop the 'Claude-style' wording from the agent-attach comments + CHANGELOG; it's
+      our own design. (Incidental, accurate 'like Claude Code' references elsewhere
+      are left.)
+
+ CHANGELOG.md                                | 19 +++++++++--------
+ lib/rubino/cli/chat_command.rb              | 31 ++++++++++++++++++---------
+ lib/rubino/ui/agent_menu.rb                 | 33 +++++++++++++++++++++++++----
+ lib/rubino/ui/bottom_composer.rb            | 18 +++++++++++-----
+ spec/rubino/cli/chat_command_attach_spec.rb | 10 +++++----
+ spec/rubino/ui/agent_menu_spec.rb           | 16 +++++++++++---
+ 6 files changed, 92 insertions(+), 35 deletions(-)
+
+commit 01e48f008a107e7f9806ca9931a695e89e9931ab
+Author: Nilthon Jhon Rojas Apumayta <oneill.jhon97@gmail.com>
+Date:   Sat Jun 20 16:42:20 2026 +0200
+
+    Address attach-view doc gaps + two refactor findings
+    
+    Refactor (from the review — only the two that REDUCE code/bugs; structural
+    extractions were deliberately skipped as premature):
+    - Fix a real quoting bug: handle_attached_input built '/agents <id> steer "…"'
+      strings and re-parsed them through the executor (whitespace-split + single-pair
+      dequote), mangling any steer/probe/reply note containing a quote. Now it calls
+      the handlers directly with the RAW text (steer_agent/probe_agent/deliver_reply
+      re-publicized as direct REPL entry points). Less code, no round-trip.
+    - Remove the dead BottomComposer#set_prompt_label (+ its spec): the scoped prompt
+      rides through build_prompt on composer rebuild; the method was unused and its
+      comment wrongly claimed the attach view used it.
+    
+    Docs (the new attach flow was undocumented and one picker hint was wrong):
+    - agent_menu.rb picker footer said 'Enter opens snapshot' — now 'Enter attaches ·
+      ← back' (Enter attaches, it never opened a snapshot in this model).
+    - /agents help (built_ins + commands.md table) now mentions ↓+Enter attach.
+    - docs/agents.md + docs/commands.md: new 'Attach to a subagent (agent-view)'
+      section (picker Enter → clear+replay child timeline → scoped sa_xxxx ❯ prompt;
+      type to steer/answer; ← detaches).
+    - CHANGELOG: Added entry under [Unreleased].
+
+ CHANGELOG.md                                | 12 ++++++++++++
+ docs/agents.md                              | 19 +++++++++++++++++++
+ docs/commands.md                            | 11 ++++++++++-
+ lib/rubino/cli/chat_command.rb              | 15 ++++++++++-----
+ lib/rubino/commands/built_ins.rb            |  2 +-
+ lib/rubino/commands/handlers/agents.rb      |  6 ++++++
+ lib/rubino/ui/agent_menu.rb                 |  2 +-
+ lib/rubino/ui/bottom_composer.rb            | 16 ----------------
+ spec/rubino/cli/chat_command_attach_spec.rb | 17 ++++++++++++-----
+ spec/rubino/ui/bottom_composer_spec.rb      | 15 ---------------
+ 10 files changed, 71 insertions(+), 44 deletions(-)

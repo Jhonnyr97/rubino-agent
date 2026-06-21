@@ -1,0 +1,50 @@
+7dce1258 Merge feat/cache-middleware into test (PR #535)
+9a996826 Merge feat/eval-harness into test (PR #534)
+569ad31a Merge feat/code-compression into test (PR #533)
+91a3b617 Merge feat/edit-fuzzy-fallback into test (PR #531)
+afec4ec9 Merge fix/minimax-thinking-default into test (PR #530)
+ebbf1207 Merge feat/agent-attach-view into test (PR #529)
+300a53ad Merge refactor/agent-view-seams into test (PR #528)
+c62de17a feat(llm): cache the growing conversation across tool round-trips via Faraday middleware (#311)
+a10a0b14 Add A/B evaluation harness for feature-flag validation
+c0f23c32 feat(compression): reversible Ruby code skeleton for whole-file reads (off by default)
+3e49169c feat(tools): add fuzzy-match fallback to edit and multi_edit
+d55f9301 Stream :full reasoning live (dim aside) instead of buffering to collapse
+1ad604a5 Default thinking ON so MiniMax-M3 streams reasoning (kills the pre-tool-call freeze)
+a08c1a08 Add '◂ main' picker row + make the picker a switcher; stop calling it Claude-style
+01e48f00 Address attach-view doc gaps + two refactor findings
+833ea1d2 Detach from the agent view with ← (arrows + Enter only, no typed /detach)
+621b5627 Toast instead of silently queuing attach during an active turn
+66d8f608 Add Claude-style agent-attach view (clear+replay timeline switch)
+a10a4892 Add reusable seams for the agent-attach view (refactor only)
+f872513a docs: clarify memory subsystem naming and comments
+7b1a6108 Merge codex/agents-dropdown-cli: /agents dropdown CLI + fixes
+dde19eb1 Stop tracking transient agent worktrees
+3949dc66 Fix spec/code mismatches and rubocop on the agents-dropdown work
+29d2cc38 Keep subagent panel painted during a turn
+0b0b0b36 fix(llm): a TRANSIENT name-resolution failure (EAI_AGAIN) is retryable, not fatal
+05732bf9 feat(agent): recover a no-finish-signal stream instead of failing the turn (Hermes parity)
+806f3ac6 refactor(ui): AgentMenu owns its focus hand-off (clean navigation)
+9121ba59 fix(ui): ↑ off the top of the subagent picker closes it and returns to the input
+352a0d6e feat(ui): drop stale typed-nav affordances from subagent cards (auto-open + ↓)
+315a0bf6 feat(ui): subagent panel hint reflects arrow-navigation, not typed /agents <id>
+ba12db42 feat(composer): single subagent panel BELOW the input (Composer::SubagentPanel)
+14454f01 refactor(composer): extract Composer::InputLine from BottomComposer
+99fcec6a feat(agents): process-exit shutdown! (cancel/join/kill subagent threads) + agents dropdown WIP
+f8757274 Merge #525: paste coalescing + task_result poll-flood suppression
+9e11de51 fix(ui): don't flood the transcript with task_result running-polls
+09212b8a fix(composer): coalesce consecutive pastes into a single placeholder
+220d1892 Merge #524 fix/history-recall-and-dropdown-enter into test/pre-release-gate
+cd6e17fb Merge #523 fix/task-poll-tools-visible into test/pre-release-gate
+e056ed44 Merge #522 fix/backspace-del-coalesce into test/pre-release-gate
+1a4ea241 style: fix rubocop Layout/ExtraSpacing in #3 spec comments
+82ad95e1 fix(ui): tie history persistence to the default store; fix #3 spec assertions
+c55b211f Expose task poll tools (task_result/task_stop/probe) whenever task is on
+43d0ca21 fix(ui): recall+persist input history; accept highlighted dropdown candidate on Enter
+8210306e Fix Backspace (DEL 0x7f) inserting a space instead of deleting
+4055bf2c Merge PR #521 (fix/dx-skills-config-resume-befc65) into test/pre-release-gate
+eeaa865f Merge PR #520 (fix/ctrld-idle-hang-coalesce-d59341) into test/pre-release-gate
+cd51311f Merge PR #519 (fix/read-block-creds-and-decode-pipe) into test/pre-release-gate
+3ffadc04 Validate --resume id before the boot banner
+f665fa59 Route config set validation error to stderr + add array syntax hint
+832c7036 Make /skills authoring discoverable at parity with /commands

@@ -80,6 +80,10 @@ module Rubino
           register(Rubino::Tools::GitHubTool.new)
           register(Rubino::Tools::ShellTool.new)
           register(Rubino::Tools::ShellOutputTool.new)
+          # Reversibility seam for log compression: hands back the original,
+          # uncompressed command output by sha256 (Compression::OutputStore).
+          # Inert unless tool_output_compression.logs.enabled produced a pointer.
+          register(Rubino::Tools::RetrieveOutputTool.new)
           register(Rubino::Tools::ShellTailTool.new)
           register(Rubino::Tools::ShellInputTool.new)
           register(Rubino::Tools::ShellKillTool.new)

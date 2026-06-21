@@ -133,7 +133,7 @@ module Rubino
           # `[Exit code: N]` out of free-form text to know whether the
           # command succeeded. The text suffix stays for visual continuity
           # in the scrollback and for tests that grep for it.
-          { output: run[:text],
+          { output: maybe_compress_log(run[:text]),
             metrics: foreground_metric(run),
             body: Util::Output.preview(run[:text]),
             body_kind: @stream_kind || :plain,
@@ -176,6 +176,56 @@ module Rubino
       end
 
       private
+
+      # Compresses the MODEL-FACING output of a foreground command (test runs,
+      # linters, build/shell dumps) when log compression is enabled. Never the
+      # human `:body` preview (that stays the real scrollback) and NEVER a diff
+      # (`@stream_kind == :diff` is its own +/- channel). The original is stashed
+      # in OutputStore so the appended pointer's `retrieve_output` round-trips.
+      # Any failure falls back to the uncompressed text — compression must never
+      # break a command's output.
+      def maybe_compress_log(text)
+        return text if text.nil? || text.empty?
+        return text if @stream_kind == :diff
+        return text unless Rubino.configuration.tool_output_compression_logs_enabled?
+
+        compressor = Compression::LogCompressor.new(
+          Rubino.configuration.tool_output_compression_logs
+        )
+        result = compressor.compress(text)
+        return text unless result.applied?
+
+        emit_log_compression_telemetry(text, result)
+        with_retrieve_pointer(result.text, text)
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "compression.log_failed",
+                            error: e.message, error_class: e.class.name)
+        text
+      end
+
+      # Appends the explicit reversibility pointer: how many lines were hidden,
+      # that failures + summary were kept, and the sha256 to retrieve the full
+      # original. Never claims recoverability it can't back — the hash is the key
+      # OutputStore was just keyed by.
+      def with_retrieve_pointer(compressed, original)
+        hash = Compression::OutputStore.instance.put(original)
+        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+        kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
+        hidden = [orig_lines - kept_lines, 0].max
+        "#{compressed}\n# … #{hidden} passing/info lines hidden by log compression " \
+          "(failures + summary kept). Full output via retrieve_output hash=#{hash}"
+      end
+
+      def emit_log_compression_telemetry(original, result)
+        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+        new_lines  = result.text.count("\n") + (result.text.end_with?("\n") ? 0 : 1)
+        Rubino.logger&.info(event: "compression.log_applied",
+                            ratio: result.ratio.round(3),
+                            original_lines: orig_lines, compressed_lines: new_lines,
+                            original_bytes: result.original_bytes,
+                            compressed_bytes: result.compressed_bytes,
+                            saved_tokens_est: result.saved_tokens_est)
+      end
 
       # Defense-in-depth: the ApprovalPolicy already denies hardline commands
       # before we get here, but the tool re-checks against the SAME single
