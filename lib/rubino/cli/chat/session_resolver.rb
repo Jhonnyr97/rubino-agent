@@ -139,6 +139,10 @@ module Rubino
 
           ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
           ui.separator
+          # The accumulated assistant text already rendered in the CURRENT turn,
+          # used to de-dupe a final message that RESTATES its earlier segments
+          # (see #replay_assistant_text). Reset at each user-turn boundary.
+          @assistant_turn_text = +""
           messages.each { |msg| replay_message(ui, msg) }
           ui.separator
         end
@@ -152,6 +156,11 @@ module Rubino
           at = parse_msg_timestamp(msg.created_at)
           case msg.role.to_s
           when "user"
+            # A new user prompt starts a fresh turn: the next assistant turn's
+            # text-restatement de-dup (#replay_assistant_text) must not carry a
+            # prior turn's accumulated text across the boundary.
+            @assistant_turn_text = +""
+
             # A `!` bang command persisted its <bash-input>/<bash-stdout> context
             # messages as user rows; replay them as the `! <cmd>` echo + dim output
             # block, never the raw tags.
@@ -159,19 +168,53 @@ module Rubino
 
             ui.replay_user_input(msg.content, at: at)
           when "assistant"
-            return if msg.content.nil? || msg.content.to_s.empty?
-
-            # Render the prior assistant turn as markdown, same as a live reply —
-            # not the old box (which the M2 redesign repurposed into a "● running"
-            # tool-style row, so resume showed assistant turns as fake tool runs
-            # with raw markdown).
-            ui.assistant_text(msg.content)
+            replay_assistant_text(ui, msg.content)
           when "tool"
             name      = msg.tool_name || "tool"
             arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
             ui.tool_started(name, arguments: arguments, at: at)
             ui.tool_finished(name, result: replay_tool_result(msg, name))
           end
+        end
+
+        # Render ONE assistant turn's text, de-duplicating a model that RESTATES
+        # its earlier segments. Some providers (MiniMax-M3 and other tool-loop
+        # models) return a FINAL message whose content is the whole turn's text
+        # accumulated across tool rounds — every earlier "pre-tool" segment
+        # concatenated with NO separator (`…enumerating the files.100 files. Let
+        # me…`, the #542 `…prints 2.Output is 2…` glue). Those earlier segments
+        # were ALSO persisted as their own intermediate assistant rows, which we
+        # already replayed above. Re-rendering the final message verbatim would
+        # (a) duplicate every segment and (b) glue them together with no break —
+        # while the LIVE turn showed each segment ONCE, on its own line (each
+        # stream block committed separately via #assistant_text → #answer_gap).
+        #
+        # So track the text shown so far this turn and, when a later message
+        # merely PREPENDS it (its content starts with what we've already shown),
+        # render only the genuinely-new tail through the same #assistant_text
+        # seam — which inserts the live blank-line separator before it. This
+        # reuses the live separation rather than inventing replay-only spacing,
+        # so the resumed transcript matches the live render exactly.
+        def replay_assistant_text(ui, content)
+          text = content.to_s
+          return if text.empty?
+
+          @assistant_turn_text ||= +""
+          shown = @assistant_turn_text
+          # A restated final message: only the suffix beyond what we already
+          # rendered is new. The common case (independent segments / first
+          # segment) leaves `shown` empty or non-prefixing, so `text` is rendered
+          # whole — same as before this guard existed.
+          new_text = !shown.empty? && text.start_with?(shown) ? text[shown.length..] : text
+          @assistant_turn_text = text.start_with?(shown) ? text : shown + text
+
+          return if new_text.nil? || new_text.empty?
+
+          # Render the prior assistant turn as markdown, same as a live reply —
+          # not the old box (which the M2 redesign repurposed into a "● running"
+          # tool-style row, so resume showed assistant turns as fake tool runs
+          # with raw markdown).
+          ui.assistant_text(new_text)
         end
 
         # Rebuilds the stored tool message as a Tools::Result carrying its
