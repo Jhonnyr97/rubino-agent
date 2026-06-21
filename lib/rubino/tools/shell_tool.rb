@@ -60,38 +60,58 @@ module Rubino
       end
 
       def description
-        "Execute a shell command. " \
-          "Foreground: blocks until the command exits or `timeout` seconds elapse " \
-          "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
-          "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
-          "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
-          "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
-          "and `shell_kill` to terminate it."
+        base = "Execute a shell command. " \
+               "Foreground: blocks until the command exits or `timeout` seconds elapse " \
+               "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
+               "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
+               "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
+               "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
+               "and `shell_kill` to terminate it."
+        base + compression_note
+      end
+
+      # Advertised only when the feature is on: explains command-output
+      # compression, the opt-out, and that the original is retrievable.
+      def compression_note
+        return "" unless compression_enabled?
+
+        " Long command output (test/build/lint dumps) may be COMPRESSED — every failure + " \
+          "the summary kept, passing noise dropped — to save tokens; the full output is always " \
+          "retrievable via the appended pointer. Pass compress:false to force verbatim output."
+      end
+
+      def compression_enabled?
+        Rubino.configuration.tool_output_compression_enabled?
+      rescue StandardError
+        false
       end
 
       def input_schema
-        {
-          type: "object",
-          properties: {
-            command: {
-              type: "string",
-              description: "The shell command to execute"
-            },
-            cwd: {
-              type: "string",
-              description: "Working directory (defaults to current)"
-            },
-            timeout: {
-              type: "integer",
-              description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
-            },
-            run_in_background: {
-              type: "boolean",
-              description: "If true, start the command detached and return a run_id immediately."
-            }
+        props = {
+          command: {
+            type: "string",
+            description: "The shell command to execute"
           },
-          required: %w[command]
+          cwd: {
+            type: "string",
+            description: "Working directory (defaults to current)"
+          },
+          timeout: {
+            type: "integer",
+            description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
+          },
+          run_in_background: {
+            type: "boolean",
+            description: "If true, start the command detached and return a run_id immediately."
+          }
         }
+        if compression_enabled?
+          props[:compress] = {
+            type: "boolean",
+            description: "Set false to skip output compression and return verbatim output (default true)."
+          }
+        end
+        { type: "object", properties: props, required: %w[command] }
       end
 
       def risk_level
@@ -140,7 +160,13 @@ module Rubino
             exit_code: run[:exit_code],
             timed_out: run[:timed_out],
             cancelled: run[:cancelled],
-            error_code: shell_error_code(run) }
+            error_code: shell_error_code(run),
+            # Routing context for the compression seam: the stream_kind lets the
+            # router send a diff (`git diff`) through UNTOUCHED — its own +/-
+            # channel — while a test/build/lint dump routes to LogCompressor. The
+            # human `body` preview above is the REAL scrollback and is never
+            # compressed.
+            compress_hint: { stream_kind: @stream_kind } }
         end
       end
 

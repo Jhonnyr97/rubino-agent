@@ -209,4 +209,50 @@ RSpec.describe Rubino::CLI::SetupCommand do
       expect(ui.messages).to include([:warning, a_string_matching(/corrupt/i)])
     end
   end
+
+  # "Activate from setup": an interactive `setup` offers command-output
+  # compression (recommended on). The shipped config stays off, so this step is
+  # the only way it flips on without hand-editing — and it must be idempotent
+  # (no nag on a re-run) and never block the headless path.
+  describe "command-output compression offer" do
+    before do
+      allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(true)
+    end
+
+    def compression_enabled?
+      Rubino.reload_configuration!
+      Rubino.configuration.tool_output_compression_enabled?
+    end
+
+    it "enables the master flag (and the logs sub-flag) on a bare Enter (recommended yes)" do
+      allow($stdin).to receive(:gets).and_return("\n")
+      described_class.new.execute
+      expect(compression_enabled?).to be true
+      expect(Rubino.configuration.tool_output_compression_logs_enabled?).to be true
+      expect(success_lines).to include(a_string_matching(/compression enabled/i))
+    end
+
+    it "leaves the flag off on an explicit 'n'" do
+      allow($stdin).to receive(:gets).and_return("n\n")
+      described_class.new.execute
+      expect(compression_enabled?).to be false
+    end
+
+    it "does not re-offer when already enabled (idempotent)" do
+      Rubino::Config::Loader.new.create_default_config!
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", true)
+      Rubino.reload_configuration!
+      expect($stdin).not_to receive(:gets)
+      described_class.new.execute
+    end
+
+    it "never prompts on the headless path" do
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(false)
+      expect($stdin).not_to receive(:gets)
+      described_class.new.execute
+      expect(compression_enabled?).to be false
+    end
+  end
 end

@@ -1,0 +1,50 @@
+lib/rubino/tools/answer_child_tool.rb:25:      def name
+lib/rubino/tools/answer_child_tool.rb:32:      def config_key
+lib/rubino/tools/answer_child_tool.rb:36:      def description
+lib/rubino/tools/answer_child_tool.rb:46:      def input_schema
+lib/rubino/tools/answer_child_tool.rb:60:      def risk_level
+lib/rubino/tools/answer_child_tool.rb:64:      def call(arguments)
+lib/rubino/tools/attach_file_tool.rb:48:      def name
+lib/rubino/tools/attach_file_tool.rb:52:      def description
+lib/rubino/tools/attach_file_tool.rb:60:      def input_schema
+lib/rubino/tools/attach_file_tool.rb:77:      def risk_level
+lib/rubino/tools/attach_file_tool.rb:81:      def call(arguments)
+lib/rubino/tools/attach_file_tool.rb:110:      def error(message)
+lib/rubino/tools/attach_file_tool.rb:114:      def content_type_for(path)
+lib/rubino/tools/ask_parent_tool.rb:53:      def name
+lib/rubino/tools/ask_parent_tool.rb:60:      def config_key
+lib/rubino/tools/ask_parent_tool.rb:64:      def description
+lib/rubino/tools/ask_parent_tool.rb:68:      def input_schema
+lib/rubino/tools/ask_parent_tool.rb:99:      def risk_level
+lib/rubino/tools/ask_parent_tool.rb:103:      def call(arguments)
+lib/rubino/tools/ask_parent_tool.rb:132:      def blocking_arg(arguments)
+lib/rubino/tools/ask_parent_tool.rb:137:      def escalate(entry, question, blocking, options = nil)
+lib/rubino/tools/ask_parent_tool.rb:176:      def await_human(entry, gate, ask_id)
+lib/rubino/tools/ask_parent_tool.rb:191:      def ask_timeout
+lib/rubino/tools/ask_parent_tool.rb:205:      def notify_agent_parent(owner_id, entry, question)
+lib/rubino/tools/ask_parent_tool.rb:211:      def agent_parent_notice(entry, question)
+lib/rubino/tools/ask_parent_tool.rb:230:      def surface_and_notify(entry, question)
+lib/rubino/tools/ask_parent_tool.rb:263:      def parent_notice(entry, question)
+lib/rubino/tools/background_tasks.rb:106:        def messages
+lib/rubino/tools/background_tasks.rb:136:        def instance
+lib/rubino/tools/background_tasks.rb:141:        def reset!
+lib/rubino/tools/background_tasks.rb:146:      def initialize
+lib/rubino/tools/background_tasks.rb:167:      def reserve(subagent:, prompt:, owner_subagent_id: nil, depth: 0)
+lib/rubino/tools/background_tasks.rb:203:      def attach(entry, thread:, runner:)
+lib/rubino/tools/background_tasks.rb:216:      def request_stop(id)
+lib/rubino/tools/background_tasks.rb:244:      def complete(entry, status:, result: nil, error: nil)
+lib/rubino/tools/background_tasks.rb:264:      def record_tool_started(id, activity)
+lib/rubino/tools/background_tasks.rb:279:      def record_tool_finished(id, line)
+lib/rubino/tools/background_tasks.rb:296:      def record_tool_output(id, chunk)
+lib/rubino/tools/background_tasks.rb:314:      def begin_approval(id, gate:, approval_id:, question:, command:)
+lib/rubino/tools/background_tasks.rb:329:      def end_approval(id)
+lib/rubino/tools/background_tasks.rb:359:      def steer(id, text)
+lib/rubino/tools/background_tasks.rb:375:      def record_live_probe(id)
+lib/rubino/tools/background_tasks.rb:400:      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil, options: nil) # rubocop:disable Metrics/ParameterLists -- keyword args recording one ask's state; splitting would obscure it
+lib/rubino/tools/background_tasks.rb:425:      def end_ask(id)
+lib/rubino/tools/background_tasks.rb:448:      def deliver_answer(id, answer)
+lib/rubino/tools/background_tasks.rb:477:      def awaiting_human
+lib/rubino/tools/background_tasks.rb:483:      def awaiting_approval
+lib/rubino/tools/background_tasks.rb:487:      def find(id)
+lib/rubino/tools/background_tasks.rb:492:      def list
+lib/rubino/tools/background_tasks.rb:500:      def running

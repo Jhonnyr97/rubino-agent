@@ -413,15 +413,21 @@ module Rubino
           "max_lines" => 2000,
           "max_line_length" => 2000
         },
-        # Deterministic, REVERSIBLE compression of tool-read results (Phase 1:
-        # Ruby code → skeleton). When enabled, a WHOLE-file read of a large Ruby
-        # file returns a skeleton (requires + signatures + small bodies verbatim,
-        # large bodies elided behind a pointer that IS a targeted `read
-        # offset/limit` of the original lines). A targeted (offset/limit) read is
-        # NEVER compressed — that's the drill-in path that returns exact bytes so
-        # the edit-gate's string match still works. OFF by default: with this
-        # flag false the read tool is byte-for-byte unchanged (Phase 1 lands
-        # inert, then we measure before flipping it on).
+        # Deterministic, REVERSIBLE compression of tool output, routed through
+        # the single Compression::ContentRouter seam in the ToolExecutor. The
+        # master `enabled` flag gates the whole seam; the per-type sub-config
+        # (`code`, `logs`) tunes each strategy. When on, the router DETECTS the
+        # content type and dispatches: a test/build/lint dump → LogCompressor
+        # (every failure + summary kept, passing noise dropped); a WHOLE-file
+        # Ruby read → skeleton (signatures + small bodies verbatim, large bodies
+        # elided behind a pointer that IS a targeted `read offset/limit`). A
+        # diff, a grep/search result, and short output PASS THROUGH byte-
+        # identical, so exact-string anchors edit/grep rely on are never touched.
+        # On any compression the full original is spilled to
+        # tool-results/<call_id>.txt and the output ends with a pointer the model
+        # can `read` back. OFF by default: with this flag false every tool output
+        # is byte-for-byte unchanged. Per-call `compress:false` on read/shell
+        # forces verbatim output even when enabled.
         "tool_output_compression" => {
           "enabled" => false,
           "code" => {
@@ -432,6 +438,81 @@ module Rubino
             # Method bodies up to this many lines are kept VERBATIM; only larger
             # bodies are elided behind a pointer.
             "keep_method_body_max_lines" => 8
+          },
+          # LOG/command-output compression (test runs, linters, build/shell
+          # dumps). The high-ROI channel: the agent reads command output WHOLE,
+          # and the signal (failures + the final tally) is a tiny fraction of the
+          # bytes. Keeps every error/failure + summary VERBATIM, drops passing/
+          # info noise, appends a pointer to retrieve the original. OFF by default
+          # (own flag, independent of `code`) — we measure before flipping it on.
+          "logs" => {
+            "enabled" => false,
+            # Outputs shorter than this pass through UNCHANGED.
+            "min_lines" => 40,
+            # Hard cap on kept lines.
+            "max_total_lines" => 100,
+            # Keep every error/failure up to this many (first & last always).
+            "max_errors" => 10,
+            "max_warnings" => 5,
+            "max_stack_traces" => 3,
+            # Lines of surrounding context kept around each failure.
+            "context_lines" => 4
+          },
+          # DIFF compression (model-facing `:output` of a `git diff` / unified
+          # diff). The human view is the tool `:body` (the full coloured diff in
+          # scrollback) and is NEVER touched — only the model's copy is trimmed.
+          # No own `enabled` flag (like `code`): active when the master flag is
+          # on; the saving guard below is the real gate. Keeps every +/- line and
+          # every file/hunk header; trims far context and elides generated/lock
+          # files. A small/tight diff passes through byte-identical automatically.
+          "diff" => {
+            # Unchanged context kept on each side of a change; far context is
+            # collapsed into a `… N unchanged lines` marker.
+            "context_lines" => 3,
+            # Diffs shorter than this pass through UNCHANGED (the common
+            # "show me the diff" case the human wants to see verbatim).
+            "min_lines" => 40,
+            # Only apply when the compressed result is at least this much
+            # smaller; otherwise byte-identical passthrough.
+            "min_saving" => 0.25,
+            # Changed files matching any of these collapse to a one-line summary
+            # (`path: +X/-Y lines, N hunks — elided (generated)`). A trailing `/`
+            # matches a directory; a `*` glob matches the basename.
+            "generated_patterns" => %w[
+              *.lock Gemfile.lock package-lock.json yarn.lock pnpm-lock.yaml
+              composer.lock *.min.js *.min.css dist/ build/ *.snap vendor/
+            ]
+          },
+          # JSON compression (a whole-output JSON dump from a tool — `curl | jq`,
+          # `kubectl get -o json`, `gh api`, `docker inspect`, `aws --output
+          # json`, or an MCP/custom-tool JSON result). Modelled on headroom's
+          # SmartCrusher: an array of UNIFORM objects folds LOSSLESSLY to a
+          # schema header + one compact row per item (the repeated key names are
+          # emitted once); a large array whose fold is too thin falls back to
+          # LOSSY row selection where error-bearing rows and statistical outliers
+          # always survive and dropped rows collapse to an `{"_elided": N}`
+          # sentinel; a single large object elides only big string values and
+          # never drops a key. No own `enabled` flag (like `code`/`diff`): active
+          # when the master flag is on; the saving guard below is the real gate,
+          # so small JSON the model wants verbatim passes through byte-identical.
+          # Detection runs BEFORE the log channel — a whole-output JSON dump from
+          # `shell` routes here, never to the log compressor.
+          "json" => {
+            # Arrays with fewer than this many items (and text shorter than
+            # min_lines) pass through UNCHANGED — small JSON stays verbatim.
+            "min_items" => 8,
+            # Objects / text shorter than this many lines pass through unchanged.
+            "min_lines" => 40,
+            # Only apply when the compressed result is at least this much smaller;
+            # otherwise byte-identical passthrough.
+            "min_saving" => 0.25,
+            # A numeric field more than this many standard deviations from its
+            # column mean marks a row as a statistical outlier (kept in the lossy
+            # fallback).
+            "outlier_sigma" => 3.0,
+            # In a single large object, string values longer than this collapse
+            # to a `<elided N chars>` placeholder (the key is always kept).
+            "max_string_chars" => 400
           }
         },
         "file_read" => {
