@@ -46,6 +46,9 @@ cfg.set("tool_output_compression", "code",
 cfg.set("tool_output_compression", "logs",
         "enabled" => true, "min_lines" => 40, "max_total_lines" => 100,
         "max_errors" => 10, "max_warnings" => 5, "max_stack_traces" => 3, "context_lines" => 4)
+cfg.set("tool_output_compression", "diff",
+        "context_lines" => 3, "min_lines" => 40, "min_saving" => 0.25,
+        "generated_patterns" => Rubino::Compression::DiffCompressor::DEFAULT_GENERATED)
 
 router = Rubino::Compression::ContentRouter.new(cfg)
 
@@ -56,7 +59,9 @@ CODE_SRC = File.read(File.join(__dir__, "fixtures", "code_tool_executor.rb"))
 CASES = [
   ["rspec suite (21 failures)", :log,  "shell", -> { read_fixture("rspec_full.txt") }, {}],
   ["rubocop (750 files)",       :log,  "shell", -> { read_fixture("rubocop_full.txt") }, {}],
-  ["git diff (executor)",       :diff, "shell", -> { read_fixture("git_diff.txt") }, { stream_kind: :diff }],
+  ["git diff -U25 (large, 9 files)", :diff, "shell", -> { read_fixture("diff_large.txt") }, { stream_kind: :diff }],
+  ["package-lock.json diff",    :diff, "shell", -> { read_fixture("diff_lockfile.txt") }, { stream_kind: :diff }],
+  ["small diff (version bump)", :diff, "shell", -> { read_fixture("diff_small.txt") }, { stream_kind: :diff }],
   ["grep defs (50 hits)",       :grep, "grep",  -> { read_fixture("grep_defs.txt") }, {}],
   ["code whole-file read",      :code, "read",  -> { CODE_SRC },
    { full_file: true, content_type: :code, source_path: "tool_executor.rb", raw_source: CODE_SRC }],
