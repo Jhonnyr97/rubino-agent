@@ -225,6 +225,12 @@ module Rubino
         # teardown doesn't abandon a half-written extraction (#319). Best-effort:
         # the cursor re-feeds anything unfinished next session anyway.
         @polishing&.wait(3)
+        # Release the per-session advisory lock (#543) so a subsequent
+        # `--continue`/`--resume` of this id in another live process can claim it
+        # cleanly. The kernel also drops the flock on process exit/crash, so this
+        # is just the prompt clean-teardown release.
+        @session_lock&.release
+        @session_lock = nil
       end
 
       private
@@ -277,6 +283,22 @@ module Rubino
           # fresh child that inherits the full history instead of stomping the
           # live session; the user keeps their context and the two writers never
           # interleave.
+          # PER-SESSION ADVISORY LOCK (#543) acquired BEFORE the pid-CAS. The
+          # CAS makes exactly one process *own* owner_pid, but it cannot close
+          # the window BEFORE owner_pid is stamped: two concurrent `--continue`
+          # both resolve the same latest session (owner_pid still nil for both
+          # reads) and only serialise at the CAS — by which point the loser
+          # forks a COPY of a transcript the winner is already writing,
+          # duplicating/interleaving rows across the two sessions (#543 repro).
+          # A real OS flock is atomic with no check-then-act window, so it
+          # serialises the "open this session" decision itself. When we DON'T win
+          # the lock, a different live process holds this session right now —
+          # fork off a fresh child instead of stomping/forking its moving
+          # transcript. The kernel drops the flock on exit/crash, so a SIGKILLed
+          # owner never wedges the session.
+          session_lock = Session::Lock.try_acquire(session[:id])
+          return fork_busy_session(session) if session_lock.nil?
+
           # ATOMICALLY claim the row for THIS process (#390/residual #376).
           # The old code checked `owned_by_other_live_process?` then later
           # stamped owner_pid — a TOCTOU window where two concurrent
@@ -284,8 +306,19 @@ module Rubino
           # check, and both stamped+wrote the live row (user,user … interleave).
           # claim_for_resume! folds the check and stamp into one compare-and-swap
           # (same idiom as Jobs::Queue#claim!): exactly one racer wins, the
-          # loser gets false and forks a fresh child off the busy parent.
-          return fork_busy_session(session) unless @session_repo.claim_for_resume!(session)
+          # loser gets false and forks a fresh child off the busy parent. Belt
+          # and braces with the lock above: if we somehow hold the lock but lose
+          # the CAS (a dead-owner row another process re-claimed), still fork.
+          unless @session_repo.claim_for_resume!(session)
+            session_lock.release
+            return fork_busy_session(session)
+          end
+
+          # Hold the per-session lock for the rest of this process's life so a
+          # later concurrent `--continue`/`--resume` of the SAME id forks rather
+          # than interleaving. Retained on the runner so the fd isn't GC-closed
+          # (which would silently drop the flock).
+          @session_lock = session_lock
 
           # An existing row is already in the DB; mark it so the lazy-persist
           # path (#144) treats it as persisted and never re-inserts. We now own
