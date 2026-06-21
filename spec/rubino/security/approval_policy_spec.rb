@@ -192,6 +192,37 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "find / -delete" })).to eq(:ask)
     end
 
+    # #536 (live repro: `git diff --ext-diff` created /tmp/PWNED_LIVE). A git
+    # command that activates a repo-config driver / config override is arbitrary
+    # command execution; decide must NOT return :allow for it. It still RUNS
+    # with approval (:ask under confirm_all) — never silently.
+    it "does NOT auto-allow git commands carrying an exec-capable vector (#536)" do
+      pol = described_class.new(config: manual_cfg)
+      [
+        "git diff --ext-diff",
+        "git diff --textconv",
+        'git -c diff.external=touch\ /tmp/x diff',
+        "git -c core.pager=cmd log",
+        "git -c diff.foo.textconv=cmd diff",
+        "git -c core.fsmonitor=cmd status",
+        "git -C /etc diff"
+      ].each do |cmd|
+        expect(pol.decide(shell, arguments: { "command" => cmd })).not_to eq(:allow), cmd
+      end
+    end
+
+    it "still auto-allows plain read-only git after the #536 fix (no regression)" do
+      pol = described_class.new(config: manual_cfg)
+      ["git diff", "git status", "git log", "git show", "git diff --stat"].each do |cmd|
+        expect(pol.decide(shell, arguments: { "command" => cmd })).to eq(:allow), cmd
+      end
+    end
+
+    it "HardlineGuard still denies catastrophic commands below the auto-allow" do
+      pol = described_class.new(config: manual_cfg)
+      expect(pol.decide(shell, arguments: { "command" => "rm -rf /" })).to eq(:deny)
+    end
+
     it "is gated by approvals.auto_allow_readonly: false" do
       # Pin confirm_all so a non-read-only fall-through is :ask (the default is
       # now dangerous_only, under which a safe `ls -la` would :allow anyway).

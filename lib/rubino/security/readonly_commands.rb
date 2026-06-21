@@ -39,6 +39,39 @@ module Rubino
       # restricted further below (bare or -v only — `git remote add` mutates),
       # `branch` to pure-flag listing forms (`git branch foo` CREATES a branch).
       GIT_READONLY_SUBCOMMANDS = %w[status log diff show rev-parse blame].freeze
+
+      # Exec-capable git option FLAGS that, on ANY git command (including an
+      # otherwise read-only subcommand like `diff`/`log`), turn the invocation
+      # into arbitrary command execution by activating a repo-config driver.
+      # These run a `diff.<n>.command` / textconv program straight from the
+      # repository config WITHOUT any approval (#536: `git diff --ext-diff`
+      # live-created /tmp/PWNED via a poisoned diff driver). A read-only intent
+      # never needs them, so their presence disqualifies the auto-allow and the
+      # allowlist fast-path — the command still runs, but only AFTER approval.
+      # Matched as an exact token (and `flag=value` form, e.g. `--textconv=cmd`).
+      GIT_EXEC_OPTION_FLAGS = %w[
+        --ext-diff --textconv -c --config-env --exec-path
+        --git-dir --work-tree --namespace --attr-source -C
+        --upload-pack --receive-pack -u
+      ].freeze
+
+      # Config KEYS (used as the value of `-c key=val` / `--config-env key=env`,
+      # or anywhere a config name can appear) whose value git executes as a
+      # command: a poisoned one is RCE. Matched case-insensitively against any
+      # token via a substring scan so `-cdiff.external=…` (glued), `--config-env
+      # diff.external=…` and a bare `diff.external` all trip. `*` stands for the
+      # arbitrary middle segment of `diff.<n>.command`.
+      GIT_EXEC_CONFIG_KEYS = %w[
+        diff.external core.pager core.sshcommand core.fsmonitor
+        core.hookspath core.editor sequence.editor uploadpack.packobjectshook
+        gpg.program ssh.variant
+      ].freeze
+      # Config-key patterns with a wildcard middle segment (per-name drivers).
+      GIT_EXEC_CONFIG_KEY_PATTERNS = [
+        /\bdiff\.[^=\s]+\.command\b/i,
+        /\bdiff\.[^=\s]+\.textconv\b/i,
+        /\bfilter\.[^=\s]+\.(?:clean|smudge|process)\b/i
+      ].freeze
       GIT_BRANCH_READONLY_FLAGS = %w[
         -a -r -v -vv --list --all --remotes --show-current --verbose
         --merged --no-merged --color --no-color
@@ -272,6 +305,10 @@ module Rubino
       # a code-loading global flag, a dangerous subcommand, or an output-writing
       # flag. Scans the GLOBAL flag region (before the subcommand) AND the rest.
       def dangerous_git?(tokens)
+        # Exec-capable vectors (--ext-diff/--textconv/-c diff.external/…) are
+        # dangerous wherever they appear — screen the whole line first (#536).
+        return true if git_exec_vector?(tokens)
+
         rest = tokens.drop(1)
         # Global flag region: everything up to the first non-flag token (the
         # subcommand). `-c name=val` / `-C path` may consume the next token as
@@ -318,11 +355,47 @@ module Rubino
         end
       end
 
+      # True when ANY token in a git invocation is an exec-capable vector: a
+      # config-override flag (`-c`/`--config-env`), an external-driver flag
+      # (`--ext-diff`/`--textconv`), a workspace/exec-path redirect, or a token
+      # naming a command-executing config key (`diff.external`, `core.pager`,
+      # `diff.<n>.command`, `filter.<n>.clean`, …). This is the Codex-model
+      # structural screen: a read-only git NEVER carries any of these, so their
+      # presence — anywhere in the line — disqualifies the silent auto-allow and
+      # the allowlist fast-path. Scans the WHOLE token list (global region AND
+      # post-subcommand args) so `git diff --ext-diff` and `git -c X=Y log`
+      # are both rejected (#536, GHSA-9ccr-r5hg-74gf).
+      def git_exec_vector?(tokens)
+        tokens.drop(1).any? { |tok| git_exec_option?(tok) || git_exec_config_key?(tok) }
+      end
+
+      # A token is an exec-capable git OPTION when it is one of the exact flags
+      # (or its `flag=value` form), or a glued short form of `-c`/`-C`/`-u`.
+      def git_exec_option?(tok)
+        GIT_EXEC_OPTION_FLAGS.any? do |f|
+          tok == f ||
+            tok.start_with?("#{f}=") ||
+            (f.length == 2 && f.start_with?("-") && !f.start_with?("--") && tok.start_with?(f) && tok.length > 2)
+        end
+      end
+
+      # A token names (or carries as a value) a command-executing config key.
+      # Case-insensitive substring/pattern scan so the key trips whether it is a
+      # bare token, a `-ckey=val`/`key=val` form, or a `--config-env key=ENV`.
+      def git_exec_config_key?(tok)
+        low = tok.downcase
+        GIT_EXEC_CONFIG_KEYS.any? { |k| low.include?(k) } ||
+          GIT_EXEC_CONFIG_KEY_PATTERNS.any? { |re| re.match?(tok) }
+      end
+
       # Read-only git: a safe subcommand (no global flags before it — `git -C`
       # falls to the prompt), never an output-writing flag (git log/diff/show
-      # can write a file with --output/-o), branch/remote in their pure
-      # listing forms only.
+      # can write a file with --output/-o), never an exec-capable vector
+      # (--ext-diff/--textconv/-c diff.external/… run a repo-config driver, #536),
+      # branch/remote in their pure listing forms only.
       def safe_git?(tokens)
+        return false if git_exec_vector?(tokens)
+
         sub = tokens[1]
         return false if sub.nil? || sub.start_with?("-")
 

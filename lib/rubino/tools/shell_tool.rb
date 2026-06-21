@@ -27,6 +27,25 @@ module Rubino
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
 
+      # Secondary hardening for #536 (GHSA-9ccr-r5hg-74gf, GitHub Copilot-CLI
+      # fix): neutralize the repo-config exec vectors a poisoned `.git/config`
+      # or a nested bare repo could fire even on a plain `git status`. Injected
+      # into the spawn env so the arg-guard (Security::ReadonlyCommands) stays
+      # the PRIMARY closer and this is belt-and-suspenders:
+      #   GIT_CONFIG_NOSYSTEM   ignore /etc/gitconfig (no attacker system config)
+      #   GIT_CONFIG_COUNT/.../safe.bareRepository=explicit
+      #     refuse to operate on a discovered nested BARE repo (whose config
+      #     could carry core.fsmonitor=… and fire on `status`)
+      #   GIT_TERMINAL_PROMPT=0 never block on an interactive credential prompt
+      # These only RESTRICT git; they don't alter any other command.
+      GIT_HARDENED_ENV = {
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_TERMINAL_PROMPT" => "0",
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "safe.bareRepository",
+        "GIT_CONFIG_VALUE_0" => "explicit"
+      }.freeze
+
       # 128 + SIGPIPE(13): under `pipefail`, a benign early-exit consumer
       # (`cmd | head -1`) makes an upstream stage report SIGPIPE and the
       # pipeline returns 141 even though nothing actually went wrong.
@@ -244,7 +263,7 @@ module Rubino
         # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
         # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
         # of being masked by an innocuous last stage (#156).
-        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+        pid = Process.spawn(GIT_HARDENED_ENV, "bash", "-o", "pipefail", "-c", command,
                             chdir: cwd, pgroup: true, out: wr, err: wr)
         pgid = pid
         wr.close
