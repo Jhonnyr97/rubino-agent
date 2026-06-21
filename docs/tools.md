@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **34 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **33 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
+The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
 
-Several tools share one config gate, so `rubino tools` shows **27 rows** (config groups), not 35: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **26 rows** (config groups), not 34: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -97,15 +97,6 @@ Find files by glob pattern. Returns paths sorted by modification time.
 ```
 Risk: low
 Parameters: pattern, path, max_results
-```
-
-### git
-
-Git operations: status, diff, log, branch, show.
-
-```
-Risk: low (read-only operations)
-Parameters: command, args
 ```
 
 ### github
