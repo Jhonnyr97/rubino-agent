@@ -49,6 +49,9 @@ cfg.set("tool_output_compression", "logs",
 cfg.set("tool_output_compression", "diff",
         "context_lines" => 3, "min_lines" => 40, "min_saving" => 0.25,
         "generated_patterns" => Rubino::Compression::DiffCompressor::DEFAULT_GENERATED)
+cfg.set("tool_output_compression", "json",
+        "min_items" => 8, "min_lines" => 40, "min_saving" => 0.25,
+        "outlier_sigma" => 3.0, "max_string_chars" => 400)
 
 router = Rubino::Compression::ContentRouter.new(cfg)
 
@@ -65,7 +68,13 @@ CASES = [
   ["grep defs (50 hits)",       :grep, "grep",  -> { read_fixture("grep_defs.txt") }, {}],
   ["code whole-file read",      :code, "read",  -> { CODE_SRC },
    { full_file: true, content_type: :code, source_path: "tool_executor.rb", raw_source: CODE_SRC }],
-  ["short output (3 lines)",    :short, "shell", -> { "build ok\n2 files\ndone" }, {}]
+  ["short output (3 lines)",    :short, "shell", -> { "build ok\n2 files\ndone" }, {}],
+  # JSON channel — a whole-output JSON dump from `shell` routes to :json (BEFORE
+  # :log). Large uniform arrays fold; the small JSON passes through.
+  ["gh api issues (100, uniform)", :json, "shell", -> { read_fixture("json_gh_issues.json") }, {}],
+  ["kubectl pods (100, +err/outlier)", :json, "shell", -> { read_fixture("json_kubectl_pods.json") }, {}],
+  ["docker inspect (1 big object)", :json, "shell", -> { read_fixture("json_big_object.json") }, {}],
+  ["small JSON (health check)", :json, "shell", -> { read_fixture("json_small.json") }, {}]
 ].freeze
 
 rows = CASES.map do |label, expected, tool, text_fn, hint|
@@ -114,6 +123,34 @@ fidelity_note = if pass_identical
                 end
 md << "\nRouting: #{routing_note}\n"
 md << "Passthrough fidelity: #{fidelity_note}\n"
+
+# --- JSON fidelity: error/outlier rows survive BOTH the lossless fold and the
+# forced-lossy path; small JSON is byte-identical. (Byte-level, no LLM.) -------
+jc_cfg = { "min_items" => 8, "min_lines" => 40, "min_saving" => 0.25,
+           "outlier_sigma" => 3.0, "max_string_chars" => 400 }
+pods = read_fixture("json_kubectl_pods.json")
+lossless = Rubino::Compression::JsonCompressor.new(jc_cfg).compress(pods)
+lossy = Rubino::Compression::JsonCompressor.new(jc_cfg.merge("min_saving" => 0.85)).compress(pods)
+small_in = read_fixture("json_small.json")
+small_out = router.route(small_in, tool_name: "shell")
+
+md << "\n## JSON fidelity (byte-level, no LLM)\n\n"
+md << "| Check | Result |\n|---|---|\n"
+md << format("| lossless fold keeps the error row (`CrashLoopBackOff`) | %s |\n",
+             lossless.text.include?("back-off 5m0s") ? "✅" : "❌")
+md << format("| lossless fold keeps the outlier (`restarts: 9999`) | %s |\n",
+             lossless.text.include?("9999") ? "✅" : "❌")
+md << format("| lossless fold ratio | %.1f%% |\n", lossless.ratio * 100)
+md << format("| LOSSY (forced) STILL keeps the error row | %s |\n",
+             lossy.text.include?("back-off 5m0s") ? "✅" : "❌")
+md << format("| LOSSY STILL keeps the outlier | %s |\n", lossy.text.include?("9999") ? "✅" : "❌")
+md << format("| LOSSY drops the rest behind `{\"_elided\": N}` | %s |\n",
+             lossy.text.match?(/\{"_elided":\d+\}/) ? "✅" : "❌")
+md << format("| LOSSY ratio (kept %d rows) | %.1f%% |\n",
+             lossy.text.lines.count { |l| l.include?("|") }, lossy.ratio * 100)
+small_routed = small_out.applied? ? small_out.text : small_in
+md << format("| small JSON passes through byte-identical | %s |\n",
+             !small_out.applied? && small_routed == small_in ? "✅" : "❌")
 
 out = File.join(__dir__, "results", "router_per_type.md")
 File.write(out, md)

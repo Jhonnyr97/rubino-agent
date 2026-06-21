@@ -1,0 +1,1002 @@
+[
+  {
+    "number": 57805,
+    "title": "Fix `Http::Headers#merge` mutating the original request",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionpack",
+    "created_at": "2026-06-21T10:13:40Z",
+    "updated_at": "2026-06-21T10:13:49Z"
+  },
+  {
+    "number": 57804,
+    "title": "Route Action Cable work scheduling through server",
+    "state": "open",
+    "user": "samuel-williams-shopify",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-21T03:05:07Z",
+    "updated_at": "2026-06-21T03:05:19Z"
+  },
+  {
+    "number": 57803,
+    "title": "Allow Action Cable server implementation to be configured",
+    "state": "open",
+    "user": "samuel-williams-shopify",
+    "comments": 1,
+    "labels": "actioncable",
+    "created_at": "2026-06-21T02:19:58Z",
+    "updated_at": "2026-06-21T02:36:50Z"
+  },
+  {
+    "number": 57802,
+    "title": "Fix typos in generated app config templates",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "railties",
+    "created_at": "2026-06-21T02:05:44Z",
+    "updated_at": "2026-06-21T06:30:05Z"
+  },
+  {
+    "number": 57801,
+    "title": "Make Action Cable executor configurable",
+    "state": "closed",
+    "user": "samuel-williams-shopify",
+    "comments": 2,
+    "labels": "actioncable",
+    "created_at": "2026-06-21T01:52:47Z",
+    "updated_at": "2026-06-21T02:06:54Z"
+  },
+  {
+    "number": 57800,
+    "title": "Reword allow/let phrasings in guides",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-21T01:33:34Z",
+    "updated_at": "2026-06-21T01:33:46Z"
+  },
+  {
+    "number": 57799,
+    "title": "Fix grammar in guides",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-21T01:12:50Z",
+    "updated_at": "2026-06-21T06:29:56Z"
+  },
+  {
+    "number": 57798,
+    "title": "Fix indefinite article in error messages",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord,activestorage",
+    "created_at": "2026-06-21T01:07:14Z",
+    "updated_at": "2026-06-21T06:29:44Z"
+  },
+  {
+    "number": 57797,
+    "title": "Fix :singleton-method: directive typo for protected_environments [ci skip]",
+    "state": "closed",
+    "user": "fuentesjr",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-21T00:51:08Z",
+    "updated_at": "2026-06-21T05:17:39Z"
+  },
+  {
+    "number": 57796,
+    "title": "Make config.rake_eager_load more explicit",
+    "state": "closed",
+    "user": "fxn",
+    "comments": 0,
+    "labels": "railties,docs",
+    "created_at": "2026-06-20T18:06:27Z",
+    "updated_at": "2026-06-20T19:25:30Z"
+  },
+  {
+    "number": 57795,
+    "title": "Support polymorphic associations with custom primary keys through `:inverse_of`",
+    "state": "open",
+    "user": "kamipo",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-20T17:21:12Z",
+    "updated_at": "2026-06-20T17:21:21Z"
+  },
+  {
+    "number": 57794,
+    "title": "Fix grammar in Model.inspect schema-not-loaded message",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-20T13:58:34Z",
+    "updated_at": "2026-06-21T00:01:23Z"
+  },
+  {
+    "number": 57793,
+    "title": "Fix typos in Rails on Rack guide",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-20T13:48:10Z",
+    "updated_at": "2026-06-21T00:01:41Z"
+  },
+  {
+    "number": 57792,
+    "title": "Avoid mutating the override options passed to `ActiveModel::Errors#import`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activemodel",
+    "created_at": "2026-06-20T13:36:02Z",
+    "updated_at": "2026-06-21T08:43:55Z"
+  },
+  {
+    "number": 57791,
+    "title": "Fix typos in comments",
+    "state": "closed",
+    "user": "55728",
+    "comments": 2,
+    "labels": "activesupport,actioncable",
+    "created_at": "2026-06-20T12:36:43Z",
+    "updated_at": "2026-06-20T12:49:20Z"
+  },
+  {
+    "number": 57790,
+    "title": "Fix typos in comments",
+    "state": "closed",
+    "user": "55728",
+    "comments": 1,
+    "labels": "activesupport,actioncable",
+    "created_at": "2026-06-20T12:31:03Z",
+    "updated_at": "2026-06-20T12:33:58Z"
+  },
+  {
+    "number": 57789,
+    "title": "Strip inline comments from unquoted `.env` values",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activesupport",
+    "created_at": "2026-06-20T12:26:30Z",
+    "updated_at": "2026-06-20T12:26:41Z"
+  },
+  {
+    "number": 57788,
+    "title": "Remove unused private `EnvConfiguration#lookup`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activesupport",
+    "created_at": "2026-06-20T10:08:21Z",
+    "updated_at": "2026-06-20T12:03:51Z"
+  },
+  {
+    "number": 57787,
+    "title": "Fix `Rails.app.dotenvs` to honor an explicit path argument",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "railties",
+    "created_at": "2026-06-20T09:59:29Z",
+    "updated_at": "2026-06-20T12:19:22Z"
+  },
+  {
+    "number": 57786,
+    "title": "[ci skip]Fix typo in comment for ENV.fetch usage in application.rb",
+    "state": "closed",
+    "user": "willnet",
+    "comments": 0,
+    "labels": "railties",
+    "created_at": "2026-06-20T08:20:41Z",
+    "updated_at": "2026-06-20T08:47:22Z"
+  },
+  {
+    "number": 57785,
+    "title": "Fix cross-database schema cache for PostgreSQL extension types",
+    "state": "open",
+    "user": "Halvanhelv",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-20T02:44:41Z",
+    "updated_at": "2026-06-20T14:38:08Z"
+  },
+  {
+    "number": 57784,
+    "title": "Fix inverse matching for association composite primary keys",
+    "state": "open",
+    "user": "Korri",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-19T14:27:42Z",
+    "updated_at": "2026-06-19T18:17:27Z"
+  },
+  {
+    "number": 57783,
+    "title": "Split template lookup into raising and non-raising",
+    "state": "open",
+    "user": "etiennebarrie",
+    "comments": 0,
+    "labels": "actionpack,actionview",
+    "created_at": "2026-06-19T14:07:49Z",
+    "updated_at": "2026-06-19T14:08:00Z"
+  },
+  {
+    "number": 57782,
+    "title": "Avoid mutating params hash passed to ActionDispatch::Http::URL.url_for",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionpack",
+    "created_at": "2026-06-19T13:02:33Z",
+    "updated_at": "2026-06-21T10:02:39Z"
+  },
+  {
+    "number": 57781,
+    "title": "Strong increase in allocations in web UIs that use ViewComponents after d24d0b7187b6568d76972d61ce91eea698503797",
+    "state": "open",
+    "user": "issyl0",
+    "comments": 1,
+    "labels": "regression,actionpack",
+    "created_at": "2026-06-19T12:01:32Z",
+    "updated_at": "2026-06-19T12:07:56Z"
+  },
+  {
+    "number": 57780,
+    "title": "Extract Template.validate_formats and Template.normalized_formats",
+    "state": "closed",
+    "user": "etiennebarrie",
+    "comments": 0,
+    "labels": "actionview",
+    "created_at": "2026-06-19T09:38:05Z",
+    "updated_at": "2026-06-19T12:22:44Z"
+  },
+  {
+    "number": 57779,
+    "title": "Add 7-day cooldown to bin/brakeman --ensure-latest",
+    "state": "open",
+    "user": "rvanlieshout",
+    "comments": 0,
+    "labels": "railties",
+    "created_at": "2026-06-19T05:37:39Z",
+    "updated_at": "2026-06-19T05:51:22Z"
+  },
+  {
+    "number": 57778,
+    "title": "Fix configuring query_log_tags in database.yml",
+    "state": "open",
+    "user": "hmcguire-shopify",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T19:25:30Z",
+    "updated_at": "2026-06-18T19:50:37Z"
+  },
+  {
+    "number": 57777,
+    "title": "8-1-stable: Clear Postgres warnings as they get handled",
+    "state": "closed",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T16:46:47Z",
+    "updated_at": "2026-06-18T17:13:11Z"
+  },
+  {
+    "number": 57775,
+    "title": "Make ActiveRecord::Base.primary_key a class attribute",
+    "state": "closed",
+    "user": "ilianah",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T15:34:31Z",
+    "updated_at": "2026-06-19T12:22:11Z"
+  },
+  {
+    "number": 57774,
+    "title": "Remove primary_key class ivar",
+    "state": "closed",
+    "user": "ilianah",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T15:15:22Z",
+    "updated_at": "2026-06-18T15:28:38Z"
+  },
+  {
+    "number": 57773,
+    "title": "Remove outdated documentation for overriding primary_key",
+    "state": "closed",
+    "user": "ilianah",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T14:56:35Z",
+    "updated_at": "2026-06-19T12:20:21Z"
+  },
+  {
+    "number": 57771,
+    "title": "7-2-stable: Backport recent test suite fixes",
+    "state": "open",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord,activesupport,railties,docs,actionmailbox",
+    "created_at": "2026-06-18T14:29:31Z",
+    "updated_at": "2026-06-18T16:55:33Z"
+  },
+  {
+    "number": 57770,
+    "title": "8-0-stable: Backport recent test suite fixes",
+    "state": "closed",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord,activesupport,railties,actionmailbox",
+    "created_at": "2026-06-18T13:36:25Z",
+    "updated_at": "2026-06-19T17:13:19Z"
+  },
+  {
+    "number": 57769,
+    "title": "Make `take` respect an existing relation limit",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T12:38:31Z",
+    "updated_at": "2026-06-20T07:36:15Z"
+  },
+  {
+    "number": 57768,
+    "title": "More test fixes",
+    "state": "closed",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-18T11:45:08Z",
+    "updated_at": "2026-06-18T12:23:57Z"
+  },
+  {
+    "number": 57767,
+    "title": "8-1-stable: Backport recent test suite fixes",
+    "state": "closed",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord,activesupport,railties,actionmailbox",
+    "created_at": "2026-06-18T03:34:49Z",
+    "updated_at": "2026-06-19T17:13:27Z"
+  },
+  {
+    "number": 57766,
+    "title": "System to help with PR backlog",
+    "state": "closed",
+    "user": "georgeu2000",
+    "comments": 4,
+    "labels": "",
+    "created_at": "2026-06-18T02:33:19Z",
+    "updated_at": "2026-06-18T14:51:18Z"
+  },
+  {
+    "number": 57765,
+    "title": "Validate `retry_on` `wait:` argument type at class definition",
+    "state": "closed",
+    "user": "55728",
+    "comments": 1,
+    "labels": "activejob",
+    "created_at": "2026-06-17T23:32:50Z",
+    "updated_at": "2026-06-18T17:23:30Z"
+  },
+  {
+    "number": 57764,
+    "title": "Use Hash default instead of default proc",
+    "state": "closed",
+    "user": "etiennebarrie",
+    "comments": 1,
+    "labels": "actionview",
+    "created_at": "2026-06-17T11:06:59Z",
+    "updated_at": "2026-06-17T14:00:36Z"
+  },
+  {
+    "number": 57763,
+    "title": "Fix `kill_connection_from_server` leaving an orphan in `@available`",
+    "state": "closed",
+    "user": "yahonda",
+    "comments": 2,
+    "labels": "activerecord",
+    "created_at": "2026-06-17T10:39:08Z",
+    "updated_at": "2026-06-18T23:36:19Z"
+  },
+  {
+    "number": 57762,
+    "title": "Add test coverage for SafeBuffer mutation escaping and as_json",
+    "state": "open",
+    "user": "hammadxcm",
+    "comments": 0,
+    "labels": "activesupport",
+    "created_at": "2026-06-17T09:30:24Z",
+    "updated_at": "2026-06-17T09:30:43Z"
+  },
+  {
+    "number": 57761,
+    "title": "ActiveRecord test-suite hang in TestCaseLeakCheckTest#test_check_connection_leaks_does_not_report_connections_held_for_async_reaper_maintenance on mysql2 and trilogy adapters",
+    "state": "closed",
+    "user": "yahonda",
+    "comments": 2,
+    "labels": "activerecord,ci issues",
+    "created_at": "2026-06-17T05:21:56Z",
+    "updated_at": "2026-06-18T23:35:06Z"
+  },
+  {
+    "number": 57760,
+    "title": "Simplify PRE_CONTENT_STRING hash",
+    "state": "closed",
+    "user": "skipkayhil",
+    "comments": 0,
+    "labels": "actionview",
+    "created_at": "2026-06-17T02:24:40Z",
+    "updated_at": "2026-06-17T14:00:04Z"
+  },
+  {
+    "number": 57759,
+    "title": "Make `test_assign_ids_with_cpk_for_two_models` order-independent",
+    "state": "closed",
+    "user": "yahonda",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-16T22:50:31Z",
+    "updated_at": "2026-06-17T00:03:01Z"
+  },
+  {
+    "number": 57758,
+    "title": "Fix `in_order_of` raising on CTEs",
+    "state": "closed",
+    "user": "viralpraxis",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-16T20:36:07Z",
+    "updated_at": "2026-06-18T14:26:27Z"
+  },
+  {
+    "number": 57757,
+    "title": "Make InheritableOptions ractor safe",
+    "state": "open",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "activesupport,Ractor Support",
+    "created_at": "2026-06-16T18:50:43Z",
+    "updated_at": "2026-06-17T13:56:19Z"
+  },
+  {
+    "number": 57756,
+    "title": "Make AbstractController::Helper.helper_method ractor safe",
+    "state": "closed",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "actionpack,Ractor Support",
+    "created_at": "2026-06-16T18:43:49Z",
+    "updated_at": "2026-06-18T06:40:22Z"
+  },
+  {
+    "number": 57755,
+    "title": "Make ActionController::Flash.add_flash_types ractor safe",
+    "state": "closed",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "actionpack,Ractor Support",
+    "created_at": "2026-06-16T18:43:34Z",
+    "updated_at": "2026-06-16T19:04:37Z"
+  },
+  {
+    "number": 57754,
+    "title": "Make AbstractController::Caching.view_cache_dependency ractor safe",
+    "state": "open",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "actionpack,Ractor Support",
+    "created_at": "2026-06-16T18:42:14Z",
+    "updated_at": "2026-06-19T15:20:14Z"
+  },
+  {
+    "number": 57753,
+    "title": "Make ExecutionContext.after_change ractor safe",
+    "state": "open",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "actionpack,activerecord,activesupport,Ractor Support",
+    "created_at": "2026-06-16T18:42:04Z",
+    "updated_at": "2026-06-18T00:22:22Z"
+  },
+  {
+    "number": 57752,
+    "title": "More shareable constants",
+    "state": "closed",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "actionpack,activesupport,actionview,Ractor Support",
+    "created_at": "2026-06-16T18:41:53Z",
+    "updated_at": "2026-06-17T11:07:47Z"
+  },
+  {
+    "number": 57751,
+    "title": "Make Messages::Metadata serializer arrays frozen by default.",
+    "state": "closed",
+    "user": "andrewn617",
+    "comments": 0,
+    "labels": "activesupport,Ractor Support",
+    "created_at": "2026-06-16T18:41:36Z",
+    "updated_at": "2026-06-16T18:56:44Z"
+  },
+  {
+    "number": 57750,
+    "title": "Avoid racing the maintenance thread's checkout",
+    "state": "closed",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-16T15:06:43Z",
+    "updated_at": "2026-06-16T15:22:20Z"
+  },
+  {
+    "number": 57749,
+    "title": "Fix `instance_variable_names` RDoc to show declaration order",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activesupport",
+    "created_at": "2026-06-16T14:52:33Z",
+    "updated_at": "2026-06-17T12:53:28Z"
+  },
+  {
+    "number": 57748,
+    "title": "Honor falsy values in routing's deprecated positional-hash options",
+    "state": "closed",
+    "user": "55728",
+    "comments": 2,
+    "labels": "actionpack",
+    "created_at": "2026-06-16T14:51:21Z",
+    "updated_at": "2026-06-17T12:52:56Z"
+  },
+  {
+    "number": 57747,
+    "title": "[RF Docs] Multiple Databases",
+    "state": "open",
+    "user": "Ridhwana",
+    "comments": 0,
+    "labels": "docs,rails foundation",
+    "created_at": "2026-06-16T08:47:01Z",
+    "updated_at": "2026-06-17T10:16:24Z"
+  },
+  {
+    "number": 57746,
+    "title": "Clarify DDL transactions in Active Record Migrations docs [ci skip]",
+    "state": "open",
+    "user": "davidjb",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-16T07:52:53Z",
+    "updated_at": "2026-06-16T07:53:04Z"
+  },
+  {
+    "number": 57745,
+    "title": "ActiveRecord with defined enum returns incorrect data for where.not query",
+    "state": "open",
+    "user": "tomkr4l",
+    "comments": 1,
+    "labels": "",
+    "created_at": "2026-06-16T07:42:48Z",
+    "updated_at": "2026-06-17T02:32:12Z"
+  },
+  {
+    "number": 57744,
+    "title": "Wait for any asynchronous connection maintenance work before leak check",
+    "state": "closed",
+    "user": "matthewd",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-16T07:13:38Z",
+    "updated_at": "2026-06-16T08:59:13Z"
+  },
+  {
+    "number": 57743,
+    "title": "Fix `ActiveSupport::InheritableOptions#to_h` for nested inheritable options",
+    "state": "closed",
+    "user": "andrewn617",
+    "comments": 1,
+    "labels": "activesupport",
+    "created_at": "2026-06-15T20:59:26Z",
+    "updated_at": "2026-06-16T12:46:46Z"
+  },
+  {
+    "number": 57742,
+    "title": "Introduce `ActiveJob::DeserializationError::RecordNotFound`",
+    "state": "open",
+    "user": "rosa",
+    "comments": 16,
+    "labels": "activerecord,railties,docs,activejob",
+    "created_at": "2026-06-15T18:40:54Z",
+    "updated_at": "2026-06-17T08:05:08Z"
+  },
+  {
+    "number": 57741,
+    "title": "Return an Enumerator from Parameters#deep_transform_values/#deep_transform_values! when no block is given",
+    "state": "open",
+    "user": "tahsin352",
+    "comments": 0,
+    "labels": "actionpack",
+    "created_at": "2026-06-15T18:38:13Z",
+    "updated_at": "2026-06-15T18:38:25Z"
+  },
+  {
+    "number": 57740,
+    "title": "Honor the deprecated `namespace` hash path options",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionpack",
+    "created_at": "2026-06-15T12:21:13Z",
+    "updated_at": "2026-06-15T14:32:15Z"
+  },
+  {
+    "number": 57739,
+    "title": "Apply the deprecated `scope` hash `:except` option to except, not only",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionpack",
+    "created_at": "2026-06-15T12:21:10Z",
+    "updated_at": "2026-06-15T14:32:33Z"
+  },
+  {
+    "number": 57738,
+    "title": "Return an empty string from `word_wrap` when the text is nil",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionview",
+    "created_at": "2026-06-15T12:13:28Z",
+    "updated_at": "2026-06-15T15:54:08Z"
+  },
+  {
+    "number": 57737,
+    "title": "Stop documenting the removed `args:` Hash form of `assert_enqueued_email_with`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionmailer",
+    "created_at": "2026-06-15T12:09:52Z",
+    "updated_at": "2026-06-15T15:44:05Z"
+  },
+  {
+    "number": 57736,
+    "title": "Document max_connections/min_connections in Database Pooling guide",
+    "state": "open",
+    "user": "igor-alexandrov",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-15T09:18:17Z",
+    "updated_at": "2026-06-15T09:18:30Z"
+  },
+  {
+    "number": 57735,
+    "title": "[RF Docs] Rails Internationalization (#57381)",
+    "state": "closed",
+    "user": "p8",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-15T07:41:25Z",
+    "updated_at": "2026-06-15T07:52:58Z"
+  },
+  {
+    "number": 57734,
+    "title": "[ci skip] Remove orphaned backtick from routing docs",
+    "state": "closed",
+    "user": "tylerlwsmith",
+    "comments": 1,
+    "labels": "docs",
+    "created_at": "2026-06-15T03:05:45Z",
+    "updated_at": "2026-06-15T07:43:51Z"
+  },
+  {
+    "number": 57733,
+    "title": "Register PostgreSQL vector type",
+    "state": "open",
+    "user": "da-vinci-noob",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-14T23:39:37Z",
+    "updated_at": "2026-06-15T22:52:47Z"
+  },
+  {
+    "number": 57732,
+    "title": "Rails 8.1.3 does not recognize pgvector extension vector columns on PostgreSQL 18",
+    "state": "open",
+    "user": "da-vinci-noob",
+    "comments": 0,
+    "labels": "",
+    "created_at": "2026-06-14T22:49:52Z",
+    "updated_at": "2026-06-15T21:57:18Z"
+  },
+  {
+    "number": 57731,
+    "title": "Fix Active Storage variants re-processed when format is a Symbol",
+    "state": "open",
+    "user": "hanscanonico",
+    "comments": 0,
+    "labels": "activestorage",
+    "created_at": "2026-06-14T20:57:09Z",
+    "updated_at": "2026-06-14T21:03:17Z"
+  },
+  {
+    "number": 57730,
+    "title": "Don't mask errors raised inside a cursor's `succ` in `Step#advance!`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T13:53:47Z",
+    "updated_at": "2026-06-14T23:30:12Z"
+  },
+  {
+    "number": 57729,
+    "title": "Pass the exception positionally when resuming a continuation after an error",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T13:49:26Z",
+    "updated_at": "2026-06-14T23:30:02Z"
+  },
+  {
+    "number": 57728,
+    "title": "Clear `enqueue_error` when re-enqueuing a job",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T13:45:20Z",
+    "updated_at": "2026-06-14T23:29:52Z"
+  },
+  {
+    "number": 57727,
+    "title": "Accept a Float wait in `retry_on`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 1,
+    "labels": "activejob",
+    "created_at": "2026-06-14T13:41:01Z",
+    "updated_at": "2026-06-17T12:49:30Z"
+  },
+  {
+    "number": 57726,
+    "title": "Fix `max_resumptions` attribute name in `ResumeLimitError` docs",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T13:36:24Z",
+    "updated_at": "2026-06-14T23:30:36Z"
+  },
+  {
+    "number": 57725,
+    "title": "Include adapter in Active Job `perform_start` event payload",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T13:07:12Z",
+    "updated_at": "2026-06-14T23:29:38Z"
+  },
+  {
+    "number": 57724,
+    "title": "[RF Docs] Update callback example in Active Record Callbacks",
+    "state": "open",
+    "user": "Ridhwana",
+    "comments": 0,
+    "labels": "docs",
+    "created_at": "2026-06-14T07:32:20Z",
+    "updated_at": "2026-06-14T07:33:07Z"
+  },
+  {
+    "number": 57723,
+    "title": "Fix `retry_on` `wait:` proc with an optional argument",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T06:08:30Z",
+    "updated_at": "2026-06-14T09:20:33Z"
+  },
+  {
+    "number": 57722,
+    "title": "Don't log a dangling \"with arguments:\" for jobs with no arguments",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activejob",
+    "created_at": "2026-06-14T06:01:17Z",
+    "updated_at": "2026-06-14T08:54:18Z"
+  },
+  {
+    "number": 57721,
+    "title": "Return an Enumerator from `Parameters#select` / `#reject` when no block is given",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actionpack",
+    "created_at": "2026-06-14T05:57:30Z",
+    "updated_at": "2026-06-15T10:18:13Z"
+  },
+  {
+    "number": 57720,
+    "title": "Don't share the actions Hash across `ActionableError` subclasses",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activesupport",
+    "created_at": "2026-06-14T05:53:51Z",
+    "updated_at": "2026-06-21T10:02:25Z"
+  },
+  {
+    "number": 57719,
+    "title": "Raise RecordNotFound for `find(nil)` on a composite primary key model",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-14T05:49:29Z",
+    "updated_at": "2026-06-14T08:54:24Z"
+  },
+  {
+    "number": 57718,
+    "title": "Don't remap `write_attribute(\"id\")` to a composite primary key",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-14T01:28:57Z",
+    "updated_at": "2026-06-20T07:36:15Z"
+  },
+  {
+    "number": 57717,
+    "title": "Coerce `seeds` and `use_metadata_table` booleans in `UrlConfig`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 2,
+    "labels": "activerecord",
+    "created_at": "2026-06-14T01:20:38Z",
+    "updated_at": "2026-06-14T08:57:44Z"
+  },
+  {
+    "number": 57716,
+    "title": "Clean up the subscription slot when subscribe_to_channel raises",
+    "state": "open",
+    "user": "chaadow",
+    "comments": 1,
+    "labels": "actioncable",
+    "created_at": "2026-06-14T00:31:42Z",
+    "updated_at": "2026-06-14T14:28:09Z"
+  },
+  {
+    "number": 57715,
+    "title": "Exclude all composite primary key components from `content_columns`",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-13T23:52:02Z",
+    "updated_at": "2026-06-14T08:58:39Z"
+  },
+  {
+    "number": 57714,
+    "title": "Treat `remove_column` with options but no type as irreversible",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-13T23:47:47Z",
+    "updated_at": "2026-06-14T08:58:30Z"
+  },
+  {
+    "number": 57713,
+    "title": "Don't cap `max_threads` at 5 for finite pools larger than 5",
+    "state": "closed",
+    "user": "55728",
+    "comments": 2,
+    "labels": "activerecord",
+    "created_at": "2026-06-13T23:41:29Z",
+    "updated_at": "2026-06-16T13:18:35Z"
+  },
+  {
+    "number": 57712,
+    "title": "Fix `counter_cache_column` crash when no column is given on the has_many side",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-13T23:35:12Z",
+    "updated_at": "2026-06-14T08:58:13Z"
+  },
+  {
+    "number": 57711,
+    "title": "Fix `create_or_find_by` scope pollution on the non-transactional retry",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "activerecord",
+    "created_at": "2026-06-13T23:23:11Z",
+    "updated_at": "2026-06-21T10:02:50Z"
+  },
+  {
+    "number": 57710,
+    "title": "Fix `has_many_attached` `attach` deleting files attached concurrently",
+    "state": "open",
+    "user": "williantenfen",
+    "comments": 1,
+    "labels": "activestorage",
+    "created_at": "2026-06-13T18:09:53Z",
+    "updated_at": "2026-06-17T14:17:43Z"
+  },
+  {
+    "number": 57709,
+    "title": "Restart the Redis listener thread when it dies",
+    "state": "closed",
+    "user": "chaadow",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-13T17:11:30Z",
+    "updated_at": "2026-06-14T06:53:41Z"
+  },
+  {
+    "number": 57708,
+    "title": "Clear the connections registry on server restart",
+    "state": "closed",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-13T14:51:35Z",
+    "updated_at": "2026-06-14T08:58:03Z"
+  },
+  {
+    "number": 57707,
+    "title": "Guard the heartbeat timer lazy-init with the server mutex",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-13T14:45:51Z",
+    "updated_at": "2026-06-20T09:34:18Z"
+  },
+  {
+    "number": 57706,
+    "title": "Raise a typed error for a `message` command without a data payload",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-13T14:32:40Z",
+    "updated_at": "2026-06-20T07:36:15Z"
+  },
+  {
+    "number": 57705,
+    "title": "Don't re-deliver captured broadcasts to live subscribers",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-13T13:12:36Z",
+    "updated_at": "2026-06-20T07:36:15Z"
+  },
+  {
+    "number": 57704,
+    "title": "Coerce the broadcasting in assert_has_stream / assert_has_no_stream",
+    "state": "open",
+    "user": "55728",
+    "comments": 0,
+    "labels": "actioncable",
+    "created_at": "2026-06-13T13:08:32Z",
+    "updated_at": "2026-06-20T07:36:15Z"
+  }
+]
