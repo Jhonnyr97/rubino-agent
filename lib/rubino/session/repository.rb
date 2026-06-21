@@ -393,8 +393,19 @@ module Rubino
       # arc would be silently skipped and the just-compacted conversation lost.
       # Compaction children always have real messages, so resume them regardless
       # of the cached counter; the count > 0 floor still guards every other source.
+      #
+      # Sessions tagged source="subagent" are the `task` tool's internal
+      # machinery, never a user-facing conversation (#540). `list`/the picker
+      # already exclude them; a bare `chat`/`--continue` must too, or its
+      # most-recent lookup can land the user INSIDE a background subagent's
+      # transcript — a session `sessions list` won't even show. Exclude them
+      # here so resume and list agree: a subagent session is never auto-resumed
+      # (it stays reachable only by explicit `--resume <id>`).
       def resumable_predicate
-        Sequel.|({ source: "compaction" }, Sequel[:message_count] > 0)
+        Sequel.&(
+          Sequel.~(source: "subagent"),
+          Sequel.|({ source: "compaction" }, Sequel[:message_count] > 0)
+        )
       end
 
       # Builds a SAFE id-prefix LIKE condition (#333a). User-supplied short ids
