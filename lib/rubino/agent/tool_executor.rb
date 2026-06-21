@@ -477,8 +477,13 @@ module Rubino
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
         pairs = Array(arguments)
-        # No arguments (e.g. a bare run_tests run) ⇒ no dangling "wants:" — a
-        # header followed by nothing reads as a truncated/broken card (#109).
+        # ONE header verb across every approval card (#558): always
+        # "<tool> wants to run" — with the call laid out after a colon when there
+        # are args, and as a bare sentence when there are none. The old code mixed
+        # "<tool> wants to run" (no-arg) with "<tool> wants:" (with-arg), so the
+        # header read inconsistently and the dangling colon looked broken (#109).
+        # No arguments (e.g. a bare run_tests run) ⇒ no colon: a header followed
+        # by nothing reads as a truncated/broken card.
         return "#{tool.name} wants to run" if pairs.empty?
 
         # multi_edit carries an `edits` ARRAY whose generic .to_s render is an
@@ -490,15 +495,15 @@ module Rubino
         end
 
         # The common case — ONE short single-line argument (a shell command, a
-        # file path) — inlines onto the header: `shell wants: touch hello.txt`
+        # file path) — inlines onto the header: `shell wants to run: touch hello.txt`
         # (P7). Multi-arg / multi-line calls keep the per-key layout below.
         if pairs.size == 1
           key, value = pairs.first
           text = Util::SecretsMask.mask_value(value, key: key).to_s
-          return "#{tool.name} wants: #{text}" if !text.include?("\n") && text.length <= 120
+          return "#{tool.name} wants to run: #{text}" if !text.include?("\n") && text.length <= 120
         end
 
-        lines = ["#{tool.name} wants:"]
+        lines = ["#{tool.name} wants to run:"]
         pairs.each { |key, value| lines.concat(format_arg_pair(key, value)) }
         lines.join("\n")
       end
@@ -532,7 +537,7 @@ module Rubino
         return nil unless edits.is_a?(Array) && !edits.empty?
 
         path  = arguments["file_path"] || arguments[:file_path]
-        lines = ["multi_edit wants: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
+        lines = ["multi_edit wants to run: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
         body  = []
         edits.each_with_index do |edit, idx|
           old_s = edit["old_string"] || edit[:old_string]

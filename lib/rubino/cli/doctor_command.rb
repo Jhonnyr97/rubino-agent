@@ -6,7 +6,7 @@ module Rubino
     #
     # Doctor is a READ-ONLY diagnosis (#68): it must never create the home
     # directory or the database file while checking them — a never-setup
-    # install is reported as "run 'rubino setup'", not silently materialized
+    # install is reported as "run `rubino setup`", not silently materialized
     # at the umask's permissions and then declared healthy.
     #
     # Exit status (#67): non-zero when one or more required checks did not
@@ -65,7 +65,11 @@ module Rubino
             ui.info("(#{optional_unconfigured} optional server check#{"s" if optional_unconfigured != 1} not configured — only needed to run the API/OAuth server)")
           end
         else
-          ui.warning("#{passed}/#{total} required checks passed")
+          # A failed required check is a genuine FAILURE, not a soft caution: an
+          # all-red `0/N` install must read as a hard ✗ (red), not a mild ⚠
+          # (yellow) that understates a broken install (#557). `⚠` stays reserved
+          # for the per-check warnings (pending migrations, unknown model, …).
+          ui.error("#{passed}/#{total} required checks passed")
           # Scripts/CI gate on doctor: a failed required check must be a
           # non-zero exit, not a green 0 under a red report (#67).
           exit(1)
@@ -79,7 +83,7 @@ module Rubino
         loader = Config::Loader.new
 
         unless loader.config_exists?
-          ui.error("config file missing. Run 'rubino setup'")
+          ui.error("config file missing. Run `rubino setup`")
           return { name: "config", status: :fail }
         end
 
@@ -89,7 +93,7 @@ module Rubino
         # a downstream check digging into the scalar (#259).
         error = config_corruption(loader)
         if error
-          ui.error("config corrupt: #{error}. Fix #{loader.config_path} (or restore from a backup / re-run 'rubino setup')")
+          ui.error("config corrupt: #{error}. Fix #{loader.config_path} (or restore from a backup / re-run `rubino setup`)")
           return { name: "config", status: :fail }
         end
 
@@ -136,7 +140,7 @@ module Rubino
       def check_database
         ui = Rubino.ui
         unless database_on_disk?
-          ui.error("database not initialized: #{Rubino.database.db_path}. Run 'rubino setup'")
+          ui.error("database not initialized: #{Rubino.database.db_path}. Run `rubino setup`")
           return { name: "database", status: :fail }
         end
 
@@ -147,7 +151,7 @@ module Rubino
         # fragment) leak through the StandardError rescue below into user output.
         if Rubino.database.corrupt?
           ui.error("database is corrupt (malformed image): #{Rubino.database.db_path}. " \
-                   "Run 'rubino setup' to quarantine it and recreate a fresh database")
+                   "Run `rubino setup` to quarantine it and recreate a fresh database")
           return { name: "database", status: :fail }
         end
 
@@ -164,7 +168,7 @@ module Rubino
         # class + PRAGMA fragment never reach the user.
         if Rubino.database.corruption_error?(e)
           ui.error("database is corrupt (malformed image): #{Rubino.database.db_path}. " \
-                   "Run 'rubino setup' to quarantine it and recreate a fresh database")
+                   "Run `rubino setup` to quarantine it and recreate a fresh database")
         else
           ui.error("database error: #{e.message}")
         end
@@ -174,7 +178,7 @@ module Rubino
       def check_migrations
         ui = Rubino.ui
         unless database_on_disk?
-          ui.error("migrations not run — no database. Run 'rubino setup'")
+          ui.error("migrations not run — no database. Run `rubino setup`")
           return { name: "migrations", status: :fail }
         end
 
@@ -185,7 +189,7 @@ module Rubino
         # check failed" reason. check_database already reports the corruption
         # with the actionable fix; degrade cleanly here without re-leaking it.
         if Rubino.database.corrupt?
-          ui.error("migration check skipped — database corrupt (run 'rubino setup')")
+          ui.error("migration check skipped — database corrupt (run `rubino setup`)")
           return { name: "migrations", status: :fail }
         end
 
@@ -202,10 +206,10 @@ module Rubino
         # Final guard so a corruption backtrace (raw class + PRAGMA fragment)
         # never reaches user output even if it surfaces here (#359).
         if Rubino.database.corruption_error?(e)
-          ui.error("migration check skipped — database corrupt (run 'rubino setup')")
+          ui.error("migration check skipped — database corrupt (run `rubino setup`)")
         elsif e.message.to_s.include?("More than 1 row in migrator table")
           ui.error("migrator table has duplicate version rows (interrupted/raced migration). " \
-                   "Run 'rubino setup' to repair it")
+                   "Run `rubino setup` to repair it")
         else
           ui.error("migration check failed: #{e.message}")
         end
@@ -231,7 +235,7 @@ module Rubino
           ui.success("Home directory exists: #{home}")
           { name: "directories", status: :ok }
         else
-          ui.error("home directory missing: #{home}. Run 'rubino setup'")
+          ui.error("home directory missing: #{home}. Run `rubino setup`")
           { name: "directories", status: :fail }
         end
       end
@@ -259,7 +263,7 @@ module Rubino
           # A missing key for the CONFIGURED provider is a hard ✗, not a soft ⚠
           # (#327): it is REQUIRED for any model call, so the agent can't work
           # without it. The warning glyph understated a broken install.
-          ui.error("No credentials found for provider '#{provider}'. Set its API key (run 'rubino setup')")
+          ui.error("No credentials found for provider '#{provider}'. Set its API key (run `rubino setup`)")
           { name: "provider_keys", status: :fail }
         end
       rescue TypeError => e
@@ -289,7 +293,7 @@ module Rubino
         # honesty in check_provider_keys; the credential verdict is scored there,
         # so this stays a non-blocking :warn rather than double-counting a :fail.
         unless model_usable?
-          ui.warning("Model '#{model}' set, but no usable credential yet — run 'rubino setup'")
+          ui.warning("Model '#{model}' set, but no usable credential yet — run `rubino setup`")
           return { name: "model", status: :warn }
         end
 

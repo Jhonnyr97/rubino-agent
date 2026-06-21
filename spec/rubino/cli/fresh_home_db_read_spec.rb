@@ -36,7 +36,9 @@ RSpec.describe "Fresh-home DB read commands (#35)" do
 
   it "`memory list` shows the empty state without a no-such-table crash" do
     expect { Rubino::CLI::MemoryCommand.new([], { "limit" => 20 }).list }.not_to raise_error
-    expect(info_messages.join("\n")).to include("No memories found")
+    # The empty state is now actionable (#559): it tells the user where memories
+    # come from instead of a bare "No memories found." dead-end.
+    expect(info_messages.join("\n")).to match(/No memories yet.*rubino chat/m)
   end
 
   it "`sessions list` shows the empty state without a no-such-table crash" do
@@ -55,7 +57,19 @@ RSpec.describe "Fresh-home DB read commands (#35)" do
 
   it "`jobs list` shows the empty state without a no-such-table crash" do
     expect { Rubino::CLI::JobsCommand.new([], { "limit" => 20 }).list }.not_to raise_error
-    expect(info_messages.join("\n")).to include("No jobs found")
+    # Actionable empty state (#559): how jobs get here, not a bare dead-end.
+    expect(info_messages.join("\n")).to match(/No jobs yet.*rubino chat/m)
+  end
+
+  # #560: `jobs process`/`worker` previously skipped the fresh-home guard and hit
+  # the `jobs` table directly, dumping a raw `SQLite3::SQLException: no such
+  # table: jobs` backtrace. They must now share the same guard `jobs list` uses:
+  # migrate the brand-new home on first access, then run cleanly (no SQL leak).
+  it "`jobs process` initializes the schema instead of leaking a no-such-table backtrace" do
+    expect { Rubino::CLI::JobsCommand.new([], { "limit" => 10 }).process }.not_to raise_error
+    # Schema initialized on first access ⇒ the success line printed, no SQL leak.
+    all = Rubino.ui.messages.map { |m| m[:message].to_s }.join("\n")
+    expect(all).not_to match(/SQLite3|no such table/i)
   end
 
   # NOTE: the old "raced migration left a duplicate schema_info row" context was
