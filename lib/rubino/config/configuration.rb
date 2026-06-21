@@ -379,6 +379,14 @@ module Rubino
         dig("tool_output", "max_lines")
       end
 
+      # Hard RAM ceiling for the shell capture seam (#539). Defaults via the
+      # defaults hash; coerced to a sane positive floor so a misconfig can't
+      # disable the cap and re-open the unbounded-producer OOM.
+      def tool_output_capture_max_bytes
+        value = dig("tool_output", "capture_max_bytes").to_i
+        value.positive? ? value : 2_000_000
+      end
+
       # Deterministic, reversible compression of tool-read results (whole-file
       # Ruby reads → skeleton). OFF by default: when false the read tool is
       # byte-for-byte unchanged. See Compression::Compressor.
