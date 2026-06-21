@@ -20,10 +20,16 @@ offers it), every tool's output passes through a deterministic content router
 before it reaches the model: test/build/lint **logs** are reduced to their
 failures + summary, a **whole-file source read** can come back as a skeleton, and
 **diffs / grep results / JSON / short output pass through byte-identical**. The
-full original is always recoverable (it is spilled to `tool-results/<call_id>.txt`
-and the compressed output points the model there). While enabled, `read` and
-`shell` advertise an extra `compress` boolean parameter (default `true`) so the
-model can pass `compress:false` to get one call's output verbatim. See
+full original is always recoverable: the compressed view ends with a passive
+pointer carrying an `id` (`retrieve_output id=…`), and the model recovers the
+verbatim original by calling the `retrieve_output` tool with that id — there is
+**no cat-able filesystem path** in the pointer, so a small model can't `sed`/
+`grep`/`cat` a spill path and re-inflate the very output compression just shrank.
+While enabled, `read` and `shell` advertise an extra `compress` boolean parameter
+(default `true`) so the model can pass `compress:false` to get one call's output
+verbatim, and the registry adds the `retrieve_output` recovery tool (present
+**only** while compression is enabled — it is absent from the default registry,
+so the count below is unchanged). See
 [configuration.md](configuration.md#tool_output_compression) for the full key
 reference. Compression is OFF in the default registry, so the parameter lists
 below describe the shipped (uncompressed) behaviour.
