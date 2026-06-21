@@ -411,7 +411,16 @@ module Rubino
         "tool_output" => {
           "max_bytes" => 50_000,
           "max_lines" => 2000,
-          "max_line_length" => 2000
+          "max_line_length" => 2000,
+          # Hard RAM ceiling on what the shell tool RETAINS while draining a
+          # subprocess pipe (#539). Independent of `max_bytes` (the model-facing
+          # truncation budget): an unbounded producer (`cat /dev/zero`, `yes`)
+          # emits faster than we can shape, so the capture seam keeps at most a
+          # bounded head+tail of this many bytes and KILLS the producer once the
+          # cap is hit — RAM stays bounded no matter how much the process emits.
+          # Sized well above max_bytes so the downstream truncate still has its
+          # full head/tail budget, but small enough to never OOM the agent.
+          "capture_max_bytes" => 2_000_000
         },
         # Deterministic, REVERSIBLE compression of tool output, routed through
         # the single Compression::ContentRouter seam in the ToolExecutor. The

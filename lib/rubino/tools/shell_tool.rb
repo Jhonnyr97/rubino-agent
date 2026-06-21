@@ -255,17 +255,30 @@ module Rubino
         # `ensure` below drops it once THIS thread has reaped it normally.
         ShellRegistry.instance.register_pgid(pgid)
 
-        # Drain the merged stdout+stderr pipe line-by-line so each chunk can
-        # be streamed to the UI/event stream as the subprocess writes it,
-        # not just at end-of-command. The accumulated string is still the
-        # canonical model-facing output. `each_line` only yields on \n or
-        # EOF, so a process emitting unterminated progress (`\r`-only) will
-        # still buffer until newline — acceptable for v1; live progress
-        # bars are a separate problem.
-        output_buf = +""
+        # Drain the merged stdout+stderr pipe in FIXED-SIZE chunks (#539). The
+        # old `each_line` only yields on \n or EOF, so an unbounded producer
+        # with no newline (`cat /dev/zero`, `yes | tr -d '\n'`) accumulated the
+        # ENTIRE stream into one in-memory String — RSS 15MB → 1.36GB in ~1s,
+        # then `negative string size`/OOM — and `cat` is auto-allowed, so it
+        # ran headless with no prompt and no --yolo. We now:
+        #   1. read 64KiB at a time (readpartial), never a whole mega-line;
+        #   2. retain at most `capture_cap` bytes as a bounded head+tail;
+        #   3. KILL the process group the instant the cap is hit (terminate_group
+        #      → SIGKILL, like the timeout path) so the producer is STOPPED, not
+        #      drained to EOF.
+        # The retained buffer (head+tail, with an elision marker) is what the
+        # model sees AND what spills to disk, so RAM and the spill file are both
+        # bounded regardless of how much the process emits. Normal small output
+        # is byte-for-byte unchanged.
+        capture_cap = capture_max_bytes
+        capture     = CappedCapture.new(capture_cap)
+        capped_hit  = false
+        line_buf    = +""
         output_thr = Thread.new do
           begin
-            rd.each_line do |line|
+            loop do
+              raw   = rd.readpartial(65_536)
+              raw_n = raw.bytesize
               # Scrub to valid UTF-8 AT THE CAPTURE SEAM (STRM-R2-1): a binary
               # / latin-1 process (`head -c 1500 /dev/urandom`, `cat *.png`)
               # writes bytes tagged UTF-8 but invalid. Left raw they later blow
@@ -273,28 +286,47 @@ module Rubino
               # tool row never persists — the model loses the record on
               # --resume. Cleaning HERE means the accumulated output AND the
               # streamed chunk are both clean before anything copies them.
-              line = Util::Output.scrub_utf8(line)
-              output_buf << line
-              # Redact credential VALUES from the live chunk BEFORE it streams
-              # to the UI / SSE-API / persisted progress rows. The end-of-
-              # command redaction in #foreground_result only masks the
-              # accumulated buffer (the model-facing copy + preview); the
-              # intermediate chunks emitted here reach @ui.tool_chunk and the
-              # TOOL_PROGRESS event independently, so `cat .env` would otherwise
-              # leak the raw value on the live stream. Per-line redaction
-              # catches every single-line secret (ENV assignment, prefix token,
-              # JSON field, DB conn-string…); a multi-line PEM block streams
-              # raw mid-flight but is still masked in the final buffer. The RAW
-              # line stays in output_buf so that whole-buffer pass can catch
-              # such cross-line shapes for the model-facing output.
-              emit_chunk(Security::Redactor.redact_sensitive_text(line))
+              chunk = Util::Output.scrub_utf8(raw)
+
+              # Retain into the bounded head+tail buffer. Cap on the RAW bytes
+              # READ (raw_n), not the scrubbed size: `cat /dev/zero` is pure NUL,
+              # which scrub_utf8 DELETES to empty — so a retained-size cap would
+              # never trip while we read GB/s (the original #539 OOM). We append
+              # the scrubbed bytes (so cross-line secret shapes like a multi-line
+              # PEM are still catchable in the model-facing output) but charge the
+              # budget by what the pipe actually delivered.
+              capture.append(chunk, raw_bytes: raw_n)
+
+              # Stream per-LINE so the live UI/SSE redaction stays line-granular
+              # (a single-line ENV assignment / token / JSON field is masked
+              # before it leaves; only a multi-line block streams raw mid-flight
+              # and is masked in the final buffer). The pending line_buf is held
+              # OUTSIDE the capped buffer and is itself bounded to one cap's
+              # worth, so an unterminated mega-line can't build a giant String.
+              line_buf << chunk
+              while (nl = line_buf.index("\n"))
+                line = line_buf.slice!(0, nl + 1)
+                emit_chunk(Security::Redactor.redact_sensitive_text(line))
+              end
+              line_buf = line_buf[-capture_cap, capture_cap] || line_buf if line_buf.bytesize > capture_cap
+
+              # Cap hit: stop the producer NOW (TERM→KILL, like the timeout path)
+              # rather than draining an infinite stream to EOF.
+              next unless capture.capped?
+
+              capped_hit = true
+              kill_group(pgid)
+              break
             end
           rescue IOError, Errno::EBADF
-            # pipe closed under us — process exited
+            # pipe closed / EOF (EOFError ⊂ IOError) — process exited, or we
+            # killed it above.
           ensure
+            # Flush any trailing partial line to the live stream.
+            emit_chunk(Security::Redactor.redact_sensitive_text(line_buf)) unless line_buf.empty?
             rd.close unless rd.closed?
           end
-          output_buf
+          capture.to_s(capped: capped_hit)
         end
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
@@ -406,6 +438,96 @@ module Rubino
         Process.kill("TERM", -pgid)
       rescue Errno::ESRCH, Errno::EPERM
         # Already dead or not ours — fine.
+      end
+
+      # TERM then KILL the whole process group — for the capture-cap path, where
+      # an unbounded producer (`cat /dev/zero`) must be STOPPED immediately, not
+      # given the timeout grace period (it would keep emitting at GB/s meanwhile).
+      def kill_group(pgid)
+        terminate_group(pgid)
+        Process.kill("KILL", -pgid)
+      rescue Errno::ESRCH, Errno::EPERM
+        # Already dead or not ours — fine.
+      end
+
+      # Hard RAM ceiling for the capture seam, config-overridable. Floored well
+      # above tool_output.max_bytes so the downstream model-facing truncate
+      # still gets its full head/tail budget; falls back to the default if the
+      # configuration is unavailable (early-boot / tool used standalone).
+      def capture_max_bytes
+        Rubino.configuration.tool_output_capture_max_bytes
+      rescue StandardError
+        2_000_000
+      end
+
+      # Bounded head+tail accumulator for a subprocess's merged output (#539).
+      # Keeps at most +cap+ bytes in memory no matter how much is appended: a
+      # ~10% HEAD slice (filled first) plus a sliding TAIL window (the rest of
+      # the budget), with the middle elided. Tail-biased because the bytes that
+      # matter on overflow — exit suffix, error, "N failures" — are at the end.
+      # `capped?` flips true once the producer has emitted MORE than the cap, so
+      # the reader can kill it; `to_s` renders the retained slice with a marker.
+      class CappedCapture
+        # Marker is a fixed worst-case width so it always fits inside the cap.
+        def initialize(cap)
+          @cap        = [cap.to_i, 1_024].max
+          @head_limit = [(@cap * 0.1).to_i, 1].max
+          @tail_limit = @cap - @head_limit
+          @head       = +""
+          @tail       = +""
+          @total      = 0
+          @capped     = false
+        end
+
+        # Append already-UTF-8-scrubbed bytes, retaining only head+tail. The cap
+        # is charged against +raw_bytes+ (the bytes the pipe actually delivered)
+        # so a producer whose output scrubs to empty (`cat /dev/zero` → pure NUL,
+        # deleted) is still capped on volume read, not on retained size (#539).
+        def append(bytes, raw_bytes: bytes.bytesize)
+          @total += raw_bytes
+          if @head.bytesize < @head_limit
+            take = @head_limit - @head.bytesize
+            @head << bytes.byteslice(0, take)
+            rest  = bytes.byteslice(take, bytes.bytesize - take)
+            push_tail(rest) if rest && !rest.empty?
+          else
+            push_tail(bytes)
+          end
+          @capped ||= @total > @cap
+          self
+        end
+
+        def capped?
+          @capped
+        end
+
+        # Render the retained output. When capped, splice in a marker that names
+        # the cap and that the producer was terminated, mirroring the elision
+        # note Util::Output.truncate uses so the model knows output was cut.
+        def to_s(capped: @capped)
+          head = scrub(@head)
+          tail = scrub(@tail)
+          return head + tail unless capped || @capped
+
+          elided = [@total - head.bytesize - tail.bytesize, 0].max
+          marker = "\n... [#{elided} bytes elided · output capped at #{@cap} bytes " \
+                   "— command terminated] ...\n"
+          head + marker + tail
+        end
+
+        private
+
+        def push_tail(bytes)
+          @tail << bytes
+          return unless @tail.bytesize > @tail_limit
+
+          # Keep the LAST tail_limit bytes (sliding window).
+          @tail = @tail.byteslice(@tail.bytesize - @tail_limit, @tail_limit)
+        end
+
+        def scrub(str)
+          Util::Output.scrub_utf8(str)
+        end
       end
     end
   end
