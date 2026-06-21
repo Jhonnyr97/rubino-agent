@@ -266,28 +266,27 @@ module Rubino
         nil
       end
 
-      # The process/session-scoped current working directory for foreground
-      # shells. Stored THREAD-LOCAL on purpose: the parent agent loop runs on
-      # one thread (its cwd persists across calls), while every subagent runs in
-      # its own Thread (TaskTool#thread) — so a subagent thread reads a fresh nil
-      # and starts at the workspace root, never inheriting the parent's cwd
-      # (#544/#545 subagent isolation). The ShellTool instance itself is a
-      # process-wide singleton (Registry), so an instance var would WRONGLY share
-      # one cwd across the parent and all concurrent subagents.
+      # The session current working directory for foreground shells — now the
+      # ONE unified holder, Workspace.current_cwd, which is also where every
+      # relative file tool (read/write/edit/multi_edit/grep/glob/apply_patch)
+      # anchors. A `cd subdir` here is therefore honoured by the next file write
+      # too, not just the next shell call (#544/#545). When carry-over is off,
+      # foreground commands default to the workspace root, like the pre-#545
+      # behaviour, without touching the unified holder.
       def session_cwd
-        return Rubino::Workspace.primary_root unless carry_over_enabled?
+        return workspace_root_real unless carry_over_enabled?
 
-        Thread.current[:rubino_shell_session_cwd] ||= workspace_root_real
+        Rubino::Workspace.current_cwd
       end
 
       def session_cwd=(path)
         return unless carry_over_enabled?
 
-        Thread.current[:rubino_shell_session_cwd] = path
+        Rubino::Workspace.current_cwd = path
       end
 
-      # Canonical (realpath) workspace root — the home the session cwd starts
-      # at and resets to when a command wanders outside the workspace.
+      # Canonical (realpath) workspace root — the home the session cwd resets to
+      # when a command wanders outside the workspace.
       def workspace_root_real
         File.realpath(File.expand_path(Rubino::Workspace.primary_root))
       rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP

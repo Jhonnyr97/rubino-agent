@@ -99,23 +99,23 @@ module Rubino
       protected
 
       # Resolves a model-supplied path to an absolute one, anchoring a RELATIVE
-      # path at the workspace primary root (terminal.cwd || launch cwd) instead
-      # of the process cwd.
+      # path at the SESSION cwd (Workspace.current_cwd) instead of the process
+      # cwd.
       #
       # `File.expand_path(rel)` anchors at Dir.pwd, but the agent's "current
-      # directory" — the dir the @-picker, shell/test and sandbox all agree on
-      # — is Workspace.primary_root, which is terminal.cwd when configured (e.g.
-      # bin/dev / the QA harness point it at a workspace subdir while the process
-      # launches from the parent). When the two diverge, a relative `shopkit/
-      # cart.py` resolved one directory too shallow and 404'd, forcing an
-      # ls→glob→re-read detour (r6 F3). Anchoring at primary_root fixes that
-      # while an ABSOLUTE path (or a ~ path) passes straight through unchanged,
-      # so the workspace guard downstream still sees the real target.
+      # directory" — the dir the @-picker, shell, sandbox and now every file
+      # tool agree on — is Workspace.current_cwd. It DEFAULTS to primary_root
+      # (terminal.cwd || launch cwd), which is what bin/dev / the QA harness
+      # point at while the process launches from the parent; and it CARRIES a
+      # `cd subdir` done in the shell, so a relative `foo.txt` written right
+      # after `cd subdir` lands in subdir, not the workspace root (#544/#545).
+      # An ABSOLUTE path (or a ~ path) passes straight through unchanged, so the
+      # workspace guard downstream still sees the real target.
       def expand_workspace_path(path)
         str = path.to_s
         return File.expand_path(str) if str.start_with?(File::SEPARATOR, "~")
 
-        File.expand_path(str, workspace_root)
+        File.expand_path(str, Workspace.current_cwd)
       end
 
       # Filesystem sandbox for write/edit/delete operations.
