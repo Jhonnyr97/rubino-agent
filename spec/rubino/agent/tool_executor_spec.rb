@@ -449,14 +449,19 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(result.output).to include("hidden by output compression")
       expect(result.output).to include("failures + summary kept")
       expect(result.output).to include("normally sufficient")
+      # Recovery is via an ID behind the retrieve_output tool — the passive
+      # phrasing, keyed on the call_id, not an imperative.
+      expect(result.output).to include("retrieve_output id=log1")
+      expect(result.output).to include("only if a hidden line is specifically needed")
+      # NO cat-able filesystem path leaks into the model-facing pointer (the
+      # whole point: a small model can't sed/grep/cat a spill path to re-inflate).
       spill = File.join(spill_home, "tool-results", "log1.txt")
-      # the spill path is still surfaced for recoverability …
-      expect(result.output).to include(spill)
-      # … but NOT as an imperative "read" that bait-drills a small model in
-      expect(result.output).not_to include("Full output: read")
-      expect(result.output).not_to match(/read #{Regexp.escape(spill)}/)
-      expect(result.output).to include("if a hidden line is specifically needed")
-      # the FULL original is on disk, retrievable with a normal read
+      expect(result.output).not_to include(spill)
+      expect(result.output).not_to include(spill_home)
+      expect(result.output).not_to include("tool-results")
+      expect(result.output).not_to include("read /")
+      expect(result.output).not_to include("full output at /")
+      # the FULL original is still spilled on disk, recoverable by id
       expect(File.read(spill)).to include("INFO line 30")
     end
 
