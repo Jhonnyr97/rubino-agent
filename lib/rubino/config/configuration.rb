@@ -390,6 +390,14 @@ module Rubino
         dig("tool_output_compression", "code") || {}
       end
 
+      # DIFF compression config. Like `code`, it has NO own `enabled` sub-flag:
+      # it is active whenever the master `tool_output_compression.enabled` is on.
+      # The DiffCompressor's saving guard (min_lines + min_saving) is the real
+      # gate — a small/tight diff passes through byte-identical on its own.
+      def tool_output_compression_diff
+        dig("tool_output_compression", "diff") || {}
+      end
+
       # LOG/command-output compression config. Independently gated from `code`
       # via its own `enabled` flag, so we can flip the high-ROI log channel on
       # without touching the code-skeleton channel.

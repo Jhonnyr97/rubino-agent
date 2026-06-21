@@ -461,22 +461,37 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(result.output).not_to include("hidden by output compression")
     end
 
-    it "passes a diff through byte-identical (compress_hint stream_kind: :diff)" do
-      enable_compression!
-      diff = "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n#{"context\n" * 40}"
-      diff_tool = Class.new(Rubino::Tools::Base) do
+    def diff_tool_for(diff)
+      Class.new(Rubino::Tools::Base) do
         define_method(:name) { "shell" }
         def description = "fake"
         def input_schema = { type: "object" }
         def risk_level = :low
-        define_method(:call) do |_a|
-          { output: diff, compress_hint: { stream_kind: :diff } }
-        end
+        define_method(:call) { |_a| { output: diff, compress_hint: { stream_kind: :diff } } }
       end.new
-      allow(registry).to receive(:find).and_return(diff_tool)
+    end
+
+    it "passes a SMALL/tight diff through byte-identical (saving guard)" do
+      enable_compression!
+      diff = "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n context\n"
+      allow(registry).to receive(:find).and_return(diff_tool_for(diff))
       result = executor.execute(name: "shell", arguments: {}, call_id: "d1")
       expect(result.output).to eq(diff)
       expect(result.output).not_to include("hidden by output compression")
+    end
+
+    it "COMPRESSES a large wide-context diff, keeping +/- lines + headers" do
+      enable_compression!
+      ctx = (1..40).map { |i| " ctx#{i}" }.join("\n")
+      diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,42 +1,42 @@\n-removed\n+added\n#{ctx}\n"
+      allow(registry).to receive(:find).and_return(diff_tool_for(diff))
+      result = executor.execute(name: "shell", arguments: {}, call_id: "d2")
+      expect(result.output).to include("-removed")
+      expect(result.output).to include("+added")
+      expect(result.output).to include("diff --git a/x b/x")
+      expect(result.output).to match(/… \d+ unchanged lines/)
+      # the diff-aware recovery pointer wording
+      expect(result.output).to include("all +/- changes + headers kept")
     end
 
     it "leaves output untouched when compression is disabled (default)" do

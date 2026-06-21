@@ -457,6 +457,31 @@ module Rubino
             "max_stack_traces" => 3,
             # Lines of surrounding context kept around each failure.
             "context_lines" => 4
+          },
+          # DIFF compression (model-facing `:output` of a `git diff` / unified
+          # diff). The human view is the tool `:body` (the full coloured diff in
+          # scrollback) and is NEVER touched — only the model's copy is trimmed.
+          # No own `enabled` flag (like `code`): active when the master flag is
+          # on; the saving guard below is the real gate. Keeps every +/- line and
+          # every file/hunk header; trims far context and elides generated/lock
+          # files. A small/tight diff passes through byte-identical automatically.
+          "diff" => {
+            # Unchanged context kept on each side of a change; far context is
+            # collapsed into a `… N unchanged lines` marker.
+            "context_lines" => 3,
+            # Diffs shorter than this pass through UNCHANGED (the common
+            # "show me the diff" case the human wants to see verbatim).
+            "min_lines" => 40,
+            # Only apply when the compressed result is at least this much
+            # smaller; otherwise byte-identical passthrough.
+            "min_saving" => 0.25,
+            # Changed files matching any of these collapse to a one-line summary
+            # (`path: +X/-Y lines, N hunks — elided (generated)`). A trailing `/`
+            # matches a directory; a `*` glob matches the basename.
+            "generated_patterns" => %w[
+              *.lock Gemfile.lock package-lock.json yarn.lock pnpm-lock.yaml
+              composer.lock *.min.js *.min.css dist/ build/ *.snap vendor/
+            ]
           }
         },
         "file_read" => {

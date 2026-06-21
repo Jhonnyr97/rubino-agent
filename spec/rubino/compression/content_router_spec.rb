@@ -14,6 +14,10 @@ RSpec.describe Rubino::Compression::ContentRouter do
                                "strategy" => "skeleton", "min_lines" => 5,
                                "keep_method_body_max_lines" => 2)
     end
+    Rubino.configuration.set("tool_output_compression", "diff",
+                             "context_lines" => 3, "min_lines" => 10, "min_saving" => 0.25,
+                             "generated_patterns" =>
+                               Rubino::Compression::DiffCompressor::DEFAULT_GENERATED)
     return unless logs
 
     Rubino.configuration.set("tool_output_compression", "logs",
@@ -46,6 +50,8 @@ RSpec.describe Rubino::Compression::ContentRouter do
     "#{(1..12).map { |i| "lib/file#{i}.rb:#{i * 3}:  def method_#{i}" }.join("\n")}\n"
   end
 
+  # A SMALL/tight diff — the common "show me the diff" case the saving guard
+  # must let through byte-identical.
   let(:diff_output) do
     <<~DIFF
       diff --git a/x.rb b/x.rb
@@ -54,6 +60,21 @@ RSpec.describe Rubino::Compression::ContentRouter do
       +new line
        context
     DIFF
+  end
+
+  # A LARGE diff: one change buried in a long run of unchanged context — the
+  # DiffCompressor trims the far context while keeping the +/- lines + headers.
+  let(:wide_diff) do
+    ctx_before = (1..30).map { |i| " ctx-before-#{i}" }
+    ctx_after  = (1..30).map { |i| " ctx-after-#{i}" }
+    body = [*ctx_before, "-old line", "+new line", *ctx_after].join("\n")
+    "diff --git a/big.rb b/big.rb\n--- a/big.rb\n+++ b/big.rb\n@@ -1,61 +1,61 @@\n#{body}\n"
+  end
+
+  # A LOCKFILE diff — collapses to a one-line generated-file summary.
+  let(:lockfile_diff) do
+    body = (1..40).map { |i| i.even? ? "+    gem-#{i} (1.0)" : "-    gem-#{i} (0.9)" }.join("\n")
+    "diff --git a/Gemfile.lock b/Gemfile.lock\n--- a/Gemfile.lock\n+++ b/Gemfile.lock\n@@ -1,40 +1,40 @@\n#{body}\n"
   end
 
   context "when compression is disabled (default)" do
@@ -92,16 +113,39 @@ RSpec.describe Rubino::Compression::ContentRouter do
       expect(result.content_type).to eq(:grep)
     end
 
-    it "PASSES THROUGH a diff byte-identical (its own +/- channel)" do
+    it "PASSES THROUGH a SMALL diff byte-identical (saving guard — 'show me')" do
       result = router.route(diff_output, tool_name: "shell", compress_hint: { stream_kind: :diff })
       expect(result.applied?).to be false
       expect(result.content_type).to eq(:diff)
     end
 
-    it "PASSES THROUGH a diff detected by content even without a hint" do
+    it "DETECTS a small diff by content even without a hint (still passthrough)" do
       result = router.route(diff_output, tool_name: "shell")
       expect(result.applied?).to be false
       expect(result.content_type).to eq(:diff)
+    end
+
+    it "COMPRESSES a large wide-context diff, keeping every +/- line + headers" do
+      result = router.route(wide_diff, tool_name: "shell", compress_hint: { stream_kind: :diff })
+      expect(result.applied?).to be true
+      expect(result.content_type).to eq(:diff)
+      expect(result.strategy).to eq(:diff)
+      expect(result.text).to include("-old line")
+      expect(result.text).to include("+new line")
+      expect(result.text).to include("diff --git a/big.rb b/big.rb")
+      expect(result.text).to match(/^@@ /)
+      expect(result.text).to match(/… \d+ unchanged lines/)
+      # far context dropped, near context kept
+      expect(result.text).not_to include(" ctx-before-1")
+      expect(result.text).to include(" ctx-after-1")
+    end
+
+    it "COLLAPSES a lockfile diff to a one-line generated summary" do
+      result = router.route(lockfile_diff, tool_name: "shell", compress_hint: { stream_kind: :diff })
+      expect(result.applied?).to be true
+      expect(result.content_type).to eq(:diff)
+      expect(result.text).to include("diff --git a/Gemfile.lock b/Gemfile.lock")
+      expect(result.text).to match(%r{Gemfile\.lock: \+\d+/-\d+ lines, 1 hunk — elided \(generated\)})
     end
 
     it "PASSES THROUGH short output untouched" do
