@@ -130,6 +130,57 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
       end
     end
 
+    # #536: `git diff --ext-diff` runs an external `diff.<n>.command` driver =
+    # arbitrary command execution with NO approval. The read-only subcommand
+    # (`diff`/`log`/`show`) is NOT enough to auto-allow — an exec-capable vector
+    # anywhere on the line must drop the command to the prompt.
+    context "with git exec-capable config/driver vectors (#536)" do
+      it "rejects --ext-diff / --textconv external-driver flags" do
+        ["git diff --ext-diff", "git diff --textconv", "git diff --textconv prog",
+         "git log --ext-diff", "git show --ext-diff"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (ext-diff/textconv = RCE)"
+        end
+      end
+
+      it "rejects -c / --config-env config overrides that run a command" do
+        ['git -c diff.external=touch\ /tmp/x diff',
+         "git -c core.pager=cmd log",
+         "git -cdiff.external=cmd diff",
+         "git -c core.sshCommand=cmd log",
+         "git -c core.fsmonitor=cmd status",
+         "git -c core.hooksPath=/tmp status",
+         "git -c core.editor=cmd log",
+         "git -c sequence.editor=cmd log",
+         "git --config-env diff.external=PWNVAR diff"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (-c config override = RCE)"
+        end
+      end
+
+      it "rejects per-name diff.<n>.command / .textconv and filter.<n>.clean drivers" do
+        ["git -c diff.foo.command=cmd diff",
+         "git -c diff.foo.textconv=cmd diff",
+         "git -c filter.lfs.clean=cmd diff",
+         "git -c filter.lfs.smudge=cmd diff"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (per-name driver = RCE)"
+        end
+      end
+
+      it "rejects path-redirect global flags (-C/--git-dir/--work-tree) pointing elsewhere" do
+        ["git -C /etc diff", "git --git-dir=/tmp/x status", "git --work-tree=/ status",
+         "git --exec-path=/tmp status"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (workspace/exec redirect)"
+        end
+      end
+
+      it "still auto-allows plain read-only git (no regression)" do
+        ["git diff", "git status", "git log", "git show", "git diff --stat",
+         "git log --oneline", "git rev-parse HEAD", "git blame lib/foo.rb",
+         "git diff --no-ext-diff", "git branch -a", "git remote -v"].each do |cmd|
+          expect(allowed?(cmd)).to be(true), "#{cmd.inspect} is read-only and must still auto-allow"
+        end
+      end
+    end
+
     context "with mutating flags on otherwise-safe heads" do
       it "rejects date -s and tree -o" do
         expect(allowed?("date -s '2026-01-01'")).to be false
