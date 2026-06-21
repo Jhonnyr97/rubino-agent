@@ -87,3 +87,18 @@
     each item's quantity times its unit price, in cents) and run the tests again
     to confirm they all pass. Do not change the tests.
   check: "ruby -Itest -Ilib test/inventory_test.rb"
+
+# BIG-LOG workload: the agent runs a command whose output is a long (200-line)
+# log dominated by passing/INFO noise with a single failure marker, then must
+# report the failure. This is the channel the compressor is BUILT for — the
+# ON arm should see the 200-line dump collapse to a handful of model-facing
+# lines (with the full output one `read` away).
+- id: report_failure
+  kind: find
+  fixture: biglog
+  prompt: >
+    Run exactly this shell command, then tell me the single line that reports a
+    failure (the one containing the word FAILED). Put just that line in your
+    final answer. Command:
+    for i in $(seq 1 200); do echo "INFO check $i passed ok"; done; echo "STEP 87 FAILED: timeout contacting service"; for i in $(seq 201 260); do echo "INFO check $i passed ok"; done
+  check: "grep -Eq 'STEP 87 FAILED' RESULT.txt"
