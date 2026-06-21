@@ -10,13 +10,18 @@ module Rubino
     #
     #   :log   → LogCompressor      (test/build/lint/shell dumps)
     #   :code  → Compressor(:code)  (Ruby source from a WHOLE-file read → skeleton)
-    #   :diff / :grep / :short / :json / :other → PASSTHROUGH (no compression)
+    #   :diff  → DiffCompressor     (unified diff → trimmed context + lock elision)
+    #   :grep / :short / :json / :other → PASSTHROUGH (no compression)
     #
-    # Passthrough IS the safety win: a `git diff`, a grep / search result
-    # (`file:line:` shaped), and any short output flow through BYTE-IDENTICAL —
-    # the library (headroom) benchmarks those at 0%, and compressing them would
-    # corrupt the exact-string anchors edit/grep rely on. JSON is a deliberate
-    # future extension point (detected, routed to passthrough today).
+    # The DIFF channel is special: a diff is the "show me the diff" view, and the
+    # human sees the FULL coloured diff in the tool `:body` (scrollback), which is
+    # rendered SEPARATELY at the executor and NEVER routed here. Only the model's
+    # `:output` reaches this seam. The DiffCompressor trims far context and elides
+    # generated/lock files but keeps every +/- line and every file/hunk header;
+    # behind its saving guard a small/tight diff passes through BYTE-IDENTICAL, so
+    # the common "show me" case is untouched. Grep / short / json still pass
+    # through verbatim (their value is exact-string anchors edit/grep rely on);
+    # JSON is a deliberate future extension point.
     #
     # The router NEVER raises into the caller: any strategy error falls back to a
     # no-op result whose `text` is meaningless, so the executor sends the
@@ -105,6 +110,7 @@ module Rubino
         case type
         when :log  then run_log(text)
         when :code then run_code(text, hint)
+        when :diff then run_diff(text)
         else Result.passthrough(type)
         end
       end
@@ -159,6 +165,18 @@ module Rubino
         return Result.passthrough(:log) unless result.applied?
 
         Result.new(applied: true, text: result.text, content_type: :log,
+                   strategy: result.strategy, saved_tokens_est: result.saved_tokens_est)
+      end
+
+      # Compress a unified diff (model-facing `:output` only; the human `:body`
+      # diff is rendered separately at the executor and never reaches here). The
+      # DiffCompressor's saving guard returns a no-op for small/tight diffs, so a
+      # "show me the diff" output passes through byte-identical without a sub-gate.
+      def run_diff(text)
+        result = DiffCompressor.new(@config.tool_output_compression_diff).compress(text)
+        return Result.passthrough(:diff) unless result.applied?
+
+        Result.new(applied: true, text: result.text, content_type: :diff,
                    strategy: result.strategy, saved_tokens_est: result.saved_tokens_est)
       end
 

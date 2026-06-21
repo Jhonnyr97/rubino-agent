@@ -328,7 +328,7 @@ output *is*, not by which tool produced it:
 | --- | --- | --- |
 | test / build / lint / shell logs (rspec, pytest, jest, cargo, npm, make, generic) | `LogCompressor` | keep every error/failure + the summary tally + context, drop passing/info noise (≈97% fewer tokens on a failing suite) |
 | a **whole-file** source read (Ruby) | code `skeleton` | keep signatures, elide large method bodies behind a `read offset:/limit:` pointer |
-| a unified diff (`git diff`, `diff`) | passthrough | **byte-identical** — diffs are their own channel |
+| a unified diff (`git diff`, `diff`) | `DiffCompressor` | keep every `+`/`-` line and every file/hunk header; trim far unchanged context to ±N lines; collapse a generated/lock file to a one-line summary. A small/tight diff (the "show me the diff" case) passes through **byte-identical** via the saving guard. The human view is the tool's separate scrollback diff (`body`), which is **never** compressed |
 | grep / search results (`path:line:`) | passthrough | **byte-identical** |
 | short output, or JSON | passthrough | unchanged (JSON is a reserved future strategy) |
 
@@ -349,7 +349,28 @@ tool_output_compression:
     max_warnings: 5
     max_stack_traces: 3
     context_lines: 4          # lines of surrounding context kept around each failure
+  diff:                       # unified diffs (git diff / diff) — model copy only
+    context_lines: 3          # unchanged context kept on each side of a change; far context → `… N unchanged lines`
+    min_lines: 40             # diffs shorter than this pass through unchanged ("show me the diff")
+    min_saving: 0.25          # only apply when ≥25% smaller; else byte-identical passthrough
+    generated_patterns:       # changed files matching these collapse to a one-line summary
+      - "*.lock"
+      - Gemfile.lock
+      - package-lock.json
+      - yarn.lock
+      - pnpm-lock.yaml
+      - composer.lock
+      - "*.min.js"
+      - "*.min.css"
+      - dist/
+      - build/
+      - "*.snap"
+      - vendor/
 ```
+
+> `diff` has **no** own `enabled` sub-gate (like `code`): it is active whenever
+> the master flag is on, and the saving guard (`min_lines` + `min_saving`) is the
+> real gate — small/tight diffs the user wants to see stay verbatim automatically.
 
 **Reversibility.** When the router compresses, the executor spills the *full
 original* to `<home>/tool-results/<call_id>.txt` and the compressed output ends
