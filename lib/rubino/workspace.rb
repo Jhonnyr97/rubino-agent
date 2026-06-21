@@ -73,13 +73,76 @@ module Rubino
         real
       end
 
-      # Test/teardown hook: drop all added roots (the primary is always derived
-      # live from config/cwd, so it can't be reset here).
+      # The SESSION current working directory — the single source of truth for
+      # "where am I right now". Relative file paths (read/write/edit/multi_edit/
+      # grep/glob/apply_patch, via Tools::Base#expand_workspace_path) and bare
+      # foreground shell commands all anchor here, so a `cd subdir` in the shell
+      # is honoured by every subsequent tool, not just the next shell call
+      # (#544/#545).
+      #
+      # Defaults to primary_root. The shell sets it on `cd` (and resets it to
+      # primary_root when a command wanders OUTSIDE the workspace).
+      #
+      # Stored THREAD-LOCAL on purpose: the parent agent loop runs on one thread
+      # (its cwd persists across calls), while every subagent runs in its own
+      # Thread (TaskTool#thread) and every background runner is its own thread —
+      # so a subagent/background runner reads a fresh nil and starts at
+      # primary_root, never inheriting the parent's cwd (subagent isolation). A
+      # process-wide ivar would WRONGLY share one cwd across the parent and all
+      # concurrent subagents.
+      def current_cwd
+        Thread.current[:rubino_session_cwd] || primary_root
+      end
+
+      # Sets the session cwd. Within the workspace sandbox the path is adopted
+      # as-is; in strict mode a path OUTSIDE every allowed root is refused and
+      # the cwd falls back to primary_root (the shell's soft-boundary reset). A
+      # nil/empty/non-directory path also resets to primary_root.
+      def current_cwd=(path)
+        str = path.to_s
+        Thread.current[:rubino_session_cwd] =
+          if str.empty? || !File.directory?(str) || (workspace_strict? && !within_roots?(str))
+            nil
+          else
+            str
+          end
+      end
+
+      # Test/teardown hook: drop all added roots AND clear this thread's session
+      # cwd (the primary is always derived live from config/cwd, so it can't be
+      # reset here).
       def reset!
         @mutex.synchronize { @added = [] }
+        reset_cwd!
+      end
+
+      # Clears ONLY the thread-local session cwd, leaving added roots intact.
+      # Used by the global spec before-hook so a `cd` (or a direct current_cwd=)
+      # on the main thread doesn't leak into the next example, WITHOUT wiping
+      # roots an `around`/`before` set up for that example.
+      def reset_cwd!
+        Thread.current[:rubino_session_cwd] = nil
       end
 
       private
+
+      # True when +path+ canonically resolves under any allowed root. Mirrors
+      # Tools::Base#within_workspace? but kept here so the cwd setter can self-
+      # validate without a Tools::Base instance.
+      def within_roots?(path)
+        real = canonical(path)
+        return false unless real
+
+        canonical_roots.any? do |root_real|
+          real == root_real || real.start_with?("#{root_real}#{File::SEPARATOR}")
+        end
+      end
+
+      def workspace_strict?
+        Rubino.configuration&.dig("tools", "workspace_strict") != false
+      rescue StandardError
+        true
+      end
 
       def canonical(path)
         return nil if path.nil? || path.to_s.empty?
