@@ -131,6 +131,23 @@ module Rubino
           # any strip list — a node with no waiting child just gets a not-waiting
           # / not-yours error.
           register(Rubino::Tools::AnswerChildTool.new)
+          # retrieve_output: the ONLY recovery path for compressed tool output.
+          # Registered solely when tool_output_compression is enabled (the
+          # default is OFF), so the shipped registry count is unchanged. When on,
+          # the compression pointer carries an `id=…` and this tool reads the
+          # spilled original back — deliberately NO cat-able path is printed, so
+          # a small model can't shell-re-inflate the output compression shrank.
+          register(Rubino::Tools::RetrieveOutputTool.new) if tool_output_compression_enabled_default?
+        end
+
+        # True when compression is enabled in the resolved config, used to gate
+        # the retrieve_output tool's registration. Best-effort: any config error
+        # falls back to OFF (matching the shipped default), so a broken config
+        # never silently adds a tool that wouldn't otherwise be present.
+        def tool_output_compression_enabled_default?
+          Rubino.configuration.tool_output_compression_enabled?
+        rescue StandardError
+          false
         end
 
         # The delegate+poll toolset that MUST travel with `task` (spawn). The

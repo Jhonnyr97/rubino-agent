@@ -390,19 +390,28 @@ tool_output_compression:
 
 **Reversibility.** When the router compresses, the executor spills the *full
 original* to `<home>/tool-results/<call_id>.txt` and the compressed output ends
-with a pointer (`… N line(s) hidden … Full output: read <path>`). The model
-recovers the original with the normal `read` tool — there is no separate store or
-retrieve tool. **Fidelity:** a failure or summary line is never dropped; only
-passing/info noise is.
+with a passive pointer carrying the call's **id** (`… N line(s) hidden …
+retrieve_output id=<id> only if a hidden line is specifically needed`). The model
+recovers the original by calling the **`retrieve_output`** tool with that id —
+registered **only** while compression is enabled (so the default registry/tool
+count is unchanged). The pointer deliberately prints **no cat-able filesystem
+path**: recovery is an id behind a dedicated tool (headroom-style), so a small
+model can't `sed`/`grep`/`cat` a printed spill path and re-inflate the output the
+compressor just shrank. If the spill failed the pointer says *full output
+unavailable (spill failed)* with no id. **Fidelity:** a failure or summary line
+is never dropped; only passing/info noise is.
 
 **Per-call opt-out.** When the feature is on, `read` and `shell` advertise a
 `compress` boolean parameter (default `true`); the model can pass `compress:false`
 to receive the verbatim output for that one call (returned byte-identical).
 
 **Telemetry.** Compression events are logged as `compression.applied` /
-`compression.drill_in` / `compression.failed` with a `content_type` field; a
-strategy error always falls back to the uncompressed text, so compression can
-never break a tool call.
+`compression.drill_in` / `compression.failed`. `compression.drill_in` is emitted
+on every `retrieve_output` call (a deliberate recovery, carrying the `id`) and on
+a `read`'s targeted offset-read into an elided `:code` skeleton body — so the
+counter measures real recoveries and is **not** bypassable by a shell `sed`/
+`grep`/`cat` (there is no path to cat). A strategy error always falls back to the
+uncompressed text, so compression can never break a tool call.
 
 ### terminal
 

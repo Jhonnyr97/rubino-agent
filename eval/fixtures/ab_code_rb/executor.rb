@@ -4,14 +4,8 @@ require "securerandom"
 
 module Rubino
   module Agent
-    # The "what survived" phrase in a compression recovery pointer, per content
-    # type (anything else — logs — keeps the failures + summary).
-    COMPRESSION_KEPT_NOTES = { code: "signatures + small bodies kept",
-                               diff: "all +/- changes + headers kept",
-                               json: "schema + error/outlier rows kept" }.freeze
-
     # Executes tool calls with approval checks and result formatting.
-    class ToolExecutor # rubocop:disable Metrics/ClassLength
+    class ToolExecutor
       # The Loop registers its count+persist sink here after construction (the
       # executor is built first so the adapter/ToolBridge can share it). See
       # Loop#handle_tool_result.
@@ -156,14 +150,7 @@ module Rubino
       # so the turn-summary count and the `tool` message rows stay accurate
       # regardless of streaming mode. Best-effort: a sink failure must not take
       # down the tool call the model is waiting on.
-      # Drill-in telemetry for the recovery channel rides here: recovery is now
-      # ONLY via retrieve_output (no cat-able path), so a retrieve_output call IS
-      # the deliberate recovery — emit compression.drill_in with its id. Makes the
-      # counter meaningful (real recoveries) and unbypassable by a shell
-      # sed/grep/cat, which the old read-only detector missed. (:code's real-file
-      # offset-read drill-in detection in ReadTool stays as-is.)
       def finish(name, arguments, call_id, result)
-        log_retrieve_drill_in(arguments) if name == "retrieve_output"
         @on_result&.call(name: name, arguments: arguments, call_id: call_id, result: result)
         result
       rescue StandardError => e
@@ -578,11 +565,7 @@ module Rubino
         note_code_skeleton(compress_hint, router, result) if result.content_type == :code
 
         emit_compression_event(name, result, text)
-        # Pointer references the call_id-based id, NOT a path: recovery is only
-        # via retrieve_output. The id is the spill file's basename (already the
-        # sanitized call_id), so it round-trips; nil when the spill failed.
-        spill_id = spill_path ? File.basename(spill_path, ".txt") : nil
-        compressed = append_recovery_pointer(result.text, text, spill_id, result.content_type)
+        compressed = append_recovery_pointer(result.text, text, spill_path, result.content_type)
         [compressed, compression_metrics(result, metrics)]
       rescue StandardError => e
         Rubino.logger&.warn(event: "compression.seam_failed", tool: name,
@@ -619,21 +602,16 @@ module Rubino
       end
 
       # The reversibility pointer: a single line stating how much was hidden, that
-      # failures/summary (logs) or large bodies (code) are kept and normally
-      # sufficient, and — passively, only "if a hidden line is specifically
-      # needed" — the ID to recover the original verbatim via the retrieve_output
-      # tool. Deliberately NO filesystem path: the headroom-style recovery is an
-      # id behind a dedicated tool, so a small model can't `sed`/`grep`/`cat` a
-      # printed spill path and re-inflate the very output compression shrank. The
-      # conditional framing avoids baiting a reflexive drill-in. Falls back to a
-      # path-less, id-less note if the spill failed.
-      def append_recovery_pointer(compressed, original, spill_id, content_type)
+      # failures/summary (logs) or large bodies (code) are kept, and the spill
+      # path the model can `read` to get the original verbatim. Falls back to a
+      # path-less note if the spill failed.
+      def append_recovery_pointer(compressed, original, spill_path, content_type)
         orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
         kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
         hidden = [orig_lines - kept_lines, 0].max
-        kept_note = COMPRESSION_KEPT_NOTES[content_type] || "failures + summary kept"
-        recover = spill_id ? "retrieve_output id=#{spill_id} only if a hidden line is specifically needed" : "full output unavailable (spill failed)" # rubocop:disable Layout/LineLength
-        "#{compressed}\n[… #{hidden} lower-signal line(s) hidden by output compression — #{kept_note}, normally sufficient; #{recover}.]" # rubocop:disable Layout/LineLength
+        kept_note = content_type == :code ? "signatures + small bodies kept" : "failures + summary kept"
+        recover = spill_path ? "Full output: read #{spill_path}" : "Full output unavailable (spill failed) — re-run."
+        "#{compressed}\n[… #{hidden} line(s) hidden by output compression (#{kept_note}). #{recover}]"
       end
 
       def compression_metrics(result, existing)
@@ -662,18 +640,7 @@ module Rubino
       # on overflow — Util keeps the pure shaping, the executor keeps the IO).
       # Best-effort: a write failure just yields no path and the marker falls
       # back to its grep/head hint. Returns the path or nil.
-      # Emits compression.drill_in for a retrieve_output call (the deliberate
-      # recovery), carrying the id. Best-effort: telemetry never breaks the call.
-      def log_retrieve_drill_in(arguments)
-        id = arguments.is_a?(Hash) ? (arguments["id"] || arguments[:id]) : nil
-        Rubino.logger&.info(event: "compression.drill_in", tool: "retrieve_output", id: id.to_s)
-      rescue StandardError
-        nil
-      end
-
       def spill_full_output(text, call_id)
-        # Sanitized identically to RetrieveOutputTool so the pointer's id (this
-        # file's basename) round-trips back to it.
         id = call_id.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")
         return nil if id.empty?
 
