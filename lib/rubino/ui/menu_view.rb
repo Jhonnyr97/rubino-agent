@@ -40,7 +40,7 @@ module Rubino
 
         selected, top, max_rows = window.values_at(:selected, :top, :max_rows)
         slice = rows[top, max_rows] || []
-        pad   = slice.map { |r| LiveRegion.display_width((r[:pad_key] || r[:label]).to_s) }.max.to_i
+        pad   = slice.map { |r| LiveRegion.display_width(safe(r[:pad_key] || r[:label])) }.max.to_i
 
         out = []
         out << pastel.dim("┄ #{header} ┄") if header
@@ -65,7 +65,7 @@ module Rubino
       end
 
       def format_row(row, pad, cols, selected:)
-        label = row[:label].to_s
+        label = safe(row[:label])
         line = if selected
                  "#{pastel.cyan("❯")} #{pastel.inverse(" #{label} ")}"
                else
@@ -79,13 +79,28 @@ module Rubino
       # widens the selected label by 2 (its padding spaces), so the unselected
       # rows get +2 to line their descriptions up with the selected one.
       def append_desc(line, row, pad, selected:)
-        plain = (row[:pad_key] || row[:label]).to_s
+        plain = safe(row[:pad_key] || row[:label])
         line += " " * (pad - LiveRegion.display_width(plain) + (selected ? 0 : 2))
-        line + pastel.dim(row[:desc].to_s)
+        line + pastel.dim(safe(row[:desc]))
       end
 
       def sub_row(sub, cols)
-        LiveRegion.take_first_columns(pastel.dim("  #{sub}"), cols)
+        LiveRegion.take_first_columns(pastel.dim("  #{safe(sub)}"), cols)
+      end
+
+      # CWE-150 render-sink defense. Menu LABELS/descs/subs are UNTRUSTED — the
+      # `@file` palette feeds raw workspace filenames straight in, so a file
+      # named with embedded escapes (`\e[2J` clear-screen, `\e]0;…\a` OSC
+      # title-set, `\e[?1049h` alt-screen, CR/BEL) would otherwise be rendered
+      # VERBATIM to the TTY the instant the picker opens — pre-tool, no approval,
+      # no gesture (#563). Neutralize every dangerous control byte at THIS
+      # chokepoint so it covers ALL label sources (the @file completer, the /
+      # command menu, the agent picker). Use the SGR-preserving variant because
+      # callers legitimately pre-colour status spans (e.g. the picker's live
+      # glyph) — those inert color codes survive; everything that can move the
+      # cursor, repaint, set the title, or write the clipboard is caret-ised.
+      def safe(text)
+        Rubino::Util::Output.sanitize_terminal_keep_sgr(text.to_s)
       end
 
       def footer(selected, total, hints)
