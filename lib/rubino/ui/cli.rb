@@ -802,7 +802,9 @@ module Rubino
         $stdout.puts
         $stdout.puts @pastel.dim("┄ probe (ephemeral · not saved) ┄#{"─" * 28}")
         answer.to_s.each_line do |line|
-          $stdout.puts @pastel.dim("┊  #{line.chomp}")
+          # CWE-150 (#565): the probe answer is model output — defang escapes
+          # before wrapping it in our own (trusted) @pastel dim styling.
+          $stdout.puts @pastel.dim("┊  #{safe(line.chomp)}")
         end
         $stdout.puts @pastel.dim("┄ vanished · main thread untouched ┄#{"─" * 25}")
         $stdout.puts
@@ -819,7 +821,9 @@ module Rubino
         seed += "  + the probe above" if included_probe
         $stdout.puts
         $stdout.puts @pastel.dim("┄ branched ┄#{"─" * 50}")
-        label = title.to_s.strip.empty? ? "" : %(  "#{title}")
+        # CWE-150 (#568): the session title is user/model-set — defang escapes
+        # before it is interpolated into the dim @pastel branch row.
+        label = title.to_s.strip.empty? ? "" : %(  "#{safe(title)}")
         $stdout.puts @pastel.dim("┊  new session  #{short_new}#{label}")
         $stdout.puts @pastel.dim("┊  #{seed}")
         $stdout.puts @pastel.dim("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return")
@@ -2047,7 +2051,9 @@ module Rubino
       # dim 2-space `┊` rail — the SAME shape #commit_reasoning_aside commits, so
       # the live-streamed scrollback matches the all-at-once aside exactly.
       def reasoning_aside_lines(block)
-        block.to_s.split("\n", -1).map { |line| @pastel.dim("┊  #{line}") }
+        # CWE-150 (#566): committed reasoning is model output — defang escapes
+        # before wrapping each line in our own (trusted) @pastel dim styling.
+        block.to_s.split("\n", -1).map { |line| @pastel.dim("┊  #{safe(line)}") }
       end
 
       # The DIM live tail for the in-flight reasoning line — same wrap/clamp
@@ -2091,7 +2097,9 @@ module Rubino
           if open_fence?(remaining)
             # A half-open fence renders as garbage; emit the buffered text PLAIN
             # so nothing is lost, still margined to sit under the rest.
-            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{line}" }
+            # CWE-150 (#567): a half-open fence dumps RAW model text — defang
+            # escapes before the margined plain-line fallback prints it.
+            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{safe(line)}" }
           else
             margined_render(remaining)
           end
@@ -2442,7 +2450,9 @@ module Rubino
         $stdout.puts
         $stdout.puts @pastel.dim("┄ thinking ┄#{"─" * 50}")
         text.to_s.each_line do |line|
-          $stdout.puts @pastel.dim("┊  #{line.chomp}")
+          # CWE-150 (#566): committed reasoning is model output — defang escapes
+          # before wrapping the line in our own (trusted) @pastel dim styling.
+          $stdout.puts @pastel.dim("┊  #{safe(line.chomp)}")
         end
         $stdout.puts @pastel.dim("┄ thought for #{seconds}s ┄")
         $stdout.puts
