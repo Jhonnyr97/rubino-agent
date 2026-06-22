@@ -123,6 +123,18 @@ RSpec.describe Rubino::UI::SubagentView do
     end
   end
 
+  # A nested child has no human watching its view, so a menu must NOT raise the
+  # Base#select NotImplementedError that used to CRASH the child — e.g. an
+  # `explore` child hitting Loop#budget_extension_choice (@ui.select). nil makes
+  # the loop fall through to force-summarize (its documented headless guarantee).
+  describe "#select" do
+    it "returns nil instead of raising, so a child menu (e.g. budget prompt) can't crash it" do
+      expect { ui.select("Reached 50 tool iterations", [["Continue", :continue], ["Abort", :abort]]) }
+        .not_to raise_error
+      expect(ui.select("q", [["a", :a]])).to be_nil
+    end
+  end
+
   # #419: a headless mutating-subagent's write was auto-denied with "the user
   # denied it" though there is no interactive user. Root cause: SubagentView
   # inherited Base#interactive? => true, so the child's ToolExecutor took the
