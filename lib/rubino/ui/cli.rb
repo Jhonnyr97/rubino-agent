@@ -84,6 +84,16 @@ module Rubino
         # teardown run exactly once. Both are nil/false outside :full streaming.
         @reasoning_md       = nil
         @reasoning_streaming = false
+        # Mid-stream "transport silence" watchdog (#21): while a content/reasoning
+        # block streams, the in-flight tail owns the live row and the status row
+        # is hidden — so a multi-second silence from a burst-delivering model
+        # leaves the screen looking frozen even though the model is just slow.
+        # @last_stream_at is bumped on every tail paint / block commit; when it
+        # goes silent past STREAM_STALL_AFTER the ticker resurfaces the facet row
+        # BELOW @live_tail_frame (the last-painted tail, already styled+defanged;
+        # nil when no tail is live). Both are touched only under @status_mutex.
+        @last_stream_at  = nil
+        @live_tail_frame = nil
         # The last retained reasoning block (committed/collapsed), revealable via
         # ctrl-o even after the answer has streamed. Reset per turn.
         @last_reasoning = nil
@@ -1167,6 +1177,9 @@ module Rubino
           # The streamed answer gets the SAME single committed gap the
           # non-streamed path gets (P3) — once, when the content stream opens.
           answer_gap if type == :content
+          # Label the (hidden) status row for the stall watchdog (#21): if this
+          # block goes silent mid-stream, the resurfaced facet row reads "writing".
+          relabel_streaming(type)
         end
 
         # Signal the bottom composer that ANSWER content is now actively
@@ -1233,6 +1246,12 @@ module Rubino
 
       # Repaint cadence for the status-row animation (seconds).
       STATUS_TICK = 0.1
+      # How long the model stream may go silent mid-block before the facet status
+      # row resurfaces BELOW the in-flight tail (#21). Set just above a normal
+      # stream's p95 inter-delta gap (~0.25s on MiniMax) so steady streaming never
+      # flickers the row, but a real multi-second transport silence (bursty
+      # delivery / proxy stall) stops the screen looking frozen.
+      STREAM_STALL_AFTER = 0.6
       # "Ruby facet" skin: a red ◆ sweeping back and forth on a 5-cell dim ┄
       # track (the house separator glyph). 12-frame loop @100ms — the facet
       # dwells one extra beat at each end of the sweep.
@@ -1251,6 +1270,11 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
+        # Fresh turn: no stream tail in flight, silence clock unarmed (#21).
+        @status_mutex.synchronize do
+          @last_stream_at  = nil
+          @live_tail_frame = nil
+        end
         # Per-turn tally of plain "Approve once" choices by tool — drives the
         # bulk-refactor batch nudge (F4); reset each turn so a new refactor
         # re-detects its batch.
@@ -2077,6 +2101,9 @@ module Rubino
           @reasoning_md = StreamingMarkdown.new
           @reasoning_streaming = true
           commit_block_atomic(["", @pastel.dim("┄ thinking ┄#{"─" * 50}")])
+          # Label the hidden status row so a stall mid-reasoning resurfaces as
+          # "thinking" beneath the dim aside (#21).
+          relabel_streaming(:thinking)
         end
 
         completed = @reasoning_md.feed(text)
@@ -2101,6 +2128,7 @@ module Rubino
       def show_reasoning_tail(tail)
         text = Util::Output.sanitize_terminal(tail.to_s)
         if text.empty?
+          note_live_tail("")
           paint_live("")
           return
         end
@@ -2108,6 +2136,7 @@ module Rubino
         budget = terminal_cols - MD_MARGIN.length - 1
         rows = text.split("\n", -1).flat_map { |line| wrap_tail_row(line, budget) }
         framed = rows.last(LIVE_TAIL_ROWS).map { |row| @pastel.dim("┊  #{row}") }.join("\n")
+        note_live_tail(framed)
         paint_live(framed)
       end
 
@@ -2161,6 +2190,11 @@ module Rubino
       def commit_block_atomic(lines)
         return if lines.nil? || lines.empty?
 
+        # A committed block is visible progress AND tears the raw tail down: bump
+        # the silence clock and drop the stored tail so the stall watchdog (#21)
+        # measures from here and never redraws a tail that has already scrolled.
+        note_live_tail("")
+
         composer = BottomComposer.current
         if composer && $stdout.respond_to?(:live)
           # Route around the StdoutProxy's per-line buffering: hand the whole
@@ -2200,7 +2234,9 @@ module Rubino
       # under indented output read as a jarring seam. Off-TTY this is moot:
       # #paint_live skips pipes entirely (#56).
       def show_live_tail(tail)
-        paint_live(margined_tail(tail))
+        frame = margined_tail(tail)
+        note_live_tail(frame)
+        paint_live(frame)
       end
 
       # WRAPS the in-flight tail to the terminal width and keeps the last
@@ -2358,7 +2394,13 @@ module Rubino
           i = 0
           loop do
             @status_mutex.synchronize do
-              paint_live(status_frame(i)) if @status && @status[:visible]
+              if @status && @status[:visible]
+                paint_live(status_frame(i))
+              elsif stream_stalled?
+                # The model went silent mid-block: resurface the facet row below
+                # the frozen-looking tail so the wait reads as latency, not a hang.
+                paint_live(stall_frame(i))
+              end
             end
             i += 1
             sleep STATUS_TICK
@@ -2376,6 +2418,42 @@ module Rubino
           cell == pos ? @pastel.red("◆") : @pastel.dim("┄")
         end.join
         "#{track} #{@pastel.dim(status_text)}"
+      end
+
+      # True when a block is mid-stream (the in-flight tail owns the hidden
+      # status row) but the model has gone silent past STREAM_STALL_AFTER — the
+      # transport-silence window the facet row should resurface into (#21). The
+      # caller already holds @status_mutex.
+      def stream_stalled?
+        @turn_active && @stream_type && @status && !@status[:visible] &&
+          @last_stream_at && (monotonic_now - @last_stream_at) > STREAM_STALL_AFTER
+      end
+
+      # The resurfaced stall frame: the in-flight tail (when one is live) with the
+      # animated facet row beneath it, so a long silence keeps recent text in view
+      # AND shows the model is still working. Facet-only when no tail. The caller
+      # already holds @status_mutex; @live_tail_frame is pre-styled+defanged.
+      def stall_frame(tick)
+        row = status_frame(tick)
+        @live_tail_frame ? "#{@live_tail_frame}\n#{row}" : row
+      end
+
+      # Labels the (hidden) status row so the stall watchdog's resurfaced facet
+      # reads "writing" for the answer / "thinking" for a reasoning aside. No-op
+      # when no status row exists (a stream outside a turn bracket).
+      def relabel_streaming(type)
+        label = type == :content ? "writing" : "thinking"
+        @status_mutex.synchronize { @status[:label] = label if @status }
+      end
+
+      # Records the in-flight stream tail for the stall watchdog and bumps the
+      # silence clock. An empty/nil frame means the tail was torn down (block
+      # committed / stream ended) — the facet then resurfaces alone (#21).
+      def note_live_tail(frame)
+        @status_mutex.synchronize do
+          @last_stream_at  = monotonic_now
+          @live_tail_frame = frame.nil? || frame.empty? ? nil : frame
+        end
       end
 
       # The text to the right of the track. Thinking phase: turn-elapsed +
