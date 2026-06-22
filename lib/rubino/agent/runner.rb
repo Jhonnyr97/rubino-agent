@@ -213,7 +213,16 @@ module Rubino
       # showing as "active" forever and cleanup/list/--continue can tell a
       # finished session from a live one. Best-effort: a failure here must never
       # crash the exit path.
-      def end_session!
+      # +handoff+ marks an IN-SESSION switch (the in-chat `/new`) where the REPL
+      # immediately builds a fresh runner and stays interactive — as opposed to a
+      # teardown/headless close where the process is about to exit. On a handoff
+      # the end-of-session memory flush is ENQUEUED detached (so the prompt is
+      # never blocked 2-3s on the catch-all extract's aux LLM call) and the
+      # in-flight-polishing wait is skipped — the still-running process's worker
+      # drains the same process-global queue. Teardown/headless keep the
+      # synchronous flush + bounded wait so the row's facts are mined before the
+      # process dies (a detached job would never drain after exit).
+      def end_session!(handoff: false)
         # Nothing to end for a session that was never persisted (the user opened
         # chat and left without sending a message, #144) — there's no row.
         return if @session.nil? || (@session[:persisted] == false && !@session_repo.persisted?(@session[:id]))
@@ -227,7 +236,7 @@ module Rubino
         # double-extracts what the interval/compaction flush already mined) and
         # gated on memory.enabled + memory.auto_extract. Mirrors Hermes'
         # MemoryProvider#on_session_end. Best-effort: never breaks the exit.
-        flush_memory_on_session_end!
+        flush_memory_on_session_end!(handoff: handoff)
 
         @session_repo.end_session!(@session[:id])
       rescue StandardError
@@ -235,8 +244,10 @@ module Rubino
       ensure
         # Let any in-flight detached polishing settle (bounded) so a clean
         # teardown doesn't abandon a half-written extraction (#319). Best-effort:
-        # the cursor re-feeds anything unfinished next session anyway.
-        @polishing&.wait(3)
+        # the cursor re-feeds anything unfinished next session anyway. On a
+        # handoff we DON'T wait — the prompt must stay instant and the new
+        # runner's worker drains the same queue.
+        @polishing&.wait(3) unless handoff
         # Release the per-session advisory lock (#543) so a subsequent
         # `--continue`/`--resume` of this id in another live process can claim it
         # cleanly. The kernel also drops the flock on process exit/crash, so this
@@ -253,8 +264,20 @@ module Rubino
       # (so it's a no-op when memory/auto_extract is off and never re-mines what
       # the interval/compaction flush already extracted). Fully rescued so a
       # memory hiccup never crashes the exit path.
-      def flush_memory_on_session_end!
-        Memory::Flusher.new(config: @config).flush_on_session_end!(@session[:id])
+      #
+      # On a +handoff+ (the in-chat `/new`) the synchronous extract — an aux LLM
+      # call that froze the prompt 2-3s — is replaced by ENQUEUEING the SAME
+      # ExtractMemoryJob the post-turn path uses, detached (drain_inline: false),
+      # gated identically. The new runner's polishing worker drains it off the
+      # process-global queue, so `/new` returns instantly and no facts are lost.
+      def flush_memory_on_session_end!(handoff: false)
+        if handoff
+          return unless @config.memory_enabled? && @config.memory_auto_extract?
+
+          Jobs::Queue.new.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: false)
+        else
+          Memory::Flusher.new(config: @config).flush_on_session_end!(@session[:id])
+        end
       rescue StandardError
         nil
       end
