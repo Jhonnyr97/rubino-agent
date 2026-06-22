@@ -2887,6 +2887,10 @@ module Rubino
         entry = Tools::BackgroundTasks.instance.find(id)
         return ui.error("no background subagent with id #{id}") unless entry
 
+        # Switching straight from one attached sub to another (the picker is a
+        # switcher while attached): stop the OLD sub's watcher before re-pointing
+        # the scope, so it can never paint the new sub's view.
+        stop_agent_watcher
         @attached_id = id
         # Focus-gate the parent: while attached, a still-running parent turn
         # keeps streaming to its session but must NOT paint this sub's screen.
@@ -2896,17 +2900,26 @@ module Rubino
         composer = UI::BottomComposer.current
         composer&.suppress_main_render!(true)
         clear_terminal
+        snapshot = Array(entry.messages)
         with_focused_view_replay(composer) do
           ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
                   pastel.dim(" — type to steer · ← to go back"))
-          session_resolver.replay_messages(ui, entry.messages)
+          session_resolver.replay_messages(ui, snapshot)
         end
+        # Tail the sub's ongoing activity from where this snapshot left off, so
+        # the attached view stays live instead of freezing. No-op off a composer.
+        start_agent_watcher(id, ui, snapshot.size)
       end
 
       # Leave the agent-view and return to the main session: clear the screen,
       # replay the main timeline, drop the scope (build_prompt returns the default
       # ❯ again on the next idle composer).
       def detach_agent_view(runner, ui)
+        # Stop the live-tail watcher BEFORE dropping the scope: with @attached_id
+        # still set its still_attached? guard is true, so a tick racing detach
+        # would paint over the main replay below. Clearing @attached_id next makes
+        # the guard false for any in-flight tick, and the join'd thread is gone.
+        stop_agent_watcher
         @attached_id = nil
         clear_terminal
         # Rebuild the main view from its full session — this captures everything
@@ -2930,6 +2943,31 @@ module Rubino
         return yield unless composer
 
         composer.with_replay_exempt(&)
+      end
+
+      # Start the live-tail watcher for the just-attached sub (after the initial
+      # snapshot replay committed `rendered` messages). The watcher tails the
+      # sub's ongoing activity through the focused-view seam so the attached
+      # screen stays live. No-op off a composer (the watcher's #start returns nil
+      # there) — plain TTY / pipe / tests have nothing to tail in place.
+      def start_agent_watcher(id, ui, rendered)
+        @agent_watcher = Chat::AttachedAgentWatcher.new(
+          host: self, id: id, ui: ui, rendered_count: rendered
+        ).start
+      end
+
+      # Stop the live-tail watcher (detach, or switching to another sub). The
+      # ticker also self-exits the moment its still_attached? guard goes false, so
+      # this kill is belt-and-suspenders; it joins so no stray tick paints after.
+      def stop_agent_watcher
+        watcher = @agent_watcher
+        @agent_watcher = nil
+        return unless watcher
+
+        watcher.kill
+        watcher.join
+      rescue StandardError
+        nil # teardown is cosmetic — never break the view switch.
       end
 
       # Adopt a new runner for the REPL and rebuild the command executor against
