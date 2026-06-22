@@ -134,6 +134,18 @@ module Rubino
         # well-formed JSON error envelope on STDOUT under --output-format
         # json|stream-json — never an empty stdout, and never a raw backtrace.
         super(given_args, config.merge(debug: true))
+      rescue Interrupt, SignalException # rubocop:disable Lint/ShadowedException -- Interrupt listed for doc value; SignalException is its superclass
+        # Final backstop for Ctrl-C / signals that ESCAPED the per-command
+        # handlers — e.g. a SECOND Ctrl-C arriving during the interactive REPL's
+        # teardown (after its own `rescue Interrupt` already fired), or a bare
+        # Interrupt raised deep inside a blocking net/http read on a path the
+        # command didn't wrap. Those used to propagate to exe/rubino and dump a
+        # raw `net/protocol.rb … wait_readable: Interrupt` backtrace. Exit cleanly
+        # at this single chokepoint instead: 130 = the shell convention for a
+        # SIGINT-terminated process (128 + signal 2). The per-command paths still
+        # do their own graceful cancel first; this only catches the strays so the
+        # user never sees a backtrace from pressing Ctrl-C.
+        exit(130)
       rescue Rubino::Database::BusyError => e
         # Final backstop (#333/#359): a SUSTAINED concurrent-migration lock that
         # outlived the connection retry budget must surface as a clean single
