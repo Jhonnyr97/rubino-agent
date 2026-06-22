@@ -196,7 +196,7 @@ module Rubino
         # wired with this run's entry id + the parent CLI (whose live region hosts
         # the card) + the approval handler. In card mode the child's per-tool
         # activity feeds the registry instead of flooding $stdout (#124).
-        child_ui  = nested_ui_for(entry, parent_ui)
+        child_ui  = nested_ui_for(entry, parent_ui, approve: approval_handler_for(entry))
         runner    = build_subagent_runner(
           definition, ui: child_ui, event_bus: Interaction::EventBus.new
         )
@@ -226,7 +226,7 @@ module Rubino
         # The runner already renders through the card-mode child UI (wired at
         # spawn); with_ui binds that SAME instance thread-locally so any global
         # Rubino.ui lookup inside the nested loop also resolves to it.
-        ui_for_child = child_ui || nested_ui_for(entry, parent_ui)
+        ui_for_child = child_ui || nested_ui_for(entry, parent_ui, approve: approval_handler_for(entry))
         # Wire the child Loop with the entry's OWN steering queue (parent->child
         # `steer` channel) and bind the current-subagent id so a tool the child
         # invokes (ask_parent) can find its own registry entry. The steer queue
@@ -464,20 +464,26 @@ module Rubino
         end
       end
 
-      # Builds the child UI for a BACKGROUND run. In the interactive CLI it's a
-      # COLLAPSED-CARD SubagentView wired with this run's entry id (so its tool
-      # activity feeds the registry/card instead of flooding $stdout), the parent
-      # CLI (whose live region hosts the card), and the approval handler that
-      # surfaces a needed approval on the card + parks the child on a per-entry
-      # gate (Option 2). Off the CLI it's Null (headless/API stays silent and
-      # auto-approves as before).
-      def nested_ui_for(entry, parent_ui)
+      # Builds the child UI. In the interactive CLI it's a COLLAPSED-CARD
+      # SubagentView wired with this run's entry id (so its tool activity feeds
+      # the registry/card instead of flooding $stdout) and the parent CLI (whose
+      # live region hosts the card). Off the CLI it's Null (headless/API stays
+      # silent and auto-approves as before).
+      #
+      # +approve+ is the handler the card calls when a child's tool needs human
+      # approval: the BACKGROUND path passes #approval_handler_for (surface on the
+      # card + park the child thread on a per-entry gate). The SYNC path passes
+      # NOTHING (nil) — a sync child runs on the PARENT TURN's own thread, so
+      # parking it on a 15-min human gate would block the whole REPL with no
+      # idle prompt to resolve it; nil keeps the historical fail-closed auto-deny
+      # until focus-gating makes mid-turn child interaction first-class.
+      def nested_ui_for(entry, parent_ui, approve: nil)
         if parent_ui.is_a?(UI::CLI)
           UI::SubagentView.new(
             agent_name: entry.subagent,
             entry_id: entry.id,
             parent_ui: parent_ui,
-            approve: approval_handler_for(entry)
+            approve: approve
           )
         else
           UI::Null.new
@@ -578,9 +584,10 @@ module Rubino
         # Same CARD-mode child UI as the background path (#124): the sync child's
         # per-tool activity feeds the registry/card instead of flooding $stdout
         # with inline `⟂` rows. Wired with this run's reserved entry id + the
-        # parent CLI; the approval handler is harmless on the sync path (a sync
-        # child runs on THIS thread, but a tool that needs approval still parks on
-        # the per-entry gate, which the human resolves via /agents). Off the CLI
+        # parent CLI. NO approval handler is passed: a sync child runs on the
+        # PARENT TURN's own thread, so parking it on the 15-min human gate would
+        # block the whole REPL with no idle prompt to resolve it — sync keeps the
+        # historical fail-closed auto-deny until focus-gating lands. Off the CLI
         # this is Null (headless/API unchanged).
         runner = build_subagent_runner(definition, ui: nested_ui_for(entry, Rubino.ui))
         registry_bg.attach(entry, thread: Thread.current, runner: runner)

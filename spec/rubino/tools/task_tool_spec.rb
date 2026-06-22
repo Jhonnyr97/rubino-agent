@@ -307,6 +307,21 @@ RSpec.describe Rubino::Tools::TaskTool do
       Rubino.ui = Rubino::UI::API.new
       expect(built_child_ui).to be_a(Rubino::UI::Null)
     end
+
+    it "forwards an approval handler to the card when one is given (the BACKGROUND path)" do
+      Rubino.ui = Rubino::UI::CLI.new
+      handler = ->(*) { true }
+      ui = described_class.new.send(:nested_ui_for, entry, Rubino.ui, approve: handler)
+      expect(ui.interactive?).to be(true)
+    end
+
+    it "wires NO approval handler by default, so a SYNC child stays fail-closed (never parks the main turn thread)" do
+      Rubino.ui = Rubino::UI::CLI.new
+      # The sync path calls nested_ui_for WITHOUT an approve handler: a sync child
+      # runs on the parent turn's own thread, so the 15-min human-approval gate
+      # would block the whole REPL. Card rendering yes, mid-turn human park no.
+      expect(described_class.new.send(:nested_ui_for, entry, Rubino.ui).interactive?).to be(false)
+    end
   end
 
   # ---------------------------------------------------------------------------
