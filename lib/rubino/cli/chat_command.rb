@@ -2078,6 +2078,7 @@ module Rubino
         # window where inline jobs (memory auto-extract, skill distill) spend
         # aux-LLM seconds after the `↳ turn` footer — so `/` and `@` dropdowns
         # and ↑↓ history work whenever the prompt is visible (#169).
+        busy = busy_command_handler(runner)
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           rail: composer_rail,
                                           on_ctrl_o: ctrl_o_handler,
@@ -2089,7 +2090,13 @@ module Rubino
                                           status_line: build_status_line(runner),
                                           max_input_rows: Rubino.configuration.display_input_max_rows,
                                           paste_store: paste_store,
-                                          on_busy_command: busy_command_handler(runner))
+                                          # ← on an empty prompt backs out of an attached subagent view to the
+                                          # main timeline MID-TURN too (slice 3): routed through the SAME busy
+                                          # handler typed lines use so the detach happens IMMEDIATELY on the
+                                          # reader thread (not queued behind the still-running turn). Guarded by
+                                          # attached_to_agent? so it's a no-op cursor key when not attached.
+                                          on_back: -> { busy.call("/back") if attached_to_agent? },
+                                          on_busy_command: busy)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
