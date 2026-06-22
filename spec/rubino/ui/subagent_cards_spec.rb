@@ -24,12 +24,14 @@ RSpec.describe Rubino::UI::SubagentCards do
     expect(cards.card_lines([entry(status: :completed)])).to eq([])
   end
 
-  it "renders one collapsed card row per running subagent with the distinguishing activity" do
+  it "renders one COMPACT collapsed card row per running subagent (no noisy activity tail)" do
     e = entry(id: "sa_9ae4", tool_count: 14, last_activity: 'grep "def authenticate"',
               started_at: Time.now - 38)
     line = plain(cards.card_lines([e])).first
     expect(line).to include("▸ sa_9ae4 · explore · running · 14 tools")
-    expect(line).to include('grep "def authenticate"')
+    # The per-tool activity (long grep/glob args / paths) is intentionally NOT on
+    # the always-visible card — it lives in the agent's own view / drill-in.
+    expect(line).not_to include("grep")
   end
 
   it "stacks up to MAX_CARDS cards plus a single shared hint line" do
@@ -46,12 +48,13 @@ RSpec.describe Rubino::UI::SubagentCards do
     expect(lines.any? { |l| l.include?("+ 2 more") }).to be(true)
   end
 
-  it "keeps concurrent tasks distinguishable by last_activity (#127)" do
-    a = entry(id: "sa_a", last_activity: "read lib/auth/session.rb")
-    b = entry(id: "sa_b", last_activity: 'shell "bundle exec rspec"')
+  it "keeps concurrent tasks distinguishable by id (#127)" do
+    a = entry(id: "sa_a", subagent: "explore", last_activity: "read lib/auth/session.rb")
+    b = entry(id: "sa_b", subagent: "build", last_activity: 'shell "bundle exec rspec"')
     lines = plain(cards.card_lines([a, b]))
-    expect(lines[0]).to include("read lib/auth/session.rb")
-    expect(lines[1]).to include('shell "bundle exec rspec"')
+    # Distinguished by id + name on the compact card (the activity is off-card).
+    expect(lines[0]).to include("sa_a · explore")
+    expect(lines[1]).to include("sa_b · build")
   end
 
   describe "approval-surfacing card (Option 2)" do
@@ -134,12 +137,9 @@ RSpec.describe Rubino::UI::SubagentCards do
       failure_message { |str| "expected no raw escapes, got #{str.inspect}" }
     end
 
-    it "neutralizes escapes in a RUNNING card's last_activity" do
-      line = cards.card_lines([entry(last_activity: evil)]).join("\n")
-      expect(line).to have_no_raw_escapes
-      expect(line).to include("^[") # ESC shown as visible caret notation
-    end
-
+    # NOTE: last_activity is no longer rendered on the compact card (it moved to
+    # the agent view / drill-in), so the card-side last_activity escape sink is
+    # gone. The subagent NAME (still on the card) keeps its CWE-150 guard below.
     it "neutralizes escapes in a RUNNING card's subagent name" do
       line = cards.card_lines([entry(subagent: "ex\e[2J\aplore")]).join("\n")
       expect(line).to have_no_raw_escapes
@@ -167,11 +167,11 @@ RSpec.describe Rubino::UI::SubagentCards do
 
     it "preserves rubino's OWN SGR colour on a legit card (not stripped)" do
       colored = described_class.new(pastel: Pastel.new(enabled: true))
-      line = colored.card_lines([entry(last_activity: "read lib/app.rb")]).join("\n")
+      line = colored.card_lines([entry(id: "sa_z", subagent: "explore")]).join("\n")
       # the cyan glyph wrapper survives…
       expect(line).to include("\e[36m")
-      # …and the legible activity text is intact.
-      expect(line.gsub(/\e\[[0-9;]*m/, "")).to include("read lib/app.rb")
+      # …and the legible compact card text is intact.
+      expect(line.gsub(/\e\[[0-9;]*m/, "")).to include("sa_z · explore · running")
     end
   end
 end
