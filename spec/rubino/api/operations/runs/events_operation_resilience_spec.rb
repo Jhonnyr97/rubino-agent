@@ -226,7 +226,7 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
       event_store.append(session_id: run[:session_id], run_id: run[:id],
                          type: "run.completed", payload: { status: "ok" })
 
-      _, _, body = described_class.call(make_request(params: { id: run[:id] }))
+      _, _, body = described_class.new.call(make_request(params: { id: run[:id] }))
       chunks = body.to_a
 
       expect(chunks.length).to eq(2)

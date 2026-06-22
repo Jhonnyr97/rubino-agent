@@ -12,10 +12,6 @@ module Rubino
         #
         # @raise [Rubino::ValidationError] on missing/typo'd mode
         class UpdateOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           def call(request)
             attrs    = request.validate!(Schemas::UpdateMode)
             previous = Rubino::Modes.current

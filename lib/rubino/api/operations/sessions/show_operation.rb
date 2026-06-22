@@ -11,10 +11,6 @@ module Rubino
         #
         # @raise [Rubino::NotFoundError] when the session does not exist.
         class ShowOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository and message store for tests.
           def initialize(repository: nil, message_store: nil)
             @repository = repository || ::Rubino::Session::Repository.new

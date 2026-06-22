@@ -12,7 +12,7 @@ RSpec.describe "API contract: error envelope" do
   # A scratch operation we wire under /v1/__test/* to provoke each typed error
   # without depending on any real resource semantics.
   class ContractErrorRaiser
-    def self.call(request)
+    def call(request)
       kind = request.params.fetch("kind")
       case kind
       when "not_found"     then raise Rubino::NotFoundError.new("widget", "missing-id")

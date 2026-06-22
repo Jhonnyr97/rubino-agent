@@ -10,10 +10,6 @@ module Rubino
         # The source defaults to RubyLLM.models.all but accepts any callable
         # returning an enumerable of model objects/hashes for tests.
         class ListOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate model source (callable) for tests.
           def initialize(model_source: nil)
             @model_source = model_source || -> { RubyLLM.models.all }

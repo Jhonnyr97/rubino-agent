@@ -7,10 +7,6 @@ module Rubino
         # GET /v1/skills
         # Lists every registered skill annotated with its persisted enabled flag.
         class ListOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate skills registry and state repository for tests.
           def initialize(registry: nil, state_repository: nil)
             @registry = registry || ::Rubino::Skills::Registry.new

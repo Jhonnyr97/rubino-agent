@@ -18,10 +18,6 @@ module Rubino
           # @raise [Rubino::ValidationError] when the body fails Schemas::CallbackProvider or state mismatches.
           # @raise [Rubino::UpstreamError] when the provider's token exchange raises.
           class CallbackOperation
-            def self.call(request)
-              new.call(request)
-            end
-
             # Accepts an alternate provider registry and connection repository for tests.
             def initialize(registry: ::Rubino::OAuth::Registry, repository: nil)
               @registry = registry

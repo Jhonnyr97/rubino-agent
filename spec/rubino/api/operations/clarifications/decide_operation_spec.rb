@@ -19,7 +19,7 @@ RSpec.describe Rubino::API::Operations::Clarifications::DecideOperation do
   it "delivers the clarification response and returns 200" do
     run = create_run_with_gate
     gate.register("cl-1")
-    status, body = described_class.call(
+    status, body = described_class.new.call(
       make_request(body: { "response" => "use 8080" }, params: { run_id: run[:id], clarify_id: "cl-1" })
     )
     expect(status).to eq(200)
@@ -31,13 +31,17 @@ RSpec.describe Rubino::API::Operations::Clarifications::DecideOperation do
     run = create_run_with_gate
     gate.register("cl-2")
     expect do
-      described_class.call(make_request(body: { "response" => "" }, params: { run_id: run[:id], clarify_id: "cl-2" }))
+      described_class.new.call(make_request(body: { "response" => "" },
+                                            params: { run_id: run[:id],
+                                                      clarify_id: "cl-2" }))
     end.to raise_error(Rubino::ValidationError)
   end
 
   it "returns 404 for unknown run" do
     expect do
-      described_class.call(make_request(body: { "response" => "yes" }, params: { run_id: "no", clarify_id: "cl-3" }))
+      described_class.new.call(make_request(body: { "response" => "yes" },
+                                            params: { run_id: "no",
+                                                      clarify_id: "cl-3" }))
     end.to raise_error(Rubino::NotFoundError)
   end
 end

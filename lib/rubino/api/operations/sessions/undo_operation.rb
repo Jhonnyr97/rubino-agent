@@ -11,10 +11,6 @@ module Rubino
         # @raise [Rubino::NotFoundError] when the session does not exist.
         # @raise [Rubino::ConflictError] when the session has no user message to undo.
         class UndoOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate session repository and message store for tests.
           def initialize(session_repository: nil, message_store: nil)
             @session_repo = session_repository || ::Rubino::Session::Repository.new

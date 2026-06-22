@@ -13,10 +13,6 @@ module Rubino
           DEFAULT_LIMIT = 20
           MAX_LIMIT     = 100
 
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts alternate dependencies for tests.
           def initialize(repository: nil, message_store: nil)
             @repository = repository || ::Rubino::Session::Repository.new

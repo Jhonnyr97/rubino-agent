@@ -36,6 +36,13 @@ module APIContractHelper
     raise NotImplementedError, "spec must define #contract_router"
   end
 
+  # The router instantiates each route's operation (`operation.new.call(req)`).
+  # Contract specs build operations with DI'd test repos/backends, so wrap a
+  # pre-built instance in a stub whose `.new` yields that same instance.
+  def route_to(instance)
+    Class.new { define_singleton_method(:new) { instance } }
+  end
+
   def auth_headers
     { "HTTP_AUTHORIZATION" => "Bearer #{API_KEY}" }
   end

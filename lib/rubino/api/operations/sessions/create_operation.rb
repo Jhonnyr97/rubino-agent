@@ -10,10 +10,6 @@ module Rubino
         # @return [[Integer, Hash]] 201 + session payload.
         # @raise [Rubino::ValidationError] when the body fails Schemas::CreateSession.
         class CreateOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository for tests.
           def initialize(repository: nil)
             @repository = repository || ::Rubino::Session::Repository.new

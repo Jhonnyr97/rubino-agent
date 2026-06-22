@@ -10,10 +10,6 @@ module Rubino
         # @return [[Integer, Hash]] 204 No Content.
         # @raise [Rubino::NotFoundError] when the session does not exist.
         class DeleteOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository for tests.
           def initialize(repository: nil)
             @repository = repository || ::Rubino::Session::Repository.new
