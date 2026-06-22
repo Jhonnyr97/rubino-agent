@@ -367,11 +367,12 @@ module Rubino
         # A raw `\e[…` in the command can move the cursor / clear the line and
         # SPOOF what the approval card shows ("rm -rf" hidden, a benign command
         # painted over it), so the human approves something other than what runs.
-        # Neutralize to visible caret notation before the trusted @pastel wrap.
-        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
+        # PATH 1 of the output funnel (#emit) strips every escape, THEN applies the
+        # trusted style around the now-inert text — the manual safe() wrap is gone.
+        emit("⚠ #{question}", style: :yellow)
         # The danger annotation is the single most safety-relevant line on the
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
-        $stdout.puts @pastel.red.bold("  ⚠ #{safe(description)}") unless description.to_s.empty?
+        emit("  ⚠ #{description}", style: %i[red bold]) unless description.to_s.empty?
 
         choice   = approval_choice(rule, tool: tool)
         approved = apply_choice(choice, scope: scope, command: command, rule: rule)
@@ -422,8 +423,9 @@ module Rubino
       # "y"/"yes" proceeds. Returns true only when the user affirmatively agreed.
       def confirm_destructive(question)
         # The question may interpolate an untrusted name (a session title, a fact
-        # body) — sanitize before the trusted yellow wrap (R3C-1, CWE-150).
-        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
+        # body) — the funnel's PATH 1 (#emit) strips escapes before the trusted
+        # yellow wrap (R3C-1, CWE-150).
+        emit("⚠ #{question}", style: :yellow)
         # Off a real terminal there is no one to answer; fail closed (decline)
         # so a piped `n` — or any pipe at all — can never destroy (#218).
         return false unless interactive_terminal?
@@ -434,7 +436,7 @@ module Rubino
         !!answer
       rescue TTY::Reader::InputInterrupt
         # Esc / Ctrl-C mid-prompt: treat as decline, never destroy.
-        $stdout.puts
+        emit_blank
         false
       end
 
@@ -453,8 +455,9 @@ module Rubino
         @session_batch_tip_shown = true if batch
         noun = session_scope_noun(tool)
         lead = batch ? "bulk edit detected" : "tip"
-        $stdout.puts @pastel.dim(
-          %(┄ #{lead}: choose "Approve — #{noun} (this session)" to approve #{noun} for the rest of this session ┄)
+        emit(
+          %(┄ #{lead}: choose "Approve — #{noun} (this session)" to approve #{noun} for the rest of this session ┄),
+          style: :dim
         )
       end
 
@@ -479,7 +482,7 @@ module Rubino
       end
 
       def separator
-        $stdout.puts @pastel.dim("─" * 80)
+        emit("─" * 80, style: :dim)
       end
 
       # Panel color diet (P8): dim label, PLAIN value, cyan reserved for the
@@ -488,13 +491,13 @@ module Rubino
       def panel_line(label, value, pointer: nil)
         row = "  #{@pastel.dim(label.to_s.ljust(10))} #{value}"
         row += "   #{@pastel.cyan(pointer)}" if pointer
-        $stdout.puts row
+        emit_styled(row)
       end
 
       # Welcome-panel hint row (P8): the actionable command is the ONE cyan
       # accent; its description stays plain.
       def hint_row(command, description)
-        $stdout.puts "    #{@pastel.cyan(command.to_s.ljust(9))} #{description}"
+        emit_styled("    #{@pastel.cyan(command.to_s.ljust(9))} #{description}")
       end
 
       # --- Compact timeline rendering (M2) ---
@@ -568,19 +571,22 @@ module Rubino
         budget = [terminal_cols - 1 - display_width(hang), 4].max
         rows   = wrap_tail_row(body, budget)
         indent = " " * hang.length
-        $stdout.puts(yield("#{hang}#{rows.first}"))
-        rows[1..].each { |row| $stdout.puts(yield("#{indent}#{row}")) }
+        # The block returns a rubino-styled line (its own @pastel SGR) built from
+        # already-sanitized +text+ → PATH 2 (#emit_styled) keeps the SGR, strips
+        # any residual danger byte.
+        emit_styled(yield("#{hang}#{rows.first}"))
+        rows[1..].each { |row| emit_styled(yield("#{indent}#{row}")) }
       end
 
       # Approval requested: renders as `◆ summary`
       def approval_requested(summary:, choices:)
-        $stdout.puts
-        # The summary is derived from the proposed tool/command (untrusted) —
-        # sanitize before the trusted wrap (R3C-1, CWE-150). Choice labels are
-        # rubino's own fixed menu text (trusted).
-        $stdout.puts @pastel.yellow("◆ #{safe(summary)}")
+        emit_blank
+        # The summary is derived from the proposed tool/command (untrusted) — the
+        # funnel's PATH 1 (#emit) strips escapes before the trusted wrap (R3C-1,
+        # CWE-150). Choice labels are rubino's own fixed menu text (trusted).
+        emit("◆ #{summary}", style: :yellow)
         choices.each do |choice|
-          $stdout.puts @pastel.dim("  [#{choice[:key]}] #{choice[:label]}")
+          emit("  [#{choice[:key]}] #{choice[:label]}", style: :dim)
         end
       end
 
@@ -589,7 +595,7 @@ module Rubino
         return if text.nil? || text.to_s.empty?
 
         text.each_line do |line|
-          $stdout.puts "  #{line.chomp}"
+          emit("  #{line.chomp}")
         end
       end
 
@@ -666,7 +672,7 @@ module Rubino
         # twice. The reset makes the marker land as ONE clean frame.
         reset_finalize_geometry
         clear_line
-        $stdout.puts @pastel.dim("  ⎿ interrupted")
+        emit("  ⎿ interrupted", style: :dim)
         $stdout.flush
         @turn_interrupting = false
       end
@@ -691,8 +697,8 @@ module Rubino
       def note(text)
         return if text.nil? || text.to_s.empty?
 
-        $stdout.puts unless @last_block == :gap
-        $stdout.puts @pastel.dim("┄ #{text} ┄")
+        emit_blank unless @last_block == :gap
+        emit("┄ #{text} ┄", style: :dim)
         @last_block = :other
       end
 
@@ -707,7 +713,7 @@ module Rubino
         pending = Array(@pending_subagent_footers)
         @pending_subagent_footers = nil
         line = ([text] + pending.map { |p| p[:fold] }).join(" · ")
-        $stdout.puts @pastel.dim("┄ #{line} ┄")
+        emit("┄ #{line} ┄", style: :dim)
         @last_block = :other
       end
 
@@ -741,7 +747,7 @@ module Rubino
         # tokens (no raw passthrough), so it is not a raw-escape sink.
         emit(line, style: status == "failed" ? :red : :dim)
         if report && !report.to_s.strip.empty?
-          $stdout.puts @pastel.dim("  ↳ report:")
+          emit("  ↳ report:", style: :dim)
           commit_markdown_block(report)
           remember_reported_subagent(id)
         end
@@ -757,13 +763,14 @@ module Rubino
       # through $stdout so (during a turn) it lands above the bottom composer like
       # every other committed line; between turns it prints inline.
       def subagent_ask_banner(id, subagent, question)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ a subagent needs you ┄")
-        $stdout.puts @pastel.red.bold("⛔ #{safe(id)} (#{safe(subagent)}) is BLOCKED, waiting on your answer")
-        # The child's escalated question is untrusted — sanitize (R3C-1, CWE-150).
-        $stdout.puts @pastel.yellow("   ❓ #{safe(question)}")
-        $stdout.puts @pastel.dim("   everything it needs is paused until you answer — #{ask_timeout_hint}")
-        $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
+        emit_blank
+        emit("┄ a subagent needs you ┄", style: :dim)
+        # id/subagent/question are untrusted — the funnel's PATH 1 (#emit) strips
+        # every escape before the trusted style wrap (R3C-1, CWE-150).
+        emit("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer", style: %i[red bold])
+        emit("   ❓ #{question}", style: :yellow)
+        emit("   everything it needs is paused until you answer — #{ask_timeout_hint}", style: :dim)
+        emit("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel", style: :dim)
         $stdout.flush
         # The ⛔ state is the loudest one — the whole subtree is parked on the
         # human — so it also rings the attention bell/hook.
@@ -799,15 +806,15 @@ module Rubino
       # never enters scrollback as a "real" answer — it is the visual contract
       # that nothing here was saved. Same render family as #note / #mode_changed.
       def probe_aside(answer)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ probe (ephemeral · not saved) ┄#{"─" * 28}")
+        emit_blank
+        emit("┄ probe (ephemeral · not saved) ┄#{"─" * 28}", style: :dim)
         answer.to_s.each_line do |line|
-          # CWE-150 (#565): the probe answer is model output — defang escapes
-          # before wrapping it in our own (trusted) @pastel dim styling.
-          $stdout.puts @pastel.dim("┊  #{safe(line.chomp)}")
+          # CWE-150 (#565): the probe answer is model output — the funnel's PATH 1
+          # (#emit) defangs escapes before our own (trusted) dim styling.
+          emit("┊  #{line.chomp}", style: :dim)
         end
-        $stdout.puts @pastel.dim("┄ vanished · main thread untouched ┄#{"─" * 25}")
-        $stdout.puts
+        emit("┄ vanished · main thread untouched ┄#{"─" * 25}", style: :dim)
+        emit_blank
       end
 
       # Confirms a `/branch` fork in the dim block from the locked UX: the new
@@ -819,16 +826,16 @@ module Rubino
         short_parent = parent_id.to_s[0..3]
         seed = "inherits  #{short_parent}  ▸ up to here"
         seed += "  + the probe above" if included_probe
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ branched ┄#{"─" * 50}")
-        # CWE-150 (#568): the session title is user/model-set — defang escapes
-        # before it is interpolated into the dim @pastel branch row.
-        label = title.to_s.strip.empty? ? "" : %(  "#{safe(title)}")
-        $stdout.puts @pastel.dim("┊  new session  #{short_new}#{label}")
-        $stdout.puts @pastel.dim("┊  #{seed}")
-        $stdout.puts @pastel.dim("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return")
-        $stdout.puts @pastel.dim("┄ now in  #{short_new} ┄#{"─" * 42}")
-        $stdout.puts
+        emit_blank
+        emit("┄ branched ┄#{"─" * 50}", style: :dim)
+        # CWE-150 (#568): the session title is user/model-set — the funnel's
+        # PATH 1 (#emit) defangs escapes before the dim branch row's styling.
+        label = title.to_s.strip.empty? ? "" : %(  "#{title}")
+        emit("┊  new session  #{short_new}#{label}", style: :dim)
+        emit("┊  #{seed}", style: :dim)
+        emit("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return", style: :dim)
+        emit("┄ now in  #{short_new} ┄#{"─" * 42}", style: :dim)
+        emit_blank
       end
 
       # Repaints the SUBAGENT CARD block in the live region from the
@@ -1417,9 +1424,11 @@ module Rubino
       # the transcript echoes it. Render-only — the literal text reached the
       # model already; only this echo is neutralized.
       def replay_user_input(text, at: nil)
-        $stdout.puts
-        $stdout.puts @pastel.green(Util::Output.sanitize_terminal(text.to_s))
-        $stdout.puts
+        emit_blank
+        # USER-SUPPLIED text — the funnel's PATH 1 (#emit) strips every escape
+        # before the trusted green wrap (CWE-150 — H1).
+        emit(text.to_s, style: :green)
+        emit_blank
         @last_block = :gap
       end
 
@@ -1470,7 +1479,7 @@ module Rubino
         shown  = limit.positive? ? lines.first(limit) : lines
         hidden = lines.size - shown.size
         write_body_lines(shown.join) { |chomped| @pastel.dim(chomped) }
-        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
+        emit("  #{hidden_lines_marker(hidden)}", style: :dim) if hidden.positive?
         @last_block = :tool
       end
 
@@ -1553,8 +1562,8 @@ module Rubino
       end
 
       def compression_started(at: nil)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ compacting context… ┄")
+        emit_blank
+        emit("┄ compacting context… ┄", style: :dim)
       end
 
       def compression_finished(metadata, at: nil)
@@ -1568,7 +1577,7 @@ module Rubino
         # inline in the SAME transcript. Falls back to the bare token line when
         # the counts aren't supplied (e.g. the API-shaped metadata).
         msg = before && after ? " (#{before}→#{after} msg)" : ""
-        $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok#{msg} ┄")
+        emit("┄ compacted · saved #{saved} tok#{msg} ┄", style: :dim)
       end
 
       # Ctrl+O reveal: re-render the LAST retained reasoning buffer as the
@@ -1634,8 +1643,8 @@ module Rubino
       # `/reasoning` with no arg: confirm the current render mode in house style.
       #   ┄ reasoning: collapsed ┄
       def reasoning_status(mode)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ reasoning: #{mode} ┄")
+        emit_blank
+        emit("┄ reasoning: #{mode} ┄", style: :dim)
       end
 
       # `/reasoning <mode>`: confirm the session render-mode switch. The actual
@@ -1646,35 +1655,35 @@ module Rubino
       # — "hidden" is otherwise opaque (no cue, no aside), so we spell out what it
       # does and how to bring reasoning back.
       def reasoning_changed(mode, previous: nil)
-        $stdout.puts
+        emit_blank
         if mode.to_sym == :hidden
-          $stdout.puts @pastel.dim("┄ reasoning hidden — won't be shown (ctrl-o or /reasoning to bring it back) ┄")
+          emit("┄ reasoning hidden — won't be shown (ctrl-o or /reasoning to bring it back) ┄", style: :dim)
         else
           arrow = previous && previous != mode ? "#{previous} → #{mode}" : mode.to_s
-          $stdout.puts @pastel.dim("┄ reasoning #{arrow} ┄")
+          emit("┄ reasoning #{arrow} ┄", style: :dim)
         end
       end
 
       # `/think` with no arg: confirm the current effort in house style.
       #   ┄ effort: medium ┄
       def think_status(effort)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ effort: #{effort} ┄")
+        emit_blank
+        emit("┄ effort: #{effort} ┄", style: :dim)
       end
 
       # `/think <level>`: confirm the effort switch.
       #   ┄ effort medium → high ┄
       def think_changed(effort, previous: nil)
         arrow = previous && previous != effort ? "#{previous} → #{effort}" : effort.to_s
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ effort #{arrow} ┄")
+        emit_blank
+        emit("┄ effort #{arrow} ┄", style: :dim)
       end
 
       def mode_changed(name, previous: nil)
         arrow = previous && previous != name ? "#{previous} → #{name}" : name.to_s
         text = "┄ mode #{arrow} ┄"
-        $stdout.puts
-        $stdout.puts(name.to_sym == :yolo ? @pastel.yellow(text) : @pastel.dim(text))
+        emit_blank
+        emit(text, style: name.to_sym == :yolo ? :yellow : :dim)
       end
 
       # Short human labels for the post-turn inline jobs the status row tracks.
@@ -1918,7 +1927,7 @@ module Rubino
         reset_tool_preview
         return unless hidden.positive?
 
-        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}")
+        emit("  #{hidden_lines_marker(hidden)}", style: :dim)
       end
 
       # Renders body text with the current activity open.
@@ -2437,7 +2446,7 @@ module Rubino
       # The dim one-liner committed in :collapsed mode:
       #   ┄ ✻ thought for <N>s · ctrl-o to show ┄
       def commit_reasoning_cue(seconds)
-        $stdout.puts @pastel.dim("┄ ✻ thought for #{seconds}s · ctrl-o to show ┄")
+        emit("┄ ✻ thought for #{seconds}s · ctrl-o to show ┄", style: :dim)
       end
 
       # The expanded reasoning aside (full mode / ctrl-o reveal), reusing the
@@ -2449,15 +2458,15 @@ module Rubino
       # would be redundant. The collapsed one-liner cue (#commit_reasoning_cue)
       # is the only place that carries the "ctrl-o to show" affordance.
       def commit_reasoning_aside(text, seconds)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ thinking ┄#{"─" * 50}")
+        emit_blank
+        emit("┄ thinking ┄#{"─" * 50}", style: :dim)
         text.to_s.each_line do |line|
-          # CWE-150 (#566): committed reasoning is model output — defang escapes
-          # before wrapping the line in our own (trusted) @pastel dim styling.
-          $stdout.puts @pastel.dim("┊  #{safe(line.chomp)}")
+          # CWE-150 (#566): committed reasoning is model output — the funnel's
+          # PATH 1 (#emit) defangs escapes before our own (trusted) dim styling.
+          emit("┊  #{line.chomp}", style: :dim)
         end
-        $stdout.puts @pastel.dim("┄ thought for #{seconds}s ┄")
-        $stdout.puts
+        emit("┄ thought for #{seconds}s ┄", style: :dim)
+        emit_blank
       end
 
       # --- Subagent delegation rows (the `task` tool) ---
@@ -2496,9 +2505,10 @@ module Rubino
         output = (result.respond_to?(:output) ? result.output : result).to_s
         if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
           # Background spawn: ONE lifecycle grammar (P6) — the live-card row
-          # shape, dim, no green ✓ (nothing finished yet; it only started).
-          # The spawn handle's name fields come from model args — sanitize.
-          $stdout.puts @pastel.dim("  └ ▸ #{safe(m[2])} · #{safe(m[1])} · started")
+          # shape, dim, no green ✓ (nothing finished yet; it only started). The
+          # spawn handle's name fields come from model args — the funnel's PATH 1
+          # (#emit) strips escapes before the dim wrap.
+          emit("  └ ▸ #{m[2]} · #{m[1]} · started", style: :dim)
         else
           # The subagent's output is UNTRUSTED — sanitize before the close-row
           # wrap (R3C-1, CWE-150).
@@ -2508,7 +2518,10 @@ module Rubino
             elsif delegation_noop?(result)       then ["⊘", :dim]
             else                                      ["✓", :dim] # quiet close — color only on failure (P1)
             end
-          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{safe(sub)}: #{summary}")
+          # sub is UNTRUSTED (model args); the funnel's PATH 1 (#emit) strips
+          # escapes before the close-row wrap (R3C-1, CWE-150). summary was
+          # already flattened+sanitized above; emit's sanitize is idempotent.
+          emit("  └ #{icon} #{sub}: #{summary}", style: color)
         end
         @delegation_subagent = nil
         @last_block = :tool
