@@ -1066,7 +1066,11 @@ module Rubino
       def commit_markdown_block(text)
         return if text.nil? || text.to_s.empty?
 
-        render_markdown_block(text).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
+        # Each rendered line is rubino-built with its own per-token SGR, off a
+        # source already sanitize_terminal'd in #render_markdown_block before
+        # parse. PATH 2 (#emit_styled) keeps that SGR and strips any residual
+        # danger byte.
+        render_markdown_block(text).each { |line| emit_styled("#{MD_MARGIN}#{line}") }
       end
 
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
@@ -1958,7 +1962,9 @@ module Rubino
           # continuation lines hang-indent under the first.
           wrap_tail_row(chomped, budget).each do |row|
             rendered = style ? style.call(row) : row
-            $stdout.puts "#{BODY_MARGIN}#{rendered}"
+            # +text+ was sanitize_terminal'd above; the style block adds rubino's
+            # own SGR → PATH 2 (#emit_styled) keeps that colour, strips danger.
+            emit_styled("#{BODY_MARGIN}#{rendered}")
           end
         end
       end
