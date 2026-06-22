@@ -70,9 +70,12 @@ module Rubino
           glyph = @pastel.cyan(COLLAPSED)
           state = entry.status == :stopping ? "stopping" : "running"
           count = entry.tool_count.to_i
-          body  = "#{entry.id} · #{safe(entry.subagent)} · #{state} · " \
-                  "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
-          body += " · #{safe(entry.last_activity)}" unless entry.last_activity.to_s.empty?
+          # Compact card: id · name · state · N tools · elapsed. The per-tool
+          # last_activity (often a long grep/glob arg or absolute path) is NOT
+          # shown here — too noisy on the always-visible card; the live detail
+          # lives in the agent's own view (Enter) / drill-in.
+          body = "#{entry.id} · #{safe(entry.subagent)} · #{state} · " \
+                 "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
           "  #{glyph} #{body}"
         end
       end
