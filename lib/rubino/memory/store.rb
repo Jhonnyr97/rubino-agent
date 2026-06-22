@@ -97,21 +97,10 @@ module Rubino
         resolve_row(id)
       end
 
-      # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
-      # nothing — a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
-      # so `memory delete ""` deleted the whole store and reported success (data
-      # loss, #416). An EXACT id always wins; a non-empty prefix is accepted ONLY
-      # when unambiguous (matches exactly one row), so a short id from
-      # `memory list` still resolves but a 1-char prefix can never mass-select.
+      # Resolve a caller-supplied id to AT MOST ONE row (shared with the sqlite
+      # backend, parameterized by this store's dataset).
       def resolve_row(id)
-        key = id.to_s
-        return nil if key.strip.empty?
-
-        exact = @db[:memories].where(id: key).first
-        return exact if exact
-
-        matches = @db[:memories].where(Sequel.like(:id, "#{key}%")).limit(2).all
-        matches.size == 1 ? matches.first : nil
+        Memory.resolve_row(@db[:memories], id)
       end
 
       # Lists memories with optional filters
@@ -225,13 +214,9 @@ module Rubino
         limit = group == "user" ? cfg.dig("memory", "user_char_limit") : cfg.dig("memory", "memory_char_limit")
         return unless limit && limit > 0
 
-        current = total_chars_for_group(group)
-        requested = content.to_s.length
-        return if current + requested <= limit
-
-        raise BudgetExceededError.new(
-          group: group, limit: limit, current: current, requested: requested
-        )
+        Memory.enforce_budget!(group: group, limit: limit,
+                               current: total_chars_for_group(group),
+                               requested: content.to_s.length)
       end
 
       # Update variant: subtract the row's current content length from the
@@ -244,12 +229,8 @@ module Rubino
         return unless limit && limit > 0
 
         current = total_chars_for_group(group) - existing[:content].to_s.length
-        requested = new_content.to_s.length
-        return if current + requested <= limit
-
-        raise BudgetExceededError.new(
-          group: group, limit: limit, current: current, requested: requested
-        )
+        Memory.enforce_budget!(group: group, limit: limit, current: current,
+                               requested: new_content.to_s.length)
       end
     end
   end

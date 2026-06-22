@@ -20,6 +20,8 @@ module Rubino
       # /skills activation; persistent disable stays a config edit (mcp.enabled
       # or removing the server).
       class MCP
+        include Display
+
         def initialize(ui:)
           @ui = ui
         end
@@ -189,39 +191,8 @@ module Rubino
           end
         end
 
-        # Wraps "<head><description>" to the terminal width, breaking only on
-        # whitespace, with continuation lines indented to the description column.
-        def wrap_skill_line(head, description)
-          width = terminal_width
-          indent = " " * head.length
-          avail  = [width - head.length, 20].max
-
-          lines = []
-          current = +""
-          description.split(/\s+/).each do |word|
-            candidate = current.empty? ? word : "#{current} #{word}"
-            if candidate.length > avail && !current.empty?
-              lines << current
-              current = word.dup
-            else
-              current = candidate
-            end
-          end
-          lines << current unless current.empty?
-          lines = [""] if lines.empty?
-
-          lines.each_with_index.map { |line, i| (i.zero? ? head : indent) + line }
-        end
-
         def pastel
           @pastel ||= Pastel.new
-        end
-
-        def terminal_width
-          cols = IO.console&.winsize&.last
-          cols&.positive? ? cols : 80
-        rescue StandardError
-          80
         end
       end
     end

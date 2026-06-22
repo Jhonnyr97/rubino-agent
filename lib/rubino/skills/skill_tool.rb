@@ -13,9 +13,6 @@ module Rubino
     # action: "create" (0 extra LLM calls; the create happens inline on the
     # tool-call the model already emitted).
     class SkillTool < Tools::Base
-      # kebab-case, <=64 chars, mirrors the skill-creator frontmatter contract.
-      NAME_RE = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
-
       def initialize(registry: nil)
         @registry = registry || Registry.new
       end
@@ -128,7 +125,7 @@ module Rubino
 
       def validate_create(skill_name, description, body)
         return "Cannot create skill: name is required." if skill_name.empty?
-        unless skill_name.match?(NAME_RE) && skill_name.length <= 64
+        unless skill_name.match?(Skill::NAME_RE) && skill_name.length <= 64
           return "Cannot create skill: name must be kebab-case (lowercase letters, " \
                  "digits, hyphens) and <=64 chars; got #{skill_name.inspect}."
         end
@@ -140,20 +137,8 @@ module Rubino
       end
 
       def write_skill(skill_name, description, body)
-        dir = File.join(skills_write_dir, skill_name)
-        FileUtils.mkdir_p(dir)
-        path = File.join(dir, "SKILL.md")
-        content = "---\nname: #{skill_name}\ndescription: #{yaml_scalar(description)}\n---\n\n"
-        content << body
-        content << "\n" unless content.end_with?("\n")
-        File.write(path, content)
-        path
-      end
-
-      # Quote the description so a colon/newline can't break the YAML frontmatter.
-      def yaml_scalar(text)
-        one_line = text.tr("\n", " ").strip
-        %("#{one_line.gsub('"', '\\"')}")
+        Skill.write!(dir: File.join(skills_write_dir, skill_name),
+                     name: skill_name, description: description, body: body)
       end
 
       # The agent HOME skills dir — the SAME place Installer writes to and the

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "yaml"
 
 module Rubino
@@ -15,6 +16,36 @@ module Rubino
     # sandboxed to the skill's own directory.
     class Skill
       attr_reader :name, :description, :path, :metadata, :linked_files
+
+      # A valid skill name: kebab-case lowercase letters/digits, <=64 chars.
+      # The single contract shared by the inline skill(create) tool, the
+      # post-turn distill job, and the installer's path-segment allowlist.
+      NAME_RE = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+
+      # Writes a <dir>/<name>/SKILL.md from the given fields and returns its path.
+      # The single skill-writer shared by the inline skill(create) tool and the
+      # distill job: it creates the dir, assembles the frontmatter (the
+      # description quoted as a one-line YAML scalar so a colon/newline can't
+      # break it), appends the body with a trailing newline, and writes. The
+      # caller owns everything situational — name/dup validation, the registry
+      # re-scan, the SKILL_CREATED event, any metrics — so the two paths keep
+      # their distinct side effects.
+      def self.write!(dir:, name:, description:, body:)
+        FileUtils.mkdir_p(dir)
+        path = File.join(dir, "SKILL.md")
+        content = "---\nname: #{name}\ndescription: #{yaml_scalar(description)}\n---\n\n"
+        content << body
+        content << "\n" unless content.end_with?("\n")
+        File.write(path, content)
+        path
+      end
+
+      # Quote the description as a one-line YAML scalar so a colon/newline in it
+      # can't break the frontmatter.
+      def self.yaml_scalar(text)
+        one_line = text.to_s.tr("\n", " ").strip
+        %("#{one_line.gsub('"', '\\"')}")
+      end
 
       # Languages this skill is scoped to (lower-cased tokens, e.g. ["ruby"]),
       # parsed from the optional `languages:` frontmatter key. Empty means the
