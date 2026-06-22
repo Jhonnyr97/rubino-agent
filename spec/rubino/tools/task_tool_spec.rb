@@ -275,31 +275,27 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
-  # nested UI selection (Phase 1 "see what a subagent is doing"):
-  # the default runner factory picks the child UI from Rubino.ui — a live
-  # SubagentView in the interactive CLI, silent Null everywhere else. The
-  # nested view is DISPLAY-ONLY (writes to $stdout), so it never enters the
-  # parent's messages or recorder; the result-only contract is unchanged.
+  # nested UI selection: BOTH paths (sync and background) build the child UI via
+  # #nested_ui_for — a CARD-mode SubagentView (entry_id wired) on the interactive
+  # CLI so the child's per-tool activity feeds the registry instead of flooding
+  # $stdout (#124 / agent-multiplexer Slice 1), silent Null everywhere else.
   # ---------------------------------------------------------------------------
 
   describe "nested UI selection" do
-    let(:explore) { Rubino.agent_registry.find("explore") }
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+    let(:entry)    { registry.reserve(subagent: "explore", prompt: "x") }
 
-    # Reach the private builder with the sync path's #nested_ui so we can inspect
-    # the child UI the default factory wires (no @runner_factory ⇒ the real
-    # Agent::Runner path).
     def built_child_ui
-      tool   = described_class.new
-      runner = tool.send(:build_subagent_runner, explore, ui: tool.send(:nested_ui, explore))
-      runner.instance_variable_get(:@ui)
+      described_class.new.send(:nested_ui_for, entry, Rubino.ui)
     end
 
     after { Rubino.ui = nil }
 
-    it "wires a SubagentView when the parent UI is the interactive CLI" do
+    it "wires a CARD-mode SubagentView (no inline flood) when the parent UI is the CLI" do
       Rubino.ui = Rubino::UI::CLI.new
       ui = built_child_ui
       expect(ui).to be_a(Rubino::UI::SubagentView)
+      expect(ui.card_mode?).to be(true)
     end
 
     it "keeps the child silent (Null) when the parent UI is Null" do
@@ -311,15 +307,31 @@ RSpec.describe Rubino::Tools::TaskTool do
       Rubino.ui = Rubino::UI::API.new
       expect(built_child_ui).to be_a(Rubino::UI::Null)
     end
+
+    it "forwards an approval handler to the card when one is given (the BACKGROUND path)" do
+      Rubino.ui = Rubino::UI::CLI.new
+      handler = ->(*) { true }
+      ui = described_class.new.send(:nested_ui_for, entry, Rubino.ui, approve: handler)
+      expect(ui.interactive?).to be(true)
+    end
+
+    it "wires NO approval handler by default, so a SYNC child stays fail-closed (never parks the main turn thread)" do
+      Rubino.ui = Rubino::UI::CLI.new
+      # The sync path calls nested_ui_for WITHOUT an approve handler: a sync child
+      # runs on the parent turn's own thread, so the 15-min human-approval gate
+      # would block the whole REPL. Card rendering yes, mid-turn human park no.
+      expect(described_class.new.send(:nested_ui_for, entry, Rubino.ui).interactive?).to be(false)
+    end
   end
 
   # ---------------------------------------------------------------------------
-  # CLI path: the subagent's tool activity surfaces on $stdout as nested rows,
-  # but the parent still receives ONLY the final result, and the child's tool
-  # events never reach the parent recorder.
+  # CLI sync path: the child's per-tool activity feeds the REGISTRY (card mode),
+  # NOT $stdout — no inline `⟂` rows flood the main timeline. The parent still
+  # receives ONLY the final result, and the child's tool events never reach the
+  # parent recorder.
   # ---------------------------------------------------------------------------
 
-  describe "CLI nested activity surfaces (display-only, isolation preserved)" do
+  describe "CLI sync delegation (card mode, no inline flood, isolation preserved)" do
     let(:child_final) { "explore says: found it in foo.rb" }
     let(:parent_llm)  { FakeLLMAdapter.new }
     let(:recorded_tool_events) { [] }
@@ -327,15 +339,17 @@ RSpec.describe Rubino::Tools::TaskTool do
     before { Rubino.ui = Rubino::UI::CLI.new }
     after  { Rubino.ui = nil }
 
-    # A runner factory that drives a SubagentView (the CLI-selected child UI)
-    # by firing a child tool_started/finished pair, then returns child_final —
-    # mirrors what a real nested loop would render while keeping the test
-    # deterministic (no real model).
-    def cli_task_tool(out)
+    # A runner factory that drives the card-mode child UI the way a real nested
+    # loop would: it fires a tool_started/finished pair on a SubagentView wired to
+    # THIS run's reserved entry (the same view #nested_ui_for builds), so the
+    # activity feeds the registry — never $stdout. The entry id is the bound
+    # current-subagent id (run_subagent binds it before running the child).
+    def cli_task_tool(_out)
       factory = lambda do |definition|
-        view = Rubino::UI::SubagentView.new(agent_name: definition.name, out: out)
         Class.new do
           define_method(:run!) do |_input, **_opts|
+            entry_id = Rubino.current_subagent_id
+            view = Rubino::UI::SubagentView.new(agent_name: definition.name, entry_id: entry_id)
             view.tool_started("grep", arguments: { "pattern" => "needle" })
             result = Rubino::Tools::Result.success(
               name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
@@ -348,16 +362,28 @@ RSpec.describe Rubino::Tools::TaskTool do
       Rubino::Tools::TaskTool.new(runner_factory: factory)
     end
 
-    it "renders the subagent's tool activity as nested rows while returning only the final result" do
+    # Runs a sync delegation with $stdout captured, returning [stdout, result].
+    def run_sync_delegation_capturing
       out = StringIO.new
+      original = $stdout
+      $stdout = out
       result = cli_task_tool(out).call("subagent" => "explore", "prompt" => "find needle", "background" => false)
+      [out.string, result]
+    ensure
+      $stdout = original
+    end
 
-      # The captured nested activity carries the subagent's steps...
-      stripped = out.string.gsub(/\e\[[0-9;]*m/, "")
-      expect(stripped).to include("⟂ explore · grep needle")
-      expect(stripped).to include("⟂ explore · ✓ grep · 3 matches")
+    it "records the child's activity to the registry (card mode) and emits NO inline ⟂ row" do
+      stdout, result = run_sync_delegation_capturing
 
-      # ...but the parent gets ONLY the subagent's final message as the result.
+      # No inline flood: the legacy nested rows never reach $stdout for a CLI spawn.
+      expect(stdout.gsub(/\e\[[0-9;]*m/, "")).not_to include("⟂")
+
+      # The per-tool detail lives in the BackgroundTasks registry (the card / drill-in).
+      entry = Rubino::Tools::BackgroundTasks.instance.list.find { |e| e.subagent == "explore" }
+      expect(entry.tool_count).to be >= 1
+
+      # ...and the parent gets ONLY the subagent's final message as the result.
       expect(result).to eq(child_final)
     end
 
@@ -746,41 +772,22 @@ RSpec.describe Rubino::Tools::TaskTool do
       )
     end
 
-    # P6: the completion line reuses the LIVE-CARD row shape
-    # (`▸ sa_… · explore · completed · 1 tool · 12s`); the report travels
-    # separately and is never amputated into the row.
-    describe "background completion line (#completion_summary)" do
-      it "renders the ▸ lifecycle row for a genuine completion" do
-        line = tool.send(:completion_summary, entry, "FOUND: lib/x.rb:42")
-        expect(line).to start_with("▸ sa_abc123")
-        expect(line).to include("· completed ·")
-        expect(line).not_to include("FOUND") # the report is not amputated into the row
+    # Agent-multiplexer Slice 1: the background-completion marker is MINIMAL —
+    # `✓ <name> · done` / `⊘ <name> · no-op` — with NO result summary, tool
+    # count, or report text (all per-tool detail stays in the registry / card).
+    describe "background completion marker (#completion_marker)" do
+      it "renders ✓ <name> · done for a genuine completion (no result text)" do
+        marker = tool.send(:completion_marker, entry, "done")
+        expect(marker).to eq("✓ explore · done")
       end
 
-      it "says no-op (not completed) when the subagent did nothing / was denied" do
-        noop = "(subagent 'explore' returned no output)"
-        line = tool.send(:completion_summary, entry, noop)
-        expect(line).to include("· no-op ·")
-        expect(line).not_to include("· completed ·")
-      end
-
-      it "pluralizes the tool count (1 tool, 3 tools) (#141)" do
-        one = tool.send(:completion_summary, entry(tool_count: 1), "ok")
-        expect(one).to include("· 1 tool")
-        many = tool.send(:completion_summary, entry(tool_count: 3), "ok")
-        expect(many).to include("· 3 tools")
-      end
-
-      it "appends the elapsed time when the entry carries timing" do
-        timed = entry
-        timed.started_at  = Time.now - 12
-        timed.finished_at = Time.now
-        line = tool.send(:completion_summary, timed, "ok")
-        expect(line).to match(/· 12s\z/)
+      it "renders ⊘ <name> · no-op when the subagent did nothing / was denied" do
+        marker = tool.send(:completion_marker, entry, "no-op")
+        expect(marker).to eq("⊘ explore · no-op")
       end
     end
 
-    describe "foreground delegation row (UI::CLI#delegation_finished, #123 path)" do
+    describe "foreground delegation marker (UI::CLI#delegation_finished)" do
       let(:cli) { Rubino::UI::CLI.new }
 
       def render(output_text)
@@ -796,16 +803,22 @@ RSpec.describe Rubino::Tools::TaskTool do
         $stdout = original
       end
 
-      it "renders ✓ for a genuine completion with output" do
+      it "renders the minimal ✓ <name> · done marker with NO result summary" do
         rendered = render("FOUND: lib/x.rb:42")
-        expect(rendered).to include("✓ explore:")
+        expect(rendered).to include("✓ explore · done")
+        expect(rendered).not_to include("FOUND") # the result never lands in main
         expect(rendered).not_to include("⊘")
       end
 
-      it "renders a neutral ⊘ (not ✓) for a no-op / denied delegation" do
+      it "renders the neutral ⊘ <name> · no-op marker for a no-op / denied delegation" do
         rendered = render("(subagent 'explore' returned no output)")
-        expect(rendered).to include("⊘ explore:")
-        expect(rendered).not_to include("✓ explore:")
+        expect(rendered).to include("⊘ explore · no-op")
+        expect(rendered).not_to include("✓ explore")
+      end
+
+      it "renders the red ✗ <name> · failed marker for a failed delegation" do
+        rendered = render("Error: unknown subagent 'nope'.")
+        expect(rendered).to include("✗ explore · failed")
       end
     end
   end
