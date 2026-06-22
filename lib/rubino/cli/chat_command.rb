@@ -1137,8 +1137,12 @@ module Rubino
                 if result[:new_session]
                   # /new: end the current session and rebuild the runner on a
                   # fresh one in place — the counterpart to the bare-chat resume.
+                  # handoff: the REPL stays interactive, so the end-of-session
+                  # memory flush is enqueued detached instead of blocking the
+                  # prompt 2-3s on its aux-LLM extract (the new runner's worker
+                  # drains it).
                   @branch_short_id = nil
-                  runner.end_session!
+                  runner.end_session!(handoff: true)
                   runner = swap_runner!(fresh_runner(ui), ui)
                   interacted = false
                   next

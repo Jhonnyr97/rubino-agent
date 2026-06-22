@@ -292,6 +292,25 @@ RSpec.describe Rubino::Agent::Runner do
 
       runner.end_session!
     end
+
+    it "on a handoff end_session! enqueues a DETACHED extract instead of the blocking flush (/new stays instant)" do
+      parent = seed_session_with_history(owner_pid: nil)
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      cfg = runner.instance_variable_get(:@config)
+      allow(cfg).to receive_messages(memory_enabled?: true, memory_auto_extract?: true)
+
+      # The synchronous aux-LLM flush (what froze the prompt 2-3s) must NOT run...
+      expect(Rubino::Memory::Flusher).not_to receive(:new)
+      # ...instead the SAME ExtractMemoryJob is enqueued detached (drain_inline: false),
+      # to be drained by the next runner's worker off the process-global queue.
+      queue = instance_double(Rubino::Jobs::Queue)
+      allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
+      expect(queue).to receive(:enqueue)
+        .with("ExtractMemoryJob", { session_id: parent[:id] }, drain_inline: false)
+
+      runner.end_session!(handoff: true)
+    end
   end
 
   # -----------------------------------------------------------------------
