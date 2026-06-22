@@ -196,7 +196,9 @@ module Rubino
         # wired with this run's entry id + the parent CLI (whose live region hosts
         # the card) + the approval handler. In card mode the child's per-tool
         # activity feeds the registry instead of flooding $stdout (#124).
-        child_ui  = nested_ui_for(entry, parent_ui, approve: approval_handler_for(entry))
+        child_ui  = nested_ui_for(entry, parent_ui,
+                                  approve: approval_handler_for(entry),
+                                  budget: budget_handler_for(entry))
         runner    = build_subagent_runner(
           definition, ui: child_ui, event_bus: Interaction::EventBus.new
         )
@@ -230,7 +232,9 @@ module Rubino
         # The runner already renders through the card-mode child UI (wired at
         # spawn); with_ui binds that SAME instance thread-locally so any global
         # Rubino.ui lookup inside the nested loop also resolves to it.
-        ui_for_child = child_ui || nested_ui_for(entry, parent_ui, approve: approval_handler_for(entry))
+        ui_for_child = child_ui || nested_ui_for(entry, parent_ui,
+                                                 approve: approval_handler_for(entry),
+                                                 budget: budget_handler_for(entry))
         # Wire the child Loop with the entry's OWN steering queue (parent->child
         # `steer` channel) and bind the current-subagent id so a tool the child
         # invokes (ask_parent) can find its own registry entry. The steer queue
@@ -485,13 +489,20 @@ module Rubino
       # parking it on a 15-min human gate would block the whole REPL with no
       # idle prompt to resolve it; nil keeps the historical fail-closed auto-deny
       # until focus-gating makes mid-turn child interaction first-class.
-      def nested_ui_for(entry, parent_ui, approve: nil)
+      #
+      # +budget+ is the handler #select calls when a child hits its tool-iteration
+      # ceiling and asks for more budget (#574). Same split as +approve+: the
+      # BACKGROUND path passes #budget_handler_for (park + dropdown grant); the
+      # SYNC path passes nil — a sync child on the parent thread can't park, so it
+      # force-summarizes (nil #select), exactly as today.
+      def nested_ui_for(entry, parent_ui, approve: nil, budget: nil)
         if parent_ui.is_a?(UI::CLI)
           UI::SubagentView.new(
             agent_name: entry.subagent,
             entry_id: entry.id,
             parent_ui: parent_ui,
-            approve: approve
+            approve: approve,
+            budget: budget
           )
         else
           UI::Null.new
@@ -538,6 +549,45 @@ module Rubino
             repaint_parent_cards(entry_parent_ui)
           end
           approved
+        end
+      end
+
+      # The budget-request handler the card-mode SubagentView calls (via #select)
+      # when a BACKGROUND child hits its tool-iteration ceiling (#574). It REUSES
+      # the approval gate: flips the entry to :needs_approval flagged as a BUDGET
+      # request (so the card / menu / resolve prompt read "wants +budget — grant?"
+      # rather than a tool approval), registers a per-entry Run::ApprovalGate, and
+      # BLOCKS the child thread on the gate's bounded wait (15min → summarize; a
+      # /agents <id> --stop cancel wakes it to summarize). The human grants/denies
+      # from the dropdown (Enter on the parked agent) or `/agents <id>`. The
+      # boolean decision is mapped to the Loop's #select contract: grant →
+      # :continue (the Loop raises the cap +step and re-enters the turn);
+      # deny / timeout / cancel → :summarize (force-summarize, today's behaviour).
+      def budget_handler_for(entry)
+        lambda do |question, *_args|
+          gate        = Run::ApprovalGate.new
+          approval_id = entry.id
+          gate.register(approval_id)
+          BackgroundTasks.instance.begin_approval(
+            entry.id, gate: gate, approval_id: approval_id,
+                      question: question.to_s, command: nil, budget: true
+          )
+          preview = Rubino::Util::Output.elide(
+            Rubino::Util::Output.first_nonblank_line(question.to_s), 80
+          )
+          surface_completion(entry_parent_ui,
+                             "⏏ #{entry.id} · #{entry.subagent} · wants +budget: #{preview} — /agents #{entry.id}")
+          repaint_parent_cards(entry_parent_ui)
+          ring_parent_attention(entry, "wants +budget: #{preview}")
+          begin
+            granted = decision_to_bool(gate.await(approval_id))
+          rescue Rubino::Interrupted
+            granted = false # a stop/cancel while parked → summarize and unwind
+          ensure
+            BackgroundTasks.instance.end_approval(entry.id)
+            repaint_parent_cards(entry_parent_ui)
+          end
+          granted ? :continue : :summarize
         end
       end
 

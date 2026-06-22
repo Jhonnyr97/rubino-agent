@@ -133,6 +133,36 @@ RSpec.describe Rubino::UI::SubagentView do
         .not_to raise_error
       expect(ui.select("q", [["a", :a]])).to be_nil
     end
+
+    # #574: WITHOUT a budget handler (legacy/foreground/headless) #select stays
+    # nil → the Loop force-summarizes, preserving the headless guarantee.
+    it "returns nil without a budget handler (preserves the headless guarantee)" do
+      view = described_class.new(agent_name: "explore", out: io, entry_id: "sa_1")
+      expect(view.select("Reached 50 tool iterations", [["Continue", :continue]])).to be_nil
+    end
+
+    # #574: WITH a budget handler (card-mode background path), #select delegates
+    # to it and returns the handler's Loop-contract symbol (:continue on a grant,
+    # :summarize on a deny) — the dropdown/gate decision in disguise.
+    it "delegates to the budget handler and returns its decision symbol" do
+      granted = described_class.new(agent_name: "explore", out: io,
+                                    entry_id: "sa_1", budget: ->(_prompt) { :continue })
+      denied  = described_class.new(agent_name: "explore", out: io,
+                                    entry_id: "sa_1", budget: ->(_prompt) { :summarize })
+      expect(granted.select("Reached 50 tool iterations", [])).to eq(:continue)
+      expect(denied.select("Reached 50 tool iterations", [])).to eq(:summarize)
+    end
+
+    it "passes the budget prompt text to the handler" do
+      seen = nil
+      handler = lambda do |prompt|
+        seen = prompt
+        :continue
+      end
+      view = described_class.new(agent_name: "explore", out: io, entry_id: "sa_1", budget: handler)
+      view.select("Reached 50 tool iterations", [])
+      expect(seen).to eq("Reached 50 tool iterations")
+    end
   end
 
   # #419: a headless mutating-subagent's write was auto-denied with "the user
