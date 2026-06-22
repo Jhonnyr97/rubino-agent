@@ -368,6 +368,20 @@ module Rubino
         # asks can never spawn OVERLAPPING takeover loops (#486); distinct from
         # @in_takeover (which only neuters the nested suspend/resume).
         @takeover_active = false
+
+        # Focus-gating (agent-multiplexer Slice 3): while the REPL is ATTACHED to
+        # a background subagent's view, the parent turn KEEPS RUNNING in the
+        # background (its messages still persist) but its output must NOT paint
+        # the screen the sub now owns. @main_render_suppressed gates print_above /
+        # set_partial / set_cards (the spinner streams through set_partial too) so
+        # main-turn frames DROP — they are NOT parked: detach replays the parent's
+        # full session from the store, so a parked raw line would only duplicate
+        # it. Distinct from @suspended (run_in_terminal's takeover, which stops the
+        # reader): the reader stays fully live so the user keeps typing into the
+        # sub. @replaying exempts the attach/detach REPLAY (the focused view the
+        # user is meant to see) from the gate — see #with_replay_exempt.
+        @main_render_suppressed = false
+        @replaying              = false
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -783,6 +797,12 @@ module Rubino
             (@parked_writes ||= []) << str
             return
           end
+          # Focus-gate: while ATTACHED to a sub's view, a parent turn keeps
+          # running but must not paint the sub's screen. DROP the frame (do NOT
+          # park — detach replays the parent's full session, so a parked line
+          # would duplicate it). The attach/detach REPLAY is exempt (@replaying).
+          return if @main_render_suppressed && !@replaying
+
           @partial = +""
           render_frame(committed: str)
         end
@@ -826,6 +846,10 @@ module Rubino
         # straight over the interactive prompt. Drop the frame — the next
         # #resume redraws the region and the ticker's next frame lands normally.
         return if @suspended
+        # Focus-gate (Slice 3): the parent turn's live tail AND the status
+        # spinner (paint_live → set_partial) must NOT animate over the attached
+        # sub's view. Drop the frame; the replay path is exempt (@replaying).
+        return if @main_render_suppressed && !@replaying
 
         @render.synchronize do
           @partial = (str || "").to_s
@@ -849,6 +873,9 @@ module Rubino
         # the frame, like #set_partial — the cards converge from the registry
         # snapshot on the next repaint after #resume.
         return if @suspended
+        # Focus-gate (Slice 3): the parent's subagent-card stack belongs to the
+        # MAIN view; don't repaint it over the attached sub. Drop the frame.
+        return if @main_render_suppressed && !@replaying
 
         capped = Array(lines).first(MAX_CARD_ROWS)
         @render.synchronize do
@@ -987,6 +1014,33 @@ module Rubino
           @status = (text || "").to_s
           redraw
         end
+      end
+
+      # Focus-gating seam (agent-multiplexer Slice 3): the REPL flips this true on
+      # attach to a subagent's view and false on detach back to main. While true,
+      # #print_above / #set_partial / #set_cards DROP main-turn frames so the
+      # parent turn (which keeps running) does not paint over the sub's view. The
+      # raw reader is untouched — the user keeps typing into the sub prompt. A
+      # plain assignment (read lock-free in the gated paths under @render); calling
+      # it off a composer is a no-op (the CLI guards with `&.`).
+      def suppress_main_render!(value)
+        @main_render_suppressed = !!value
+      end
+
+      def main_render_suppressed? = @main_render_suppressed
+
+      # Run +block+ with the main-render gate EXEMPTED, so the attach/detach
+      # REPLAY (the focused view the user is meant to see) renders even while
+      # main-render is suppressed. The reader thread drives both the replay and
+      # the attach itself, so this is never re-entered from two threads; the brief
+      # window in which a background parent-turn frame could also slip through is
+      # harmless — detach repaints main from the full session replay regardless.
+      def with_replay_exempt
+        prev = @replaying
+        @replaying = true
+        yield
+      ensure
+        @replaying = prev
       end
 
       # Handle a Ctrl+C pressed at the IDLE prompt (BH-2). Mirrors the industry

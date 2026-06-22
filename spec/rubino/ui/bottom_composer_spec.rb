@@ -2118,6 +2118,60 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # Focus-gating (agent-multiplexer Slice 3): while ATTACHED to a subagent's
+  # view, the parent turn keeps running but its output must NOT paint the screen
+  # the sub now owns. The three main-turn render paths DROP their frames; the
+  # attach/detach REPLAY is exempt so the focused view the user wants still
+  # paints. The raw input reader is untouched (not asserted here — see the PTY
+  # spec — but the gate never stops it, unlike #suspend).
+  describe "main-render suppression (#suppress_main_render!)" do
+    it "DROPS print_above / set_partial / set_cards frames while suppressed" do
+      composer.suppress_main_render!(true)
+      output.truncate(0)
+      output.rewind
+
+      composer.print_above("parent turn line")
+      composer.set_partial("parent streaming tok")
+      composer.set_cards(["▸ sa_1 · running"])
+
+      # No main-turn frame reached the terminal, and no live state was mutated.
+      expect(output.string).to eq("")
+      expect(composer.partial?).to be(false)
+      expect(composer.cards).to eq([])
+    end
+
+    it "renders again once suppression is lifted (detach resumes the main view)" do
+      composer.suppress_main_render!(true)
+      composer.suppress_main_render!(false)
+      composer.print_above("parent line back on screen")
+      expect(output.string).to include("parent line back on screen\r\n")
+    end
+
+    it "EXEMPTS the attach/detach replay (#with_replay_exempt) from the gate" do
+      composer.suppress_main_render!(true)
+      output.truncate(0)
+      output.rewind
+
+      composer.with_replay_exempt do
+        composer.print_above("replayed sub transcript row")
+      end
+
+      # The replay paints even while main-render is suppressed...
+      expect(output.string).to include("replayed sub transcript row\r\n")
+      # ...and the exemption is scoped: a main-turn frame after it still drops.
+      output.truncate(0)
+      output.rewind
+      composer.print_above("parent line after replay")
+      expect(output.string).to eq("")
+    end
+
+    it "is a harmless no-op query when never suppressed" do
+      expect(composer.main_render_suppressed?).to be(false)
+      composer.suppress_main_render!(true)
+      expect(composer.main_render_suppressed?).to be(true)
+    end
+  end
+
   describe "render mutex serializes concurrent frames" do
     it "interleaved print_above + keystrokes never corrupt the buffer" do
       threads = []
