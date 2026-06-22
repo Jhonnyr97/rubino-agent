@@ -33,6 +33,12 @@ module Rubino
         # inlines the live set.
         TERMINAL_STATES = %i[completed failed stopped cancelled].freeze
 
+        # How many recent `✓ verb · hint` activity rows the live "doing now" block
+        # shows under its header — enough to convey intra-turn progress on a long
+        # turn that hasn't committed yet, few enough to stay within the composer's
+        # transient-row budget and not crowd the committed transcript above.
+        MAX_LIVE_ROWS = 3
+
         # @param host           the ChatCommand — supplies session_resolver,
         #                        with_focused_view_replay, pastel and the
         #                        @attached_id focus guard.
@@ -102,7 +108,8 @@ module Rubino
           messages = Array(entry.messages)
           return if messages.size <= @rendered_count
 
-          @host.send(:session_resolver).replay_messages(@ui, messages[@rendered_count..])
+          @host.send(:session_resolver)
+               .replay_messages(@ui, messages[@rendered_count..], banner: false)
           @rendered_count = messages.size
         end
 
@@ -120,17 +127,28 @@ module Rubino
           composer.set_partial(frame)
         end
 
-        # The one-liner: `⟂ <sub> · running · <n> tools · <activity>`. activity
-        # prefers the running last_activity, falling back to the freshest
-        # output_tail line; both are bounded by the registry.
+        # The live "doing now" block. A subagent's COMMITTED transcript
+        # (entry.messages) only grows when a turn PERSISTS — so a long turn that
+        # fires many tool calls before it commits would leave #commit_message_delta
+        # with nothing to show and the attached view frozen (the user's "rimane
+        # frizzato"). The registry's per-TOOL fields (tool_count + activity_log)
+        # advance live within that turn, so surface them here as a transient block:
+        # a `⟂ <sub> · <status> · <n> tools` header over the last few `✓ verb ·
+        # hint` activity rows. It repaints in place (set_partial) whenever the
+        # activity changes, so intra-turn progress shows before the turn commits.
+        # Falls back to last_activity / output_tail when the ring is empty.
         def live_tail_frame(entry)
-          pastel    = @host.send(:pastel)
-          activity  = entry.last_activity.to_s
-          activity  = Array(entry.output_tail).reject(&:empty?).last.to_s if activity.empty?
-          tools     = entry.tool_count.to_i
-          head      = "⟂ #{entry.subagent} · #{entry.status} · #{tools} tool#{"s" if tools != 1}"
-          head += " · #{activity}" unless activity.empty?
-          pastel.dim(head)
+          pastel = @host.send(:pastel)
+          tools  = entry.tool_count.to_i
+          head   = "⟂ #{entry.subagent} · #{entry.status} · #{tools} tool#{"s" if tools != 1}"
+          recent = Array(entry.activity_log).last(MAX_LIVE_ROWS)
+          if recent.empty?
+            activity = entry.last_activity.to_s
+            activity = Array(entry.output_tail).reject(&:empty?).last.to_s if activity.empty?
+            head += " · #{activity}" unless activity.empty?
+            return pastel.dim(head)
+          end
+          pastel.dim(([head] + recent.map { |row| "  #{row}" }).join("\n"))
         end
 
         # On the sub reaching a terminal state while attached: clear the live row,
