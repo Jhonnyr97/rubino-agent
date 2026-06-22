@@ -2884,6 +2884,14 @@ module Rubino
         clear_terminal
         snapshot = Array(entry.messages)
         with_focused_view_replay(composer) do
+          # Drop the global subagent-card stack: while attached, the focused view
+          # (this sub's transcript + the watcher's live "doing now" block) owns the
+          # screen. The cards' own repaints are already focus-gated off while
+          # attached, but the LAST set persists in @cards and would redraw under
+          # every watcher frame, crowding/clobbering the live block. Clearing here
+          # (replay-exempt, so it lands past the suppression gate) hands the bottom
+          # region to the watcher; detach lifts suppression and the cards return.
+          composer&.set_cards([])
           ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
                   pastel.dim(" — type to steer · ← to go back"))
           session_resolver.replay_messages(ui, snapshot)

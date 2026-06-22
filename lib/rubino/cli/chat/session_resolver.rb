@@ -132,19 +132,25 @@ module Rubino
         # Replay an ALREADY-FETCHED message list (the attach view passes the
         # child's `entry.messages` straight through, no second store hit). A no-op
         # on an empty list, framed by the same "Loaded N" status + separators the
-        # resume path shows.
-        def replay_messages(ui, messages)
+        # resume path shows. `banner:` false drops that "Loaded N" header + framing
+        # separators for an INCREMENTAL tail (the attached-agent watcher replays a
+        # few-message delta every ~0.4s; re-printing "Loaded N prior messages" on
+        # each one floods the focused view with banner noise) — the messages still
+        # render through the same per-message seam, just without the resume frame.
+        def replay_messages(ui, messages, banner: true)
           messages = Array(messages)
           return if messages.empty?
 
-          ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
-          ui.separator
+          if banner
+            ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
+            ui.separator
+          end
           # The accumulated assistant text already rendered in the CURRENT turn,
           # used to de-dupe a final message that RESTATES its earlier segments
           # (see #replay_assistant_text). Reset at each user-turn boundary.
           @assistant_turn_text = +""
           messages.each { |msg| replay_message(ui, msg) }
-          ui.separator
+          ui.separator if banner
         end
 
         private
