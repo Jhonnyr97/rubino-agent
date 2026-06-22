@@ -1022,14 +1022,16 @@ RSpec.describe Rubino::UI::CLI do
     # Slice 1: a background spawn only STARTED — the minimal dim marker `▸ <name>
     # · started` (the matching `done`/`failed` arrives later), no green ✓ and
     # none of the verbose spawn-handle sentence.
-    it "renders a minimal '▸ <name> · started' marker for a background spawn" do
+    it "renders a minimal '▸ <id> · <name> · started' marker for a background spawn" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1",
         output: "Started background subagent 'explore' as task sa_1. " \
                 "It is running now — keep working on other things."
       )
       out = render_delegation(result)
-      expect(out).to include("└ ▸ explore · started")
+      # The id leads so this row correlates with the standalone done marker that
+      # lands far below it once the child finishes.
+      expect(out).to include("└ ▸ sa_1 · explore · started")
       expect(out).not_to include("✓")
       expect(out).not_to include("It is running now")
     end

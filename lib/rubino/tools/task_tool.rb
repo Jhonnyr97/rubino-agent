@@ -252,11 +252,11 @@ module Rubino
         # must not surface as a ✗ "failed" notice (#108/#13).
         if entry.status == :stopped
           notify(sink, stopped_notice(entry))
-          surface_completion(parent_ui, "⊘ #{entry.subagent} · stopped",
+          surface_completion(parent_ui, "⊘ #{entry.id} · #{entry.subagent} · stopped",
                              id: entry.id, status: "stopped")
         else
           notify(sink, failure_notice(entry, e.message))
-          surface_completion(parent_ui, "✗ #{entry.subagent} · failed",
+          surface_completion(parent_ui, "✗ #{entry.id} · #{entry.subagent} · failed",
                              id: entry.id, status: "failed")
         end
         repaint_parent_cards(parent_ui)
@@ -303,15 +303,19 @@ module Rubino
       end
 
       # The MINIMAL main-timeline marker for a finished background subagent
-      # (agent-multiplexer Slice 1): `✓ <name> · done` / `⊘ <name> · no-op`. NO
-      # result summary, tool count, or report text reaches the main scrollback —
-      # all per-tool detail lives in the BackgroundTasks registry (the card /
-      # /agents drill-in). The full result still reaches the MODEL via the
-      # InputQueue completion notice and task_result. A no-op / fully-denied run
-      # (#16) reads "no-op", never a misleading green ✓.
+      # (agent-multiplexer Slice 1): `✓ <id> · <name> · done` / `⊘ <id> · <name>
+      # · no-op`. The id LEADS: a background child finishes far below its
+      # `● delegated → <name>` row in the append-only scroll (the parent kept
+      # streaming in between), so the done marker must self-identify by id rather
+      # than pretend to be `└`-nested under whatever row happens to precede it —
+      # and two same-named children (`explore`) stay distinguishable. NO result
+      # summary / tool count / report reaches the main scrollback — all per-tool
+      # detail lives in the registry (card / /agents drill-in); the full result
+      # reaches the MODEL via the InputQueue notice + task_result. A no-op /
+      # fully-denied run (#16) reads "no-op", never a misleading green ✓.
       def completion_marker(entry, status)
         icon = status == "no-op" ? "⊘" : "✓"
-        "#{icon} #{entry.subagent} · #{status}"
+        "#{icon} #{entry.id} · #{entry.subagent} · #{status}"
       end
 
       # Rings the parent's attention notifier (bell/command hook) for a child
