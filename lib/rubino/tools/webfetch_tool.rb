@@ -174,8 +174,17 @@ module Rubino
       # fetch never crashes and never returns a near-empty page.
       def strip_html(html)
         readability_extract(html)
-      rescue StandardError
-        # Malformed input or any nokogiri failure: never crash a fetch.
+      rescue Nokogiri::SyntaxError => e
+        # Malformed markup nokogiri couldn't parse — the expected fallback case.
+        # Degrade to the full-page legacy strip so the fetch still returns text.
+        Rubino.logger&.debug(event: "webfetch.readability.parse_failed", error: e.message)
+        legacy_strip_html(html)
+      rescue StandardError => e
+        # An UNEXPECTED extraction failure (not a parse error). Still degrade so a
+        # fetch never crashes, but log at warn so the bug is observable instead of
+        # silently making readability extraction permanently dead weight.
+        Rubino.logger&.warn(event: "webfetch.readability.unexpected_error",
+                            error: "#{e.class}: #{e.message}")
         legacy_strip_html(html)
       end
 
