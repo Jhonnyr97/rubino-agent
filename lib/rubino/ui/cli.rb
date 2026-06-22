@@ -520,8 +520,14 @@ module Rubino
         hint_str = hint ? " #{hint}" : ""
         # ONE blank before the first frame of a tool run; frames inside a run
         # butt together, and a gap left by the previous block isn't doubled (P3).
-        $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}"
+        emit_blank unless %i[tool gap].include?(@last_block)
+        # `● <name> <hint>`: a trusted cyan glyph + a dim body. The body's only
+        # UNTRUSTED span (the path inside +hint+) was already defanged in
+        # #args_hint and wrapped in rubino's own (trusted) OSC 8 link, so the
+        # whole row is rubino-built → PATH 2 (#emit_styled) keeps the cyan/dim
+        # SGR AND the now-OSC8-preserving sanitizer keeps the legit hyperlink,
+        # while still neutralizing any residual danger byte (Cat 2 + Cat 3).
+        emit_styled("#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}")
         @activity_open = true
         @activity_name = name
         @last_block = :tool
@@ -2490,11 +2496,17 @@ module Rubino
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub
-        # subagent name + prompt preview are UNTRUSTED (model-chosen args):
-        # sanitize before the trusted dim wrap (R3C-1, CWE-150).
-        preview = prompt ? "  #{truncate_inline(safe(prompt), 60)}" : ""
-        $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{safe(sub)}#{preview}")}"
+        # subagent name + prompt preview are UNTRUSTED (model-chosen args).
+        # #truncate_inline flattens newlines but does NOT touch escape bytes, so
+        # defang the preview source before clamping; the body's UNTRUSTED `sub`
+        # span is defanged by #emit_glyph below (its sanitize is idempotent on
+        # the already-clean preview, so the visual is unchanged).
+        preview = prompt ? "  #{truncate_inline(Util::Output.sanitize_terminal(prompt), 60)}" : ""
+        emit_blank unless %i[tool gap].include?(@last_block)
+        # `● delegated → <sub> <preview>`: a trusted cyan glyph composed with a
+        # dim, fully-defanged body — Cat 2's compose affordance. No hyperlink on
+        # this row, so the whole body can take PATH 1's strip-then-style.
+        emit_glyph("#{@pastel.cyan("●")} ", "delegated → #{sub}#{preview}", style: :dim)
         @activity_open = true
         @activity_name = "task"
         @last_block = :tool
@@ -2587,12 +2599,17 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        # The masked value is the UNTRUSTED command/path/pattern — neutralize
-        # escape bytes BEFORE building the open-row hint, so a `\e]0;…` in a
-        # filename/command can't drive the terminal from the `● name hint` row
-        # (R3C-1, CWE-150). Sanitize the raw text here, then rubino's own OSC-8
-        # hyperlink wrap (trusted) is applied around the clean label.
-        hint  = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
+        # Cat 3 (OSC 8), decision (a)+(b): the masked value is the UNTRUSTED
+        # command/path/pattern. DEFANG it FIRST — so both the link URI (the path)
+        # and the visible label are control-free — and ONLY THEN wrap the clean
+        # path in rubino's own (trusted) OSC 8 hyperlink. Building the link OUTSIDE
+        # the sanitized region means a malicious path can inject via NEITHER the
+        # URI nor the visible text. The `● name hint` row then rides PATH 2
+        # (#emit_styled in #activity_started): #sanitize_terminal_keep_sgr now
+        # PRESERVES a well-formed OSC 8 sequence (its URI is already control-free,
+        # so it can't smuggle a second OSC) while still defanging the label and
+        # every other byte — so the legit hyperlink survives and injection can't.
+        hint  = Util::Output.sanitize_terminal(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
         first = hint.lines.first.to_s.strip
         label = first.length > 60 ? "#{first[0, 57]}..." : first
 

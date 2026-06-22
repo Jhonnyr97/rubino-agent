@@ -100,6 +100,41 @@ RSpec.describe Rubino::UI::PrinterBase do
     end
   end
 
+  describe "#emit_glyph (PATH 1 compose — trusted prefix + untrusted body)" do
+    let(:pastel) { Pastel.new(enabled: true) }
+
+    it "keeps the trusted glyph's colour AND defangs the untrusted body" do
+      glyph = "#{pastel.cyan("●")} "
+      out = capture { printer.emit_glyph(glyph, evil, style: :dim) }
+      # rubino's OWN cyan glyph + dim body wrap are the only escapes; the body's
+      # CSI/OSC/BEL/CR payload must be gone.
+      expect(out).to include("\e[36m")               # cyan glyph survives
+      expect(out).to include("\e[2m")                # dim body wrap applied
+      payload = out.gsub(/\e\[[0-9;]*m/, "")
+      expect(payload).not_to include("\e]")          # no raw OSC in the body
+      expect(payload).not_to include("\a")
+      expect(payload).not_to include("\r")
+      expect(payload).to include("^[")               # ESC shown as caret
+    end
+
+    it "writes exactly one line" do
+      out = capture { printer.emit_glyph("#{pastel.cyan("●")} ", "name", style: :dim) }
+      expect(out.lines.size).to eq(1)
+    end
+  end
+
+  describe "#emit_frame (Cat 4 — rubino's own cursor-control frame)" do
+    it "writes rubino's cursor escapes through the seam WITHOUT a trailing newline" do
+      out = capture { printer.emit_frame("\r\e[2Khello") }
+      expect(out).to eq("\r\e[2Khello") # cursor control preserved, no puts newline
+    end
+
+    it "leaves an empty clear frame as an empty write" do
+      out = capture { printer.emit_frame("") }
+      expect(out).to eq("")
+    end
+  end
+
   describe "the centralized rows re-expressed on the funnel" do
     it "routes #info/#success/#warning/#error/#status through the funnel, defanged" do
       out = capture do
