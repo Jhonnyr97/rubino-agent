@@ -967,6 +967,77 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
+  # Budget-request handler (#574): a BACKGROUND child that hit its tool-iteration
+  # ceiling parks on the SAME approval gate to ask the human for more budget. The
+  # handler maps the human's grant/deny to the Loop's #select contract:
+  # grant → :continue (extend +step, re-enter the turn); else → :summarize.
+  # ---------------------------------------------------------------------------
+
+  describe "budget-request handler (#574)" do
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+    let(:entry)    { registry.reserve(subagent: "explore", prompt: "x") }
+    let(:tool)     { described_class.new }
+
+    def handler
+      tool.send(:budget_handler_for, entry)
+    end
+
+    it "parks the entry as a BUDGET request, blocks, then returns :continue on a grant" do
+      h = handler
+      decided = nil
+      th = Thread.new { decided = h.call("Reached 50 tool iterations") }
+
+      wait_until { registry.find(entry.id).status == :needs_approval }
+      parked = registry.find(entry.id)
+      expect(parked.budget_request).to be(true) # flavored as budget, not a tool approval
+      expect(parked.approval_question).to eq("Reached 50 tool iterations")
+      expect(parked.approval_command).to eq("") # no command to allowlist
+      expect(th).to be_alive # still blocked on the gate
+
+      parked.approval_gate.decide(parked.approval_id, true)
+      th.join(2)
+      expect(decided).to eq(:continue)
+      # State cleared back to running, the budget flag reset.
+      expect(registry.find(entry.id).status).to eq(:running)
+      expect(registry.find(entry.id).budget_request).to be(false)
+    end
+
+    it "returns :summarize when the human denies (decide false)" do
+      h = handler
+      decided = nil
+      th = Thread.new { decided = h.call("Reached 50 tool iterations") }
+      wait_until { registry.find(entry.id).status == :needs_approval }
+
+      e = registry.find(entry.id)
+      e.approval_gate.decide(e.approval_id, false)
+      th.join(2)
+      expect(decided).to eq(:summarize)
+    end
+
+    it "returns :summarize on a cancel (stop) while parked (Interrupted)" do
+      h = handler
+      decided = nil
+      th = Thread.new { decided = h.call("Reached 50 tool iterations") }
+      wait_until { registry.find(entry.id).status == :needs_approval }
+
+      registry.find(entry.id).approval_gate.cancel!
+      th.join(2)
+      expect(decided).to eq(:summarize)
+    end
+
+    it "returns :summarize when the bounded wait expires with no decision" do
+      gate = Rubino::Run::ApprovalGate.new
+      allow(Rubino::Run::ApprovalGate).to receive(:new).and_return(gate)
+      allow(gate).to receive(:await).and_wrap_original do |orig, id, **_|
+        orig.call(id, timeout: 0.05)
+      end
+
+      expect(handler.call("Reached 50 tool iterations")).to eq(:summarize)
+      expect(registry.find(entry.id).status).to eq(:running)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # task_result + task_stop companion tools (BashOutput / KillShell analogues).
   # ---------------------------------------------------------------------------
 

@@ -425,6 +425,18 @@ module Rubino
                       ])
       end
 
+      # The arrow-key picker for a subagent's BUDGET request (#574): it hit its
+      # tool-iteration ceiling and is asking for more. Reuses the same unified
+      # #approval_menu component, but the vocabulary is GRANT/DENY budget — there
+      # is no "always" (no command to allowlist; budget is a one-shot grant). The
+      # caller maps :grant→continue and :deny/:summarize→summarize.
+      def subagent_budget_choice
+        approval_menu("grant more budget?", [
+                        ["Grant more iterations", :grant],
+                        ["Summarize now", :summarize]
+                      ])
+      end
+
       # A destructive yes/No confirm — NOT the tool-approval menu (#218).
       # Deleting a session or forgetting a fact is not a tool/command the model
       # proposed, so the "Approve once / this command / this tool" vocabulary is

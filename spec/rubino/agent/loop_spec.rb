@@ -881,6 +881,48 @@ RSpec.describe Rubino::Agent::Loop do
       expect(fake_llm.call_count).to eq(3)
     end
 
+    # Spec 5 (#574): a BACKGROUND subagent reaches the cap through a real
+    # SubagentView whose budget handler returns :continue (as if the human
+    # granted from the dropdown) → the Loop extends and resumes the turn, exactly
+    # as the scripted-UI continue path does. Proves the subagent #select →
+    # :continue → extend! wiring end-to-end (the view is the production adapter).
+    it "subagent (SubagentView + budget handler → :continue): extends and resumes" do
+      view = Rubino::UI::SubagentView.new(
+        agent_name: "explore", out: StringIO.new, entry_id: "sa_1",
+        budget: ->(_prompt) { :continue }
+      )
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      4.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Final summary after the granted budget.")
+
+      extended = []
+      allow(budget).to receive(:extend!).and_wrap_original do |orig, by|
+        extended << by
+        orig.call(by)
+      end
+
+      loop_instance = build_loop_with(ui: view, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(extended).to eq([tight_config.agent_budget_extension_step])
+      expect(result).to eq("Final summary after the granted budget.")
+    end
+
+    # Spec 6 (#574): a subagent SubagentView with NO budget handler (foreground/
+    # sync/headless) keeps the nil #select → force-summarize guarantee.
+    it "subagent (SubagentView, no budget handler): force-summarizes (select → nil)" do
+      view = Rubino::UI::SubagentView.new(agent_name: "explore", out: StringIO.new, entry_id: "sa_1")
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Summary without a budget grant.")
+
+      loop_instance = build_loop_with(ui: view, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(result).to eq("Summary without a budget grant.")
+      expect(fake_llm.calls.last[:tools]).to eq([])
+    end
+
     # -------------------------------------------------------------------------
     # #403 (HIGH regression): the budget-extension prompt must NOT fire when the
     # TIME limit (not the iteration ceiling) is what's exhausted. extend! only
