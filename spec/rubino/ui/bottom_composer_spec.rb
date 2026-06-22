@@ -3105,6 +3105,45 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
+    # ONE status bar: during a turn the footer ABSORBS the live activity facet
+    # (set by the CLI ticker via #set_turn_status) so the model/ctx bar and the
+    # "◆ writing · …" activity share a single row below the prompt, with the
+    # "(esc to interrupt)" hint present exactly once.
+    context "merged turn-status footer" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output,
+                            status_line: "m3", on_interrupt: -> {})
+      end
+
+      it "prepends the live turn activity to the model/ctx bar while a turn runs" do
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing")
+        row = composer.send(:status_row)
+        expect(row).to include("◆ writing")
+        expect(row).to include("m3")
+        expect(row.scan("(esc to interrupt)").size).to eq(1) # the hint, exactly once
+      end
+
+      it "reverts to the bare model/ctx bar when the turn status is cleared" do
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing")
+        composer.clear_turn_status
+        expect(composer.send(:status_row)).to eq("m3  #{composer.send(:interrupt_hint)}")
+      end
+
+      it "sheds the model/ctx tail before the live activity on overflow" do
+        composer.set_status("a really long model and context summary line")
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing · 9s")
+        row = composer.send(:status_row)
+        expect(row).to include("◆ writing · 9s") # the live info is kept
+        expect(row).not_to include("really long model") # the tail is dropped
+      end
+    end
+
     it "teardown clears the bar row along with the input block" do
       composer.handle_key("x")
       # Drive the shared #stop/#suspend teardown directly (no live reader).

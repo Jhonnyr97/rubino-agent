@@ -7,9 +7,9 @@ require "rubino/ui/cli"
 # The mid-stream "transport silence" watchdog (#21): while a content/reasoning
 # block streams, the in-flight tail owns the hidden status row. If the model
 # burst-delivers and goes silent for several seconds the screen looks frozen —
-# the ticker must resurface the animated facet row BELOW the in-flight tail so
-# the wait reads as latency, not a hang. These are unit checks on the pure
-# predicate/frame helpers (no ticker thread; the real monotonic clock is used).
+# the ticker must resurface the animated facet (in the footer) so the wait reads
+# as latency, not a hang. These are unit checks on the pure predicate helpers
+# (no ticker thread; the real monotonic clock is used).
 RSpec.describe Rubino::UI::CLI do
   subject(:ui) { described_class.new }
 
@@ -27,16 +27,14 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#note_live_tail" do
-    it "records a non-empty frame and bumps the silence clock" do
+    it "bumps the silence clock on a tail paint" do
       before_at = now
       ui.send(:note_live_tail, "  hello tail")
-      expect(ui.instance_variable_get(:@live_tail_frame)).to eq("  hello tail")
       expect(ui.instance_variable_get(:@last_stream_at)).to be >= before_at
     end
 
-    it "drops the tail (nil) on an empty/teardown frame but still bumps the clock" do
+    it "still bumps the clock on an empty/teardown frame" do
       ui.send(:note_live_tail, "")
-      expect(ui.instance_variable_get(:@live_tail_frame)).to be_nil
       expect(ui.instance_variable_get(:@last_stream_at)).to be_a(Float)
     end
   end
@@ -73,24 +71,6 @@ RSpec.describe Rubino::UI::CLI do
     it "is false before any output armed the clock" do
       ui.instance_variable_set(:@last_stream_at, nil)
       expect(ui.send(:stream_stalled?)).to be_falsey
-    end
-  end
-
-  describe "#stall_frame" do
-    it "stacks the in-flight tail ABOVE the animated facet row" do
-      ui.instance_variable_set(:@live_tail_frame, "  the half-written sentence")
-      frame = ui.send(:stall_frame, 0)
-      lines = frame.split("\n")
-      expect(lines.first).to eq("  the half-written sentence")
-      # The facet row carries the relabelled "writing" status beneath it.
-      expect(lines.last).to include("writing")
-    end
-
-    it "shows the facet row ALONE when no tail is live" do
-      ui.instance_variable_set(:@live_tail_frame, nil)
-      frame = ui.send(:stall_frame, 0)
-      expect(frame).not_to include("\n")
-      expect(frame).to include("writing")
     end
   end
 
