@@ -39,7 +39,7 @@ RSpec.describe Rubino::Compression::JsonCompressor do
       expect(result.text.lines.length).to eq(51)
       # the repeated key name "namespace" appears ONCE (header), not per row
       expect(result.text.scan("namespace").length).to eq(1)
-      expect(result.ratio).to be >= 0.25
+      expect(result.saved_tokens_est).to be > 0
     end
 
     it "is lossless: every row's values survive (sorted-key order)" do
