@@ -70,9 +70,9 @@ module Rubino
           glyph = @pastel.cyan(COLLAPSED)
           state = entry.status == :stopping ? "stopping" : "running"
           count = entry.tool_count.to_i
-          body  = "#{entry.id} · #{entry.subagent} · #{state} · " \
+          body  = "#{entry.id} · #{safe(entry.subagent)} · #{state} · " \
                   "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
-          body += " · #{entry.last_activity}" unless entry.last_activity.to_s.empty?
+          body += " · #{safe(entry.last_activity)}" unless entry.last_activity.to_s.empty?
           "  #{glyph} #{body}"
         end
       end
@@ -84,8 +84,8 @@ module Rubino
       def blocked_card_line(entry)
         glyph    = @pastel.red(BLOCKED)
         question = entry.ask_question.to_s
-        "  #{glyph} #{entry.id} · #{entry.subagent} · " +
-          @pastel.red("waiting on you") + ": #{first_line(question, 60)} " \
+        "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
+          @pastel.red("waiting on you") + ": #{safe(first_line(question, 60))} " \
                                           "· ↓ to answer"
       end
 
@@ -95,8 +95,8 @@ module Rubino
         glyph   = @pastel.yellow(APPROVAL)
         command = entry.approval_command.to_s
         command = entry.approval_question.to_s if command.empty?
-        "  #{glyph} #{entry.id} · #{entry.subagent} · " +
-          @pastel.yellow("needs approval") + ": #{first_line(command, 60)} " \
+        "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
+          @pastel.yellow("needs approval") + ": #{safe(first_line(command, 60))} " \
                                              "· ↓ to approve"
       end
 
@@ -134,6 +134,21 @@ module Rubino
       # there rendered an EMPTY "needs approval:" body on the card (#141).
       def first_line(text, max)
         Rubino::Util::Output.first_line(text, max)
+      end
+
+      # CWE-150 render-sink defense (#564). Every card field below is UNTRUSTED:
+      # the subagent NAME is model-chosen; last_activity is built from the child's
+      # tool args (#args_hint extracts file_path/path/pattern/command — an
+      # attacker-named workspace file); ask_question / approval_command are a
+      # child's ask_parent text / a shell-or-ruby command. These lines are stored
+      # in BottomComposer#@cards and the live region prints them VERBATIM the
+      # instant a subagent acts — no approval, no gesture (the #563 class). Route
+      # each untrusted span through the canonical defanger so `\e[2J` (clear) /
+      # `\e]0;…\a` (title) / `\e[?1049h` (alt-screen) / CR / BEL render as inert
+      # caret notation. Keep-SGR so rubino's OWN color wrappers (applied around
+      # these spans) survive; #first_line only truncates and does NOT neutralize.
+      def safe(text)
+        Rubino::Util::Output.sanitize_terminal_keep_sgr(text.to_s)
       end
     end
   end

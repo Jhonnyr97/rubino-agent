@@ -112,4 +112,66 @@ RSpec.describe Rubino::UI::SubagentCards do
     expect(one).to include("· 1 tool ·")
     expect(two).to include("· 2 tools ·")
   end
+
+  # CWE-150 (#564, same class as #563): a card's untrusted fields — last_activity
+  # (built from a child's tool args, e.g. an attacker-named workspace file), the
+  # model-chosen subagent NAME, an ask_parent question, an approval command — are
+  # stored in BottomComposer#@cards and the live region paints them VERBATIM the
+  # instant the subagent acts, with NO approval and NO user gesture. A raw
+  # `\e[2J` (clear) / `\e]0;…\a` (OSC title) / `\e[?1049h` (alt-screen) / CR
+  # (rewind spoof) / BEL would otherwise reach the TTY and EXECUTE. Mirrors the
+  # MenuView (#563) and tool-tail/approval-card CWE-150 sink tests.
+  describe "terminal-escape injection (CWE-150, #564)" do
+    # The full exploit chain a malicious tool-arg filename / name / question
+    # carries: clear-screen, OSC title-set (BEL-terminated), alt-screen-enter,
+    # CR (line-rewind spoof), bare BEL.
+    let(:evil) { "read \e[2J\e]0;PWNED\a\e[?1049h\rrest\a.txt" }
+
+    # No raw control byte that can repaint, move the cursor, set the title, or
+    # rewind the line may survive to the terminal.
+    matcher :have_no_raw_escapes do
+      match { |str| ["\e", "\a", "\r", "\e]"].none? { |seq| str.include?(seq) } }
+      failure_message { |str| "expected no raw escapes, got #{str.inspect}" }
+    end
+
+    it "neutralizes escapes in a RUNNING card's last_activity" do
+      line = cards.card_lines([entry(last_activity: evil)]).join("\n")
+      expect(line).to have_no_raw_escapes
+      expect(line).to include("^[") # ESC shown as visible caret notation
+    end
+
+    it "neutralizes escapes in a RUNNING card's subagent name" do
+      line = cards.card_lines([entry(subagent: "ex\e[2J\aplore")]).join("\n")
+      expect(line).to have_no_raw_escapes
+    end
+
+    it "neutralizes escapes in a BLOCKED card's ask_question" do
+      e = entry(status: :blocked_on_human, ask_question: evil)
+      expect(cards.card_lines([e]).join("\n")).to have_no_raw_escapes
+    end
+
+    it "neutralizes escapes in a BLOCKED card's subagent name" do
+      e = entry(status: :blocked_on_human, subagent: "ex\e]0;X\aplore", ask_question: "q")
+      expect(cards.card_lines([e]).join("\n")).to have_no_raw_escapes
+    end
+
+    it "neutralizes escapes in an APPROVAL card's approval_command" do
+      e = entry(status: :needs_approval, approval_command: evil)
+      expect(cards.card_lines([e]).join("\n")).to have_no_raw_escapes
+    end
+
+    it "neutralizes escapes in an APPROVAL card's approval_question fallback" do
+      e = entry(status: :needs_approval, approval_command: "", approval_question: evil)
+      expect(cards.card_lines([e]).join("\n")).to have_no_raw_escapes
+    end
+
+    it "preserves rubino's OWN SGR colour on a legit card (not stripped)" do
+      colored = described_class.new(pastel: Pastel.new(enabled: true))
+      line = colored.card_lines([entry(last_activity: "read lib/app.rb")]).join("\n")
+      # the cyan glyph wrapper survives…
+      expect(line).to include("\e[36m")
+      # …and the legible activity text is intact.
+      expect(line.gsub(/\e\[[0-9;]*m/, "")).to include("read lib/app.rb")
+    end
+  end
 end
