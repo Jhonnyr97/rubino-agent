@@ -1019,16 +1019,17 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("delegato")
     end
 
-    # P6: a background spawn only STARTED — the close row reuses the live-card
-    # shape, dim, with no green ✓ and none of the verbose spawn-handle sentence.
-    it "renders a quiet '▸ <id> · <name> · started' row for a background spawn (P6)" do
+    # Slice 1: a background spawn only STARTED — the minimal dim marker `▸ <name>
+    # · started` (the matching `done`/`failed` arrives later), no green ✓ and
+    # none of the verbose spawn-handle sentence.
+    it "renders a minimal '▸ <name> · started' marker for a background spawn" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1",
         output: "Started background subagent 'explore' as task sa_1. " \
                 "It is running now — keep working on other things."
       )
       out = render_delegation(result)
-      expect(out).to include("└ ▸ sa_1 · explore · started")
+      expect(out).to include("└ ▸ explore · started")
       expect(out).not_to include("✓")
       expect(out).not_to include("It is running now")
     end
@@ -1436,76 +1437,44 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  # P6: one lifecycle grammar — terminal-state events reuse the live-card row
-  # shape, and the child's report renders WHOLE (markdown) under `↳ report:`.
-  describe "#subagent_finished lifecycle rendering (P6)" do
-    it "renders the dim ▸ row plus the FULL report, markdown-rendered" do
+  # Agent-multiplexer Slice 1: the MAIN-timeline lifecycle marker is MINIMAL —
+  # just the close line, NO result summary or report dumped into scrollback. All
+  # per-tool detail lives in the BackgroundTasks registry (the card / drill-in);
+  # the full result still reaches the MODEL via the injected completion notice.
+  describe "#subagent_finished lifecycle rendering (minimal marker)" do
+    it "renders ONLY the minimal close marker, no report body" do
       report = "## Findings\n\n- first\n- second\n\nA much longer closing paragraph of the report."
       out = capture_stdout do
-        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
-                             id: "sa_e488", status: "done", report: report)
+        ui.subagent_finished("✓ explore · done", id: "sa_e488", status: "done", report: report)
       end
-      expect(out).to include("▸ sa_e488 · explore · completed · 1 tool · 12s")
-      expect(out).to include("↳ report:")
-      expect(out).to include("Findings")
-      expect(out).to include("closing paragraph of the report.") # not amputated
-      expect(out).not_to include("##") # markdown-rendered, not raw
+      expect(out).to include("✓ explore · done")
+      expect(out).not_to include("↳ report:") # detail stays in the registry, not main
+      expect(out).not_to include("Findings")
+      expect(out).not_to include("closing paragraph of the report.")
     end
 
-    it "renders a failed lifecycle row in red" do
+    it "renders a failed lifecycle marker in red" do
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
       out = capture_stdout do
-        ui.subagent_finished("▸ sa_e488 · explore · failed: boom", id: "sa_e488", status: "failed")
+        ui.subagent_finished("✗ explore · failed", id: "sa_e488", status: "failed")
       end
       expect(out).to include("\e[31m")
     end
 
-    it "skips the report block when there is none" do
-      out = capture_stdout do
-        ui.subagent_finished("▸ sa_1 · explore · no-op · 0 tools", id: "sa_1", status: "no-op")
-      end
-      expect(out).not_to include("↳ report:")
-    end
-
-    # A between-turns completion renders the FULL report immediately; the
-    # queued completion notice injected next turn must not ECHO the same
-    # report body a second time — the head line still confirms the model
-    # received it, the body is elided once already shown.
-    it "does not render the same report twice when the completion notice is injected later" do
-      report = "## Findings\n\n- the bug is in lib/x.rb:42\n\nClosing paragraph."
+    # The injected completion notice still carries the FULL result to the model;
+    # since the report is no longer rendered into main, the notice echoes whole
+    # (no "report shown above" elision) — the user reads the result once, here.
+    it "echoes the full injected completion notice (result not shown in main)" do
       notice = "[background-task] Task sa_e488 (subagent 'explore') completed.\n" \
-               "Result:\n#{report}\n(full result via task_result(\"sa_e488\"))"
+               "Result:\nthe bug is in lib/x.rb:42\n(full result via task_result(\"sa_e488\"))"
       out = capture_stdout do
-        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
-                             id: "sa_e488", status: "done", report: report)
+        ui.subagent_finished("✓ explore · done", id: "sa_e488", status: "done", report: "the bug is in lib/x.rb:42")
         ui.input_injected(notice)
       end
-      expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # shown once, at completion
+      expect(out).to include("✓ explore · done")
       expect(out).to include("↳ received while working: [background-task] Task sa_e488")
-      expect(out).to include("report shown above")
-    end
-
-    it "still echoes the full injected notice for a report that was NEVER lifecycle-rendered" do
-      notice = "[background-task] Task sa_x1 (subagent 'explore') completed.\n" \
-               "Result:\nFOUND: lib/y.rb:7\n(full result via task_result(\"sa_x1\"))"
-      out = capture_stdout { ui.input_injected(notice) }
-      expect(out).to include("FOUND: lib/y.rb:7")
+      expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # only in the injected notice
       expect(out).not_to include("report shown above")
-    end
-
-    it "elides only the matching notice when several are injected together" do
-      shown = "shown-report body"
-      other = "other-report body"
-      coalesced = "[background-task] Task sa_a (subagent 'explore') completed.\n" \
-                  "Result:\n#{shown}\n(full result via task_result(\"sa_a\"))\n" \
-                  "[background-task] Task sa_b (subagent 'explore') completed.\n" \
-                  "Result:\n#{other}\n(full result via task_result(\"sa_b\"))"
-      out = capture_stdout do
-        ui.subagent_finished("▸ sa_a · explore · completed", id: "sa_a", status: "done", report: shown)
-        ui.input_injected(coalesced)
-      end
-      expect(out.scan(shown).size).to eq(1) # elided in the echo
-      expect(out.scan(other).size).to eq(1) # untouched
     end
   end
 

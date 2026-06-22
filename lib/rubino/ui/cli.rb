@@ -104,10 +104,6 @@ module Rubino
         # (frames butt together), :gap (a trailing blank is already open, so
         # the next separator is skipped), :answer, :other.
         @last_block         = :other
-        # Task ids whose FULL report the lifecycle block already rendered
-        # (#subagent_lifecycle): the injected completion notice for one of
-        # these drops its duplicated Result body (#elide_shown_reports).
-        @reported_subagent_ids = []
         @session_id         = session_id || SecureRandom.uuid
         @approval_cache     = approval_cache || Rubino::Run::SessionApprovalCache.instance
       end
@@ -752,26 +748,19 @@ module Rubino
         end
       end
 
-      # ONE lifecycle grammar (P6): the live-card-shaped row
-      # (`▸ sa_e488 · explore · completed · 1 tool · 12s`) — dim; red only on
-      # failure — and the child's FULL report markdown-rendered under its own
-      # `↳ report:` lead (the #139 fold-in treatment), never amputated to a
-      # one-line head. The id is remembered so the completion notice the model
-      # receives next turn doesn't ECHO the same report a second time
-      # (#input_injected elides the already-shown Result body).
+      # MINIMAL main-timeline lifecycle marker (agent-multiplexer Slice 1): just
+      # the close line (`✓ <name> · done` / `✗ <name> · failed`) — dim, red only
+      # on failure. NO result summary or report is dumped into the main
+      # scrollback; the child's per-tool detail lives in the BackgroundTasks
+      # registry (the card / /agents drill-in) and its full result reaches the
+      # MODEL via the InputQueue completion notice. The `report` param is kept in
+      # the signature for back-compat but no longer rendered here.
       def subagent_lifecycle(line, status: "done", report: nil, id: nil)
         emit_blank unless @last_block == :gap
-        # The lifecycle line embeds the subagent name/summary (UNTRUSTED, R3C-1
-        # / CWE-150). PATH 1: #emit strips every escape and applies the row's
-        # style (red on failure, else dim) around the inert text. The report
-        # body goes through #commit_markdown_block, which renders structured
-        # tokens (no raw passthrough), so it is not a raw-escape sink.
+        # The line embeds the subagent name (UNTRUSTED, R3C-1 / CWE-150). PATH 1:
+        # #emit strips every escape and applies the row's style (red on failure,
+        # else dim) around the inert text.
         emit(line, style: status == "failed" ? :red : :dim)
-        if report && !report.to_s.strip.empty?
-          emit("  ↳ report:", style: :dim)
-          commit_markdown_block(report)
-          remember_reported_subagent(id)
-        end
         @last_block = :other
       end
 
@@ -983,7 +972,7 @@ module Rubino
           text.to_s.split("\n").each { |line| composer.commit_queued(line) }
         end
         clear_line
-        first, rest = elide_shown_reports(text.to_s).split("\n", 2)
+        first, rest = text.to_s.split("\n", 2)
         # The injected first line is a subagent completion notice (UNTRUSTED,
         # R3C-1 / CWE-150). PATH 1: #emit strips every escape and dims the inert
         # text — the manual safe + @pastel.dim wrap is gone. The rest goes
@@ -991,44 +980,6 @@ module Rubino
         emit("↳ received while working: #{first}", style: :dim)
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
-      end
-
-      # Drops the Result body from a completion notice whose report the
-      # lifecycle block ALREADY rendered in full (#subagent_lifecycle), so the
-      # user doesn't read the same report twice — once at completion and again
-      # when the queued notice is injected next turn. DISPLAY-ONLY: the
-      # model-facing injected text is untouched. Anchored to the notice shape
-      # TaskTool#completion_notice emits; an unmatched notice renders whole
-      # (duplicated beats lost). Each id is consumed on first elision.
-      def elide_shown_reports(text)
-        ids = @reported_subagent_ids
-        return text if ids.nil? || ids.empty?
-
-        ids.dup.each do |id|
-          quoted  = Regexp.escape(id)
-          pattern = Regexp.new(
-            "^(\\[background-task\\] Task #{quoted} \\([^)]*\\) completed\\.)\n" \
-            "Result:\n.*?\n\\(full result via task_result\\(\"#{quoted}\"\\)\\)",
-            Regexp::MULTILINE
-          )
-          replaced = text.sub(pattern) do
-            "#{::Regexp.last_match(1)} (report shown above — full result via task_result(\"#{id}\"))"
-          end
-          next if replaced == text
-
-          text = replaced
-          ids.delete(id)
-        end
-        text
-      end
-
-      # Bounded memory of lifecycle-rendered report ids (see #elide_shown_reports).
-      def remember_reported_subagent(id)
-        return unless id
-
-        @reported_subagent_ids ||= []
-        @reported_subagent_ids << id.to_s
-        @reported_subagent_ids.shift while @reported_subagent_ids.size > 32
       end
 
       # Markdown rendering: assistant output rendered as readable text with
@@ -2607,38 +2558,38 @@ module Rubino
         status_show("task", phase: :tool, hint: sub) if @turn_active
       end
 
-      # `✓ <subagent>: <summary>` (or `✗ <subagent>: <error>` on failure).
+      # MINIMAL main-timeline marker (agent-multiplexer Slice 1): the main
+      # scrollback shows ONLY the close marker, NEVER the child's result summary
+      # — `✓ <name> · done` on success, `✗ <name> · failed` on failure,
+      # `⊘ <name> · no-op` on a denied/empty run, and `▸ <name> · started` for a
+      # background spawn (the matching `done` arrives later via
+      # #subagent_lifecycle). The model still receives the FULL result through the
+      # tool return; only this rendered line drops the summary. Per-tool detail
+      # lives in the BackgroundTasks registry (the card / drill-in), not here.
       #
       # The `task` tool reports its failures by RETURNING an error STRING
       # ("Error: unknown subagent …", "At capacity: …") — the executor then
-      # wraps that in a SUCCESS-status Result, so #success? is true and the row
-      # used to render a misleading green ✓ (#123, the B7 family on the
-      # delegation card). Use the same #errorish? predicate #tool_finished
-      # uses, plus the "At capacity:" prefix the task tool emits, so a failed
-      # delegation renders the red ✗ variant — consistent with regular tools.
+      # wraps that in a SUCCESS-status Result, so #success? is true. Use the same
+      # #errorish? predicate #tool_finished uses, plus the "At capacity:" prefix
+      # the task tool emits, so a failed delegation renders the red ✗ variant.
       def delegation_finished(result)
         @activity_open = false
         sub    = @delegation_subagent || "subagent"
         output = (result.respond_to?(:output) ? result.output : result).to_s
         if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
-          # Background spawn: ONE lifecycle grammar (P6) — the live-card row
-          # shape, dim, no green ✓ (nothing finished yet; it only started). The
-          # spawn handle's name fields come from model args — the funnel's PATH 1
-          # (#emit) strips escapes before the dim wrap.
-          emit("  └ ▸ #{m[2]} · #{m[1]} · started", style: :dim)
+          # Background spawn: minimal "started" marker (the "done"/"failed"
+          # marker comes later when the child finishes — #subagent_lifecycle).
+          # The handle's name field is model args — #emit strips escapes (CWE-150).
+          emit("  └ ▸ #{safe(m[1])} · started", style: :dim)
         else
-          # The subagent's output is UNTRUSTED — sanitize before the close-row
-          # wrap (R3C-1, CWE-150).
-          summary = truncate_inline(safe(output.strip), 80)
-          icon, color =
-            if delegation_failed?(result)        then ["✗", :red]
-            elsif delegation_noop?(result)       then ["⊘", :dim]
-            else                                      ["✓", :dim] # quiet close — color only on failure (P1)
+          # sub is UNTRUSTED (model args); #emit (PATH 1) strips escapes before
+          # the marker's style wrap (R3C-1, CWE-150).
+          marker, color =
+            if delegation_failed?(result)  then ["✗ #{safe(sub)} · failed", :red]
+            elsif delegation_noop?(result) then ["⊘ #{safe(sub)} · no-op", :dim]
+            else                                ["✓ #{safe(sub)} · done", :dim] # quiet close (P1)
             end
-          # sub is UNTRUSTED (model args); the funnel's PATH 1 (#emit) strips
-          # escapes before the close-row wrap (R3C-1, CWE-150). summary was
-          # already flattened+sanitized above; emit's sanitize is idempotent.
-          emit("  └ #{icon} #{sub}: #{summary}", style: color)
+          emit("  └ #{marker}", style: color)
         end
         @delegation_subagent = nil
         @last_block = :tool
