@@ -148,6 +148,20 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       expect(result).to be_a(String)
       expect(result).to include("Hello body content here")
     end
+
+    it "logs and falls back when readability fails UNEXPECTEDLY (not a parse error)" do
+      html = "<html><body><main><p>Body content for fallback</p></main></body></html>"
+      # Use a throwaway instance (not the subject) so we can simulate an
+      # UNEXPECTED extraction failure without stubbing the object under test.
+      faulty = described_class.new
+      def faulty.readability_extract(_html) = raise("unexpected boom")
+      # The unexpected case must be observable, not silently permanent dead weight.
+      expect(Rubino.logger).to receive(:warn).with(
+        hash_including(event: "webfetch.readability.unexpected_error")
+      )
+      out = faulty.send(:strip_html, html)
+      expect(out).to include("Body content for fallback") # still degrades cleanly
+    end
   end
 
   describe "format:html keeps the raw body verbatim (escape hatch)" do

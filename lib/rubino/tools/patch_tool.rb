@@ -77,28 +77,46 @@ module Rubino
           # scans the patch's target paths and prompts (→ :ask) when ANY hunk
           # touches a secret; an approved apply_patch proceeds, a denied/headless
           # one never reaches #call. The workspace sandbox below is unchanged.
-          unless within_workspace?(file_path)
-            return [nil, workspace_violation_message(hunk[:file]) +
-                         " (no changes applied — apply_patch is two-phase)"]
-          end
+          return [nil, two_phase_error(workspace_violation_message(hunk[:file]))] unless within_workspace?(file_path)
 
           if hunk[:new_file]
+            # A "new file" hunk that targets a path which ALREADY exists is an
+            # overwrite — apply the same read-before-overwrite guard `write`
+            # uses, so a blind apply_patch can't clobber a file the model never
+            # read this session.
+            if File.exist?(file_path) && (guard = overwrite_guard_error(file_path, hunk[:file]))
+              return [nil, two_phase_error(guard[:output])]
+            end
+
             pending << { kind: :create,
                          path: file_path,
                          display: hunk[:file],
                          content: hunk[:additions].join("\n") + "\n" }
           elsif hunk[:delete_file]
+            # Deleting a file the model never read this session is refused
+            # exactly as edit/multi_edit refuse to modify an unread file.
+            return [nil, two_phase_error("Error: File not found: #{hunk[:file]}")] unless File.exist?(file_path)
+            if (gate = read_gate_error(file_path, hunk[:file], verb: "delete"))
+              return [nil, two_phase_error(gate[:output])]
+            end
+
             pending << { kind: :delete,
                          path: file_path,
                          display: hunk[:file] }
           else
-            return [nil, "Error: File not found: #{hunk[:file]} (no changes applied)"] unless File.exist?(file_path)
+            return [nil, two_phase_error("Error: File not found: #{hunk[:file]}")] unless File.exist?(file_path)
+
+            # Read-before-patch gate: refuse to rewrite a file the model never
+            # read this session (or read but is now stale on disk), matching
+            # edit/multi_edit. Without a tracker injected this is a no-op.
+            if (gate = read_gate_error(file_path, hunk[:file], verb: "patch"))
+              return [nil, two_phase_error(gate[:output])]
+            end
 
             content                   = File.read(file_path)
             new_content, drift, fuzzy = apply_hunk(content, hunk)
             if new_content.nil?
-              return [nil, "Error: Could not apply hunk to #{hunk[:file]} - " \
-                           "context mismatch (no changes applied)"]
+              return [nil, two_phase_error("Error: Could not apply hunk to #{hunk[:file]} - context mismatch")]
             end
 
             pending << { kind: :patch,
@@ -128,18 +146,35 @@ module Rubino
           case op[:kind]
           when :create
             FileUtils.mkdir_p(File.dirname(op[:path]))
-            File.write(op[:path], op[:content])
+            # Crash-safe write through the shared atomic seam (HIGH-1), same as
+            # write/edit/multi_edit — a SIGINT/crash mid-flush can't leave a
+            # torn file. Then mark the bytes authoritative so a later edit of
+            # this just-created file passes the read-gate (r5 B2).
+            Util::AtomicFile.write_atomic(op[:path], op[:content])
+            @read_tracker&.note_write(op[:path], op[:content])
             results << "Created: #{op[:display]}"
           when :delete
             File.delete(op[:path]) if File.exist?(op[:path])
+            # The path no longer exists; record an empty-content write so the
+            # tracker's view matches disk (mirrors edit/multi_edit calling
+            # note_write after a successful mutation).
+            @read_tracker&.note_write(op[:path], "")
             results << "Deleted: #{op[:display]}"
           when :patch
-            File.write(op[:path], op[:content])
+            Util::AtomicFile.write_atomic(op[:path], op[:content])
+            @read_tracker&.note_write(op[:path], op[:content])
             results << patch_result_line(op)
           end
         end
 
         results.join("\n")
+      end
+
+      # Append the two-phase "no changes applied" note to a plan-phase error so
+      # the model knows the abort left the tree untouched (apply_patch validates
+      # all hunks before writing any). One place so every refusal reads the same.
+      def two_phase_error(message)
+        "#{message} (no changes applied — apply_patch is two-phase)"
       end
 
       # The drift note is the bit that distinguishes "applied exactly where

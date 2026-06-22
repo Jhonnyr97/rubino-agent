@@ -198,8 +198,24 @@ module Rubino
           else
             format_item(data)
           end
+        else
+          # Valid JSON that is neither an object nor an array (a string, number,
+          # boolean, or null — e.g. an endpoint returning `true`). Surface the
+          # raw body instead of silently returning nil, which read as an
+          # "(no output)"-style blank to the model.
+          response.body[0..500]
         end
-      rescue StandardError
+      rescue JSON::ParserError => e
+        # Non-JSON body (HTML error page, plain-text rate-limit notice, empty
+        # body). Returning the raw body is the right fallback; log so a parse
+        # regression is observable.
+        Rubino.logger&.debug(event: "github.response.non_json", error: e.message)
+        response.body[0..500]
+      rescue StandardError => e
+        # Anything else is unexpected — keep the safe fallback but log at warn so
+        # the failure isn't masked.
+        Rubino.logger&.warn(event: "github.response.unexpected_error",
+                            error: "#{e.class}: #{e.message}")
         response.body[0..500]
       end
 

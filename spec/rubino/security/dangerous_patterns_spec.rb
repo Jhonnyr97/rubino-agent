@@ -101,6 +101,33 @@ RSpec.describe Rubino::Security::DangerousPatterns do
     end
   end
 
+  describe "shell line-continuation evasion (shared normalizer)" do
+    # A backslash-newline pair is a shell line-continuation the shell deletes
+    # entirely, gluing the next line on with no intervening char. Pre-fix this
+    # layer did NOT strip continuations (only HardlineGuard did), so
+    # `rm -r\<newline>f /` split into `rm -r f /` and slipped past the danger/
+    # approval layer. Now both layers share CommandNormalizer, so the
+    # continuation folds away and the recursive-delete pattern fires — matching
+    # what HardlineGuard already catches.
+    {
+      "rm -r\\\nf /" => /recursive delete/,
+      "rm -r\\\nf node_modules" => /recursive delete/,
+      "git reset --\\\nhard HEAD~1" => /git reset --hard/
+    }.each do |command, key_match|
+      it "flags #{command.inspect} despite the line-continuation" do
+        dangerous, pattern_key = described_class.detect(command)
+        expect(dangerous).to be(true)
+        expect(pattern_key).to match(key_match)
+      end
+    end
+
+    it "matches what HardlineGuard catches for a continuation-split rm -rf /" do
+      cmd = "rm -r\\\nf /"
+      expect(described_class.dangerous?(cmd)).to be(true)
+      expect(Rubino::Security::HardlineGuard.detect(cmd).first).to be(true)
+    end
+  end
+
   describe "no overlap with the hardline floor" do
     # The two layers must stay disjoint: a hardline command is catastrophic
     # and owned by HardlineGuard, not double-listed here as merely "dangerous".

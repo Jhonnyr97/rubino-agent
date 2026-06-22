@@ -228,7 +228,21 @@ module Rubino
       # only — the authoritative answer delivery is the gate decision
       # (/reply or answer_child).
       def surface_and_notify(entry, question)
+        # AUTHORITATIVE notice — this is how the parent MODEL learns of the
+        # question and can answer (answer_child). It MUST NOT be swallowed: if it
+        # were inside the cosmetic rescue below and push_notice raised, the child
+        # would block all the way to its timeout with the parent never told. So
+        # it runs OUTSIDE the rescue — a failure here propagates (and surfaces to
+        # the child) rather than silently parking the thread.
         entry.parent_sink&.push_notice(parent_notice(entry, question))
+        surface_on_parent_cli(entry, question)
+      end
+
+      # COSMETIC parent-CLI surfacing (scrollback banner / auto-open dropdown /
+      # attention bell). Purely a display nicety on top of the authoritative
+      # notice already pushed by #surface_and_notify — best-effort, so any
+      # failure here is swallowed (logged) and the ask still proceeds.
+      def surface_on_parent_cli(entry, question)
         parent_ui = Rubino.instance_variable_get(:@ui)
         return unless parent_ui.is_a?(UI::CLI)
 
@@ -253,7 +267,10 @@ module Rubino
         elsif parent_ui.respond_to?(:subagent_ask_banner)
           parent_ui.subagent_ask_banner(entry.id, entry.subagent, question)
         end
-      rescue StandardError
+      rescue StandardError => e
+        # Cosmetic surfacing only — the authoritative notice was already pushed.
+        # Log so a CLI-surfacing regression is observable, then swallow.
+        Rubino.logger&.warn(event: "ask_parent.cli_surface_failed", task: entry.id, error: e.message)
         nil
       end
 
