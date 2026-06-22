@@ -1614,15 +1614,23 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("hello")
     end
 
-    it "during a turn, Enter on the picker toasts instead of silently queuing attach" do
-      reg.reserve(subagent: "explore", prompt: "inspect the parser")
-      composer.begin_turn # a parent turn now owns the screen
+    it "during a turn, Enter on the picker routes attach through the busy classifier (focus-gating, no toast)" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      seen = nil
+      c = described_class.new(input_queue: queue, input: input, output: output, echo: :prompt,
+                              on_busy_command: lambda { |line|
+                                seen = line
+                                :immediate
+                              })
+      c.begin_turn # a parent turn now owns the screen
 
-      composer.send(:history_down)
-      composer.handle_key("\r")
+      c.send(:history_down)
+      c.handle_key("\r")
 
-      expect(queue.shift).to be_nil # NOT queued as silent type-ahead
-      expect(output.string).to include("attach when the turn ends") # the toast
+      # Attach is dispatched NOW (via the busy classifier), not queued or toasted.
+      expect(seen).to eq("/agents #{entry.id} --attach")
+      expect(queue.shift).to be_nil
+      expect(output.string).not_to include("attach when the turn ends")
     end
 
     it "dismisses the subagent picker with Esc without interrupting idle input" do
@@ -2107,6 +2115,60 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to include("a finished timeline row\r\n")
       # The panel survives a commit (it's persistent live-region state).
       expect(output.string).to include("▸ sa_1 · running")
+    end
+  end
+
+  # Focus-gating (agent-multiplexer Slice 3): while ATTACHED to a subagent's
+  # view, the parent turn keeps running but its output must NOT paint the screen
+  # the sub now owns. The three main-turn render paths DROP their frames; the
+  # attach/detach REPLAY is exempt so the focused view the user wants still
+  # paints. The raw input reader is untouched (not asserted here — see the PTY
+  # spec — but the gate never stops it, unlike #suspend).
+  describe "main-render suppression (#suppress_main_render!)" do
+    it "DROPS print_above / set_partial / set_cards frames while suppressed" do
+      composer.suppress_main_render!(true)
+      output.truncate(0)
+      output.rewind
+
+      composer.print_above("parent turn line")
+      composer.set_partial("parent streaming tok")
+      composer.set_cards(["▸ sa_1 · running"])
+
+      # No main-turn frame reached the terminal, and no live state was mutated.
+      expect(output.string).to eq("")
+      expect(composer.partial?).to be(false)
+      expect(composer.cards).to eq([])
+    end
+
+    it "renders again once suppression is lifted (detach resumes the main view)" do
+      composer.suppress_main_render!(true)
+      composer.suppress_main_render!(false)
+      composer.print_above("parent line back on screen")
+      expect(output.string).to include("parent line back on screen\r\n")
+    end
+
+    it "EXEMPTS the attach/detach replay (#with_replay_exempt) from the gate" do
+      composer.suppress_main_render!(true)
+      output.truncate(0)
+      output.rewind
+
+      composer.with_replay_exempt do
+        composer.print_above("replayed sub transcript row")
+      end
+
+      # The replay paints even while main-render is suppressed...
+      expect(output.string).to include("replayed sub transcript row\r\n")
+      # ...and the exemption is scoped: a main-turn frame after it still drops.
+      output.truncate(0)
+      output.rewind
+      composer.print_above("parent line after replay")
+      expect(output.string).to eq("")
+    end
+
+    it "is a harmless no-op query when never suppressed" do
+      expect(composer.main_render_suppressed?).to be(false)
+      composer.suppress_main_render!(true)
+      expect(composer.main_render_suppressed?).to be(true)
     end
   end
 
