@@ -1739,16 +1739,19 @@ module Rubino
       # flash then vanish). Just queue "/agents <id> --attach"; if a turn is
       # mid-flight, route it through the busy classifier so it runs now.
       def submit_agent_attach(entry)
-        cmd = "/agents #{entry.id} --attach"
+        dispatch_view_command("/agents #{entry.id} --attach")
+      end
 
-        # Focus-gating (Slice 3): attach works DURING a turn too. The parent turn
-        # keeps running in the background (its messages still persist); attaching
-        # switches the screen to the sub's view and suppresses the parent's
-        # painting. Route the attach through the SAME busy classifier the other
-        # mid-turn control commands use (@on_busy_command), so it dispatches NOW
-        # on the reader thread (clear + replay the sub + scope the prompt) instead
-        # of queuing behind the running turn. With no turn active (or no hook —
-        # tests/standalone) it queues for the idle loop exactly as before.
+      # Route a view-switch control command (attach a sub, or `/detach` back to
+      # main) so it takes effect NOW. Focus-gating (Slice 3): DURING a turn the
+      # parent keeps running in the background, so dispatch through the SAME busy
+      # classifier the other mid-turn controls use (@on_busy_command) — it runs on
+      # the reader thread (clear + replay + scope) instead of queuing behind the
+      # turn. With no turn active (or no hook — tests/standalone) it queues for the
+      # idle loop exactly as before. Shared by the picker's Enter-attach AND its
+      # `◂ main` row, so returning to main is immediate whether or not a turn is
+      # streaming (the ← back-out already routes the same way).
+      def dispatch_view_command(cmd)
         if (@turn_active || @content_streaming) && @on_busy_command
           @on_busy_command.call(cmd)
         else
@@ -2210,8 +2213,10 @@ module Rubino
 
         if AgentMenu.main_row?(entry)
           # The "◂ main" row: leave an attached agent (the REPL detaches, or it's
-          # a harmless no-op at the main prompt). Routed like the ← back-out.
-          @input_queue&.push("/detach")
+          # a harmless no-op at the main prompt). Same immediate routing as attach
+          # and the ← back-out, so returning to main works mid-turn too (not
+          # queued behind the running turn).
+          dispatch_view_command("/detach")
         else
           submit_agent_attach(entry)
         end
