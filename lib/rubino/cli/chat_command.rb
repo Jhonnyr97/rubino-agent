@@ -2140,8 +2140,31 @@ module Rubino
       def busy_command_handler(runner)
         executor = Rubino::Commands::Executor.new(ui: Rubino.ui, runner: runner)
         lambda do |line|
+          # While ATTACHED to a sub mid-turn (Slice 3): every typed line is
+          # SCOPED to the sub, not the running parent — detach on /back|/detach,
+          # otherwise steer/answer the child (the same routing the idle loop's
+          # #handle_attached_input does). Return :immediate so the composer does
+          # NOT queue it as a parent steer. The parent turn keeps running.
+          if attached_to_agent?
+            ui = Rubino.ui
+            if %w[/detach /back].include?(line.strip)
+              detach_agent_view(runner, ui)
+            else
+              handle_attached_input(line, runner, ui, executor)
+            end
+            next :immediate
+          end
+
           disposition = executor.busy_disposition(line)
-          executor.try_execute(line) if disposition == :immediate
+          if disposition == :immediate
+            result = executor.try_execute(line)
+            # `/agents <id> --attach` mid-turn (Slice 3): the post-turn dispatch
+            # acts on the {attach_agent:} signal, but during a turn the REPL is
+            # blocked in #run_turn — so do the view switch HERE, on the reader
+            # thread (clear + replay the sub + scope the prompt). attach_agent_view
+            # suppresses the parent's painting; the parent turn keeps running.
+            attach_agent_view(result[:attach_agent], Rubino.ui) if result.is_a?(Hash) && result[:attach_agent]
+          end
           disposition
         rescue StandardError
           :pass
@@ -2858,10 +2881,19 @@ module Rubino
         return ui.error("no background subagent with id #{id}") unless entry
 
         @attached_id = id
+        # Focus-gate the parent: while attached, a still-running parent turn
+        # keeps streaming to its session but must NOT paint this sub's screen.
+        # Set suppression BEFORE the replay so the parent's frames drop straight
+        # away; the replay itself renders through the exempt seam below. No-op off
+        # a composer (plain TTY / pipe / tests).
+        composer = UI::BottomComposer.current
+        composer&.suppress_main_render!(true)
         clear_terminal
-        ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
-                pastel.dim(" — type to steer · ← to go back"))
-        session_resolver.replay_messages(ui, entry.messages)
+        with_focused_view_replay(composer) do
+          ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
+                  pastel.dim(" — type to steer · ← to go back"))
+          session_resolver.replay_messages(ui, entry.messages)
+        end
       end
 
       # Leave the agent-view and return to the main session: clear the screen,
@@ -2870,8 +2902,27 @@ module Rubino
       def detach_agent_view(runner, ui)
         @attached_id = nil
         clear_terminal
-        ui.info(pastel.dim("◀ back to the main session"))
-        session_resolver.replay_session(ui, runner.session[:id])
+        # Rebuild the main view from its full session — this captures everything
+        # the parent turn streamed WHILE we were away (it kept persisting). Render
+        # it through the exempt seam (suppression is still on here), THEN lift
+        # suppression so a still-running parent turn paints normally again from
+        # its next frame.
+        composer = UI::BottomComposer.current
+        with_focused_view_replay(composer) do
+          ui.info(pastel.dim("◀ back to the main session"))
+          session_resolver.replay_session(ui, runner.session[:id])
+        end
+        composer&.suppress_main_render!(false)
+      end
+
+      # Render the attach/detach REPLAY (the focused view the user is meant to
+      # see) through the composer's replay-exempt seam, so it paints even while
+      # main-render is suppressed. Yields plainly when no composer owns the screen
+      # (plain TTY / pipe / tests) — there is nothing to suppress there.
+      def with_focused_view_replay(composer, &)
+        return yield unless composer
+
+        composer.with_replay_exempt(&)
       end
 
       # Adopt a new runner for the REPL and rebuild the command executor against
