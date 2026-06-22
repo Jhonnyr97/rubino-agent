@@ -17,9 +17,8 @@ Infrastructure Layer   →  LLM Adapter, Database, MCP, OAuth
 1. **All output goes through UI** — No `puts`/`print` in core modules
 2. **LLM is isolated** — Only `LLM::RubyLLMAdapter` talks to ruby_llm
 3. **SQLite is the single database** — Sessions, memory, jobs, events
-4. **Event-driven** — Core emits events, UI/plugins subscribe
-5. **Plugin hooks** — 38 declared extension points for customization (design surface; few are wired today)
-6. **Config is not architecture** — Configuration describes what; architecture decides how
+4. **Event-driven** — Core emits events, UI subscribes
+5. **Config is not architecture** — Configuration describes what; architecture decides how
 
 ## Module Map
 
@@ -96,11 +95,6 @@ Experimental — booted at chat startup when `mcp.servers` is configured
 - `DoomLoopDetector` — Detects repeated identical tool calls
 - `CommandAllowlist` — Pre-approved shell commands
 
-### `plugins/`
-- `Registry` — Central hook registry; the hook set (38 points) is declared in
-  `plugins.rb` as a design surface, with few hooks wired today
-- Loaded from `.rubino/plugins/`
-
 ### `skills/`
 - `Skill` — Parsed SKILL.md with YAML frontmatter
 - `Registry` — Discovery from configured paths
@@ -167,7 +161,6 @@ User Input
         │    │    ├─ Check permissions (ApprovalPolicy)
         │    │    ├─ Check doom loop (DoomLoopDetector)
         │    │    ├─ Execute tool (ToolExecutor)
-        │    │    ├─ Run plugin hooks
         │    │    └─ Loop back to LLM
         │    └─ Final text response
         │
