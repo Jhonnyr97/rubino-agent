@@ -19,6 +19,35 @@ RSpec.describe Rubino::UI::SubagentView do
     text.gsub(/\e\[[0-9;]*m/, "")
   end
 
+  # CWE-150 (#564): the LEGACY inline rows print to $stdout VERBATIM. The
+  # activity body is built from the child's tool args (#args_hint — an
+  # attacker-named workspace file) and the agent name is model-chosen, so a raw
+  # `\e[2J` / `\e]0;…\a` / CR / BEL there would reach the TTY and EXECUTE with no
+  # gesture. Mirror the MenuView (#563) / card (#564) sink tests.
+  describe "terminal-escape injection in legacy inline rows (CWE-150, #564)" do
+    matcher :have_no_raw_escapes do
+      match { |str| ["\e", "\a", "\r", "\e]"].none? { |seq| str.include?(seq) } }
+      failure_message { |str| "expected no raw escapes, got #{str.inspect}" }
+    end
+
+    it "neutralizes escapes in a tool-arg filename (the args_hint sink)" do
+      ui.tool_started("read", arguments: { "file_path" => "evil\e[2J\e]0;PWNED\a.txt" })
+      expect(io.string).to have_no_raw_escapes
+      expect(io.string).to include("^[")
+    end
+
+    it "neutralizes escapes in a model-chosen agent name" do
+      v = described_class.new(agent_name: "ex\e[2J\aplore", out: io)
+      v.tool_started("read", arguments: { "file_path" => "lib/foo.rb" })
+      expect(io.string).to have_no_raw_escapes
+    end
+
+    it "neutralizes escapes in a dim_row annotation body" do
+      ui.note("doing\e]0;PWNED\athing")
+      expect(io.string).to have_no_raw_escapes
+    end
+  end
+
   describe "tool activity rendering" do
     it "renders tool_started as an indented, name-prefixed row" do
       ui.tool_started("read", arguments: { "file_path" => "lib/foo.rb" })

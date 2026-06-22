@@ -237,14 +237,14 @@ module Rubino
       def row(text)
         return if text.nil? || text.to_s.strip.empty?
 
-        @out.puts @pastel.public_send(@color, "#{INDENT}#{GLYPH} #{@agent_name} · #{text}")
+        @out.puts @pastel.public_send(@color, "#{INDENT}#{GLYPH} #{safe(@agent_name)} · #{safe(text)}")
       end
 
       # Dim variant for low-priority annotations (note/status/info).
       def dim_row(text)
         return if text.nil? || text.to_s.strip.empty?
 
-        @out.puts @pastel.dim("#{INDENT}#{GLYPH} #{@agent_name} · #{first_line(text, 80)}")
+        @out.puts @pastel.dim("#{INDENT}#{GLYPH} #{safe(@agent_name)} · #{safe(first_line(text, 80))}")
       end
 
       # A compact metric for the finish row: prefer the tool's own metrics,
@@ -274,6 +274,15 @@ module Rubino
       # often starts with a blank line, which would render an empty hint (#141).
       def first_line(text, max)
         Rubino::Util::Output.first_line(text, max)
+      end
+
+      # CWE-150 render-sink defense (#564) for the LEGACY inline rows. agent_name
+      # is model-chosen and the activity body is built from the child's tool args
+      # (#args_hint — an attacker-named workspace file), printed VERBATIM to
+      # $stdout here (no approval, no gesture). Neutralize control bytes to inert
+      # caret notation, keep-SGR so rubino's own color wrapper survives.
+      def safe(text)
+        Rubino::Util::Output.sanitize_terminal_keep_sgr(text.to_s)
       end
     end
   end
