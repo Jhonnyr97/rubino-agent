@@ -136,32 +136,18 @@ module Rubino
         false
       end
 
-      # Idle completion affordance (item 5): when a BACKGROUND subagent finishes
-      # while the parent is sitting at the idle prompt, surface a non-blocking
-      # one-liner — `✓ sa_… finished — /agents <id> for the result` — so the
-      # parent stays free (no blocking, no polling, no narrating "waiting"). The
-      # maintainer's decision: a background subagent runs async and the human is
-      # NOTIFIED when it finishes, rather than the parent pretending to wait.
-      #
-      # Announced ONCE per entry (tracked in @announced_finished_subagents) so the
-      # ~50ms poll doesn't repeat the line, and only for entries that finished
-      # cleanly (:completed) — a :failed / :stopped child already gets its own
-      # worker-surfaced notice, so re-announcing here would double-report. The
-      # line commits ABOVE the pinned composer through the StdoutProxy already
-      # swapped in for the idle read, exactly like a background-task note. Best
-      # effort: a hiccup must never break the idle prompt.
-      def surface_finished_subagents
-        announced = (@announced_finished_subagents ||= {})
-        Tools::BackgroundTasks.instance.list.each do |entry|
-          next unless entry.status == :completed
-          next if announced[entry.id]
-
-          announced[entry.id] = true
-          Rubino.ui.note("✓ #{entry.id} (#{entry.subagent}) finished — /agents #{entry.id} for the result")
-        end
-      rescue StandardError
-        nil # the idle completion affordance is cosmetic — never break the prompt.
-      end
+      # NOTE: the idle "✓ sa_… finished — /agents <id> for the result" affordance
+      # (the old #surface_finished_subagents idle poll) was REMOVED here: the
+      # agent-multiplexer slice-1 worker marker (UI::CLI#subagent_finished →
+      # `✓ <id> · <name> · done`, emitted by TaskTool#record_completion the moment
+      # the child reaches a terminal state) now announces every completion exactly
+      # once — immediately at idle, or deferred to the parent turn's footer. This
+      # idle poll re-announced :completed children the worker already surfaced, so
+      # the main timeline showed the SAME finish twice (`✓ … · done` AND
+      # `✓ … finished — /agents …`). The poll's own comment already skipped
+      # :failed/:stopped "because the worker surfaces those"; :completed simply
+      # joined them once the multiplexer added its marker. Viewing a finished
+      # child's result is now the dropdown's `↓ + Enter` drill-in, not `/agents`.
 
       # True when the idle input buffer holds nothing the user is mid-typing, so
       # an autonomous background-subagent resume (#561) is safe to start without
@@ -1585,11 +1571,6 @@ module Rubino
             next
           end
 
-          # Non-blocking idle completion affordance (item 5): announce any
-          # background subagent that finished while we've been idle, then carry on
-          # reading input — the parent never blocks or polls for a child.
-          surface_finished_subagents
-
           # Take ONE parked line (FIFO) so several items queued at idle each run
           # as their OWN turn (B4), in submission order — never coalesced. The
           # rest stay parked for the next #next_input / loop pass. Checked
@@ -1629,8 +1610,9 @@ module Rubino
             unless notices.empty?
               line = coalesced_resume_prompt(notices)
               # Synthetic resume, not a user submission: do NOT echo it as a typed
-              # message (no @input_from_queue), the notices are already surfaced
-              # above the prompt by #surface_finished_subagents.
+              # message (no @input_from_queue). Each finished child was already
+              # surfaced above the prompt by its worker `✓ <id> · <name> · done`
+              # marker (UI::CLI#subagent_finished).
               @input_from_queue = nil
               break
             end
