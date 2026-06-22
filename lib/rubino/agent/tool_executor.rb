@@ -580,7 +580,7 @@ module Rubino
         # Read drill-in telemetry: record the elided ranges so a later targeted
         # read inside one is logged as a drill-in (the read tool's skeleton
         # behavior, now driven from this seam rather than inside the tool).
-        note_code_skeleton(compress_hint, router, result) if result.content_type == :code
+        note_code_skeleton(compress_hint, router) if result.content_type == :code
 
         emit_compression_event(name, result, text)
         # Pointer references the call_id-based id, NOT a path: recovery is only
@@ -608,17 +608,17 @@ module Rubino
         value != false
       end
 
-      # For a :code skeleton, register the elided ranges + token saving on the
-      # read tracker so a later targeted read into an elided body is flagged as a
-      # drill-in (the "did the skeleton hide what was needed" signal). Keyed on
-      # the EXPANDED path the read tool stamped into the compress_hint.
-      def note_code_skeleton(compress_hint, router, result)
+      # For a :code skeleton, register the elided ranges on the read tracker so a
+      # later targeted read into an elided body is flagged as a drill-in (the
+      # "did the skeleton hide what was needed" signal). Keyed on the EXPANDED
+      # path the read tool stamped into the compress_hint.
+      def note_code_skeleton(compress_hint, router)
         return unless @read_tracker && compress_hint.is_a?(Hash)
 
         expanded = compress_hint[:tracker_path] || compress_hint["tracker_path"]
         return unless expanded
 
-        @read_tracker.note_skeleton(expanded, router.last_elided_ranges, result.saved_tokens_est)
+        @read_tracker.note_skeleton(expanded, router.last_elided_ranges)
       rescue StandardError
         nil # telemetry only — never break the tool call
       end

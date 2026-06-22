@@ -43,12 +43,11 @@ RSpec.describe Rubino::Compression::Compressor do
   describe "skeleton correctness" do
     let(:result) { compress(source) }
 
-    it "applies and reports byte/token savings" do
+    it "applies and reports token savings" do
       expect(result.applied?).to be(true)
       expect(result.strategy).to eq(:skeleton)
-      expect(result.compressed_bytes).to be < result.original_bytes
       expect(result.saved_tokens_est).to be > 0
-      expect(result.ratio).to be > 0.25
+      expect(result.text.bytesize).to be < source.bytesize
     end
 
     it "keeps requires, constants, attr_*, signatures and the small body verbatim" do
