@@ -1075,6 +1075,25 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # The turn status ticker advances the live subagent cards too, so a child's
+  # elapsed never freezes mid-turn while it sits in a long, event-less LLM call
+  # (the idle card ticker is dormant during a turn).
+  describe "#refresh_live_cards" do
+    before { Rubino::Tools::BackgroundTasks.reset! }
+    after  { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "repaints the cards while a background child is live" do
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "go")
+      expect(ui).to receive(:set_subagent_cards)
+      ui.send(:refresh_live_cards)
+    end
+
+    it "is a no-op when no child is live (a plain turn pays nothing)" do
+      expect(ui).not_to receive(:set_subagent_cards)
+      ui.send(:refresh_live_cards)
+    end
+  end
+
   # #106/#107: off a real terminal TTY::Prompt would leak raw cursor-control
   # escapes (ESC[4A / ESC[2K / ESC[1G) into the piped stream and read whatever
   # ambient stdin held. #ask must fail closed: deterministic nil, zero output.
