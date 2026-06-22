@@ -130,7 +130,7 @@ module Rubino
         if self.class.main_row?(entry)
           { label: @pastel.dim("◂ main session") }
         else
-          { label: "#{entry.id} · #{entry.subagent} · #{status_label(entry.status)}",
+          { label: "#{entry.id} · #{entry.subagent} · #{status_label(entry)}",
             sub: entry.last_activity.to_s }
         end
       end
@@ -145,9 +145,11 @@ module Rubino
         %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
       end
 
-      def status_label(status)
-        case status
-        when :needs_approval then @pastel.yellow("approval")
+      # A budget request (#574) reuses :needs_approval but reads as "wants
+      # +budget" so the human knows the Enter grants iterations, not a tool.
+      def status_label(entry)
+        case entry.status
+        when :needs_approval then @pastel.yellow(entry.budget_request ? "wants +budget" : "approval")
         when :blocked_on_human then @pastel.red("waiting on you")
         when :blocked_on_parent then @pastel.red("waiting on parent")
         when :stopping then "stopping"

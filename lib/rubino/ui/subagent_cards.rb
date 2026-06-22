@@ -93,14 +93,28 @@ module Rubino
       end
 
       # A card for a child parked on a human approval — the approval is the most
-      # important thing on the row, so it leads (amber ●) with the command.
+      # important thing on the row, so it leads (amber ●) with the command. A
+      # BUDGET request (#574) reuses the same parked state but reads as a budget
+      # grant, not a tool approval, so the human knows what they're granting.
       def approval_card_line(entry)
+        return budget_card_line(entry) if entry.budget_request
+
         glyph   = @pastel.yellow(APPROVAL)
         command = entry.approval_command.to_s
         command = entry.approval_question.to_s if command.empty?
         "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
           @pastel.yellow("needs approval") + ": #{safe(first_line(command, 60))} " \
                                              "· ↓ to approve"
+      end
+
+      # A card for a child parked asking for MORE budget (#574): it hit its
+      # tool-iteration ceiling and wants the human to grant more iterations.
+      def budget_card_line(entry)
+        glyph    = @pastel.yellow(APPROVAL)
+        question = entry.approval_question.to_s
+        "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
+          @pastel.yellow("wants +budget") + ": #{safe(first_line(question, 60))} " \
+                                            "· ↓ to grant"
       end
 
       private

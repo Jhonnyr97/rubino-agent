@@ -20,7 +20,7 @@ module Rubino
       #   /agents <id> steer "…"  → fire-and-forget note into the child's context
       #   /agents <id> probe "…"  → ephemeral read-only peek
       #   /reply <id> <answer>    → answer a child blocked on a human/parent ask
-      class Agents
+      class Agents # rubocop:disable Metrics/ClassLength -- one cohesive /agents command surface (list/attach/steer/probe/reply/approval/budget); splitting would scatter the routing
         include Rubino::UI::ProbeWaitIndicator
 
         # How many times the parked-child approval prompt re-renders after an
@@ -554,6 +554,8 @@ module Rubino
             return
           end
 
+          return resolve_agent_budget(entry, gate) if entry.budget_request
+
           @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
           @ui.info("needs approval to run:")
           @ui.info("  #{entry.approval_command.to_s.empty? ? entry.approval_question : entry.approval_command}")
@@ -570,6 +572,39 @@ module Rubino
             end
           gate.decide(entry.approval_id, decision)
           @ui.info(decision ? "Approved #{entry.id}." : "Denied #{entry.id}.")
+        end
+
+        # #574 — resolve a parked child's BUDGET request (it hit its
+        # tool-iteration ceiling). Reuses the approval gate but asks Grant/
+        # Summarize: a grant decides the gate true (the child's #select handler
+        # maps it to :continue → the Loop raises the cap +step and re-enters the
+        # turn); anything else decides false → :summarize (force-summarize). No
+        # "always" — budget is a one-shot grant, nothing to allowlist.
+        def resolve_agent_budget(entry, gate)
+          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
+          @ui.info("hit its tool-iteration limit and wants more budget:")
+          @ui.info("  #{entry.approval_question}")
+          choice = ask_budget_answer(entry)
+          return if choice.nil?
+
+          grant = choice == :grant
+          gate.decide(entry.approval_id, grant)
+          @ui.info(grant ? "Granted more budget to #{entry.id}." : "#{entry.id} will summarize now.")
+        end
+
+        # Mirror of #ask_approval_answer for the budget picker: re-render on a
+        # transient TTY abort (a background fold-in aborting the read returns nil,
+        # NOT a decision), and leave the child parked on a persistent abort so
+        # `/agents <id>` re-opens it — never silently summarize.
+        def ask_budget_answer(entry)
+          return nil unless @ui.respond_to?(:subagent_budget_choice)
+
+          APPROVAL_ASK_ATTEMPTS.times do
+            choice = @ui.subagent_budget_choice
+            return choice if choice
+          end
+          @ui.info("no answer read — #{entry.id} is still waiting; /agents #{entry.id} to decide.")
+          nil
         end
 
         # Renders the UNIFIED arrow-key approval menu (TUI-6) for a parked
