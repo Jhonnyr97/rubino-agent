@@ -215,6 +215,18 @@ module Rubino
         nil
       end
 
+      # No interactive MENU mid-delegation: a background/nested child has no human
+      # watching its view to pick from a list, so return nil like UI::Null —
+      # callers fall back to their non-interactive path. Without this, a child
+      # that hit e.g. the budget-extension prompt (Loop#budget_extension_choice →
+      # @ui.select) inherited Base#select, which RAISES NotImplementedError and
+      # CRASHED the child (an `explore` child reaching the tool-iteration ceiling
+      # died here; a short `general` task never hit it). nil makes the loop's
+      # documented headless guarantee — nil → force-summarize — hold for subagents.
+      def select(_prompt, _choices)
+        nil
+      end
+
       private
 
       # Asks the parent CLI to repaint the collapsed card block from the
