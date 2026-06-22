@@ -733,13 +733,13 @@ module Rubino
       # receives next turn doesn't ECHO the same report a second time
       # (#input_injected elides the already-shown Result body).
       def subagent_lifecycle(line, status: "done", report: nil, id: nil)
-        $stdout.puts unless @last_block == :gap
-        # The lifecycle line embeds the subagent name/summary (untrusted) —
-        # sanitize before the trusted color wrap (R3C-1, CWE-150). The report
+        emit_blank unless @last_block == :gap
+        # The lifecycle line embeds the subagent name/summary (UNTRUSTED, R3C-1
+        # / CWE-150). PATH 1: #emit strips every escape and applies the row's
+        # style (red on failure, else dim) around the inert text. The report
         # body goes through #commit_markdown_block, which renders structured
         # tokens (no raw passthrough), so it is not a raw-escape sink.
-        safe_line = safe(line)
-        $stdout.puts(status == "failed" ? @pastel.red(safe_line) : @pastel.dim(safe_line))
+        emit(line, style: status == "failed" ? :red : :dim)
         if report && !report.to_s.strip.empty?
           $stdout.puts @pastel.dim("  ↳ report:")
           commit_markdown_block(report)
@@ -920,11 +920,12 @@ module Rubino
         return if text.nil? || text.to_s.empty?
 
         clear_line
-        # USER-SUPPLIED steered text: neutralize terminal escapes before the
-        # echo (CWE-150 — H1), the same render-boundary defense the approval
-        # card and the submit echo use. Render-only — the literal text is what
-        # runs next turn; only this echo is sanitized.
-        $stdout.puts @pastel.dim("queued ▸ #{Util::Output.sanitize_terminal(text.to_s)}")
+        # USER-SUPPLIED steered text is UNTRUSTED (CWE-150 — H1). PATH 1 of the
+        # output funnel: #emit strips every escape and applies the :dim style
+        # around the now-inert text, so the manual sanitize + @pastel.dim wrap is
+        # gone. Render-only — the literal text is what runs next turn; only this
+        # echo is defanged.
+        emit("queued ▸ #{text}", style: :dim)
         $stdout.flush
       end
 
@@ -955,10 +956,11 @@ module Rubino
         end
         clear_line
         first, rest = elide_shown_reports(text.to_s).split("\n", 2)
-        # The injected first line is a subagent completion notice (untrusted) —
-        # sanitize before the trusted dim wrap (R3C-1, CWE-150). The rest goes
+        # The injected first line is a subagent completion notice (UNTRUSTED,
+        # R3C-1 / CWE-150). PATH 1: #emit strips every escape and dims the inert
+        # text — the manual safe + @pastel.dim wrap is gone. The rest goes
         # through #commit_markdown_block, which renders structured tokens.
-        $stdout.puts @pastel.dim("↳ received while working: #{safe(first)}")
+        emit("↳ received while working: #{first}", style: :dim)
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
       end
