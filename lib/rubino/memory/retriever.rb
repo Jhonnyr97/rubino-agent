@@ -14,7 +14,7 @@ module Rubino
       def user_profile
         return nil unless @config.dig("memory", "user_profile_enabled")
 
-        char_limit = @config.memory_user_char_limit
+        char_limit = @config.dig("memory", "user_char_limit")
         memories = @store.by_kind("user_profile")
 
         text = memories.map { |m| m[:content] }.join("\n")
@@ -33,7 +33,7 @@ module Rubino
 
       # Returns memories relevant to the current session context
       def relevant_for_session(_session_id)
-        char_limit = @config.memory_char_limit
+        char_limit = @config.dig("memory", "memory_char_limit")
         @store.within_limit(char_limit: char_limit)
       end
 
@@ -42,7 +42,7 @@ module Rubino
         {
           user_profile: user_profile,
           project_context: project_context,
-          general: @store.within_limit(char_limit: @config.memory_char_limit)
+          general: @store.within_limit(char_limit: @config.dig("memory", "memory_char_limit"))
         }
       end
     end

@@ -126,8 +126,8 @@ module Rubino
       def config_corruption(loader)
         loader.load
         config = Config::Configuration.new
-        config.model_default
-        config.model_provider
+        config.dig("model", "default")
+        config.dig("model", "provider")
         nil
       rescue Config::ConfigError => e
         e.message
@@ -276,7 +276,7 @@ module Rubino
 
       def check_model_configured
         ui = Rubino.ui
-        model = Rubino.configuration.model_default
+        model = Rubino.configuration.dig("model", "default")
 
         if model.nil? || model.empty?
           ui.error("no model configured")

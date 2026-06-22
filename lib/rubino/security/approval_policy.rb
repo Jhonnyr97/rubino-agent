@@ -63,7 +63,7 @@ module Rubino
 
       def initialize(config: nil, agent_overrides: nil)
         @config = config || Rubino.configuration
-        @mode = @config.approvals_mode
+        @mode = @config.dig("approvals", "mode")
         # Effective shell prompt policy (:confirm_all | :dangerous_only), the
         # SOLE source of truth (item 7): security.confirm_policy only — the legacy
         # security.require_confirmation_for_shell alias was removed (see

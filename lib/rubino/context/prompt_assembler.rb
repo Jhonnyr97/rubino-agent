@@ -279,7 +279,7 @@ module Rubino
       # provider declaring anthropic_compatible: true (e.g. MiniMax /anthropic).
       def anthropic_family_provider?
         provider = LLM::ProviderResolver.resolve(
-          @session[:model], explicit_provider: @config.model_provider
+          @session[:model], explicit_provider: @config.dig("model", "provider")
         )
         return true if %w[anthropic bedrock].include?(provider.to_s)
 

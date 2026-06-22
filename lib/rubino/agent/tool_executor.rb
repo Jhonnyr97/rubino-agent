@@ -200,8 +200,8 @@ module Rubino
           raw = Tools::Result.new(
             name: name,
             call_id: call_id,
-            output: Util::Output.truncate(raw.output, max_bytes: @config.tool_output_max_bytes,
-                                                      max_lines: @config.tool_output_max_lines,
+            output: Util::Output.truncate(raw.output, max_bytes: @config.dig("tool_output", "max_bytes"),
+                                                      max_lines: @config.dig("tool_output", "max_lines"),
                                                       spill: ->(full) { spill_full_output(full, call_id) }),
             status: raw.status,
             error: raw.error,
@@ -253,8 +253,8 @@ module Rubino
         result = Tools::Result.success(
           name: name,
           call_id: call_id,
-          output: Util::Output.truncate(text, max_bytes: @config.tool_output_max_bytes,
-                                              max_lines: @config.tool_output_max_lines,
+          output: Util::Output.truncate(text, max_bytes: @config.dig("tool_output", "max_bytes"),
+                                              max_lines: @config.dig("tool_output", "max_lines"),
                                               spill: ->(full) { spill_full_output(full, call_id) }),
           metrics: metrics,
           error_code: error_code&.to_sym,

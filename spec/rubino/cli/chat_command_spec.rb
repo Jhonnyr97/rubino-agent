@@ -364,7 +364,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "uses default model when no override" do
       described_class.new("query" => "hi").execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
-        hash_including(model_override: Rubino.configuration.model_default)
+        hash_including(model_override: Rubino.configuration.dig("model", "default"))
       )
     end
 

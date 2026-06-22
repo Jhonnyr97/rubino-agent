@@ -72,7 +72,8 @@ RSpec.describe Rubino::CLI::SetupCommand do
   # model.default is actually blank.
   it "says 'no model is configured' only when model.default is blank" do
     allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
-    allow_any_instance_of(Rubino::Config::Configuration).to receive(:model_default).and_return("")
+    allow_any_instance_of(Rubino::Config::Configuration).to receive(:dig).and_call_original
+    allow_any_instance_of(Rubino::Config::Configuration).to receive(:dig).with("model", "default").and_return("")
 
     described_class.new.execute
 
@@ -108,7 +109,7 @@ RSpec.describe Rubino::CLI::SetupCommand do
 
     def configured
       Rubino.reload_configuration!
-      [Rubino.configuration.model_provider, Rubino.configuration.model_default]
+      [Rubino.configuration.dig("model", "provider"), Rubino.configuration.dig("model", "default")]
     end
 
     it "defaults to minimax when ONLY MINIMAX_API_KEY is present" do

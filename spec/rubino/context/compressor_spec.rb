@@ -46,7 +46,7 @@ RSpec.describe Rubino::Context::Compressor do
 
       result = described_class.new(session_id: session_id, config: config, db: double).compact!
 
-      expected = config.compression_protect_first_n + config.compression_protect_last_n + 5
+      expected = config.dig("compression", "protect_first_n") + config.dig("compression", "protect_last_n") + 5
       expect(result[:minimum_messages]).to eq(expected)
     end
   end

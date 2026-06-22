@@ -89,7 +89,7 @@ module Rubino
         # non-interactive (files-only) paths.
         if LLM::CredentialCheck.usable?
           ui.success("Setup complete! Run 'rubino doctor' to verify.")
-        elsif (model = Rubino.configuration.model_default.to_s).empty?
+        elsif (model = Rubino.configuration.dig("model", "default").to_s).empty?
           ui.warning("Setup files created, but no model is configured yet.")
           ui.status("Run 'rubino setup' again or add an API key, then 'rubino doctor' to verify.")
         else
@@ -184,7 +184,7 @@ module Rubino
         return unless choice
         # Already pointed at this provider (e.g. config carried over): nothing
         # to rewrite, and don't churn the file or its line on every re-run.
-        return if Rubino.configuration.model_provider == choice[:provider]
+        return if Rubino.configuration.dig("model", "provider") == choice[:provider]
 
         # Non-destructive re-run (F9): a re-run of `setup` over an EXISTING
         # config must never silently clobber a model the user deliberately
@@ -194,8 +194,9 @@ module Rubino
         # and just tells the user how to switch. (Industry: idempotent setup
         # fills missing fields, never overwrites a set one.)
         if model_customized?
+          cfg = Rubino.configuration
           ui.status("Detected #{choice[:env_var]}, but keeping your configured model " \
-                    "#{Rubino.configuration.model_default} (#{Rubino.configuration.model_provider}). " \
+                    "#{cfg.dig("model", "default")} (#{cfg.dig("model", "provider")}). " \
                     "Run `rubino config set model.provider #{choice[:provider]}` to switch.")
           return
         end
@@ -215,7 +216,7 @@ module Rubino
       def model_customized?
         cfg = Rubino.configuration
         seed = Config::Defaults::MODULE_DEFAULTS["model"] || {}
-        cfg.model_default != seed["default"] || cfg.model_provider != seed["provider"]
+        cfg.dig("model", "default") != seed["default"] || cfg.dig("model", "provider") != seed["provider"]
       rescue StandardError
         # If we can't tell, err on the side of PRESERVING the user's config.
         true

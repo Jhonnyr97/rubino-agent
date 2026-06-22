@@ -177,7 +177,7 @@ module Rubino
           return nil if rows.empty?
 
           text = rows.map { |r| r[:text] }.join("\n")
-          limit = @config.memory_user_char_limit
+          limit = @config.dig("memory", "user_char_limit")
           text.length > limit ? text[0...limit] : text
         end
 
@@ -197,7 +197,7 @@ module Rubino
         # ({id:, kind:, content:, ...}) so the prompt assembler is unchanged.
         def retrieve(session_id:, query: nil, k: DEFAULT_K)
           ranked = rank(query: query, k: k)
-          budget = @config.memory_char_limit
+          budget = @config.dig("memory", "memory_char_limit")
           selected = []
           total = 0
           ranked.each do |row|
@@ -523,12 +523,13 @@ module Rubino
 
         def enforce_char_budget!(kind, text)
           group = kind == USER_KIND ? "user" : "memory"
-          # INGEST cap, decoupled from the injection budget. `memory_char_limit`
+          # INGEST cap, decoupled from the injection budget. memory.memory_char_limit
           # bounds only what `retrieve` packs into the prompt; storing facts is
-          # gated by `memory_ingest_char_limit` (nil => unbounded) so long
+          # gated by memory.ingest_char_limit (nil => unbounded) so long
           # multi-session conversations don't stall once the injection budget
           # fills. User facts keep their own (small) profile budget.
-          limit = group == "user" ? @config.memory_user_char_limit : @config.memory_ingest_char_limit
+          key = group == "user" ? "user_char_limit" : "ingest_char_limit"
+          limit = @config.dig("memory", key)
           return unless limit&.positive?
 
           current = current_chars(group)

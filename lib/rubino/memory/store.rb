@@ -222,7 +222,7 @@ module Rubino
       def enforce_char_budget!(kind, content)
         cfg = @config || Rubino.configuration
         group = self.class.group_for_kind(kind)
-        limit = group == "user" ? cfg.memory_user_char_limit : cfg.memory_char_limit
+        limit = group == "user" ? cfg.dig("memory", "user_char_limit") : cfg.dig("memory", "memory_char_limit")
         return unless limit && limit > 0
 
         current = total_chars_for_group(group)
@@ -240,7 +240,7 @@ module Rubino
       def enforce_char_budget_for_update!(existing, new_content)
         cfg = @config || Rubino.configuration
         group = self.class.group_for_kind(existing[:kind])
-        limit = group == "user" ? cfg.memory_user_char_limit : cfg.memory_char_limit
+        limit = group == "user" ? cfg.dig("memory", "user_char_limit") : cfg.dig("memory", "memory_char_limit")
         return unless limit && limit > 0
 
         current = total_chars_for_group(group) - existing[:content].to_s.length

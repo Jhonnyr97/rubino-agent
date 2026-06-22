@@ -446,7 +446,7 @@ module Rubino
       # With no pin AND no catalog, the id itself drives routing (auto pattern
       # match), so the switch is real — allow it.
       def model_switch_ok?(name)
-        explicit = Rubino.configuration.model_provider
+        explicit = Rubino.configuration.dig("model", "provider")
         pinned   = !(explicit.nil? || explicit.to_s.empty? || explicit == "auto")
         provider = pinned ? explicit : LLM::ProviderResolver.resolve(name)
         ids      = LLM::ModelCatalog.ids_for(provider)
@@ -477,7 +477,7 @@ module Rubino
 
         ids = LLM::ModelCatalog.ids_for(provider)
         if ids.empty?
-          explicit = Rubino.configuration.model_provider
+          explicit = Rubino.configuration.dig("model", "provider")
           if explicit.nil? || explicit.to_s.empty? || explicit == "auto"
             @ui.info("No model catalog for provider '#{provider}' — `/model <name>` still " \
                      "switches (the id picks the provider).")
@@ -504,14 +504,14 @@ module Rubino
       def status_model
         @runner&.session&.dig(:model) ||
           (@runner.respond_to?(:model_id) ? @runner.model_id : nil) ||
-          Rubino.configuration.model_default
+          Rubino.configuration.dig("model", "default")
       end
 
       # The provider the next turn will actually route through — the single
       # ProviderResolver seam AdapterFactory uses, fed with the configured
       # explicit provider (or "auto" pattern-matching the model id).
       def active_provider(model_id)
-        LLM::ProviderResolver.resolve(model_id, explicit_provider: Rubino.configuration.model_provider)
+        LLM::ProviderResolver.resolve(model_id, explicit_provider: Rubino.configuration.dig("model", "provider"))
       rescue StandardError
         "(unknown)"
       end
@@ -522,7 +522,7 @@ module Rubino
       # different provider than the pinned one — gateway excepted, since a
       # gateway proxies arbitrary model ids by design.
       def warn_cross_provider_model(model_id)
-        explicit = Rubino.configuration.model_provider
+        explicit = Rubino.configuration.dig("model", "provider")
         return if explicit.nil? || explicit == "auto" || explicit == "gateway"
 
         implied = LLM::ProviderResolver.resolve(model_id)

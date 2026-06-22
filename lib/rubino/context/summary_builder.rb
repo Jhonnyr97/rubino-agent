@@ -74,7 +74,7 @@ module Rubino
         content = format_messages_for_summary(messages)
 
         prompt = build_summary_prompt(content, previous_summary)
-        @config.compression_max_summary_tokens
+        @config.dig("compression", "max_summary_tokens")
 
         # Route through AuxiliaryClient so the WHOLE `auxiliary.compression` block
         # is honored — provider, model AND base_url — exactly like the other aux

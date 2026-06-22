@@ -118,7 +118,7 @@ module Rubino
     # gate-less global that would silently drop interactive prompts (the
     # clarify/`question` flow) and could cross-talk between runs.
     def ui
-      Thread.current[:rubino_ui] || (@ui ||= UI.build(configuration.ui_adapter))
+      Thread.current[:rubino_ui] || (@ui ||= UI.build(configuration.dig("ui", "adapter")))
     end
 
     # Sets the process-global UI adapter (CLI boot, tests).
