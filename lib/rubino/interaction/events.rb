@@ -15,9 +15,6 @@ module Rubino
       # current turn"). Payload: { text:, iteration: }.
       INPUT_INJECTED = :input_injected
 
-      # Status change events
-      STATUS_CHANGED = :status_changed
-
       # Session events
       SESSION_LOADED = :session_loaded
       SESSION_CREATED = :session_created

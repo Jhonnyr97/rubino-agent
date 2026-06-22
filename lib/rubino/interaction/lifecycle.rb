@@ -37,7 +37,6 @@ module Rubino
         # Explicit per-run cap from `--max-turns` (Runner → here → IterationBudget).
         # nil ⇒ use the configured agent_max_tool_iterations (#141).
         @max_tool_iterations = max_tool_iterations
-        @state = State.new
         @session_repo = Session::Repository.new
         @message_store = Session::Store.new
       end
@@ -54,36 +53,28 @@ module Rubino
       # runs, which stay isolated — no user injection, exactly as before.
       def execute(input, image_paths: [], input_queue: nil, paste_expansions: [])
         @event_bus.emit(Events::INTERACTION_STARTED, input: input)
-        @state.transition_to!(:receiving_input, event_bus: @event_bus)
 
         # 1. Persist user message
-        @state.transition_to!(:loading_session, event_bus: @event_bus)
         persist_user_message(input, paste_expansions: paste_expansions)
 
         # 2. Load memory (if enabled)
-        @state.transition_to!(:loading_memory, event_bus: @event_bus)
         memory_context = load_memory(input)
 
         # 3. Build prompt/context
-        @state.transition_to!(:building_context, event_bus: @event_bus)
         messages = build_messages(input, memory_context)
         tools = load_tools
 
         # 4. Check token budget
-        @state.transition_to!(:checking_budget, event_bus: @event_bus)
         messages = check_and_compact(messages)
 
         # 5. Run agent loop
-        @state.transition_to!(:calling_model, event_bus: @event_bus)
         response = run_agent_loop(messages, tools, image_paths: image_paths,
                                                    input_queue: input_queue)
 
         # 6. Persist session state
-        @state.transition_to!(:persisting_session, event_bus: @event_bus)
         update_session_state
 
         # 7. Enqueue post-turn jobs
-        @state.transition_to!(:enqueueing_jobs, event_bus: @event_bus)
         enqueue_post_turn_jobs
 
         # 8. Finish
@@ -93,12 +84,10 @@ module Rubino
         # non-streaming path emits no deltas — so without this, a completed run
         # would terminate with no final text for clients to display. This makes
         # run.completed the single source of truth for the answer.
-        @state.transition_to!(:finished, event_bus: @event_bus)
         @event_bus.emit(Events::INTERACTION_FINISHED, output: response.to_s)
 
         response
       rescue StandardError => e
-        @state.transition_to!(:failed, event_bus: @event_bus)
         @event_bus.emit(Events::INTERACTION_FAILED, error: e.message)
         raise
       end
@@ -208,8 +197,6 @@ module Rubino
           # the session is hovering at the threshold and re-compacting would
           # only shave a message or two. The user can still force /compact.
           return messages if compressor.thrashing?
-
-          @state.transition_to!(:compressing_context, event_bus: @event_bus)
 
           result = compressor.compact!
 

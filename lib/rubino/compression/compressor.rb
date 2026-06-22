@@ -41,11 +41,11 @@ module Rubino
       def compress(content, source_path:, content_type:, full_file:)
         original_bytes = content.bytesize
 
-        return CompressionResult.noop(strategy: :not_full_file, original_bytes: original_bytes) unless full_file
-        return CompressionResult.noop(strategy: :not_code, original_bytes: original_bytes) unless content_type == :code
+        return CompressionResult.noop(strategy: :not_full_file) unless full_file
+        return CompressionResult.noop(strategy: :not_code) unless content_type == :code
 
         line_count = content.count("\n") + (content.end_with?("\n") ? 0 : 1)
-        return CompressionResult.noop(strategy: :too_small, original_bytes: original_bytes) if line_count < @min_lines
+        return CompressionResult.noop(strategy: :too_small) if line_count < @min_lines
 
         skeletonise(content, source_path, original_bytes)
       end
@@ -60,7 +60,7 @@ module Rubino
         end
 
         # nil → Prism could not parse; identical text → nothing was elided.
-        return CompressionResult.noop(strategy: :parse_error, original_bytes: original_bytes) if skeleton.nil?
+        return CompressionResult.noop(strategy: :parse_error) if skeleton.nil?
 
         compressed_bytes = skeleton.bytesize
         saved = original_bytes - compressed_bytes
@@ -68,15 +68,12 @@ module Rubino
 
         if ratio < MIN_SAVING_RATIO
           @elided_ranges = []
-          return CompressionResult.noop(strategy: :insufficient_saving, original_bytes: original_bytes)
+          return CompressionResult.noop(strategy: :insufficient_saving)
         end
 
         CompressionResult.new(
           text: skeleton,
-          original_bytes: original_bytes,
-          compressed_bytes: compressed_bytes,
           saved_tokens_est: estimate_tokens(saved),
-          ratio: ratio,
           strategy: :skeleton,
           applied: true
         )

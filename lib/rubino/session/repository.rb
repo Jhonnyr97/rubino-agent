@@ -11,7 +11,6 @@ module Rubino
     # Notes:
     # - #find supports prefix matching on the UUID so short ids from the CLI
     #   resolve to a full session row.
-    # - #latest_active is used to resume the most recently touched session.
     # - #destroy! cascades manually to events, tool_calls, messages,
     #   session_summaries and runs inside a single transaction (no FK cascade
     #   in schema; the runs FK would otherwise block the session delete).
@@ -20,13 +19,6 @@ module Rubino
       # (the Runner) needs the SAME stomp guard auto-resume already applies, so a
       # second process resuming a session a first live process is still writing
       # can fork instead of interleaving writes into one malformed transcript.
-      # True when this row has an alive owner_pid that isn't us, for a session of
-      # ANY status (#376): an ended session a live process is re-writing is guarded
-      # too, so concurrent explicit resumes of it fork instead of interleaving.
-      def owned_by_other_live_process?(row)
-        live_owned_by_other?(row)
-      end
-
       # Atomically claims a resumable session for THIS process (#390/residual
       # #376). The explicit-resume guard used to be a check-then-stamp:
       # `owned_by_other_live_process?` read owner_pid, and a LATER `update(id,
@@ -279,27 +271,6 @@ module Rubino
         reaped
       rescue StandardError
         reaped
-      end
-
-      # Returns the most recent active session, if any
-      def latest_active
-        @db[:sessions]
-          .where(status: "active")
-          .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
-          .first
-      end
-
-      # Returns the most recent session worth resuming on a bare `chat`: the
-      # last session that actually has messages, regardless of status, so a
-      # closed terminal (status still "active") OR a cleanly ended session can
-      # both be continued. Empty 0-message sessions are skipped so a stray
-      # earlier launch never shadows the real conversation (#99). Returns nil on
-      # a true first run, which the CLI uses to fall back to the welcome panel.
-      def latest_resumable
-        @db[:sessions]
-          .where(resumable_predicate)
-          .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
-          .first
       end
 
       # Bare `chat` / `--continue` auto-resume target, SCOPED to the launch dir

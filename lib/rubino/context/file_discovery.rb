@@ -32,14 +32,6 @@ module Rubino
           path if File.exist?(path)
         end
       end
-
-      # Checks a subdirectory for local context files
-      def local_context(subdir)
-        CONTEXT_FILES.filter_map do |filename|
-          path = File.join(@base_path, subdir, filename)
-          File.read(path, encoding: "UTF-8") if File.exist?(path)
-        end.join("\n")
-      end
     end
   end
 end

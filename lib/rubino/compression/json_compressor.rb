@@ -66,18 +66,18 @@ module Rubino
       def compress(text)
         original_bytes = text.bytesize
         data = parse(text)
-        return CompressionResult.noop(strategy: :not_json, original_bytes: original_bytes) if data == :not_json
+        return CompressionResult.noop(strategy: :not_json) if data == :not_json
 
         out =
           case data
           when Array then compress_array(text, data)
           when Hash  then compress_object(text, data)
           end
-        return CompressionResult.noop(strategy: :too_small, original_bytes: original_bytes) if out.nil?
+        return CompressionResult.noop(strategy: :too_small) if out.nil?
 
         build_result(out, original_bytes)
       rescue StandardError
-        CompressionResult.noop(strategy: :parse_error, original_bytes: original_bytes)
+        CompressionResult.noop(strategy: :parse_error)
       end
 
       private
@@ -257,18 +257,14 @@ module Rubino
       def build_result(out, original_bytes)
         compressed_bytes = out.bytesize
         saved = original_bytes - compressed_bytes
-        ratio = original_bytes.zero? ? 0.0 : saved.fdiv(original_bytes)
 
         unless saved_enough?(original_bytes, compressed_bytes)
-          return CompressionResult.noop(strategy: :insufficient_saving, original_bytes: original_bytes)
+          return CompressionResult.noop(strategy: :insufficient_saving)
         end
 
         CompressionResult.new(
           text: out,
-          original_bytes: original_bytes,
-          compressed_bytes: compressed_bytes,
           saved_tokens_est: (saved / 4.0).round,
-          ratio: ratio,
           strategy: :json,
           applied: true
         )

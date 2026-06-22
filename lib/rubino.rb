@@ -420,16 +420,6 @@ module Rubino
     # Sets the agent registry (useful for testing / custom boots).
     attr_writer :agent_registry
 
-    # Returns the plugin registry
-    def plugin_registry
-      Plugins.registry
-    end
-
-    # DSL for defining plugins
-    def plugin(&)
-      Plugins.registry.instance_eval(&)
-    end
-
     # Resets all memoized state (useful for testing)
     def reset!
       @configuration = nil
@@ -437,7 +427,6 @@ module Rubino
       @database = nil
       @event_bus = nil
       @agent_registry = nil
-      Plugins.reset!
     end
 
     # Returns the home directory path. Delegates to the SAME resolver the
@@ -478,7 +467,7 @@ module Rubino
         # rescue so a non-writable home yields the SAME clean one-line domain
         # error + exit 1, no trace.
         File.chmod(0o700, home)
-        %w[memories sessions logs skills commands tools plugins].each do |subdir|
+        %w[memories sessions logs skills commands tools].each do |subdir|
           dir = File.join(home, subdir)
           FileUtils.mkdir_p(dir) unless File.directory?(dir)
         end

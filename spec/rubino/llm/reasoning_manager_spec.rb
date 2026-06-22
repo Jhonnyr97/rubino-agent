@@ -83,12 +83,4 @@ RSpec.describe Rubino::LLM::ReasoningManager do
       expect(rendered.thinking).to be_nil
     end
   end
-
-  # Echo-back seam — documented no-op on ruby_llm 1.15 (see #carry rationale).
-  describe "#carry" do
-    it "returns the history unchanged (documented no-op seam)" do
-      history = [{ role: "assistant", content: "x" }]
-      expect(manager.carry(history)).to equal(history)
-    end
-  end
 end

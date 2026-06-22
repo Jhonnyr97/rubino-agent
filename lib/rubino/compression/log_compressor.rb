@@ -108,20 +108,14 @@ module Rubino
         # the line count and the rebuilt output match the input.
         raw.pop if raw.last == "" && text.end_with?("\n")
 
-        if raw.length < @cfg.min_lines
-          return CompressionResult.noop(strategy: :too_small,
-                                        original_bytes: original_bytes)
-        end
+        return CompressionResult.noop(strategy: :too_small) if raw.length < @cfg.min_lines
 
         @format = detect_format(raw)
         lines = classify(raw)
         select!(lines)
         kept = lines.select(&:kept)
 
-        if kept.length >= raw.length
-          return CompressionResult.noop(strategy: :insufficient_saving,
-                                        original_bytes: original_bytes)
-        end
+        return CompressionResult.noop(strategy: :insufficient_saving) if kept.length >= raw.length
 
         out = render(lines)
         build_result(out, original_bytes)
@@ -292,15 +286,10 @@ module Rubino
       end
 
       def build_result(out, original_bytes)
-        compressed_bytes = out.bytesize
-        saved = original_bytes - compressed_bytes
-        ratio = original_bytes.zero? ? 0.0 : saved.fdiv(original_bytes)
+        saved = original_bytes - out.bytesize
         CompressionResult.new(
           text: out,
-          original_bytes: original_bytes,
-          compressed_bytes: compressed_bytes,
           saved_tokens_est: (saved / 4.0).round,
-          ratio: ratio,
           strategy: :log,
           applied: true
         )
