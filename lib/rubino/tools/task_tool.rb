@@ -44,7 +44,7 @@ module Rubino
       NOOP_RESULT_SUFFIX = "returned no output)"
 
       # True when a subagent's final result text is the no-op placeholder, i.e.
-      # the run did nothing / was denied. Shared by completion_summary so the
+      # the run did nothing / was denied. Shared by completion_marker so the
       # background path mirrors the foreground delegation row.
       def self.noop_result?(text)
         text.to_s.strip.end_with?(NOOP_RESULT_SUFFIX)
@@ -196,7 +196,7 @@ module Rubino
         # wired with this run's entry id + the parent CLI (whose live region hosts
         # the card) + the approval handler. In card mode the child's per-tool
         # activity feeds the registry instead of flooding $stdout (#124).
-        child_ui  = nested_ui_for(entry, parent_ui)
+        child_ui  = nested_ui_for(entry, parent_ui, approve: approval_handler_for(entry))
         runner    = build_subagent_runner(
           definition, ui: child_ui, event_bus: Interaction::EventBus.new
         )
@@ -226,7 +226,7 @@ module Rubino
         # The runner already renders through the card-mode child UI (wired at
         # spawn); with_ui binds that SAME instance thread-locally so any global
         # Rubino.ui lookup inside the nested loop also resolves to it.
-        ui_for_child = child_ui || nested_ui_for(entry, parent_ui)
+        ui_for_child = child_ui || nested_ui_for(entry, parent_ui, approve: approval_handler_for(entry))
         # Wire the child Loop with the entry's OWN steering queue (parent->child
         # `steer` channel) and bind the current-subagent id so a tool the child
         # invokes (ask_parent) can find its own registry entry. The steer queue
@@ -252,11 +252,11 @@ module Rubino
         # must not surface as a ✗ "failed" notice (#108/#13).
         if entry.status == :stopped
           notify(sink, stopped_notice(entry))
-          surface_completion(parent_ui, "▸ #{entry.id} · #{entry.subagent} · stopped at your request",
+          surface_completion(parent_ui, "⊘ #{entry.subagent} · stopped",
                              id: entry.id, status: "stopped")
         else
           notify(sink, failure_notice(entry, e.message))
-          surface_completion(parent_ui, "▸ #{entry.id} · #{entry.subagent} · failed: #{e.message}",
+          surface_completion(parent_ui, "✗ #{entry.subagent} · failed",
                              id: entry.id, status: "failed")
         end
         repaint_parent_cards(parent_ui)
@@ -297,33 +297,21 @@ module Rubino
                              "⚠ #{entry.id} · steer note not delivered (task completed first): " \
                              "#{Rubino::Util::Output.elide(undelivered.join(" | "), 80)}")
         end
-        surface_completion(parent_ui, completion_summary(entry, text),
-                           id: entry.id, status: self.class.noop_result?(text) ? "no-op" : "done",
-                           report: text)
+        status = self.class.noop_result?(text) ? "no-op" : "done"
+        surface_completion(parent_ui, completion_marker(entry, status),
+                           id: entry.id, status: status)
       end
 
-      # One committed summary line for a finished subagent, folded above the
-      # prompt by #surface_completion (the card itself clears when the registry
-      # snapshot no longer lists it as running). Reuses the LIVE-CARD row shape
-      # (P6) so the lifecycle reads in one grammar:
-      #   ▸ sa_e488 · explore · completed · 1 tool · 12s
-      # The status word reflects the OUTCOME: a no-op / fully-denied run (final
-      # text is the no-op placeholder) says "no-op" — a denied subagent that
-      # did nothing must not read as a success (#16). The full report travels
-      # SEPARATELY (surface_completion report:) so the CLI can render it whole
-      # under `↳ report:` instead of an amputated one-line head.
-      def completion_summary(entry, text)
-        count = entry.tool_count.to_i
-        tools = "#{count} tool#{"s" if count != 1}"
-        word  = self.class.noop_result?(text) ? "no-op" : "completed"
-        ["▸ #{entry.id}", entry.subagent, word, tools, entry_elapsed(entry)].compact.join(" · ")
-      end
-
-      # Human elapsed time for the lifecycle row, or nil when unknown.
-      def entry_elapsed(entry)
-        return nil unless entry.started_at
-
-        Util::Duration.human_duration((entry.finished_at || Time.now) - entry.started_at)
+      # The MINIMAL main-timeline marker for a finished background subagent
+      # (agent-multiplexer Slice 1): `✓ <name> · done` / `⊘ <name> · no-op`. NO
+      # result summary, tool count, or report text reaches the main scrollback —
+      # all per-tool detail lives in the BackgroundTasks registry (the card /
+      # /agents drill-in). The full result still reaches the MODEL via the
+      # InputQueue completion notice and task_result. A no-op / fully-denied run
+      # (#16) reads "no-op", never a misleading green ✓.
+      def completion_marker(entry, status)
+        icon = status == "no-op" ? "⊘" : "✓"
+        "#{icon} #{entry.subagent} · #{status}"
       end
 
       # Rings the parent's attention notifier (bell/command hook) for a child
@@ -452,9 +440,10 @@ module Rubino
 
       # Builds the nested Runner for BOTH the sync and background paths.
       # Injectable via the constructor for tests (a FakeLLMAdapter can drive the
-      # child loop). The two paths differ only in the child UI (sync: a live
-      # nested view via #nested_ui or Null; background: the collapsed-card view
-      # via #nested_ui_for) and the event bus: the background path injects a
+      # child loop). Both paths build the child UI via #nested_ui_for (the
+      # collapsed-card SubagentView on the CLI, Null off it) so neither floods
+      # $stdout with inline rows; they differ only in the event bus: the
+      # background path injects a
       # fresh per-run EventBus so concurrent runs don't cross-contaminate, while
       # the sync path passes nil and inherits Rubino.event_bus (the same result
       # as omitting it). The fresh session is always tagged session_source
@@ -475,20 +464,26 @@ module Rubino
         end
       end
 
-      # Builds the child UI for a BACKGROUND run. In the interactive CLI it's a
-      # COLLAPSED-CARD SubagentView wired with this run's entry id (so its tool
-      # activity feeds the registry/card instead of flooding $stdout), the parent
-      # CLI (whose live region hosts the card), and the approval handler that
-      # surfaces a needed approval on the card + parks the child on a per-entry
-      # gate (Option 2). Off the CLI it's Null (headless/API stays silent and
-      # auto-approves as before).
-      def nested_ui_for(entry, parent_ui)
+      # Builds the child UI. In the interactive CLI it's a COLLAPSED-CARD
+      # SubagentView wired with this run's entry id (so its tool activity feeds
+      # the registry/card instead of flooding $stdout) and the parent CLI (whose
+      # live region hosts the card). Off the CLI it's Null (headless/API stays
+      # silent and auto-approves as before).
+      #
+      # +approve+ is the handler the card calls when a child's tool needs human
+      # approval: the BACKGROUND path passes #approval_handler_for (surface on the
+      # card + park the child thread on a per-entry gate). The SYNC path passes
+      # NOTHING (nil) — a sync child runs on the PARENT TURN's own thread, so
+      # parking it on a 15-min human gate would block the whole REPL with no
+      # idle prompt to resolve it; nil keeps the historical fail-closed auto-deny
+      # until focus-gating makes mid-turn child interaction first-class.
+      def nested_ui_for(entry, parent_ui, approve: nil)
         if parent_ui.is_a?(UI::CLI)
           UI::SubagentView.new(
             agent_name: entry.subagent,
             entry_id: entry.id,
             parent_ui: parent_ui,
-            approve: approval_handler_for(entry)
+            approve: approve
           )
         else
           UI::Null.new
@@ -586,7 +581,15 @@ module Rubino
         )
         return capacity_message(registry_bg) unless entry
 
-        runner = build_subagent_runner(definition, ui: nested_ui(definition))
+        # Same CARD-mode child UI as the background path (#124): the sync child's
+        # per-tool activity feeds the registry/card instead of flooding $stdout
+        # with inline `⟂` rows. Wired with this run's reserved entry id + the
+        # parent CLI. NO approval handler is passed: a sync child runs on the
+        # PARENT TURN's own thread, so parking it on the 15-min human gate would
+        # block the whole REPL with no idle prompt to resolve it — sync keeps the
+        # historical fail-closed auto-deny until focus-gating lands. Off the CLI
+        # this is Null (headless/API unchanged).
+        runner = build_subagent_runner(definition, ui: nested_ui_for(entry, Rubino.ui))
         registry_bg.attach(entry, thread: Thread.current, runner: runner)
         result = Rubino.with_current_subagent_id(entry.id) { runner.run!(prompt) }
         text   = result_or_noop(result, definition.name)
@@ -597,26 +600,6 @@ module Rubino
         # never wedge a live-slot leak; #call's rescue phrases the message.
         registry_bg.complete(entry, status: :failed, error: e.message) if entry
         raise
-      end
-
-      # The UI the child loop renders through.
-      #
-      # Interactive CLI → UI::SubagentView: the subagent's tool activity shows
-      # INLINE, nested + colored under the parent's "● delegated → X" row (the
-      # only "watch live" that fits our scroll-native + bottom-composer model).
-      # It is DISPLAY-ONLY — it writes to $stdout and never touches the parent
-      # loop's messages or recorder, so the result-only contract holds.
-      #
-      # API / headless / tests (UI::Null, UI::API, …) → UI::Null: the child
-      # stays silent so the boundary-only contract for SSE consumers and the
-      # non-interactive paths is unchanged (the web nested view is a separate
-      # follow-up).
-      def nested_ui(definition)
-        if Rubino.ui.is_a?(UI::CLI)
-          UI::SubagentView.new(agent_name: definition.name)
-        else
-          UI::Null.new
-        end
       end
 
       # Optional injection point for tests — a callable taking the resolved
