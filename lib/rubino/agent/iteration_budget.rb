@@ -21,7 +21,7 @@ module Rubino
         # rather than silently coercing it to "unbounded" / the default and
         # surprising the user. nil/absent stays meaningful (unbounded rail /
         # config default).
-        @max_turns = require_positive_cap!(@config.agent_max_turns, "agent.max_turns")
+        @max_turns = require_positive_cap!(@config.dig("agent", "max_turns"), "agent.max_turns")
         # An explicit override (the CLI `--max-turns N` flag, threaded through
         # Runner → Lifecycle) wins over the config default so the documented
         # control knob actually caps tool iterations (#141). A nil/blank

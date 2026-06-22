@@ -12,23 +12,6 @@ module Rubino
         @raw = raw || load_from_file
       end
 
-      # -- Model section --
-      def model_default
-        dig("model", "default")
-      end
-
-      def model_provider
-        dig("model", "provider")
-      end
-
-      def model_context_length
-        dig("model", "context_length")
-      end
-
-      def model_temperature
-        dig("model", "temperature")
-      end
-
       # -- Database section --
       # Resolves the sqlite path. The DEFAULT (sentinel) follows the resolved
       # home so RUBINO_HOME relocates the DB alongside config/.env/skills,
@@ -44,16 +27,7 @@ module Rubino
         end
       end
 
-      # -- Paths section --
-      def paths_home
-        dig("paths", "home")
-      end
-
       # -- UI section --
-      def ui_adapter
-        dig("ui", "adapter")
-      end
-
       def ui_verbose?
         dig("ui", "verbose") == true
       end
@@ -153,10 +127,6 @@ module Rubino
       end
 
       # -- Agent section --
-      def agent_max_turns
-        dig("agent", "max_turns")
-      end
-
       # Iteration/time caps fall back to the built-in defaults when the config
       # value is nil/missing (e.g. `config set agent.max_tool_iterations nil`,
       # whose writer coerces "nil" -> nil). A bare nil here would crash every
@@ -186,10 +156,6 @@ module Rubino
         raw = dig("agent", "budget_extension_step")
         n = Integer(raw, exception: false)
         n&.positive? ? n : agent_max_tool_iterations
-      end
-
-      def agent_api_max_retries
-        dig("agent", "api_max_retries")
       end
 
       def agent_disabled_toolsets
@@ -293,26 +259,6 @@ module Rubino
         dig("compression", "enabled") == true
       end
 
-      def compression_threshold
-        dig("compression", "threshold")
-      end
-
-      def compression_target_ratio
-        dig("compression", "target_ratio")
-      end
-
-      def compression_protect_first_n
-        dig("compression", "protect_first_n")
-      end
-
-      def compression_protect_last_n
-        dig("compression", "protect_last_n")
-      end
-
-      def compression_max_summary_tokens
-        dig("compression", "max_summary_tokens")
-      end
-
       def compression_preserve_tool_pairs?
         dig("compression", "preserve_tool_pairs") == true
       end
@@ -333,10 +279,6 @@ module Rubino
         positive_interval(dig("memory", "auto_extract_interval"))
       end
 
-      def memory_char_limit
-        dig("memory", "memory_char_limit")
-      end
-
       # Post-turn skill distillation. Defaults to true (skills feature on +
       # distill key absent ⇒ distill on), mirroring memory_auto_extract? as the
       # gate for an aux-spending background job. Turning skills off disables it
@@ -354,40 +296,9 @@ module Rubino
         positive_interval(dig("skills", "auto_distill_interval"))
       end
 
-      def memory_user_char_limit
-        dig("memory", "user_char_limit")
-      end
-
-      # Ingest/store budget for the live memory set, decoupled from the
-      # injection budget (`memory_char_limit`). `nil` => unbounded ingest.
-      def memory_ingest_char_limit
-        dig("memory", "ingest_char_limit")
-      end
-
-      # -- Jobs section --
-      def jobs_mode
-        dig("jobs", "mode")
-      end
-
-      def jobs_poll_interval
-        dig("jobs", "poll_interval")
-      end
-
-      def jobs_max_attempts
-        dig("jobs", "max_attempts")
-      end
-
       # -- Tools section --
       def tool_enabled?(name)
         dig("tools", name.to_s) == true
-      end
-
-      def tool_output_max_bytes
-        dig("tool_output", "max_bytes")
-      end
-
-      def tool_output_max_lines
-        dig("tool_output", "max_lines")
       end
 
       # Hard RAM ceiling for the shell capture seam (#539). Defaults via the
@@ -437,10 +348,6 @@ module Rubino
       end
 
       # -- Security section --
-      def approvals_mode
-        dig("approvals", "mode")
-      end
-
       # Seconds a run blocks on a human approval/clarification before the gate
       # gives up and AUTO-DENIES (freeing the worker thread). nil = wait
       # indefinitely (interruptible only by an explicit stop). Used by
@@ -522,7 +429,7 @@ module Rubino
         raw = dig("model", "supports_vision")
         return raw == true unless raw.nil?
 
-        LLM::ContentBuilder.supports_vision?(model_default.to_s)
+        LLM::ContentBuilder.supports_vision?(dig("model", "default").to_s)
       end
 
       # -- Generic access --

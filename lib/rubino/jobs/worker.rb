@@ -7,7 +7,7 @@ module Rubino
     class Worker
       def initialize(config: nil)
         @config = config || Rubino.configuration
-        @poll_interval = @config.jobs_poll_interval
+        @poll_interval = @config.dig("jobs", "poll_interval")
         @running = false
         @worker_id = "worker-#{Process.pid}-#{Thread.current.object_id}"
       end

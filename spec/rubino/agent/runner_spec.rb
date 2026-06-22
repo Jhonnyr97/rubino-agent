@@ -306,7 +306,7 @@ RSpec.describe Rubino::Agent::Runner do
 
     it "falls back to config default when no override" do
       runner = described_class.new(ui: null_ui)
-      expect(runner.instance_variable_get(:@model_id)).to eq(Rubino.configuration.model_default)
+      expect(runner.instance_variable_get(:@model_id)).to eq(Rubino.configuration.dig("model", "default"))
     end
   end
 

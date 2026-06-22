@@ -7,14 +7,14 @@ module Rubino
       def initialize(messages:, config: nil)
         @messages = messages
         @config = config || Rubino.configuration
-        @protect_first = @config.compression_protect_first_n
+        @protect_first = @config.dig("compression", "protect_first_n")
         # Anti-task-loss (#415c, Hermes _ensure_last_user_message_in_tail):
         # guarantee the most recent user message lands in the protected tail.
         # If it falls in the compressed middle, SUMMARY_PREFIX tells the next
         # model to ignore it (reference-only) and the user's latest request
         # silently vanishes — the agent stalls or re-does old work
         # (#10896 class). Grow the protected-last window backward to cover it.
-        @protect_last = [@config.compression_protect_last_n, tail_to_last_user].max
+        @protect_last = [@config.dig("compression", "protect_last_n"), tail_to_last_user].max
       end
 
       # Returns the protected head messages (system prompt + first N)

@@ -135,7 +135,8 @@ RSpec.describe "Agent end-to-end with FakeLLMAdapter" do
       Rubino::Tools::Registry.instance.register(Rubino::Tools::ReadTool.new)
 
       # Disable approval so tool runs automatically
-      allow(Rubino.configuration).to receive(:approvals_mode).and_return("auto")
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig).with("approvals", "mode").and_return("auto")
     end
 
     it "executes a read tool call and returns the follow-up LLM response" do

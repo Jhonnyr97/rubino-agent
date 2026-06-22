@@ -66,7 +66,7 @@ module Rubino
       desc "worker", "Start a background worker loop"
       def worker
         ensure_jobs_database!
-        Rubino.ui.info("Starting job worker (poll every #{Rubino.configuration.jobs_poll_interval}s)...")
+        Rubino.ui.info("Starting job worker (poll every #{Rubino.configuration.dig("jobs", "poll_interval")}s)...")
         Rubino.ui.info("Press Ctrl+C to stop.")
 
         worker = Jobs::Worker.new

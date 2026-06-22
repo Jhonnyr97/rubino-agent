@@ -14,7 +14,7 @@ module Rubino
           # Accepts an alternate workspace for tests.
           #
           # Roots the workspace at the SAME directory the tools sandbox to
-          # (terminal.cwd || Dir.pwd), not config.paths_home. Tools and
+          # (terminal.cwd || Dir.pwd), not config.dig("paths", "home"). Tools and
           # attach_file emit absolute paths under that root, so a produced
           # artifact lives there — rooting at paths_home would make every
           # such path look like a traversal escape and 422 the download.

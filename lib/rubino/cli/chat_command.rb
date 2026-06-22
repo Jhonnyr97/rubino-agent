@@ -2695,7 +2695,7 @@ module Rubino
       end
 
       def model_name
-        opt(:model) || opt(:m) || Rubino.configuration.model_default
+        opt(:model) || opt(:m) || Rubino.configuration.dig("model", "default")
       end
 
       def model_override_given?
@@ -2960,7 +2960,7 @@ module Rubino
 
         # Same opt-in gate as ServerCommand: fake provider is dev-only and
         # must not be reachable without RUBINO_ALLOW_FAKE=1.
-        if Rubino.configuration.model_provider.to_s == "fake" &&
+        if Rubino.configuration.dig("model", "provider").to_s == "fake" &&
            ENV["RUBINO_ALLOW_FAKE"] != "1"
           warn "fake provider is dev-only — set RUBINO_ALLOW_FAKE=1 to opt in."
           exit(1)

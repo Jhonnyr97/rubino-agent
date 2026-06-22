@@ -410,8 +410,9 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
     it "does not produce invalid bytes when truncating mid-character" do
       # 4-byte emoji repeated past the byte cap → would split mid-char with naked byteslice
-      allow(config).to receive(:tool_output_max_bytes).and_return(10)
-      allow(config).to receive(:tool_output_max_lines).and_return(1_000)
+      allow(config).to receive(:dig).and_call_original
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(10)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(1_000)
       tool.output = "🚀" * 20 # 4 bytes × 20 = 80 bytes
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c5")

@@ -79,7 +79,7 @@ module Rubino
 
       def build_adapter(entry)
         model = (entry.runner.respond_to?(:model_id) ? entry.runner.model_id : nil) if entry.runner
-        model ||= Rubino.configuration.model_default
+        model ||= Rubino.configuration.dig("model", "default")
         return @adapter_factory.call(model) if @adapter_factory
 
         LLM::AdapterFactory.build(model_id: model, config: Rubino.configuration)
