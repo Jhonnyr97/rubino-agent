@@ -73,12 +73,13 @@ module Rubino
       # Memory content (and, defensively, every other stored field) is
       # attacker-influenceable — facts are EXTRACTED from conversation, so a
       # raw `\e]0;…\a` / `\e[2J` in `content` would hijack the window title or
-      # clear the screen the moment `info` printed it (CWE-150, R4-N2). The
-      # `info`/`success` family does NOT sanitize (PrinterBase#puts_colored is
-      # the shared funnel and legitimately receives rubino's OWN pastel ANSI
-      # from other callers, e.g. the `/agents` watch view, so it can't strip
-      # escapes wholesale). We therefore neutralize the UNTRUSTED CONTENT here,
-      # before it is handed to the printer, into visible caret notation.
+      # clear the screen the moment `info` printed it (CWE-150, R4-N2). As of
+      # #564 PrinterBase#puts_colored (the shared funnel) ALSO defangs every row
+      # via sanitize_terminal_keep_sgr — which preserves rubino's OWN pastel ANSI
+      # (the obstacle that previously kept the funnel from sanitizing) while
+      # neutralizing the dangerous bytes. These local #safe calls are now
+      # belt-and-suspenders (idempotent) but kept so this surface stays safe
+      # independent of the funnel.
       def self.render(memory, ui:)
         ui.info("ID: #{safe(memory[:id])}")
         ui.info("Kind: #{safe(memory[:kind])}")

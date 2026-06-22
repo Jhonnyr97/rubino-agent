@@ -70,8 +70,21 @@ module Rubino
         nil
       end
 
+      # CWE-150 render-sink defense (#564, same class as #563). Many rows printed
+      # here interpolate UNTRUSTED text — most acutely the /agents handler's
+      # subagent name / ask_question / error / activity_log / last_activity /
+      # approval_command, all built from a child's tool args (an attacker-named
+      # workspace file) or model-chosen strings. Printed verbatim, an embedded
+      # `\e[2J` (clear) / `\e]0;…\a` (title-set) / `\e[?1049h` (alt-screen) / CR /
+      # BEL would reach the TTY and EXECUTE — no approval, no gesture. Neutralize
+      # every dangerous control byte at THIS chokepoint (the single seam every
+      # info/success/warning/error/status row flows through), rendering them as
+      # visible caret notation. The SGR-preserving variant keeps rubino's OWN
+      # inert color spans (e.g. the watch frame's `pastel.yellow("●")`) intact
+      # while the outer #color wrap is applied AFTER, around the now-safe text.
       def puts_colored(color, text)
-        line = color ? @pastel.send(color, text) : text
+        safe = Rubino::Util::Output.sanitize_terminal_keep_sgr(text.to_s)
+        line = color ? @pastel.send(color, safe) : safe
         $stdout.puts line
       end
     end
