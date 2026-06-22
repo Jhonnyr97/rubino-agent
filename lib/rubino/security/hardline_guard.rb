@@ -158,10 +158,11 @@ module Rubino
       # Same whitespace normalization as #normalize (line-continuation strip,
       # space/tab collapse, trim) but WITHOUT lowercasing. Used only by the
       # case-sensitive sudo-stdin guard so `-S` (stdin password) stays
-      # distinguishable from `-s` (start shell).
+      # distinguishable from `-s` (start shell). Delegates to the shared
+      # CommandNormalizer that DangerousPatterns uses too, so both layers
+      # canonicalize identically (see CommandNormalizer for the rationale).
       def normalize_case_preserving(command)
-        joined = command.to_s.gsub(/\\\r?\n/, "")
-        joined.gsub(/[ \t]+/, " ").strip
+        CommandNormalizer.normalize(command)
       end
 
       # Canonicalize the (already normalized) command so common, trivial

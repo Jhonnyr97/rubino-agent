@@ -118,11 +118,13 @@ module Rubino
         detect(command).first
       end
 
-      # Same normalization idiom as HardlineGuard: collapse spaces/tabs (keep
-      # newlines so separator anchors fire), trim, lowercase. Trivial
-      # obfuscation (extra spaces, case) doesn't slip through.
+      # The shared CommandNormalizer (line-continuation strip + space/tab
+      # collapse + trim), plus lowercase. Using the SAME normalizer as
+      # HardlineGuard is load-bearing: a divergence here re-opened the shell
+      # line-continuation evasion (`rm -r\<newline>f /`) that HardlineGuard
+      # already closed, letting it slip past this danger/approval layer.
       def normalize(command)
-        command.to_s.gsub(/[ \t]+/, " ").strip.downcase
+        CommandNormalizer.normalize(command).downcase
       end
     end
   end
