@@ -43,7 +43,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
       seed_draft: nil,
       idle_cards: instance_double(Rubino::CLI::Chat::IdleCardHost, paint: nil, children_live?: false),
       update_polishing_indicator: false,
-      surface_finished_subagents: nil,
       auto_resolve_pending_subagent_request: false,
       build_prompt: "> ",
       build_status_line: "",
