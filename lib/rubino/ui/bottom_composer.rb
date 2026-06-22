@@ -172,7 +172,7 @@ module Rubino
       #   over a menu reads dismiss-then-rewind. The hook runs on the reader
       #   thread — callers must only flip a flag, never block or take the
       #   composer's locks (the idle loop drains it, like the Ctrl+C trap).
-      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, # rubocop:disable Metrics/MethodLength -- one assignment per injected collaborator/hook; a wide DI constructor, not a complex body
+      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, # rubocop:disable Metrics/MethodLength,Metrics/AbcSize -- one assignment per injected collaborator/hook; a wide DI constructor, not a complex body
                      rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
@@ -258,6 +258,12 @@ module Rubino
         # goes through @input_line under the @render mutex, then a #redraw.
         @input_line  = Composer::InputLine.new
         @partial     = +"" # live, un-committed streamed line shown above the prompt
+        # The live TURN activity (the animated facet: "◆ writing · 47s · 18 tools
+        # · ~202 tok"), set by the CLI status ticker via #set_turn_status. When
+        # non-empty the footer (#status_row) prepends it to the model/ctx bar so
+        # there is ONE status bar during a turn instead of a separate row above
+        # the prompt. Cleared at turn end so the footer reverts to model/ctx.
+        @turn_status = +""
         # TRANSIENT announcement row (e.g. the Shift+Tab mode confirmation):
         # rendered in the live region directly above the partial/prompt, redrawn
         # in place every frame and NEVER committed to scrollback. Cleared on the
@@ -857,6 +863,26 @@ module Rubino
         end
       end
 
+      # Sets the live TURN activity shown in the FOOTER (#status_row) — the
+      # animated facet "◆ writing · 47s · …" produced by the CLI status ticker.
+      # Mirrors #set_partial's discipline EXACTLY (same suspend / focus-gate
+      # guards and @render-synchronized redraw) so the footer can't animate over
+      # an attached sub's view. An empty string clears it; the footer then
+      # reverts to the plain model/ctx bar on the next frame.
+      def set_turn_status(str)
+        return if @suspended
+        return if @main_render_suppressed && !@replaying
+
+        @render.synchronize do
+          @turn_status = (str || "").to_s
+          render_frame(committed: nil)
+        end
+      end
+
+      def clear_turn_status
+        set_turn_status("")
+      end
+
       # Sets the SUBAGENT CARD block — a small list of collapsed live rows shown
       # above the streamed partial and the prompt (Variant A). Each frame redraws
       # them in place from this list, so concurrent background subagents appear as
@@ -1410,18 +1436,33 @@ module Rubino
       def status_row
         return nil if @cols < MIN_STATUS_COLS
 
-        if (@turn_active || @content_streaming) && @on_interrupt
-          return interrupt_hint if @status.empty?
+        # The live turn activity ("◆ writing · …") prepended to the model/ctx bar
+        # so a turn shows ONE footer, not a separate activity row above the prompt.
+        active = !@turn_status.empty?
+        base   = active ? "#{@turn_status}  #{@status}".strip : @status
+        hint   = (@turn_active || @content_streaming) && @on_interrupt ? interrupt_hint : nil
 
-          combined = "#{@status}  #{interrupt_hint}"
-          return combined if display_width(combined.gsub(ANSI_RE, "")) <= @cols - 1
-          # The combined line overflows — keep the bar, drop the (cosmetic) hint.
-        end
+        # Candidates richest-first; render the first that fits the row. On
+        # overflow we shed the least-important pieces in order — drop the cosmetic
+        # hint, then the model/ctx tail (keep the live turn info, which changes
+        # every frame) — rather than truncating mid-ANSI or showing nothing.
+        candidates = [hint && join(base, hint), base]
+        candidates += [hint && join(@turn_status, hint), @turn_status] if active
+        candidates.compact.reject(&:empty?).find { |row| fits?(row) }
+      end
 
-        return nil if @status.empty?
-        return nil if display_width(@status.gsub(ANSI_RE, "")) > @cols - 1
+      # Joins two status pieces with the two-space separator the bar uses,
+      # collapsing to the non-empty side when one is blank (no leading gap).
+      def join(left, right)
+        return right if left.empty?
+        return left if right.empty?
 
-        @status
+        "#{left}  #{right}"
+      end
+
+      # True when +str+'s visible width fits the status row (one column of slack).
+      def fits?(str)
+        display_width(str.gsub(ANSI_RE, "")) <= @cols - 1
       end
 
       # The dim "(esc to interrupt)" type-ahead affordance shown in the status

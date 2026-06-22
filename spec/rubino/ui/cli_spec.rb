@@ -417,15 +417,16 @@ RSpec.describe Rubino::UI::CLI do
       expect { ui.stream(type: :content, text: "") }.not_to output.to_stdout
     end
 
-    it "animates the thinking row through #live and stops the timer cleanly" do
-      # A live-capable stdout double drives the animated path (not the static
-      # plain-mode print). The timer thread must start, then be joined/killed by
+    it "animates the thinking facet into the composer footer and stops the timer cleanly" do
+      # An ACTIVE composer owns the screen, so the facet ticker routes its frames
+      # to the single footer bar (#set_turn_status), NOT a row above the prompt.
+      # The timer thread must start, then be joined/killed by
       # clear_thinking_indicator with no leak.
-      live = Class.new(StringIO) do
-        def live(str) = print(str)
-      end.new
-      old = $stdout
-      $stdout = live
+      frames = []
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:set_turn_status) { |f| frames << f }
+      allow(composer).to receive(:set_partial) # the teardown clears the partial too
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
       begin
         ui.thinking_started
         expect(ui.instance_variable_get(:@thinking_thread)).to be_a(Thread)
@@ -433,9 +434,9 @@ RSpec.describe Rubino::UI::CLI do
         ui.send(:clear_thinking_indicator)
         expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
         expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
-        expect(live.string).to include("thinking")
+        expect(frames.join).to include("thinking")
       ensure
-        $stdout = old
+        allow(Rubino::UI::BottomComposer).to receive(:current).and_call_original
       end
     end
 
@@ -504,6 +505,7 @@ RSpec.describe Rubino::UI::CLI do
       allow(composer).to receive(:finalize_region) { events << :finalize_region }
       allow(composer).to receive(:print_above) { |s| events << [:print_above, s] }
       allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:set_turn_status)
       allow(composer).to receive(:begin_content_stream)
       allow(composer).to receive(:end_content_stream)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
@@ -541,6 +543,7 @@ RSpec.describe Rubino::UI::CLI do
       composer = instance_double(Rubino::UI::BottomComposer)
       allow(composer).to receive(:finalize_region)
       allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:set_turn_status)
       allow(composer).to receive(:print_above)
       allow(composer).to receive(:begin_content_stream)
       allow(composer).to receive(:end_content_stream)
@@ -2348,6 +2351,38 @@ RSpec.describe Rubino::UI::CLI do
   describe "#thinking_finished" do
     it "is a quiet no-op when nothing is showing" do
       out = capture_stdout { ui.thinking_finished }
+      expect(out).to eq("")
+    end
+  end
+
+  # ONE status bar: the activity facet now rides the composer footer, which owns
+  # the single "(esc to interrupt)" hint — so the facet TEXT must no longer carry
+  # its own "esc to interrupt" piece (that double-hint was the user's complaint).
+  describe "#status_text" do
+    it "no longer carries an 'esc to interrupt' piece (the footer owns the hint)" do
+      now = ui.send(:monotonic_now)
+      ui.instance_variable_set(:@turn_active, true)
+      ui.instance_variable_set(:@turn_started_at, now - 5)
+      ui.instance_variable_set(:@status, { label: "thinking", phase: :thinking,
+                                           phase_started_at: now - 5 })
+      expect(ui.send(:status_text, now)).not_to include("esc to interrupt")
+    end
+  end
+
+  # The ticker routes STATUS/STALL frames to the composer FOOTER (#set_turn_status),
+  # not the partial above the prompt; the CONTENT/REASONING tails keep #paint_live.
+  describe "#paint_turn_status" do
+    it "routes the frame to the composer's footer turn-status slot" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:set_turn_status)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      ui.send(:paint_turn_status, "◆ writing")
+      expect(composer).to have_received(:set_turn_status).with("◆ writing")
+    end
+
+    it "is a no-op with no composer and a non-TTY stdout" do
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(nil)
+      out = capture_stdout { ui.send(:paint_turn_status, "◆ writing") }
       expect(out).to eq("")
     end
   end
