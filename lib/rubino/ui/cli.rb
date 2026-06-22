@@ -2577,10 +2577,12 @@ module Rubino
         sub    = @delegation_subagent || "subagent"
         output = (result.respond_to?(:output) ? result.output : result).to_s
         if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
-          # Background spawn: minimal "started" marker (the "done"/"failed"
-          # marker comes later when the child finishes — #subagent_lifecycle).
-          # The handle's name field is model args — #emit strips escapes (CWE-150).
-          emit("  └ ▸ #{safe(m[1])} · started", style: :dim)
+          # Background spawn: minimal "started" marker carrying the task id, so it
+          # correlates with the standalone `✓ <id> · <name> · done` that lands far
+          # below it once the child finishes (the parent keeps streaming between
+          # them — they can't rely on adjacency). m[2]=id, m[1]=name; both model
+          # args, so #emit strips escapes (CWE-150).
+          emit("  └ ▸ #{safe(m[2])} · #{safe(m[1])} · started", style: :dim)
         else
           # sub is UNTRUSTED (model args); #emit (PATH 1) strips escapes before
           # the marker's style wrap (R3C-1, CWE-150).

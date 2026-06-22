@@ -772,18 +772,20 @@ RSpec.describe Rubino::Tools::TaskTool do
       )
     end
 
-    # Agent-multiplexer Slice 1: the background-completion marker is MINIMAL —
-    # `✓ <name> · done` / `⊘ <name> · no-op` — with NO result summary, tool
-    # count, or report text (all per-tool detail stays in the registry / card).
+    # Agent-multiplexer Slice 1/1b: the background-completion marker is MINIMAL
+    # and ID-LED — `✓ <id> · <name> · done` / `⊘ <id> · <name> · no-op` — with NO
+    # result summary, tool count, or report text (all per-tool detail stays in
+    # the registry / card). The id leads so the marker self-identifies far below
+    # its `● delegated → <name>` row in the append-only scroll.
     describe "background completion marker (#completion_marker)" do
-      it "renders ✓ <name> · done for a genuine completion (no result text)" do
+      it "renders ✓ <id> · <name> · done for a genuine completion (no result text)" do
         marker = tool.send(:completion_marker, entry, "done")
-        expect(marker).to eq("✓ explore · done")
+        expect(marker).to eq("✓ #{entry.id} · explore · done")
       end
 
-      it "renders ⊘ <name> · no-op when the subagent did nothing / was denied" do
+      it "renders ⊘ <id> · <name> · no-op when the subagent did nothing / was denied" do
         marker = tool.send(:completion_marker, entry, "no-op")
-        expect(marker).to eq("⊘ explore · no-op")
+        expect(marker).to eq("⊘ #{entry.id} · explore · no-op")
       end
     end
 
