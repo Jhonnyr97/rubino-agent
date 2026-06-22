@@ -25,6 +25,36 @@ RSpec.describe Rubino::Agent::Runner do
   end
 
   # -----------------------------------------------------------------------
+  # soft iteration ceiling vs the max_turns rail (#571 — subagents can ask budget)
+  # -----------------------------------------------------------------------
+
+  describe "soft iteration ceiling wiring (#571)" do
+    def captured_kwargs_for(**runner_args)
+      captured = {}
+      allow(Rubino::Interaction::Lifecycle).to receive(:new) do |**kwargs|
+        captured = kwargs
+        lifecycle_active_session[:built_on] = kwargs[:session]
+        fake_lifecycle
+      end
+      described_class.new(model_override: "gpt-4o", ui: null_ui, **runner_args).run("hi")
+      captured
+    end
+
+    it "a SUBAGENT passes a nil soft ceiling so it falls back to config max_tool_iterations (< max_turns)" do
+      kwargs = captured_kwargs_for(max_turns: 90, session_source: "subagent")
+      # nil → IterationBudget uses config agent.max_tool_iterations (25) as the
+      # soft ceiling, below the 90 hard rail — so #extendable? is true and the
+      # subagent can surface a budget request (#574) instead of soft==hard==90.
+      expect(kwargs[:max_tool_iterations]).to be_nil
+    end
+
+    it "the MAIN agent still passes its max_turns as the soft ceiling (--max-turns N honored)" do
+      kwargs = captured_kwargs_for(max_turns: 7, session_source: "cli")
+      expect(kwargs[:max_tool_iterations]).to eq(7)
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # session creation
   # -----------------------------------------------------------------------
 
