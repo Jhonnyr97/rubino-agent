@@ -204,6 +204,10 @@ module Rubino
         thread = Thread.new do
           run_child_thread(entry, runner, prompt, sink, event_bus, parent_ui, child_ui)
         end
+        # #run_child_thread already rescues Exception, but never let a dying child
+        # auto-dump a backtrace into the parent's terminal — e.g. if shutdown!'s
+        # Thread#kill or a stray Interrupt unwinds it through a net/http read.
+        thread.report_on_exception = false
         registry_bg.attach(entry, thread: thread, runner: runner)
 
         event_bus&.emit(Interaction::Events::SUBAGENT_SPAWNED,
