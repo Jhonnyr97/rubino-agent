@@ -1,0 +1,124 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+# The live-tail watcher for an ATTACHED subagent: while the REPL is pinned to a
+# running sub, each tick commits the sub's NEW transcript messages to scrollback
+# (the append-only delta) and repaints a single transient "doing now" row, then
+# stops with a final marker the moment the sub reaches a terminal state. These
+# specs drive #tick directly (the ticker thread + timing are covered by the
+# headless ttyd run); a stub composer stands in for the live one.
+RSpec.describe Rubino::CLI::Chat::AttachedAgentWatcher do
+  subject(:watcher) do
+    described_class.new(host: host, id: "sa_1", ui: ui, rendered_count: rendered_count)
+  end
+
+  let(:ui) { Rubino::UI::Null.new }
+  let(:session_resolver) { instance_double(Rubino::CLI::Chat::SessionResolver, replay_messages: nil) }
+  let(:pastel) { Pastel.new(enabled: false) }
+
+  # A stand-in host exposing the three private seams the watcher reaches into.
+  let(:host) do
+    instance_double(Rubino::CLI::ChatCommand).tap do |h|
+      allow(h).to receive_messages(session_resolver: session_resolver, pastel: pastel)
+      allow(h).to receive(:with_focused_view_replay) { |_c, &blk| blk.call }
+    end
+  end
+
+  # A composer that records the transient-row frames it is handed.
+  let(:composer) do
+    Class.new do
+      attr_reader :partials
+
+      def initialize = @partials = []
+      # Mirrors the real BottomComposer seam name, hence the writer prefix.
+      def set_partial(str) = @partials << str # rubocop:disable Naming/AccessorMethodName
+    end.new
+  end
+
+  let(:entry) do
+    instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                    id: "sa_1", subagent: "explore", status: :running,
+                    tool_count: 2, last_activity: "reading parser.rb",
+                    output_tail: [], messages: messages)
+  end
+  let(:messages) { [] }
+  let(:rendered_count) { 0 }
+
+  before do
+    allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_1").and_return(entry)
+  end
+
+  def tick! = watcher.send(:tick, composer)
+
+  describe "committed-message delta" do
+    context "when entry.messages has grown past the rendered baseline" do
+      let(:rendered_count) { 1 }
+      let(:messages) { %w[m0 m1 m2 m3] } # 2 new past the baseline of 1
+
+      it "replays ONLY the new tail and advances the cursor" do
+        expect(session_resolver).to receive(:replay_messages).with(ui, %w[m1 m2 m3])
+        tick!
+        # A second tick with no further growth replays nothing more.
+        expect(session_resolver).not_to receive(:replay_messages)
+        tick!
+      end
+    end
+
+    context "when entry.messages is unchanged since the last render" do
+      let(:rendered_count) { 2 }
+      let(:messages) { %w[m0 m1] }
+
+      it "replays nothing new" do
+        expect(session_resolver).not_to receive(:replay_messages)
+        tick!
+      end
+    end
+  end
+
+  describe "live tail row" do
+    it "paints a transient 'doing now' row from the sub's live fields" do
+      tick!
+      expect(composer.partials.last).to include("explore", "running", "2 tools", "reading parser.rb")
+    end
+
+    it "does NOT repaint the row when nothing changed across ticks" do
+      tick!
+      tick!
+      expect(composer.partials.size).to eq(1)
+    end
+  end
+
+  describe "terminal state while attached" do
+    before { allow(entry).to receive(:status).and_return(:completed) }
+
+    it "clears the live row and commits a single final marker" do
+      tick!
+      expect(composer.partials.last).to eq("") # transient row cleared
+      marker = ui.messages.find { |m| m[:level] == :info && m[:message].include?("finished") }
+      expect(marker[:message]).to include("sa_1", "completed", "/back")
+    end
+
+    it "commits the marker only once across repeated ticks" do
+      tick!
+      tick!
+      markers = ui.messages.count { |m| m[:level] == :info && m[:message].include?("finished") }
+      expect(markers).to eq(1)
+    end
+
+    it "reports not-live so the ticker loop will stop" do
+      expect(watcher.send(:live?)).to be(false)
+    end
+  end
+
+  describe "#live? gating the ticker loop" do
+    it "is true while the sub still holds a live thread" do
+      expect(watcher.send(:live?)).to be(true)
+    end
+
+    it "is false once the sub's entry is gone (reaped)" do
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_1").and_return(nil)
+      expect(watcher.send(:live?)).to be(false)
+    end
+  end
+end
