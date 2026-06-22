@@ -2953,9 +2953,25 @@ module Rubino
         id    = @attached_id
         entry = Tools::BackgroundTasks.instance.find(id)
 
-        # The child finished/stopped while attached: nothing left to talk to —
+        # The child's entry is GONE (reaped) while attached: nothing to show —
         # fall back to the main view so the user is never stranded on a dead scope.
         return detach_agent_view(runner, ui) if entry.nil?
+
+        # The child reached a TERMINAL state (completed/failed/stopped) WHILE you're
+        # attached: its entry still exists (so you keep its final snapshot on
+        # screen), but it can no longer be steered/answered. DON'T route typed text
+        # to steer — that returned the alarming "✗ cannot steer <id> — no such
+        # running subagent (subagents reset when rubino restarts)" and left the
+        # prompt wedged on a dead scope (the user's "forced to restart" report).
+        # Switching to another live subagent still works; anything else gets a calm
+        # notice — ← / /back returns to main. (Live = the same set BackgroundTasks#
+        # live_status? / AgentMenu#live? use; inlined since it's the only use here.)
+        unless %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
+          return attach_agent_view(Regexp.last_match(1), ui) if input =~ %r{\A/agents\s+(\S+)\s+--attach\z}
+
+          ui.info(pastel.dim("◦ #{id} has finished · #{entry.status} — press ← or /back to return to main"))
+          return
+        end
 
         # Call the agent handlers DIRECTLY with the raw text (not by serializing a
         # `/agents <id> steer "…"` string and re-parsing it through the executor,

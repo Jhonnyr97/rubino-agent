@@ -156,5 +156,25 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:handle_attached_input, "anything", runner, ui, cmd_executor)
       expect(cmd.send(:attached_to_agent?)).to be(false)
     end
+
+    # The "forced to restart" report: a FINISHED child's entry still exists, so
+    # the old code fell through to steer → "✗ cannot steer … (subagents reset
+    # when rubino restarts)" and wedged the prompt on a dead scope.
+    it "on a FINISHED child shows a calm notice and does NOT steer (no 'cannot steer / restart' wedge)" do
+      allow(entry).to receive(:status).and_return(:completed)
+      allow(ui).to receive(:info)
+      cmd.send(:handle_attached_input, "keep going", runner, ui, cmd_executor)
+      expect(agents_handler).not_to have_received(:steer_agent)
+      expect(ui).to have_received(:info).with(a_string_including("has finished"))
+    end
+
+    it "still lets you SWITCH away from a finished child to another live one" do
+      allow(entry).to receive(:status).and_return(:completed)
+      other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                              id: "sa_2", subagent: "build", status: :running, messages: [])
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
+      cmd.send(:handle_attached_input, "/agents sa_2 --attach", runner, ui, cmd_executor)
+      expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
+    end
   end
 end
