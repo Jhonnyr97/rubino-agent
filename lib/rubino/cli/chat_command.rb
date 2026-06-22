@@ -915,8 +915,8 @@ module Rubino
         # Best-effort: a closed terminal / kill marks the session ended too (#100).
         prev_signal_traps = install_session_end_traps(runner)
 
-        cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
-        cmd_loader   = Rubino::Commands::Loader.new
+        swap_runner!(runner, ui)
+        cmd_loader = Rubino::Commands::Loader.new
 
         # The bottom composer is now the SINGLE input path (idle AND in-turn): one
         # pinned-bottom editor with full editing parity, so output/reasoning/
@@ -985,8 +985,7 @@ module Rubino
             # same swap-in-place /branch and /compact do).
             if (rewound = @rewound_runner)
               @rewound_runner = nil
-              runner = rewound
-              cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+              runner = swap_runner!(rewound, ui)
             end
             if input.nil? || exit_command?(input)
               break if confirm_quit?(ui)
@@ -1019,7 +1018,7 @@ module Rubino
             # mode (from the main prompt) arrives while @attached_id is still nil,
             # so it falls through to normal dispatch below.
             if attached_to_agent?
-              handle_attached_input(input, runner, ui, cmd_executor)
+              handle_attached_input(input, runner, ui, @cmd_executor)
               next
             end
 
@@ -1082,7 +1081,7 @@ module Rubino
               # (#192). Commit it here — echo + drop the indicator — before the
               # command runs, whatever the dispatch result is.
               commit_queued_dispatch
-              result = cmd_executor.try_execute(input)
+              result = @cmd_executor.try_execute(input)
               case result
               when :exit
                 # `/exit` / `/quit` dispatched through the slash executor must
@@ -1111,8 +1110,7 @@ module Rubino
                   # /branch [name]: fork the current session here into a new
                   # saved one (inheriting context + any preceding probe) and
                   # SWITCH into it, leaving the original intact.
-                  runner = branch_runner(ui, runner, result[:title])
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(branch_runner(ui, runner, result[:title]), ui)
                   next
                 end
                 if result[:attach_agent]
@@ -1128,8 +1126,7 @@ module Rubino
                   # prompt — no process restart needed. Leaving a branch (e.g.
                   # back to the parent) drops the branch token from the status bar.
                   @branch_short_id = nil
-                  runner = resume_runner(ui, result[:resume_session_id])
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(resume_runner(ui, result[:resume_session_id]), ui)
                   next
                 end
                 if result[:compact_into]
@@ -1137,8 +1134,7 @@ module Rubino
                   # child session (the source is now status "compacted") —
                   # swap the runner into the child WITHOUT replaying history,
                   # so the next turn runs on the compacted context.
-                  runner = build_runner(session_id: result[:compact_into], ui: ui)
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(build_runner(session_id: result[:compact_into], ui: ui), ui)
                   next
                 end
                 if result[:new_session]
@@ -1146,8 +1142,7 @@ module Rubino
                   # fresh one in place — the counterpart to the bare-chat resume.
                   @branch_short_id = nil
                   runner.end_session!
-                  runner = fresh_runner(ui)
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(fresh_runner(ui), ui)
                   interacted = false
                   next
                 end
@@ -2876,6 +2871,17 @@ module Rubino
         clear_terminal
         ui.info(pastel.dim("◀ back to the main session"))
         session_resolver.replay_session(ui, runner.session[:id])
+      end
+
+      # Adopt a new runner for the REPL and rebuild the command executor against
+      # it in ONE place. Every branch that swaps the live runner (rewind, /branch,
+      # /sessions, /compact, /new, plus the initial build) routes through here, so
+      # the "runner changed → executor must follow" invariant can't be forgotten
+      # by a future branch and leave a stale executor wired to the old runner.
+      # Returns the new runner so callers can write `runner = swap_runner!(...)`.
+      def swap_runner!(new_runner, ui)
+        @cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: new_runner)
+        new_runner
       end
 
       # Route a line typed while attached. `/detach` (or the child being gone)
