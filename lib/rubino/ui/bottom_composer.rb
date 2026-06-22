@@ -1926,6 +1926,18 @@ module Rubino
 
       # Move the cursor by +delta+ codepoints, clamped to the buffer.
       def move_by(delta)
+        # ← while the agent picker is OPEN backs OUT of it (the picker's own
+        # "← back" hint): close it and return focus to the prompt. Checked before
+        # the cursor move / on_back so the "back" gesture is consistent whether
+        # you're browsing the picker or already attached.
+        if delta.negative? && agent_menu_open?
+          @render.synchronize do
+            @agent_menu.close!
+            redraw
+          end
+          return
+        end
+
         # ← (or Ctrl+B) on an EMPTY prompt is the "back out" gesture when one is
         # wired (the agent-attach view detaches to the main timeline — no typed
         # /detach needed). Only when there's nothing to move over, so it never
@@ -1996,14 +2008,22 @@ module Rubino
         return menu_down if menu_open?
         return if move_caret_row(1)
 
+        # When subagents are live, ↓ on an EMPTY prompt opens the agent picker —
+        # the "↓ to navigate" affordance the card hints at. This MUST take
+        # precedence over history-forward: @history.down only returns nil at the
+        # live draft position, so once the user has touched ↑ even once, history
+        # would otherwise SHADOW the picker and make it unreachable (the bug that
+        # left you stuck in prompt history with no way into a subagent or back to
+        # main). #open! is a no-op (returns nil) when nothing is live, so with no
+        # subagents this falls straight through to normal history-forward.
+        if buffer.strip.empty? && @agent_menu.open!
+          @render.synchronize { redraw }
+          return
+        end
+
         @render.synchronize do
           entry = @history.down(buffer)
-          if entry.nil?
-            next unless buffer.strip.empty? && @agent_menu.open!
-
-            redraw
-            next
-          end
+          next if entry.nil?
 
           @input_line.replace(entry)
           redraw
