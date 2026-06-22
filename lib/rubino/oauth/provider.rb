@@ -98,11 +98,6 @@ module Rubino
         normalize(token)
       end
 
-      def refresh(refresh_token)
-        token = OAuth2::AccessToken.new(oauth2_client, "", refresh_token: refresh_token)
-        normalize(token.refresh!)
-      end
-
       # Provider-specific call to /userinfo (or equivalent) using the access
       # token.
       #

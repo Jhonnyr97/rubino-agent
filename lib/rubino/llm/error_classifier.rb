@@ -25,11 +25,6 @@ module Rubino
       MODEL_NOT_FOUND  = :model_not_found   # 404 / invalid model — fallback to another model
       FORMAT_ERROR     = :format_error      # 400 bad request — abort + fallback
       UNKNOWN          = :unknown           # unclassifiable — retry with backoff
-
-      ALL = [
-        AUTH, BILLING, RATE_LIMIT, OVERLOADED, SERVER_ERROR, TIMEOUT,
-        CONTEXT_OVERFLOW, MODEL_NOT_FOUND, FORMAT_ERROR, UNKNOWN
-      ].freeze
     end
 
     # Structured classification of an API error with recovery hints, mirroring

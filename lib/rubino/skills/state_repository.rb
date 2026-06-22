@@ -28,10 +28,6 @@ module Rubino
           .insert_conflict(target: :name, update: { enabled: enabled, updated_at: now })
           .insert(name: name.to_s, enabled: enabled, updated_at: now)
       end
-
-      def all
-        @db[:skill_states].all.to_h { |row| [row[:name], row[:enabled] == true] }
-      end
     end
   end
 end

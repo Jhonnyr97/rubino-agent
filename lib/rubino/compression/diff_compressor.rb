@@ -66,12 +66,10 @@ module Rubino
         had_trailing_nl = raw.last == "" && text.end_with?("\n")
         raw.pop if had_trailing_nl
 
-        if raw.length < @cfg.min_lines
-          return CompressionResult.noop(strategy: :too_small, original_bytes: original_bytes)
-        end
+        return CompressionResult.noop(strategy: :too_small) if raw.length < @cfg.min_lines
 
         files = parse(raw)
-        return CompressionResult.noop(strategy: :parse_error, original_bytes: original_bytes) if files.empty?
+        return CompressionResult.noop(strategy: :parse_error) if files.empty?
 
         out_lines = files.flat_map { |f| render_file(f) }
         out = out_lines.join("\n")
@@ -240,16 +238,11 @@ module Rubino
 
         # Saving guard: below min_saving the pointer indirection isn't worth it —
         # pass through byte-identical so the common small "show me" diff is intact.
-        if ratio < @cfg.min_saving
-          return CompressionResult.noop(strategy: :insufficient_saving, original_bytes: original_bytes)
-        end
+        return CompressionResult.noop(strategy: :insufficient_saving) if ratio < @cfg.min_saving
 
         CompressionResult.new(
           text: out,
-          original_bytes: original_bytes,
-          compressed_bytes: compressed_bytes,
           saved_tokens_est: (saved / 4.0).round,
-          ratio: ratio,
           strategy: :diff,
           applied: true
         )

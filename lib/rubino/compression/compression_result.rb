@@ -15,22 +15,20 @@ module Rubino
   module Compression
     # Immutable result of one compression attempt. `applied?` is the single gate
     # the caller checks: when false, `text` is meaningless (use the original) and
-    # the byte/token fields are zeroed. When true, `text` is the skeleton and the
-    # numbers describe the saving. `strategy` is :skeleton when applied, otherwise
-    # the no-op REASON (:not_full_file/:not_code/:too_small/:parse_error/
-    # :insufficient_saving) for the measurement events.
+    # `saved_tokens_est` is zeroed. When true, `text` is the skeleton and
+    # `saved_tokens_est` is the estimated saving. `strategy` is :skeleton (or the
+    # per-type tag) when applied, otherwise the no-op REASON (:not_full_file/
+    # :not_code/:too_small/:parse_error/:insufficient_saving) for measurement events.
     CompressionResult = Data.define(
-      :text, :original_bytes, :compressed_bytes,
-      :saved_tokens_est, :ratio, :strategy, :applied
+      :text, :saved_tokens_est, :strategy, :applied
     ) do
       def applied?
         applied
       end
 
       # The no-op result: nothing was compressed, the caller sends the original.
-      def self.noop(strategy:, original_bytes: 0)
-        new(text: nil, original_bytes: original_bytes, compressed_bytes: original_bytes,
-            saved_tokens_est: 0, ratio: 0.0, strategy: strategy, applied: false)
+      def self.noop(strategy:)
+        new(text: nil, saved_tokens_est: 0, strategy: strategy, applied: false)
       end
     end
   end

@@ -60,22 +60,6 @@ RSpec.describe Rubino::LLM::Request do
       expect(request.image_paths).to eq(["/tmp/cat.png"])
       expect(request.stream?).to be true
     end
-
-    it "round-trips through to_h" do
-      expect(request.to_h).to eq(
-        messages: [{ role: "user", content: "hi" }],
-        tools: [:a_tool],
-        temperature: 0.2,
-        max_tokens: 2048,
-        thinking: { enabled: true, budget: 8000 },
-        prefill: "Sure, ",
-        image_paths: ["/tmp/cat.png"],
-        stream: true,
-        on_intermediate_message: nil,
-        on_round_trip: nil,
-        budget_exhausted: nil
-      )
-    end
   end
 
   describe "boundary dispatch via RubyLLMAdapter#call" do

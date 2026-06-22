@@ -69,10 +69,8 @@ module Rubino
         # COMPRESSION drill-in tracking (tool_output_compression). For each path
         # we sent as a skeleton: the elided [first_line, line_count] ranges, so a
         # later TARGETED read landing inside one is a "drill-in" — the signal
-        # that the skeleton hid a body the model then needed. `@saved_tokens`
-        # accumulates the per-session estimate for the session-end summary.
+        # that the skeleton hid a body the model then needed.
         @skeletons = {}
-        @saved_tokens = 0
         @mutex = Mutex.new
       end
 
@@ -116,16 +114,14 @@ module Rubino
       end
 
       # Records that +path+ was sent as a skeleton with these elided ranges
-      # (each [first_line, line_count]) and adds its estimated saving to the
-      # running session total. Replaces any prior record for the path (a re-read
-      # re-skeletons from scratch).
-      def note_skeleton(path, ranges, saved_tokens)
+      # (each [first_line, line_count]). Replaces any prior record for the path
+      # (a re-read re-skeletons from scratch).
+      def note_skeleton(path, ranges)
         key = canonical(path)
         return unless key
 
         @mutex.synchronize do
           @skeletons[key] = ranges
-          @saved_tokens += saved_tokens.to_i
         end
       end
 
@@ -146,12 +142,6 @@ module Rubino
             first <= win_end && (first + count - 1) >= win_start
           end
         end
-      end
-
-      # Running per-session estimate of tokens saved by compression, for the
-      # session-end summary.
-      def compression_saved_tokens
-        @mutex.synchronize { @saved_tokens }
       end
 
       def seen?(path)
