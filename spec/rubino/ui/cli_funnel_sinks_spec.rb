@@ -46,4 +46,61 @@ RSpec.describe Rubino::UI::CLI do
     expect(done).to include("^[")
     expect(failed).to include("^[")
   end
+
+  # Cat 2 — the `● name` activity row: trusted cyan glyph + a body whose
+  # untrusted hint span is defanged.
+  it "#activity_started renders the cyan ● + name and defangs an escape in the hint" do
+    out = capture { |ui| ui.activity_started("read", hint: evil) }
+    expect(out).to include("●")          # the glyph renders
+    expect(out).to include("read")
+    expect(out).to have_no_raw_escapes   # the hint's CSI/OSC/BEL/CR are gone
+    expect(out).to include("^[")
+  end
+
+  # Cat 2 — the `● delegated → sub` row composed via #emit_glyph.
+  it "#delegation_started renders the cyan ● + defangs an escape in the subagent name" do
+    out = capture { |ui| ui.send(:delegation_started, { subagent: evil, prompt: "hi" }) }
+    expect(out).to include("●")
+    expect(out).to include("delegated →")
+    expect(out).to have_no_raw_escapes
+    expect(out).to include("^[")
+  end
+
+  # Cat 3 — a tool with a file-path arg: the OSC 8 link survives the funnel
+  # while a hostile path injects via neither URI nor visible text.
+  it "#activity_started keeps a legit OSC 8 hyperlink and defangs a hostile path" do
+    require "tempfile"
+    Tempfile.create(["legit", ".txt"]) do |f|
+      with_hyperlinks do
+        out = capture { |ui| ui.activity_started("read", hint: ui.send(:args_hint, { file_path: f.path })) }
+        expect(out).to include("\e]8;;file://") # the trusted hyperlink survives
+        expect(out).to include("\e]8;;\e\\") # closed properly
+      end
+      # A path carrying an escape: no raw danger byte reaches the terminal, and
+      # the only OSC that survives is a well-formed 8 (link), never a title-set.
+      with_hyperlinks do
+        evil_hint = capture { |ui| ui.activity_started("read", hint: ui.send(:args_hint, { file_path: evil })) }
+        expect(evil_hint).not_to include("\e]0;") # no title-set injection
+        expect(evil_hint).not_to include("\a")
+        expect(evil_hint).to include("^[")
+      end
+    end
+  end
+
+  # Cat 4 — the base streaming seam defangs the untrusted chunk and emits it
+  # with no committing newline.
+  it "PrinterBase#stream defangs the streamed chunk (no raw escapes)" do
+    out = capture { |ui| Rubino::UI::PrinterBase.instance_method(:stream).bind_call(ui, { text: evil }) }
+    expect(out).to have_no_raw_escapes
+    expect(out).to include("^[")
+  end
+
+  def with_hyperlinks
+    ENV["RUBINO_HYPERLINKS"] = "1"
+    Rubino::Util::Hyperlink.reset!
+    yield
+  ensure
+    ENV.delete("RUBINO_HYPERLINKS")
+    Rubino::Util::Hyperlink.reset!
+  end
 end
