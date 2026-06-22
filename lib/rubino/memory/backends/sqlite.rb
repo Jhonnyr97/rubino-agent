@@ -233,19 +233,10 @@ module Rubino
           row ? @db[TABLE].where(id: row[:id]).delete.positive? : false
         end
 
-        # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
-        # nothing — a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
-        # so `memory delete ""` wiped the whole store and reported success (#416).
-        # EXACT id wins; else accept a prefix ONLY when unambiguous (one match),
-        # so a short id from `memory list` works but a 1-char prefix can't
-        # mass-select. limit(2) distinguishes "one" from "many".
+        # Resolve a caller-supplied id to AT MOST ONE row (shared with Store,
+        # parameterized by this backend's dataset).
         def resolve_row(id)
-          key = id.to_s
-          return nil if key.strip.empty?
-          return @db[TABLE].where(id: key).first if @db[TABLE].where(id: key).get(:id)
-
-          matches = @db[TABLE].where(Sequel.like(:id, "#{key}%")).limit(2).all
-          matches.size == 1 ? matches.first : nil
+          Memory.resolve_row(@db[TABLE], id)
         end
 
         # Count only LIVE facts (valid_to IS NULL) — retired/superseded rows are
@@ -532,13 +523,9 @@ module Rubino
           limit = @config.dig("memory", key)
           return unless limit&.positive?
 
-          current = current_chars(group)
-          requested = text.to_s.length
-          return if current + requested <= limit
-
-          raise Store::BudgetExceededError.new(
-            group: group, limit: limit, current: current, requested: requested
-          )
+          Memory.enforce_budget!(group: group, limit: limit,
+                                 current: current_chars(group),
+                                 requested: text.to_s.length)
         end
 
         # Budget is metered over LIVE facts only — superseded rows don't count

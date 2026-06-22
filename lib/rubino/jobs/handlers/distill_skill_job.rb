@@ -21,8 +21,6 @@ module Rubino
       class DistillSkillJob
         TOOL_THRESHOLD = Integer(ENV.fetch("RA_DISTILL_TOOL_THRESHOLD", "5"))
 
-        NAME_RE = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
-
         # Common 4+-char English / dev words that carry no topical signal. A
         # single one of these overlapping ("file", "code", "this", "with",
         # "rails" sitting in a skill description) must NOT count as coverage —
@@ -196,12 +194,8 @@ module Rubino
           return unless valid?(name, desc, body)
           return if registry.find(name) # don't overwrite
 
-          dir = File.join(skills_write_dir, name)
-          FileUtils.mkdir_p(dir)
-          path = File.join(dir, "SKILL.md")
-          content = "---\nname: #{name}\ndescription: #{yaml_scalar(desc)}\n---\n\n#{body}"
-          content << "\n" unless content.end_with?("\n")
-          File.write(path, content)
+          path = Skills::Skill.write!(dir: File.join(skills_write_dir, name),
+                                      name: name, description: desc, body: body)
 
           Metrics.counter(:skills_created_total).increment
           Rubino.active_event_bus&.emit(
@@ -211,12 +205,8 @@ module Rubino
         end
 
         def valid?(name, desc, body)
-          name.match?(NAME_RE) && name.length <= 64 &&
+          name.match?(Skills::Skill::NAME_RE) && name.length <= 64 &&
             !desc.empty? && desc.length <= 1024 && !body.strip.empty?
-        end
-
-        def yaml_scalar(text)
-          %("#{text.gsub('"', '\\"')}")
         end
 
         # The agent HOME skills dir (RUBINO_HOME → else ~/.rubino), the SAME

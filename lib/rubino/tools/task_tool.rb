@@ -197,7 +197,9 @@ module Rubino
         # the card) + the approval handler. In card mode the child's per-tool
         # activity feeds the registry instead of flooding $stdout (#124).
         child_ui  = nested_ui_for(entry, parent_ui)
-        runner    = build_background_runner(definition, child_ui)
+        runner    = build_subagent_runner(
+          definition, ui: child_ui, event_bus: Interaction::EventBus.new
+        )
 
         thread = Thread.new do
           run_child_thread(entry, runner, prompt, sink, event_bus, parent_ui, child_ui)
@@ -236,8 +238,7 @@ module Rubino
             runner.run!(prompt, input_queue: entry.steer_queue)
           end
         end
-        text     = result.to_s.strip
-        text     = "(subagent '#{entry.subagent}' #{NOOP_RESULT_SUFFIX}" if text.empty?
+        text = result_or_noop(result, entry.subagent)
 
         record_completion(entry, text, sink, parent_ui)
         repaint_parent_cards(parent_ui)
@@ -441,7 +442,24 @@ module Rubino
       # events stay off the parent recorder (the result-only isolation contract).
       # Built directly here (not via @runner_factory, which tests use to inject a
       # stub for the SYNC path) so the bus wiring is always honored.
-      def build_background_runner(definition, child_ui)
+      # A subagent's final result text, or the neutral no-op placeholder when the
+      # run produced nothing / was fully denied (#16). One spelling for both the
+      # sync and background completion paths, recognized by .noop_result?.
+      def result_or_noop(result, name)
+        text = result.to_s.strip
+        text.empty? ? "(subagent '#{name}' #{NOOP_RESULT_SUFFIX}" : text
+      end
+
+      # Builds the nested Runner for BOTH the sync and background paths.
+      # Injectable via the constructor for tests (a FakeLLMAdapter can drive the
+      # child loop). The two paths differ only in the child UI (sync: a live
+      # nested view via #nested_ui or Null; background: the collapsed-card view
+      # via #nested_ui_for) and the event bus: the background path injects a
+      # fresh per-run EventBus so concurrent runs don't cross-contaminate, while
+      # the sync path passes nil and inherits Rubino.event_bus (the same result
+      # as omitting it). The fresh session is always tagged session_source
+      # "subagent" so it's hidden from the user-facing /sessions picker (item 2).
+      def build_subagent_runner(definition, ui:, event_bus: nil)
         if @runner_factory
           @runner_factory.call(definition)
         else
@@ -449,11 +467,9 @@ module Rubino
             session_id: nil,
             model_override: definition.resolved_model,
             max_turns: definition.max_turns,
-            ui: child_ui,
+            ui: ui,
             agent_definition: definition,
-            event_bus: Interaction::EventBus.new,
-            # Tag the child's fresh session as subagent machinery so it's hidden
-            # from the user-facing /sessions picker + `sessions list` (item 2).
+            event_bus: event_bus,
             session_source: "subagent"
           )
         end
@@ -570,11 +586,10 @@ module Rubino
         )
         return capacity_message(registry_bg) unless entry
 
-        runner = build_runner(definition)
+        runner = build_subagent_runner(definition, ui: nested_ui(definition))
         registry_bg.attach(entry, thread: Thread.current, runner: runner)
         result = Rubino.with_current_subagent_id(entry.id) { runner.run!(prompt) }
-        text   = result.to_s.strip
-        text   = "(subagent '#{definition.name}' #{NOOP_RESULT_SUFFIX}" if text.empty?
+        text   = result_or_noop(result, definition.name)
         registry_bg.complete(entry, status: :completed, result: text)
         text
       rescue StandardError => e
@@ -582,27 +597,6 @@ module Rubino
         # never wedge a live-slot leak; #call's rescue phrases the message.
         registry_bg.complete(entry, status: :failed, error: e.message) if entry
         raise
-      end
-
-      # Builds the nested Runner. Injectable via the constructor for tests
-      # (so a FakeLLMAdapter can drive the child loop); defaults to a real
-      # Runner wired with the subagent's resolved model / max_turns and a
-      # fresh ephemeral session. The child UI is chosen by #nested_ui: a
-      # live nested view in the interactive CLI, silent (Null) everywhere else.
-      def build_runner(definition)
-        if @runner_factory
-          @runner_factory.call(definition)
-        else
-          Agent::Runner.new(
-            session_id: nil,
-            model_override: definition.resolved_model,
-            max_turns: definition.max_turns,
-            ui: nested_ui(definition),
-            agent_definition: definition,
-            # Hidden from the user-facing /sessions list/picker (item 2).
-            session_source: "subagent"
-          )
-        end
       end
 
       # The UI the child loop renders through.

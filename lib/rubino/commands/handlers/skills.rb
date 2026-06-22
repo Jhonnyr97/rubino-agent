@@ -24,6 +24,8 @@ module Rubino
       # mirroring Rubino::Modes) so it survives across turns and is force-loaded
       # into the system prompt each turn (Context::PromptAssembler).
       class Skills
+        include Display
+
         # The /skills toggle verbs (#188) — the same registry-validated
         # StateRepository write the HTTP API and `rubino skills` CLI run.
         TOGGLE_VERBS = %w[enable disable].freeze
@@ -200,37 +202,6 @@ module Rubino
           Array(paths).map { |dir| Rubino::Skills::Registry.resolve_path_for(dir) }.uniq
         rescue StandardError
           [".rubino/skills", "~/.rubino/skills"]
-        end
-
-        # Wraps "<head><description>" to the terminal width, breaking only on
-        # whitespace, with continuation lines indented to the description column.
-        def wrap_skill_line(head, description)
-          width = terminal_width
-          indent = " " * head.length
-          avail  = [width - head.length, 20].max
-
-          lines = []
-          current = +""
-          description.split(/\s+/).each do |word|
-            candidate = current.empty? ? word : "#{current} #{word}"
-            if candidate.length > avail && !current.empty?
-              lines << current
-              current = word.dup
-            else
-              current = candidate
-            end
-          end
-          lines << current unless current.empty?
-          lines = [""] if lines.empty?
-
-          lines.each_with_index.map { |line, i| (i.zero? ? head : indent) + line }
-        end
-
-        def terminal_width
-          cols = IO.console&.winsize&.last
-          cols&.positive? ? cols : 80
-        rescue StandardError
-          80
         end
       end
     end

@@ -8,6 +8,8 @@ module Rubino
       # collaborator given the command `loader` and the `ui` — it owns the
       # built-in/keys/input reference text and the custom-command discovery copy.
       class Help
+        include Display
+
         def initialize(ui:, loader:)
           @ui = ui
           @loader = loader
@@ -231,15 +233,6 @@ module Rubino
           end
           lines << line unless line.empty?
           lines.empty? ? [""] : lines
-        end
-
-        # The current terminal width (columns), defaulting to 80 off a tty or on
-        # any console hiccup — matching the other handlers' helper (#mcp/#skills).
-        def terminal_width
-          cols = IO.console&.winsize&.last
-          cols&.positive? ? cols : 80
-        rescue StandardError
-          80
         end
       end
     end

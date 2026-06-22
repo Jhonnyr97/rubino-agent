@@ -285,11 +285,12 @@ RSpec.describe Rubino::Tools::TaskTool do
   describe "nested UI selection" do
     let(:explore) { Rubino.agent_registry.find("explore") }
 
-    # Reach the private build_runner so we can inspect the child UI the default
-    # factory wires (no @runner_factory ⇒ the real Agent::Runner path).
+    # Reach the private builder with the sync path's #nested_ui so we can inspect
+    # the child UI the default factory wires (no @runner_factory ⇒ the real
+    # Agent::Runner path).
     def built_child_ui
       tool   = described_class.new
-      runner = tool.send(:build_runner, explore)
+      runner = tool.send(:build_subagent_runner, explore, ui: tool.send(:nested_ui, explore))
       runner.instance_variable_get(:@ui)
     end
 
