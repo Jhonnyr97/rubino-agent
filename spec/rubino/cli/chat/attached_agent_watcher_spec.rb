@@ -40,9 +40,10 @@ RSpec.describe Rubino::CLI::Chat::AttachedAgentWatcher do
     instance_double(Rubino::Tools::BackgroundTasks::Entry,
                     id: "sa_1", subagent: "explore", status: :running,
                     tool_count: 2, last_activity: "reading parser.rb",
-                    output_tail: [], messages: messages)
+                    output_tail: [], activity_log: activity_log, messages: messages)
   end
   let(:messages) { [] }
+  let(:activity_log) { [] }
   let(:rendered_count) { 0 }
 
   before do
@@ -56,8 +57,8 @@ RSpec.describe Rubino::CLI::Chat::AttachedAgentWatcher do
       let(:rendered_count) { 1 }
       let(:messages) { %w[m0 m1 m2 m3] } # 2 new past the baseline of 1
 
-      it "replays ONLY the new tail and advances the cursor" do
-        expect(session_resolver).to receive(:replay_messages).with(ui, %w[m1 m2 m3])
+      it "replays ONLY the new tail (quiet, no 'Loaded N' banner) and advances the cursor" do
+        expect(session_resolver).to receive(:replay_messages).with(ui, %w[m1 m2 m3], banner: false)
         tick!
         # A second tick with no further growth replays nothing more.
         expect(session_resolver).not_to receive(:replay_messages)
@@ -86,6 +87,29 @@ RSpec.describe Rubino::CLI::Chat::AttachedAgentWatcher do
       tick!
       tick!
       expect(composer.partials.size).to eq(1)
+    end
+
+    context "when the sub has live intra-turn activity (long uncommitted turn)" do
+      let(:activity_log) { ["✓ read · parser.rb", "✓ read · lexer.rb", "✓ glob · **/*.rb"] }
+
+      it "surfaces the recent activity rows under the header so progress shows before the turn commits" do
+        tick!
+        frame = composer.partials.last
+        expect(frame).to include("explore", "running", "2 tools")
+        # The last MAX_LIVE_ROWS activity rows ride below the header as a block.
+        expect(frame).to include("parser.rb", "lexer.rb", "**/*.rb")
+        expect(frame.lines.size).to be > 1
+      end
+
+      it "repaints when the activity ring advances (new tool finished mid-turn)" do
+        tick!
+        first = composer.partials.last
+        allow(entry).to receive(:activity_log)
+          .and_return(["✓ read · lexer.rb", "✓ glob · **/*.rb", "✓ read · runner.rb"])
+        tick!
+        expect(composer.partials.last).not_to eq(first)
+        expect(composer.partials.last).to include("runner.rb")
+      end
     end
   end
 
