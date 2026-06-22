@@ -91,4 +91,28 @@ RSpec.describe Rubino::Tools::AskParentTool do
       expect(registry.find(entry.id).ask_options).to be_nil
     end
   end
+
+  # The authoritative parent notice (parent_sink.push_notice) is how the parent
+  # MODEL learns of the question. It must NOT live inside the cosmetic CLI rescue:
+  # if the CLI surfacing raises, the notice must still have fired — otherwise the
+  # child blocks all the way to its timeout with the parent never told.
+  describe "#surface_and_notify keeps the authoritative notice out of the cosmetic rescue" do
+    let(:sink)  { double("ParentSink", push_notice: nil) }
+    let(:entry) { double("Entry", parent_sink: sink, id: "t-1", subagent: "explore") }
+
+    it "still pushes the parent notice even when the CLI surfacing raises" do
+      # A parent_ui whose first surfacing call blows up — the cosmetic half.
+      faulty_ui = Class.new(Rubino::UI::CLI) do
+        def initialize; end # rubocop:disable Lint/MissingSuper
+        def auto_open_human_ask(_entry) = raise("cli boom")
+      end.new
+      Rubino.instance_variable_set(:@ui, faulty_ui)
+
+      expect { tool.send(:surface_and_notify, entry, "which db?") }.not_to raise_error
+      # AUTHORITATIVE notice fired despite the cosmetic failure.
+      expect(sink).to have_received(:push_notice).with(include("which db?"))
+    ensure
+      Rubino.instance_variable_set(:@ui, nil)
+    end
+  end
 end
