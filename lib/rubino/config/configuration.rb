@@ -504,10 +504,6 @@ module Rubino
       end
 
       # -- Auxiliary section --
-      def auxiliary_compression_config
-        dig("auxiliary", "compression") || {}
-      end
-
       def auxiliary_vision_config
         dig("auxiliary", "vision") || {}
       end

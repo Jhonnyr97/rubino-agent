@@ -36,11 +36,6 @@ module Rubino
         @messages.last(@protect_last)
       end
 
-      # Returns true if there are enough messages to have a middle section
-      def has_compressible_middle?
-        !middle.empty?
-      end
-
       private
 
       # How many trailing messages must be protected to keep the most recent

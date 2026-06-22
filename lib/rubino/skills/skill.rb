@@ -41,19 +41,9 @@ module Rubino
         !@directory.nil?
       end
 
-      # The skill's own directory (only for directory skills).
-      def dir
-        @directory
-      end
-
       # Returns the full skill content (loaded lazily)
       def content
         @content ||= load_content
-      end
-
-      # Returns true if the skill has been fully loaded
-      def loaded?
-        !@content.nil?
       end
 
       # Reads a bundled file by its relative path, sandboxed to the skill dir.
