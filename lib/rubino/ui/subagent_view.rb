@@ -72,8 +72,15 @@ module Rubino
       # @param approve [#call, nil] in card mode, the approval handler TaskTool
       #   wires: called with (question, scope:, command:) and returns the boolean
       #   decision. nil ⇒ #confirm auto-denies (legacy behavior).
-      def initialize(agent_name:, out: $stdout, pastel: Pastel.new,
-                     entry_id: nil, parent_ui: nil, approve: nil)
+      # @param budget [#call, nil] in card mode, the budget-request handler
+      #   TaskTool wires for a BACKGROUND child (#574): called when the child
+      #   loop hits its tool-iteration ceiling and asks for more budget. It parks
+      #   the child on the SAME per-entry gate the approval path uses and returns
+      #   the human's decision mapped to the Loop's contract (:continue / :summarize).
+      #   nil ⇒ #select returns nil → the Loop force-summarizes, exactly as before
+      #   (the headless / foreground / sync guarantee).
+      def initialize(agent_name:, out: $stdout, pastel: Pastel.new, # rubocop:disable Metrics/ParameterLists -- keyword args wiring one view's collaborators; splitting would obscure it
+                     entry_id: nil, parent_ui: nil, approve: nil, budget: nil)
         @agent_name = agent_name.to_s
         @out        = out
         @pastel     = pastel
@@ -81,6 +88,7 @@ module Rubino
         @entry_id   = entry_id
         @parent_ui  = parent_ui
         @approve    = approve
+        @budget     = budget
       end
 
       # The color this view paints its rows in (exposed for tests).
@@ -215,15 +223,24 @@ module Rubino
         nil
       end
 
-      # No interactive MENU mid-delegation: a background/nested child has no human
-      # watching its view to pick from a list, so return nil like UI::Null —
-      # callers fall back to their non-interactive path. Without this, a child
-      # that hit e.g. the budget-extension prompt (Loop#budget_extension_choice →
-      # @ui.select) inherited Base#select, which RAISES NotImplementedError and
-      # CRASHED the child (an `explore` child reaching the tool-iteration ceiling
-      # died here; a short `general` task never hit it). nil makes the loop's
-      # documented headless guarantee — nil → force-summarize — hold for subagents.
-      def select(_prompt, _choices)
+      # The only #select a nested child ever reaches is the Loop's
+      # budget-extension prompt at the tool-iteration ceiling
+      # (Loop#budget_extension_choice). A background child WITH a wired @budget
+      # handler (card mode) surfaces that as a BUDGET REQUEST on the card and
+      # parks the child thread on the same per-entry gate the approval path uses;
+      # the human grants/denies from the dropdown (Enter on the parked agent) or
+      # `/agents <id>`, and the handler returns the decision mapped to the Loop's
+      # contract: :continue (grant → extend +step) or :summarize (deny/timeout →
+      # force-summarize). This is the ONLY way a subagent can ask for budget (#574).
+      #
+      # Without a handler (legacy inline / foreground / sync child — no one to
+      # ask) we return nil, exactly like UI::Null: the Loop reads a nil/
+      # unrecognised choice as force-summarize, preserving the historical
+      # headless guarantee. (Before any of this, Base#select RAISED
+      # NotImplementedError and CRASHED a child that reached the ceiling.)
+      def select(prompt, _choices)
+        return @budget.call(prompt) if @budget
+
         nil
       end
 

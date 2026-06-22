@@ -49,11 +49,20 @@ module Rubino
       # approval the child thread parks on `approval_gate` (a Run::ApprovalGate)
       # and the entry flips to status :needs_approval with the question/command
       # shown on the card; the user resolves it via /agents <id>.
+      #
+      # budget_request (#574) REUSES that exact :needs_approval gate for a
+      # different ask: a BACKGROUND child that hit its tool-iteration ceiling
+      # parks on the same gate to ask the human for MORE budget instead of
+      # silently force-summarizing. The flag only re-flavors the surfaces (card /
+      # menu row / the /agents resolve prompt read "wants +budget — grant?", and
+      # the allowlist-persisting "always" option is dropped — there is no command
+      # to remember); the parking/wake/stop-cancel plumbing is identical.
       Entry = Struct.new(
         :id, :subagent, :prompt, :status, :result, :error,
         :thread, :runner, :started_at, :finished_at,
         :last_activity, :tool_count, :activity_log, :output_tail,
         :approval_gate, :approval_id, :approval_question, :approval_command,
+        :budget_request,
         # Parent->child steer (the `/agents <id> steer "..."` note). Wired into
         # the child Loop as its Interaction::InputQueue (the SAME turn-boundary
         # steering channel the human uses on the parent); the parent pushes a
@@ -311,7 +320,7 @@ module Rubino
       # question/command the card surfaces (Option 2). The child thread then
       # parks on `gate.await(approval_id)`; the user resolves it via
       # /agents <id>. Returns the previous status so the child can restore it.
-      def begin_approval(id, gate:, approval_id:, question:, command:)
+      def begin_approval(id, gate:, approval_id:, question:, command:, budget: false)
         @mutex.synchronize do
           entry = @entries[id]
           return unless entry
@@ -320,6 +329,7 @@ module Rubino
           entry.approval_id       = approval_id
           entry.approval_question = question.to_s
           entry.approval_command  = command.to_s
+          entry.budget_request    = budget ? true : false
           entry.status            = :needs_approval
         end
       end
@@ -335,6 +345,7 @@ module Rubino
           entry.approval_id       = nil
           entry.approval_question = nil
           entry.approval_command  = nil
+          entry.budget_request    = false
           entry.status            = :running if entry.status == :needs_approval
         end
       end
