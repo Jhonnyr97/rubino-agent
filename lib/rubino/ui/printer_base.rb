@@ -27,7 +27,7 @@ module Rubino
       end
 
       def stream_end
-        $stdout.puts
+        emit_blank
       end
 
       def tool_started(name, arguments: nil, at: nil)
@@ -52,7 +52,7 @@ module Rubino
       def job_started(_type)  = nil
       def job_finished(_type) = nil
 
-      def blank_line = $stdout.puts
+      def blank_line = emit_blank
 
       # Default fallback. CLI overrides to render the
       # `┄ HH:MM · mode → plan ┄` free-line variant.
@@ -60,6 +60,64 @@ module Rubino
         arrow = previous && previous != name ? " #{previous} → #{name}" : " #{name}"
         puts_colored(color_for(:muted), "  ⟳ mode#{arrow}")
       end
+
+      # ─────────────────────────────────────────────────────────────────────
+      # THE OUTPUT FUNNEL (CWE-150 defense by construction — #563/#564/#565-568)
+      # ─────────────────────────────────────────────────────────────────────
+      #
+      # Every byte rubino writes to the terminal flows through ONE of two paths
+      # here, and #write_line below is the ONLY place that touches $stdout. The
+      # per-sink `sanitize_terminal` discipline we used before was leaky: each
+      # new $stdout.puts had to REMEMBER to defang its interpolated text, and the
+      # ones that forgot became the escape-injection bugs. Centralizing the write
+      # makes "raw escapes reach the TTY" impossible to express in caller code —
+      # there is no longer a sink that bakes untrusted text + color into one
+      # string and prints it raw.
+      #
+      # PATH 1 — #emit / #emit_line: UNTRUSTED text + an optional rubino style.
+      #   The text (a tool-arg filename, a subagent name, a model-chosen string,
+      #   steered user input) is run through #sanitize_terminal, which STRIPS
+      #   every escape — ESC/CSI/OSC/C1/BEL/CR become visible caret notation
+      #   (ESC → "^[") — and ONLY THEN is rubino's own colour applied around the
+      #   now-inert text. An embedded `\e[2J` / `\e]0;…\a` / `\e[?1049h` can
+      #   never reach the emulator because it is no longer an escape by the time
+      #   the style wrap (and the write) happen. Callers pass a SEMANTIC style
+      #   symbol (e.g. :dim, :cyan) — they never hand us a pre-coloured string,
+      #   so they cannot smuggle escapes in via the colour either.
+      #
+      # PATH 2 — #emit_styled: rubino's OWN, already-styled content (markdown
+      #   render output, the live region, a row that legitimately interpolates a
+      #   `@pastel.yellow("●")` glyph). This is run through
+      #   #sanitize_terminal_keep_sgr, which strips every DANGEROUS control byte
+      #   exactly like path 1 but PRESERVES inert SGR colour escapes, so rubino's
+      #   styling survives while cursor-move / clear / title-set / clipboard
+      #   sequences still cannot pass. Use this ONLY for content rubino itself
+      #   built; never route untrusted text here (it would keep that text's SGR).
+      #
+      # So untrusted text can ONLY render via path 1 (fully defanged), and
+      # rubino's own styling survives via path 2 — by construction, not by each
+      # sink remembering to call the sanitizer.
+
+      # PATH 1. Untrusted +text+ → strip ALL escapes → apply +style+ → write.
+      # +style+ is a semantic Pastel method symbol (:dim, :cyan, :red, …) or
+      # nil for no colour. The text is treated as hostile; escapes become
+      # visible caret notation.
+      def emit(text, style: nil)
+        safe = Rubino::Util::Output.sanitize_terminal(text.to_s)
+        write_line(style ? @pastel.send(style, safe) : safe)
+      end
+      alias emit_line emit
+
+      # PATH 2. rubino's OWN pre-built styled +prebuilt+ → strip dangerous
+      # control bytes, KEEP rubino's SGR colour → write. For markdown render
+      # output, the live region, and rows that interpolate a rubino-coloured
+      # glyph. NEVER pass untrusted text here.
+      def emit_styled(prebuilt)
+        write_line(Rubino::Util::Output.sanitize_terminal_keep_sgr(prebuilt.to_s))
+      end
+
+      # A blank line. Routed through the funnel so $stdout stays private to it.
+      def emit_blank = write_line
 
       private
 
@@ -70,22 +128,24 @@ module Rubino
         nil
       end
 
-      # CWE-150 render-sink defense (#564, same class as #563). Many rows printed
-      # here interpolate UNTRUSTED text — most acutely the /agents handler's
-      # subagent name / ask_question / error / activity_log / last_activity /
-      # approval_command, all built from a child's tool args (an attacker-named
-      # workspace file) or model-chosen strings. Printed verbatim, an embedded
-      # `\e[2J` (clear) / `\e]0;…\a` (title-set) / `\e[?1049h` (alt-screen) / CR /
-      # BEL would reach the TTY and EXECUTE — no approval, no gesture. Neutralize
-      # every dangerous control byte at THIS chokepoint (the single seam every
-      # info/success/warning/error/status row flows through), rendering them as
-      # visible caret notation. The SGR-preserving variant keeps rubino's OWN
-      # inert color spans (e.g. the watch frame's `pastel.yellow("●")`) intact
-      # while the outer #color wrap is applied AFTER, around the now-safe text.
+      # The SINGLE seam that writes a committed line to the terminal. Keeping
+      # $stdout access here (and nowhere else in the funnel) is what makes the
+      # CWE-150 guarantee structural: there is exactly one write, and both ways
+      # to reach it (#emit, #emit_styled) have already neutralized escapes.
+      def write_line(line = nil)
+        line.nil? ? $stdout.puts : $stdout.puts(line)
+      end
+
+      # Re-expressed on PATH 2. The info/success/warning/error/status rows above
+      # interpolate rubino's own glyphs/labels around text that MAY be untrusted
+      # (e.g. an /agents row's subagent name) — historically defanged with the
+      # SGR-preserving sanitizer so rubino's colour survived. That is exactly
+      # #emit_styled's contract, so this now just forwards the colour-wrapped
+      # line into the funnel. (Phase 2 will split the genuinely-untrusted callers
+      # onto #emit so even their SGR can't pass; for the centralized base rows it
+      # is a clean 1:1 onto the funnel today.)
       def puts_colored(color, text)
-        safe = Rubino::Util::Output.sanitize_terminal_keep_sgr(text.to_s)
-        line = color ? @pastel.send(color, safe) : safe
-        $stdout.puts line
+        emit_styled(color ? @pastel.send(color, text.to_s) : text.to_s)
       end
     end
   end
