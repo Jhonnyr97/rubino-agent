@@ -288,4 +288,26 @@ RSpec.describe Rubino::CLI::Commands do
       end
     end
   end
+
+  # A Ctrl-C / signal that ESCAPES a command's own handler — a second Ctrl-C
+  # during the interactive REPL's teardown, or a bare Interrupt raised inside a
+  # blocking net/http read on an unwrapped path — used to reach exe/rubino and
+  # dump a raw `net/protocol.rb … wait_readable: Interrupt` backtrace. The boot
+  # chokepoint now rescues it and exits cleanly (130), like every other error.
+  describe "stray Interrupt / SIGINT escaping a command (the Ctrl-C backtrace)" do
+    it "exits cleanly with 130 and leaks NO raw backtrace" do
+      allow(described_class).to receive(:bare_prompt_args).and_raise(Interrupt)
+      r = run_cli(["chat"])
+      expect(r[:status]).to eq(130)
+      expect(backtrace?(r[:stderr])).to be(false)
+      expect(backtrace?(r[:stdout])).to be(false)
+    end
+
+    it "also exits cleanly on a SignalException (SIGTERM/SIGHUP) without a backtrace" do
+      allow(described_class).to receive(:bare_prompt_args).and_raise(SignalException, "TERM")
+      r = run_cli(["chat"])
+      expect(r[:status]).to eq(130)
+      expect(backtrace?(r[:stderr])).to be(false)
+    end
+  end
 end
