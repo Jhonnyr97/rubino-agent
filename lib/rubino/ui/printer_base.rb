@@ -21,9 +21,12 @@ module Rubino
       def status(message)  = puts_colored(color_for(:status),  message)
 
       def stream(chunk)
-        text = chunk[:text].to_s
-        $stdout.print text
-        $stdout.flush
+        # The streamed chunk is UNTRUSTED model text printed with NO trailing
+        # newline (incremental). Defang it here (Cat 4 contract: the caller
+        # neutralizes untrusted spans), then write through #emit_frame's single
+        # no-newline + flush seam — so even this base streaming path no longer
+        # touches $stdout directly.
+        emit_frame(Rubino::Util::Output.sanitize_terminal(chunk[:text].to_s))
       end
 
       def stream_end
@@ -121,6 +124,44 @@ module Rubino
       # A blank line. Routed through the funnel so $stdout stays private to it.
       def emit_blank = write_line
 
+      # PATH 1 (compose). A TRUSTED rubino-built prefix (a coloured glyph rubino
+      # chose, e.g. `@pastel.cyan("●")`) + an UNTRUSTED +body+ that gets the
+      # full PATH-1 defang before its own style wrap. The two are joined and
+      # written through the single seam.
+      #
+      # Cat 2 of the phase-2 migration: the `● <name>` activity/delegation rows
+      # interpolate a trusted cyan glyph next to a model-chosen name/preview. A
+      # plain #emit("#{glyph} #{name}") would defang the glyph's OWN colour (the
+      # caret leak); #emit_styled("#{glyph} #{@pastel.dim(name)}") would KEEP the
+      # untrusted name's SGR (the injection leak). This composes correctly: the
+      # glyph keeps its trusted colour, the body is stripped of every escape and
+      # THEN wrapped in +style+, and the join is written verbatim — the glyph's
+      # SGR and the body style are the only escapes that survive. +prefix+ must
+      # be rubino-built (never untrusted); +body+ is always treated as hostile.
+      def emit_glyph(prefix, body, style: nil)
+        safe = Rubino::Util::Output.sanitize_terminal(body.to_s)
+        styled = style ? @pastel.decorate(safe, *Array(style)) : safe
+        write_line("#{prefix}#{styled}")
+      end
+
+      # A rubino-built CURSOR-CONTROL frame for the live region / status spinner /
+      # stream tail (Cat 4 — the hot path). These legitimately carry rubino's OWN
+      # cursor escapes (`\r`, `\e[2K`, cursor moves) that a defang would strip, so
+      # this writes +raw+ THROUGH the single $stdout seam WITHOUT stripping cursor
+      # control, then flushes (transient frames must paint immediately — they are
+      # not committed lines).
+      #
+      # CONTRACT: the caller has ALREADY defanged every UNTRUSTED span it
+      # interpolated (model tail text via #sanitize_terminal at #margined_tail /
+      # #show_reasoning_tail; the status label/hint via #safe at build time). Only
+      # rubino's own frame escapes pass here. This exists so even the live/stream
+      # writes go through ONE seam — there is no direct $stdout.print left in the
+      # render path — without changing the print+flush timing the smooth-cadence
+      # measurement depends on.
+      def emit_frame(raw)
+        write_raw(raw.to_s)
+      end
+
       private
 
       # Subclasses override to map a semantic role to a Pastel method symbol.
@@ -136,6 +177,17 @@ module Rubino
       # to reach it (#emit, #emit_styled) have already neutralized escapes.
       def write_line(line = nil)
         line.nil? ? $stdout.puts : $stdout.puts(line)
+      end
+
+      # The partner seam for TRANSIENT cursor-control frames (#emit_frame): a
+      # raw, no-newline print + flush. Kept here, alongside #write_line, so EVERY
+      # byte rubino writes — committed lines AND live frames — still funnels
+      # through this one file's $stdout access. The print/flush pair is the exact
+      # shape the live region used before (no extra buffering), so cadence is
+      # unchanged.
+      def write_raw(raw)
+        $stdout.print(raw)
+        $stdout.flush
       end
 
       # Re-expressed on PATH 2. The info/success/warning/error/status rows above

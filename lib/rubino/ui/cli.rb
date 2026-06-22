@@ -310,9 +310,9 @@ module Rubino
       # exactly as it was before the picker opened.
       def erase_picker_frame(choice_count)
         rows = 1 + [choice_count, PICKER_PAGE_SIZE].min
-        $stdout.print(TTY::Cursor.column(1))
-        $stdout.print(TTY::Cursor.up(rows))
-        $stdout.print(TTY::Cursor.clear_screen_down)
+        # rubino's OWN cursor moves to wipe the cancelled picker frame — no
+        # untrusted text → one Cat 4 frame through the single seam.
+        emit_frame("#{TTY::Cursor.column(1)}#{TTY::Cursor.up(rows)}#{TTY::Cursor.clear_screen_down}")
       end
 
       # A DEDICATED TTY::Prompt for cancellable pickers, with Esc bound to the
@@ -520,8 +520,14 @@ module Rubino
         hint_str = hint ? " #{hint}" : ""
         # ONE blank before the first frame of a tool run; frames inside a run
         # butt together, and a gap left by the previous block isn't doubled (P3).
-        $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}"
+        emit_blank unless %i[tool gap].include?(@last_block)
+        # `● <name> <hint>`: a trusted cyan glyph + a dim body. The body's only
+        # UNTRUSTED span (the path inside +hint+) was already defanged in
+        # #args_hint and wrapped in rubino's own (trusted) OSC 8 link, so the
+        # whole row is rubino-built → PATH 2 (#emit_styled) keeps the cyan/dim
+        # SGR AND the now-OSC8-preserving sanitizer keeps the legit hyperlink,
+        # while still neutralizing any residual danger byte (Cat 2 + Cat 3).
+        emit_styled("#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}")
         @activity_open = true
         @activity_name = name
         @last_block = :tool
@@ -1197,7 +1203,7 @@ module Rubino
         if @stream_type == :content && @stream_md
           flush_content_stream
         elsif @stream_type
-          $stdout.puts
+          emit_blank
         end
         @stream_md = nil
         @stream_type = nil
@@ -1299,8 +1305,9 @@ module Rubino
           return if @thinking_indicator
 
           @thinking_indicator = true
-          $stdout.print @pastel.dim("thinking…")
-          $stdout.flush
+          # rubino's OWN dim label, no untrusted text → Cat 4 cursor-control
+          # frame (transient print+flush, no committing newline).
+          emit_frame(@pastel.dim("thinking…"))
           return
         end
 
@@ -1366,9 +1373,13 @@ module Rubino
         elsif tty_stdout?
           # The bare-TTY repaint owns ONE row (CR + clear-line): show only the
           # last line of a multi-line frame so the in-place repaint can't wrap
-          # and leave residue it can never erase.
-          $stdout.print("\r\e[2K#{frame.to_s.split("\n").last}")
-          $stdout.flush
+          # and leave residue it can never erase. The frame is rubino's OWN
+          # cursor-control output (CR + \e[2K) wrapping content the caller has
+          # already defanged (#margined_tail / #show_reasoning_tail sanitize the
+          # model tail; the status frame interpolates only @pastel + a pre-#safe'd
+          # hint) → Cat 4's #emit_frame writes it through the single seam without
+          # stripping the cursor control, print+flush, timing unchanged.
+          emit_frame("\r\e[2K#{frame.to_s.split("\n").last}")
         end
       end
 
@@ -1407,7 +1418,9 @@ module Rubino
       def clear_line
         return unless tty_stdout?
 
-        $stdout.print("\r\e[2K")
+        # rubino's own CR + erase-line — Cat 4 cursor-control frame (no untrusted
+        # text), through the single seam.
+        emit_frame("\r\e[2K")
       end
 
       # The active reasoning render mode (:hidden | :collapsed | :full), resolved
@@ -1969,16 +1982,20 @@ module Rubino
         end
       end
 
-      # The single chokepoint for UNTRUSTED inline text (R3C-1, CWE-150): tool
-      # command/args on the approval card, tool/shell output reflected in a
-      # metric or close row, a subagent's name/summary/question. Neutralizes
-      # every terminal-control byte to visible caret/<XX> notation BEFORE the
-      # caller wraps it in rubino's own (trusted) @pastel styling — so a raw
-      # `\e[2J` / `\e]0;…\a` / cursor-move embedded in that text can never clear
-      # the screen, set the window title, or SPOOF the line the human is about
-      # to authorize. #write_body_lines is the parallel chokepoint for the
-      # multi-line tool BODY; this one covers the single-line interpolated sinks.
-      # rubino's own ANSI is applied around the result and is never passed here.
+      # COMPOSE-TIME span defang: neutralizes an UNTRUSTED span (a tool metric, a
+      # subagent summary, a reasoning/fence line) to visible caret/<XX> notation
+      # BEFORE it is interpolated into a line that rubino then wraps in its OWN
+      # @pastel styling and commits via the funnel's PATH 2 (#emit_styled).
+      #
+      # Why it SURVIVES phase 2: #emit_styled keeps SGR (so rubino's wrapping
+      # colour shows), which means it would ALSO keep an untrusted span's OWN
+      # `\e[31m` — the SGR-injection leak. The simple PATH-1 #emit can't be used
+      # here because the line carries rubino's per-token/per-row SGR that MUST
+      # survive. So the untrusted span is stripped of EVERY escape here first;
+      # only then does rubino's trusted style wrap it. (#emit_glyph is the
+      # ready-made version for the single-span `glyph + body` rows; #safe covers
+      # the cases where the defanged span is interpolated mid-line before a
+      # multi-token render.) Thin alias for Util::Output.sanitize_terminal.
       def safe(text)
         Util::Output.sanitize_terminal(text)
       end
@@ -2157,7 +2174,12 @@ module Rubino
           # region would (#show_live_tail), then commit per line.
           show_live_tail("")
           clear_plain_tail
-          lines.each { |line| $stdout.puts line }
+          # Each line is rubino-built: rendered-markdown lines carry per-token
+          # SGR off a source already sanitize_terminal'd in #render_markdown_block,
+          # and the half-open-fence fallback pre-defangs each line; a "" blank
+          # stays blank. PATH 2 (#emit_styled) keeps that SGR, strips any residual
+          # danger byte, and keeps $stdout private to the funnel.
+          lines.each { |line| emit_styled(line) }
         end
       end
 
@@ -2490,11 +2512,17 @@ module Rubino
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
         @delegation_subagent = sub
-        # subagent name + prompt preview are UNTRUSTED (model-chosen args):
-        # sanitize before the trusted dim wrap (R3C-1, CWE-150).
-        preview = prompt ? "  #{truncate_inline(safe(prompt), 60)}" : ""
-        $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{safe(sub)}#{preview}")}"
+        # subagent name + prompt preview are UNTRUSTED (model-chosen args).
+        # #truncate_inline flattens newlines but does NOT touch escape bytes, so
+        # defang the preview source before clamping; the body's UNTRUSTED `sub`
+        # span is defanged by #emit_glyph below (its sanitize is idempotent on
+        # the already-clean preview, so the visual is unchanged).
+        preview = prompt ? "  #{truncate_inline(Util::Output.sanitize_terminal(prompt), 60)}" : ""
+        emit_blank unless %i[tool gap].include?(@last_block)
+        # `● delegated → <sub> <preview>`: a trusted cyan glyph composed with a
+        # dim, fully-defanged body — Cat 2's compose affordance. No hyperlink on
+        # this row, so the whole body can take PATH 1's strip-then-style.
+        emit_glyph("#{@pastel.cyan("●")} ", "delegated → #{sub}#{preview}", style: :dim)
         @activity_open = true
         @activity_name = "task"
         @last_block = :tool
@@ -2587,12 +2615,17 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        # The masked value is the UNTRUSTED command/path/pattern — neutralize
-        # escape bytes BEFORE building the open-row hint, so a `\e]0;…` in a
-        # filename/command can't drive the terminal from the `● name hint` row
-        # (R3C-1, CWE-150). Sanitize the raw text here, then rubino's own OSC-8
-        # hyperlink wrap (trusted) is applied around the clean label.
-        hint  = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
+        # Cat 3 (OSC 8), decision (a)+(b): the masked value is the UNTRUSTED
+        # command/path/pattern. DEFANG it FIRST — so both the link URI (the path)
+        # and the visible label are control-free — and ONLY THEN wrap the clean
+        # path in rubino's own (trusted) OSC 8 hyperlink. Building the link OUTSIDE
+        # the sanitized region means a malicious path can inject via NEITHER the
+        # URI nor the visible text. The `● name hint` row then rides PATH 2
+        # (#emit_styled in #activity_started): #sanitize_terminal_keep_sgr now
+        # PRESERVES a well-formed OSC 8 sequence (its URI is already control-free,
+        # so it can't smuggle a second OSC) while still defanging the label and
+        # every other byte — so the legit hyperlink survives and injection can't.
+        hint  = Util::Output.sanitize_terminal(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
         first = hint.lines.first.to_s.strip
         label = first.length > 60 ? "#{first[0, 57]}..." : first
 
