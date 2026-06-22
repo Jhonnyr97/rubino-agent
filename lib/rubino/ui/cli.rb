@@ -145,7 +145,9 @@ module Rubino
           tbl = TTY::Table.new(header: headers, rows: rows)
           # Pin the width explicitly: TTY::Table otherwise probes the terminal
           # via ioctl, which blows up when $stdout is a StringIO (tests/pipes).
-          $stdout.puts tbl.render(:unicode, padding: [0, 1], width: terminal_cols, resize: false)
+          # Cells are already SGR-sanitized above; PATH 2 (#emit_styled) keeps the
+          # trusted cell colour while stripping any residual danger byte.
+          emit_styled(tbl.render(:unicode, padding: [0, 1], width: terminal_cols, resize: false))
         end
       end
 
@@ -160,11 +162,13 @@ module Rubino
         ([headers] + rows).each do |row|
           row.each_with_index { |cell, i| widths[i] = [widths[i], display_width(cell.to_s)].max }
         end
-        $stdout.puts grid_border(widths, "┌", "┬", "┐")
-        $stdout.puts grid_row(headers, widths)
-        $stdout.puts grid_border(widths, "├", "┼", "┤")
-        rows.each { |row| $stdout.puts grid_row(row, widths) }
-        $stdout.puts grid_border(widths, "└", "┴", "┘")
+        # Borders are rubino's own glyphs; rows interpolate already-SGR-sanitized
+        # cells. PATH 2 (#emit_styled) keeps the trusted cell colour, strips danger.
+        emit_styled(grid_border(widths, "┌", "┬", "┐"))
+        emit_styled(grid_row(headers, widths))
+        emit_styled(grid_border(widths, "├", "┼", "┤"))
+        rows.each { |row| emit_styled(grid_row(row, widths)) }
+        emit_styled(grid_border(widths, "└", "┴", "┘"))
       end
 
       def grid_border(widths, left, mid, right)
@@ -199,10 +203,11 @@ module Rubino
         label_w = headers.map { |h| display_width(h.to_s) }.max.to_i
         rule    = @pastel.dim("─" * [[terminal_cols, 1].max, 40].min)
         rows.each_with_index do |row, i|
-          $stdout.puts rule if i.positive?
+          emit_styled(rule) if i.positive?
           headers.each_with_index do |h, col|
             label = h.to_s.ljust(label_w + (h.to_s.length - display_width(h.to_s)))
-            $stdout.puts "#{label}  #{row[col]}"
+            # row[col] is an already-SGR-sanitized cell; PATH 2 keeps its colour.
+            emit_styled("#{label}  #{row[col]}")
           end
         end
       end
