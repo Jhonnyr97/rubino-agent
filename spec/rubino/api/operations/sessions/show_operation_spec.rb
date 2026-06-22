@@ -9,7 +9,7 @@ RSpec.describe Rubino::API::Operations::Sessions::ShowOperation do
 
   it "returns 200 with session details and empty messages" do
     session = repo.create(source: "api", title: "hello")
-    status, body = described_class.call(make_request(params: { id: session[:id] }))
+    status, body = described_class.new.call(make_request(params: { id: session[:id] }))
     expect(status).to eq(200)
     expect(body[:id]).to eq(session[:id])
     expect(body[:title]).to eq("hello")
@@ -20,7 +20,7 @@ RSpec.describe Rubino::API::Operations::Sessions::ShowOperation do
     session = repo.create(source: "api", title: "with msgs")
     store = Rubino::Session::Store.new
     store.create(session_id: session[:id], role: "user", content: "hello world")
-    status, body = described_class.call(make_request(params: { id: session[:id] }))
+    status, body = described_class.new.call(make_request(params: { id: session[:id] }))
     expect(status).to eq(200)
     expect(body[:messages].length).to eq(1)
     msg = body[:messages].first
@@ -31,7 +31,7 @@ RSpec.describe Rubino::API::Operations::Sessions::ShowOperation do
   end
 
   it "raises NotFoundError on unknown id" do
-    expect { described_class.call(make_request(params: { id: "no-such-id" })) }
+    expect { described_class.new.call(make_request(params: { id: "no-such-id" })) }
       .to raise_error(Rubino::NotFoundError)
   end
 end

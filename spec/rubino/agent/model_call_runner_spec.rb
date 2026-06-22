@@ -238,8 +238,7 @@ RSpec.describe Rubino::Agent::ModelCallRunner do
     def cap_for(reason)
       runner = build_runner(ScriptedBoundary.new(text_response), cfg: cfg)
       classified = Rubino::LLM::ClassifiedError.new(
-        reason: reason, status_code: nil, message: "x", retryable: true,
-        should_compress: false, should_rotate_credential: false, should_fallback: false
+        reason: reason, status_code: nil, message: "x", retryable: true
       )
       runner.send(:error_backoff_cap, classified)
     end

@@ -32,7 +32,7 @@ module Rubino
           priority: priority,
           payload_json: JSON.generate(payload),
           attempts: 0,
-          max_attempts: @config.jobs_max_attempts,
+          max_attempts: @config.dig("jobs", "max_attempts"),
           run_at: run_at || now,
           created_at: now,
           updated_at: now
@@ -49,7 +49,7 @@ module Rubino
         # row never reaches complete!/fail! — sits "queued" forever and is the
         # behaviour #84 closed. Every inline enqueue means a live process is
         # here and willing to drain, so reap those orphans on this boot.
-        if @config.jobs_mode == "inline"
+        if @config.dig("jobs", "mode") == "inline"
           reap_inline_orphans(before: id)
           Runner.new.run_job(id)
         end
@@ -117,7 +117,7 @@ module Rubino
         new_status =
           if new_attempts >= job[:max_attempts]
             "dead"
-          elsif @config.jobs_mode == "inline"
+          elsif @config.dig("jobs", "mode") == "inline"
             "failed"
           else
             "queued"

@@ -9,10 +9,6 @@ module Rubino
         #
         # @raise [Rubino::NotFoundError] when the cron job does not exist.
         class ShowOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository for tests.
           def initialize(repository: nil)
             @repository = repository || ::Rubino::Jobs::CronJobRepository.new

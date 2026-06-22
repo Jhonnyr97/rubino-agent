@@ -10,10 +10,6 @@ module Rubino
         # @raise [Rubino::NotFoundError] when no skill is registered under +name+.
         # @raise [Rubino::ValidationError] when the body fails Schemas::ToggleSkill.
         class ToggleOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate skills registry and state repository for tests.
           def initialize(registry: nil, state_repository: nil)
             @registry = registry || ::Rubino::Skills::Registry.new

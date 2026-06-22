@@ -10,10 +10,6 @@ module Rubino
         # endpoint for that). The registry is process-local and not persisted,
         # so this reflects only the current server process's children.
         class IndexOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate registry for tests.
           def initialize(registry: nil)
             @registry = registry || ::Rubino::Tools::BackgroundTasks.instance

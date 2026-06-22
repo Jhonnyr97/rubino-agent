@@ -11,10 +11,6 @@ module Rubino
         #
         # @raise [Rubino::NotFoundError] when the run does not exist.
         class StopOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository for tests.
           def initialize(repository: nil)
             @repository = repository || ::Rubino::Run::Repository.new

@@ -68,14 +68,14 @@ module Rubino
       # On a 128k+ window the floor/ratio still governs (0.85·window is larger);
       # on an 8k window the 0.85 cap governs (~6.8k) so compaction stays reachable.
       def compaction_threshold
-        floored = [(available_tokens * @config.compression_threshold).to_i, MINIMUM_CONTEXT_LENGTH].max
+        floored = [(available_tokens * @config.dig("compression", "threshold")).to_i, MINIMUM_CONTEXT_LENGTH].max
         ceiling = (available_tokens * MAX_WINDOW_FRACTION).to_i
         [floored, ceiling].min
       end
 
       # Returns the target token count after compaction
       def compaction_target
-        (available_tokens * @config.compression_target_ratio).to_i
+        (available_tokens * @config.dig("compression", "target_ratio")).to_i
       end
 
       private
@@ -86,7 +86,7 @@ module Rubino
       # any provider-compatible model id work; if its real window differs
       # from the default, the user pins it in config.
       def determine_context_window
-        @config.model_context_length || DEFAULT_CONTEXT_WINDOW
+        @config.dig("model", "context_length") || DEFAULT_CONTEXT_WINDOW
       end
     end
   end

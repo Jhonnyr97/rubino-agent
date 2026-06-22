@@ -35,7 +35,7 @@ module Rubino
       def initialize(model_id: nil, provider: nil, config: nil, ui: nil, event_bus: nil,
                      tool_executor: nil, cancel_token: nil)
         @config        = config || Rubino.configuration
-        @model_id      = model_id || @config.model_default || "fake/happy-path"
+        @model_id      = model_id || @config.dig("model", "default") || "fake/happy-path"
         @provider      = provider || "fake"
         @ui            = ui
         @event_bus     = event_bus
@@ -123,7 +123,7 @@ module Rubino
       end
 
       def context_window
-        @config.model_context_length || 128_000
+        @config.dig("model", "context_length") || 128_000
       end
 
       # Convenience: returns the scenario name FakeProvider would pick for

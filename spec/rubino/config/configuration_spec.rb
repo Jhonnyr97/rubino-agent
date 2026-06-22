@@ -5,11 +5,11 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "model accessors" do
     it "returns model default" do
-      expect(config.model_default).to eq("openai/gpt-4.1")
+      expect(config.dig("model", "default")).to eq("openai/gpt-4.1")
     end
 
     it "defaults temperature to nil (inherit provider default, #414)" do
-      expect(config.model_temperature).to be_nil
+      expect(config.dig("model", "temperature")).to be_nil
     end
 
     it "returns model temperature" do
@@ -19,11 +19,11 @@ RSpec.describe Rubino::Config::Configuration do
                                  "context_length" => nil,
                                  "temperature" => 0.3
                                })
-      expect(cfg.model_temperature).to eq(0.3)
+      expect(cfg.dig("model", "temperature")).to eq(0.3)
     end
 
     it "returns model provider" do
-      expect(config.model_provider).to eq("auto")
+      expect(config.dig("model", "provider")).to eq("auto")
     end
   end
 
@@ -80,7 +80,7 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "compression accessors" do
     it "returns compression threshold" do
-      expect(config.compression_threshold).to eq(0.50)
+      expect(config.dig("compression", "threshold")).to eq(0.50)
     end
 
     it "returns compression enabled" do
@@ -88,8 +88,8 @@ RSpec.describe Rubino::Config::Configuration do
     end
 
     it "returns protect first/last N" do
-      expect(config.compression_protect_first_n).to eq(3)
-      expect(config.compression_protect_last_n).to eq(20)
+      expect(config.dig("compression", "protect_first_n")).to eq(3)
+      expect(config.dig("compression", "protect_last_n")).to eq(20)
     end
   end
 
@@ -99,8 +99,8 @@ RSpec.describe Rubino::Config::Configuration do
     end
 
     it "returns memory char limits" do
-      expect(config.memory_char_limit).to eq(2200)
-      expect(config.memory_user_char_limit).to eq(1375)
+      expect(config.dig("memory", "memory_char_limit")).to eq(2200)
+      expect(config.dig("memory", "user_char_limit")).to eq(1375)
     end
   end
 

@@ -90,14 +90,14 @@ module Rubino
         def status_model
           @runner&.session&.dig(:model) ||
             (@runner.respond_to?(:model_id) ? @runner.model_id : nil) ||
-            Rubino.configuration.model_default
+            Rubino.configuration.dig("model", "default")
         end
 
         # The configured provider — the "what am I talking to" line a status
         # check wants. We report the configured target, not a live probe (a
         # health round-trip would make /status slow and flaky).
         def status_provider_line
-          Rubino.configuration.model_provider || "(default)"
+          Rubino.configuration.dig("model", "provider") || "(default)"
         rescue StandardError
           "(unavailable)"
         end

@@ -10,7 +10,7 @@ module Rubino
     # the HTTP API (read, upload, etc.) must be resolved through #resolve so
     # the result is guaranteed to live under @root.
     #
-    # Root defaults to config.paths_home (the agent home); uploads are
+    # Root defaults to config.dig("paths", "home") (the agent home); uploads are
     # written under `<root>/uploads/`. The root is overridable in tests.
     #
     # Path-traversal defense:
@@ -27,7 +27,7 @@ module Rubino
       end
 
       def initialize(root: nil)
-        path = root || ::Rubino.configuration.paths_home
+        path = root || ::Rubino.configuration.dig("paths", "home")
         expanded = File.expand_path(path)
         FileUtils.mkdir_p(expanded)
         # Resolve symlinks (macOS' /tmp → /private/tmp is the usual offender)

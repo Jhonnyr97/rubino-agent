@@ -52,12 +52,12 @@ module Rubino
 
       # Returns the max turns for this agent (falls back to global config)
       def max_turns
-        @max_turns || Rubino.configuration.agent_max_turns
+        @max_turns || Rubino.configuration.dig("agent", "max_turns")
       end
 
       # Returns the resolved model (falls back to global default)
       def resolved_model
-        @model || Rubino.configuration.model_default
+        @model || Rubino.configuration.dig("model", "default")
       end
 
       # Returns tool list based on the agent's tool configuration.

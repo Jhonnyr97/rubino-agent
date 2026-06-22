@@ -28,7 +28,7 @@ module Rubino
         @session_repo = Session::Repository.new
         @message_store = Session::Store.new
         @explicit_model_override = model_override
-        @model_id = model_override || @config.model_default
+        @model_id = model_override || @config.dig("model", "default")
         @provider_override = provider_override
         @max_turns = max_turns
         @ignore_rules = ignore_rules
@@ -200,7 +200,8 @@ module Rubino
         @model_id = model_id
         @session[:model] = model_id
         @session[:provider] = @provider_override ||
-                              LLM::ProviderResolver.resolve(model_id, explicit_provider: @config.model_provider)
+                              LLM::ProviderResolver.resolve(model_id,
+                                                            explicit_provider: @config.dig("model", "provider"))
         if @session_repo.persisted?(@session[:id])
           @session_repo.update(@session[:id], model: model_id, provider: @session[:provider])
         end

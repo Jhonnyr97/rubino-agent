@@ -288,7 +288,7 @@ module Rubino
         # mutate the persisted session row.
         llm_adapter = LLM::AdapterFactory.build(
           model_id: @model_override || @session[:model],
-          provider: @provider_override || @config.model_provider,
+          provider: @provider_override || @config.dig("model", "provider"),
           ui: @ui,
           event_bus: @event_bus,
           tool_executor: tool_executor,

@@ -427,12 +427,12 @@ module Rubino
         names = @turn_tools.map { |t| tool_name_of(t) }
         return true if names.include?("question")
 
-        manual = @config.approvals_mode == "manual"
+        manual = @config.dig("approvals", "mode") == "manual"
         # shell can park on the gate under EITHER confirm_policy: confirm_all
         # always prompts; dangerous_only still prompts on a DangerousPattern.
         # We don't have the concrete command here, so treat a present shell tool
         # as potentially-blocking unless approvals are skipped entirely.
-        confirm_shell = @config.approvals_mode != "skip"
+        confirm_shell = @config.dig("approvals", "mode") != "skip"
         return true if confirm_shell && names.include?("shell")
         return true if manual && @turn_tools.any? { |t| t.respond_to?(:risky?) && t.risky? }
 

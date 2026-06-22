@@ -32,9 +32,9 @@ module Rubino
       def initialize(model_id: nil, provider: nil, config: nil, ui: nil, event_bus: nil,
                      tool_executor: nil, cancel_token: nil, isolate_config: false)
         @config        = config || Rubino.configuration
-        @model_id      = model_id || @config.model_default
+        @model_id      = model_id || @config.dig("model", "default")
         @provider      = provider || resolve_provider
-        @temperature   = @config.model_temperature
+        @temperature   = @config.dig("model", "temperature")
         @ui            = ui || Rubino.ui
         @event_bus     = event_bus || Rubino.event_bus
         @tool_executor = tool_executor # nil = ToolBridge falls back to direct tool.call
@@ -138,7 +138,7 @@ module Rubino
       # Returns the context window size for the current model
       def context_window
         info = model_info
-        return @config.model_context_length if @config.model_context_length
+        return @config.dig("model", "context_length") if @config.dig("model", "context_length")
 
         info&.context_window || 128_000
       end
@@ -650,7 +650,7 @@ module Rubino
       # default — including "auto" and the Bedrock-bearer override — through the
       # single ProviderResolver seam rather than re-implementing it here.
       def resolve_provider
-        ProviderResolver.resolve(@model_id, explicit_provider: @config.model_provider)
+        ProviderResolver.resolve(@model_id, explicit_provider: @config.dig("model", "provider"))
       end
 
       def build_chat(tools: nil, response_format: nil, budget_exhausted: nil)
