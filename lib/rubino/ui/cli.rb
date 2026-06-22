@@ -881,6 +881,16 @@ module Rubino
         # A card repaint is cosmetic — never let it break the turn or the child.
       end
 
+      # Tick-driven card refresh (called ~1 Hz from the turn status thread) so a
+      # live child's elapsed keeps advancing mid-turn even when it fires no tool
+      # events. Skipped when no child is live, so a plain turn pays nothing;
+      # #set_subagent_cards coalesces, so an unchanged snapshot never repaints.
+      def refresh_live_cards
+        set_subagent_cards if Tools::BackgroundTasks.instance.running.any?
+      rescue StandardError
+        nil
+      end
+
       def subagent_cards
         @subagent_cards ||= SubagentCards.new(pastel: @pastel)
       end
@@ -2365,6 +2375,14 @@ module Rubino
                 paint_live(stall_frame(i))
               end
             end
+            # Advance the live subagent cards too (~1 Hz, the idle ticker's
+            # cadence). The IdleCardHost ticker only runs BETWEEN turns, so during
+            # a turn a background child's card elapsed would freeze whenever the
+            # child went a while without firing a tool event (a long LLM call) —
+            # a still-running child then looked hung at a stale "N tools · Ms".
+            # Outside @status_mutex (set_subagent_cards takes the composer's own
+            # render mutex; keeping the locks un-nested avoids any ordering risk).
+            refresh_live_cards if (i % 10).zero?
             i += 1
             sleep STATUS_TICK
           end
