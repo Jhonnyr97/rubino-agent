@@ -113,6 +113,28 @@ module Rubino
       # neutralizing every dangerous control byte.
       SGR_RE = /\e\[[0-9;]*m/
 
+      # OSC 8 hyperlink — the ONE OSC class safe to keep through the SGR-aware
+      # sanitizer (Cat 3, #565-568). Shape: `\e]8;PARAMS;URI\e\\LABEL\e]8;;\e\\`
+      # (the open carries an optional params field + the URI, the close is an
+      # empty `\e]8;;`; both terminate with ST `\e\\`). A hyperlink only changes
+      # what a click does — it cannot move the cursor, clear the screen, set the
+      # title, or write the clipboard — so a WELL-FORMED one is a safe display
+      # escape like SGR. The match is deliberately strict so injection can't ride
+      # in: PARAMS and URI may contain NO control byte and NO embedded ESC/ST/BEL
+      # (`[^\x00-\x1F\x7F\e]`), so a malicious path cannot close the sequence
+      # early and smuggle a second OSC. The LABEL is captured separately so the
+      # caller can DEFANG it (a label is visible text and must be neutralized
+      # exactly like any other untrusted span). Anything that does not match this
+      # exact, control-free shape falls through to full caret defang. BEL (`\a`)
+      # is NOT accepted as a terminator here — only the ST form — so a lone
+      # `\e]8;…\a` injection can never masquerade as a link.
+      OSC8_RE = /\e\]8;[^\x00-\x1F\x7F\e]*;([^\x00-\x1F\x7F\e]*)\e\\(.*?)\e\]8;;\e\\/m
+
+      # The display escapes the keep_sgr sanitizer carves out and preserves
+      # (SGR colour OR a well-formed OSC 8 hyperlink). Tried in this order so an
+      # SGR run inside a hyperlink LABEL is matched by the OSC 8 arm first.
+      KEEP_RE = Regexp.union(OSC8_RE, SGR_RE)
+
       # Like #sanitize_terminal, but PRESERVES SGR colour escapes.
       #
       # Some sinks interpolate TRUSTED rubino styling (a pastel-colored cell,
@@ -126,17 +148,37 @@ module Rubino
       # display-width helpers) since SGR occupies zero columns. Pure.
       def self.sanitize_terminal_keep_sgr(text)
         s = scrub_encoding(text)
-        # Carve out the SGR runs, sanitize the gaps, splice the SGR back in.
+        # Carve out the SAFE display escapes (SGR runs + well-formed OSC 8
+        # hyperlinks), sanitize the gaps, splice the kept escapes back in. For an
+        # SGR match the whole run is inert and copied verbatim; for an OSC 8 match
+        # the open/close FRAMING is copied verbatim (its URI is already control-
+        # free by OSC8_RE) but the visible LABEL is itself defanged — a link's
+        # display text is untrusted exactly like any other text.
         parts = []
         last  = 0
-        s.to_enum(:scan, SGR_RE).each do
+        s.to_enum(:scan, KEEP_RE).each do
           m = Regexp.last_match
           parts << sanitize_terminal(s[last...m.begin(0)])
-          parts << m[0]
+          parts << keep_match(m)
           last = m.end(0)
         end
         parts << sanitize_terminal(s[last..]) if last < s.length
         parts.join
+      end
+
+      # Re-emits one KEEP_RE match: an OSC 8 hyperlink (capture 2 is its LABEL)
+      # has its framing kept verbatim and only the LABEL defanged; a plain SGR
+      # run is inert and kept whole.
+      def self.keep_match(match)
+        return match[0] if match[1].nil? # SGR arm (no captures)
+
+        # OSC 8 arm: rebuild open-framing + DEFANGED label + close-framing. The
+        # framing bytes around the captured label are exactly the matched text
+        # minus the label span, so reconstruct from the known close sequence.
+        whole = match[0]
+        label = match[2]
+        open_len = whole.length - label.length - "\e]8;;\e\\".length
+        "#{whole[0, open_len]}#{sanitize_terminal(label)}\e]8;;\e\\"
       end
 
       # Visible, unambiguous stand-in for a stripped control byte: ESC → "^[",
