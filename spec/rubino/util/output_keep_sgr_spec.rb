@@ -47,14 +47,14 @@ RSpec.describe Rubino::Util::Output do
         expect(out).to include("\e]8;;file:///tmp/a.txt\e\\") # open framing kept
         expect(out).to end_with("\e]8;;\e\\")                  # close framing kept
         expect(out).not_to include("\e[2J")                    # label danger gone
-        expect(out).to include("^[")                            # shown as caret
+        expect(out).to include("^[") # shown as caret
       end
 
       it "does NOT preserve a sequence whose URI carries a control byte (no smuggling)" do
         # A BEL inside the URI would let an attacker close early + start a new OSC.
         evil = "\e]8;;file:///x\aPWNED\e\\label\e]8;;\e\\"
         out = described_class.sanitize_terminal_keep_sgr(evil)
-        expect(out).not_to include("\e]8;")  # whole thing caret-defanged
+        expect(out).not_to include("\e]8;") # whole thing caret-defanged
         expect(out).to include("^[")
       end
 

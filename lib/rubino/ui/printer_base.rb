@@ -21,9 +21,12 @@ module Rubino
       def status(message)  = puts_colored(color_for(:status),  message)
 
       def stream(chunk)
-        text = chunk[:text].to_s
-        $stdout.print text
-        $stdout.flush
+        # The streamed chunk is UNTRUSTED model text printed with NO trailing
+        # newline (incremental). Defang it here (Cat 4 contract: the caller
+        # neutralizes untrusted spans), then write through #emit_frame's single
+        # no-newline + flush seam — so even this base streaming path no longer
+        # touches $stdout directly.
+        emit_frame(Rubino::Util::Output.sanitize_terminal(chunk[:text].to_s))
       end
 
       def stream_end
