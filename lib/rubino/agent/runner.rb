@@ -123,7 +123,18 @@ module Rubino
           cancel_token: @cancel_token,
           model_override: @explicit_model_override,
           provider_override: @provider_override,
-          max_tool_iterations: @max_turns,
+          # The SOFT iteration ceiling (where the budget-extension prompt fires)
+          # vs the HARD max_turns outer rail. For the main agent @max_turns is the
+          # `--max-turns N` override, which intentionally sets the soft ceiling.
+          # A SUBAGENT, though, gets @max_turns = definition.max_turns (= config
+          # agent.max_turns, 90) — passing THAT as the soft ceiling made soft ==
+          # hard, so #extendable? was always false and a subagent could NEVER
+          # surface a budget request (#571) — it just force-summarized. Subagents
+          # therefore pass nil so the soft ceiling falls back to config
+          # agent.max_tool_iterations (25) < the 90 hard rail, exactly like the
+          # main agent — so a subagent at 25 iterations parks and asks for budget
+          # via the dropdown (#574), extendable up to the 90 outer rail.
+          max_tool_iterations: @session_source == "subagent" ? nil : @max_turns,
           polishing: @polishing
         )
 
