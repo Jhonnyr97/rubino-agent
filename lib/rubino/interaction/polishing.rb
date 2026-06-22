@@ -56,6 +56,14 @@ module Rubino
           @cancel_token = token
           @thread = Thread.new { run(token, ui, event_bus) }
           @thread.name = "rubino-polishing" if @thread.respond_to?(:name=)
+          # NEVER let a dying detached worker auto-dump a backtrace into the user's
+          # terminal. #run rescues Interrupted + StandardError and logs, but a
+          # non-StandardError (an Interrupt raised inside its aux-LLM net/http read
+          # on teardown, a Thread#raise) would otherwise hit Ruby's default
+          # report_on_exception and print a raw `net/protocol.rb … Interrupt`
+          # backtrace mid-chat. The work is best-effort and re-runs next session,
+          # so a silent death on shutdown is correct.
+          @thread.report_on_exception = false
         end
         nil
       end

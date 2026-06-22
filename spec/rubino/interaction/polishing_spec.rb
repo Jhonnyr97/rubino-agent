@@ -59,6 +59,22 @@ RSpec.describe Rubino::Interaction::Polishing do
       polishing.cancel!
       polishing.wait(5)
     end
+
+    it "spawns the detached worker with report_on_exception OFF (never dumps a backtrace on death)" do
+      slow = slow_handler
+      Rubino::Jobs::Registry.register("PolishTestJob", slow)
+      queue.enqueue("PolishTestJob", {}, drain_inline: false)
+
+      polishing.start(ui: ui, event_bus: bus)
+      thread = polishing.instance_variable_get(:@thread)
+      # A non-StandardError (an Interrupt in its aux-LLM net/http read on teardown)
+      # must NOT auto-dump a raw backtrace into the user's terminal via Ruby's
+      # default report_on_exception.
+      expect(thread.report_on_exception).to be(false)
+    ensure
+      polishing.cancel!
+      polishing.wait(5)
+    end
   end
 
   describe "coalescing rapid turns" do
