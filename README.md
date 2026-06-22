@@ -191,7 +191,6 @@ These are designed-in but not fully wired yet — don't depend on them in produc
 
 - **MCP Support** — connect to Model Context Protocol servers via [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) ([docs/mcp.md](docs/mcp.md)).
 - **Multi-Agent** — Build / Plan / Explore agents with `@mention` routing ([docs/agents.md](docs/agents.md)).
-- **Plugin Hooks** — event hooks for extending behavior ([docs/plugins.md](docs/plugins.md)).
 
 ## Development
 
