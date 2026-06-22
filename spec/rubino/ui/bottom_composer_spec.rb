@@ -1663,6 +1663,26 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).not_to include("attach when the turn ends")
     end
 
+    it "during a turn, picking ◂ main routes /detach through the busy classifier (immediate, not queued)" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      seen = nil
+      c = described_class.new(input_queue: queue, input: input, output: output, echo: :prompt,
+                              on_busy_command: lambda { |line|
+                                seen = line
+                                :immediate
+                              })
+      c.begin_turn # a parent turn owns the screen
+
+      c.send(:history_down) # open the picker (selects the first subagent)
+      c.send(:history_down) # move down to the ◂ main row (last item)
+      c.handle_key("\r")    # Enter on ◂ main → return to main
+
+      # Returning to main is dispatched NOW (like attach / ←), not queued behind
+      # the still-running turn.
+      expect(seen).to eq("/detach")
+      expect(queue.shift).to be_nil
+    end
+
     it "dismisses the subagent picker with Esc without interrupting idle input" do
       reg.reserve(subagent: "explore", prompt: "inspect")
       composer.send(:history_down)
