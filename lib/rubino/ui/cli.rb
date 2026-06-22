@@ -89,11 +89,10 @@ module Rubino
         # is hidden — so a multi-second silence from a burst-delivering model
         # leaves the screen looking frozen even though the model is just slow.
         # @last_stream_at is bumped on every tail paint / block commit; when it
-        # goes silent past STREAM_STALL_AFTER the ticker resurfaces the facet row
-        # BELOW @live_tail_frame (the last-painted tail, already styled+defanged;
-        # nil when no tail is live). Both are touched only under @status_mutex.
-        @last_stream_at  = nil
-        @live_tail_frame = nil
+        # goes silent past STREAM_STALL_AFTER the ticker resurfaces the facet in
+        # the footer (the frozen tail stays above the prompt). Touched only under
+        # @status_mutex.
+        @last_stream_at = nil
         # The last retained reasoning block (committed/collapsed), revealable via
         # ctrl-o even after the answer has streamed. Reset per turn.
         @last_reasoning = nil
@@ -1230,9 +1229,6 @@ module Rubino
       # dwells one extra beat at each end of the sweep.
       FACET_TRACK_CELLS = 5
       FACET_FRAMES = [0, 0, 0, 1, 2, 3, 4, 4, 4, 3, 2, 1].freeze
-      # Don't nag fast turns: the "esc to interrupt" hint appears only after
-      # the wait has visibly dragged.
-      INTERRUPT_HINT_AFTER = 1.5
 
       # Marks the start of a TURN: resets the per-turn stats and starts the
       # status-row engine in its initial "thinking" phase (the P1 wait). Called
@@ -1243,11 +1239,8 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
-        # Fresh turn: no stream tail in flight, silence clock unarmed (#21).
-        @status_mutex.synchronize do
-          @last_stream_at  = nil
-          @live_tail_frame = nil
-        end
+        # Fresh turn: silence clock unarmed (#21).
+        @status_mutex.synchronize { @last_stream_at = nil }
         # Per-turn tally of plain "Approve once" choices by tool — drives the
         # bulk-refactor batch nudge (F4); reset each turn so a new refactor
         # re-detects its batch.
@@ -1376,6 +1369,21 @@ module Rubino
           # model tail; the status frame interpolates only @pastel + a pre-#safe'd
           # hint) → Cat 4's #emit_frame writes it through the single seam without
           # stripping the cursor control, print+flush, timing unchanged.
+          emit_frame("\r\e[2K#{frame.to_s.split("\n").last}")
+        end
+      end
+
+      # Routes a TURN STATUS / STALL frame to whichever seam owns the bottom of
+      # the screen, resolved per call like #paint_live — but to the FOOTER, not
+      # the partial: during a turn a composer owns the screen, so the facet rides
+      # its SINGLE footer bar (#set_turn_status) instead of a separate row above
+      # the prompt. On a bare TTY with no composer (the cooked /probe wait, #58)
+      # there is no footer, so it degrades to the same one-row CR repaint
+      # #paint_live uses there. Into a pipe / between turns it is a no-op.
+      def paint_turn_status(frame)
+        if (composer = BottomComposer.current)
+          composer.set_turn_status(frame)
+        elsif tty_stdout?
           emit_frame("\r\e[2K#{frame.to_s.split("\n").last}")
         end
       end
@@ -2337,6 +2345,9 @@ module Rubino
           @status[:visible] = false if @status
           paint_live("")
         end
+        # The facet leaves the footer too (a tail now owns the live region); the
+        # footer reverts to the plain model/ctx bar until the ticker resurfaces.
+        paint_turn_status("")
         $stdout.flush
       end
 
@@ -2352,6 +2363,10 @@ module Rubino
         @status_mutex.synchronize { @status = nil }
         @turn_started_at = nil unless @turn_active
         paint_live("")
+        # Drop the facet from the footer so it reverts to the plain model/ctx
+        # line the instant the turn ends (interrupt / error / normal end all
+        # land here). No stale "◆ writing" left below the prompt.
+        paint_turn_status("")
         $stdout.flush
       rescue StandardError
         nil
@@ -2368,11 +2383,13 @@ module Rubino
           loop do
             @status_mutex.synchronize do
               if @status && @status[:visible]
-                paint_live(status_frame(i))
+                paint_turn_status(status_frame(i))
               elsif stream_stalled?
-                # The model went silent mid-block: resurface the facet row below
-                # the frozen-looking tail so the wait reads as latency, not a hang.
-                paint_live(stall_frame(i))
+                # The model went silent mid-block: resurface the facet in the
+                # footer so the wait reads as latency, not a hang. The frozen
+                # tail already sits above the prompt (the last #paint_live left
+                # it in the partial), so only the facet row moves down here.
+                paint_turn_status(status_frame(i))
               end
             end
             # Advance the live subagent cards too (~1 Hz, the idle ticker's
@@ -2410,15 +2427,6 @@ module Rubino
           @last_stream_at && (monotonic_now - @last_stream_at) > STREAM_STALL_AFTER
       end
 
-      # The resurfaced stall frame: the in-flight tail (when one is live) with the
-      # animated facet row beneath it, so a long silence keeps recent text in view
-      # AND shows the model is still working. Facet-only when no tail. The caller
-      # already holds @status_mutex; @live_tail_frame is pre-styled+defanged.
-      def stall_frame(tick)
-        row = status_frame(tick)
-        @live_tail_frame ? "#{@live_tail_frame}\n#{row}" : row
-      end
-
       # Labels the (hidden) status row so the stall watchdog's resurfaced facet
       # reads "writing" for the answer / "thinking" for a reasoning aside. No-op
       # when no status row exists (a stream outside a turn bracket).
@@ -2427,14 +2435,12 @@ module Rubino
         @status_mutex.synchronize { @status[:label] = label if @status }
       end
 
-      # Records the in-flight stream tail for the stall watchdog and bumps the
-      # silence clock. An empty/nil frame means the tail was torn down (block
-      # committed / stream ended) — the facet then resurfaces alone (#21).
-      def note_live_tail(frame)
-        @status_mutex.synchronize do
-          @last_stream_at  = monotonic_now
-          @live_tail_frame = frame.nil? || frame.empty? ? nil : frame
-        end
+      # Bumps the silence clock for the stall watchdog on every tail paint /
+      # block commit. When it goes silent past STREAM_STALL_AFTER the ticker
+      # resurfaces the facet in the footer (#21). The +_frame+ argument is kept
+      # for call-site symmetry with the tail painters but no longer stored.
+      def note_live_tail(_frame = nil)
+        @status_mutex.synchronize { @last_stream_at = monotonic_now }
       end
 
       # The text to the right of the track. Thinking phase: turn-elapsed +
@@ -2448,7 +2454,6 @@ module Rubino
           parts << "#{(now - (@turn_started_at || s[:phase_started_at])).to_i}s"
           parts << "#{@turn_tool_count} tool#{"s" if @turn_tool_count != 1}" if @turn_tool_count.positive?
           parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
-          parts << "esc to interrupt" if interrupt_hint?(s, now)
         else
           parts << "#{(now - s[:phase_started_at]).to_i}s"
         end
@@ -2461,15 +2466,6 @@ module Rubino
       # — always marked with the leading ~; the exact total stays in the footer.
       def format_status_tokens(count)
         count >= 1000 ? "#{(count / 1000.0).round(1)}k" : count.to_s
-      end
-
-      # The hint only appears where Esc actually interrupts (a composer owns
-      # the keyboard, #421) and only once the wait has dragged past the
-      # threshold.
-      def interrupt_hint?(state, now)
-        @turn_active &&
-          (now - state[:phase_started_at]) >= INTERRUPT_HINT_AFTER &&
-          !BottomComposer.current.nil?
       end
 
       # Commits the buffered reasoning into scrollback per the active render mode,
