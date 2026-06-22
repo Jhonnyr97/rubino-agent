@@ -1614,6 +1614,36 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("hello")
     end
 
+    # REGRESSION (the "disaster" report): with a STALE history index — set the
+    # moment the user has touched ↑ even once, or left over from a prior turn —
+    # Down on an EMPTY prompt used to walk history FORWARD and SHADOW the picker,
+    # so it never opened: no `◂ main` row, no way to navigate subagents, and ←
+    # (which only detaches once attached) was dead. Down on an empty prompt with
+    # live subagents must open the picker REGARDLESS of the history index.
+    it "Down opens the picker on an empty prompt even with a stale history index (history must not shadow it)" do
+      history = Rubino::UI::InputHistory.new
+      history.remember("old command")
+      history.up("") # prior ↑ / un-reset turn: index now set, prompt still empty
+
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              echo: :prompt, history: history)
+      reg.reserve(subagent: "explore", prompt: "inspect")
+
+      expect(c.buffer).to eq("") # empty prompt
+      c.send(:history_down)      # ↓
+      expect(c.agent_menu_open?).to be(true)               # picker opens (was: recalled "old command")
+      expect(c.buffer).to eq("")                           # did NOT recall history into the buffer
+      expect(output.string).to include("◂ main session") # the main row IS reachable
+    end
+
+    it "← (Ctrl+B) backs out of the OPEN picker (the picker's '← back' hint)" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      composer.handle_key("\x02") # Ctrl+B = ← (same path as the Left arrow)
+      expect(composer.agent_menu_open?).to be(false)
+    end
+
     it "during a turn, Enter on the picker routes attach through the busy classifier (focus-gating, no toast)" do
       entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
       seen = nil
