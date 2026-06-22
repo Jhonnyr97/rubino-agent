@@ -103,11 +103,10 @@ module Rubino
 
       # The rendered picker rows, or [] when closed. Delegates the look — the
       # `┄ subagents ┄` header, the scroll-window slice, the cyan ❯ + inverse
-      # highlight, the dim ┊ rest, the selected row's live-activity sub-line, and
-      # the overflow footer — to the shared {MenuView}, so this picker and the
-      # `/` command palette render alike (#562). This menu still owns its rows:
-      # the status-coloured `id · subagent · status` label, the `◂ main` row, and
-      # which entry carries an activity sub-line.
+      # highlight, the dim rest, and the overflow footer — to the shared
+      # {MenuView}, so this picker and the `/` command palette render alike
+      # (#562). This menu still owns its rows: the status-coloured
+      # `id · subagent · status` label and the `◂ main` row.
       def rows(cols)
         return [] unless open?
 
@@ -124,14 +123,14 @@ module Rubino
 
       # A {MenuView} row descriptor for one picker entry: the label is the
       # status-coloured `id · subagent · status` (or the dim `◂ main session`
-      # row), and a live subagent's last-activity rides along as the sub-line
-      # MenuView draws under it when selected.
+      # row). No activity sub-line — the picker is for NAVIGATION; a sub's live
+      # tool preview (e.g. `summarize_file …`) under the selected row was noise
+      # there. Its live activity belongs in the focused view's tail once attached.
       def descriptor(entry)
         if self.class.main_row?(entry)
           { label: @pastel.dim("◂ main session") }
         else
-          { label: "#{entry.id} · #{entry.subagent} · #{status_label(entry)}",
-            sub: entry.last_activity.to_s }
+          { label: "#{entry.id} · #{entry.subagent} · #{status_label(entry)}" }
         end
       end
 
