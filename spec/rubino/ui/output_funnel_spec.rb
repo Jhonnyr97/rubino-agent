@@ -73,6 +73,12 @@ RSpec.describe Rubino::UI::PrinterBase do
       expect(payload).not_to include("\r")
     end
 
+    it "applies a COMPOUND style (Array) around the inert text" do
+      out = capture { printer.emit("hi", style: %i[red bold]) }
+      expect(out).to include("\e[31;1m") # red+bold SGR, matching @pastel.red.bold
+      expect(out.gsub(/\e\[[0-9;]*m/, "")).to include("hi")
+    end
+
     it "writes nothing but the one line (single $stdout write)" do
       out = capture { printer.emit("one") }
       expect(out.lines.size).to eq(1)

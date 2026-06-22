@@ -99,12 +99,14 @@ module Rubino
       # sink remembering to call the sanitizer.
 
       # PATH 1. Untrusted +text+ → strip ALL escapes → apply +style+ → write.
-      # +style+ is a semantic Pastel method symbol (:dim, :cyan, :red, …) or
-      # nil for no colour. The text is treated as hostile; escapes become
-      # visible caret notation.
+      # +style+ is a semantic Pastel method symbol (:dim, :cyan, :red, …), an
+      # Array of them for a compound decoration (e.g. [:red, :bold]), or nil for
+      # no colour. The text is treated as hostile; escapes become visible caret
+      # notation, and the style is applied AFTER sanitizing so it can only wrap
+      # already-inert text.
       def emit(text, style: nil)
         safe = Rubino::Util::Output.sanitize_terminal(text.to_s)
-        write_line(style ? @pastel.send(style, safe) : safe)
+        write_line(style ? @pastel.decorate(safe, *Array(style)) : safe)
       end
       alias emit_line emit
 
