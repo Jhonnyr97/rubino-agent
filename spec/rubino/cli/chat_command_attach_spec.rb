@@ -91,6 +91,30 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:detach_agent_view, runner, ui)
       expect(composer.main_render_suppressed?).to be(false)
     end
+
+    # The live-tail watcher (this slice): attach starts a thread that keeps the
+    # attached view fresh as the sub works; detach and switching away stop it so
+    # it never paints another view.
+    it "attach STARTS a live-tail watcher thread; detach stops it" do
+      allow(cmd.send(:session_resolver)).to receive(:replay_session)
+      attach!
+      watcher = cmd.instance_variable_get(:@agent_watcher)
+      expect(watcher).to be_a(Thread)
+      cmd.send(:detach_agent_view, runner, ui)
+      expect(watcher).not_to be_alive
+      expect(cmd.instance_variable_get(:@agent_watcher)).to be_nil
+    end
+
+    it "switching to ANOTHER agent stops the previous watcher before re-pointing" do
+      other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                              id: "sa_2", subagent: "build", status: :running, messages: [])
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
+      attach!
+      first = cmd.instance_variable_get(:@agent_watcher)
+      cmd.send(:attach_agent_view, "sa_2", ui)
+      expect(first).not_to be_alive
+      expect(cmd.instance_variable_get(:@agent_watcher)).not_to eq(first)
+    end
   end
 
   # Mid-turn: the busy classifier (the reader-thread seam) is what routes input
