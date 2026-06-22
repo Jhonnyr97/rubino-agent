@@ -58,6 +58,69 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # Focus-gating (Slice 3): attach/detach drive the composer's main-render gate
+  # so a still-running parent turn keeps streaming to its session but does NOT
+  # paint the attached sub's view; the replay is exempt so the focused view
+  # paints. A StringIO composer stands in for the live one.
+  describe "focus-gating wiring (composer suppression)" do
+    let(:composer) do
+      Rubino::UI::BottomComposer.new(
+        input_queue: Rubino::Interaction::InputQueue.new,
+        input: StringIO.new, output: StringIO.new
+      )
+    end
+
+    around do |ex|
+      prev = Rubino::UI::BottomComposer.current
+      Rubino::UI::BottomComposer.current = composer
+      ex.run
+    ensure
+      Rubino::UI::BottomComposer.current = prev
+    end
+
+    it "attach SUPPRESSES main render, and replays the sub through the exempt seam" do
+      expect(composer).to receive(:with_replay_exempt).and_yield
+      attach!
+      expect(composer.main_render_suppressed?).to be(true)
+    end
+
+    it "detach CLEARS the suppression after replaying the main view" do
+      allow(cmd.send(:session_resolver)).to receive(:replay_session)
+      attach!
+      expect(composer.main_render_suppressed?).to be(true)
+      cmd.send(:detach_agent_view, runner, ui)
+      expect(composer.main_render_suppressed?).to be(false)
+    end
+  end
+
+  # Mid-turn: the busy classifier (the reader-thread seam) is what routes input
+  # while a parent turn owns the loop. Attach dispatches there now (no deferral),
+  # and once attached EVERY typed line is scoped to the sub, never the parent.
+  describe "#busy_command_handler while attached (mid-turn focus)" do
+    let(:handler) { cmd.send(:busy_command_handler, runner) }
+
+    it "dispatches a mid-turn --attach to the view switch (not a queue/toast)" do
+      allow(cmd_executor).to receive(:try_execute) # not used: the real executor runs
+      expect(cmd).to receive(:attach_agent_view).with("sa_1", anything)
+      handler.call("/agents sa_1 --attach")
+    end
+
+    it "routes a plain line to the SUB (steer), returning :immediate so it never queues to the parent" do
+      attach!
+      expect(handler.call("look at the parser")).to eq(:immediate)
+      expect(agents_handler).to have_received(:steer_agent).with("sa_1", "look at the parser")
+    end
+
+    it "detaches on /back while attached mid-turn" do
+      attach!
+      allow(cmd).to receive(:session_resolver).and_return(
+        instance_double(Rubino::CLI::Chat::SessionResolver, replay_session: nil)
+      )
+      handler.call("/back")
+      expect(cmd.send(:attached_to_agent?)).to be(false)
+    end
+  end
+
   describe "#handle_attached_input routing" do
     before { attach! }
 
