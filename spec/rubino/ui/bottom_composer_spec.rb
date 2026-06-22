@@ -1586,7 +1586,10 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.agent_menu_open?).to be(true)
       expect(output.string).to include("subagents")
       expect(output.string).to include(entry.id)
-      expect(output.string).to include("read parser.rb")
+      # The picker shows only `id · subagent · status` — NOT a live activity
+      # preview (e.g. `read parser.rb`) under the selected row; that tool-level
+      # detail belongs in the focused view's tail once attached, not the nav list.
+      expect(output.string).not_to include("read parser.rb")
 
       composer.handle_key("\r")
       expect(composer.agent_menu_open?).to be(false)
