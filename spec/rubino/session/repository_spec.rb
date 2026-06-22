@@ -380,81 +380,6 @@ RSpec.describe Rubino::Session::Repository do
     end
   end
 
-  describe "#latest_active" do
-    it "returns the most recently updated active session" do
-      repo.create(source: "cli")
-      second = repo.create(source: "cli")
-      expect(repo.latest_active[:id]).to eq(second[:id])
-    end
-
-    it "returns nil when no active sessions" do
-      s = repo.create(source: "cli")
-      repo.end_session!(s[:id])
-      expect(repo.latest_active).to be_nil
-    end
-  end
-
-  describe "#latest_resumable" do
-    it "returns the most recent session that has messages" do
-      old = repo.create(source: "cli")
-      repo.increment_message_count!(old[:id])
-      recent = repo.create(source: "cli")
-      repo.increment_message_count!(recent[:id])
-      expect(repo.latest_resumable[:id]).to eq(recent[:id])
-    end
-
-    it "skips empty (0-message) sessions so they never shadow real work" do
-      with_msgs = repo.create(source: "cli")
-      repo.increment_message_count!(with_msgs[:id])
-      repo.create(source: "cli") # newer but empty
-      expect(repo.latest_resumable[:id]).to eq(with_msgs[:id])
-    end
-
-    it "resumes an ended session too (a closed terminal still continues)" do
-      s = repo.create(source: "cli")
-      repo.increment_message_count!(s[:id])
-      repo.end_session!(s[:id])
-      expect(repo.latest_resumable[:id]).to eq(s[:id])
-    end
-
-    it "returns nil on a true first run (no sessions with messages)" do
-      repo.create(source: "cli")
-      expect(repo.latest_resumable).to be_nil
-    end
-
-    # #394: a freshly-compacted child (source="compaction") carries a fully
-    # copied transcript but its cached message_count may still be 0 in the window
-    # before the Compressor syncs it (or if the process exits right after the
-    # copy). It must still be resumable via `--continue`, or the just-compacted
-    # arc is silently skipped and lost.
-    it "resumes a compaction child even when its cached message_count is 0" do
-      child = repo.create(source: "compaction") # message_count defaults to 0
-      expect(child[:message_count]).to eq(0)
-      expect(repo.latest_resumable[:id]).to eq(child[:id])
-      # ...while a 0-message NON-compaction session is still skipped (the
-      # "returns nil on a true first run" case above covers the cli source).
-    end
-
-    # #540: a `task`-tool subagent session (source="subagent") is internal
-    # machinery, EXCLUDED from `sessions list` — so a bare `chat`/`--continue`
-    # must never auto-resume one either, or the user lands inside a background
-    # subagent transcript a `sessions list` won't even show. Resume and list
-    # must agree on the subagent exclusion.
-    it "never resumes a subagent session even when it is the most recent" do
-      user = repo.create(source: "cli")
-      repo.increment_message_count!(user[:id])
-      sub = repo.create(source: "subagent") # newer, internal
-      repo.increment_message_count!(sub[:id])
-      expect(repo.latest_resumable[:id]).to eq(user[:id])
-    end
-
-    it "returns nil when the ONLY session is a subagent one (nothing to resume)" do
-      sub = repo.create(source: "subagent")
-      repo.increment_message_count!(sub[:id])
-      expect(repo.latest_resumable).to be_nil
-    end
-  end
-
   # r5 MF-4 / C-1: every session is stamped with the dir it was launched in so
   # resume can be scoped per-cwd, killing "folder B silently resumes folder A".
   describe "cwd stamping" do
@@ -495,8 +420,9 @@ RSpec.describe Rubino::Session::Repository do
       resumable_in("/home/dev/api") # only session exists, in /api
       # A bare chat in /web must start fresh, not latch onto /api.
       expect(repo.latest_resumable_for_cwd("/home/dev/web")).to be_nil
-      # ...whereas the global latest_resumable WOULD have grabbed /api (the bug).
-      expect(repo.latest_resumable[:cwd]).to eq("/home/dev/api")
+      # ...whereas the SAME dir still resolves to /api (proving the row exists
+      # and only the cwd scope — not message state — kept /web empty).
+      expect(repo.latest_resumable_for_cwd("/home/dev/api")[:cwd]).to eq("/home/dev/api")
     end
 
     it "two different dirs each resolve to their OWN latest (no cross-stomp)" do
@@ -568,42 +494,6 @@ RSpec.describe Rubino::Session::Repository do
       sub = repo.create(source: "subagent", cwd: "/home/dev/api")
       repo.increment_message_count!(sub[:id])
       expect(repo.latest_resumable_for_cwd("/home/dev/api")).to be_nil
-    end
-  end
-
-  # #347: the explicit-resume owner-guard reuses the SAME live-owner predicate
-  # auto-resume relies on, now exposed publicly so the Runner can consult it.
-  describe "#owned_by_other_live_process?" do
-    it "is true for an active session a DIFFERENT live process owns" do
-      s = repo.create(source: "cli")
-      repo.update(s[:id], status: "active", owner_pid: 999_999)
-      allow(repo).to receive(:process_alive?).and_call_original
-      allow(repo).to receive(:process_alive?).with(999_999).and_return(true)
-      expect(repo.owned_by_other_live_process?(repo.find(s[:id]))).to be true
-    end
-
-    it "is false for our OWN pid, a dead owner, or no pid" do
-      ours = repo.create(source: "cli") # owner_pid = our pid
-      expect(repo.owned_by_other_live_process?(repo.find(ours[:id]))).to be false
-
-      dead = repo.create(source: "cli")
-      repo.update(dead[:id], status: "active", owner_pid: 999_999)
-      allow(repo).to receive(:process_alive?).and_call_original
-      allow(repo).to receive(:process_alive?).with(999_999).and_return(false)
-      expect(repo.owned_by_other_live_process?(repo.find(dead[:id]))).to be false
-    end
-
-    # #376 (residual #347): the owner-guard must fire on an ENDED session a
-    # DIFFERENT live process is re-writing, not just on status="active". A
-    # finished turn leaves status="ended" while the resuming process still claims
-    # owner_pid; two concurrent explicit resumes of that row would otherwise race
-    # unguarded and interleave writes into one malformed transcript.
-    it "is true for an ENDED session a DIFFERENT live process still owns (#376)" do
-      ended = repo.create(source: "cli")
-      repo.update(ended[:id], status: "ended", owner_pid: 999_999)
-      allow(repo).to receive(:process_alive?).and_call_original
-      allow(repo).to receive(:process_alive?).with(999_999).and_return(true)
-      expect(repo.owned_by_other_live_process?(repo.find(ended[:id]))).to be true
     end
   end
 

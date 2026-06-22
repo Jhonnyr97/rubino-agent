@@ -62,22 +62,6 @@ module Rubino
       def stream?
         @stream
       end
-
-      def to_h
-        {
-          messages: @messages,
-          tools: @tools,
-          temperature: @temperature,
-          max_tokens: @max_tokens,
-          thinking: @thinking,
-          prefill: @prefill,
-          image_paths: @image_paths,
-          stream: @stream,
-          on_intermediate_message: @on_intermediate_message,
-          on_round_trip: @on_round_trip,
-          budget_exhausted: @budget_exhausted
-        }
-      end
     end
   end
 end
