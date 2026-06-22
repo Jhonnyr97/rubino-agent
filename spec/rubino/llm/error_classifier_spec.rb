@@ -34,17 +34,14 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       end
     end
 
-    it "ContextLengthExceededError -> context_overflow, not retryable, should_compress" do
+    it "ContextLengthExceededError -> context_overflow, not retryable" do
       c = described_class.classify(ruby_llm_error(RubyLLM::ContextLengthExceededError, 429, "context length exceeded"))
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
       expect(c.retryable).to be false
-      expect(c.should_compress).to be true
     end
 
-    it "auth errors carry the rotate-credential + fallback hints" do
+    it "auth errors are classified as auth" do
       c = described_class.classify(ruby_llm_error(RubyLLM::UnauthorizedError, 401, "no"))
-      expect(c.should_rotate_credential).to be true
-      expect(c.should_fallback).to be true
       expect(c.auth?).to be true
     end
   end
@@ -83,10 +80,9 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       expect(c.retryable).to be false
     end
 
-    it "400 with a context-overflow phrase -> context_overflow, should_compress" do
+    it "400 with a context-overflow phrase -> context_overflow" do
       c = described_class.classify(ruby_llm_error(RubyLLM::Error, 400, "prompt is too long for context window"))
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
-      expect(c.should_compress).to be true
     end
 
     it "404 with model-not-found -> model_not_found" do
@@ -148,7 +144,6 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
         c = described_class.classify(RubyLLM::Error.new(nil, message))
         expect(c.reason).to eq(FR::FORMAT_ERROR)
         expect(c.retryable).to be false
-        expect(c.should_fallback).to be true
       end
     end
 
@@ -170,7 +165,6 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       c = described_class.classify(err)
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
       expect(c.retryable).to be false
-      expect(c.should_compress).to be true
     end
 
     it "OverloadedError wrapping a context-overflow phrase is also non-retryable" do
@@ -178,7 +172,6 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       c = described_class.classify(err)
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
       expect(c.retryable).to be false
-      expect(c.should_compress).to be true
     end
 
     it "a plain ServerError with NO overflow phrase still stays retryable (no regression)" do
