@@ -17,6 +17,8 @@ module Rubino
       #   /memory forget <id>      → delete a fact
       #   /memory backend          → active + available backends (#184)
       class Memory
+        include Display
+
         def initialize(ui:)
           @ui = ui
         end
@@ -162,30 +164,6 @@ module Rubino
           @ui.table(headers: %w[ID Kind Content], rows: rows)
         end
 
-        # Wraps "<head><description>" to the terminal width, breaking only on
-        # whitespace, with continuation lines indented to the description column.
-        def wrap_skill_line(head, description)
-          width = terminal_width
-          indent = " " * head.length
-          avail  = [width - head.length, 20].max
-
-          lines = []
-          current = +""
-          description.split(/\s+/).each do |word|
-            candidate = current.empty? ? word : "#{current} #{word}"
-            if candidate.length > avail && !current.empty?
-              lines << current
-              current = word.dup
-            else
-              current = candidate
-            end
-          end
-          lines << current unless current.empty?
-          lines = [""] if lines.empty?
-
-          lines.each_with_index.map { |line, i| (i.zero? ? head : indent) + line }
-        end
-
         def truncate(text, max)
           s = text.to_s.gsub(/\s+/, " ").strip
           s.length > max ? "#{s[0, max - 1]}…" : s
@@ -196,13 +174,6 @@ module Rubino
         # the non-sanitizing `info`/`success` funnel (CWE-150, R4-N2).
         def safe(text)
           Rubino::Util::Output.sanitize_terminal(text)
-        end
-
-        def terminal_width
-          cols = IO.console&.winsize&.last
-          cols&.positive? ? cols : 80
-        rescue StandardError
-          80
         end
       end
     end
