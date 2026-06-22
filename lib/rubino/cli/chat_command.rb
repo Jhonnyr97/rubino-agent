@@ -279,6 +279,24 @@ module Rubino
         exit(exit_code)
       end
 
+      # Shared one-shot preamble for the text and JSON paths: resolve @image
+      # tokens + --image flags into the native vision slot, build the headless
+      # runner, surface the resume-forked / resuming-compacted notices, and
+      # attach the per-run usage recorder (the SAME summed-usage seam both paths
+      # persist). Returns the shared pieces by position so each caller layers its
+      # own bits (text: model echo + activity trace + skill capture; JSON: the
+      # system_init frame + transcript baseline) around it.
+      def setup_oneshot(query, ui:, announce_session: true)
+        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
+        requested_session_id = session_resolver.resolve_session_id
+        runner = build_runner(session_id: requested_session_id, ui: ui,
+                              announce_session: announce_session)
+        warn_if_resume_forked(requested_session_id, runner)
+        note_if_resuming_compacted_parent(runner)
+        recorder = Output::TurnRecorder.new.attach!
+        [runner, text, image_paths, recorder]
+      end
+
       def run_oneshot(query)
         resolve_yolo!
         # Clear the cross-adapter fail-closed latch (F1-subagents) so a reused
@@ -307,13 +325,6 @@ module Rubino
         # prompt is skipped (an untrusted dir simply runs in restricted mode).
         setup_workspace_and_trust!(Rubino.ui, interactive: false)
 
-        # Headless/scripted attachment: honour @image tokens in the prompt AND
-        # explicit --image PATH flags, both routed to the native vision slot
-        # (image_paths) — the same path the interactive REPL uses. Without this,
-        # `-q` / `prompt` / `chat "..."` had no way to attach an image at all
-        # (attachment was REPL-only); automation, jobs and tests can now drive it.
-        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
-
         # Default-on per-tool ACTIVITY TRACE for the one-shot TEXT path (#418
         # follow-up): a plain UI::Null swallows every tool event, so a scripted
         # `rubino prompt` showed only the final answer with no window onto what
@@ -328,10 +339,13 @@ module Rubino
                       else
                         UI::HeadlessTrace.new(verbose: verbose?)
                       end
-        requested_session_id = session_resolver.resolve_session_id
-        runner = build_runner(session_id: requested_session_id, ui: headless_ui)
-        warn_if_resume_forked(requested_session_id, runner)
-        note_if_resuming_compacted_parent(runner)
+        # Shared preamble: resolve @image/--image attachments, build the runner,
+        # surface the resume notices, attach the usage recorder (#382). The runner
+        # is run! (not run) below so a model/credential failure PROPAGATES instead
+        # of being swallowed into a nil and printed as an empty line with exit 0
+        # (#93): a no-key user would otherwise see ~80s of silent retries then an
+        # empty prompt and a success exit.
+        runner, text, image_paths, recorder = setup_oneshot(query, ui: headless_ui)
 
         # Capture skills distilled during this turn (#369b). SKILL_CREATED is
         # emitted by an inline skill(create) call AND by the post-turn distill
@@ -341,20 +355,6 @@ module Rubino
         # surface them to STDERR after the answer (mirroring the #372 routing:
         # post-turn notices stay off the clean stdout answer).
         created_skills = subscribe_created_skills
-
-        # Use run! (not run) so a model/credential failure PROPAGATES instead of
-        # being swallowed into a nil and printed as an empty line with exit 0.
-        # A brand-new user with no key would otherwise see ~80s of silent retries
-        # then an empty prompt and a success exit (#93) — here we surface the
-        # actionable error to stderr and exit non-zero so automation/the user can
-        # actually tell it failed.
-        # Persist per-run usage on the headless path (#382). The interactive REPL
-        # never wrote a `runs` row from the CLI either, but headless is where the
-        # gap bites: automation has no other window onto a scripted turn's token
-        # spend. Attach a TurnRecorder around the turn (the SAME summed-usage seam
-        # the JSON path uses) and write one runs row with the real input/output
-        # token counts after run! returns.
-        recorder = Output::TurnRecorder.new.attach!
 
         announce_attachment_upload(image_paths)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -522,16 +522,13 @@ module Rubino
         warn_unknown_model if model_override_given?
         setup_workspace_and_trust!(Rubino.ui, interactive: false)
 
-        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
+        # Shared preamble (same seam the text path uses), but with a silent Null
+        # UI and announce_session:false so nothing prints to the stdout JSON
+        # contract.
         headless_ui = UI::Null.new
-        requested_session_id = session_resolver.resolve_session_id
-        runner = build_runner(session_id: requested_session_id,
-                              ui: headless_ui, announce_session: false)
-        warn_if_resume_forked(requested_session_id, runner)
-        note_if_resuming_compacted_parent(runner)
-
-        recorder = Output::TurnRecorder.new.attach!
-        store    = ::Rubino::Session::Store.new
+        runner, text, image_paths, recorder =
+          setup_oneshot(query, ui: headless_ui, announce_session: false)
+        store = ::Rubino::Session::Store.new
         # Snapshot the transcript length so stream-json replays only THIS turn's
         # newly-persisted messages (the user prompt, assistant/tool steps).
         baseline = store.for_session(runner.session[:id]).length
