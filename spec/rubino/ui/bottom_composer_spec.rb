@@ -1614,15 +1614,23 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.buffer).to eq("hello")
     end
 
-    it "during a turn, Enter on the picker toasts instead of silently queuing attach" do
-      reg.reserve(subagent: "explore", prompt: "inspect the parser")
-      composer.begin_turn # a parent turn now owns the screen
+    it "during a turn, Enter on the picker routes attach through the busy classifier (focus-gating, no toast)" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      seen = nil
+      c = described_class.new(input_queue: queue, input: input, output: output, echo: :prompt,
+                              on_busy_command: lambda { |line|
+                                seen = line
+                                :immediate
+                              })
+      c.begin_turn # a parent turn now owns the screen
 
-      composer.send(:history_down)
-      composer.handle_key("\r")
+      c.send(:history_down)
+      c.handle_key("\r")
 
-      expect(queue.shift).to be_nil # NOT queued as silent type-ahead
-      expect(output.string).to include("attach when the turn ends") # the toast
+      # Attach is dispatched NOW (via the busy classifier), not queued or toasted.
+      expect(seen).to eq("/agents #{entry.id} --attach")
+      expect(queue.shift).to be_nil
+      expect(output.string).not_to include("attach when the turn ends")
     end
 
     it "dismisses the subagent picker with Esc without interrupting idle input" do
