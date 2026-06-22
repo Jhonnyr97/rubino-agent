@@ -14,10 +14,6 @@ module Rubino
         class UpdateOperation
           include ScheduleValidation
 
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository and scheduler for tests.
           def initialize(repository: nil, scheduler: nil)
             @repository = repository || ::Rubino::Jobs::CronJobRepository.new

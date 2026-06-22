@@ -11,11 +11,7 @@ module Rubino
       #
       # @return [[Integer, Hash]] 200 when all deps are ok, 503 otherwise.
       class HealthOperation
-        def self.call(_request)
-          new.call
-        end
-
-        def call
+        def call(_request = nil)
           deps = { db: db_status, scheduler: scheduler_status }
           status = deps.values.all? { |s| s[:status] == "ok" } ? 200 : 503
           [status, {

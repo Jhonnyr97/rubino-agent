@@ -18,9 +18,9 @@ RSpec.describe "API contract: memory" do
     delete = Rubino::API::Operations::Memory::DeleteOperation.new(backend: backend)
 
     router = Rubino::API::Router.new
-    router.get    "/v1/memory",       to: ->(req) { index.call(req) }
-    router.get    "/v1/memory/stats", to: ->(req) { stats.call(req) }
-    router.delete "/v1/memory/:id",   to: ->(req) { delete.call(req) }
+    router.get    "/v1/memory",       to: route_to(index)
+    router.get    "/v1/memory/stats", to: route_to(stats)
+    router.delete "/v1/memory/:id",   to: route_to(delete)
     router
   end
 

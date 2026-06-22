@@ -11,10 +11,6 @@ module Rubino
         # @return [[Integer, Hash]] 204 No Content.
         # @raise [Rubino::NotFoundError] when the cron job does not exist.
         class DeleteOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository and scheduler for tests.
           def initialize(repository: nil, scheduler: nil)
             @repository = repository || ::Rubino::Jobs::CronJobRepository.new

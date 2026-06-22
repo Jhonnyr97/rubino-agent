@@ -19,10 +19,6 @@ module Rubino
           # @return [[Integer, nil]] 204 No Content.
           # @raise [Rubino::NotFoundError] when the connection does not exist.
           class DisconnectOperation
-            def self.call(request)
-              new.call(request)
-            end
-
             # Accepts an alternate repository / registry / logger for tests.
             def initialize(repository: nil, registry: ::Rubino::OAuth::Registry, logger: nil)
               @repository = repository

@@ -9,7 +9,7 @@ module Rubino
     # original pattern is stashed on env["rubino.route"] (low-cardinality label
     # for Observability), and the operation's return value is coerced via Responses.
     #
-    # Operation contract: `.call(request)` returning one of:
+    # Operation contract: instances respond to `#call(request)`, returning one of:
     #   - Hash                                  → 200 JSON
     #   - [status, body_hash]                   → status + JSON body
     #   - [status, headers, body_iterable]      → raw Rack triple
@@ -51,7 +51,7 @@ module Rubino
           params = route.keys.zip(match.captures).to_h
           env["rubino.route"] = route.original_path
           request = Request.new(env, params)
-          return Responses.coerce(route.operation.call(request))
+          return Responses.coerce(route.operation.new.call(request))
         end
 
         Responses.json(404, error: { code: "not_found", message: "route not found: #{rack_method} #{path}" })

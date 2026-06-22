@@ -8,10 +8,6 @@ module Rubino
           # GET /v1/oauth/providers
           # Lists OAuth providers registered at boot, with their default scopes.
           class ListOperation
-            def self.call(request)
-              new.call(request)
-            end
-
             # Accepts an alternate provider registry for tests.
             def initialize(registry: ::Rubino::OAuth::Registry)
               @registry = registry

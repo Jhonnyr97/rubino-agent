@@ -10,10 +10,6 @@ module Rubino
         #
         # @raise [Rubino::NotFoundError] when no task has the id.
         class ShowOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate registry for tests.
           def initialize(registry: nil)
             @registry = registry || ::Rubino::Tools::BackgroundTasks.instance

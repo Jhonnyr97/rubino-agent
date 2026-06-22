@@ -36,10 +36,6 @@ module Rubino
           # leak until the run reaches a terminal status.
           DISCONNECT_ERRORS = [Errno::EPIPE, Errno::ECONNRESET, IOError].freeze
 
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate run repository and event store for tests.
           # `clock` and `sleeper` are seams so heartbeat/disconnect specs can
           # drive virtual time without sleeping in real wall-clock seconds.
