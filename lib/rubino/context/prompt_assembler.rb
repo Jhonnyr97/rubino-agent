@@ -312,7 +312,12 @@ module Rubino
             include_project_local: project_local_trusted?
           )
         ).render
-      rescue StandardError
+      rescue StandardError => e
+        # Never take down prompt assembly — but LOG (like #active_skill_block at
+        # the sibling below) so a logic error here is visible instead of the
+        # WHOLE skills catalogue silently vanishing from the prompt (#62).
+        Rubino.logger&.debug(event: "prompt.skills_index_block_failed",
+                             error: "#{e.class}: #{e.message}")
         nil
       end
 

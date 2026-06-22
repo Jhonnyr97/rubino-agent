@@ -93,8 +93,11 @@ module Rubino
 
         body = response&.content || fallback_summary(messages, previous_summary)
         with_summary_prefix(body)
-      rescue StandardError
-        # If LLM fails, produce a basic extractive summary
+      rescue StandardError => e
+        # If the LLM summary fails, degrade to a basic extractive summary. Log so
+        # a persistently-failing compression endpoint (which silently produces a
+        # worse summary every turn) is observable instead of invisible.
+        Rubino.logger&.debug(event: "summary_builder.llm_failed", error: e.message)
         with_summary_prefix(fallback_summary(messages, previous_summary))
       end
 

@@ -121,17 +121,18 @@ module Rubino
       rescue Rubino::Interrupted
         raise
       rescue StandardError => e
-        # Total failure still degrades gracefully -- the model gets the
-        # shell-hint and the turn survives.
-        Rubino.logger&.warn(event: "read_attachment.failed", path: file_path, error: e.class.to_s)
-        begin
-          Attachments::Preamble.document_shell_hint(
-            Attachments::Classification.new(path: file_path, kind: :document,
-                                            mime: nil, size_bytes: nil, safe: true, reason: nil)
-          )
-        rescue StandardError
-          "Error: could not read #{file_path}: #{e.class}."
-        end
+        # A real failure AFTER the fail-closed classification already passed
+        # (conversion/redaction/summarize blew up). The turn still survives, but
+        # we surface a genuine error with the cause instead of FABRICATING a
+        # `Classification(safe: true)` just to reach the shell-hint — that fake
+        # masked to_markdown/redaction bugs and could misreport an unsafe path
+        # as safe. Log the actual message so the bug is observable.
+        Rubino.logger&.warn(event: "read_attachment.failed", path: file_path,
+                            error: "#{e.class}: #{e.message}")
+        "Error: could not read #{file_path}: #{e.message}. " \
+          "Extract its text with a shell tool instead, e.g. `markitdown #{file_path}` " \
+          "(fallback `pdftotext #{file_path} -`, or `textutil -convert txt #{file_path}` on macOS), " \
+          "then read the output."
       end
 
       private
