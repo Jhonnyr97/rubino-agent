@@ -29,8 +29,8 @@ RSpec.describe "LIVE MiniMax prefill-to-continue cure", :live do
     real_home = ENV["RUBINO_REAL_HOME"] || File.expand_path("~/.rubino")
     config = Rubino::Config::Configuration.new(home_path: real_home)
     adapter = Rubino::LLM::RubyLLMAdapter.new(
-      model_id: config.model_default,
-      provider: config.model_provider,
+      model_id: config.dig("model", "default"),
+      provider: config.dig("model", "provider"),
       config: config,
       ui: Rubino::UI::Null.new,
       event_bus: Rubino::Interaction::EventBus.new

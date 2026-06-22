@@ -10,10 +10,6 @@ module Rubino
         # @return [[Integer, Hash]] 204 No Content.
         # @raise [Rubino::NotFoundError] when no fact matches the id.
         class DeleteOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate backend for tests.
           def initialize(backend: nil)
             @backend = backend || ::Rubino::Memory::Backends.build

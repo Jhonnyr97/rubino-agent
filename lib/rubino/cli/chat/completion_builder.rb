@@ -159,9 +159,9 @@ module Rubino
         # a /model or /config provider switch is reflected immediately.
         def model_arg_candidates
           config  = Rubino.configuration
-          current = config.model_default
+          current = config.dig("model", "default")
           Rubino::LLM::ModelCatalog.ids_for(
-            Rubino::LLM::ProviderResolver.resolve(current, explicit_provider: config.model_provider)
+            Rubino::LLM::ProviderResolver.resolve(current, explicit_provider: config.dig("model", "provider"))
           )
         rescue StandardError
           []

@@ -12,9 +12,9 @@ RSpec.describe Rubino::API::Router do
     end
   end
 
-  let(:hello_op) { Class.new { def self.call(req) = { hello: req.params["name"] } } }
-  let(:show_op)  { Class.new { def self.call(req) = { id: req.params["id"] } } }
-  let(:tuple_op) { Class.new { def self.call(_req) = [201, { created: true }] } }
+  let(:hello_op) { Class.new { def call(req) = { hello: req.params["name"] } } }
+  let(:show_op)  { Class.new { def call(req) = { id: req.params["id"] } } }
+  let(:tuple_op) { Class.new { def call(_req) = [201, { created: true }] } }
 
   def env(method:, path:)
     { "REQUEST_METHOD" => method, "PATH_INFO" => path, "rubino.json" => {}, "QUERY_STRING" => "" }

@@ -24,10 +24,10 @@ module Rubino
       # DoctorCommand#resolved_provider and the adapter's resolution: an explicit
       # model.provider (not "auto") wins; otherwise derive from the model id.
       def resolved_provider(config = Rubino.configuration)
-        configured = config.model_provider
+        configured = config.dig("model", "provider")
         return configured if configured && configured != "auto"
 
-        ProviderResolver.resolve(config.model_default.to_s)
+        ProviderResolver.resolve(config.dig("model", "default").to_s)
       end
 
       # True when a credential for the resolved provider is available. The "fake"
@@ -133,7 +133,7 @@ module Rubino
         env_var = provider_env_var_name(provider)
         loader = Config::Loader.new
         <<~MSG.strip
-          No API key configured for provider '#{provider}' (model #{config.model_default}).
+          No API key configured for provider '#{provider}' (model #{config.dig("model", "default")}).
           Set it up one of these ways:
             • run `rubino setup` for a guided first-run setup (creates the files below), or
             • add #{env_var}=<your-key> to #{loader.env_path} (or run `rubino setup` to create them), or

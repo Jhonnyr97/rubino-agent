@@ -109,7 +109,7 @@ module Rubino
       private
 
       def guard_fake_provider!
-        provider = Rubino.configuration.model_provider
+        provider = Rubino.configuration.dig("model", "provider")
         return unless provider.to_s == "fake"
         return if ENV["RUBINO_ALLOW_FAKE"] == "1"
 

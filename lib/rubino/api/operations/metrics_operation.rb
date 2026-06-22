@@ -8,7 +8,7 @@ module Rubino
       #
       # @return [[Integer, Hash, Array<String>]] raw Rack triple with the rendered registry.
       class MetricsOperation
-        def self.call(_request)
+        def call(_request)
           body = ::Rubino::Metrics.render
           [200, { "content-type" => "text/plain; version=0.0.4" }, [body]]
         end

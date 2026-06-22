@@ -12,10 +12,6 @@ module Rubino
         # @raise [Rubino::NotFoundError] when the session does not exist.
         # @raise [Rubino::ConflictError] when the session has no user message to retry.
         class RetryOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts alternate collaborators (session repo, message store, run repo, executor) for tests.
           def initialize(session_repository: nil, message_store: nil, run_repository: nil, executor: nil)
             @session_repo = session_repository || ::Rubino::Session::Repository.new

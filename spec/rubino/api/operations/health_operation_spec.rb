@@ -8,7 +8,7 @@ RSpec.describe Rubino::API::Operations::HealthOperation do
   it "returns 200 with deps when db + scheduler are up" do
     scheduler = instance_double(Rubino::Jobs::Scheduler, scheduled_count: 3)
     allow(Rubino::Jobs::Scheduler).to receive(:instance).and_return(scheduler)
-    status, body = described_class.call(make_request)
+    status, body = described_class.new.call(make_request)
     expect(status).to eq(200)
     expect(body[:status]).to eq("ok")
     expect(body[:deps][:db][:status]).to eq("ok")
@@ -22,7 +22,7 @@ RSpec.describe Rubino::API::Operations::HealthOperation do
     allow(scheduler).to receive(:scheduled_count).and_raise(StandardError, "boom")
     allow(Rubino::Jobs::Scheduler).to receive(:instance).and_return(scheduler)
 
-    status, body = described_class.call(make_request)
+    status, body = described_class.new.call(make_request)
     expect(status).to eq(503)
     expect(body[:deps][:scheduler][:status]).to eq("down")
   end
@@ -34,7 +34,7 @@ RSpec.describe Rubino::API::Operations::HealthOperation do
     allow(Rubino::Jobs::Scheduler).to receive(:instance)
       .and_return(instance_double(Rubino::Jobs::Scheduler, scheduled_count: 0))
 
-    status, body = described_class.call(make_request)
+    status, body = described_class.new.call(make_request)
     expect(status).to eq(503)
     expect(body[:status]).to eq("degraded")
     expect(body[:deps][:db][:status]).to eq("down")

@@ -5,7 +5,7 @@
 # the provider's prompt-cache counters so a caller can confirm a cache hit.
 RSpec.describe Rubino::LLM::RubyLLMAdapter, "prompt cache (#311)" do
   def adapter(config)
-    described_class.new(model_id: config.model_default, config: config)
+    described_class.new(model_id: config.dig("model", "default"), config: config)
   end
 
   describe "#tool_cache_breakpoint?" do

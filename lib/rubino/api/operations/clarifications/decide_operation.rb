@@ -12,10 +12,6 @@ module Rubino
         # @raise [Rubino::ValidationError] when the body fails Schemas::DecideClarification.
         # @raise [Rubino::ConflictError] when the run has no pending gate.
         class DecideOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate run repository and gate registry for tests.
           def initialize(repository: nil, registry: nil)
             @repository = repository || ::Rubino::Run::Repository.new

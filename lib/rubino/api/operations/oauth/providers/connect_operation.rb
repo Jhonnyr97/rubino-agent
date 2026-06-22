@@ -15,10 +15,6 @@ module Rubino
           # @raise [Rubino::NotFoundError] when no provider is registered for +:id+.
           # @raise [Rubino::ValidationError] when the body fails Schemas::ConnectProvider.
           class ConnectOperation
-            def self.call(request)
-              new.call(request)
-            end
-
             # Accepts an alternate provider registry for tests.
             def initialize(registry: ::Rubino::OAuth::Registry)
               @registry = registry

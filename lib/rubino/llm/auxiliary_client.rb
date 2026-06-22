@@ -33,10 +33,10 @@ module Rubino
 
       def build_adapter(cfg)
         provider = cfg["provider"].to_s
-        resolved_provider = provider.empty? || provider == "main" ? @config.model_provider : provider
+        resolved_provider = provider.empty? || provider == "main" ? @config.dig("model", "provider") : provider
 
         AdapterFactory.build(
-          model_id: cfg["model"].to_s.empty? ? @config.model_default : cfg["model"],
+          model_id: cfg["model"].to_s.empty? ? @config.dig("model", "default") : cfg["model"],
           provider: resolved_provider,
           config: build_overlay_config(cfg, resolved_provider)
         )

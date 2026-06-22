@@ -35,11 +35,11 @@ RSpec.describe "API contract: runs" do
     )
 
     router = Rubino::API::Router.new
-    router.post "/v1/sessions/:id/runs",   to: ->(req) { create.call(req) }
-    router.post "/v1/runs/:id/stop",       to: ->(req) { stop.call(req) }
-    router.get  "/v1/runs/:id/events",     to: ->(req) { events.call(req) }
-    router.post "/v1/sessions/:id/retry",  to: ->(req) { retry_.call(req) }
-    router.post "/v1/sessions/:id/undo",   to: ->(req) { undo.call(req) }
+    router.post "/v1/sessions/:id/runs",   to: route_to(create)
+    router.post "/v1/runs/:id/stop",       to: route_to(stop)
+    router.get  "/v1/runs/:id/events",     to: route_to(events)
+    router.post "/v1/sessions/:id/retry",  to: route_to(retry_)
+    router.post "/v1/sessions/:id/undo",   to: route_to(undo)
     router
   end
 

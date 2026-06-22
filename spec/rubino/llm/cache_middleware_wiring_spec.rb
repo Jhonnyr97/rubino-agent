@@ -11,7 +11,7 @@
 # spec is self-contained and needs no ANTHROPIC_API_KEY in the environment.
 RSpec.describe Rubino::LLM::RubyLLMAdapter do
   def adapter(config)
-    described_class.new(model_id: config.model_default, config: config)
+    described_class.new(model_id: config.dig("model", "default"), config: config)
   end
 
   def installed?(chat)

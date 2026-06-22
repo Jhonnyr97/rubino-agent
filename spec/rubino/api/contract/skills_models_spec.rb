@@ -29,9 +29,9 @@ RSpec.describe "API contract: skills + models" do
     models_list   = Rubino::API::Operations::Models::ListOperation.new(model_source: -> { fake_models })
 
     router = Rubino::API::Router.new
-    router.get "/v1/skills",       to: ->(req) { skills_list.call(req) }
-    router.put "/v1/skills/:name", to: ->(req) { skills_toggle.call(req) }
-    router.get "/v1/models",       to: ->(req) { models_list.call(req) }
+    router.get "/v1/skills",       to: route_to(skills_list)
+    router.put "/v1/skills/:name", to: route_to(skills_toggle)
+    router.get "/v1/models",       to: route_to(models_list)
     router
   end
 

@@ -28,8 +28,7 @@ RSpec.describe Rubino::Memory::AuxRetry do
   let(:classified) do
     Rubino::LLM::ClassifiedError.new(
       reason: Rubino::LLM::FailoverReason::RATE_LIMIT, status_code: 429,
-      message: "429", retryable: true, should_compress: false,
-      should_rotate_credential: false, should_fallback: false
+      message: "429", retryable: true
     )
   end
 

@@ -46,12 +46,13 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     allow(registry).to receive(:find).with("fake_tool").and_return(tool)
     allow(policy).to receive(:decide).and_return(:allow)
     allow(Rubino).to receive(:home_path).and_return(spill_home)
+    allow(config).to receive(:dig).and_call_original
   end
 
   describe "byte-level tail bias" do
     it "keeps a small head, the marker, and the tail when above max_bytes" do
-      allow(config).to receive(:tool_output_max_bytes).and_return(1_000)
-      allow(config).to receive(:tool_output_max_lines).and_return(10_000)
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(1_000)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(10_000)
       tool.output = "HEAD#{"x" * 5_000}TAIL"
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c1")
@@ -63,16 +64,16 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
 
     it "does not truncate when text is within budget" do
-      allow(config).to receive(:tool_output_max_bytes).and_return(1_000)
-      allow(config).to receive(:tool_output_max_lines).and_return(10_000)
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(1_000)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(10_000)
       tool.output = "short"
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c2")
       expect(result.output).to eq("short")
     end
 
     it "preserves the [Exit code: N] suffix shell appends at the tail" do
-      allow(config).to receive(:tool_output_max_bytes).and_return(2_000)
-      allow(config).to receive(:tool_output_max_lines).and_return(10_000)
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(2_000)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(10_000)
       noise = "verbose noise\n" * 500
       tool.output = "#{noise}\n[Exit code: 1]"
 
@@ -83,8 +84,8 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
   describe "spill-to-file on overflow" do
     it "writes the FULL output to tool-results/<call_id>.txt and points the marker at it" do
-      allow(config).to receive(:tool_output_max_bytes).and_return(1_000)
-      allow(config).to receive(:tool_output_max_lines).and_return(10_000)
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(1_000)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(10_000)
       full = "HEAD#{"x" * 5_000}TAIL"
       tool.output = full
 
@@ -98,8 +99,8 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
 
     it "does not spill when output is within budget" do
-      allow(config).to receive(:tool_output_max_bytes).and_return(1_000)
-      allow(config).to receive(:tool_output_max_lines).and_return(10_000)
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(1_000)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(10_000)
       tool.output = "short"
       executor.execute(name: "fake_tool", arguments: {}, call_id: "nospill")
       expect(Dir.exist?(File.join(spill_home, "tool-results"))).to be(false).or(
@@ -110,8 +111,8 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
   describe "line-level tail bias" do
     it "elides middle lines and keeps both ends" do
-      allow(config).to receive(:tool_output_max_bytes).and_return(10_000_000)
-      allow(config).to receive(:tool_output_max_lines).and_return(20)
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(10_000_000)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(20)
       tool.output = (1..100).map { |i| "line-#{i}" }.join("\n")
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c4")

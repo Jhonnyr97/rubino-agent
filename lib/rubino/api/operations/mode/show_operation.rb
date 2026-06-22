@@ -8,10 +8,6 @@ module Rubino
         # Returns the active mode and the list of valid modes so the web
         # client can render a picker without hardcoding the set.
         class ShowOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           def call(_request)
             current = Rubino::Modes.current
             [200, {

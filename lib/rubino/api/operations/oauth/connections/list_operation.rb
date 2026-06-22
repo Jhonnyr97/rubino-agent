@@ -9,10 +9,6 @@ module Rubino
           # Lists stored OAuth connections through Serializer, which strips
           # tokens and other secret fields before they leave the API.
           class ListOperation
-            def self.call(request)
-              new.call(request)
-            end
-
             # Accepts an alternate connection repository for tests.
             def initialize(repository: nil)
               @repository = repository

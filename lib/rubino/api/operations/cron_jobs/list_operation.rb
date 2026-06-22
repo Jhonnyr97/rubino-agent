@@ -10,10 +10,6 @@ module Rubino
         # Lists cron jobs. Disabled jobs are included by default; pass
         # ?include_disabled=false to hide them.
         class ListOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository for tests.
           def initialize(repository: nil)
             @repository = repository || ::Rubino::Jobs::CronJobRepository.new
