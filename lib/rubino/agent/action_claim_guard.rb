@@ -406,13 +406,21 @@ module Rubino
       # positive here is harmless: the ledger gate, not the wording, decides.
       # Kept model-agnostic (negations of read/run/edit/write/grep/search/tool +
       # "nothing"/"no … was done" shapes), not a single provider's phrasing.
+      #
+      # #84 — the same pessimism narrowed to a SPECIFIC requested item: a CLOSING
+      # summary (often after a budget extension) that calls a named deliverable
+      # "not started", "queued but unstarted", "not added/implemented yet" or "I
+      # didn't add/implement it" — when the turn DID edit the relevant files. Same
+      # ledger gate decides, so a false positive merely surfaces the truthful "N
+      # tool calls ran — review the working tree" note, never an "I did X" claim.
       NO_ACTION_CLAIM = Regexp.new(
         '\b(?:have\s+not|haven\s?\'?t|did\s+not|didn\s?\'?t|have\s+no|having\s+not|' \
         'was\s+not\s+able\s+to|were\s+not\s+able\s+to|not)\b' \
         '[^.!?\n]{0,40}?' \
         '\b(?:read|run|ran|execute[d]?|use[d]?|call(?:ed)?|invoke[d]?|grep(?:ped)?|' \
         "search(?:ed)?|made|make|edit(?:ed)?|written|wrote|create[d]?|change[d]?|" \
-        'modif(?:y|ied)|touch(?:ed)?|appl(?:y|ied)|do|done|perform(?:ed)?|take|taken|took)\b' \
+        "modif(?:y|ied)|touch(?:ed)?|appl(?:y|ied)|do|done|perform(?:ed)?|take|taken|took|" \
+        'start(?:ed)?|begin|begun|add(?:ed)?|implement(?:ed)?|get\s+to|got\s+to)\b' \
         '|\b(?:made|make|did|do|ran|run|read|wrote|written|applied|performed|took|taken)\b' \
         '\s+(?:any\s+)?\bno\b\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|' \
         'actions?|commands?|modifications?)\b' \
@@ -425,7 +433,12 @@ module Rubino
         '(?:done|run|made|changed|read|executed|performed|taken|applied|edited|written)\b' \
         '|\b(?:i|we)\s+(?:have\s+|had\s+)?(?:did|do|done|made|changed|read|run|' \
         'executed|performed|accomplished)\s+(?:absolutely\s+|literally\s+)?nothing\b' \
-        '|\bnot\s+a\s+single\s+(?:file|tool|edit|command|change)\b',
+        '|\bnot\s+a\s+single\s+(?:file|tool|edit|command|change)\b' \
+        '|\b(?:not\s+(?:yet\s+)?(?:started|begun|added|implemented|created|done|' \
+        'applied|written|touched)|never\s+(?:started|added|implemented))\b' \
+        '|\b(?:queued\s+but\s+unstarted|(?:still\s+)?unstarted|still\s+(?:queued|' \
+        'pending|outstanding|to\s+do|to-do)|remains?\s+(?:queued|pending|unstarted|' \
+        'outstanding|undone|to\s+be\s+done))\b',
         Regexp::IGNORECASE
       )
 

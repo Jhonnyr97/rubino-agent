@@ -425,6 +425,37 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       end
     end
 
+    # #84 — the pessimism narrowed to a SPECIFIC named deliverable: a closing
+    # summary calls a requested item "not started / queued but unstarted / not
+    # added yet / I didn't implement it" while the turn DID edit the files. Same
+    # ledger gate, so the note reconciles it the same way.
+    it "fires on a SPECIFIC item reported un-started while edits ran (#84)" do
+      [
+        "I added the validation logic. The tags field is not started, and the " \
+        "accented lf author is queued but unstarted.",
+        "The tags field was not added yet.",
+        "I haven't started the tags field.",
+        "The tags field remains unstarted; the author rename is still queued.",
+        "I did not implement the tags field.",
+        "The accented lf author change didn't get applied."
+      ].each do |claim|
+        out = reconcile(claim, tool_count: 7, edit_count: 2)
+        expect(out).not_to(be_nil, "expected a harness note for: #{claim}")
+        expect(out).to match(/7 tool calls actually ran/i)
+        expect(out).to match(/2 edits/i)
+      end
+    end
+
+    it "leaves a truthful 'X is done / present on disk' summary alone (#84 neg)" do
+      [
+        "I added the tags field and renamed the author to lf.",
+        "Implemented both: the tags field is present and the accented author is saved.",
+        "All requested changes are complete and on disk."
+      ].each do |claim|
+        expect(reconcile(claim, tool_count: 7, edit_count: 2)).to be_nil
+      end
+    end
+
     it "labels edits only when mutating tools ran (read-only run → no edits clause)" do
       out = reconcile("I made no edits and read nothing.", tool_count: 5, edit_count: 0)
       expect(out).to match(/5 tool calls actually ran/i)

@@ -341,6 +341,79 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 
+  # #84 — the SAME pessimistic reconciliation, but on the NORMAL closing summary
+  # (not the forced budget-exhausted one). After accepting "Continue (+N)" the
+  # turn runs more tools/edits and then ends with an ORDINARY text answer; that
+  # answer never passed through the ledger guard before (#evaluate bails the
+  # moment tools ran). If the closing summary calls real, on-disk work "not
+  # started / queued but unstarted", the loop now reconciles it via the same
+  # harness note on the text_only? exit. Budget is NOT capped here, so the
+  # summary is a genuine final answer — exactly the path #381 missed.
+  describe "normal closing summary that claims a SPECIFIC item un-started (#84)" do
+    def write_result
+      Rubino::Tools::Result.success(name: "write", call_id: "c1", output: "wrote 12 bytes")
+    end
+
+    it "reconciles 'tags field not started / author queued but unstarted' against the ledger" do
+      # Iteration 1: a REAL mutating tool call (the turn DID edit the files).
+      fake_llm.enqueue_tool_call("write", { "path" => "/work/m.rb", "content" => "tags" })
+      # Iteration 2: an ordinary closing summary — pessimistic about SPECIFIC items
+      # that are actually on disk. Budget is NOT exhausted, so this is the normal
+      # text_only? exit, not the forced-summary path.
+      fake_llm.enqueue_text(
+        "I added the validation logic. The tags field is not started, and the " \
+        "accented lf author is queued but unstarted."
+      )
+
+      events = []
+      event_bus.on(Rubino::Interaction::Events::HARNESS_NOTE) { |payload| events << payload }
+
+      loop_obj = build_loop
+      allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
+        loop_obj.send(:handle_tool_result, name: name, arguments: arguments,
+                                           call_id: call_id, result: write_result)
+        write_result
+      end
+
+      result = loop_obj.run(messages: user_messages("add a tags field and an accented lf author"),
+                            tools: tools)
+
+      # The model's summary still reaches the user verbatim (clean stdout, #418) —
+      # the truthful note rides the side channel, never spliced into the answer.
+      expect(result).to match(/queued but unstarted/i)
+      expect(result).not_to match(/harness note/i)
+
+      warnings = null_ui.messages.select { |m| m[:level] == :warning }.map { |m| m[:message] }
+      expect(warnings.join("\n")).to match(/1 tool call actually ran/i)
+      expect(warnings.join("\n")).to match(/1 edit\b/)
+      expect(events.size).to eq(1)
+      expect(events.first[:note]).to match(/uncommitted changes/i)
+    end
+
+    it "leaves a truthful 'both items are on disk' closing summary untouched" do
+      fake_llm.enqueue_tool_call("write", { "path" => "/work/m.rb", "content" => "tags" })
+      fake_llm.enqueue_text("Added the tags field and renamed the author to lf — both on disk.")
+
+      events = []
+      event_bus.on(Rubino::Interaction::Events::HARNESS_NOTE) { |payload| events << payload }
+
+      loop_obj = build_loop
+      allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
+        loop_obj.send(:handle_tool_result, name: name, arguments: arguments,
+                                           call_id: call_id, result: write_result)
+        write_result
+      end
+
+      result = loop_obj.run(messages: user_messages("add a tags field and an accented lf author"),
+                            tools: tools)
+
+      expect(result).to match(/both on disk/i)
+      expect(events).to be_empty
+      warnings = null_ui.messages.select { |m| m[:level] == :warning }.map { |m| m[:message] }
+      expect(warnings.join("\n")).not_to match(/tool call actually ran/i)
+    end
+  end
+
   describe "cd claim is rewritten honestly (rubino has no cd tool)" do
     it "replaces 'Changed directory ...' with the honest no-cd answer" do
       fake_llm.enqueue_text("Changed the working directory to /tmp/elsewhere and confirmed.")
