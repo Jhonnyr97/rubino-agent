@@ -101,6 +101,12 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::UI::BottomComposer.current = prev
     end
 
+    # The StringIO composer stands in for the TTY-mode REPL: the watcher's start
+    # guard keys off the persistent TTY capability (#active?), not the live
+    # composer instance, because #attach_agent_view runs after the idle read tore
+    # its composer down (#85). Express composer-mode here so the watcher starts.
+    before { allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true) }
+
     it "attach SUPPRESSES main render, and replays the sub through the exempt seam" do
       expect(composer).to receive(:with_replay_exempt).and_yield
       attach!
