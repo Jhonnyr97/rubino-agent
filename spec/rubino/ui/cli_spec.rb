@@ -1061,14 +1061,37 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("✓ explore")
     end
 
-    it "renders ✗ when the task tool returned an At capacity: string" do
+    # A cap REJECTION never launched a subagent — there is no `sa_…` id and no
+    # run to fail. It must NOT render the phantom `✗ <name> · failed` card the
+    # model's capped 4th parallel delegate used to produce; surface a neutral,
+    # NAMED "at capacity" close row that explains the concurrency cap instead.
+    it "renders a neutral, named 'at capacity' close row (not ✗ failed) when the cap rejected it" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1",
-        output: "At capacity: 3 background subagents are already running."
+        output: "At capacity: this agent already has 3 subagents running. " \
+                "Wait for one to finish (you'll get a `[background-task]` message), " \
+                "check it with task_result, or do the work directly."
       )
       out = render_delegation(result)
-      expect(out).to include("✗ explore")
+      expect(out).to include("⊝ explore")
+      expect(out).to include("at capacity")
+      expect(out).to include("concurrency cap reached")
+      expect(out).not_to include("✗ explore")
+      expect(out).not_to include("✗ failed")
       expect(out).not_to include("✓ explore")
+    end
+
+    # The depth cap (a subagent nesting too deep) reads as its OWN reason, still
+    # neutral and named — never a ✗ failed phantom.
+    it "renders a named depth-cap close row when the nesting-depth cap rejected it" do
+      result = Rubino::Tools::Result.success(
+        name: "task", call_id: "t1",
+        output: "Max nesting depth reached: subagents can only nest 2 levels deep."
+      )
+      out = render_delegation(result)
+      expect(out).to include("⊝ explore")
+      expect(out).to include("nesting depth reached")
+      expect(out).not_to include("✗ explore")
     end
 
     it "renders ✗ when the result has error status (synchronous subagent raised)" do
