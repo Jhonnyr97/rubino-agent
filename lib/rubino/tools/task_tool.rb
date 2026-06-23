@@ -182,11 +182,22 @@ module Rubino
         # Captured on the PARENT thread, before we spawn — the child thread has
         # no access to the parent's thread-locals. The sink is the parent's
         # InputQueue (completion notice), event_bus is the turn-scoped bus (so
-        # SSE/recorder sees the lifecycle), parent_ui is the parent's CLI view
-        # (so completion surfaces as a line, like background-shell does).
+        # SSE/recorder sees the lifecycle), parent_ui is the TOP-LEVEL CLI that
+        # hosts the collapsed-card live region (so the card + the approval note
+        # surface there, like background-shell does).
         sink      = Rubino.background_sink
         event_bus = Rubino.active_event_bus
-        parent_ui = Rubino.ui
+        # The card host is the ROOT CLI, not the thread-local Rubino.ui. When a
+        # SUBAGENT spawns a (grand)child (S1 nesting), the spawner runs under
+        # with_ui(its own SubagentView), so Rubino.ui here is that SubagentView —
+        # NOT a UI::CLI. nested_ui_for keys card-mode on `is_a?(UI::CLI)`, so the
+        # thread-local would make a nested child fall through to a Null view with
+        # NO approval handler: its approval-gated tools would then fail closed
+        # with the headless :noninteractive block instead of escalating to the
+        # parent (#86). The single live region is owned by the one top-level CLI
+        # (the process-global @ui, the same host entry_parent_ui resolves), so
+        # EVERY card — depth-1 or nested — renders and escalates through it.
+        parent_ui = root_cli
         # Stash the spawn-captured sink on the entry so a tool running on the
         # CHILD's thread (ask_parent) can notify the parent MODEL without
         # reading the child's own thread-local sink — which is the child's own
@@ -596,6 +607,17 @@ module Rubino
       # SubagentView (bound by with_ui); the real parent CLI is the process-global
       # adapter, which is what hosts the live region.
       def entry_parent_ui
+        root_cli
+      end
+
+      # The TOP-LEVEL CLI that owns the collapsed-card live region. This is the
+      # process-global UI adapter, NOT the thread-local Rubino.ui: a nested
+      # subagent (S1) spawns from a thread bound by with_ui(its own SubagentView),
+      # so Rubino.ui there is that SubagentView, not the real CLI. Every card —
+      # at any nesting depth — is hosted by the one top-level CLI, so resolving
+      # the host here keeps both the card rendering and the approval escalation
+      # (nested_ui_for's `is_a?(UI::CLI)` gate) working past depth 1 (#86).
+      def root_cli
         Rubino.instance_variable_get(:@ui)
       end
 
@@ -647,7 +669,7 @@ module Rubino
         # block the whole REPL with no idle prompt to resolve it — sync keeps the
         # historical fail-closed auto-deny until focus-gating lands. Off the CLI
         # this is Null (headless/API unchanged).
-        runner = build_subagent_runner(definition, ui: nested_ui_for(entry, Rubino.ui))
+        runner = build_subagent_runner(definition, ui: nested_ui_for(entry, root_cli))
         registry_bg.attach(entry, thread: Thread.current, runner: runner)
         result = Rubino.with_current_subagent_id(entry.id) { runner.run!(prompt) }
         text   = result_or_noop(result, definition.name)
