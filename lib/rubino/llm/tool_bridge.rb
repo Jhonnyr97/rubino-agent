@@ -34,7 +34,7 @@ module Rubino
 
       # rubocop:disable Metrics/ParameterLists
       def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil,
-                   cache_breakpoint: false, budget_exhausted: nil)
+                   cache_breakpoint: false, budget_exhausted: nil, cancel_token: nil)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
                   ui: ui || Rubino.ui,
@@ -42,7 +42,8 @@ module Rubino
                   tool_executor: tool_executor,
                   call_id_provider: call_id_provider,
                   cache_breakpoint: cache_breakpoint,
-                  budget_exhausted: budget_exhausted)
+                  budget_exhausted: budget_exhausted,
+                  cancel_token: cancel_token)
       end
       # rubocop:enable Metrics/ParameterLists
 
@@ -55,7 +56,7 @@ module Rubino
       # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
       # rubocop:disable Metrics/ParameterLists
       def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false,
-                       budget_exhausted: nil, production: nil)
+                       budget_exhausted: nil, production: nil, cancel_token: nil)
         list = Array(tools)
 
         # Security invariant (#355 defensive): approval + audit only fire when a
@@ -85,7 +86,8 @@ module Rubino
                                         tool_executor: tool_executor,
                                         call_id_provider: -> { current_call_id },
                                         cache_breakpoint: cache_tools && idx == last_index,
-                                        budget_exhausted: budget_exhausted))
+                                        budget_exhausted: budget_exhausted,
+                                        cancel_token: cancel_token))
         end
       end
       # rubocop:enable Metrics/ParameterLists
@@ -101,14 +103,14 @@ module Rubino
         Rubino::Tools::Result.success(name: name, call_id: nil, output: output.to_s)
       end
 
-      # rubocop:disable Metrics/ParameterLists, Metrics/PerceivedComplexity
+      # rubocop:disable Metrics/ParameterLists, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity
       def self.build_class(tool_name)
         klass = Class.new(::RubyLLM::Tool) do
           define_method(:name) { tool_name }
 
           define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:,
                                           call_id_provider: nil, cache_breakpoint: false,
-                                          budget_exhausted: nil|
+                                          budget_exhausted: nil, cancel_token: nil|
             @agent_tool       = agent_tool
             @ui               = ui
             @event_bus        = event_bus
@@ -118,6 +120,11 @@ module Rubino
             # 0-arity predicate the Loop wires so a tool dispatched mid-stream can
             # be HALTED once the per-turn iteration/time budget is spent (#355a).
             @budget_exhausted = budget_exhausted
+            # The turn's CancelToken, checked at the tool-dispatch boundary so a
+            # user interrupt that lands between a tool returning and ruby_llm
+            # issuing the NEXT round-trip request unwinds cleanly instead of
+            # sending a malformed continuation (#48) / lagging the unwind (#52).
+            @cancel_token     = cancel_token
           end
 
           define_method(:description) { @agent_tool.description }
@@ -136,6 +143,18 @@ module Rubino
             name = @agent_tool.name
             args = kwargs.transform_keys(&:to_s)
 
+            # Tool-dispatch BOUNDARY interrupt (#48/#52). ruby_llm runs the whole
+            # model↔tool loop inside one ask(); the only in-loop cancel poll is the
+            # per-chunk check in the streaming callback. If the user hits Esc in
+            # the window between a tool RETURNING and ruby_llm issuing the next
+            # round-trip request, that poll never runs — ruby_llm sends a
+            # continuation the provider rejects ("invalid params"), and the unwind
+            # lags until the post-cancel stream settles. Checking the token here —
+            # before AND after each mid-stream dispatch — raises Interrupted on the
+            # streaming thread at the boundary, so the clean `⎿ interrupted` path
+            # runs PROMPTLY and no malformed request is ever sent.
+            @cancel_token&.check!
+
             # Budget-exhausted graceful abort (#355a). ruby_llm runs the whole
             # model↔tool loop inside one ask(); the Loop can't re-check its budget
             # between the intermediate round-trips. So before running THIS tool,
@@ -151,36 +170,44 @@ module Rubino
               return ::RubyLLM::Tool::Halt.new(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
             end
 
-            if @tool_executor
-              # Full pipeline: approval check → tool.call → truncation → audit record.
-              # Thread the real tool_call id (captured by the adapter's
-              # before_tool_call callback) so the streaming path populates the
-              # spill file + tool_call_id/tool_calls linkage exactly like the
-              # non-streaming Loop#execute_tool_calls (STRM-2).
-              call_id = @call_id_provider&.call
-              result = @tool_executor.execute(
-                name: name,
-                arguments: args,
-                call_id: call_id
-              )
-              result.output
-            else
-              # Fallback: direct call (tests / one-shot mode without full Lifecycle)
-              @event_bus&.emit(Rubino::Interaction::Events::TOOL_STARTED, name: name)
-              @ui&.tool_started(name, arguments: args)
-
-              begin
-                output = @agent_tool.call(args)
-                result = Rubino::LLM::ToolBridge.result_from_tool_output(name, output)
-                @event_bus&.emit(Rubino::Interaction::Events::TOOL_FINISHED, name: name)
-                @ui&.tool_finished(name, result: result)
+            output =
+              if @tool_executor
+                # Full pipeline: approval check → tool.call → truncation → audit record.
+                # Thread the real tool_call id (captured by the adapter's
+                # before_tool_call callback) so the streaming path populates the
+                # spill file + tool_call_id/tool_calls linkage exactly like the
+                # non-streaming Loop#execute_tool_calls (STRM-2).
+                call_id = @call_id_provider&.call
+                result = @tool_executor.execute(
+                  name: name,
+                  arguments: args,
+                  call_id: call_id
+                )
                 result.output
-              rescue StandardError => e
-                @event_bus&.emit(Rubino::Interaction::Events::TOOL_FINISHED, name: name)
-                @ui&.tool_finished(name)
-                "Error: #{e.message}"
+              else
+                # Fallback: direct call (tests / one-shot mode without full Lifecycle)
+                @event_bus&.emit(Rubino::Interaction::Events::TOOL_STARTED, name: name)
+                @ui&.tool_started(name, arguments: args)
+
+                begin
+                  raw    = @agent_tool.call(args)
+                  result = Rubino::LLM::ToolBridge.result_from_tool_output(name, raw)
+                  @event_bus&.emit(Rubino::Interaction::Events::TOOL_FINISHED, name: name)
+                  @ui&.tool_finished(name, result: result)
+                  result.output
+                rescue StandardError => e
+                  @event_bus&.emit(Rubino::Interaction::Events::TOOL_FINISHED, name: name)
+                  @ui&.tool_finished(name)
+                  "Error: #{e.message}"
+                end
               end
-            end
+
+            # Post-return boundary: the tool finished cleanly, but if the user hit
+            # Esc WHILE it ran (e.g. a long shell command that SIGTERM-settled),
+            # ruby_llm is about to issue the next round-trip. Re-check the token so
+            # the interrupt unwinds here instead of riding out the doomed request.
+            @cancel_token&.check!
+            output
           end
         end
 
@@ -191,7 +218,7 @@ module Rubino
 
         klass
       end
-      # rubocop:enable Metrics/ParameterLists, Metrics/PerceivedComplexity
+      # rubocop:enable Metrics/ParameterLists, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity
     end
   end
 end
