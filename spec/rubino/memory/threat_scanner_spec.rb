@@ -121,6 +121,39 @@ RSpec.describe Rubino::Memory::ThreatScanner do
       end
     end
 
+    # R1: memory is persisted to disk and re-injected into every future system
+    # prompt, so a secret saved into a fact leaks to the provider on later turns.
+    # The write path (Store / SQLite backend) gates on .scan, so a secret-bearing
+    # content must be refused with "secret_detected".
+    context "secrets (R1 — credentials must never persist to memory)" do
+      [
+        ["sk-proj OpenAI key", "remember the key sk-proj-FAKE0000000000000000abcd"],
+        ["GitHub PAT", "token is ghp_FAKE000000000000000000abcd"],
+        ["AWS access key id", "aws id AKIAIOSFODNN7EXAMPLE"],
+        ["AWS secret (40-char, near context)",
+         'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'],
+        ["generic high-entropy secret", "the credential is Zx9Kp2Lq7Wm4Rt8Yn3Bv6Cd1Fg5Hj0"],
+        ["JWT", "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.abcDEF123456zzz"]
+      ].each do |label, sample|
+        it "flags #{label}" do
+          expect(described_class.scan(sample)).to eq("secret_detected")
+        end
+      end
+
+      # No false positives — these are NOT secrets and must SAVE unchanged.
+      [
+        ["normal fact", "The user prefers tabs over spaces."],
+        ["UUID", "session id 550e8400-e29b-41d4-a716-446655440000"],
+        ["git SHA", "fixed in commit ff6c8958c0de1234567890abcdef1234567890ab"],
+        ["non-secret KEY=value (#67)", %(MAX_TOKENS = "4096")],
+        ["ordinary long sentence", "Remember to run the whole test suite before pushing today"]
+      ].each do |label, sample|
+        it "does NOT flag #{label}" do
+          expect(described_class.scan(sample)).to be_nil
+        end
+      end
+    end
+
     context "invisible unicode" do
       it "flags zero-width spaces" do
         expect(described_class.scan("hello​world")).to eq("invisible_unicode")
