@@ -82,6 +82,32 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
         expect(allowed?("ls 2> err.log")).to be false
         expect(allowed?("cat a.txt | tee copy.txt")).to be false
       end
+
+      # #68: a read-only command keeps auto-running when it carries a NON-WRITE
+      # redirect the model habitually appends — fd-dup (`2>&1`) and discard to
+      # the null device (`>/dev/null`, `&>/dev/null`, `1>/dev/null`). Pre-fix any
+      # `>` rejected outright, so these over-prompted pervasively.
+      it "allows non-write redirects (2>&1, discard to /dev/null)" do
+        expect(allowed?("ls -la 2>&1")).to be true
+        expect(allowed?("git log --oneline 2>&1 | head")).to be true
+        expect(allowed?("ls /tmp 2>/dev/null")).to be true
+        expect(allowed?("cat file >/dev/null")).to be true
+        expect(allowed?("grep foo bar &>/dev/null")).to be true
+        expect(allowed?("cat x 1>/dev/null")).to be true
+        expect(allowed?("ls >/dev/null 2>&1")).to be true
+        expect(allowed?("ls > /dev/null")).to be true
+        expect(allowed?("ls >>/dev/null")).to be true
+      end
+
+      # Guard: a redirect that writes an ARBITRARY file is still rejected — the
+      # /dev/null match is anchored so `/dev/nullx` (a real file) doesn't slip.
+      it "still rejects a redirect that writes an arbitrary file" do
+        expect(allowed?("cat secret > out.txt")).to be false
+        expect(allowed?("echo hi >> log")).to be false
+        expect(allowed?("find . 2> err.txt")).to be false
+        expect(allowed?("ls > /dev/nullx")).to be false
+        expect(allowed?("ls > /dev/null; rm x")).to be false
+      end
     end
 
     context "with command / process substitution" do
