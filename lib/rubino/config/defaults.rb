@@ -408,6 +408,10 @@ module Rubino
           #     workspace-write— writes confined to workspace + temp + ~/.rubino
           #   network: allow (slice 1; deny/proxy are slice 3+)
           #   extra_writable: extra absolute paths added to the write jail
+          #   require: false — fail-OPEN when no mechanism exists (default).
+          #     Set true to FAIL-CLOSED: shell (foreground AND background)
+          #     REFUSES to run when the sandbox is unavailable, for the
+          #     paranoid / multi-tenant-host operator (slice 2 Part B).
           # Always-on when a mechanism exists, INCLUDING under --yolo (--yolo
           # skips approval prompts, not the OS write-jail). Fails OPEN with a
           # one-time loud banner where no mechanism is available (old kernel,
@@ -415,7 +419,8 @@ module Rubino
           "sandbox" => {
             "mode" => "workspace-write",
             "network" => "allow",
-            "extra_writable" => []
+            "extra_writable" => [],
+            "require" => false
           },
 
           # Default ON, matching Hermes (web tools ship in the default toolset,

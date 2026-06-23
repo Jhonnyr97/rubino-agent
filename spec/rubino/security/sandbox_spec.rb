@@ -18,10 +18,11 @@ RSpec.describe Rubino::Security::Sandbox do
   end
 
   # Drive a deterministic config + mechanism regardless of the host OS.
-  def configure(mode:, mechanism:, extra_writable: [])
+  def configure(mode:, mechanism:, extra_writable: [], require_sandbox: false)
     raw = Rubino::Config::Defaults.to_hash
     raw["tools"]["sandbox"]["mode"] = mode
     raw["tools"]["sandbox"]["extra_writable"] = extra_writable
+    raw["tools"]["sandbox"]["require"] = require_sandbox
     config = Rubino::Config::Configuration.new(raw: raw)
     allow(Rubino).to receive(:configuration).and_return(config)
     allow(described_class).to receive(:available_mechanism).and_return(mechanism)
@@ -165,12 +166,54 @@ RSpec.describe Rubino::Security::Sandbox do
       expect(described_class).not_to be_degraded
     end
 
-    it "summarises state for /status" do
+    it "summarises state for /status with the require/best-effort posture" do
       configure(mode: "workspace-write", mechanism: :landlock)
-      expect(described_class.status_summary).to eq("workspace-write (landlock)")
+      expect(described_class.status_summary).to eq("workspace-write (landlock, best-effort)")
+
+      configure(mode: "workspace-write", mechanism: :landlock, require_sandbox: true)
+      expect(described_class.status_summary).to eq("workspace-write (landlock, required)")
 
       configure(mode: "workspace-write", mechanism: :none)
       expect(described_class.status_summary).to eq("OFF (unavailable)")
+
+      configure(mode: "workspace-write", mechanism: :none, require_sandbox: true)
+      expect(described_class.status_summary).to eq("OFF (unavailable, required)")
+    end
+  end
+
+  describe ".active?" do
+    it "is true when a mechanism exists and mode != off" do
+      configure(mode: "workspace-write", mechanism: :seatbelt)
+      expect(described_class).to be_active
+    end
+
+    it "is false when mode is off" do
+      configure(mode: "off", mechanism: :seatbelt)
+      expect(described_class).not_to be_active
+    end
+
+    it "is false when degraded (requested but no mechanism)" do
+      configure(mode: "workspace-write", mechanism: :none)
+      expect(described_class).not_to be_active
+    end
+  end
+
+  describe ".required? and .refusal_reason (fail-closed)" do
+    it "does not require by default" do
+      configure(mode: "workspace-write", mechanism: :none)
+      expect(described_class).not_to be_required
+      expect(described_class.refusal_reason).to be_nil
+    end
+
+    it "refuses when require:true AND no mechanism is available" do
+      configure(mode: "workspace-write", mechanism: :none, require_sandbox: true)
+      expect(described_class).to be_required
+      expect(described_class.refusal_reason).to include("sandbox required but unavailable")
+    end
+
+    it "runs (nil refusal) when require:true but a mechanism IS available" do
+      configure(mode: "workspace-write", mechanism: :seatbelt, require_sandbox: true)
+      expect(described_class.refusal_reason).to be_nil
     end
   end
 end
