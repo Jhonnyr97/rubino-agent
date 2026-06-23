@@ -33,7 +33,7 @@ module Rubino
         emit_blank
       end
 
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         puts_colored(color_for(:tool), "  → Running tool: #{name}")
       end
 
