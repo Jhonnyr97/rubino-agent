@@ -24,4 +24,19 @@ RSpec.describe Rubino::Tools::ShellRegistry do
   ensure
     registry.remove(entry.id) if defined?(entry) && entry
   end
+
+  # Slice 2 Part A: the BACKGROUND spawn must apply the SAME OS write-jail as
+  # the foreground — it went UNJAILED before, a real hole. It builds its spawn
+  # argv+env through the shared ShellTool.sandboxed_bash_argv helper.
+  it "routes the background spawn through the shared sandbox builder" do
+    expect(Rubino::Tools::ShellTool)
+      .to receive(:sandboxed_bash_argv)
+      .with("echo hi", cwd: Dir.pwd)
+      .and_call_original
+
+    entry = registry.spawn(command: "echo hi", cwd: Dir.pwd)
+    entry.wait_thr.join
+  ensure
+    registry.remove(entry.id) if defined?(entry) && entry
+  end
 end

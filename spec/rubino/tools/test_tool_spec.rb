@@ -201,4 +201,44 @@ RSpec.describe Rubino::Tools::TestTool do
       end
     end
   end
+
+  # HOLE 2 / #544: run_tests spawns its runner directly, so it must go through
+  # the SAME OS write-jail and fail-closed refusal as the shell tool.
+  describe "OS write-jail wiring" do
+    it "refuses (fail-closed) when the sandbox is required but unavailable" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "spec"))
+        File.write(File.join(dir, ".rspec"), "")
+        allow(Rubino::Security::Sandbox).to receive(:refusal_reason)
+          .and_return("sandbox required but unavailable on this host")
+        in_workspace(dir) do
+          res = tool.call({})
+          expect(res[:error_code]).to eq(:denied_command)
+          expect(res[:output]).to include("sandbox required but unavailable")
+        end
+      end
+    end
+
+    it "prefixes the spawned runner argv with the launcher prefix" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "spec"))
+        File.write(File.join(dir, ".rspec"), "")
+        allow(Rubino::Security::Sandbox).to receive(:refusal_reason).and_return(nil)
+        allow(Rubino::Security::Sandbox).to receive(:wrap_argv) { |argv, **| ["/jail", "--", *argv] }
+        allow(Rubino::Security::Sandbox).to receive(:wrap_env).and_return({})
+        captured = nil
+        # Capture the spawn argv, then run a harmless real process so execute()
+        # completes normally (it rescues StandardError, so we can't raise here).
+        real_spawn = Process.method(:spawn)
+        allow(Process).to receive(:spawn) do |*args, **opts|
+          captured = args
+          real_spawn.call("true", **opts)
+        end
+        in_workspace(dir) { tool.call({}) }
+        # Process.spawn(env, *prefix, "bash", "-o", ...): env first, prefix next.
+        expect(captured[0]).to eq({})
+        expect(captured[1, 4]).to eq(["/jail", "--", "bash", "-o"])
+      end
+    end
+  end
 end

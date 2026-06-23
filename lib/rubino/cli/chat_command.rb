@@ -2750,9 +2750,16 @@ module Rubino
       # only boundary. Guarded once per process so it doesn't repeat on /status
       # or a resume within the same session.
       def warn_sandbox_degraded(ui)
-        return unless Rubino::Security::Sandbox.degraded?
-
-        ui.warning(Rubino::Security::Sandbox.degradation_notice)
+        if Rubino::Security::Sandbox.degraded?
+          ui.warning(Rubino::Security::Sandbox.degradation_notice)
+        elsif Rubino::Security::Sandbox.present_but_not_enforcing?
+          ui.warning(
+            "OS write-sandbox helper present but NOT enforcing on this host " \
+            "(runtime self-test denied no write — Landlock/Seatbelt not active); " \
+            "shell writes are NOT confined. Approval prompts + the hardline floor " \
+            "are the only boundary."
+          )
+        end
       rescue StandardError
         nil
       end
