@@ -1168,9 +1168,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:idle_cards).paint
 
         # The card block is live ABOVE the idle prompt — proof the region is not
-        # gated to an active turn.
+        # gated to an active turn. The card labels itself with the task dimension
+        # drawn from the prompt (S7 F5), so the descriptive name surfaces.
         expect(composer.cards).not_to be_empty
-        expect(composer.cards.join).to include("explore", "running")
+        expect(composer.cards.join).to include("find the bug", "running")
       end
 
       it "clears the card region when no child is running" do
@@ -1226,7 +1227,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
 
       it "paints the live subagent cards above the idle prompt while a child runs (F1)" do
-        registry.reserve(subagent: "explore", prompt: "scan")
+        registry.reserve(subagent: "explore", prompt: "scan the repo")
 
         typist = Thread.new do
           sleep 0.05
@@ -1237,8 +1238,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:read_idle_line, input_queue, nil)
         typist.join
 
-        # The running child's collapsed row hit the composer's output.
-        expect(output.string).to include("explore")
+        # The running child's collapsed row hit the composer's output — labelled
+        # with the task dimension from the prompt (S7 F5).
+        expect(output.string).to include("scan the repo")
         expect(output.string).to include("running")
       end
 

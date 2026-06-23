@@ -80,11 +80,11 @@ module Rubino
           glyph = @pastel.cyan(COLLAPSED)
           state = entry.status == :stopping ? "stopping" : "running"
           count = entry.tool_count.to_i
-          # Compact card: id · name · state · N tools · elapsed. The per-tool
+          # Compact card: id · label · state · N tools · elapsed. The per-tool
           # last_activity (often a long grep/glob arg or absolute path) is NOT
           # shown here — too noisy on the always-visible card; the live detail
           # lives in the agent's own view (Enter) / drill-in.
-          body = "#{entry.id} · #{safe(entry.subagent)} · #{state} · " \
+          body = "#{entry.id} · #{safe(card_label(entry))} · #{state} · " \
                  "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
           "  #{glyph} #{body}"
         end
@@ -97,7 +97,7 @@ module Rubino
       def blocked_card_line(entry)
         glyph    = @pastel.red(BLOCKED)
         question = entry.ask_question.to_s
-        "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
+        "  #{glyph} #{entry.id} · #{safe(card_label(entry))} · " +
           @pastel.red("waiting on you") + ": #{safe(first_line(question, 60))} " \
                                           "· ↓ to answer"
       end
@@ -112,7 +112,7 @@ module Rubino
         glyph   = @pastel.yellow(APPROVAL)
         command = entry.approval_command.to_s
         command = entry.approval_question.to_s if command.empty?
-        "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
+        "  #{glyph} #{entry.id} · #{safe(card_label(entry))} · " +
           @pastel.yellow("needs approval") + ": #{safe(first_line(command, 60))} " \
                                              "· ↓ to approve"
       end
@@ -122,7 +122,7 @@ module Rubino
       def budget_card_line(entry)
         glyph    = @pastel.yellow(APPROVAL)
         question = entry.approval_question.to_s
-        "  #{glyph} #{entry.id} · #{safe(entry.subagent)} · " +
+        "  #{glyph} #{entry.id} · #{safe(card_label(entry))} · " +
           @pastel.yellow("wants +budget") + ": #{safe(first_line(question, 60))} " \
                                             "· ↓ to grant"
       end
@@ -178,6 +178,35 @@ module Rubino
         # instead of reading as frozen; a finished entry keeps the coarse final
         # duration (#44).
         Rubino::Util::Duration.human_duration(finish - entry.started_at, precise: entry.finished_at.nil?)
+      end
+
+      # The descriptive label for a card: a developer running 3 subagents at
+      # once needs to tell them apart, and the bare agent TYPE ("general") is the
+      # same on every card (S7 Y1). Prefer a short DIMENSION drawn from the task
+      # prompt — a `**BOLD**` heading (the conventional "**BUG AUDIT**" marker) if
+      # present, else the prompt's first non-blank line — so the cards read
+      # `sa_580f · BUG AUDIT · running` / `· STRUCTURE · ` / `· TEST COVERAGE ·`.
+      # Falls back to the agent type when the prompt yields nothing usable, so a
+      # specialized subagent (explore/etc.) and the sync/headless path keep their
+      # existing label. The result is defanged by the caller's #safe.
+      def card_label(entry)
+        prompt = entry.respond_to?(:prompt) ? entry.prompt : nil
+        prompt_dimension(prompt) || entry.subagent.to_s
+      end
+
+      # A short, human-meaningful name pulled from the task prompt, or nil when
+      # the prompt has nothing to offer (so the caller can fall back to the type).
+      def prompt_dimension(prompt)
+        text = prompt.to_s
+        return nil if text.strip.empty?
+
+        if (bold = text[/\*\*\s*([^*\n]{1,40}?)\s*\*\*/, 1])
+          stripped = bold.strip
+          return stripped unless stripped.empty?
+        end
+
+        line = Rubino::Util::Output.first_line(text, 40).to_s.strip
+        line.empty? ? nil : line
       end
 
       # First NON-BLANK line, elided to +max+. A ruby/shell approval command

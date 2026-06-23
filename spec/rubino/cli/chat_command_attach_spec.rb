@@ -81,6 +81,31 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # S7 F2 — the polish worker runs for >1min after almost every turn; its
+  # indicator must NOT occlude the `ctx ~Xk/128k (Y%)` saturation bar at idle.
+  # The indicator is composed ALONGSIDE the normal status bar, not in place of it.
+  describe "#polishing_status_line composition (F2)" do
+    it "renders the polishing indicator ALONGSIDE the ctx status bar" do
+      allow(cmd).to receive(:build_status_line)
+        .with(runner).and_return(" default · gpt-4.1 · ctx ~8.4k/128k (7%)")
+
+      line = cmd.send(:polishing_status_line, runner)
+
+      expect(line).to include("polishing memory… (Esc to skip)")
+      # The ctx saturation stays visible — not occluded by the indicator.
+      expect(line).to include("ctx ~8.4k/128k (7%)")
+    end
+
+    it "falls back to the bare indicator when there is no status bar" do
+      allow(cmd).to receive(:build_status_line).with(runner).and_return(nil)
+
+      line = cmd.send(:polishing_status_line, runner)
+
+      expect(line).to include("polishing memory… (Esc to skip)")
+      expect(line).not_to include("ctx ")
+    end
+  end
+
   # Focus-gating (Slice 3): attach/detach drive the composer's main-render gate
   # so a still-running parent turn keeps streaming to its session but does NOT
   # paint the attached sub's view; the replay is exempt so the focused view
