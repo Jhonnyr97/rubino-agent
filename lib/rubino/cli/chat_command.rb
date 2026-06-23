@@ -1497,7 +1497,13 @@ module Rubino
           # the main timeline (arrows + Enter only — the picker's "◂ main" row does
           # the same). Routed through the input queue so the idle loop runs it the
           # same way a typed /detach would. nil when not attached.
-          on_back: (attached_to_agent? ? -> { input_queue.push("/detach") } : nil)
+          on_back: (attached_to_agent? ? -> { input_queue.push("/detach") } : nil),
+          # Seed the focus-gate from the PERSISTENT attach-state (#82): this
+          # composer is rebuilt every idle pass, so a flag set on the previous
+          # one at attach time is gone the moment the loop recreates it.
+          # Reconcile it here so the parent cards stay suppressed and the
+          # focused sub's live tail owns the screen.
+          attached: attached_to_agent?
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -1684,6 +1690,12 @@ module Rubino
       # model/context status bar. A cosmetic repaint must never break the prompt.
       def update_polishing_indicator(composer, runner, shown)
         return shown unless composer.respond_to?(:set_status)
+        # The polishing indicator belongs to the MAIN session the user stepped
+        # away from; while ATTACHED to a sub the focused view owns the screen, so
+        # this dim "polishing memory…" status must NOT bleed into it (#82). It's
+        # driven through #set_status (the status BAR), which is not behind the
+        # main-render gate, so suppress it at the source here.
+        return shown if attached_to_agent?
 
         running = runner&.polishing? || false
         return shown if running == shown
@@ -2087,6 +2099,12 @@ module Rubino
                                           # reader thread (not queued behind the still-running turn). Guarded by
                                           # attached_to_agent? so it's a no-op cursor key when not attached.
                                           on_back: -> { busy.call("/back") if attached_to_agent? },
+                                          # Seed the focus-gate from the persistent attach-state (#82):
+                                          # if a turn's composer is built while already attached to a
+                                          # sub (attach happened mid-turn, the parent kept running), it
+                                          # starts suppressed so the parent's stream/cards stay off the
+                                          # focused view.
+                                          attached: attached_to_agent?,
                                           on_busy_command: busy)
         composer.start
         real_stdout = $stdout

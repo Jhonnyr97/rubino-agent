@@ -178,7 +178,8 @@ module Rubino
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
                      on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
-                     on_busy_command: nil, on_back: nil, on_idle_interrupt: nil)
+                     on_busy_command: nil, on_back: nil, on_idle_interrupt: nil,
+                     attached: false)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -313,7 +314,7 @@ module Rubino
         @stop_pipe   = nil # self-pipe write end used to wake the reader's select
         @running     = false
         @suspended   = false
-        init_takeover_state
+        init_takeover_state(attached: attached)
         @cols = compute_cols
       end
 
@@ -323,7 +324,7 @@ module Rubino
       # is the dropdown block queued for the input thread and @takeover_snapshot
       # the [buffer, cursor] draft captured when it was queued (restored
       # verbatim after the dropdown closes).
-      def init_takeover_state
+      def init_takeover_state(attached: false)
         # Set when the reader sees an EOF/quit (empty-buffer Ctrl+D or a closed
         # stdin) so the idle poll loop can OBSERVE it and return nil (EOF),
         # mirroring how #idle_interrupt surfaces a Ctrl+C. Without this the reader
@@ -386,7 +387,16 @@ module Rubino
         # reader): the reader stays fully live so the user keeps typing into the
         # sub. @replaying exempts the attach/detach REPLAY (the focused view the
         # user is meant to see) from the gate — see #with_replay_exempt.
-        @main_render_suppressed = false
+        #
+        # SEEDED from the persistent host attach-state (`attached:`): the REPL
+        # builds a FRESH composer per idle iteration / per turn, so a flag set
+        # imperatively at attach time on the previous composer would be lost the
+        # moment the loop recreates one (the parent cards bleed back and the
+        # focused sub's live tail never owns the screen — #82). Whether the view is
+        # scoped to a sub lives on the host (@attached_id), so the composer
+        # RECONCILES its gate from that at construction — every composer that owns
+        # the screen while attached starts already suppressed.
+        @main_render_suppressed = attached
         @replaying              = false
       end
 
