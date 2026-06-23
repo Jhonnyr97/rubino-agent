@@ -393,7 +393,7 @@ module Rubino
         # Guard flush in the same way as the per-chunk emit so a final UI error
         # doesn't lose the response. (issue #21)
         flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        build_response(response, buffered, usage: usage, final_text_block: last_block)
+        build_response(response, buffered, usage: usage, final_text_block: last_block, streaming: true)
       end
 
       # Wires the per-round-trip ruby_llm callbacks (#355 #351) and returns a
@@ -1124,7 +1124,7 @@ module Rubino
       # the final response's own usage when no accumulator was wired (the
       # accumulator is only zero when ruby_llm surfaced no per-message usage, in
       # which case the final-message usage is the best we have).
-      def build_response(response, buffered = nil, usage: nil, final_text_block: nil)
+      def build_response(response, buffered = nil, usage: nil, final_text_block: nil, streaming: false)
         return nil unless response
 
         # Budget Halt (#355a): when ToolBridge returned RubyLLM::Tool::Halt to
@@ -1151,7 +1151,19 @@ module Rubino
 
         AdapterResponse.new(
           content: buffered && !buffered.empty? ? buffered : response.content,
-          tool_calls: extract_tool_calls(response),
+          # On the streaming path ruby_llm runs the WHOLE model↔tool loop inside
+          # one ask(): every tool was already executed mid-stream via ToolBridge
+          # (→ Agent::ToolExecutor — the single source of truth for the
+          # tool_started/tool_finished render + audit). The message ruby_llm
+          # RETURNS, however, can STILL carry those executed tool_calls (the
+          # anthropic-compatible MiniMax /anthropic path does), and handing them
+          # back made Loop#run's #has_tool_calls? branch re-run #execute_tool_calls
+          # on tools that already ran — firing a SECOND tool_finished and rendering
+          # the `└ ▸ sa_… · <name> · started` spawn confirmation TWICE (#53). They
+          # already ran, so the streaming response carries NONE; the Loop treats it
+          # as the terminal text turn. The non-streaming path keeps them: there
+          # ruby_llm returns the final TEXT message (no tool_calls) anyway.
+          tool_calls: streaming ? [] : extract_tool_calls(response),
           input_tokens: input_tokens,
           output_tokens: output_tokens,
           model_id: @model_id,
