@@ -22,6 +22,7 @@ module Rubino
       #   /sessions --all          → list without the row cap
       #   /sessions show <id>      → details, without switching into it
       #   /sessions delete <id>    → delete (asks to confirm)
+      #   /sessions rename <id> T  → set a human-readable title (#45)
       #   /sessions <id|title>     → resume
       class Sessions
         def initialize(ui:, runner:)
@@ -37,6 +38,7 @@ module Rubino
           case tokens.first
           when "show"   then session_verb(tokens[1..].join(" "), "show") { |s| CLI::SessionCommand.render(s, ui: @ui) }
           when "delete" then session_verb(tokens[1..].join(" "), "delete") { |s| delete_session(s) }
+          when "rename" then rename_session(tokens[1..])
           else resume_session(tokens.join(" "))
           end
         end
@@ -104,6 +106,28 @@ module Rubino
           CLI::SessionCommand.destroy_with_confirm(session, repo: Session::Repository.new, ui: @ui)
         end
 
+        # `/sessions rename <id|title> <new title>` — give a session a
+        # human-readable title (#45). A session is auto-titled from its first
+        # user message, so a throwaway opener ("say hi") leaves a useless
+        # `/sessions` row; both Hermes (`/title`) and Claude Code (session
+        # rename) let the user fix it explicitly. The id/title matcher and
+        # not-found/ambiguous handling are shared with show/delete; the new
+        # title is written through Session::Repository#update, which scrubs it.
+        # The first token is the session selector, the rest is the new title.
+        def rename_session(tokens)
+          query = tokens.first.to_s
+          new_title = tokens[1..].to_a.join(" ").strip
+          if query.empty? || new_title.empty?
+            @ui.info("Usage: /sessions rename <id> <new title>")
+            return :handled
+          end
+
+          session_verb(query, "rename") do |session|
+            Session::Repository.new.update(session[:id], title: new_title)
+            @ui.success(%(Renamed #{session[:id][0..7]} → "#{session_title(session.merge(title: new_title))}"))
+          end
+        end
+
         def list_sessions(all: false)
           sessions = Session::Repository.new.list(limit: all ? nil : sessions_list_limit)
           if sessions.empty?
@@ -126,7 +150,7 @@ module Rubino
             return { resume_session_id: chosen }
           end
 
-          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
+          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete|rename <id>")
           :handled
         end
 
@@ -140,7 +164,7 @@ module Rubino
              s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
           end
           @ui.table(headers: %w[ID Title Dir Created Status Msgs], rows: rows)
-          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
+          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete|rename <id>")
           :handled
         end
 
