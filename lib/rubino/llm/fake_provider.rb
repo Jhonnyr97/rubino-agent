@@ -253,7 +253,7 @@ module Rubino
       end
 
       def reasoning_hidden?
-        Config::ReasoningPrefs.mode(@config) == :hidden
+        Config::ReasoningPrefs.effective_mode(@config) == :hidden
       end
 
       # Pulls the override scenarios directory off the adapter's own config
