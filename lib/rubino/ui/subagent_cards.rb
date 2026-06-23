@@ -190,7 +190,8 @@ module Rubino
       # specialized subagent (explore/etc.) and the sync/headless path keep their
       # existing label. The result is defanged by the caller's #safe.
       def card_label(entry)
-        prompt_dimension(entry.prompt) || entry.subagent.to_s
+        prompt = entry.respond_to?(:prompt) ? entry.prompt : nil
+        prompt_dimension(prompt) || entry.subagent.to_s
       end
 
       # A short, human-meaningful name pulled from the task prompt, or nil when
