@@ -152,6 +152,44 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       expect(ui.lines).to be_empty
     end
 
+    # R2 — two children raise an approval at once. Only ONE modal is presented
+    # per call (the FIFO head); it advertises "(1 more queued)" so the user knows
+    # the second is waiting, and resolving the first lets the second present
+    # (with no backlog) on the next idle pass. The modals never overlap.
+    it "presents ONE approval modal at a time and advertises the queued backlog (R2)" do
+      first, first_gate   = stage_approval
+      second, second_gate = stage_approval
+      allow(first_gate).to receive(:decide)
+      allow(second_gate).to receive(:decide)
+
+      # The FIFO head is the child that parked FIRST.
+      expect(registry.awaiting_approval.first.id).to eq(first.id)
+
+      decisions << :once
+      handler.auto_resolve_pending
+      joined = ui.lines.join("\n")
+      # The active modal is the head AND it tells the user another is queued.
+      expect(joined).to include(first.id).and include("(1 more queued)")
+      # The SECOND child's modal body did NOT render — no overlap.
+      expect(joined).not_to include("(0 more queued)")
+      expect(first_gate).to have_received(:decide)
+      expect(second_gate).not_to have_received(:decide)
+
+      # The child's approval handler clears the gate state in its ensure once the
+      # decision is delivered; simulate that resume so the entry leaves the queue.
+      registry.end_approval(first.id)
+
+      # After the first resolves it is no longer parked; the second is now the
+      # sole head with no backlog, and the NEXT idle pass presents it.
+      ui.lines.clear
+      decisions << :once
+      handler.auto_resolve_pending
+      joined2 = ui.lines.join("\n")
+      expect(joined2).to include(second.id)
+      expect(joined2).not_to include("more queued")
+      expect(second_gate).to have_received(:decide)
+    end
+
     it "leaves the child waiting (no answer delivered) on an empty reply" do
       entry, _gate = stage_ask
       answers << "" # user dismissed the ◆ prompt without typing
