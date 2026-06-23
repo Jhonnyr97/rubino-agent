@@ -363,6 +363,86 @@ module Rubino
         false
       end
 
+      # The EXEC/network/system SUBSET of #dangerous_flag_form? — the forms that
+      # still warrant a prompt EVEN WHEN the OS write-jail is ACTIVE (slice 2
+      # Part C). The jail confines arbitrary WRITES, so the pure-write flag-forms
+      # (`sort -o`, `tree -o`, `find -delete`, `git --output`, `sed -i`, `dd of=`,
+      # `tee`, `tar` write/extract) no longer need a prompt once it is enforcing.
+      # But these still RUN ARBITRARY CODE (network exfil, reading secrets) or
+      # mutate the SYSTEM beyond the file jail, so the prompt stays a speed bump:
+      #   (a) git EXEC vectors (`-c`, `--config-env`, `--ext-diff`, `--textconv`,
+      #       `core.sshCommand`, …) and the EXEC/NETWORK git subcommands
+      #       (apply/am/hooks run attacker code; push/pull/fetch/clone/send-email
+      #       touch the network) — git --output ALONE (a pure write) does NOT
+      #       trip this;
+      #   (b) FORBIDDEN_FLAGS EXEC forms only: `find -exec`/`-execdir`/`-ok`/
+      #       `-okdir` (run a program) and `date -s` (mutate the system clock).
+      #       `find -delete`/`-fprintf`/… and `sort -o`/`tree -o` (pure writes)
+      #       do NOT trip this;
+      #   (c) a CODE_EXEC_HEAD carrying an INLINE-CODE/EVAL/EXEC flag
+      #       (`python -c`, `bash -c`, `perl -e`, `--eval`, `tar --to-command`,
+      #       `xargs/env/eval CMD`) — `sed -i`/`tee`/`dd of=` (pure writes) do
+      #       NOT trip this.
+      # Conservative split: when in doubt a form is treated as EXEC (keeps
+      # prompting). `tokens` is one already-split, non-chained segment.
+      def exec_flag_form?(tokens)
+        return false if tokens.empty?
+
+        head = tokens.first
+        return git_exec_vector?(tokens) || dangerous_git_exec_subcommand?(tokens) if head == "git"
+        return find_or_date_exec_form?(head, tokens) if FORBIDDEN_FLAGS.key?(head)
+        return code_exec_eval_form?(head, tokens) if CODE_EXEC_HEADS.include?(head)
+
+        false
+      end
+
+      # The EXEC subset of FORBIDDEN_FLAGS: find's program-running flags and
+      # `date -s` (system-clock mutation). find's pure-write flags (`-delete`,
+      # `-fprintf`, `-fprint`, `-fprint0`, `-fls`) and `sort -o`/`tree -o` are
+      # jail-contained writes and are NOT included.
+      FIND_EXEC_FLAGS = %w[-exec -execdir -ok -okdir].freeze
+      def find_or_date_exec_form?(head, tokens)
+        args = tokens.drop(1)
+        case head
+        when "find" then args.any? { |t| FIND_EXEC_FLAGS.include?(t) }
+        when "date" then args.any? { |t| t == "-s" || t == "--set" || t.start_with?("--set=") }
+        else false
+        end
+      end
+
+      # The EXEC subset of #dangerous_code_exec_form?: inline-code/eval/exec
+      # forms that RUN arbitrary code. The pure-write forms (`tee`, `sed -i`,
+      # `dd of=`) are dropped — the jail contains their writes. `tar
+      # --to-command`/`-O` pipe to a shell (exec) so they stay.
+      def code_exec_eval_form?(head, tokens)
+        args = tokens.drop(1)
+        return true if head == "tar" && args.any? { |t| tar_exec_flag?(t) }
+        return true if %w[xargs env eval].include?(head) && args.any? { |t| !t.start_with?("-") }
+
+        args.any? { |t| inline_code_flag?(t) }
+      end
+
+      # The EXEC/network git subcommands (run attacker code or touch the
+      # network), as opposed to the pure-write `--output` flag-form. Reuses the
+      # global-flag skipping of #dangerous_git? to find the subcommand token.
+      GIT_EXEC_SUBCOMMANDS = %w[
+        apply am rebase merge cherry-pick revert checkout switch restore
+        stash push pull fetch clone hook filter-branch send-email daemon
+      ].freeze
+      def dangerous_git_exec_subcommand?(tokens)
+        rest = tokens.drop(1)
+        i = 0
+        while i < rest.length
+          tok = rest[i]
+          break unless tok.start_with?("-")
+
+          i += 1 if %w[-c -C].include?(tok) && !rest[i + 1].nil?
+          i += 1
+        end
+        sub = rest[i]
+        !sub.nil? && GIT_EXEC_SUBCOMMANDS.include?(sub)
+      end
+
       # True when a CODE_EXEC_HEAD invocation carries an inline-code/eval/exec/
       # write flag (vs. running a plain script/file). Heads that ALWAYS write or
       # pipe to a shell (`tee`, `tar --to-command`, `dd of=`) are flagged on the
