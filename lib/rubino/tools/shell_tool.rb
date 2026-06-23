@@ -551,6 +551,15 @@ module Rubino
           foreground_result(stdout: output_thr.value,
                             duration_ms: elapsed_ms(started_at))
         end
+      rescue Rubino::Interrupted
+        # A user interrupt mid-command is NOT a shell error. Rubino::Interrupted
+        # is a StandardError, so without this it was swallowed into a generic
+        # `shell_error` result ("Shell error: interrupted by user") — the cancel
+        # token went unobserved, the loop continued, and the next (malformed)
+        # model round-trip was rejected with a raw `✗ error: invalid params`
+        # (#41). Re-raise so the cancel path unwinds the turn cleanly into the
+        # standardized `⎿ interrupted`, exactly like the polled-cancellation path.
+        raise
       rescue StandardError => e
         { text: "Shell error: #{e.message}", exit_code: nil, timed_out: false,
           cancelled: false, shell_error: true, duration_ms: 0 }
