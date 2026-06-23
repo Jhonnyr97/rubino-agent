@@ -38,6 +38,15 @@ Gem::Specification.new do |spec|
   spec.executables = ["rubino"]
   spec.require_paths = ["lib"]
 
+  # The Linux Landlock write-jail helper (Security::Sandbox). extconf.rb builds
+  # a tiny standalone `rubino-landlock` executable at install time. It DEGRADES
+  # GRACEFULLY: on macOS/Windows, without a compiler, or without Landlock
+  # headers it writes a no-op Makefile and exits 0, so `gem install` never
+  # breaks — the sandbox just reports the Linux mechanism unavailable and fails
+  # open (with a loud banner). The Ruby side also compiles it on first run as a
+  # fallback, so a source checkout / pristine bundle still gets confinement.
+  spec.extensions = ["ext/landlock/extconf.rb"]
+
   # Core dependencies
   spec.add_dependency "dry-configurable", "~> 1.0"
   spec.add_dependency "dry-schema", "~> 1.13"
