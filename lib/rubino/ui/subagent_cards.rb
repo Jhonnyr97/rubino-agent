@@ -143,7 +143,10 @@ module Rubino
         return "" unless entry.started_at
 
         finish = entry.finished_at || Time.now
-        Rubino::Util::Duration.human_duration(finish - entry.started_at)
+        # Live (still running) → precise so the counter advances every second
+        # instead of reading as frozen; a finished entry keeps the coarse final
+        # duration (#44).
+        Rubino::Util::Duration.human_duration(finish - entry.started_at, precise: entry.finished_at.nil?)
       end
 
       # First NON-BLANK line, elided to +max+. A ruby/shell approval command

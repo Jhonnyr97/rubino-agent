@@ -756,7 +756,9 @@ module Rubino
           finish = entry.finished_at || Time.now
           return "" unless entry.started_at
 
-          Rubino::Util::Duration.human_duration(finish - entry.started_at)
+          # Live (still running) → precise so the counter advances every second
+          # (#44); a finished entry keeps the coarse final duration.
+          Rubino::Util::Duration.human_duration(finish - entry.started_at, precise: entry.finished_at.nil?)
         end
 
         def pastel
