@@ -17,27 +17,21 @@ module Rubino
       # terminal, and LISTS (the script-safe static table) off a TTY. Resuming
       # used to require a SEPARATE `rubino chat --session <id>` after eyeballing
       # the list — the very-common "pick up where I left off" intent took two
-      # commands and a copy-paste. So the bare-on-a-TTY invocation now routes to
-      # `resume` (↑↓ select, Enter loads, Esc cancels — the SAME picker the
+      # commands and a copy-paste. So bare `rubino sessions` on a TTY now opens
+      # the picker (↑↓ select, Enter loads, Esc cancels — the SAME picker the
       # in-REPL `/sessions` uses); a pipe/redirect keeps the `list` table so
-      # scripts stay deterministic. We rewrite ONLY the no-subcommand args and
-      # otherwise defer to normal Thor dispatch — so `sessions list` (explicit),
-      # `sessions show|delete|compact`, `sessions help`, and the unknown-
-      # subcommand error (#67: `sessions frobnicate` must still exit non-zero)
-      # all behave exactly as before. A leading `--all`/`--limit`/`--status`
-      # is NOT a subcommand, so it seeds the picker (or the list off a TTY) too.
-      def self.start(given_args = ARGV, config = {})
-        given_args = [default_subcommand, *given_args] if no_subcommand?(given_args)
-        super
-      end
-
-      # The verb a bare `rubino sessions` resolves to: the interactive `resume`
-      # picker on a real terminal, the script-safe `list` table off one. The
-      # explicit `rubino sessions list` is untouched (it carries a subcommand
-      # token, so #no_subcommand? is false and this never fires).
-      def self.default_subcommand
-        interactive_terminal? ? "resume" : "list"
-      end
+      # scripts stay deterministic.
+      #
+      # Wiring note: `rubino sessions` reaches this class through Thor's
+      # `subcommand` dispatch (Commands → `invoke(SessionCommand, args)` →
+      # SessionCommand.dispatch), which does NOT call our `.start`. A no-arg /
+      # leading-flag invocation falls through to Thor's `default_command`, so we
+      # point that at `browse` — the TTY-gating dispatcher below — instead of
+      # the inherited `help` roster. `sessions list` (explicit),
+      # `show|delete|compact`, `sessions help`, and the unknown-subcommand error
+      # (#67: `sessions frobnicate` still exits non-zero) all keep their normal
+      # dispatch; only the bare / leading-flag form hits `browse`.
+      default_command :browse
 
       # True when stdin AND stdout are a real terminal, so the arrow-key picker
       # makes sense (it reads keys and redraws). The same gate the in-REPL
@@ -49,20 +43,37 @@ module Rubino
         false
       end
 
-      # True when the args carry no leading SUBCOMMAND token — either empty, or
-      # starting with an option flag (`--all`, `-h`). Such an invocation is the
-      # bare-`sessions` intent, so we route it to `list` (item 3). A first
-      # positional token (`show`, `compact`, or even a typo like `frobnicate`)
-      # is left for normal Thor dispatch so the unknown-subcommand error (#67)
-      # and the real subcommands are untouched.
-      def self.no_subcommand?(args)
-        first = args.find { |a| !a.to_s.empty? }
-        first.nil? || first.to_s.start_with?("-")
-      end
-
       # Drop Thor's inherited `tree` so its banner doesn't render the doubled
       # "rubino rubino sessions tree" (#327); the top-level `rubino tree` covers it.
       remove_command :tree
+
+      # The bare-`rubino sessions` dispatcher (Thor default_command): the
+      # interactive resume picker on a real terminal, the script-safe `list`
+      # table off one. Carries the SAME filter flags as `list`/`resume` so
+      # `rubino sessions --all` / `--status active` seed whichever surface runs.
+      # Hidden from the help roster (it is the implicit entry, not a verb a user
+      # types). `sessions list` / `sessions resume` remain explicit.
+      desc "browse", "List or pick a session (bare `rubino sessions`)", hide: true
+      option :limit,  type: :numeric, default: 20, desc: "Max results"
+      option :status, type: :string,  desc: "Filter by status"
+      option :search, type: :string,  desc: "Filter by title (substring match)"
+      option :all,    type: :boolean, default: false,
+                      desc: "Every directory's sessions, not just this one"
+      def browse(*unknown)
+        # An UNKNOWN subcommand (`rubino sessions frobnicate`) reaches the
+        # default command with its token unshifted back into the args (Thor
+        # `dispatch`: `!command && invoked_via_subcommand` → call default with
+        # the unmatched token). It must still EXIT NON-ZERO (#67), not silently
+        # open the picker — so a stray positional re-raises Thor's own
+        # "Could not find command" voice the top-level error handler renders.
+        raise Thor::UndefinedCommandError.new(unknown.first, self.class.all_commands.keys, nil) unless unknown.empty?
+
+        if self.class.interactive_terminal?
+          resume
+        else
+          list
+        end
+      end
 
       desc "list", "List recent sessions in this directory (--all for every dir)"
       option :limit,  type: :numeric, default: 20, desc: "Max results"
