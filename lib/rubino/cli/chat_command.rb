@@ -1701,7 +1701,7 @@ module Rubino
         running = runner&.polishing? || false
         return shown if running == shown
 
-        composer.set_status(running ? polishing_status_line : build_status_line(runner))
+        composer.set_status(running ? polishing_status_line(runner) : build_status_line(runner))
         running
       rescue StandardError
         shown
@@ -1709,10 +1709,21 @@ module Rubino
 
       # The dim, non-blocking indicator text. Reads as background (not a block)
       # precisely because the composer stays editable beneath it (#319).
-      def polishing_status_line
-        pastel.dim("polishing memory… (Esc to skip)")
+      #
+      # The polish worker runs for >1min after almost every turn, so it must NOT
+      # OCCLUDE the `ctx ~Xk/128k (Y%)` saturation bar for that whole window —
+      # ctx% at idle is the at-a-glance "how full am I / when will it compact"
+      # signal (S7 F2). Render the indicator ALONGSIDE the normal status bar
+      # (`polishing memory… (Esc to skip) · <mode · model · ctx …>`) so both stay
+      # visible; fall back to the bare indicator when there is no status bar.
+      def polishing_status_line(runner = nil)
+        indicator = pastel.dim("polishing memory… (Esc to skip)")
+        bar = runner && build_status_line(runner)
+        return indicator if bar.nil? || bar.to_s.strip.empty?
+
+        "#{indicator}#{pastel.dim(" · ")}#{bar.to_s.lstrip}"
       rescue StandardError
-        "polishing memory… (Esc to skip)"
+        pastel.dim("polishing memory… (Esc to skip)")
       end
 
       # Seed a carried-over draft into the composer char-by-char so cursor/delete
