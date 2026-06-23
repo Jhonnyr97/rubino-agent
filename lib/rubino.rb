@@ -299,8 +299,10 @@ module Rubino
         # cheap dir-writability probe, no DB write — and raise the accurate
         # "not writable" diagnosis instead, matching the migrate-path branch
         # below. A real (writable) home passes through untouched.
-        raise ConfigurationError, "rubino home / database is not writable: #{home_path}" \
-          unless home_writable?
+        unless home_writable?
+          raise ConfigurationError,
+                "rubino home / database is not writable: #{home_path}#{write_jail_db_hint}"
+        end
 
         return true
       end
@@ -334,10 +336,30 @@ module Rubino
       # set up". Everything else still degrades to false.
       if not_writable_error?(e)
         raise ConfigurationError,
-              "rubino home / database is not writable: #{home_path} (#{clean_errno_message(e.message)})"
+              "rubino home / database is not writable: #{home_path} " \
+              "(#{clean_errno_message(e.message)})#{write_jail_db_hint}"
       end
 
       false
+    end
+
+    # When the home/DB is read-only AND sits OUTSIDE the OS write-jail, the cause
+    # is almost always a nested `rubino` launched from inside the agent's own
+    # jailed shell tool: the shell is confined away from ~/.rubino, so it can't
+    # write the session DB. Reuse the #74 write-jail framing so a bare "not
+    # writable" becomes attributable (#Y2A). Empty string (no extra hint) unless
+    # the jail is PROVEN enforcing and the home is outside its writable roots;
+    # best-effort, never raises into the boot path.
+    def write_jail_db_hint
+      return "" unless defined?(Security::Sandbox) && Security::Sandbox.respond_to?(:enforcing?)
+      return "" unless Security::Sandbox.enforcing?
+      return "" if Security::Sandbox.writable?(home_path)
+
+      " — #{home_path} is outside the workspace write-jail, so a nested rubino " \
+        "launched from inside the agent's shell tool can't write the session DB " \
+        "(tools.sandbox). Run rubino outside the jailed shell."
+    rescue StandardError
+      ""
     end
 
     # Cheap, side-effect-free check that the home directory accepts writes — the
