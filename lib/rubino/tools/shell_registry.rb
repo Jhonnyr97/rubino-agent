@@ -14,9 +14,23 @@ module Rubino
     class ShellRegistry
       RING_BYTES = 256 * 1024 # cap per run; older bytes are dropped
 
+      # A backgrounded command that FINISHES before the next turn used to be
+      # dropped from the registry the moment a reader (shell_output/tail/kill)
+      # saw it non-running — which also collapsed `any?` to false, so the
+      # shell-management tools vanished from the schema next turn and the
+      # model could never fetch a short bg command's captured output (#78).
+      # Instead a finished entry is RETIRED: it stays in the registry (its
+      # buffer + exit status intact, retrievable by shell_output) and `any?`
+      # keeps the tools exposed, until it is read again OR these bounds reap
+      # it. RETIRED_TTL caps how long a finished-but-unread entry lingers;
+      # MAX_RETIRED caps how many we keep at once (oldest-retired evicted
+      # first) so the registry stays bounded across a long session.
+      RETIRED_TTL = 300 # seconds a finished, unread bg shell stays retrievable
+      MAX_RETIRED = 16  # most retired entries retained at once
+
       Entry = Struct.new(
         :id, :command, :cwd, :pid, :pgid, :wait_thr, :reader_thr,
-        :buffer, :mutex, :started_at, :read_offset, :stdin,
+        :buffer, :mutex, :started_at, :read_offset, :stdin, :retired_at,
         keyword_init: true
       )
 
@@ -126,14 +140,19 @@ module Rubino
         @mutex.synchronize { @entries[id] }
       end
 
-      # True when at least one background shell has been started this session
-      # (and not yet removed). The session-stable signal #313 gates the
-      # shell-management tools on: a normal turn with no background shell never
-      # ships shell_input/shell_output/shell_tail/shell_kill. Flips at most once
-      # per session (when the first background shell is spawned), so the cached
-      # tool prefix stays stable across ordinary turns.
+      # True when at least one background shell is RUNNING or has finished but is
+      # still retained (retired, unread, within TTL — see #retire). The
+      # session-stable signal #313 gates the shell-management tools on this: a
+      # normal turn with no background shell never ships
+      # shell_input/shell_output/shell_tail/shell_kill, but a SHORT bg command
+      # that finished before the next turn keeps shell_output exposed so the
+      # model can still fetch its captured output (#78). Prunes stale retired
+      # entries first so the gate closes once nothing is reachable.
       def any?
-        @mutex.synchronize { !@entries.empty? }
+        @mutex.synchronize do
+          prune_retired
+          !@entries.empty?
+        end
       end
 
       def remove(id)
@@ -144,6 +163,30 @@ module Rubino
         end
         close_stdin(entry) if entry
         entry
+      end
+
+      # Retires a FINISHED background shell instead of dropping it (#78): the
+      # entry stays in the registry — its captured output + exit status intact
+      # and retrievable by a later shell_output — and `any?` keeps the
+      # shell-management tools exposed, so a short bg command's output is still
+      # reachable on the next turn. The process is already dead, so its pgid is
+      # cleared from the teardown snapshot and its stdin closed. Bounded by
+      # RETIRED_TTL / MAX_RETIRED (pruned here and in #any?). Stamps retired_at
+      # on the first retire and is idempotent — a second read of a retired entry
+      # keeps the original timestamp so a re-read can't extend its lifetime
+      # indefinitely. No-op for an unknown or still-running id.
+      def retire(id)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return nil unless entry
+          return entry if entry.retired_at # already retired — keep original TTL clock
+
+          entry.retired_at = Time.now
+          close_stdin(entry)    # process is gone; release its stdin pipe
+          refresh_pgid_snapshot # a retired (dead) shell drops out of the teardown set
+          prune_retired
+          entry
+        end
       end
 
       # Writes `text` to the background process's stdin (with a trailing
@@ -225,7 +268,26 @@ module Rubino
       # writers; the trap-side reader in #kill_all_groups never locks. The new
       # Array is frozen so a reader can't see a half-built collection.
       def refresh_pgid_snapshot
-        @pgid_snapshot = (@entries.values.map(&:pgid) + @fg_pgids.keys).uniq.freeze
+        live_pgids = @entries.values.reject(&:retired_at).map(&:pgid)
+        @pgid_snapshot = (live_pgids + @fg_pgids.keys).uniq.freeze
+      end
+
+      # Bounds the retained-finished set (#78): drop retired entries older than
+      # RETIRED_TTL, then evict the oldest-retired ones until at most MAX_RETIRED
+      # remain. Running entries are never touched. Always called UNDER @mutex.
+      def prune_retired
+        retired = @entries.values.select(&:retired_at)
+        return if retired.empty?
+
+        now = Time.now
+        stale = retired.select { |e| now - e.retired_at > RETIRED_TTL }
+        survivors = retired - stale
+        overflow = survivors.sort_by(&:retired_at).first([survivors.size - MAX_RETIRED, 0].max)
+        (stale + overflow).each do |e|
+          @entries.delete(e.id)
+          close_stdin(e)
+        end
+        refresh_pgid_snapshot
       end
 
       def signal_group(sig, pgid)

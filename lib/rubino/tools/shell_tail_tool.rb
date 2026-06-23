@@ -84,7 +84,9 @@ module Rubino
         body      = Security::Redactor.redact_sensitive_text(body)
         status    = registry.status(entry)
         exit_code = registry.exit_code(entry)
-        registry.remove(run_id) unless status == :running
+        # Retire (don't drop) a finished shell so its captured output stays
+        # retrievable and the shell-management tools stay exposed (#78).
+        registry.retire(run_id) unless status == :running
 
         text = if body.empty?
                  tail_header(run_id, registry, entry, body)

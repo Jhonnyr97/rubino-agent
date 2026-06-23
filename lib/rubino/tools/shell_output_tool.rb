@@ -62,7 +62,10 @@ module Rubino
         header << " exit=#{exit_code}" if exit_code
         header << " (#{body.bytesize} bytes #{mode == "all" ? "total" : "new"})"
 
-        registry.remove(run_id) unless status == :running
+        # Retire (don't drop) a finished shell so its captured output stays
+        # retrievable on a later turn and the shell-management tools stay
+        # exposed — a SHORT bg command finishes before the next turn (#78).
+        registry.retire(run_id) unless status == :running
 
         if body.empty?
           status == :running ? "#{header}\n(no new output)" : header
