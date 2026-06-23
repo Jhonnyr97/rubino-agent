@@ -66,6 +66,10 @@ module Rubino
             return
           end
 
+          # Resolve the same discoverability aliases `/config get` uses (#36
+          # follow-up) so `/config reasoning full` sets display.reasoning, the
+          # key /status advertises and /reasoning writes — symmetric with get.
+          key = CLI::ConfigCommand::ALIASES.fetch(key, key)
           writer = Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
           writer.set(key, value)
           coerced = writer.get(key)
