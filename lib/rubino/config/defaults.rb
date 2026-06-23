@@ -119,6 +119,20 @@ module Rubino
             "model" => "",
             "base_url" => nil,
             "timeout" => 300
+          },
+          # Session titling. Deterministic by default (#103): a session is
+          # titled by Session::Repository.derive_title with NO model call. When
+          # this block names a CONCRETE aux backend distinct from the primary
+          # (a non-"main" provider OR a non-empty model), the first user message
+          # is instead summarized into a short title via the aux LLM (#45),
+          # falling back to the deterministic title on any error/empty result.
+          # At the defaults below (provider:"main", model:"") nothing is
+          # "configured", so titling stays deterministic.
+          "title" => {
+            "provider" => "main",
+            "model" => "",
+            "base_url" => nil,
+            "timeout" => 30
           }
         },
         "agent" => {

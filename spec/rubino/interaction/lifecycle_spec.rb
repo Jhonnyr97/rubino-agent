@@ -90,6 +90,75 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     end
   end
 
+  # #45: titling stays DETERMINISTIC by default, but uses an auxiliary LLM to
+  # summarize the first message into a title WHEN an aux title backend is
+  # configured distinct from the primary — falling back to the deterministic
+  # title on no-aux / aux error / empty result (titling must never break a turn).
+  describe "#maybe_set_title aux titling (#45)" do
+    subject(:lifecycle) do
+      described_class.new(session: session, event_bus: event_bus, ui: null_ui, config: config)
+    end
+
+    let(:session) { { id: "sess-1", model: "gpt-4o" } }
+    let(:session_repo) { instance_double(Rubino::Session::Repository, update: nil) }
+    let(:aux_client) { instance_double(Rubino::LLM::AuxiliaryClient) }
+
+    # An aux block whose provider is the "main" sentinel (the default) ⇒ NOT
+    # configured; an explicit provider/model ⇒ configured.
+    def config_with(title_cfg)
+      Rubino::Config::Configuration.new(raw: {
+                                          "model" => { "default" => "gpt-4o", "provider" => "openai" },
+                                          "auxiliary" => { "title" => title_cfg }
+                                        })
+    end
+
+    before { lifecycle.instance_variable_set(:@session_repo, session_repo) }
+
+    context "with an aux title backend configured" do
+      let(:config) { config_with("provider" => "anthropic", "model" => "claude-haiku") }
+
+      it "sets the AUX-generated title (sanitized) over the deterministic one" do
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
+        allow(aux_client).to receive(:call)
+          .with(task: "title", messages: anything)
+          .and_return(instance_double(Rubino::LLM::AdapterResponse, content: %("Add modulo op")))
+
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add modulo op")
+        lifecycle.send(:maybe_set_title, "please add a modulo operation to the calculator")
+        expect(session[:title]).to eq("Add modulo op")
+      end
+
+      it "falls back to the deterministic title when the aux call errors" do
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
+        allow(aux_client).to receive(:call).and_raise(StandardError, "boom")
+
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add a modulo operation")
+        lifecycle.send(:maybe_set_title, "Add a modulo operation")
+      end
+
+      it "falls back to the deterministic title when the aux result is empty" do
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
+        allow(aux_client).to receive(:call)
+          .and_return(instance_double(Rubino::LLM::AdapterResponse, content: "   "))
+
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add a modulo operation")
+        lifecycle.send(:maybe_set_title, "Add a modulo operation")
+      end
+    end
+
+    context "with NO aux title backend configured (default sentinel)" do
+      let(:config) { config_with("provider" => "main", "model" => "") }
+
+      it "uses the deterministic title and never calls the aux client" do
+        expect(Rubino::LLM::AuxiliaryClient).not_to receive(:new)
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add a modulo operation")
+
+        lifecycle.send(:maybe_set_title, "Add a modulo operation")
+        expect(session[:title]).to eq("Add a modulo operation")
+      end
+    end
+  end
+
   # F1 (P3 endurance): automatic budget-triggered compaction MUST swap the
   # active session to the compaction child, exactly as the manual /compact path
   # does (chat_command.rb: result[:compact_into] → build_runner on the child).
