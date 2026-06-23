@@ -52,10 +52,17 @@ module Rubino
       # provider 4xx or nonsensical behaviour at call time. Keyed by the LEAF
       # name so the same bound applies wherever the key appears (model.* and the
       # per-provider/aux mirrors). Bounds are inclusive.
+      #
+      # Keyed by FULL dotted path when the leaf name is ambiguous: the bare
+      # `threshold` is a 0..1 ratio for compression.threshold but an
+      # identical-call COUNT (>= 2) for doom_loop.threshold (#414) — keying the
+      # count by leaf name applied the 0..1 ratio bound to it, rejecting the
+      # shipped default of 5. #range_for tries the full path first, then the leaf.
       RANGES = {
         "temperature" => (0.0..2.0),
         "threshold" => (0.0..1.0),
-        "target_ratio" => (0.0..1.0)
+        "target_ratio" => (0.0..1.0),
+        "doom_loop.threshold" => (2..Float::INFINITY)
       }.freeze
 
       # Leaves that must be a POSITIVE integer when set: a turn/iteration cap of
@@ -154,10 +161,8 @@ module Rubino
 
           # Skip a leaf still at its seeded default: `setup` writes the FULL
           # default config to disk, so every default value is present in the raw
-          # hash. Those are valid by construction (and a leaf-name RANGES
-          # collision — e.g. doom_loop.threshold's count 5 vs a 0..1 ratio —
-          # would otherwise mis-flag a value the user never touched). Only a leaf
-          # the user CHANGED can be a hand-edit mistake.
+          # hash. Those are valid by construction. Only a leaf the user CHANGED
+          # can be a hand-edit mistake.
           next if seeded_default?(keys, value)
 
           key_path = keys.join(".")
@@ -241,7 +246,7 @@ module Rubino
         # nil to inherit the provider default, #414 — but `temperature banana`
         # must still be rejected, not silently stored as a string). A nil clears
         # the key and is allowed.
-        if RANGES.key?(keys.last.to_s)
+        if range_for(keys)
           return if coerced.nil? || coerced.is_a?(Numeric)
 
           raise ConfigurationError,
@@ -280,7 +285,7 @@ module Rubino
       # the type-unconstrained nil-default path. Out of range is a hard reject
       # with a clear message + non-zero exit, like the other set-time footguns.
       def check_range!(key_path, keys, value)
-        range = RANGES[keys.last.to_s]
+        range = range_for(keys)
         return unless range
 
         coerced = Writer.coerce_value(value)
@@ -290,6 +295,12 @@ module Rubino
         raise ConfigurationError,
               "invalid value for '#{key_path}': #{coerced} is out of range " \
               "(expected #{range.begin}..#{range.end})"
+      end
+
+      # The RANGE for a leaf: full dotted path first (so an ambiguous leaf name
+      # like `threshold` gets its path-specific bound), then the bare leaf name.
+      def range_for(keys)
+        RANGES[keys.join(".")] || RANGES[keys.last.to_s]
       end
 
       # A turn/iteration cap leaf must be a POSITIVE integer when set. A 0 or

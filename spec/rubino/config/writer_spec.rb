@@ -183,6 +183,27 @@ RSpec.describe Rubino::Config::Writer do
         .to raise_error(Rubino::ConfigurationError, /out of range/)
     end
 
+    # FINDING #60: doom_loop.threshold is an identical-call COUNT (consumed as an
+    # Integer >= 2 by Configuration#doom_loop_threshold), NOT a 0..1 ratio. The
+    # range was keyed by bare leaf name, so it inherited compression.threshold's
+    # 0..1 bound and the SHIPPED DEFAULT of 5 failed its own validator — `set
+    # doom_loop.threshold 8` was rejected while 0.5 was accepted.
+    it "accepts the shipped default for doom_loop.threshold against its own validator" do
+      shipped = Rubino::Config::Defaults.to_hash.dig("doom_loop", "threshold")
+      expect { writer.set("doom_loop.threshold", shipped.to_s) }.not_to raise_error
+      expect(writer.get("doom_loop.threshold")).to eq(shipped)
+    end
+
+    it "accepts a doom_loop.threshold count above the ratio bound (8)" do
+      writer.set("doom_loop.threshold", "8")
+      expect(writer.get("doom_loop.threshold")).to eq(8)
+    end
+
+    it "rejects a doom_loop.threshold below the count floor (1)" do
+      expect { writer.set("doom_loop.threshold", "1") }
+        .to raise_error(Rubino::ConfigurationError, /out of range/)
+    end
+
     it "rejects a non-URL value for a base_url leaf (providers.minimax.base_url)" do
       expect { writer.set("providers.minimax.base_url", "not a url") }
         .to raise_error(Rubino::ConfigurationError,

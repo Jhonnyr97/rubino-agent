@@ -17,8 +17,15 @@ RSpec.describe Rubino::Config::Validator do
     end
 
     it "flags an out-of-range bounded value" do
-      issues = described_class.warnings({ "doom_loop" => { "threshold" => 9.9 } })
+      issues = described_class.warnings({ "compression" => { "threshold" => 9.9 } })
       expect(issues).to include(a_string_matching(/threshold.*out of range/i))
+    end
+
+    it "flags a doom_loop.threshold below its count floor (path-keyed range)" do
+      # doom_loop.threshold is an identical-call COUNT (>= 2), not a 0..1 ratio:
+      # 1 is below the floor and must be flagged.
+      issues = described_class.warnings({ "doom_loop" => { "threshold" => 1 } })
+      expect(issues).to include(a_string_matching(/doom_loop\.threshold.*out of range/i))
     end
 
     it "produces NO warnings for the full seeded default config (no false positives)" do
