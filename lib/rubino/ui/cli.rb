@@ -2080,13 +2080,55 @@ module Rubino
         # tail row can't survive above the rendered block at the scroll boundary
         # (#265) — the same single-frame discipline the final flush uses.
         completed.each { |block| commit_block_atomic(margined_render(block)) }
-        # Live region: a small ROLLING window over the in-flight block — its last
-        # few raw lines, so a long list/table block keeps its recent context
-        # visible while it streams instead of vanishing to a single flickering
-        # line until the whole block commits (#127). Bounded, so a long open
-        # fence can never push the prompt off-screen; the block still snaps to
-        # rendered markdown the moment it completes.
-        show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
+        # Live region. While a GFM table is in flight, paint a FITTED, growing
+        # partial table (header + completed rows) instead of the raw `| … |`
+        # rows — the rows mid-cell soft-wrap with no borders otherwise (the
+        # streaming-table garble). Otherwise a small ROLLING window over the
+        # in-flight block — its last few raw lines, so a long list/prose block
+        # keeps its recent context visible while it streams instead of vanishing
+        # to a single flickering line (#127). Both are bounded, so neither can
+        # push the prompt off-screen; the block snaps to rendered markdown the
+        # moment it completes.
+        if @stream_md.in_table?
+          show_live_table(@stream_md.table_rows_so_far)
+        else
+          show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
+        end
+      end
+
+      # Paint the growing partial table in the live region: re-render the
+      # completed-rows-so-far through MarkdownRenderer's solid table path
+      # (fitted to markdown_width, balanced columns, #95 floor — never a
+      # mid-cell raw-pipe wrap), capped to LIVE_TAIL_ROWS data rows so a tall
+      # table can't push the prompt off-screen (header + last K rows show; the
+      # full table snaps in on completion via #flush_content_stream). Uses the
+      # SAME single-frame live-region seam (#paint_live) and #265 ghost guard as
+      # the raw tail, so the partial table is cleanly replaced each row and torn
+      # down when the block commits.
+      def show_live_table(rows)
+        lines = render_partial_table_lines(rows)
+        if lines.empty?
+          note_live_tail("")
+          paint_live("")
+          return
+        end
+
+        frame = lines.join("\n")
+        note_live_tail(frame)
+        paint_live(frame)
+      end
+
+      # Completed-rows-so-far -> MD_MARGIN-indented, ANSI-styled live-table lines.
+      # The source pipe rows are untrusted model text (CWE-150): defang escapes
+      # before parsing, exactly as #render_markdown_block does for committed
+      # blocks. Capped to LIVE_TAIL_ROWS data rows to keep the live region small.
+      def render_partial_table_lines(rows)
+        safe_rows = Array(rows).map { |line| Util::Output.sanitize_terminal(line.to_s) }
+        MarkdownRenderer.new(width: markdown_width)
+                        .render_partial_table(safe_rows, max_rows: LIVE_TAIL_ROWS)
+                        .map do |line_tokens|
+          "#{MD_MARGIN}#{line_tokens.map { |token, style| style.nil? ? token : apply_style(token, style) }.join}"
+        end
       end
 
       # Erases an in-place raw tail on the plain (no-#live) path before a commit.

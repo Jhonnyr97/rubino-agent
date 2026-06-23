@@ -1,0 +1,49 @@
+# Option-B GROWING-table scenario. A tall table (more rows than the live-region
+# budget of LIVE_TAIL_ROWS=3 data rows) emitted one row per delta with a pause
+# between each, so each COMPLETED row visibly appears in the fitted live partial
+# table. Once the table exceeds the budget the live partial shows the header +
+# the LAST 3 rows (capped, never pushing the prompt off-screen); on the closing
+# blank line the FULL table snaps into scrollback via the committed path. PASS:
+# each completed row is visible in the live partial as it lands; the live partial
+# is bordered/fitted (no raw `| … |`); the final snap shows ALL rows.
+events:
+  - type: content
+    text: "Counting up:\n\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| N | Squared |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| --- | --- |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| 1 | 1 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| 2 | 4 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| 3 | 9 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| 4 | 16 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| 5 | 25 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "| 6 | 36 |\n"
+  - type: delay_seconds
+    value: 0.30
+  - type: content
+    text: "\nDone counting."
+  - type: delay_seconds
+    value: 0.30
