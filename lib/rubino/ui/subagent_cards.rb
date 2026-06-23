@@ -144,8 +144,14 @@ module Rubino
         "#{LiveRegion.take_first_columns(row, width - 1)}#{@pastel.dim("…")}"
       end
 
+      # A child is shown on the footer card stack for as long as the REGISTRY
+      # considers it alive — the exact same set #running selects (R1). The card
+      # formatter must not carry its OWN narrower status list: dropping
+      # :blocked_on_parent here (a child parked asking its agent-parent, still
+      # holding a slot) silently vanished a live sibling from the footer while
+      # the switcher/picker still listed it. Delegate to the one oracle.
       def live?(entry)
-        %i[running needs_approval blocked_on_human stopping].include?(entry.status)
+        Tools::BackgroundTasks.live_status?(entry.status)
       end
 
       # Shared hint under the block. When one or more children are blocked on the
