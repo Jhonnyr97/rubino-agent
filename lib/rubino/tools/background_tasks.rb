@@ -141,6 +141,18 @@ module Rubino
       # deliver-or-report-undelivered invariant for real steer notes is intact.
       ANSWER_NOTE_PREFIX = "[parent answer] "
 
+      # The statuses under which a child still holds a concurrency slot: its
+      # worker thread is alive — actively running, parked on a human approval,
+      # parked on an escalated ask_parent (waiting on the human OR its
+      # agent-parent), or unwinding after a stop request. This is the SINGLE
+      # source of truth for "is this child still alive?", shared by the registry
+      # itself (#running / #reserve cap) AND by every UI surface that lists live
+      # children (the footer cards, the attached switcher, the navigable picker)
+      # so they can never drift apart and silently drop a live-but-quiet child
+      # from one surface while another still shows it (R1). Any new parked state
+      # added to the lifecycle is made visible everywhere by editing this one set.
+      LIVE_STATUSES = %i[running needs_approval blocked_on_human blocked_on_parent stopping].freeze
+
       class << self
         def instance
           @instance ||= new
@@ -149,6 +161,14 @@ module Rubino
         # Test seam: drop all state between examples.
         def reset!
           @instance = nil
+        end
+
+        # The shared liveness oracle (see LIVE_STATUSES). Public so the UI
+        # surfaces that format a registry snapshot (SubagentCards, AgentMenu)
+        # filter by the EXACT same rule the registry uses, with no duplicated
+        # status list to fall out of sync.
+        def live_status?(status)
+          LIVE_STATUSES.include?(status)
         end
       end
 
@@ -701,13 +721,11 @@ module Rubino
         fallback
       end
 
-      # A child holds a concurrency slot while its thread is alive — whether
-      # actively running, parked on a human approval, parked on an escalated
-      # ask_parent question (waiting on the human OR on its agent-parent), or
-      # unwinding after a stop request (:stopping). All of these hold a live
-      # thread, so all count as live.
+      # Instance-side shim onto the canonical class predicate (LIVE_STATUSES) so
+      # the registry's own callers (#running, #reserve cap) and the UI surfaces
+      # share ONE definition of "alive". See LIVE_STATUSES for the rationale.
       def live_status?(status)
-        %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(status)
+        self.class.live_status?(status)
       end
 
       # A child has reached a TERMINAL state once #complete has run: its worker
