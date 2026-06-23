@@ -357,7 +357,17 @@ module Rubino
           "mode" => "inline",
           "poll_interval" => 2,
           "max_attempts" => 3,
-          "retry_backoff_seconds" => 30
+          "retry_backoff_seconds" => 30,
+          # How long a CLAIMED (queued -> running) row may stay `running` before
+          # it's presumed abandoned and reclaimed (#76). A worker that claims a
+          # row and then dies / is quit / hangs leaves it `running` with
+          # locked_by set; nothing in the queue scan re-picks a `running` row, so
+          # pre-fix it sat forever (0 attempts, queue grew across sessions). The
+          # next drain reclaims any row whose lock is older than this lease,
+          # bumping attempts so a genuinely stuck job still goes terminal at
+          # max_attempts rather than re-running forever. Generous (15 min) so a
+          # legitimately slow aux-LLM job is never yanked out from under itself.
+          "lock_lease_seconds" => 900
         },
         # Nested-subagent (the `task` delegation tool) caps. A subagent CAN now
         # spawn its own subagents; these three caps bound the tree so depth ×
