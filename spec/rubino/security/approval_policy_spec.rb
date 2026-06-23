@@ -773,6 +773,77 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       end
     end
 
+    # NARROW dangerous WRITE/EXEC flag-form screen for the default gate.
+    # Under dangerous_only, DangerousPatterns alone let genuinely dangerous
+    # flag-forms (git config/exec, inline-code interpreters, in-place edits,
+    # find -delete, tee) auto-run unprompted. shell_confirm_decision now also
+    # prompts for those, WITHOUT prompting on ordinary script/filter invocations
+    # a coding agent runs constantly (`python test.py`, `sed 's/a/b/'`).
+    context "dangerous_only flag-form screen (narrow)" do
+      let(:pol) do
+        described_class.new(config: test_configuration(
+          "approvals" => { "mode" => "manual" },
+          "security" => { "confirm_policy" => "dangerous_only" }
+        ))
+      end
+
+      def decide(cmd)
+        pol.decide(shell, arguments: { "command" => cmd })
+      end
+
+      # --- must PROMPT (these FAIL pre-fix: today everything safe auto-allows) ---
+      must_prompt = {
+        "git --output write flag" => "git diff --output=/tmp/x",
+        "git -c alias exec" => "git -c alias.x='!touch /tmp/p' x",
+        "git -c core.pager exec" => "git -c core.pager='!sh' log",
+        "sort -o write" => "sort -o /tmp/x f",
+        "sort --output write" => "sort --output=/tmp/x f",
+        "sed -i in-place" => "sed -i s/a/b/ f",
+        "sed --in-place" => "sed --in-place s/a/b/ f",
+        "python3 -c inline" => 'python3 -c "import os;os.system(\'id\')"',
+        "bash -c inline" => "bash -c 'rm x'",
+        "sh -c inline" => "sh -c 'echo hi'",
+        "perl -e eval" => "perl -e 'print 1'",
+        "ruby -e eval" => "ruby -e 'puts 1'",
+        "node -e eval" => "node -e 'console.log(1)'",
+        "node --eval" => "node --eval 'console.log(1)'",
+        "find -delete" => "find . -delete",
+        "find -exec" => "find . -exec rm {} ;",
+        "tar --to-command" => "tar --to-command=sh -xf a.tar",
+        "tee always writes" => "tee /tmp/x",
+        "chained sort -o after echo" => "echo hi && sort -o /tmp/x f"
+      }
+      must_prompt.each do |label, cmd|
+        it "prompts (:ask) for #{label}: #{cmd}" do
+          expect(decide(cmd)).to eq(:ask)
+        end
+      end
+
+      # --- must AUTO-RUN (guard against over-broadening; pass pre-fix) ---
+      must_allow = {
+        "python script file" => "python3 test.py",
+        "node script file" => "node build.js",
+        "bash script file" => "bash script.sh",
+        "ruby script file" => "ruby app.rb",
+        "sed stream filter" => "sed 's/a/b/' f",
+        "awk stream filter" => "awk '{print $1}' f",
+        "perl -pe read filter" => "perl -pe 's/a/b/' f",
+        "git diff" => "git diff",
+        "git log" => "git log",
+        "git status" => "git status",
+        "sort plain" => "sort f",
+        "grep" => "grep x f",
+        "cat" => "cat f",
+        "make build" => "make build",
+        "ls -la" => "ls -la"
+      }
+      must_allow.each do |label, cmd|
+        it "auto-runs (:allow) for #{label}: #{cmd}" do
+          expect(decide(cmd)).to eq(:allow)
+        end
+      end
+    end
+
     # item 7: confirm_policy is the SOLE source of truth — the legacy
     # require_confirmation_for_shell alias was removed and is no longer honored.
     context "removed require_confirmation_for_shell alias" do

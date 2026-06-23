@@ -117,12 +117,24 @@ module Rubino
 
         # One-line approval-policy summary so a newcomer knows what will prompt.
         # Mode is authoritative: yolo skips every approval, plan filters mutating
-        # tools out entirely; otherwise approvals come from config.
+        # tools out entirely; otherwise the confirm_policy decides which shell
+        # commands prompt (dangerous_only is the default — risky commands and
+        # secret/out-of-workspace writes prompt, safe commands and in-workspace
+        # edits run automatically; confirm_all prompts on every shell command).
         def status_approvals_line
           case Rubino::Modes.current
           when :yolo then "skipped (yolo mode — nothing prompts)"
           when :plan then "read-only mode — no edits/shell to approve"
-          else            "from config (mutating commands prompt)"
+          else            status_confirm_policy_line
+          end
+        end
+
+        # The confirm_policy copy for the normal (non-yolo, non-plan) modes.
+        def status_confirm_policy_line
+          if Rubino.configuration.confirm_policy == :confirm_all
+            "confirm_all — every shell command prompts"
+          else
+            "dangerous_only — risky commands prompt; safe commands + in-workspace edits run automatically"
           end
         end
 
