@@ -124,6 +124,13 @@ module Rubino
 
           session_verb(query, "rename") do |session|
             Session::Repository.new.update(session[:id], title: new_title)
+            # If this is the session the live runner sits on, refresh its
+            # in-memory title too. /status reads @runner.session[:title] (a
+            # boot-time snapshot the rename never touched), so without this it
+            # kept showing the STALE auto-title until a compaction forked a new
+            # session id (S7 F3).
+            live = @runner&.session
+            live[:title] = new_title if live && live[:id] == session[:id]
             @ui.success(%(Renamed #{session[:id][0..7]} → "#{session_title(session.merge(title: new_title))}"))
           end
         end
