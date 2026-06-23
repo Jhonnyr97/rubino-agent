@@ -1,0 +1,34 @@
+# Table immediately followed by a paragraph with NO blank line between them. The
+# splitter must close the table block on the first non-pipe (prose) line — the
+# table renders as a fitted table, the prose becomes a SEPARATE block — exercising
+# the table-exit branch (and confirming MarkdownRenderer#normalize's glued-table
+# tolerance still holds for the committed render).
+events:
+  - type: content
+    text: "Status:\n\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Component | State |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| --- | --- |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| API | Done |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| CLI | Done |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "That concludes the status. "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "Everything is shipped."
+  - type: delay_seconds
+    value: 0.20

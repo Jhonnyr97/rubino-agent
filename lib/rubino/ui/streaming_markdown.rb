@@ -56,6 +56,12 @@ module Rubino
       # produced the "1. Mercury / 1. Venus / 1. Earth" off-by-one (B4).
       LIST_ITEM_RE = /\A\s*(?:[-*+]|\d+[.)])\s/
 
+      # A GFM pipe-table separator row, e.g. "|---|:--:|---|" or "---|---". The
+      # EXACT regex MarkdownRenderer uses to detect a table (markdown_renderer.rb)
+      # — DRY: a separator row is the single unambiguous "this is a table" signal,
+      # so the splitter and the renderer must agree on what one looks like.
+      TABLE_SEP_RE = MarkdownRenderer::TABLE_SEP_RE
+
       def initialize
         @pending = +""   # un-newlined remainder (the live tail-in-progress line)
         @block   = []    # completed lines accumulated for the current block
@@ -69,6 +75,30 @@ module Rubino
         @fence_depth = nil
         @in_list  = false # current block is a markdown list (keep loose items together)
         @blanks   = 0     # blank lines buffered inside a list, re-emitted iff it continues
+        # A GFM pipe table is its OWN block type (like a fence): once the
+        # separator row is consumed after a header-ish row we hold every
+        # following pipe row in the block and NEVER show raw pipes live — the
+        # CLI re-renders the completed-rows-so-far as a fitted partial table
+        # (Option B) instead. A blank line or a non-pipe line ENDS the table.
+        @in_table = false
+      end
+
+      # True while the in-flight block is a GFM pipe table (header + separator
+      # consumed, rows still arriving). The CLI uses this to paint a fitted
+      # partial table in the live region instead of leaking raw `| … |` rows.
+      def in_table?
+        @in_table
+      end
+
+      # The table-so-far as COMPLETED lines (header, separator, and every
+      # fully-arrived data row) — the in-flight last partial row (the un-newlined
+      # @pending remainder) is intentionally DROPPED so the partial render never
+      # shows a half-typed row. Empty unless a table block is in flight. Feeding
+      # MarkdownRenderer this subset yields a correctly-bordered growing table.
+      def table_rows_so_far
+        return [] unless @in_table
+
+        @block.dup
       end
 
       # Accumulate streamed text; return the list of block texts that became
@@ -112,6 +142,12 @@ module Rubino
       # whole block committed (#127). Earlier lines stay buffered and the block
       # still snaps to rendered markdown the moment it completes.
       def live_tail(rows = 1)
+        # While a table is in flight the raw `| col | col |` rows must NEVER be
+        # shown live (they wrap mid-cell, no borders): the CLI paints a fitted
+        # partial table (from #table_rows_so_far) instead. Return empty here so
+        # no caller can leak raw pipes regardless of which branch it took.
+        return "" if @in_table
+
         lines = @block.last(rows)
         lines += [@pending] unless @pending.empty?
         lines.last(rows).join("\n")
@@ -135,6 +171,7 @@ module Rubino
         @fence_depth = nil
         @in_list = false
         @blanks = 0
+        @in_table = false
         text
       end
 
@@ -165,6 +202,13 @@ module Rubino
           @block << line
           return nil
         end
+
+        # A GFM pipe table is its own block type (like a fence): handled in
+        # #consume_table_line, which detects a table start (separator row after a
+        # header-ish row), holds its rows, and closes it on a blank/non-row line.
+        # Returns a 2-tuple [handled?, completed_block_or_nil].
+        handled, table_block = consume_table_line(line)
+        return table_block if handled
 
         if line.strip.empty?
           # A blank line inside a list is BUFFERED, not a separator: it only ends
@@ -232,6 +276,51 @@ module Rubino
         text = @block.join("\n")
         @block = []
         @in_list = false
+        text
+      end
+
+      # Handle one line for the GFM-table block type. Returns [handled?, block]:
+      #   * [true, nil]  the line was absorbed into the (continuing) table
+      #   * [true, text] the line closed the table; +text+ is the completed block
+      #     (a non-row line that closed the table is re-buffered to start the
+      #     NEXT block, mirroring the list-exit branch)
+      #   * [false, nil] this line is not table-related; the caller handles it
+      #
+      # A table STARTS when a separator row is consumed right after a header-ish
+      # row (the previously-buffered line contained a `|`) — the exact signal
+      # MarkdownRenderer#normalize keys on; the header is already buffered, so we
+      # just absorb the separator. While IN a table a blank line or a non-pipe
+      # line ENDS it (blank = separator consumed; a non-row line starts a fresh
+      # block); any other line is another row that keeps accumulating.
+      def consume_table_line(line)
+        unless @in_table
+          if line.match?(TABLE_SEP_RE) && @block.last&.include?("|")
+            @in_table = true
+            @block << line
+            return [true, nil]
+          end
+          return [false, nil]
+        end
+
+        if line.strip.empty?
+          [true, take_table]
+        elsif !line.include?("|")
+          finished = take_table
+          @block << line
+          [true, finished]
+        else
+          @block << line # another table row keeps accumulating
+          [true, nil]
+        end
+      end
+
+      # Close the in-flight table block: join its buffered lines (header,
+      # separator, data rows) and reset table state. The committed text renders
+      # through MarkdownRenderer's solid table path (balanced_column_widths).
+      def take_table
+        text = @block.join("\n")
+        @block = []
+        @in_table = false
         text
       end
     end

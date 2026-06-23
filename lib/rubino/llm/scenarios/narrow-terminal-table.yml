@@ -1,0 +1,47 @@
+# The same 5-column table as wide-table.yml streamed at a VERY NARROW width
+# (drive the terminal at ~40 cols). Exercises balanced_column_widths /
+# MIN_COL_WIDTH floor and the winsize-under-report floor (markdown_width, #95)
+# on the LIVE partial-table path: columns must WRAP (cells break across lines),
+# never collapse to 1 char, never garble — both in the growing live render and
+# the committed snap. Run this scenario in a 40-column terminal.
+events:
+  - type: content
+    text: "Feature matrix:\n\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Feature | Status | Priority | Owner | Notes |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| --- | --- | --- | --- | --- |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| HTTP API | Done | High | Backend "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Stable in prod since release v0.2 |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| CLI Chat | Done | High | Frontend "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Live markdown blocks committed and styled |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| TUI Mode | In Progress | Medium | Platform "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Live region repaint work ongoing |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "\nMatrix complete."
+  - type: delay_seconds
+    value: 0.20
