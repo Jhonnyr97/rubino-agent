@@ -78,4 +78,33 @@ RSpec.describe Rubino::Tools::Result do
       expect(result.output).to eq("Tool execution denied by policy (not by the user).")
     end
   end
+
+  describe "#errorish?" do
+    it "is true for a soft-error output with the canonical 'Error:' prefix" do
+      result = described_class.success(name: "edit", call_id: "e1", output: "Error: old_string not found")
+      expect(result).to be_errorish
+    end
+
+    # FINDING #65 mislabel: the file tools' rescue returns "Error editing …" /
+    # "Error reading …" / "Error writing …" — NO colon after "Error". The old
+    # start_with?("Error:") check missed those, so a failed edit (e.g. the
+    # accented-file write crash) rendered with a green ✓ instead of ✗.
+    it "is true for the file tools' colon-less 'Error <verb>ing …' messages" do
+      %w[edit read write].each do |verb|
+        out = "Error #{verb}ing notes/format.py: some failure"
+        result = described_class.success(name: verb, call_id: "e2", output: out)
+        expect(result).to be_errorish, "expected #{out.inspect} to be errorish"
+      end
+    end
+
+    it "is false for a normal success output that merely mentions errors" do
+      result = described_class.success(name: "shell", call_id: "e3", output: "Errors found: 0\n")
+      expect(result).not_to be_errorish
+    end
+
+    it "is true whenever an error_code is set, regardless of the text" do
+      result = described_class.success(name: "read", call_id: "e4", output: "ok", error_code: :stale_read)
+      expect(result).to be_errorish
+    end
+  end
 end

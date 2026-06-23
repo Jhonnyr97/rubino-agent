@@ -78,6 +78,18 @@ module Rubino
         tmp = File.join(dir, ".#{File.basename(path)}.#{Process.pid}.#{rand(1 << 32)}.tmp")
         begin
           File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |f|
+            # Write the bytes VERBATIM, regardless of the process's encoding
+            # environment. The edit/multi_edit read-modify-write builds +contents+
+            # as a BINARY (ASCII-8BIT) buffer so untouched non-UTF-8 bytes survive
+            # (#326). Without binmode, a process whose Encoding.default_internal is
+            # UTF-8 (set by some locales / a `ruby -Eutf-8:utf-8`) makes IO#write
+            # TRANSCODE that binary buffer ASCII-8BIT→UTF-8 and raise
+            # Encoding::UndefinedConversionError on the first high byte (e.g. the
+            # `\xC3` of a `José` on an edited line) — an intermittent, env-driven
+            # in-session crash that never reproduces where default_internal is nil.
+            # binmode pins the stream to raw bytes (external ASCII-8BIT, no internal
+            # transcode), so an accented edit writes its exact bytes everywhere.
+            f.binmode
             f.write(contents)
             f.flush
             f.fsync
