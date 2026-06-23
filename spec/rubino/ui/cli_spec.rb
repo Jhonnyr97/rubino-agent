@@ -1333,6 +1333,38 @@ RSpec.describe Rubino::UI::CLI do
       expect { ui.note("turn · 9s · 0 tools · 1.3k tok") }
         .to output(/┄ turn · 9s · 0 tools · 1\.3k tok ┄/).to_stdout
     end
+
+    # R2/Y4 — an async parent-surface notice (a 2nd subagent's `● … needs
+    # approval` line / a `✓ … done` completion) can fire from a worker thread
+    # WHILE an approval modal owns the raw terminal. It MUST go through the
+    # composer's committed paint (#print_above), which PARKS the line while the
+    # composer is suspended and flushes it at column 0 on resume — NOT a raw
+    # $stdout.puts that lands mid-line over the modal at an offset column.
+    it "routes the async note through the composer's parked-paint, not raw stdout (R2/Y4)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      committed = []
+      allow(composer).to receive(:print_above) { |s| committed << s }
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      out = capture_stdout { ui.note("● sa_69 · needs approval: rm -rf /tmp/x — /agents sa_69") }
+
+      # The notice rode #print_above (so suspend can park it), carrying the body.
+      expect(committed.join("\n")).to include("● sa_69 · needs approval: rm -rf /tmp/x")
+      # Nothing leaked straight to the raw terminal where it would tear the modal.
+      expect(out).to eq("")
+    end
+
+    it "routes the async subagent completion line through the parked-paint too (Y4)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      committed = []
+      allow(composer).to receive(:print_above) { |s| committed << s }
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      out = capture_stdout { ui.subagent_lifecycle("✓ sa_fc · general · done", status: "done", id: "sa_fc") }
+
+      expect(committed.join("\n")).to include("✓ sa_fc · general · done")
+      expect(out).to eq("")
+    end
   end
 
   describe "#input_injected" do

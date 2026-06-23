@@ -556,7 +556,7 @@ module Rubino
 
           return resolve_agent_budget(entry, gate) if entry.budget_request
 
-          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
+          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}#{queued_approval_suffix}")
           @ui.info("needs approval to run:")
           @ui.info("  #{entry.approval_command.to_s.empty? ? entry.approval_question : entry.approval_command}")
           choice = ask_approval_answer(entry)
@@ -574,6 +574,16 @@ module Rubino
           @ui.info(decision ? "Approved #{entry.id}." : "Denied #{entry.id}.")
         end
 
+        # The "(N more queued)" tail the active approval/budget modal shows when
+        # other children are ALSO parked on an approval behind this one (R2):
+        # only one modal is presented at a time, so this tells the user more are
+        # waiting and that resolving the current one dequeues the next. Empty
+        # when this is the only parked child.
+        def queued_approval_suffix
+          n = Tools::BackgroundTasks.instance.queued_approval_count
+          n.positive? ? "   (#{n} more queued)" : ""
+        end
+
         # #574 — resolve a parked child's BUDGET request (it hit its
         # tool-iteration ceiling). Reuses the approval gate but asks Grant/
         # Summarize: a grant decides the gate true (the child's #select handler
@@ -581,7 +591,7 @@ module Rubino
         # turn); anything else decides false → :summarize (force-summarize). No
         # "always" — budget is a one-shot grant, nothing to allowlist.
         def resolve_agent_budget(entry, gate)
-          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
+          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}#{queued_approval_suffix}")
           @ui.info("hit its tool-iteration limit and wants more budget:")
           @ui.info("  #{entry.approval_question}")
           choice = ask_budget_answer(entry)

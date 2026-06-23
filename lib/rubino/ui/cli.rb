@@ -725,8 +725,15 @@ module Rubino
       def note(text)
         return if text.nil? || text.to_s.empty?
 
-        emit_blank unless @last_block == :gap
-        emit("┄ #{text} ┄", style: :dim)
+        # ASYNC parent-surface write (R2/Y4): a `note` can fire from a CHILD
+        # thread (a 2nd subagent's `● … needs approval` notice) WHILE an approval
+        # modal owns the terminal — the composer is suspended and $stdout has been
+        # swapped to the raw terminal, so a plain #emit would land mid-line over
+        # the modal at an offset column. Route through the committed live-region
+        # paint so it PARKS while suspended and flushes at column 0 on resume,
+        # stacking cleanly instead of tearing the frame.
+        lead = @pastel.dim("┄ #{Util::Output.sanitize_terminal(text.to_s)} ┄")
+        commit_async_above([lead], gap: @last_block != :gap)
         @last_block = :other
       end
 
@@ -767,12 +774,39 @@ module Rubino
       # MODEL via the InputQueue completion notice. The `report` param is kept in
       # the signature for back-compat but no longer rendered here.
       def subagent_lifecycle(line, status: "done", report: nil, id: nil)
-        emit_blank unless @last_block == :gap
-        # The line embeds the subagent name (UNTRUSTED, R3C-1 / CWE-150). PATH 1:
-        # #emit strips every escape and applies the row's style (red on failure,
-        # else dim) around the inert text.
-        emit(line, style: status == "failed" ? :red : :dim)
+        # The line embeds the subagent name (UNTRUSTED, R3C-1 / CWE-150): defang
+        # every escape BEFORE the trusted style wrap. This is an ASYNC write from
+        # the worker thread — the `✓ … done` completion notice can fire while an
+        # approval modal owns the terminal (Y4), so it MUST go through the
+        # committed parked-paint (see #note / #commit_async_above) and land at
+        # column 0 on resume rather than at the cursor's offset over the modal.
+        safe   = Util::Output.sanitize_terminal(line.to_s)
+        styled = @pastel.decorate(safe, status == "failed" ? :red : :dim)
+        commit_async_above([styled], gap: @last_block != :gap)
         @last_block = :other
+      end
+
+      # Commits one or more PRE-STYLED async parent-surface lines above the
+      # prompt through the SAME live-region paint ordinary committed cards use
+      # (R2/Y4). When a bottom composer owns the screen we hand the block to its
+      # #print_above: during a turn it commits in one clean frame; while the
+      # composer is SUSPENDED (an approval/ask modal owns the raw terminal) it
+      # PARKS the line in @parked_writes and #resume flushes it in arrival order
+      # at column 0 — so a 2nd subagent's notice can never tear the active modal
+      # or land at an offset column. Off the composer seam (between turns / plain
+      # TTY / pipe / tests) it falls back to per-line emit so idle notices and
+      # headless runs are unchanged. The lines are rubino-built + already defanged
+      # by the caller (PATH 2), so the SGR survives the keep-sgr write.
+      def commit_async_above(lines, gap: false)
+        rows = (gap ? [""] : []) + Array(lines)
+        composer = BottomComposer.current
+        if composer
+          composer.print_above(rows.join("\n"))
+        else
+          rows.each { |row| row.empty? ? emit_blank : emit_styled(row) }
+        end
+      rescue StandardError
+        # An async-notice paint is cosmetic — never let it break a turn or child.
       end
 
       # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
