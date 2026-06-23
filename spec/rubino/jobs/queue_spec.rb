@@ -396,4 +396,68 @@ RSpec.describe Rubino::Jobs::Queue do
       expect(running.size).to eq(1)
     end
   end
+
+  # #76: a row a worker CLAIMED (queued -> running) and then abandoned — the
+  # process died / was quit / hung — stays `running` with locked_by set and
+  # attempts=0. Nothing re-picked it (the scan only sees `queued`), so it sat
+  # forever and the queue grew across sessions. #reclaim_stale! recovers any
+  # row whose lock is older than jobs.lock_lease_seconds.
+  describe "#reclaim_stale!" do
+    let(:config) do
+      test_configuration(
+        "jobs" => { "mode" => "manual", "max_attempts" => 3, "poll_interval" => 1,
+                    "retry_backoff_seconds" => 0, "lock_lease_seconds" => 900 }
+      )
+    end
+
+    def insert_running(locked_ago:, attempts: 0, max_attempts: 3)
+      id = SecureRandom.uuid
+      now = Time.now.utc.iso8601
+      db_connection.db[:jobs].insert(
+        id: id, type: "TestJob", status: "running", priority: 100,
+        payload_json: "{}", attempts: attempts, max_attempts: max_attempts,
+        locked_at: (Time.now - locked_ago).utc.iso8601, locked_by: "worker-dead",
+        run_at: now, created_at: now, updated_at: now
+      )
+      id
+    end
+
+    it "re-queues a running row whose lock has outlived the lease" do
+      stale = insert_running(locked_ago: 3600)
+
+      expect(queue.reclaim_stale!).to eq(1)
+
+      row = db_connection.db[:jobs].where(id: stale).first
+      expect(row[:status]).to eq("queued")
+      expect(row[:attempts]).to eq(1) # bumped so it can't loop forever
+      expect(row[:locked_by]).to be_nil
+    end
+
+    it "leaves a freshly-locked running row alone (within the lease)" do
+      fresh = insert_running(locked_ago: 5)
+
+      expect(queue.reclaim_stale!).to eq(0)
+      expect(db_connection.db[:jobs].where(id: fresh).first[:status]).to eq("running")
+    end
+
+    it "marks a stale row terminal (dead) once attempts are exhausted" do
+      exhausted = insert_running(locked_ago: 3600, attempts: 2, max_attempts: 3)
+
+      queue.reclaim_stale!
+
+      # A genuinely stuck/poison job that keeps being reclaimed must eventually
+      # stop being re-run rather than spin forever.
+      expect(db_connection.db[:jobs].where(id: exhausted).first[:status]).to eq("dead")
+    end
+
+    it "is folded into #next_due_queued so the detached drain recovers orphans" do
+      insert_running(locked_ago: 3600)
+
+      # The drain scans via next_due_queued; reclaiming makes the orphan visible
+      # as the next due row instead of staying stranded in `running`.
+      row = queue.next_due_queued
+      expect(row).not_to be_nil
+      expect(row[:status]).to eq("queued")
+    end
+  end
 end
