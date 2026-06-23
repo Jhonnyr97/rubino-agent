@@ -247,6 +247,40 @@ RSpec.describe Rubino::Security::Sandbox do
     end
   end
 
+  # #74: an EACCES from the OS write-jail (a write OUTSIDE the writable roots)
+  # reads like an ordinary perms error; the model retries with chmod/sudo. When
+  # the jail is enforcing AND the denied path is outside the writable set, append
+  # a clear attribution so the model writes inside the workspace instead.
+  describe ".write_jail_attribution" do
+    before do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:probe_enforcement).and_return(true)
+    end
+
+    it "attributes an EACCES against a path OUTSIDE the writable roots to the jail" do
+      text = "bash: line 1: /usr/local/blocked.txt: Permission denied"
+      hint = described_class.write_jail_attribution(text, cwd: workspace)
+      expect(hint).to include("write-jail")
+      expect(hint).to include("tools.sandbox")
+    end
+
+    it "does NOT attribute a normal perms error INSIDE the workspace to the jail" do
+      inside = File.join(File.realpath(workspace), "locked.txt")
+      text = "open #{inside}: Permission denied"
+      expect(described_class.write_jail_attribution(text, cwd: workspace)).to be_nil
+    end
+
+    it "is nil when the jail is NOT enforcing (no misattribution on an open host)" do
+      allow(described_class).to receive(:probe_enforcement).and_return(false)
+      text = "/usr/local/blocked.txt: Permission denied"
+      expect(described_class.write_jail_attribution(text, cwd: workspace)).to be_nil
+    end
+
+    it "is nil when there is no EACCES in the output" do
+      expect(described_class.write_jail_attribution("all good\n", cwd: workspace)).to be_nil
+    end
+  end
+
   describe ".required? and .refusal_reason (fail-closed)" do
     it "does not require by default" do
       configure(mode: "workspace-write", mechanism: :none)

@@ -200,6 +200,12 @@ module Rubino
           spawn_background(command, working_dir)
         else
           run = execute_foreground(command, working_dir, timeout)
+          # Attribute an OS write-jail denial (#74): an EACCES against a path
+          # outside the writable roots reads like a plain perms error, so the
+          # model retries with chmod/sudo instead of writing in the workspace.
+          # Append a one-line hint when the jail is the real cause. No-op text
+          # (nil) when it isn't a jailed-write denial.
+          run[:text] = append_jail_hint(run[:text], working_dir)
           # exit_code / timed_out / cancelled are surfaced as structured
           # keys so downstream code (and the model) doesn't have to parse
           # `[Exit code: N]` out of free-form text to know whether the
@@ -220,6 +226,15 @@ module Rubino
             # compressed.
             compress_hint: { stream_kind: @stream_kind } }
         end
+      end
+
+      # Appends the write-jail attribution (#74) to the captured text when the
+      # EACCES it carries is an OS-sandbox denial of a write outside the writable
+      # roots. Returns the text unchanged when it isn't (normal perms error, no
+      # denial, or the jail isn't enforcing).
+      def append_jail_hint(text, cwd)
+        hint = Security::Sandbox.write_jail_attribution(text, cwd: cwd)
+        hint ? "#{text}\n#{hint}" : text
       end
 
       def shell_error_code(run)

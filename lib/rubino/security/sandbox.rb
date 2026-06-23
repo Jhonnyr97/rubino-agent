@@ -187,6 +187,56 @@ module Rubino
         roots.compact.uniq.select { |p| File.directory?(p) }
       end
 
+      # The one-line attribution appended to a tool's output when an EACCES it
+      # surfaced is actually the OS write-jail denying a write OUTSIDE the
+      # writable roots (#74). Without it a jailed write reads like an ordinary
+      # perms error and the model misattributes it (chmod/sudo loops) instead of
+      # writing inside the workspace.
+      WRITE_JAIL_HINT =
+        "(blocked by the workspace write-jail — tools.sandbox; write inside the workspace)"
+
+      # Detects the OS-deny shape, capturing the offending path. EACCES from a
+      # write outside the jail surfaces as "Permission denied @ ... - /abs/path"
+      # (Ruby Errno) or "<path>: Permission denied" (shell tools).
+      DENIED_PATH = %r{
+        (?:Permission\ denied|EACCES|Operation\ not\ permitted)
+        .*?(/[^\s'"`:]+)
+        |
+        (/[^\s'"`:]+)\s*:?\s*(?:Permission\ denied|Operation\ not\ permitted)
+      }xi
+
+      # Returns the attribution hint when +text+ carries an EACCES/"Permission
+      # denied" against a path that is OUTSIDE the writable roots while the jail
+      # is PROVEN to be enforcing; nil otherwise. Only fires under #enforcing? so
+      # an unconfined host (no/degraded sandbox) never mislabels a genuine perms
+      # error as a jail denial. A normal perms failure INSIDE the workspace is
+      # not a jail block, so it returns nil too. Best-effort: any parse/probe
+      # error yields nil (no hint) rather than raising into a tool's output.
+      def write_jail_attribution(text, cwd: nil)
+        return nil if text.to_s.empty?
+        return nil unless enforcing?
+
+        roots = writable_roots(cwd: cwd)
+        text.to_s.scan(DENIED_PATH).each do |groups|
+          path = groups.compact.first
+          next unless path
+
+          target = canonical(path) || File.expand_path(path)
+          return WRITE_JAIL_HINT unless inside_roots?(target, roots)
+        end
+        nil
+      rescue StandardError
+        nil
+      end
+
+      # True when +target+ resolves under any of +roots+ (a writable location).
+      def inside_roots?(target, roots)
+        roots.any? do |root|
+          target == root || target.start_with?("#{root}#{File::SEPARATOR}")
+        end
+      end
+      private_class_method :inside_roots?
+
       # Test/teardown hook — drop the memoised probe so a stubbed platform takes
       # effect in the next example.
       def reset!
