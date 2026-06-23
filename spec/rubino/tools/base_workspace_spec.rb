@@ -71,6 +71,31 @@ RSpec.describe Rubino::Tools::Base do
       expect(tool.send(:within_workspace?, new_path)).to be(false)
     end
 
+    # A DANGLING in-workspace symlink (the link exists, its target does not yet)
+    # whose target is OUTSIDE every root must be rejected: writing through it
+    # creates the file at the target, outside the sandbox. File.exist? is false
+    # on a dangling link, so the create-new-file path used to canonicalize the
+    # link's own location and wrongly accept it.
+    it "rejects an in-workspace dangling symlink pointing to a not-yet-existing outside file" do
+      bait = File.join(workspace, "innocent.txt")
+      File.symlink(File.join(outside, "will_be_created.txt"), bait)
+      expect(tool.send(:within_workspace?, bait)).to be(false)
+    end
+
+    it "still allows an in-workspace dangling symlink pointing inside the workspace" do
+      bait = File.join(workspace, "link.txt")
+      File.symlink(File.join(workspace, "inside_target.txt"), bait)
+      expect(tool.send(:within_workspace?, bait)).to be(true)
+    end
+
+    it "does not loop forever on a symlink cycle" do
+      a = File.join(workspace, "a")
+      b = File.join(workspace, "b")
+      File.symlink(b, a)
+      File.symlink(a, b)
+      expect(tool.send(:within_workspace?, a)).to be(false)
+    end
+
     it "is bypassed when tools.workspace_strict=false" do
       Rubino.configuration.set("tools", "workspace_strict", false)
       expect(tool.send(:within_workspace?, "/etc/passwd")).to be(true)
