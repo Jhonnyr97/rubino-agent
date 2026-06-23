@@ -275,8 +275,10 @@ module Rubino
         close_block = proc do |msg|
           # Flush any tail the think-filter is still holding so it is emitted
           # with THIS block's id before we close the block (and before the
-          # tool call that follows a tool-use message executes).
-          flush_filter(think_filter, &emit)
+          # tool call that follows a tool-use message executes). final: false —
+          # the stream continues, so an incomplete tag straddling this boundary
+          # is held back for the next message rather than mis-routed (STRM-3).
+          flush_filter(think_filter, final: false, &emit)
           @event_bus&.emit(Interaction::Events::MESSAGE_COMPLETED, message_id: message_block_id)
           # #488: a tool-use message just closed ⇒ ruby_llm is about to run those
           # tools mid-stream. Suspend the stale watchdog's idle accrual for the
@@ -467,8 +469,8 @@ module Rubino
 
       # Flushes the think-filter, swallowing UI/flush errors so a late failure
       # never loses the response (issues #6, #21).
-      def flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        think_filter.flush(&emit)
+      def flush_filter(think_filter, event: "llm.stream.flush_error", final: true, &emit)
+        think_filter.flush(final: final, &emit)
       rescue StandardError => e
         log_safely(event: event, error: e.message)
       end

@@ -14,6 +14,23 @@ RSpec.describe Rubino::LLM::InlineThinkFilter do
     { content: content, thinking: thinking }
   end
 
+  # Drives feed() then a MID-STREAM flush(final: false) — the exact sequence the
+  # adapter runs on after_message between two assistant content blocks of a tool
+  # turn — between each chunk, then a terminal flush. A tag split across one of
+  # those boundaries must still route correctly.
+  def collect_with_boundary_flush(chunks)
+    content  = +""
+    thinking = +""
+    filter   = described_class.new
+    emit     = ->(type, text) { (type == :thinking ? thinking : content) << text }
+    chunks.each do |c|
+      filter.feed(c, &emit)
+      filter.flush(final: false, &emit)
+    end
+    filter.flush(&emit)
+    { content: content, thinking: thinking }
+  end
+
   it "passes plain content through unchanged" do
     expect(collect(["hello ", "world"])).to eq(content: "hello world", thinking: "")
   end
@@ -94,6 +111,50 @@ RSpec.describe Rubino::LLM::InlineThinkFilter do
       stream = "<think>plan</think>here:\n```html\n<think>hi</think>\n```\n"
       expect(collect([stream]))
         .to eq(content: "here:\n```html\n<think>hi</think>\n```\n", thinking: "plan")
+    end
+  end
+
+  # ── STRM-3 (mid-stream flush mis-routes a split tag) ────────────────────────
+  # The adapter flushes the filter at every message boundary (after_message). A
+  # <think>/</think> sentinel split across that boundary used to be DUMPED by the
+  # flush: the opening "<thi" leaked to :content (marking content seen, so the
+  # completed <think> read as literal and the reasoning leaked into the body —
+  # finding #54), and the closing "</thi" leaked to :thinking (so the answer
+  # leaked into the thinking block). The torn-tag fragment must instead survive
+  # the boundary and complete on the next feed; live deltas read whole, not torn
+  # (finding #43, which "self-heals on the final paint").
+  context "with a tag split across a mid-stream flush (STRM-3)" do
+    it "routes a leading <think> open tag split by a flush to :thinking" do
+      expect(collect_with_boundary_flush(["<thi", "nk>secret reasoning</think>visible"]))
+        .to eq(content: "visible", thinking: "secret reasoning")
+    end
+
+    it "routes the body after a </think> close tag split by a flush to :content" do
+      expect(collect_with_boundary_flush(["<think>reasoning here</thi", "nk>answer body"]))
+        .to eq(content: "answer body", thinking: "reasoning here")
+    end
+
+    it "survives a leading think+answer at every two-chunk split with a flush at the seam" do
+      full = "<think>secret reasoning</think>visible text"
+      exp  = { content: "visible text", thinking: "secret reasoning" }
+      (1...full.length).each do |i|
+        expect(collect_with_boundary_flush([full[0...i], full[i..]]))
+          .to eq(exp), "mis-routed tag at flush split index #{i}"
+      end
+    end
+
+    it "preserves every space when a flush falls at a word/space boundary (#43)" do
+      # Raw deltas carry the boundary space; the mid-stream flush must not drop
+      # it nor tear the word across the block seam.
+      expect(collect_with_boundary_flush(["dispatch parallel subagents for ", "code exploration"]))
+        .to eq(content: "dispatch parallel subagents for code exploration", thinking: "")
+      expect(collect_with_boundary_flush(["different strategy. ", "No ensurepip either"]))
+        .to eq(content: "different strategy. No ensurepip either", thinking: "")
+    end
+
+    it "still emits an unterminated tag fragment verbatim at end of stream" do
+      # final flush has nothing following it, so a dangling "<thi" is real text.
+      expect(collect(["<thi"])).to eq(content: "<thi", thinking: "")
     end
   end
 end
