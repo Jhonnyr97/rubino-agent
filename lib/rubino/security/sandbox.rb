@@ -229,6 +229,28 @@ module Rubino
         nil
       end
 
+      # True when +path+ resolves under one of the current writable roots — i.e.
+      # a write there would NOT be blocked by the jail. Public so callers that
+      # already hold a concrete path (e.g. the DB-open read-only attribution,
+      # #Y2A) can ask directly instead of pattern-matching an error string. The
+      # path is canonicalized the SAME way the roots are (realpath, resolving the
+      # nearest EXISTING ancestor for a not-yet-created file) so a symlinked
+      # parent like macOS's /var → /private/var doesn't read as "outside".
+      def writable?(path, cwd: nil)
+        inside_roots?(canonical_existing(path), writable_roots(cwd: cwd))
+      end
+
+      # realpath of +path+ when it exists, else realpath of its nearest existing
+      # ancestor with the missing tail re-appended, else a plain expand_path.
+      def canonical_existing(path)
+        abs = File.expand_path(path.to_s)
+        dir = abs
+        dir = File.dirname(dir) while !File.exist?(dir) && File.dirname(dir) != dir
+        real = (File.realpath(dir) if File.exist?(dir))
+        real ? abs.sub(/\A#{Regexp.escape(dir)}/, real) : abs
+      end
+      private_class_method :canonical_existing
+
       # True when +target+ resolves under any of +roots+ (a writable location).
       def inside_roots?(target, roots)
         roots.any? do |root|
