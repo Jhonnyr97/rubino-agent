@@ -501,7 +501,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
     # note must fire ONLY on a TOTALIZING "I did nothing this turn" claim. These
     # are accurate closing summaries with a LOCAL negated caveat — they must stay
     # SILENT even though tools ran and the prose doesn't enumerate them.
-    context "OVER-FIRE: accurate summaries with a LOCAL negation must stay silent" do
+    describe "OVER-FIRE: accurate summaries with a LOCAL negation stay silent" do
       [
         "I updated the model field but did not change the timeout.",
         "I have not yet run the full suite, only the unit specs.",
@@ -521,7 +521,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
 
     # The genuine confabulations — TOTALIZING "nothing happened this turn" — must
     # STILL fire (we tightened the trigger, we did not disable it).
-    context "still fires on a GENUINE totalizing 'I did nothing' claim" do
+    describe "still fires on a GENUINE totalizing 'I did nothing' claim" do
       [
         "I have not read a single file, run grep, or made any edits this turn.",
         "Nothing was done this turn.",
@@ -539,7 +539,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
     # that returned empty/garbled closing text. An empty/blank summary carries NO
     # pessimistic CLAIM, so the note must NOT be manufactured out of silence —
     # otherwise the "degraded under quota" case reads as a confabulation over-fire.
-    context "degraded / empty summary under an API error must not trip the note" do
+    describe "degraded / empty summary under an API error does not trip the note" do
       it "returns nil on an empty closing summary even when tools ran" do
         expect(reconcile("", tool_count: 5, edit_count: 2)).to be_nil
       end
