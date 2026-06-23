@@ -37,4 +37,39 @@ RSpec.describe Rubino, ".ensure_database_ready! on a read-only home (F14)" do
   it "returns true on a normal writable home (no false positive)" do
     expect(described_class.ensure_database_ready!).to be(true)
   end
+
+  # #Y2A — a read-only DB UNDER the OS write-jail (a nested rubino launched from
+  # inside the agent's jailed shell) gets the attributable write-jail hint
+  # appended, not just an opaque "not writable". Outside the jail (or jail off)
+  # the message is unchanged.
+  describe "write-jail attribution (#Y2A)" do
+    it "appends the write-jail hint when the home is outside an enforcing jail" do
+      allow(Rubino::Security::Sandbox).to receive_messages(enforcing?: true, writable?: false)
+
+      expect(described_class.write_jail_db_hint)
+        .to include("outside the workspace write-jail", "nested rubino", "tools.sandbox")
+    end
+
+    it "is empty when the jail is not enforcing" do
+      allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false)
+      expect(described_class.write_jail_db_hint).to eq("")
+    end
+
+    it "is empty when the home IS writable under the jail (genuine read-only mount)" do
+      allow(Rubino::Security::Sandbox).to receive_messages(enforcing?: true, writable?: true)
+      expect(described_class.write_jail_db_hint).to eq("")
+    end
+
+    it "surfaces the hint inside the full not-writable ConfigurationError" do
+      expect(described_class.ensure_database_ready!).to be(true)
+      described_class.reset!
+      FileUtils.chmod_R("a-w", home)
+
+      allow(Rubino::Security::Sandbox).to receive_messages(enforcing?: true, writable?: false)
+
+      expect { described_class.ensure_database_ready! }
+        .to raise_error(Rubino::ConfigurationError,
+                        /not writable.*outside the workspace write-jail/m)
+    end
+  end
 end

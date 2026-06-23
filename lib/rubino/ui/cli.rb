@@ -1473,7 +1473,7 @@ module Rubino
       # render path share one source of truth). Handles the legacy show_reasoning
       # back-compat mapping.
       def reasoning_mode
-        Config::ReasoningPrefs.mode(Rubino.configuration)
+        Config::ReasoningPrefs.effective_mode(Rubino.configuration)
       end
 
       # Whole seconds the current/last thinking phase ran, for the collapse cue.

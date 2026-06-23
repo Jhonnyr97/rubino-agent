@@ -35,9 +35,13 @@ module Rubino
             id ? show_memory(id) : @ui.info("Usage: /memory show <id>")
           elsif args.match?(/\Abackend\b/)
             show_memory_backend(args[/\Abackend\s+(\S+)\z/, 1])
-          elsif args.match?(/\Aforget\b/)
-            id = args[/\Aforget\s+(\S+)\z/, 1]
-            id ? forget_memory(id) : @ui.info("Usage: /memory forget <id>")
+          elsif args.match?(/\A(?:forget|delete)\b/)
+            # Verb parity with the `rubino memory delete|forget` CLI (#Y3B): the
+            # CLI accepted both verbs but the REPL only knew `forget`. Accept
+            # `delete` here too so muscle memory from either surface works.
+            verb = args[/\A(forget|delete)\b/, 1]
+            id   = args[/\A(?:forget|delete)\s+(\S+)\z/, 1]
+            id ? forget_memory(id) : @ui.info("Usage: /memory #{verb} <id>")
           elsif args.match?(/\Asearch\b/)
             # `search` is a subcommand token, not a query term (#59): bare
             # `/memory search` falls back to the summary instead of searching

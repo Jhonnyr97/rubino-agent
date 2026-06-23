@@ -648,7 +648,10 @@ module Rubino
         # returns false — the gate is denied either way; the reason is advisory.
         def deny_with_explanation(entry)
           reason = @ui.respond_to?(:ask) ? @ui.ask("why deny? (sent to the agent): ").to_s.strip : ""
-          Tools::BackgroundTasks.instance.steer(entry.id, "[approval denied by human] #{reason}") unless reason.empty?
+          unless reason.empty?
+            Tools::BackgroundTasks.instance.steer(entry.id,
+                                                  "#{Tools::BackgroundTasks::DENY_NOTE_PREFIX}#{reason}")
+          end
           false
         rescue StandardError
           false

@@ -125,6 +125,23 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       expect(backend.find(row[:id])).to be_nil
     end
 
+    # #Y3B — verb parity: the CLI must accept `forget` as an alias for `delete`
+    # (the REPL says "forget"), and both must do the same thing.
+    it "forgets (deletes) a fact via the `forget` alias" do
+      row = backend.store(kind: "fact", content: "User's deploy port is 7788.")
+      expect(backend.count).to eq(1)
+
+      expect(Rubino.ui).to receive(:success).with(/Memory deleted/)
+      described_class.new.forget(row[:id][0..7])
+
+      expect(backend.count).to eq(0)
+    end
+
+    it "forget raises Thor::Error for an unknown id (parity with delete)" do
+      expect { described_class.new.forget("does-not-exist") }
+        .to raise_error(Thor::Error, /memory not found: does-not-exist/)
+    end
+
     # P2-H1/H2: a not-found show/delete is a FAILURE on the automation surface —
     # it must raise Thor::Error (exit non-zero, message on stderr), matching
     # SessionCommand, not print to stdout and return 0.

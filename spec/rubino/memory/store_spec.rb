@@ -41,6 +41,33 @@ RSpec.describe Rubino::Memory::Store do
     end
   end
 
+  # #Y4 — saving the same fact twice used to mint two identical rows; the
+  # write seam now dedups exact/normalized-verbatim repeats (idempotent).
+  describe "#create verbatim dedup (#Y4)" do
+    it "keeps a single row when identical content is saved twice" do
+      first  = store.create(kind: "fact", content: "Ruby is great")
+      second = store.create(kind: "fact", content: "Ruby is great")
+
+      expect(second[:id]).to eq(first[:id])
+      expect(store.by_kind("fact").size).to eq(1)
+    end
+
+    it "dedups a whitespace/case variant of the same fact" do
+      first  = store.create(kind: "fact", content: "Ruby is great")
+      second = store.create(kind: "fact", content: "  ruby   IS  Great ")
+
+      expect(second[:id]).to eq(first[:id])
+      expect(store.by_kind("fact").size).to eq(1)
+    end
+
+    it "still stores a genuinely different fact as its own row" do
+      store.create(kind: "fact", content: "Ruby is great")
+      store.create(kind: "fact", content: "Python is fine too")
+
+      expect(store.by_kind("fact").size).to eq(2)
+    end
+  end
+
   # R1: a write carrying a credential must be REFUSED — the secret must never
   # land in the store (it would be persisted to disk and re-injected into every
   # future system prompt). Asserts both the refusal AND an empty table.

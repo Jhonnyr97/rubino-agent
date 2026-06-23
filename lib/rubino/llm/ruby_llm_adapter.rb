@@ -918,7 +918,7 @@ module Rubino
       # UI::API drops them at its own boundary. Still gates the bedrock-bearer
       # client, which has no downstream reveal machinery.
       def reasoning_hidden?
-        Config::ReasoningPrefs.mode(@config) == :hidden
+        Config::ReasoningPrefs.effective_mode(@config) == :hidden
       end
 
       # ── Streaming resilience helpers (issues #12, #22) ────────────────────

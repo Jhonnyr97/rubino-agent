@@ -102,13 +102,21 @@ module Rubino
         Util::Output.sanitize_terminal(text)
       end
 
-      desc "delete ID", "Delete a specific memory"
+      desc "delete ID", "Delete a specific memory (alias: forget)"
       def delete(id)
         # Same not-found-is-failure contract as #show (P2-H1/H2): exit non-zero
         # with the error on stderr instead of stdout-printing and returning 0.
         raise Thor::Error, "memory not found: #{id}" unless backend_store.delete(id)
 
         Rubino.ui.success("Memory deleted: #{id}")
+      end
+
+      # Verb parity with the in-chat `/memory forget <id>` (#Y3B): the REPL says
+      # "forget", the CLI said only "delete". Both surfaces now accept BOTH verbs
+      # so muscle memory from either side works on the other.
+      desc "forget ID", "Forget (delete) a specific memory"
+      def forget(id)
+        delete(id)
       end
 
       desc "backend [NAME]", "Show the active memory backend, or switch to NAME"

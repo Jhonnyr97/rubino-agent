@@ -72,6 +72,14 @@ module Rubino
         # Defense-in-depth: today's writers are model-mediated, but a future
         # extractor that pipes raw tool/file bytes into a fact would wedge here.
         content = Util::Output.scrub_utf8(content)
+        # Exact/normalized-verbatim dedup at the write seam (#Y4): saving the
+        # same fact twice used to mint two identical rows (the 0.85 Jaccard
+        # near-dup runs per-extraction, not on a direct create). Idempotent — a
+        # verbatim repeat (incl. a whitespace/case variant) returns the existing
+        # row instead of inserting; a genuinely different fact still inserts.
+        existing = verbatim_duplicate(kind, content)
+        return existing if existing
+
         enforce_threat_scan!(content)
         enforce_char_budget!(kind, content)
 
@@ -189,6 +197,17 @@ module Rubino
       end
 
       private
+
+      # First existing row of `kind` whose normalized-verbatim form equals the
+      # candidate's (trim/collapse-whitespace + case-fold, #Y4), or nil.
+      def verbatim_duplicate(kind, content)
+        target = Deduplicator.normalize_verbatim(content)
+        return nil if target.empty?
+
+        @db[:memories].where(kind: kind).all.find do |row|
+          Deduplicator.normalize_verbatim(row[:content]) == target
+        end
+      end
 
       def validate_kind!(kind)
         return if VALID_KINDS.include?(kind)

@@ -309,12 +309,28 @@ module Rubino
         # gate delivered it — so reporting it would surface a false "steer note
         # not delivered" alarm on the happy path. GENUINE steer notes (no
         # ANSWER_NOTE_PREFIX) still report undelivered, preserving #457's invariant.
-        undelivered = drained.reject { |n| n.to_s.start_with?(BackgroundTasks::ANSWER_NOTE_PREFIX) }
+        # A drained gate-answer COPY (#457) is not undelivered — the gate
+        # delivered it; drop it. A drained DENY-note (#Y1B) is ADVISORY — the
+        # approval was already denied, so a "couldn't deliver it" alarm is
+        # misleading: the denial applied and the explanation is simply moot. Only
+        # GENUINE `/agents <id> steer` notes (neither prefix) are a real
+        # deliver-or-report case that warrants the scary warning.
+        denied = drained.select { |n| n.to_s.start_with?(BackgroundTasks::DENY_NOTE_PREFIX) }
+        undelivered = drained.reject do |n|
+          s = n.to_s
+          s.start_with?(BackgroundTasks::ANSWER_NOTE_PREFIX, BackgroundTasks::DENY_NOTE_PREFIX)
+        end
         notify(sink, completion_notice(entry, text, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,
                              "⚠ #{entry.id} · steer note not delivered (task completed first): " \
                              "#{Rubino::Util::Output.elide(undelivered.join(" | "), 80)}")
+        end
+        # Calm, non-alarming note for a moot deny explanation (no ⚠): the denial
+        # was applied; the agent just finished before reading why.
+        unless denied.empty?
+          surface_completion(parent_ui,
+                             "#{entry.id} · denial applied; the agent finished before reading the note")
         end
         status = self.class.noop_result?(text) ? "no-op" : "done"
         surface_completion(parent_ui, completion_marker(entry, status),
