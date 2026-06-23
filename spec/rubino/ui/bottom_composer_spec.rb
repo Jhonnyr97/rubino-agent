@@ -2309,6 +2309,28 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.suppress_main_render!(false)
       expect(composer.instance_variable_get(:@attached_id)).to be_nil
     end
+
+    # The REPL rebuilds a fresh composer per idle iteration / per turn, so the
+    # focused-sub id (like the suppression gate) must be SEEDED from the host's
+    # `attached:` arg at construction — an imperatively-set id on the previous
+    # composer is gone the moment the loop recreates one (#82/#87).
+    it "seeds the focused sub from the attached: id at construction" do
+      a = reg.reserve(subagent: "explore", prompt: "first")
+      b = reg.reserve(subagent: "build", prompt: "second")
+      c = described_class.new(input_queue: queue, input: input, output: output, attached: b.id)
+
+      expect(c.main_render_suppressed?).to be(true)
+      line = c.send(:below_input_rows).join
+      expect(line).to include(a.id)        # other sub visible
+      expect(line).to include("▸#{b.id}")  # focused sub seeded + marked
+    end
+
+    it "is NOT suppressed when built with attached: nil (at main)" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      c = described_class.new(input_queue: queue, input: input, output: output, attached: nil)
+
+      expect(c.main_render_suppressed?).to be(false)
+    end
   end
 
   describe "render mutex serializes concurrent frames" do

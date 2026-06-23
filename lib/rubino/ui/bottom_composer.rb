@@ -388,15 +388,18 @@ module Rubino
         # sub. @replaying exempts the attach/detach REPLAY (the focused view the
         # user is meant to see) from the gate — see #with_replay_exempt.
         #
-        # SEEDED from the persistent host attach-state (`attached:`): the REPL
-        # builds a FRESH composer per idle iteration / per turn, so a flag set
-        # imperatively at attach time on the previous composer would be lost the
-        # moment the loop recreates one (the parent cards bleed back and the
-        # focused sub's live tail never owns the screen — #82). Whether the view is
-        # scoped to a sub lives on the host (@attached_id), so the composer
-        # RECONCILES its gate from that at construction — every composer that owns
-        # the screen while attached starts already suppressed.
-        @main_render_suppressed = attached
+        # SEEDED from the persistent host attach-state (`attached:` — the focused
+        # sub's id, or nil/false when at main): the REPL builds a FRESH composer
+        # per idle iteration / per turn, so a flag set imperatively at attach time
+        # on the previous composer would be lost the moment the loop recreates one
+        # (the parent cards bleed back and the focused sub's live tail never owns
+        # the screen — #82). Whether the view is scoped to a sub lives on the host
+        # (@attached_id), so the composer RECONCILES its gate from that at
+        # construction — every composer that owns the screen while attached starts
+        # already suppressed AND knows which sub is focused, so the while-attached
+        # switcher line marks it (#87).
+        @attached_id            = attached || nil
+        @main_render_suppressed = !@attached_id.nil?
         @replaying              = false
       end
 
