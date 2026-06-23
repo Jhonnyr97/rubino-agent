@@ -58,6 +58,29 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
+  # #82: the "polishing memory…" indicator belongs to the MAIN session; while
+  # attached it must NOT bleed into the focused sub view. It rides #set_status
+  # (the status bar, NOT behind the main-render gate), so it is suppressed at
+  # the source in the idle loop.
+  describe "#update_polishing_indicator while attached" do
+    let(:composer) { instance_spy(Rubino::UI::BottomComposer) }
+
+    before { allow(composer).to receive(:respond_to?).with(:set_status).and_return(true) }
+
+    it "does NOT paint the polishing status while attached, even when polishing" do
+      allow(runner).to receive(:polishing?).and_return(true)
+      attach!
+      cmd.send(:update_polishing_indicator, composer, runner, false)
+      expect(composer).not_to have_received(:set_status)
+    end
+
+    it "still paints the polishing status when NOT attached (no regression)" do
+      allow(runner).to receive(:polishing?).and_return(true)
+      cmd.send(:update_polishing_indicator, composer, runner, false)
+      expect(composer).to have_received(:set_status)
+    end
+  end
+
   # Focus-gating (Slice 3): attach/detach drive the composer's main-render gate
   # so a still-running parent turn keeps streaming to its session but does NOT
   # paint the attached sub's view; the replay is exempt so the focused view

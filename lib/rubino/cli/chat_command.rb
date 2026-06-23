@@ -1690,6 +1690,12 @@ module Rubino
       # model/context status bar. A cosmetic repaint must never break the prompt.
       def update_polishing_indicator(composer, runner, shown)
         return shown unless composer.respond_to?(:set_status)
+        # The polishing indicator belongs to the MAIN session the user stepped
+        # away from; while ATTACHED to a sub the focused view owns the screen, so
+        # this dim "polishing memory…" status must NOT bleed into it (#82). It's
+        # driven through #set_status (the status BAR), which is not behind the
+        # main-render gate, so suppress it at the source here.
+        return shown if attached_to_agent?
 
         running = runner&.polishing? || false
         return shown if running == shown
