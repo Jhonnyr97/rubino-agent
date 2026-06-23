@@ -322,6 +322,42 @@ RSpec.describe Rubino::Tools::TaskTool do
       # would block the whole REPL. Card rendering yes, mid-turn human park no.
       expect(described_class.new.send(:nested_ui_for, entry, Rubino.ui).interactive?).to be(false)
     end
+
+    # #86 — NESTED escalation. A subagent that spawns a (grand)child runs under
+    # with_ui(its own SubagentView), so the thread-local Rubino.ui at the spawn
+    # is a SubagentView, NOT a UI::CLI. The card host (#root_cli) must still
+    # resolve to the TOP-LEVEL CLI (the process-global @ui), otherwise
+    # nested_ui_for's `is_a?(UI::CLI)` gate falls through to a silent Null view
+    # with NO approve handler — and the grandchild's approval-gated tools fail
+    # closed with the headless :noninteractive block instead of escalating.
+    describe "nested spawn (subagent spawns subagent) — card host is the root CLI (#86)" do
+      let(:root_cli)   { Rubino::UI::CLI.new }
+      let(:parent_sub) { Rubino::UI::SubagentView.new(agent_name: "explore", entry_id: "sa_parent") }
+
+      before { Rubino.ui = root_cli } # the process-global @ui = the one live region
+
+      it "#root_cli ignores the thread-local SubagentView and returns the top-level CLI" do
+        Rubino.with_ui(parent_sub) do
+          # The thread-local IS the parent's SubagentView (the nested-spawn gap)…
+          expect(Rubino.ui).to be(parent_sub)
+          # …yet the card host still resolves to the one top-level CLI.
+          expect(described_class.new.send(:root_cli)).to be(root_cli)
+        end
+      end
+
+      it "builds an INTERACTIVE card-mode view (escalates) for a nested background child, not a Null" do
+        handler = ->(*) { true }
+        # Mirror run_background: parent_ui = root_cli (the fix), captured even
+        # though the spawner thread-local Rubino.ui is the parent's SubagentView.
+        ui = Rubino.with_ui(parent_sub) do
+          host = described_class.new.send(:root_cli)
+          described_class.new.send(:nested_ui_for, entry, host, approve: handler)
+        end
+        expect(ui).to be_a(Rubino::UI::SubagentView)
+        expect(ui.card_mode?).to be(true)
+        expect(ui.interactive?).to be(true) # the approve handler is wired ⇒ escalation, not noninteractive
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
