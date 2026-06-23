@@ -85,7 +85,17 @@ module Rubino
         # pgid == child pid. Lets shell_kill send SIGTERM to the whole tree.
         # bash -o pipefail keeps this path consistent with the foreground
         # shell: a mid-pipeline crash surfaces as the exit status (#156).
-        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+        #
+        # OS write-jail (#290/#544, slice 2): a backgrounded command went
+        # UNJAILED before this — a real hole, since `run_in_background: true`
+        # let a write outside the workspace through that the foreground path
+        # blocks. We now build the spawn argv+env through the SAME
+        # ShellTool.sandboxed_bash_argv helper the foreground uses, so the
+        # platform sandbox launcher prefixes bash and the writable-roots env is
+        # merged identically. The launcher `exec`s into bash in-place, so the
+        # pgroup/pipes/cwd/tracking below are all preserved. Empty prefix when
+        # the sandbox is off/unavailable ⇒ byte-identical to before.
+        pid = Process.spawn(*ShellTool.sandboxed_bash_argv(command, cwd: cwd),
                             chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
         wr.close
         in_rd.close

@@ -58,6 +58,28 @@ module Rubino
         code.zero? || code == SIGPIPE_EXIT
       end
 
+      # SINGLE source of truth for how a shell script is spawned under the OS
+      # write-jail (slice 2: foreground here AND background in ShellRegistry
+      # share this, so a backgrounded command can't bypass the jail the
+      # foreground enforces — #290/#544). Returns the `[env, *argv]` array to
+      # splat into Process.spawn: the platform sandbox launcher (sandbox-exec
+      # on macOS, rubino-landlock on Linux; [] when off/unavailable) prefixed
+      # before `bash -o pipefail -c <script>`, and GIT_HARDENED_ENV merged with
+      # the jail's extra_env (writable roots, never on argv). `cwd` derives the
+      # writable roots; `script` is the already-wrapped bash source.
+      def self.sandboxed_bash_argv(script, cwd:)
+        prefix = Security::Sandbox.command_prefix(cwd: cwd)
+        env    = GIT_HARDENED_ENV.merge(Security::Sandbox.extra_env(cwd: cwd))
+        [env, *prefix, "bash", "-o", "pipefail", "-c", script]
+      end
+
+      # nil when the shell may run, else the one-line refusal (fail-closed
+      # tools.sandbox.require with no mechanism). Both shell spawn paths consult
+      # this before launching so the refusal is symmetric (slice 2 Part B).
+      def self.sandbox_refusal_reason
+        Security::Sandbox.refusal_reason
+      end
+
       # True when the command's primary output is a unified diff the dev is
       # asking to SEE — `git diff`, `git show`, `git log -p`, or plain `diff`.
       # Matched on the FIRST stage of the command only (anything piped into a
@@ -162,6 +184,14 @@ module Rubino
 
         working_dir = resolve_cwd(cwd)
         return "Error: cannot access working directory: #{cwd.inspect}" unless working_dir
+
+        # Fail-closed (tools.sandbox.require): refuse BOTH foreground and
+        # background when the operator requires the OS jail but no mechanism can
+        # enforce it (slice 2 Part B). When a mechanism exists this is nil and
+        # execution proceeds unchanged.
+        if (refusal = self.class.sandbox_refusal_reason)
+          return { output: "Error: #{refusal}", error_code: :denied_command }
+        end
 
         if background
           # Background shells are detached and outlive the turn; the persistent
@@ -390,10 +420,9 @@ module Rubino
         # SAME process, so chdir/pgroup/the out-err pipe/fd 3/timeout/cancel all
         # apply unchanged. Empty prefix ([]) when sandbox is off/unavailable ⇒
         # byte-identical to before. Writable roots go to the helper via env
-        # (never argv), merged on top of GIT_HARDENED_ENV.
-        prefix = Security::Sandbox.command_prefix(cwd: cwd)
-        env    = GIT_HARDENED_ENV.merge(Security::Sandbox.extra_env(cwd: cwd))
-        pid    = Process.spawn(env, *prefix, "bash", "-o", "pipefail", "-c", wrapped, **spawn_opts)
+        # (never argv), merged on top of GIT_HARDENED_ENV. Built by the SHARED
+        # helper so the background path (ShellRegistry) jails identically.
+        pid = Process.spawn(*self.class.sandboxed_bash_argv(wrapped, cwd: cwd), **spawn_opts)
         pgid = pid
         wr.close
         cwd_wr&.close
