@@ -13,17 +13,40 @@ module Rubino
         true
       end
 
-      # Bare `rubino sessions` LISTS rather than printing the subcommand help
-      # (item 3): listing is the overwhelmingly common intent, and the help was
-      # a dead end that hid the very thing the user came for. We rewrite ONLY the
-      # empty-args invocation to `list` and otherwise defer to normal Thor
-      # dispatch — so `sessions show|delete|compact`, `sessions help`, and the
-      # unknown-subcommand error (#67: `sessions frobnicate` must still exit
-      # non-zero) all behave exactly as before. A leading `--help`/`-h`/`--all`
-      # is NOT empty, so it routes normally too.
+      # Bare `rubino sessions` opens the arrow-key RESUME PICKER on a real
+      # terminal, and LISTS (the script-safe static table) off a TTY. Resuming
+      # used to require a SEPARATE `rubino chat --session <id>` after eyeballing
+      # the list — the very-common "pick up where I left off" intent took two
+      # commands and a copy-paste. So the bare-on-a-TTY invocation now routes to
+      # `resume` (↑↓ select, Enter loads, Esc cancels — the SAME picker the
+      # in-REPL `/sessions` uses); a pipe/redirect keeps the `list` table so
+      # scripts stay deterministic. We rewrite ONLY the no-subcommand args and
+      # otherwise defer to normal Thor dispatch — so `sessions list` (explicit),
+      # `sessions show|delete|compact`, `sessions help`, and the unknown-
+      # subcommand error (#67: `sessions frobnicate` must still exit non-zero)
+      # all behave exactly as before. A leading `--all`/`--limit`/`--status`
+      # is NOT a subcommand, so it seeds the picker (or the list off a TTY) too.
       def self.start(given_args = ARGV, config = {})
-        given_args = ["list", *given_args] if no_subcommand?(given_args)
+        given_args = [default_subcommand, *given_args] if no_subcommand?(given_args)
         super
+      end
+
+      # The verb a bare `rubino sessions` resolves to: the interactive `resume`
+      # picker on a real terminal, the script-safe `list` table off one. The
+      # explicit `rubino sessions list` is untouched (it carries a subcommand
+      # token, so #no_subcommand? is false and this never fires).
+      def self.default_subcommand
+        interactive_terminal? ? "resume" : "list"
+      end
+
+      # True when stdin AND stdout are a real terminal, so the arrow-key picker
+      # makes sense (it reads keys and redraws). The same gate the in-REPL
+      # picker uses (Commands::Handlers::Sessions#interactive_terminal?). A
+      # pipe/redirect on either side falls back to the static `list`.
+      def self.interactive_terminal?
+        $stdin.respond_to?(:tty?) && $stdin.tty? && $stdout.respond_to?(:tty?) && $stdout.tty?
+      rescue StandardError
+        false
       end
 
       # True when the args carry no leading SUBCOMMAND token — either empty, or
@@ -84,6 +107,57 @@ module Rubino
           headers: %w[ID Title Dir Status Messages Updated],
           rows: rows
         )
+      end
+
+      desc "resume", "Pick a session to resume (interactive picker on a TTY)"
+      option :limit,  type: :numeric, default: 20, desc: "Max results"
+      option :status, type: :string,  desc: "Filter by status"
+      option :search, type: :string,  desc: "Filter by title (substring match)"
+      option :all,    type: :boolean, default: false,
+                      desc: "Pick from every directory's sessions, not just this one"
+      # Bare `rubino sessions` on a TTY (item: CLI resume picker). Lists the
+      # (cwd-scoped, --all to unscope) sessions in the SAME arrow-key picker the
+      # in-REPL `/sessions` uses (Session::Picker — ONE selection UI), and on
+      # Enter boots the chat REPL resumed at the chosen id by handing it to the
+      # EXACT path `rubino chat --session <id>` runs (ChatCommand). Esc cancels
+      # (no boot). Off a TTY this verb is never reached — #default_subcommand
+      # routes bare `sessions` to `list` there — but if called explicitly the
+      # picker's UI#select returns nil (non-interactive) and we fall through to
+      # the same "nothing to resume / cancelled" message, never a hang.
+      def resume
+        guard_corrupt_database!
+        Rubino.ensure_database_ready!
+        repo = Session::Repository.new
+        # Reap sessions left "active" by a process that died without ending
+        # them, same as #list, so the picker never offers a stale "active" row.
+        repo.reap_orphaned_active!
+        # Default to THIS directory's sessions (#334); --all seeds an unscoped
+        # picker over every dir. nil cwd ⇒ unscoped.
+        cwd = options[:all] ? nil : Rubino::Workspace.primary_root
+        sessions = repo.list(limit: options[:limit], status: options[:status],
+                             search: options[:search], cwd: cwd)
+
+        if sessions.empty?
+          msg = options[:all] ? "No sessions found." : "No sessions found in this directory (try --all)."
+          Rubino.ui.info(msg)
+          return
+        end
+
+        chosen = Session::Picker.new(ui: Rubino.ui).pick(sessions)
+        unless chosen
+          # Esc / non-interactive UI: nothing was picked. Leave a one-line hint
+          # so the user knows how to resume explicitly and isn't dropped at a
+          # blank prompt wondering whether anything happened.
+          Rubino.ui.info("Cancelled. Resume directly with: rubino chat --session <id>")
+          return
+        end
+
+        # Hand the chosen id to the SAME resolver `rubino chat --session <id>`
+        # uses (ChatCommand → SessionResolver#resolve_session_id reads :session
+        # first), so the loaded REPL is byte-identical to the flag form — no
+        # resume logic is reimplemented here. Pass through --yolo etc. is not
+        # needed: a resume picker is the interactive entry point.
+        ChatCommand.new(session: chosen).execute
       end
 
       desc "show ID", "Show session details"

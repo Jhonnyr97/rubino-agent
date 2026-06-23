@@ -149,8 +149,10 @@ module Rubino
           # typed-shortcut fallback renders instead.
           return sessions_table_fallback(sessions) unless interactive_terminal?
 
-          choices = sessions.map { |s| [session_choice_label(s), s[:id]] }
-          chosen  = @ui.select("Resume which session? (Esc to cancel)", choices)
+          # ONE picker for both resume surfaces (#40): the in-REPL chooser here
+          # and the CLI `rubino sessions` bare-on-a-TTY entry share
+          # Session::Picker so the selection UI + row label live in one place.
+          chosen = Session::Picker.new(ui: @ui).pick(sessions)
           if chosen
             session = sessions.find { |s| s[:id] == chosen }
             @ui.success(%(Resuming #{chosen[0..7]}  "#{session_title(session)}")) if session
@@ -175,31 +177,12 @@ module Rubino
           :handled
         end
 
-        # One picker row: short id + title + message count + recency (and status
-        # when not yet ended), so the highlighted entry is identifiable at a
-        # glance and the picker is a clean superset of the old static table (#40).
+        # One picker row, delegated to the shared Session::Picker (#40) so the
+        # in-REPL chooser and the CLI `rubino sessions` picker render rows
+        # identically. Kept as a thin alias for the sessions_table_fallback and
+        # the existing label-shape spec.
         def session_choice_label(session)
-          id    = session[:id].to_s[0..7]
-          title = session_title(session)
-          msgs  = session[:message_count]
-          dir   = session_dir(session)
-          meta  = [
-            ("#{msgs} msg#{"s" if msgs != 1}" if msgs),
-            (dir unless dir == "—"),
-            session_age(session),
-            (session[:status].to_s unless ["", "ended"].include?(session[:status].to_s))
-          ].compact.join(" · ")
-          meta.empty? ? "#{id}  #{title}" : "#{id}  #{title}  (#{meta})"
-        end
-
-        # "Created" humanized for the picker row — "5m ago" scans better than a
-        # raw ISO timestamp in a recency-ordered list (#40). nil when unparseable.
-        def session_age(session)
-          created = session[:created_at]
-          created = Time.parse(created.to_s) unless created.is_a?(Time)
-          "#{Rubino::Util::Duration.human_duration(Time.now - created)} ago"
-        rescue StandardError
-          nil
+          Session::Picker.session_choice_label(session)
         end
 
         def resume_session(query)
@@ -230,29 +213,15 @@ module Rubino
           (error.cause || error).message.to_s.lines.first.to_s.strip
         end
 
-        # A session title is auto-generated from the conversation, so it is
-        # attacker-influenceable: a raw `\e]0;…\a` / `\e[2J` in it would hijack
-        # the window title or clear the screen the moment it reached the
-        # `info`/`success`/picker funnels (none of which sanitize) — CWE-150,
-        # R4-N2. Neutralize to caret notation at this single title funnel, which
-        # every title-printing path (resume, picker label, Resuming success)
-        # flows through.
+        # Title/dir, delegated to the shared Session::Picker (CWE-150 / R4-N2
+        # sanitization lives there now) so the resume/rename success lines and
+        # the table fallback render the same neutralized fields the picker does.
         def session_title(session)
-          title = Rubino::Util::Output.sanitize_terminal(session[:title].to_s).strip
-          title.empty? ? "(untitled)" : title
+          Session::Picker.session_title(session)
         end
 
-        # The session's launch dir (r5 MF-4), home-collapsed and terminal-escape
-        # sanitized for display in the picker/table. "—" for pre-cwd-column rows.
         def session_dir(session)
-          raw = session[:cwd].to_s
-          return "—" if raw.empty?
-
-          home = Dir.home
-          collapsed = raw.start_with?(home) ? raw.sub(home, "~") : raw
-          Rubino::Util::Output.sanitize_terminal(collapsed)
-        rescue StandardError
-          Rubino::Util::Output.sanitize_terminal(session[:cwd].to_s)
+          Session::Picker.session_dir(session)
         end
 
         # The bare-list row cap (#183): configurable (`sessions.list_limit`) and
