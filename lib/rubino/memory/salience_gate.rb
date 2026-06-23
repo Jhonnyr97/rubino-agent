@@ -98,6 +98,32 @@ module Rubino
           TRIVIAL_WORDS.include?(w)
         end
       end
+
+      # A capability/limitation claim about the TOOLING or environment that was
+      # almost certainly mined from a transient tool error, not asserted by the
+      # user as a durable fact. e.g. after a one-off failure the aux model mints
+      # "file-editing tooling can't edit non-ASCII files" / "the edit tool fails
+      # on large files" — a meta claim that should NEVER become durable memory:
+      # it is often wrong (the error was transient) and primes future refusals.
+      # The user's REAL durable facts ("I prefer X", "the project uses Y") never
+      # match this shape, so storing them is unaffected.
+      TOOL_LIMITATION_CLAIM = /
+        \b(?:the\ )?
+        (?:tool(?:ing|s)?|edit(?:or|ing)?|read(?:er|ing)?|write|writing|shell|
+           command|agent|model|assistant|file-editing|filesystem)\b
+        [^.]*?
+        \b(?:can(?:no|')t|cannot|could\ ?n[o']t|un(?:able|supported)|
+           does\ ?n[o']t|do\ ?n[o']t|fail(?:s|ed)?|broke|broken|error(?:s|ed)?|
+           crash(?:es|ed)?|not\ supported|no\ support|isn'?t\ able|won'?t)\b
+      /xi
+
+      # True when +text+ reads as an error-derived tool/environment limitation
+      # claim (see TOOL_LIMITATION_CLAIM) rather than a durable user/project
+      # fact. The single choke point the extraction apply path consults to NOOP
+      # such candidates before they are persisted.
+      def tool_limitation_claim?(text)
+        TOOL_LIMITATION_CLAIM.match?(text.to_s)
+      end
     end
   end
 end

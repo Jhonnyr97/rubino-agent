@@ -61,7 +61,7 @@ module Rubino
         # are gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask): an
         # APPROVED edit of your .env actually applies, a denied/headless one
         # never reaches #call. The workspace sandbox below is unchanged.
-        return workspace_violation_message(file_path) unless within_workspace?(expanded)
+        return workspace_violation_message(file_path) unless writable_workspace?(expanded)
 
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
 

@@ -152,4 +152,27 @@ RSpec.describe Rubino::Tools::ReadTracker do
       expect(File.read(path)).to eq("mutated")
     end
   end
+
+  # #77c: after the model's OWN landed edit, the next read of that path must
+  # serve FRESH bytes — not a stale "[DUPLICATE READ]" nudge against the
+  # pre-edit content. note_write refreshes the read cache (clears the window
+  # records for the path), so the same window is no longer a duplicate.
+  describe "#note_write refreshes the read cache (#77c)" do
+    it "serves a fresh read of the same window after the agent's own write" do
+      path = write_file("doc.txt", "before")
+      old_digest = Digest::SHA256.hexdigest("before")
+      # The model read the file (window recorded), so an identical re-read would
+      # otherwise dedupe.
+      expect(tracker.duplicate_read?(path, 1, 2000, old_digest)).to be(false)
+      expect(tracker.duplicate_read?(path, 1, 2000, old_digest)).to be(true)
+
+      # The model edits it: note_write must clear the stale window for this path.
+      File.write(path, "after")
+      tracker.note_write(path, "after")
+
+      # The next read of the SAME window is NOT a duplicate — it serves fresh.
+      new_digest = Digest::SHA256.hexdigest("after")
+      expect(tracker.duplicate_read?(path, 1, 2000, new_digest)).to be(false)
+    end
+  end
 end

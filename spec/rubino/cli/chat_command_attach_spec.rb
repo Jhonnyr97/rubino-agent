@@ -92,6 +92,23 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(composer.main_render_suppressed?).to be(false)
     end
 
+    # #37: while ATTACHED the parent's idle subagent cards belong to the main
+    # view — they must NOT render under the focused sub-view (every watcher/
+    # input repaint would otherwise redraw the last card set and clutter it).
+    # They reappear once detached.
+    it "suppresses the parent's subagent cards while attached, restoring them on detach" do
+      allow(cmd.send(:session_resolver)).to receive(:replay_session)
+      composer.set_cards(["• explore — searching"])
+      expect(composer.send(:below_input_rows)).not_to be_empty
+
+      attach!
+      expect(composer.send(:below_input_rows)).to be_empty
+
+      cmd.send(:detach_agent_view, runner, ui)
+      composer.set_cards(["• explore — searching"])
+      expect(composer.send(:below_input_rows)).not_to be_empty
+    end
+
     # The live-tail watcher (this slice): attach starts a thread that keeps the
     # attached view fresh as the sub works; detach and switching away stop it so
     # it never paints another view.

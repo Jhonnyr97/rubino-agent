@@ -176,13 +176,13 @@ RSpec.describe "session cwd consistency (#544/#545)" do # rubocop:disable RSpec/
   describe "workspace_strict still blocks a write outside the workspace" do
     it "refuses an absolute out-of-workspace write even after a cd" do
       on_fresh_thread do
-        outside = Dir.mktmpdir("cwd-block")
+        # A NON-scratch outside path: #77a now accepts $TMPDIR/tmp scratch, so
+        # the boundary assertion targets a path outside the scratch set.
+        target = "/usr/local/rubino_cwd_block_evil.txt"
         shell.call("command" => "cd sub")
-        res = write_tool.call("file_path" => File.join(outside, "evil.txt"), "content" => "z")
+        res = write_tool.call("file_path" => target, "content" => "z")
         expect(res.to_s).to include("refusing to access")
-        expect(File.exist?(File.join(outside, "evil.txt"))).to be(false)
-      ensure
-        FileUtils.rm_rf(outside)
+        expect(File.exist?(target)).to be(false)
       end
     end
   end

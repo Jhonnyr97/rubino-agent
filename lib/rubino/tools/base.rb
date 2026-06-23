@@ -185,6 +185,48 @@ module Rubino
         end
       end
 
+      # The WRITE/EDIT sandbox check: within the workspace OR under the temp
+      # scratch set ($TMPDIR + /tmp). The OS write-jail already grants scratch as
+      # writable and `shell` can freely write there, but the structured write/edit
+      # guard refused it — so `write /tmp/x` failed while `shell printf > /tmp/x`
+      # worked, an inconsistency the model tripped on (#77a). This is deliberately
+      # SEPARATE from #within_workspace? so the relaxation applies ONLY to writes:
+      # the AUX-LLM read guard (#outside_workspace?, which exfiltrates bytes to a
+      # third-party model) stays strict and never reaches scratch.
+      def writable_workspace?(expanded)
+        return true unless workspace_strict?
+        return true if within_workspace?(expanded)
+
+        target_real = canonical_path(expanded)
+        return false unless target_real
+
+        temp_scratch?(target_real)
+      end
+
+      # The shared temp scratch roots ($TMPDIR + /tmp), resolved through symlinks
+      # so the comparison matches canonical_path's output.
+      def temp_scratch_roots
+        [ENV.fetch("TMPDIR", nil), "/tmp"].filter_map do |p|
+          next if p.nil? || p.empty? || !File.directory?(p)
+
+          File.realpath(File.expand_path(p))
+        rescue StandardError
+          nil
+        end.uniq
+      end
+
+      def temp_scratch?(target_real)
+        # The agent home (~/.rubino) holds the sandbox's own trust anchors and is
+        # DELIBERATELY non-writable from the jail (see Security::Sandbox); a temp
+        # home in tests sits under $TMPDIR, so carve it out here too — scratch
+        # must never become a self-tamper write path.
+        return false if under_agent_home?(target_real)
+
+        temp_scratch_roots.any? do |root|
+          target_real == root || target_real.start_with?("#{root}#{File::SEPARATOR}")
+        end
+      end
+
       # Resolves `path` through every symlink to its canonical destination.
       # When the path doesn't exist yet (create-new-file flow) walks up to
       # the deepest existing ancestor, realpaths that, then re-joins the
