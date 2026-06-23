@@ -55,9 +55,16 @@ module Rubino
           @last_composer  = nil
         end
 
-        # Start the ticker thread. A no-op off a composer (plain TTY / pipe /
-        # tests) where there is nothing to tail in place. Returns the Thread (or
-        # nil) so the caller can stop it on detach.
+        # Start the ticker thread. A no-op off a TTY (plain TTY / pipe / tests)
+        # where there is nothing to tail in place. Returns the Thread (or nil) so
+        # the caller can stop it on detach.
+        #
+        # Gated on UI::BottomComposer.active? (the persistent both-ends-TTY
+        # capability), NOT on .current: #attach_agent_view runs AFTER the idle
+        # read's `ensure` has torn its composer down (stop ⇒ .current = nil), so
+        # .current is nil at start time even on a real TTY — guarding on it here
+        # never started the watcher and the attached view froze (#85). The next
+        # idle pass rebuilds a composer; the loop below re-resolves it.
         #
         # Each tick RE-RESOLVES the composer that owns the screen NOW
         # (UI::BottomComposer.current) rather than pinning the one present at
@@ -66,15 +73,19 @@ module Rubino
         # the live tail would silently stop painting (#82). The focus guard is the
         # persistent host @attached_id, not composer identity.
         def start
-          return nil unless UI::BottomComposer.current
+          return nil unless UI::BottomComposer.active?
 
           Thread.new do
             loop do
               sleep(WATCH_TICK)
-              composer = UI::BottomComposer.current
-              break unless still_attached?(composer)
+              break unless still_attached?
 
-              tick(composer)
+              # A composer may be transiently absent between idle passes (the read
+              # tears it down before the next is built). That is NOT a detach — keep
+              # looping and paint when one is back, so the live tail resumes instead
+              # of the ticker dying for the rest of the attach (#85).
+              composer = UI::BottomComposer.current
+              tick(composer) if composer
               break unless live?
             end
           rescue StandardError => e
@@ -193,16 +204,15 @@ module Rubino
           TERMINAL_STATES.include?(entry.status)
         end
 
-        # Still attached to THIS sub AND a composer still owns the screen.
-        # Re-checked every tick so the watcher never paints after a detach or a
-        # switch to another agent (each gets its own watcher). The guard is the
-        # PERSISTENT host @attached_id, not composer identity: the REPL rebuilds
-        # the composer every idle pass, so pinning a specific instance would
-        # falsely report "detached" and freeze the live tail (#82). A nil composer
-        # (no TTY) stops the ticker.
-        def still_attached?(composer)
-          !composer.nil? &&
-            @host.instance_variable_get(:@attached_id) == @id
+        # Still attached to THIS sub. The ONLY break condition (besides the sub
+        # going terminal): re-checked every tick so the watcher stops the instant
+        # the REPL detaches or switches to another agent (each gets its own
+        # watcher). The guard is the PERSISTENT host @attached_id, not composer
+        # identity — the REPL rebuilds the composer every idle pass and tears it
+        # down between passes, so a momentarily-nil composer is NOT a detach (#85)
+        # and pinning a specific instance would falsely report "detached" (#82).
+        def still_attached?
+          @host.instance_variable_get(:@attached_id) == @id
         end
       end
     end
