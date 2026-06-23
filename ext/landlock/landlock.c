@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -109,9 +110,30 @@ static uint64_t write_access_mask(int abi) {
   return m;
 }
 
-/* Grant the handled write rights on one path (a directory or a file like
- * /dev/null). A non-existent path is skipped silently. Returns 0 on success or
- * skip, -1 on a hard error after the path was opened. */
+/* The subset of the write mask that is valid on a NON-directory inode (a
+ * regular file or char/block device such as /dev/null). The directory-shaped
+ * rights (MAKE_REG, MAKE_DIR, REMOVE_FILE, REFER, ...) only apply to a
+ * directory; granting them on a file makes landlock_add_rule return EINVAL,
+ * which previously dropped the whole grant and silently blocked writes to
+ * /dev/null and the like. */
+static uint64_t file_access_subset(uint64_t allowed) {
+  uint64_t m = 0;
+#ifdef LANDLOCK_ACCESS_FS_WRITE_FILE
+  m |= LANDLOCK_ACCESS_FS_WRITE_FILE;
+#endif
+#ifdef LANDLOCK_ACCESS_FS_TRUNCATE
+  m |= LANDLOCK_ACCESS_FS_TRUNCATE;
+#endif
+#ifdef LANDLOCK_ACCESS_FS_IOCTL_DEV
+  m |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
+#endif
+  return m & allowed;
+}
+
+/* Grant the handled write rights on one path. For a directory we grant the
+ * full write mask (create/remove/rename children); for a file/device we grant
+ * only the file-applicable subset, so landlock doesn't EINVAL. A non-existent
+ * path is skipped silently. Returns 0 on success/skip, -1 on a hard error. */
 static int grant_path(int ruleset_fd, const char *path, uint64_t allowed) {
   struct landlock_path_beneath_attr pb = {0};
   int fd = open(path, O_PATH | O_CLOEXEC);
@@ -119,8 +141,13 @@ static int grant_path(int ruleset_fd, const char *path, uint64_t allowed) {
     /* Missing root (e.g. no $TMPDIR) — nothing to grant, not fatal. */
     return 0;
   }
+  struct stat st;
+  uint64_t rights = allowed;
+  if (fstat(fd, &st) == 0 && !S_ISDIR(st.st_mode)) {
+    rights = file_access_subset(allowed);
+  }
   pb.parent_fd = fd;
-  pb.allowed_access = allowed;
+  pb.allowed_access = rights;
   int rc = landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &pb, 0);
   close(fd);
   if (rc) {
