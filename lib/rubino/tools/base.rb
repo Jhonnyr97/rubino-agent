@@ -190,11 +190,28 @@ module Rubino
       # the deepest existing ancestor, realpaths that, then re-joins the
       # missing tail. The tail itself can't traverse — expand_path already
       # collapsed `..` segments before we got here.
-      def canonical_path(path)
+      def canonical_path(path, symlink_hops = 0)
         return nil if path.nil? || path.to_s.empty?
 
         expanded = File.expand_path(path.to_s)
         return File.realpath(expanded) if File.exist?(expanded)
+
+        # A DANGLING symlink (the link exists; its target does not yet) reports
+        # File.exist? == false because exist? follows the link to the missing
+        # target — so the create-new-file fallback below would canonicalize the
+        # LINK'S OWN location and wrongly accept it as in-workspace, even though
+        # a write through the link lands at the target OUTSIDE the workspace.
+        # Resolve where the link actually points (recursively, in case the
+        # target is itself a dangling link) so the sandbox confines the real
+        # write destination, not the harmless-looking link path. The hop counter
+        # bails a symlink cycle (a→b→a) — exist? never trips on a cycle, so an
+        # unbounded recurse would loop; matching realpath's ELOOP, return nil.
+        if File.symlink?(expanded)
+          return nil if symlink_hops >= 40
+
+          target = File.expand_path(File.readlink(expanded), File.dirname(expanded))
+          return canonical_path(target, symlink_hops + 1)
+        end
 
         ancestor = expanded
         tail     = []
