@@ -205,6 +205,17 @@ module Rubino
       # tokens through query strings. Known credential shapes inside URLs are
       # still caught by PREFIX_RE / JWT_RE; DB passwords by DB_CONNSTR_RE.
       def redact_misc_patterns(text)
+        # Prefix-less AWS secret-access-key (40-char base64, no prefix of its
+        # own) — only masked when it sits next to an `aws_secret_access_key`
+        # cue, so a bare 40-char base64/hex blob in normal output is NOT touched
+        # (preserves the #67 no-over-redaction contract). Precise/context-gated,
+        # safe on both prose and source.
+        if text =~ /secret/i && text =~ /key/i
+          text = text.gsub(SecretDetector::AWS_SECRET_KEY_RE) do
+            m = ::Regexp.last_match
+            m[0].sub(m[2], mask_token(m[2]))
+          end
+        end
         if text =~ /uthorization/i
           text = text.gsub(AUTH_HEADER_RE) { "#{::Regexp.last_match(1)}#{mask_token(::Regexp.last_match(2))}" }
         end

@@ -107,6 +107,14 @@ module Rubino
 
           return "prompt_injection" if PROMPT_INJECTION_PATTERNS.any? { |p| text.match?(p) }
           return "behavior_override" if BEHAVIOR_OVERRIDE_PATTERNS.any? { |p| text.match?(p) }
+          # Credentials (API keys, tokens, AWS secret keys, generic high-entropy
+          # secrets). Memory is persisted to disk and re-injected into every
+          # future system prompt, so a saved secret leaks to the provider on
+          # later turns. A false positive only costs an un-saved fact, so we run
+          # the conservative high-entropy heuristic here (entropy: true) on top
+          # of the known shapes. Covers BOTH the explicit `memory` tool save and
+          # the auto-extract persist path (both reach .scan via the store guards).
+          return "secret_detected" if Security::SecretDetector.present?(text, entropy: true)
           return "exfiltration_url_credentials" if text.match?(URL_CREDENTIAL_PATTERN)
           return "exfiltration_pipe_to_shell" if text.match?(PIPE_TO_SHELL_PATTERN)
           return "exfiltration_base64_blob" if text.match?(BASE64_BLOB_PATTERN)
