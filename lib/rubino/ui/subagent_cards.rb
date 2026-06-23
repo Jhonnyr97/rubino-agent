@@ -29,6 +29,16 @@ module Rubino
       # list anyway with an explicit overflow tail.
       MAX_CARDS = Tools::BackgroundTasks::MAX_CONCURRENT
 
+      # The display-column budget every card row is bounded to when the caller
+      # does not pass the live pane width. Several concurrent `needs approval`
+      # cards previously rendered at WHATEVER length their (model-chosen) command
+      # made them — so two parked children sat at different right edges and the
+      # longer one wrapped mid-word onto a second physical line at a stray column.
+      # Bounding EVERY row to one budget (and eliding on a glyph boundary, never
+      # mid-word) keeps the concurrent toasts a calm, left-aligned, single-line
+      # stack. A real pane width (when threaded through) overrides this default.
+      DEFAULT_CARD_WIDTH = 100
+
       # Collapsed glyph (a running card) / approval glyph (needs the human) /
       # BLOCKED glyph (an escalated ask_parent waiting on the human — RESERVED for
       # "the tree is blocked on you" and nothing else, the distinct-signal rule).
@@ -45,13 +55,13 @@ module Rubino
       # nothing is live, so the renderer can clear the region. +entries+ is a
       # snapshot (BackgroundTasks#running) taken under the registry mutex by the
       # caller — this method only reads the plain struct fields.
-      def card_lines(entries)
+      def card_lines(entries, width: DEFAULT_CARD_WIDTH)
         live = entries.select { |e| live?(e) }
         return [] if live.empty?
 
         shown    = live.first(MAX_CARDS)
         overflow = live.size - shown.size
-        lines    = shown.map { |e| card_line(e) }
+        lines    = shown.map { |e| clamp_row(card_line(e), width) }
         lines << @pastel.dim("  + #{overflow} more · /agents") if overflow.positive?
         # Count blocked children over the FULL live list (pre-cap), not just the
         # shown cards, so the aggregated ⛔N is the true number waiting on the
@@ -118,6 +128,21 @@ module Rubino
       end
 
       private
+
+      # Bound ONE assembled card row to +width+ display columns so concurrent
+      # cards share a consistent right edge and a too-long row never wraps onto a
+      # second physical line at a stray column. Uses the ANSI-aware, whole-glyph
+      # column walk (LiveRegion.take_first_columns) so the cut lands on a glyph
+      # boundary — never mid-word in the middle of a multi-cell glyph or inside an
+      # SGR escape — and stamps a trailing dim "…" when it actually truncated, so
+      # the elision reads as deliberate. A non-positive width is a no-op (winsize
+      # can briefly report 0). The two-space left margin every row already carries
+      # is preserved: clamping only trims the RIGHT, so the stack stays left-aligned.
+      def clamp_row(row, width)
+        return row if width.to_i < 1 || LiveRegion.display_width(row) <= width
+
+        "#{LiveRegion.take_first_columns(row, width - 1)}#{@pastel.dim("…")}"
+      end
 
       def live?(entry)
         %i[running needs_approval blocked_on_human stopping].include?(entry.status)
