@@ -118,4 +118,79 @@ RSpec.describe Rubino::LLM::ToolBridge do
     described_class.install(chat, [agent_tool], ui: ui, event_bus: nil, tool_executor: nil)
     expect(chat.dispatch(tool_call("call_x", "fake_tool", {}))).to eq("ok")
   end
+
+  # FINDING #48 / #52: the tool-dispatch BOUNDARY. ruby_llm runs the whole
+  # model↔tool loop inside one ask(); the only in-loop cancel poll is the
+  # per-chunk streaming callback. A user interrupt that lands BETWEEN a tool
+  # returning and ruby_llm issuing the next round-trip request used to go
+  # unnoticed: ruby_llm sent a malformed continuation the provider rejected
+  # ("invalid params", #48) and the unwind lagged until the post-cancel stream
+  # settled (16–21s, #52). The bridge now checks the turn's CancelToken at the
+  # boundary — before AND after each mid-stream dispatch — so the interrupt
+  # surfaces PROMPTLY as a clean Rubino::Interrupted and no doomed request is
+  # ever issued.
+  describe "cancel-token boundary check (#48/#52)" do
+    let(:token) { Rubino::Interaction::CancelToken.new }
+
+    it "raises Interrupted at the post-return boundary when the user cancelled DURING the tool" do
+      allow(repo).to receive(:record)
+      # Mimics a long shell command SIGTERM-settled by Esc: the cancel flips
+      # while the tool runs, and the tool RETURNS NORMALLY (cancelled output) —
+      # it does not raise. Without the boundary check, control would flow back
+      # to ruby_llm and a continuation request would go out before the interrupt
+      # is noticed.
+      flip = token
+      agent_tool.define_singleton_method(:call) do |_args|
+        flip.cancel!
+        "[Command cancelled by user — SIGTERM sent]"
+      end
+
+      described_class.install(chat, [agent_tool], ui: ui, event_bus: nil,
+                                                  tool_executor: executor, cancel_token: token)
+
+      expect { chat.dispatch(tool_call("call_late", "fake_tool", {})) }
+        .to raise_error(Rubino::Interrupted)
+    end
+
+    it "raises Interrupted BEFORE running the tool when the token is already cancelled" do
+      token.cancel!
+      ran = false
+      agent_tool.define_singleton_method(:call) do |_args|
+        ran = true
+        "should not run"
+      end
+
+      described_class.install(chat, [agent_tool], ui: ui, event_bus: nil,
+                                                  tool_executor: executor, cancel_token: token)
+
+      expect { chat.dispatch(tool_call("call_pre", "fake_tool", {})) }
+        .to raise_error(Rubino::Interrupted)
+      expect(ran).to be(false)
+    end
+
+    it "carries the cancel reason so an external teardown is not mislabeled as a user interrupt" do
+      token.cancel!(reason: :external)
+
+      described_class.install(chat, [agent_tool], ui: ui, event_bus: nil,
+                                                  tool_executor: executor, cancel_token: token)
+
+      raised = nil
+      begin
+        chat.dispatch(tool_call("call_ext", "fake_tool", {}))
+      rescue Rubino::Interrupted => e
+        raised = e
+      end
+      expect(raised.reason).to eq(:external)
+    end
+
+    it "runs the tool normally and returns its output when the token is NOT cancelled" do
+      allow(repo).to receive(:record)
+      agent_tool.output = "ok"
+
+      described_class.install(chat, [agent_tool], ui: ui, event_bus: nil,
+                                                  tool_executor: executor, cancel_token: token)
+
+      expect(chat.dispatch(tool_call("call_ok", "fake_tool", {}))).to eq("ok")
+    end
+  end
 end
