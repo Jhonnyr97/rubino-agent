@@ -54,7 +54,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     # A runner with NO detached worker, so the orphan is drained by the
     # main-thread reaper inside #drain_post_turn_jobs! — the exact leak path.
-    runner = instance_double(Rubino::Agent::Runner, polishing: nil)
+    # The reaper is now SCOPED to this run's session (WHATIF-headless RED-1), so
+    # the runner reports the same session the orphan ExtractMemoryJob targets.
+    runner = instance_double(Rubino::Agent::Runner, polishing: nil, session: session)
     headless_ui = Rubino::UI::Null.new
     cmd = described_class.new
 
@@ -78,7 +80,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     Rubino::Jobs::Queue.new(db: db.db, config: config)
                        .enqueue("ExtractMemoryJob", { session_id: session[:id] }, drain_inline: false)
 
-    runner = instance_double(Rubino::Agent::Runner, polishing: nil)
+    runner = instance_double(Rubino::Agent::Runner, polishing: nil, session: session)
     cmd = described_class.new
 
     out = capture_stdout do

@@ -138,8 +138,15 @@ module Rubino
         )
       end
 
-      # Lists jobs with optional filters
+      # Lists jobs with optional filters. Reclaims lease-expired `running` rows
+      # FIRST (WHATIF-headless YELLOW-1) so the list is honest: reclaim_stale!
+      # otherwise ran only on the dequeue/process/drain write paths, so a row a
+      # dead worker abandoned sat "running" long past the 900s lease (e.g. 43
+      # min) on every `jobs list` / `/jobs` read. Reclaiming on the read path
+      # re-queues (or kills) it so the status shown matches reality. Idempotent
+      # and cheap — a second call in #counts (the /jobs header) finds nothing.
       def list(status: nil, limit: 20)
+        reclaim_stale!
         dataset = @db[:jobs].order(Sequel.desc(:created_at)).limit(limit)
         dataset = dataset.where(status: status) if status
         dataset.all
@@ -156,7 +163,10 @@ module Rubino
 
       # Status counts for the whole queue (status => count), one grouped
       # query — the in-chat /jobs header line (#187). {} when the queue is empty.
+      # Reclaims lease-expired `running` rows first (WHATIF-headless YELLOW-1) so
+      # the header count matches the reclaimed list rendered right after it.
       def counts
+        reclaim_stale!
         @db[:jobs].group_and_count(:status).to_h { |row| [row[:status], row[:count]] }
       end
 
@@ -178,7 +188,19 @@ module Rubino
       # so a turn whose extraction was interrupted is recovered on the next
       # inline boot instead of sitting "queued" forever. Each is taken through
       # run_job, which marks it completed / failed (inline) / dead terminally.
-      def reap_inline_orphans(before: nil)
+      #
+      # +session_id+ SCOPES the sweep to the current run's OWN post-turn jobs
+      # (WHATIF-headless RED-1). A headless one-shot drains before it exits, and
+      # the unscoped sweep ran EVERY due/queued/unlocked row in the table — a
+      # whole foreign backlog (each row a full LLM call), so a trivial `rubino -q`
+      # on a home with a backlog blocked 9-15+ min past its answer and, under
+      # --output-format json, withheld stdout behind the backlog. The post-turn
+      # jobs (ExtractMemory/DistillSkill/Summarize) all carry the enqueuing
+      # session's id in their payload, so passing +session_id+ restricts the
+      # drain to rows this session owns; foreign rows stay `queued` for the next
+      # run / the worker. Reaping with no +session_id+ keeps the original
+      # whole-queue sweep (the in-process inline-enqueue boot recovery).
+      def reap_inline_orphans(before: nil, session_id: nil)
         # First re-queue any row a prior run abandoned mid-flight in `running`
         # (#76) so the scan below sweeps it too — same recovery the detached
         # drain gets via #next_due_queued.
@@ -193,6 +215,9 @@ module Rubino
                   .where { run_at <= now }
                   .order(:priority, :run_at)
         dataset = dataset.exclude(id: before) if before
+        # Match the session's own rows by the serialized payload tag
+        # (JSON.generate emits "session_id":"<id>" with no spaces, #enqueue).
+        dataset = dataset.where(Sequel.like(:payload_json, "%\"session_id\":\"#{session_id}\"%")) if session_id
 
         # Isolate each orphan: run_job already failure-isolates a bad row
         # terminally, but a defence-in-depth guard here means even an

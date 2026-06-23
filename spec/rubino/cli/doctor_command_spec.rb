@@ -34,13 +34,20 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(ui.messages.last).to include(level: :success)
     end
 
-    it "reports :warn when migrations are pending" do
+    # WHATIF-headless YELLOW-2: a pending migration used to render as a soft ⚠
+    # (level :warning) with NO fix hint, inconsistent with the ✗ + "run `rubino
+    # setup`" the missing-key/corrupt-config failures give. It already flipped
+    # the exit non-zero (:warn isn't counted as :ok), so make it a hard ✗ (:fail,
+    # level :error) WITH the actionable setup hint.
+    it "reports :fail with a ✗ and a setup hint when migrations are pending (YELLOW-2)" do
       migrator_double(pending: true)
 
       result = doctor.send(:check_migrations)
 
-      expect(result).to eq(name: "migrations", status: :warn)
-      expect(ui.messages.last).to include(level: :warning)
+      expect(result).to eq(name: "migrations", status: :fail)
+      last = ui.messages.last
+      expect(last).to include(level: :error)
+      expect(last[:message]).to include("rubino setup")
     end
 
     # Regression: the old rescue mapped ANY error (including a real DB failure)
