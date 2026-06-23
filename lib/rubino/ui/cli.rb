@@ -1143,7 +1143,13 @@ module Rubino
           nil
         end
         cols = 80 unless cols&.positive?
-        [cols - MD_MARGIN.length, MIN_MARKDOWN_WIDTH].max
+        # Apply the #95 under-report floor to the REAL pane width FIRST, THEN
+        # subtract the MD_MARGIN every committed/live line is indented by, so the
+        # rendered table plus its margin never exceeds the actual pane (#Y1).
+        # Flooring after the subtraction (the old `[cols - margin, FLOOR].max`)
+        # let a 40-col pane render a 40-col table that, once margined, spilled to
+        # 42 cols and tore/garbled. Clamp the post-margin budget to ≥1 too.
+        [[cols, MIN_MARKDOWN_WIDTH].max - MD_MARGIN.length, 1].max
       end
 
       # --- Streaming (unchanged except visual, now uses assistant_text) ---
