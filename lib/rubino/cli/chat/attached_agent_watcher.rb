@@ -52,19 +52,26 @@ module Rubino
           @ui             = ui
           @rendered_count = rendered_count
           @last_tail      = nil
+          @last_composer  = nil
         end
 
-        # Start the ticker thread. Captures the composer that owns the screen NOW
-        # (the same one the attach replay painted into); a no-op off a composer
-        # (plain TTY / pipe / tests) where there is nothing to tail in place.
-        # Returns the Thread (or nil) so the caller can stop it on detach.
+        # Start the ticker thread. A no-op off a composer (plain TTY / pipe /
+        # tests) where there is nothing to tail in place. Returns the Thread (or
+        # nil) so the caller can stop it on detach.
+        #
+        # Each tick RE-RESOLVES the composer that owns the screen NOW
+        # (UI::BottomComposer.current) rather than pinning the one present at
+        # attach time: the REPL rebuilds a fresh composer every idle pass, so a
+        # pinned reference would go stale the instant the loop recreates one and
+        # the live tail would silently stop painting (#82). The focus guard is the
+        # persistent host @attached_id, not composer identity.
         def start
-          composer = UI::BottomComposer.current
-          return nil unless composer
+          return nil unless UI::BottomComposer.current
 
           Thread.new do
             loop do
               sleep(WATCH_TICK)
+              composer = UI::BottomComposer.current
               break unless still_attached?(composer)
 
               tick(composer)
@@ -88,6 +95,17 @@ module Rubino
         def tick(composer)
           entry = Tools::BackgroundTasks.instance.find(@id)
           return unless entry
+
+          # The REPL rebuilds the composer every idle pass (#82): a fresh one has
+          # an empty transient row, but @last_tail still holds the prior frame, so
+          # an unchanged-status tick would SKIP repainting and leave the new
+          # composer with no live tail until the status text happens to change.
+          # Drop the cache on a composer changeover so the ⟂ frame lands on the
+          # new screen immediately.
+          unless composer.equal?(@last_composer)
+            @last_tail     = nil
+            @last_composer = composer
+          end
 
           @host.send(:with_focused_view_replay, composer) do
             commit_message_delta(entry)
@@ -175,11 +193,15 @@ module Rubino
           TERMINAL_STATES.include?(entry.status)
         end
 
-        # Still attached to THIS sub AND the same composer still owns the screen.
+        # Still attached to THIS sub AND a composer still owns the screen.
         # Re-checked every tick so the watcher never paints after a detach or a
-        # switch to another agent (each gets its own watcher).
+        # switch to another agent (each gets its own watcher). The guard is the
+        # PERSISTENT host @attached_id, not composer identity: the REPL rebuilds
+        # the composer every idle pass, so pinning a specific instance would
+        # falsely report "detached" and freeze the live tail (#82). A nil composer
+        # (no TTY) stops the ticker.
         def still_attached?(composer)
-          composer.equal?(UI::BottomComposer.current) &&
+          !composer.nil? &&
             @host.instance_variable_get(:@attached_id) == @id
         end
       end

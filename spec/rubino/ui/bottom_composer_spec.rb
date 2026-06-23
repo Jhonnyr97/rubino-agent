@@ -3503,4 +3503,55 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(pending).to be_nil
     end
   end
+
+  # #82: attach must focus the view on the sub. The composer is REBUILT every
+  # idle pass, so the focus-gate can't be set imperatively on a previous
+  # instance — it is SEEDED from the host's persistent attach-state at
+  # construction (`attached:`). While the gate is on, the parent's subagent
+  # cards (set_cards) drop, but the attached sub's live ⟂ tail (set_partial,
+  # painted through the @replaying-exempt seam the watcher uses) still renders;
+  # detach (gate off) restores both.
+  describe "focus-gate seeded from attach-state (#82)" do
+    it "starts SUPPRESSED when built with attached: true" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      expect(c.main_render_suppressed?).to be(true)
+    end
+
+    it "starts UNSUPPRESSED by default (non-attached, no regression)" do
+      expect(composer.main_render_suppressed?).to be(false)
+    end
+
+    it "DROPS the parent's subagent cards while attached (set_cards gated)" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      c.set_cards(["▸ sa_1 · general · running · 2 tools · 47s"])
+      expect(c.instance_variable_get(:@cards)).to eq([])
+    end
+
+    it "still RENDERS the watcher's live ⟂ tail while attached (replay-exempt set_partial)" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      # The watcher paints inside with_replay_exempt; that seam exempts the
+      # focus-gate, so the ⟂ frame lands even while main-render is suppressed.
+      c.with_replay_exempt { c.set_partial("⟂ sa_1 · running · 2 tools") }
+      expect(c.instance_variable_get(:@partial)).to eq("⟂ sa_1 · running · 2 tools")
+    end
+
+    it "drops the watcher's ⟂ frame when NOT routed through the replay seam" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      c.set_partial("⟂ sa_1 · running") # no with_replay_exempt → gated
+      expect(c.instance_variable_get(:@partial).to_s).to eq("")
+    end
+
+    it "RESTORES card painting once detached (suppress_main_render! false)" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      c.suppress_main_render!(false)
+      c.set_cards(["▸ sa_1 · general · running · 2 tools · 47s"])
+      expect(c.instance_variable_get(:@cards))
+        .to eq(["▸ sa_1 · general · running · 2 tools · 47s"])
+    end
+  end
 end
