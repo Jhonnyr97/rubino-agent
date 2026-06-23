@@ -1,0 +1,55 @@
+# Streaming-table live-render scenario (Option B). A normal 3-column GFM table
+# emitted ROW-BY-ROW across many small content deltas (header, separator, then
+# each data row split over a couple of deltas), closed by a blank line and a
+# trailing prose paragraph. Drives the CLI streaming seam so the live region
+# shows a GROWING, fitted, bordered table — NEVER raw `| col | col |` rows that
+# soft-wrap mid-cell — and the finished table snaps in once on the blank line.
+events:
+  - type: content
+    text: "Here are the gems:\n\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Gem | Purpose |"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: " Status |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| --- | --- | --- |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| ruby_llm | LLM client "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Stable |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| tty-table | Table render "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Stable |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| kramdown | Markdown parse "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Stable |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| pastel | ANSI color | Stable |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "\nAll gems are listed above."
+  - type: delay_seconds
+    value: 0.20

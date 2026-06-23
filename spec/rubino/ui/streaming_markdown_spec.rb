@@ -173,13 +173,15 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
       expect(buf.live_tail).to eq("incomplete ta")
     end
 
-    it "shows only the in-progress row by default (single-row window)" do
+    it "suppresses the raw tail once a table is detected (separator seen)" do
       # A markdown table arriving row-by-row: header + separator are complete
-      # lines, only the third row is still in progress. The default window is
-      # one row -- just the in-progress row, never all three crushed together.
+      # lines, the third row is still in progress. Once the separator marks the
+      # block as a table the raw `| … |` rows must NOT show live (they wrap
+      # mid-cell); the CLI paints a fitted partial table from
+      # #table_rows_so_far instead. The raw live tail stays empty.
       buf.feed("| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM")
-      expect(buf.live_tail).to eq("| ruby_llm | LLM")
-      expect(buf.live_tail).not_to include("\n")
+      expect(buf.in_table?).to be(true)
+      expect(buf.live_tail).to eq("")
     end
 
     it "returns a rolling window of the last N lines of the in-flight block (#127)" do
@@ -217,6 +219,95 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
       done = buf.feed("| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM |\n\n")
       expect(done).to eq(["| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM |"])
       expect(buf.live_tail).to eq("")
+    end
+  end
+
+  # A GFM pipe table is its own block type (like a fence). The splitter must
+  # detect it (separator row after a header-ish row), hold its rows together
+  # (never reporting raw pipe rows as the live tail), and close it on a blank or
+  # non-row line — so the CLI can paint a fitted GROWING table live instead of
+  # leaking raw `| col | col |` rows that soft-wrap mid-cell, then snap.
+  describe "GFM tables (Option A foundation + Option B live partial)" do
+    it "enters table mode when a separator row follows a header-ish row" do
+      buf.feed("| Gem | Use |\n")
+      expect(buf.in_table?).to be(false) # header alone is not yet a table
+      buf.feed("| --- | --- |\n")
+      expect(buf.in_table?).to be(true)
+    end
+
+    it "does NOT enter table mode for a separator with no preceding pipe row" do
+      # A lone "---" / setext-ish line that is not preceded by a pipe header is
+      # not a table — it stays prose.
+      buf.feed("Some text\n")
+      buf.feed("| --- | --- |\n")
+      expect(buf.in_table?).to be(false)
+    end
+
+    it "stays in table mode while data rows arrive and does not report complete" do
+      done = feed_all("| Gem | Use |\n", "| --- | --- |\n", "| ruby_llm | LLM |\n", "| tty | UI |\n")
+      expect(done).to eq([])
+      expect(buf.in_table?).to be(true)
+    end
+
+    it "closes the table block on a BLANK line (separator consumed)" do
+      done = feed_all("| A | B |\n", "| --- | --- |\n", "| 1 | 2 |\n", "\n")
+      expect(done).to eq(["| A | B |\n| --- | --- |\n| 1 | 2 |"])
+      expect(buf.in_table?).to be(false)
+    end
+
+    it "closes the table on a NON-row line, which starts a fresh block (table-then-prose)" do
+      # No blank line between the table and the trailing prose: the first
+      # non-pipe line ends the table and begins the next block.
+      done = feed_all("| A | B |\n", "| --- | --- |\n", "| 1 | 2 |\n", "Trailing prose.\n", "\n")
+      expect(done).to eq(["| A | B |\n| --- | --- |\n| 1 | 2 |", "Trailing prose."])
+      expect(buf.in_table?).to be(false)
+    end
+
+    it "drains a trailing (un-closed) table on flush" do
+      buf.feed("| A | B |\n| --- | --- |\n| 1 | 2 |\n")
+      expect(buf.flush).to eq("| A | B |\n| --- | --- |\n| 1 | 2 |")
+      expect(buf.in_table?).to be(false)
+    end
+
+    it "NEVER returns raw pipe rows as the live tail while in a table" do
+      # The core regression: the live tail must not echo `| … |` rows (they
+      # mid-cell soft-wrap, no borders). The CLI paints a fitted partial table
+      # from #table_rows_so_far instead; live_tail stays empty.
+      buf.feed("| A | B |\n| --- | --- |\n")
+      buf.feed("| 1 | 2 |\n| 3 | 4 ")
+      expect(buf.in_table?).to be(true)
+      expect(buf.live_tail(3)).to eq("")
+      expect(buf.live_tail(3)).not_to include("|")
+    end
+
+    it "exposes the COMPLETED rows so far, dropping the in-flight partial row" do
+      buf.feed("| A | B |\n| --- | --- |\n")
+      buf.feed("| 1 | 2 |\n")
+      buf.feed("| 3 | 4") # in-flight, un-newlined partial row
+      # Only the completed lines (header, separator, the one finished data row);
+      # the half-typed "| 3 | 4" remainder is NOT included.
+      expect(buf.table_rows_so_far).to eq(["| A | B |", "| --- | --- |", "| 1 | 2 |"])
+    end
+
+    it "grows table_rows_so_far one completed row at a time" do
+      buf.feed("| A | B |\n| --- | --- |\n")
+      expect(buf.table_rows_so_far).to eq(["| A | B |", "| --- | --- |"])
+      buf.feed("| 1 | 2 |\n")
+      expect(buf.table_rows_so_far).to eq(["| A | B |", "| --- | --- |", "| 1 | 2 |"])
+      buf.feed("| 3 | 4 |\n")
+      expect(buf.table_rows_so_far).to eq(["| A | B |", "| --- | --- |", "| 1 | 2 |", "| 3 | 4 |"])
+    end
+
+    it "returns an empty rows-so-far and not-in-table once nothing is buffered" do
+      expect(buf.table_rows_so_far).to eq([])
+      expect(buf.in_table?).to be(false)
+    end
+
+    it "reassembles a table whose rows are split across feeds without leaking raw pipes" do
+      feed_all("| A ", "| B |\n", "| --- ", "| --- |\n", "| 1 ", "| 2 |\n")
+      expect(buf.in_table?).to be(true)
+      expect(buf.live_tail(3)).not_to include("|")
+      expect(buf.table_rows_so_far).to eq(["| A | B |", "| --- | --- |", "| 1 | 2 |"])
     end
   end
 

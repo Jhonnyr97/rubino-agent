@@ -63,8 +63,13 @@ module Rubino
       MAX_CARD_ROWS = 6
 
       # Hard ceiling on the live partial rows so a runaway caller can never push
-      # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block).
-      MAX_PARTIAL_ROWS = 4
+      # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block). Sized
+      # for the tallest legitimate partial: the GROWING table live-render — a
+      # fitted bordered table of the header + the last LIVE_TAIL_ROWS (3)
+      # completed rows is top-border + header + header-separator + 3 rows +
+      # bottom-border = 7 physical rows. Prose/reasoning tails arrive pre-capped
+      # to LIVE_TAIL_ROWS upstream, so this ceiling only ever clamps a runaway.
+      MAX_PARTIAL_ROWS = 7
 
       # Default cap on the input block's visual rows (config:
       # display.input_max_rows, threaded in by the chat command). Past it the

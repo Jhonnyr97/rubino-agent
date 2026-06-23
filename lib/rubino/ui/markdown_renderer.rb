@@ -58,6 +58,37 @@ module Rubino
         text.to_s.split("\n", -1).map { |l| [[l, nil]] }
       end
 
+      # Render a GROWING (partial) GFM table for the streaming live region — the
+      # header/separator plus the already-completed data rows (the in-flight last
+      # row is dropped upstream by StreamingMarkdown#table_rows_so_far). The same
+      # fitted, width-clamped, border-correct path the committed table uses
+      # (block_lines -> table_lines -> balanced_column_widths), so the partial
+      # never mid-cell soft-wraps and matches the final snap.
+      #
+      # The live region is bounded (it must never push the prompt off-screen):
+      # +max_rows+ caps the visible DATA rows. When the table-so-far is taller,
+      # only the header + the LAST +max_rows+ data rows render (the user watches
+      # the bottom of the table fill in), with the full table snapping in on
+      # completion via the committed path. Returns [] until a separator row has
+      # arrived (nothing meaningful to draw yet — "hide until it means something").
+      def render_partial_table(lines, max_rows: nil)
+        rows = Array(lines)
+        sep_idx = rows.index { |l| l.to_s.match?(TABLE_SEP_RE) }
+        return [] if sep_idx.nil?
+
+        head = rows[0..sep_idx] # header row(s) + separator
+        data = rows[(sep_idx + 1)..] || []
+        # No completed data row yet: kramdown won't parse a header+separator with
+        # an empty body AS a table (it degrades to raw `| h | h |` text + an
+        # em-dash separator), which is the very raw-pipe leak we're killing. Draw
+        # nothing until the first data row arrives — "hide until it means
+        # something"; the row in flight shows the moment it completes.
+        return [] if data.empty?
+
+        data = data.last(max_rows) if max_rows && data.size > max_rows
+        render([*head, *data].join("\n"))
+      end
+
       private
 
       # Models routinely box a whole answer in an outer ```markdown / ```md
