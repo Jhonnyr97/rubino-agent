@@ -60,11 +60,20 @@ module Rubino
       # as a green "✓ done" because it only checked #success?. This is the
       # single predicate the UI uses so an errored tool shows "✗" regardless of
       # which failure convention the tool used.
+      #
+      # Matches "Error:" AND the verb forms the file tools use in their rescue —
+      # "Error editing …", "Error reading …", "Error writing …" (note: NO colon
+      # after "Error"). The old `start_with?("Error:")` check missed those, so a
+      # failed edit (e.g. the accented-file write crash) rendered with a green ✓
+      # instead of ✗. Anchored `Error` + (`:` | whitespace) so a non-error line
+      # like "Errors found: 0" still doesn't trip it.
+      ERROR_PREFIX_RE = /\AError[:\s]/
+
       def errorish?
         return true unless success?
         return true unless @error_code.nil?
 
-        @output.to_s.start_with?("Error:")
+        ERROR_PREFIX_RE.match?(@output.to_s)
       end
 
       # Returns a truncated preview for display

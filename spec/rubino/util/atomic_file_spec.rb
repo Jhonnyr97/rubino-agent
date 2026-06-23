@@ -99,6 +99,25 @@ RSpec.describe Rubino::Util::AtomicFile do
       described_class.write_atomic(path, "v2")
       expect(File.stat(path).mode & 0o777).to eq(0o640)
     end
+
+    # FINDING #65: the edit/multi_edit read-modify-write builds its contents as a
+    # BINARY (ASCII-8BIT) buffer so untouched non-UTF-8 bytes survive (#326).
+    # When the process runs with Encoding.default_internal = UTF-8 (set by some
+    # locales / `ruby -Eutf-8:utf-8`), a non-binmode IO#write TRANSCODES that
+    # binary buffer ASCII-8BIT→UTF-8 and raises Encoding::UndefinedConversionError
+    # on the first high byte (the `\xC3` of a `José` on an edited line) — an
+    # intermittent in-session crash that never reproduces where default_internal
+    # is nil. binmode pins the stream to raw bytes so the bytes land verbatim.
+    it "writes a binary buffer with high bytes verbatim even when default_internal is UTF-8" do
+      prev = Encoding.default_internal
+      Encoding.default_internal = Encoding::UTF_8
+      binary = +"name = \"Jos\xC3\xA9 T\xC3\xBCrner\"\n"
+      binary.force_encoding(Encoding::ASCII_8BIT)
+      expect { described_class.write_atomic(path, binary) }.not_to raise_error
+      expect(File.binread(path)).to eq(binary)
+    ensure
+      Encoding.default_internal = prev
+    end
   end
 
   describe ".read_shared" do
