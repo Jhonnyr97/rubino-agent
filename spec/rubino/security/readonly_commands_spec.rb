@@ -251,4 +251,55 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
       end
     end
   end
+
+  # Slice 2 Part C: the EXEC/network/system SUBSET of dangerous_flag_form? — the
+  # forms the OS write-jail does NOT contain, so they still prompt when it is
+  # active. The pure-WRITE forms must NOT be in this subset.
+  describe ".exec_flag_form?" do
+    def exec?(cmd) = described_class.exec_flag_form?(Shellwords.split(cmd))
+
+    # EXEC / network / system → still prompt even with the jail active.
+    {
+      "git -c alias exec" => "git -c alias.x='!sh' x",
+      "git -c core.pager exec" => "git -c core.pager='!sh' log",
+      "git --ext-diff" => "git diff --ext-diff",
+      "git push (network)" => "git push origin main",
+      "git fetch (network)" => "git fetch",
+      "python -c inline" => "python3 -c print(1)",
+      "bash -c inline" => "bash -c 'echo hi'",
+      "perl -e eval" => "perl -e 'print 1'",
+      "node --eval" => "node --eval 'console.log(1)'",
+      "find -exec" => "find . -exec rm {} ;",
+      "date -s clock" => "date -s '2020-01-01'",
+      "tar --to-command" => "tar --to-command=sh -xf a.tar",
+      "xargs running cmd" => "xargs rm"
+    }.each do |label, cmd|
+      it "flags EXEC form #{label}: #{cmd}" do
+        expect(exec?(cmd)).to be true
+      end
+    end
+
+    # Pure WRITE (jail-contained) → NOT in the exec subset.
+    {
+      "sort -o" => "sort -o /tmp/x f",
+      "tree -o" => "tree -o /tmp/out .",
+      "sed -i" => "sed -i s/a/b/ f",
+      "tee" => "tee /tmp/x",
+      "dd of=" => "dd of=/tmp/x if=/dev/zero",
+      "git --output" => "git diff --output=/tmp/x",
+      "find -delete (write)" => "find . -delete",
+      "find -fprintf (write)" => "find . -fprintf /tmp/x %p"
+    }.each do |label, cmd|
+      it "does NOT flag pure-write form #{label}: #{cmd}" do
+        expect(exec?(cmd)).to be false
+      end
+    end
+
+    it "does not flag ordinary read/script invocations" do
+      expect(exec?("python3 test.py")).to be false
+      expect(exec?("sed 's/a/b/' f")).to be false
+      expect(exec?("git diff")).to be false
+      expect(exec?("ls -la")).to be false
+    end
+  end
 end

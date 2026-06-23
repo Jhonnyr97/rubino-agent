@@ -16,6 +16,66 @@ RSpec.describe Rubino::Tools::ShellTool do
     expect(tool.risk_level).to eq(:high)
   end
 
+  # Slice 2: the SHARED OS-jail spawn builder used by BOTH the foreground spawn
+  # here and the background spawn in ShellRegistry (so a backgrounded command
+  # can't bypass the jail). Returns [env, *prefix, "bash", "-o", "pipefail",
+  # "-c", script].
+  describe ".sandboxed_bash_argv" do
+    after { Rubino::Security::Sandbox.reset! }
+
+    it "prefixes the sandbox launcher and trails bash -c <script>" do
+      allow(Rubino::Security::Sandbox).to receive_messages(command_prefix: ["/launcher", "--"],
+                                                           extra_env: { "X" => "1" })
+
+      env, *argv = described_class.sandboxed_bash_argv("echo hi", cwd: "/w")
+      expect(env).to include("X" => "1")
+      expect(env).to include("GIT_CONFIG_NOSYSTEM" => "1") # GIT_HARDENED_ENV merged
+      expect(argv).to eq(["/launcher", "--", "bash", "-o", "pipefail", "-c", "echo hi"])
+    end
+
+    it "is byte-identical to a bare bash spawn when the sandbox is off" do
+      allow(Rubino::Security::Sandbox).to receive_messages(command_prefix: [], extra_env: {})
+
+      _env, *argv = described_class.sandboxed_bash_argv("echo hi", cwd: "/w")
+      expect(argv).to eq(["bash", "-o", "pipefail", "-c", "echo hi"])
+    end
+  end
+
+  describe ".sandbox_refusal_reason (fail-closed delegation)" do
+    after { Rubino::Security::Sandbox.reset! }
+
+    it "delegates to Security::Sandbox.refusal_reason" do
+      allow(Rubino::Security::Sandbox).to receive(:refusal_reason).and_return("nope")
+      expect(described_class.sandbox_refusal_reason).to eq("nope")
+    end
+  end
+
+  # Slice 2 Part B: tools.sandbox.require with no mechanism ⇒ shell REFUSES
+  # (foreground AND background) instead of failing open.
+  describe "#call fail-closed (tools.sandbox.require)" do
+    it "refuses a foreground command when the sandbox is required but unavailable" do
+      allow(Rubino::Security::Sandbox).to receive(:refusal_reason)
+        .and_return("sandbox required but unavailable on this host")
+      result = tool.call("command" => "echo hi")
+      expect(payload(result)).to include("sandbox required but unavailable")
+      expect(result[:error_code]).to eq(:denied_command)
+    end
+
+    it "refuses a BACKGROUND command too (no bypass via run_in_background)" do
+      allow(Rubino::Security::Sandbox).to receive(:refusal_reason)
+        .and_return("sandbox required but unavailable on this host")
+      expect(Rubino::Tools::ShellRegistry.instance).not_to receive(:spawn)
+      result = tool.call("command" => "echo hi", "run_in_background" => true)
+      expect(payload(result)).to include("sandbox required but unavailable")
+    end
+
+    it "runs normally when refusal_reason is nil (mechanism available)" do
+      allow(Rubino::Security::Sandbox).to receive(:refusal_reason).and_return(nil)
+      result = tool.call("command" => "echo jailed-ok")
+      expect(payload(result)).to include("jailed-ok")
+    end
+  end
+
   # G3: a diff-producing command is rendered as a real diff (full hunks, +/-
   # coloring) rather than a dimmed/collapsed dump. The tool tags the output
   # kind so the UI knows.

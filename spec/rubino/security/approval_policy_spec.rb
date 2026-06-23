@@ -791,15 +791,26 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         pol.decide(shell, arguments: { "command" => cmd })
       end
 
-      # --- must PROMPT (these FAIL pre-fix: today everything safe auto-allows) ---
-      must_prompt = {
+      # The OS write-jail confines arbitrary writes (slice 2 Part C), so the
+      # flag-form screen is CONDITIONAL on whether it PROVES enforcement
+      # (#enforcing?, NOT mere presence). Pure-WRITE flag-forms still prompt when
+      # the jail is DEGRADED/off/present-but-not-enforcing (the allowlist is the
+      # only guard) but auto-run when it is ENFORCING; EXEC/network forms prompt
+      # EITHER WAY (they run arbitrary code the jail can't contain).
+      write_class = {
         "git --output write flag" => "git diff --output=/tmp/x",
-        "git -c alias exec" => "git -c alias.x='!touch /tmp/p' x",
-        "git -c core.pager exec" => "git -c core.pager='!sh' log",
         "sort -o write" => "sort -o /tmp/x f",
         "sort --output write" => "sort --output=/tmp/x f",
         "sed -i in-place" => "sed -i s/a/b/ f",
         "sed --in-place" => "sed --in-place s/a/b/ f",
+        "tree -o write" => "tree -o /tmp/out .",
+        "tee always writes" => "tee /tmp/x",
+        "chained sort -o after echo" => "echo hi && sort -o /tmp/x f"
+      }
+      exec_class = {
+        "git -c alias exec" => "git -c alias.x='!touch /tmp/p' x",
+        "git -c core.pager exec" => "git -c core.pager='!sh' log",
+        "git push (network)" => "git push origin main",
         "python3 -c inline" => 'python3 -c "import os;os.system(\'id\')"',
         "bash -c inline" => "bash -c 'rm x'",
         "sh -c inline" => "sh -c 'echo hi'",
@@ -807,19 +818,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         "ruby -e eval" => "ruby -e 'puts 1'",
         "node -e eval" => "node -e 'console.log(1)'",
         "node --eval" => "node --eval 'console.log(1)'",
-        "find -delete" => "find . -delete",
         "find -exec" => "find . -exec rm {} ;",
-        "tar --to-command" => "tar --to-command=sh -xf a.tar",
-        "tee always writes" => "tee /tmp/x",
-        "chained sort -o after echo" => "echo hi && sort -o /tmp/x f"
+        "tar --to-command" => "tar --to-command=sh -xf a.tar"
       }
-      must_prompt.each do |label, cmd|
-        it "prompts (:ask) for #{label}: #{cmd}" do
-          expect(decide(cmd)).to eq(:ask)
-        end
-      end
-
-      # --- must AUTO-RUN (guard against over-broadening; pass pre-fix) ---
       must_allow = {
         "python script file" => "python3 test.py",
         "node script file" => "node build.js",
@@ -837,9 +838,62 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         "make build" => "make build",
         "ls -la" => "ls -la"
       }
-      must_allow.each do |label, cmd|
-        it "auto-runs (:allow) for #{label}: #{cmd}" do
-          expect(decide(cmd)).to eq(:allow)
+
+      context "sandbox DEGRADED/off (allowlist is the only guard)" do
+        before { allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false) }
+
+        write_class.merge(exec_class).each do |label, cmd|
+          it "prompts (:ask) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+
+        must_allow.each do |label, cmd|
+          it "auto-runs (:allow) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:allow)
+          end
+        end
+      end
+
+      context "sandbox PRESENT but NOT enforcing (helper fails open ⇒ broad screen stays)" do
+        # The HOLE-1 case: a mechanism is present (active?) but the runtime
+        # self-test proved it does not confine, so the pure-WRITE flag-forms
+        # MUST keep prompting — relaxation gates on enforcing?, not active?.
+        before do
+          allow(Rubino::Security::Sandbox).to receive(:active?).and_return(true)
+          allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false)
+        end
+
+        write_class.merge(exec_class).each do |label, cmd|
+          it "prompts (:ask) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+      end
+
+      context "sandbox ENFORCING (the jail confines writes)" do
+        before { allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(true) }
+
+        # The pure-write flag-forms NOW auto-run (the jail contains them), same
+        # as the ordinary script/filter invocations.
+        write_class.merge(must_allow).each do |label, cmd|
+          it "auto-runs (:allow) #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:allow)
+          end
+        end
+
+        exec_class.each do |label, cmd|
+          it "STILL prompts (:ask) the exec/network form #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+
+        it "DangerousPatterns still prompt regardless (rm -rf in-workspace)" do
+          expect(decide("rm -rf ./build")).to eq(:ask)
+        end
+
+        it "find -delete still prompts (it is a DangerousPattern, not a jailed write)" do
+          expect(decide("find . -delete")).to eq(:ask)
         end
       end
     end

@@ -320,17 +320,35 @@ module Rubino
         dangerous?(command_str) || dangerous_flag_form_present?(command_str) ? :ask : :allow
       end
 
-      # True when ANY chain segment of the command is a dangerous WRITE/EXEC
-      # flag-form (ReadonlyCommands#dangerous_flag_form?). Reuses the same
-      # quote-aware chain split as the read-only auto-allow so `echo hi && sort
-      # -o /tmp/x f` is screened per-segment. Fails SAFE: a segment that does not
-      # parse (split returns nil, or Shellwords raises) is treated as dangerous.
+      # True when ANY chain segment of the command is a flag-form that still
+      # warrants a prompt. Reuses the same quote-aware chain split as the
+      # read-only auto-allow so `echo hi && sort -o /tmp/x f` is screened
+      # per-segment. Fails SAFE: a segment that does not parse (split returns
+      # nil, or Shellwords raises) is treated as dangerous.
+      #
+      # CONDITIONAL on the OS write-jail PROVING enforcement (slice 2 Part C):
+      # the jail confines arbitrary WRITES, so when it is ENFORCING the pure-write
+      # flag-forms (`sort -o`, `sed -i`, `git --output`, `find -delete`, `tar`
+      # write/extract, …) no longer need a prompt — only the EXEC/network/system
+      # forms that run arbitrary code (`python -c`, `bash -c`, `git -c`/push,
+      # `perl -e`, …) do. When the jail is DEGRADED/off OR present-but-not-
+      # enforcing (helper fails open) the allowlist is the ONLY guard, so the
+      # broader WRITE+EXEC screen (#dangerous_flag_form?) stays in force exactly
+      # as before. `DangerousPatterns.dangerous?` + the hardline floor are
+      # checked separately and ALWAYS prompt/deny regardless of this gate.
       def dangerous_flag_form_present?(command_str)
         segments = ReadonlyCommands.split_segments(command_str.to_s)
         return true if segments.nil?
 
+        # Gate on PROVEN enforcement, not mere presence: a helper that fails
+        # open (kernel without Landlock) reports active? but does NOT confine,
+        # so relaxing on active? would auto-run unconfined writes. enforcing?
+        # runs the launcher once and only returns true when a write outside the
+        # jail is actually denied. Present-but-not-enforcing ⇒ broad screen.
+        enforcing = Sandbox.enforcing?
         segments.any? do |segment|
-          ReadonlyCommands.dangerous_flag_form?(Shellwords.split(segment))
+          tokens = Shellwords.split(segment)
+          enforcing ? ReadonlyCommands.exec_flag_form?(tokens) : ReadonlyCommands.dangerous_flag_form?(tokens)
         rescue ArgumentError
           true
         end
