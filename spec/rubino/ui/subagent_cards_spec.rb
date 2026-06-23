@@ -101,6 +101,47 @@ RSpec.describe Rubino::UI::SubagentCards do
     expect(lines[1]).to include("sa_b · build")
   end
 
+  # S7 Y1 — three subagents spawned at once all show the same agent TYPE
+  # ("general"), so a dev can't tell them apart except by sa_id. Surface a
+  # descriptive DIMENSION drawn from the task prompt on the card instead.
+  describe "card label prefers the task dimension over the bare agent type (Y1)" do
+    it "uses a **BOLD** dimension heading from the prompt" do
+      es = [
+        entry(id: "sa_a", subagent: "general",
+              prompt: "You are the **BUG AUDIT** reviewer for the shop/ module…"),
+        entry(id: "sa_b", subagent: "general",
+              prompt: "You are the **STRUCTURE** reviewer for the shop/ module…"),
+        entry(id: "sa_c", subagent: "general",
+              prompt: "You are the **TEST COVERAGE** reviewer for the shop/ module…")
+      ]
+      lines = plain(cards.card_lines(es))
+      expect(lines[0]).to include("sa_a · BUG AUDIT · running")
+      expect(lines[1]).to include("sa_b · STRUCTURE · running")
+      expect(lines[2]).to include("sa_c · TEST COVERAGE · running")
+      # The bare type no longer makes the three cards indistinguishable.
+      expect(lines[0]).not_to include("· general ·")
+    end
+
+    it "falls back to the prompt's first line when there is no bold heading" do
+      e = entry(id: "sa_p", subagent: "general", prompt: "Migrate the billing tests to RSpec")
+      line = plain(cards.card_lines([e])).first
+      expect(line).to include("sa_p · Migrate the billing tests to RSpec · running")
+    end
+
+    it "falls back to the agent TYPE when the prompt is blank" do
+      e = entry(id: "sa_t", subagent: "explore", prompt: "")
+      line = plain(cards.card_lines([e])).first
+      expect(line).to include("sa_t · explore · running")
+    end
+
+    it "applies the dimension label to a needs_approval card too" do
+      e = entry(id: "sa_x", status: :needs_approval, subagent: "general",
+                prompt: "You are the **DEPLOY** agent", approval_command: "rm -rf build")
+      line = plain(cards.card_lines([e])).first
+      expect(line).to include("sa_x · DEPLOY · needs approval: rm -rf build")
+    end
+  end
+
   describe "approval-surfacing card (Option 2)" do
     it "leads with the approval + command instead of the running line" do
       e = entry(id: "sa_x", status: :needs_approval, approval_command: "rm -rf build")

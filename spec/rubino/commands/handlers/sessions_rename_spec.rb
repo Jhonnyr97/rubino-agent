@@ -55,4 +55,29 @@ RSpec.describe Rubino::Commands::Handlers::Sessions do
 
     expect(ui.lines.join("\n")).to match(/no session matching/i)
   end
+
+  # S7 F3 — /status reads the runner's in-memory session[:title] snapshot.
+  # Renaming the ACTIVE session must refresh that snapshot, else /status keeps
+  # showing the stale auto-title until a compaction forks a new session id.
+  it "refreshes the live runner's in-memory title when renaming the active session" do
+    session = repo.create(source: "cli", title: "say hi")
+    runner  = double("Runner", session: { id: session[:id], title: "say hi" })
+    active_handler = described_class.new(ui: ui, runner: runner)
+
+    active_handler.handle_sessions("rename #{session[:id][0, 8]} ship the release")
+
+    expect(runner.session[:title]).to eq("ship the release")
+  end
+
+  it "leaves a non-active runner's in-memory title alone (only the renamed one)" do
+    target = repo.create(source: "cli", title: "say hi")
+    other  = repo.create(source: "cli", title: "other session")
+    runner = double("Runner", session: { id: other[:id], title: "other session" })
+    active_handler = described_class.new(ui: ui, runner: runner)
+
+    active_handler.handle_sessions("rename #{target[:id][0, 8]} ship the release")
+
+    expect(runner.session[:title]).to eq("other session")
+    expect(repo.find(target[:id])[:title]).to eq("ship the release")
+  end
 end
