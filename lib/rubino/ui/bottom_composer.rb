@@ -1676,7 +1676,18 @@ module Rubino
       end
 
       # The single subagent panel, drawn BELOW the input (see Composer::SubagentPanel).
+      #
+      # While ATTACHED to a sub (#main_render_suppressed?) the parent's idle
+      # subagent CARDS belong to the main view, not this focused sub-view — every
+      # render (watcher tail, draw_input) would otherwise redraw the last @cards
+      # set under the live block and clutter it (#37). Suppress the cards face
+      # here, at the single render source, so it holds regardless of what @cards
+      # carries. The PICKER stays exempt: it doubles as the while-attached
+      # agent switcher, so when it's open we still draw it.
       def below_input_rows
+        return @agent_menu.rows(@cols) if @main_render_suppressed && @agent_menu.open?
+        return [] if @main_render_suppressed
+
         @subagent_panel.rows(@cols)
       end
 

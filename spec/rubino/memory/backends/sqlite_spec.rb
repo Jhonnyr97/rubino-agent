@@ -714,6 +714,22 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       out = backend.retrieve(session_id: "s2", query: "How does the user deploy?")
       expect(out.map { |r| r[:content] }).to include("User deploys with Kamal.")
     end
+
+    # #69: after a transient tool error the aux extractor returned a tool-limitation
+    # "fact". The insert choke point must NOOP the error-derived claim while still
+    # storing the real preference emitted in the same batch.
+    it "gates out an error-derived tool-limitation claim but keeps a real preference" do
+      store.create(session_id: "s1", role: "user", content: "Use tabs. (after an edit hit a transient error)")
+      stub_llm('{"add":[' \
+               '{"text":"The file-editing tooling can\'t edit non-ASCII files.","kind":"fact"},' \
+               '{"text":"User prefers tabs over spaces.","kind":"preference"}' \
+               '],"supersede":[]}')
+      stored = backend.extract("s1")
+      contents = stored.map { |s| s[:content] }
+      expect(contents).to include("User prefers tabs over spaces.")
+      expect(contents).not_to include(a_string_matching(/can't edit non-ASCII/))
+      expect(db[:memory_facts].where(Sequel.like(:text, "%non-ASCII%")).count).to eq(0)
+    end
   end
 
   # r5 C-2 — the aux extraction call must RETRY a transient rate-limit instead of

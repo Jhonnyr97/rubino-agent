@@ -415,6 +415,12 @@ module Rubino
         # default extractor, which silently skips dups).
         def guarded_insert(text:, kind:, entities:, session_id:, valid_from:, id: nil)
           return nil if text.to_s.strip.empty?
+          # NOOP error-derived tool-limitation claims (#69): after a transient
+          # tool failure the aux model can mint a durable-looking "the tool can't
+          # edit non-ASCII files" — a meta claim that is often wrong and primes
+          # future refusals. Drop it here, the single insert choke point shared by
+          # add[] and supersede[], so neither path can persist one.
+          return nil if tool_limitation_claim?(text)
 
           insert_fact(
             text: text, kind: normalize_kind(kind), entities: Array(entities),

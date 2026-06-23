@@ -112,6 +112,23 @@ RSpec.describe Rubino::Tools::ShellTool do
       expect(payload(tool.call("command" => "echo hello_shell"))).to include("hello_shell")
     end
 
+    # #74: an EACCES from the OS write-jail (a write outside the writable roots)
+    # reads like a plain perms error; append the attribution so the model writes
+    # inside the workspace instead of retrying with chmod/sudo.
+    it "appends the write-jail attribution to a jailed-write EACCES" do
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution)
+        .and_return(Rubino::Security::Sandbox::WRITE_JAIL_HINT)
+      out = payload(tool.call("command" => "echo done"))
+      expect(out).to include("write-jail")
+    end
+
+    it "leaves output unchanged when it is not a jailed-write denial" do
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution).and_return(nil)
+      out = payload(tool.call("command" => "echo plain_ok"))
+      expect(out).to include("plain_ok")
+      expect(out).not_to include("write-jail")
+    end
+
     # Matches Hermes terminal_tool: `cat .env` is NOT blocked — it runs and
     # the credential VALUE in the output is redacted (full patterns, no
     # code_file, so secret-named ENV assignments mask too).

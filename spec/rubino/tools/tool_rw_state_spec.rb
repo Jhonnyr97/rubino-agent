@@ -163,7 +163,9 @@ RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeCla
     end
 
     it "still refuses to WRITE outside the workspace (writes stay sandboxed)" do
-      target = File.join(outside, "evil.txt")
+      # A NON-scratch outside path: #77a now accepts $TMPDIR/tmp scratch, so the
+      # workspace-boundary assertion must target a path outside the scratch set.
+      target = "/usr/local/rubino_rw_state_evil.txt"
       out = writer.call("file_path" => target, "content" => "x")
       expect(text(out)).to include("refusing to access")
       expect(File).not_to exist(target)
