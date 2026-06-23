@@ -224,7 +224,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       expect(out).to include("┄ thinking ┄")
-      expect(out).to include("  Let me check the failing test first.")
+      expect(out).to include("Let me check the failing test first.")
       # A shown aside is append-only scrollback that can't be un-shown, so its
       # close line carries NO toggle promise (neither "to hide" nor "to show").
       expect(out).to match(/┄ thought for \d+s ┄/)
@@ -249,7 +249,7 @@ RSpec.describe Rubino::UI::CLI do
       # The opening rail and the first reasoning line are already on screen DURING
       # the thinking phase — proof it streamed live, not buffered to collapse.
       expect(mid).to include("┄ thinking ┄")
-      expect(mid).to include("  First I will read the file.")
+      expect(mid).to include("First I will read the file.")
       # The aside is NOT double-rendered when the answer arrives: the close rail
       # appears once, the first line is not re-emitted.
       after = capture_stdout do
@@ -257,7 +257,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream(type: :content, text: "answer")
         ui.stream_end
       end
-      expect(after).to include("  Then I will reply.")
+      expect(after).to include("Then I will reply.")
       expect(after).to match(/┄ thought for \d+s ┄/)
       expect(after).not_to include("First I will read the file.") # not re-rendered
       expect(after).to include("answer")
@@ -315,7 +315,7 @@ RSpec.describe Rubino::UI::CLI do
 
       out = capture_stdout { ui.reveal_last_reasoning }
       expect(out).to include("┄ thinking ┄")
-      expect(out).to include("  secret musing")
+      expect(out).to include("secret musing")
     end
 
     it "reveals the last retained reasoning buffer via ctrl-o (one-way)" do
@@ -329,7 +329,7 @@ RSpec.describe Rubino::UI::CLI do
       end
       out = capture_stdout { ui.reveal_last_reasoning }
       expect(out).to include("┄ thinking ┄")
-      expect(out).to include("  Let me check the failing test first.")
+      expect(out).to include("Let me check the failing test first.")
       # The reveal JUST showed the reasoning, so its close line must NOT promise
       # "to show" (redundant) nor "to hide" (a scrollback aside can't be hidden).
       expect(out).to match(/┄ thought for \d+s ┄/)
@@ -348,10 +348,10 @@ RSpec.describe Rubino::UI::CLI do
       first  = capture_stdout { ui.reveal_last_reasoning }
       second = capture_stdout { ui.reveal_last_reasoning }
       third  = capture_stdout { ui.reveal_last_reasoning }
-      expect(first).to include("  first thought.")
+      expect(first).to include("first thought.")
       # Every subsequent press prints NOTHING — no aside, and no ack line
       # ("┄ already shown ┄" was scrollback spam; D2 removed it). True silence.
-      expect(second).not_to include("  first thought.")
+      expect(second).not_to include("first thought.")
       expect(second).not_to include("┄ thinking ┄")
       expect(second).not_to include("already shown")
       expect(second).to eq("")
@@ -375,7 +375,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       out = capture_stdout { ui.reveal_last_reasoning }
-      expect(out).to include("  thought two.")
+      expect(out).to include("thought two.")
       expect(out).not_to include("┄ already shown ┄")
     end
 

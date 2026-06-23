@@ -2094,18 +2094,21 @@ module Rubino
         show_reasoning_tail(@reasoning_md.live_tail(LIVE_TAIL_ROWS))
       end
 
-      # The streamed-aside body for a completed reasoning block: each line on a
-      # dim 2-space indent — the SAME shape #commit_reasoning_aside commits, so
-      # the live-streamed scrollback matches the all-at-once aside exactly.
+      # The streamed-aside body for a completed reasoning block: each line dim and
+      # flush-left under the `┄ thinking ┄` rail — the SAME shape
+      # #commit_reasoning_aside commits, so the live-streamed scrollback matches
+      # the all-at-once aside exactly.
       def reasoning_aside_lines(block)
         # CWE-150 (#566): committed reasoning is model output — defang escapes
         # before wrapping each line in our own (trusted) @pastel dim styling.
-        block.to_s.split("\n", -1).map { |line| @pastel.dim("  #{safe(line)}") }
+        block.to_s.split("\n", -1).map { |line| @pastel.dim(safe(line).to_s) }
       end
 
       # The DIM live tail for the in-flight reasoning line — same wrap/clamp
-      # geometry as #show_live_tail (so it can't push the prompt off-screen), but
-      # styled dim and indented so it reads as reasoning, never the answer.
+      # geometry as #show_live_tail (so it can't push the prompt off-screen),
+      # styled dim and flush-left under the `┄ thinking ┄` rail (the dim styling
+      # + rail mark it as reasoning, not the answer) — matching the committed
+      # aside so the tail doesn't shift when it commits.
       def show_reasoning_tail(tail)
         text = Util::Output.sanitize_terminal(tail.to_s)
         if text.empty?
@@ -2116,7 +2119,7 @@ module Rubino
 
         budget = terminal_cols - MD_MARGIN.length - 1
         rows = text.split("\n", -1).flat_map { |line| wrap_tail_row(line, budget) }
-        framed = rows.last(LIVE_TAIL_ROWS).map { |row| @pastel.dim("  #{row}") }.join("\n")
+        framed = rows.last(LIVE_TAIL_ROWS).map { |row| @pastel.dim(row) }.join("\n")
         note_live_tail(framed)
         paint_live(framed)
       end
@@ -2551,7 +2554,7 @@ module Rubino
         text.to_s.each_line do |line|
           # CWE-150 (#566): committed reasoning is model output — the funnel's
           # PATH 1 (#emit) defangs escapes before our own (trusted) dim styling.
-          emit("  #{line.chomp}", style: :dim)
+          emit("#{line.chomp}", style: :dim)
         end
         emit("┄ thought for #{seconds}s ┄", style: :dim)
         emit_blank
