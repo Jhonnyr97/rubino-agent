@@ -148,8 +148,11 @@ module Rubino
         []
       end
 
+      # Same liveness rule the registry and the footer cards use — one oracle,
+      # so the picker can never list a different set of live subs than the
+      # footer/switcher (R1).
       def live?(entry)
-        %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
+        Tools::BackgroundTasks.live_status?(entry.status)
       end
 
       # A budget request (#574) reuses :needs_approval but reads as "wants

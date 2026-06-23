@@ -24,6 +24,50 @@ RSpec.describe Rubino::UI::SubagentCards do
     expect(cards.card_lines([entry(status: :completed)])).to eq([])
   end
 
+  # R1 — the footer card stack must show EVERY child the registry still counts
+  # as alive (BackgroundTasks::LIVE_STATUSES), not a narrower hand-maintained
+  # subset. A child parked on :blocked_on_parent (asking its agent-parent) still
+  # holds a slot and ticks; dropping it here vanished a live sibling from the
+  # footer while the switcher/picker still listed it.
+  describe "footer liveness matches the registry oracle (R1)" do
+    it "renders a card for a child still RUNNING" do
+      line = plain(cards.card_lines([entry(id: "sa_run", status: :running)])).first
+      expect(line).to include("sa_run")
+    end
+
+    it "renders a card for a child parked on needs_approval" do
+      e = entry(id: "sa_apr", status: :needs_approval, approval_command: "rm -rf build")
+      line = plain(cards.card_lines([e])).first
+      expect(line).to include("sa_apr")
+      expect(line).to include("needs approval")
+    end
+
+    it "renders a card for a child parked on blocked_on_parent (previously dropped)" do
+      e = entry(id: "sa_bop", status: :blocked_on_parent)
+      line = plain(cards.card_lines([e])).first
+      expect(line).to include("sa_bop")
+    end
+
+    it "shows ALL live siblings together — running + needs_approval + blocked_on_parent" do
+      es = [
+        entry(id: "sa_run", status: :running),
+        entry(id: "sa_apr", status: :needs_approval, approval_command: "echo hi"),
+        entry(id: "sa_bop", status: :blocked_on_parent)
+      ]
+      joined = plain(cards.card_lines(es)).join("\n")
+      expect(joined).to include("sa_run").and include("sa_apr").and include("sa_bop")
+    end
+
+    it "filters by exactly BackgroundTasks::LIVE_STATUSES (no drift)" do
+      Rubino::Tools::BackgroundTasks::LIVE_STATUSES.each do |st|
+        line = plain(cards.card_lines([entry(id: "sa_#{st}", status: st)])).first
+        expect(line).to include("sa_#{st}"), "expected #{st} to be shown on the footer"
+      end
+      # ...and a terminal status is NOT shown.
+      expect(cards.card_lines([entry(status: :failed)])).to eq([])
+    end
+  end
+
   it "renders one COMPACT collapsed card row per running subagent (no noisy activity tail)" do
     e = entry(id: "sa_9ae4", tool_count: 14, last_activity: 'grep "def authenticate"',
               started_at: Time.now - 38)
