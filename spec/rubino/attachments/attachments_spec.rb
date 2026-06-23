@@ -273,6 +273,21 @@ RSpec.describe Rubino::Attachments do
       expect(out).to include("no multimodal model is configured")
       expect(out).not_to include("vision` tool")
     end
+
+    # A raster image has no text to "convert": markitdown is a document
+    # converter, so the shell fallback must be OCR, not markitdown.
+    it "gives a raster image an OCR (not markitdown) shell fallback" do
+      out = described_class::Preamble.no_multimodal_warning("/x/img.png", "image/png")
+      expect(out).to include("tesseract")
+      expect(out).not_to include("markitdown")
+    end
+
+    # A PDF/document that merely sniffed as visual still gets the document path.
+    it "keeps the document fallback for a non-image visual attachment" do
+      out = described_class::Preamble.no_multimodal_warning("/x/doc.pdf", "application/pdf")
+      expect(out).to include("read_attachment")
+      expect(out).to include("markitdown")
+    end
   end
 
   describe "Policy (secure defaults)" do

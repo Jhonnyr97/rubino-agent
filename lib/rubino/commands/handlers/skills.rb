@@ -30,6 +30,11 @@ module Rubino
         # StateRepository write the HTTP API and `rubino skills` CLI run.
         TOGGLE_VERBS = %w[enable disable].freeze
 
+        # Explicit synonyms for the LIST action, so `/skills list` shows the
+        # catalogue instead of being mis-parsed as "activate the skill named
+        # 'list'" (which errored with `✗ unknown skill: list`).
+        LIST_VERBS = %w[list ls].freeze
+
         def initialize(ui:)
           @ui = ui
         end
@@ -43,7 +48,7 @@ module Rubino
 
           arg = normalize_skill_arg(arguments)
 
-          return show_skills if arg.nil?
+          return show_skills if arg.nil? || LIST_VERBS.include?(arg.downcase)
 
           if clear_skill_arg?(arg)
             previous = Rubino::ActiveSkill.current
