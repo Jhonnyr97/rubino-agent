@@ -41,6 +41,36 @@ RSpec.describe Rubino::Memory::Store do
     end
   end
 
+  # R1: a write carrying a credential must be REFUSED — the secret must never
+  # land in the store (it would be persisted to disk and re-injected into every
+  # future system prompt). Asserts both the refusal AND an empty table.
+  describe "#create with a secret (R1)" do
+    [
+      ["sk-proj key", "remember sk-proj-FAKE0000000000000000abcd"],
+      ["AWS secret near context",
+       'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'],
+      ["generic high-entropy", "creds Zx9Kp2Lq7Wm4Rt8Yn3Bv6Cd1Fg5Hj0"]
+    ].each do |label, sample|
+      it "refuses and never persists: #{label}" do
+        expect { store.create(kind: "fact", content: sample) }
+          .to raise_error(Rubino::Memory::Store::ThreatDetectedError) { |e| expect(e.threat).to eq("secret_detected") }
+        expect(db_connection.db[:memories].count).to eq(0)
+      end
+    end
+
+    it "saves a normal fact, a UUID and a git SHA unchanged (no false positive)" do
+      %w[fact fact fact].zip([
+                               "Ruby 3.3.3 is the project version",
+                               "session 550e8400-e29b-41d4-a716-446655440000",
+                               "commit ff6c8958c0de1234567890abcdef1234567890ab"
+                             ]).each do |kind, content|
+        mem = store.create(kind: kind, content: content)
+        expect(mem[:content]).to eq(content)
+      end
+      expect(db_connection.db[:memories].count).to eq(3)
+    end
+  end
+
   describe "#list" do
     it "returns all memories ordered by creation (newest first)" do
       store.create(kind: "fact",       content: "first")

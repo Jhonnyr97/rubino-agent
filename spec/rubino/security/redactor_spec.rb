@@ -21,6 +21,29 @@ RSpec.describe Rubino::Security::Redactor do
       expect(out).not_to include("sk-proj-abcdefghij1234567890")
     end
 
+    # Y2: prefix-less AWS secret-access-key (40-char base64, no prefix of its
+    # own). Caught only when it sits next to an aws_secret_access_key cue.
+    it "masks a prefix-less AWS secret access key near its cue" do
+      raw = 'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'
+      out = redactor.redact_sensitive_text(raw)
+      expect(out).not_to include("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+      expect(out).to include("aws_secret_access_key")
+    end
+
+    it "masks an AWS secret in a JSON field" do
+      raw = %({"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"})
+      out = redactor.redact_sensitive_text(raw)
+      expect(out).not_to include("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    end
+
+    # Y2 / #67 guard: a bare 40-char base64/hex blob with NO secret cue (a hash,
+    # a checksum, a base64 chunk in normal output) is NOT redacted — the new
+    # AWS pattern is context-gated, not a blanket entropy sweep.
+    it "does NOT redact a bare 40-char blob with no secret cue (no over-redaction)" do
+      raw = "sha: ff6c8958c0de1234567890abcdef1234567890ab and abcDEFghijKLMNopqrstUVWXyz0123456789ABcd"
+      expect(redactor.redact_sensitive_text(raw)).to eq(raw)
+    end
+
     it "masks secret-named ENV assignments (non code_file)" do
       out = redactor.redact_sensitive_text("OPENAI_API_KEY=plainsecretvalue123")
       expect(out).to include("OPENAI_API_KEY=")
