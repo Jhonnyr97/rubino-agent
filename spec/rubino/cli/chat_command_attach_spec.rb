@@ -220,6 +220,60 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(cmd_executor).to have_received(:try_execute).with("/agents sa_1 --stop")
     end
 
+    # R3: `/stop <id>` (the EXACT syntax the footer advertises) typed while
+    # attached must EXECUTE the command — not be swallowed as a steer note.
+    it "DISPATCHES `/stop <id>` as a command (R3 — not steer)" do
+      cmd.send(:handle_attached_input, "/stop sa_1", runner, ui, cmd_executor)
+      expect(cmd_executor).to have_received(:try_execute).with("/stop sa_1")
+      expect(agents_handler).not_to have_received(:steer_agent)
+    end
+
+    it "DISPATCHES other slash commands (`/agents`, `/status`) instead of steering them" do
+      cmd.send(:handle_attached_input, "/agents", runner, ui, cmd_executor)
+      cmd.send(:handle_attached_input, "/status", runner, ui, cmd_executor)
+      expect(cmd_executor).to have_received(:try_execute).with("/agents")
+      expect(cmd_executor).to have_received(:try_execute).with("/status")
+      expect(agents_handler).not_to have_received(:steer_agent)
+    end
+
+    it "acts on a {attach_agent:} signal returned by a dispatched command" do
+      other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                              id: "sa_9", subagent: "build", status: :running, messages: [])
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_9").and_return(other)
+      allow(cmd_executor).to receive(:try_execute).with("/agents sa_9 --attach")
+                                                  .and_return({ attach_agent: "sa_9" })
+      cmd.send(:handle_attached_input, "/agents sa_9 --attach", runner, ui, cmd_executor)
+      expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_9")
+    end
+
+    it "still STEERS a plain (non-slash) running line (unchanged)" do
+      cmd.send(:handle_attached_input, "look at the parser", runner, ui, cmd_executor)
+      expect(agents_handler).to have_received(:steer_agent).with("sa_1", "look at the parser")
+      expect(cmd_executor).not_to have_received(:try_execute)
+    end
+
+    # Y3 fold-in: `/back` (and `/detach`) detach to main regardless of draft —
+    # the key-independent way out when ← is eaten as cursor-left.
+    it "/back detaches to main" do
+      expect(cmd.send(:session_resolver)).to receive(:replay_session).with(ui, "main-sess")
+      cmd.send(:handle_attached_input, "/back", runner, ui, cmd_executor)
+      expect(cmd.send(:attached_to_agent?)).to be(false)
+    end
+
+    it "/detach detaches to main" do
+      allow(cmd.send(:session_resolver)).to receive(:replay_session)
+      cmd.send(:handle_attached_input, "/detach", runner, ui, cmd_executor)
+      expect(cmd.send(:attached_to_agent?)).to be(false)
+    end
+
+    # R3 also holds when the attached sub has FINISHED: a `/`-command still runs
+    # (e.g. /stop another sub), only plain text gets the "has finished" notice.
+    it "dispatches a slash command even when the attached child has finished" do
+      allow(entry).to receive(:status).and_return(:completed)
+      cmd.send(:handle_attached_input, "/status", runner, ui, cmd_executor)
+      expect(cmd_executor).to have_received(:try_execute).with("/status")
+    end
+
     it "auto-detaches when the child is gone (never strands the user)" do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_1").and_return(nil)
       expect(cmd.send(:session_resolver)).to receive(:replay_session).with(ui, "main-sess")
