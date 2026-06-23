@@ -45,6 +45,14 @@ module Rubino
         live + [MAIN_ROW]
       end
 
+      # The single live subagent, or nil when there are zero or several. Lets the
+      # composer honor the "Enter to view" hint with a true one-press attach when
+      # there is nothing to choose between (#42).
+      def single_live
+        live = live_entries
+        live.size == 1 ? live.first : nil
+      end
+
       def close!
         @state = nil
       end
