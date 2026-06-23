@@ -90,6 +90,12 @@ module Rubino
         root = resolve_workspace
         return { output: "Error: cannot access workspace directory", error_code: :workspace_error } unless root
 
+        # Fail-closed (tools.sandbox.require): refuse before spawning, same gate
+        # as the shell tool — run_tests cannot bypass the OS jail (#544 / HOLE 2).
+        if (refusal = Rubino::Security::Sandbox.refusal_reason)
+          return { output: "Error: #{refusal}", error_code: :denied_command }
+        end
+
         framework = (override && !override.to_s.empty? ? override.to_s : detect_framework(root))
         unless framework
           return { output: "Error: no test setup detected in #{root} — looked for " \
@@ -208,7 +214,14 @@ module Rubino
       def execute(command, cwd, timeout)
         require "open3"
         rd, wr = IO.pipe
-        pid    = Process.spawn(command, chdir: cwd, pgroup: true, out: wr, err: wr)
+        # Jail the test runner through the SAME OS write-jail as `shell`
+        # (#544 / HOLE 2): a project spec doing File.write('/etc/x') runs under
+        # "run the suite", so it must be write-confined too. wrap_argv prepends
+        # the launcher prefix ([] when off ⇒ unchanged); the string command is
+        # run via bash like the shell tool. wrap_env carries the writable roots.
+        argv = Security::Sandbox.wrap_argv(["bash", "-o", "pipefail", "-c", command], cwd: cwd)
+        env  = Security::Sandbox.wrap_env(cwd: cwd)
+        pid  = Process.spawn(env, *argv, chdir: cwd, pgroup: true, out: wr, err: wr)
         pgid   = pid
         wr.close
 

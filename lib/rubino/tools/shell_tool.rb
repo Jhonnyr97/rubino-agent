@@ -68,9 +68,9 @@ module Rubino
       # the jail's extra_env (writable roots, never on argv). `cwd` derives the
       # writable roots; `script` is the already-wrapped bash source.
       def self.sandboxed_bash_argv(script, cwd:)
-        prefix = Security::Sandbox.command_prefix(cwd: cwd)
-        env    = GIT_HARDENED_ENV.merge(Security::Sandbox.extra_env(cwd: cwd))
-        [env, *prefix, "bash", "-o", "pipefail", "-c", script]
+        argv = Security::Sandbox.wrap_argv(["bash", "-o", "pipefail", "-c", script], cwd: cwd)
+        env  = GIT_HARDENED_ENV.merge(Security::Sandbox.wrap_env(cwd: cwd))
+        [env, *argv]
       end
 
       # nil when the shell may run, else the one-line refusal (fail-closed

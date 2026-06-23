@@ -65,6 +65,33 @@ RSpec.describe Rubino::Tools::RubyTool do
       end
   end
 
+  # HOLE 2 / #544: the ruby tool spawns its own interpreter, so it must go
+  # through the SAME OS write-jail and fail-closed refusal as the shell tool.
+  describe "OS write-jail wiring" do
+    it "refuses (fail-closed) when the sandbox is required but unavailable" do
+      allow(Rubino::Security::Sandbox).to receive(:refusal_reason)
+        .and_return("sandbox required but unavailable on this host")
+      expect(tool.call("code" => "1")).to include("sandbox required but unavailable")
+    end
+
+    it "prefixes the spawned ruby argv with the launcher prefix" do
+      allow(Rubino::Security::Sandbox).to receive(:refusal_reason).and_return(nil)
+      allow(Rubino::Security::Sandbox).to receive(:wrap_argv) { |argv, **| ["/jail", "--", *argv] }
+      allow(Rubino::Security::Sandbox).to receive(:wrap_env).and_return({})
+      captured = nil
+      allow(Open3).to receive(:popen3) do |*args, **|
+        captured = args
+        raise "stop-after-capture"
+      end
+      expect { tool.call("code" => "1") }.to raise_error("stop-after-capture")
+      # Open3.popen3(env, *prefix, ruby, "-I", ...): env first, prefix next.
+      expect(captured[0]).to eq({})
+      expect(captured[1, 2]).to eq(["/jail", "--"])
+      expect(captured[3]).to eq(RbConfig.ruby)
+      expect(captured[4, 4]).to eq(["-I", "lib", "-I", "."])
+    end
+  end
+
   it "has name 'ruby' and :medium risk" do
     expect(tool.name).to eq("ruby")
     expect(tool.risk_level).to eq(:medium)
