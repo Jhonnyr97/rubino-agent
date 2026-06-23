@@ -78,15 +78,46 @@ module Rubino
         end
       end
 
-      def flush
+      # Drains buffered text. At a mid-stream message boundary (final: false) a
+      # tag split across the boundary — e.g. "<thi" closing one message, "nk>"
+      # opening the next — must NOT be dumped as content: doing so marks content
+      # as seen and makes the now-completed <think> read as literal, leaking the
+      # reasoning into the body (and the inverse for </think> leaks the answer
+      # into thinking). So a trailing fragment that is a non-empty prefix of an
+      # open/close tag (or a ``` fence) is retained for the next feed to
+      # complete. At true end of stream (final: true) nothing follows, so the
+      # tail is emitted verbatim under the current sentinel (STRM-3).
+      def flush(final: true, &block)
         return if @pending.empty?
 
         sentinel = @inside ? :thinking : :content
-        yield sentinel, @pending
-        @pending = +""
+        emit_len = final ? @pending.length : @pending.length - dangling_tag_prefix_len
+        return if emit_len <= 0
+
+        emit = @pending.slice!(0, emit_len)
+        note_content(emit) if sentinel == :content
+        block.call(sentinel, emit)
       end
 
       private
+
+      # Length of the longest suffix of @pending that is a non-empty prefix of a
+      # tag we still need to recognise (</think> while inside a reasoning span,
+      # else <think> or a ``` fence), so a mid-stream flush can hold it back for
+      # the next feed to complete instead of mis-routing it.
+      def dangling_tag_prefix_len
+        candidates = @inside ? ["</think>"] : ["<think>", "```"]
+        candidates.map { |tag| tag_prefix_suffix_len(@pending, tag) }.max
+      end
+
+      # The largest k>0 such that the last k chars of +text+ equal the first k
+      # chars of +tag+ (case-insensitively, matching OPEN_RE/CLOSE_RE), else 0.
+      def tag_prefix_suffix_len(text, tag)
+        [text.length, tag.length - 1].min.downto(1) do |k|
+          return k if text[-k, k].casecmp?(tag[0, k])
+        end
+        0
+      end
 
       # Holds back the last (TAG_MAX_LEN-1) chars in case the next chunk
       # completes a tag (or a ``` fence) that began at the tail of @pending,
