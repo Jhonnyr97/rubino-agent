@@ -128,4 +128,29 @@ RSpec.describe Rubino::Tools::Base do
       end
     end
   end
+
+  # #77a: the WRITE/EDIT guard (writable_workspace?) accepts $TMPDIR/tmp scratch
+  # — aligning structured writes with the sandbox writable set + `shell` — while
+  # the AUX-LLM read guard (within_workspace?/outside_workspace?) stays strict so
+  # scratch reads are never exfiltrated to a third-party model.
+  describe "#writable_workspace? temp scratch (#77a)" do
+    it "accepts a path inside the workspace" do
+      inside = File.join(workspace, "ok.txt")
+      expect(tool.send(:writable_workspace?, inside)).to be(true)
+    end
+
+    it "accepts a path under the temp scratch roots ($TMPDIR/tmp)" do
+      scratch = File.join(Dir.tmpdir, "rubino_scratch_#{Process.pid}.txt")
+      expect(tool.send(:writable_workspace?, scratch)).to be(true)
+    end
+
+    it "still rejects a non-scratch path outside the workspace" do
+      expect(tool.send(:writable_workspace?, "/usr/local/rubino_escape.txt")).to be(false)
+    end
+
+    it "does NOT relax the strict read/exfiltration guard for scratch" do
+      scratch = File.join(Dir.tmpdir, "rubino_scratch_#{Process.pid}.txt")
+      expect(tool.send(:within_workspace?, scratch)).to be(false)
+    end
+  end
 end
