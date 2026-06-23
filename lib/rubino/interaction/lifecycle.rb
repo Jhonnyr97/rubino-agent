@@ -350,9 +350,12 @@ module Rubino
         # turn's critical path); it is only true in API/server/subagent contexts
         # that have no background drainer, so the throttle keeps the aux-LLM
         # extract off the interactive path AND cuts its cadence ~10x.
+        enqueued = false
+
         if @config.memory_auto_extract? && interval_due?(turn_no, @config.memory_auto_extract_interval)
           queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
+          enqueued = true
         end
 
         # Variant B — deterministic post-turn skill distillation. Gated exactly
@@ -366,6 +369,7 @@ module Rubino
         if @config.skills_auto_distill? && interval_due?(turn_no, @config.skills_auto_distill_interval)
           queue.enqueue("DistillSkillJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
+          enqueued = true
         end
 
         # Summarize if session is getting long
@@ -373,11 +377,23 @@ module Rubino
         if message_count > 20
           queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
+          enqueued = true
         end
 
         # Detach: kick the polishing worker so it drains the rows just enqueued
         # off this thread. Returns immediately — the next prompt is never gated.
-        @polishing&.start(ui: @ui, event_bus: @event_bus)
+        #
+        # ONLY when this turn actually enqueued a row (#59). The interval/length
+        # gates above mean the typical turn enqueues NOTHING — yet an
+        # unconditional #start still spawned a worker thread, bound the aux
+        # cancel token and flashed the dim "polishing memory… (Esc to skip)"
+        # indicator under the prompt every single turn, only to scan an empty
+        # queue and exit. That visual noise (and the throwaway thread) is what
+        # made the polish look like it "fires on nearly every turn". Gating on
+        # +enqueued+ keeps the worker — and the indicator — for the turns that
+        # genuinely produced durable work, consistent with the same interval
+        # salience gates that decide whether a row is worth enqueuing at all.
+        @polishing&.start(ui: @ui, event_bus: @event_bus) if enqueued
       end
 
       # Deterministic per-session turn counter for the throttle gates (#412/#414).
