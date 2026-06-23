@@ -35,4 +35,39 @@ RSpec.describe Rubino::Commands::Handlers::Status do
 
     expect(ui.panels["workspace"]).to eq("~/code/repo")
   end
+
+  # The approvals line must tell the truth about what the default gate does:
+  # under dangerous_only, risky commands prompt while safe commands and
+  # in-workspace edits run automatically — NOT the old "mutating commands
+  # prompt" copy (false: a safe in-workspace edit runs unprompted).
+  describe "approvals line copy" do
+    it "describes the dangerous_only default accurately" do
+      allow(Rubino::Modes).to receive(:current).and_return(:auto)
+      allow(Rubino.configuration).to receive(:confirm_policy).and_return(:dangerous_only)
+
+      handler.show_status
+
+      expect(ui.panels["approvals"]).to eq(
+        "dangerous_only — risky commands prompt; safe commands + in-workspace edits run automatically"
+      )
+    end
+
+    it "describes confirm_all when opted in" do
+      allow(Rubino::Modes).to receive(:current).and_return(:auto)
+      allow(Rubino.configuration).to receive(:confirm_policy).and_return(:confirm_all)
+
+      handler.show_status
+
+      expect(ui.panels["approvals"]).to eq("confirm_all — every shell command prompts")
+    end
+
+    it "does not use the old 'mutating commands prompt' copy" do
+      allow(Rubino::Modes).to receive(:current).and_return(:auto)
+      allow(Rubino.configuration).to receive(:confirm_policy).and_return(:dangerous_only)
+
+      handler.show_status
+
+      expect(ui.panels["approvals"]).not_to include("mutating commands prompt")
+    end
+  end
 end
