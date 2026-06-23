@@ -140,6 +140,11 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
+        # Tools that ERRORED / were blocked (e.g. a write refused by the
+        # workspace jail). They neither "ran" nor mutated, so they stay out of
+        # @tool_count/@edit_count and never trip the #381 "review uncommitted
+        # changes" note (S7 F1) — tracked separately for the footer/diagnostics.
+        @errored_count  = 0
         # Of the tools that RAN, how many were MUTATING (edit/write/patch). Lets
         # the pessimistic-summary reconciliation (#381) say "N tool calls (M edits
         # — review uncommitted changes)" so a developer is pointed at real,
@@ -874,6 +879,15 @@ module Rubino
           # denial output; remember it so the binding guard's honest message can
           # name `--yolo` rather than "approve interactively" (F2).
           @noninteractive_block = true if result.output.to_s.include?("no interactive session")
+        elsif result.respond_to?(:errorish?) && result.errorish?
+          # A tool that ERRORED/was BLOCKED (e.g. a write refused by the
+          # workspace jail — file NEVER created) did not mutate anything, so it
+          # must NOT inflate the "N tools actually ran / M edits" ledger the
+          # #381 pessimistic-summary note reads. Otherwise a turn whose ONLY
+          # tool call was a refused write would falsely tell the user to "review
+          # uncommitted changes" for work that never happened (S7 F1). The
+          # error is still surfaced in its own card; it just isn't a mutation.
+          @errored_count += 1
         else
           @tool_count += 1
           # Track mutating tool calls separately so the pessimistic-summary

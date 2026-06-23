@@ -339,6 +339,40 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to eq("I edited a.rb and ran the suite — refactor is on disk, tests pass.")
       expect(result).not_to match(/harness note/i)
     end
+
+    # S7 F1 — a write REFUSED by the workspace jail (file NEVER created) returns
+    # an errorish Result. It must NOT count toward the ledger, so a pessimistic
+    # closing summary must NOT trip the #381 note telling the user to "review
+    # uncommitted changes" for work that never happened.
+    it "does NOT emit a harness note when the ONLY tool call was a blocked write (F1)" do
+      blocked = Rubino::Tools::Result.error(
+        name: "write", call_id: "c1",
+        error: "refusing to access '/root/escape.txt' — outside /work. " \
+               "Set tools.workspace_strict=false in config.yml to disable this check."
+      )
+      fake_llm.enqueue_tool_call("write", { "path" => "/root/escape.txt", "content" => "x" })
+      fake_llm.enqueue_text("I have not made any edits — nothing was written.")
+
+      events = []
+      event_bus.on(Rubino::Interaction::Events::HARNESS_NOTE) { |payload| events << payload }
+
+      loop_obj = build_loop
+      allow(tool_executor).to receive(:execute) do |name:, arguments:, call_id:|
+        loop_obj.send(:handle_tool_result, name: name, arguments: arguments,
+                                           call_id: call_id, result: blocked)
+        blocked
+      end
+
+      result = loop_obj.run(messages: user_messages("write /root/escape.txt"), tools: tools)
+
+      # The blocked write neither ran nor mutated: no harness note, no false
+      # "N tools actually ran / review uncommitted changes".
+      expect(result).to eq("I have not made any edits — nothing was written.")
+      expect(events).to be_empty
+      warnings = null_ui.messages.select { |m| m[:level] == :warning }.map { |m| m[:message] }
+      expect(warnings.join("\n")).not_to match(/harness note/i)
+      expect(warnings.join("\n")).not_to match(/uncommitted changes/i)
+    end
   end
 
   # #84 — the SAME pessimistic reconciliation, but on the NORMAL closing summary
