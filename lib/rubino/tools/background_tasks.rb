@@ -63,6 +63,12 @@ module Rubino
         :last_activity, :tool_count, :activity_log, :output_tail,
         :approval_gate, :approval_id, :approval_question, :approval_command,
         :budget_request,
+        # Monotonic stamp of the instant this child blocked on its approval gate
+        # (begin_approval), used to order the approval MODAL QUEUE FIFO: only one
+        # approval modal is presented at a time (awaiting_approval.first), and a
+        # later-parked child waits its turn as part of the "(N more queued)"
+        # backlog. Cleared on end_approval. nil ⇒ not currently parked.
+        :approval_seq,
         # Parent->child steer (the `/agents <id> steer "..."` note). Wired into
         # the child Loop as its Interaction::InputQueue (the SAME turn-boundary
         # steering channel the human uses on the parent); the parent pushes a
@@ -175,6 +181,11 @@ module Rubino
       def initialize
         @entries = {}
         @mutex   = Mutex.new
+        # Monotonic source for approval_seq — the FIFO order of the approval
+        # modal queue. Bumped under @mutex on every begin_approval so two
+        # children that park "at once" still get a deterministic, stable order
+        # (the one whose begin_approval won the lock first is the head).
+        @approval_seq = 0
       end
 
       # Reserves a slot and registers a `running` entry, returning it. The
@@ -350,6 +361,7 @@ module Rubino
           entry.approval_question = question.to_s
           entry.approval_command  = command.to_s
           entry.budget_request    = budget ? true : false
+          entry.approval_seq      = (@approval_seq += 1)
           entry.status            = :needs_approval
         end
       end
@@ -366,6 +378,7 @@ module Rubino
           entry.approval_question = nil
           entry.approval_command  = nil
           entry.budget_request    = false
+          entry.approval_seq      = nil
           entry.status            = :running if entry.status == :needs_approval
         end
       end
@@ -510,9 +523,27 @@ module Rubino
       end
 
       # Entries currently parked on a human approval — surfaced on their card
-      # and answerable via /agents <id>.
+      # and answerable via /agents <id>. Ordered OLDEST-FIRST (by the moment the
+      # child blocked, approval_seq) so the modal queue is FIFO: when two
+      # children raise an approval at once only ONE modal is presented at a time
+      # (the head of this list — auto_resolve_pending takes #first), the rest are
+      # the "(N more queued)" backlog shown on the active modal, and they dequeue
+      # in the order they parked. Ties fall back to started_at for a stable order.
       def awaiting_approval
-        @mutex.synchronize { @entries.values.select { |e| e.status == :needs_approval } }
+        @mutex.synchronize do
+          @entries.values.select { |e| e.status == :needs_approval }
+                         .sort_by { |e| [e.approval_seq.to_i, e.started_at] }
+        end
+      end
+
+      # How many children are parked on an approval BEHIND the head — i.e. the
+      # backlog the active modal advertises as "(N more queued)". Only ONE
+      # approval modal is presented at a time (awaiting_approval.first); this is
+      # everyone else still :needs_approval. Zero when at most one child is
+      # parked. The active modal reads this so the user knows more are waiting
+      # and that resolving the current one dequeues the next.
+      def queued_approval_count
+        [awaiting_approval.size - 1, 0].max
       end
 
       def find(id)

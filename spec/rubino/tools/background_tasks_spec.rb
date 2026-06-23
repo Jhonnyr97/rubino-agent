@@ -340,6 +340,63 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     end
   end
 
+  # R2 — the approval MODAL queue. When two children raise an approval at once
+  # only ONE modal is presented at a time (awaiting_approval.first); the rest are
+  # the "(N more queued)" backlog and dequeue FIFO in the order they parked, so
+  # the modals never overlap.
+  describe "approval modal queue (R2)" do
+    def park_approval(entry)
+      registry.begin_approval(entry.id, gate: Rubino::Run::ApprovalGate.new,
+                                        approval_id: entry.id, question: "q", command: "c #{entry.id}")
+    end
+
+    it "orders awaiting_approval FIFO by the moment each child parked" do
+      a = reserve
+      b = reserve
+      park_approval(a) # a parks FIRST
+      park_approval(b) # b parks SECOND
+      # The head is the first to park — that one drives the single active modal;
+      # b waits behind it regardless of map/hash order.
+      expect(registry.awaiting_approval.map(&:id)).to eq([a.id, b.id])
+    end
+
+    it "reports the queued backlog behind the head as (N more queued)" do
+      a = reserve
+      b = reserve
+      c = reserve
+      expect(registry.queued_approval_count).to eq(0) # nothing parked yet
+      park_approval(a)
+      expect(registry.queued_approval_count).to eq(0) # only one parked → no backlog
+      park_approval(b)
+      park_approval(c)
+      expect(registry.queued_approval_count).to eq(2) # b + c wait behind a
+    end
+
+    it "dequeues the next parked child as the head once the first resolves" do
+      a = reserve
+      b = reserve
+      park_approval(a)
+      park_approval(b)
+      expect(registry.awaiting_approval.first.id).to eq(a.id)
+
+      registry.end_approval(a.id) # the first modal is resolved
+      # b is now the sole parked child → it becomes the active modal, no backlog.
+      expect(registry.awaiting_approval.map(&:id)).to eq([b.id])
+      expect(registry.queued_approval_count).to eq(0)
+    end
+
+    it "clears approval_seq on end_approval so a re-park re-enters the queue tail" do
+      a = reserve
+      b = reserve
+      park_approval(a)
+      park_approval(b)
+      registry.end_approval(a.id)
+      expect(registry.find(a.id).approval_seq).to be_nil
+      park_approval(a) # a parks again — now BEHIND b (later seq)
+      expect(registry.awaiting_approval.map(&:id)).to eq([b.id, a.id])
+    end
+  end
+
   # R1 — #running is the SINGLE source feeding both the footer cards and the
   # attached switcher. It must list every child the lifecycle still considers
   # alive (LIVE_STATUSES), so a sibling that goes quiet / parks (mid-spawn,
