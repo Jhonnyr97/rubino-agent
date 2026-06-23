@@ -106,7 +106,7 @@ module Rubino
       # tool counter) and repaint the parent's collapsed card — NO $stdout row, so
       # a read-heavy child never floods the parent terminal (#124). Legacy mode:
       # the old inline `    ⟂ explore · read lib/foo.rb` row.
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         hint = args_hint(arguments)
         if card_mode?
           activity = hint ? "#{name} #{hint}" : name.to_s

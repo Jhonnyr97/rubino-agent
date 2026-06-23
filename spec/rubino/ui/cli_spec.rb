@@ -1009,7 +1009,10 @@ RSpec.describe Rubino::UI::CLI do
   describe "#tool_finished (task delegation card)" do
     def render_delegation(result)
       capture_stdout do
-        ui.tool_started("task", arguments: { subagent: "explore", prompt: "hi" })
+        # The executor always threads the call's call_id into tool_started so the
+        # close row resolves its OWN name (#35); mirror that here.
+        cid = result.respond_to?(:call_id) ? result.call_id : nil
+        ui.tool_started("task", arguments: { subagent: "explore", prompt: "hi" }, call_id: cid)
         ui.tool_finished("task", result: result)
       end
     end
@@ -1075,6 +1078,59 @@ RSpec.describe Rubino::UI::CLI do
       out = render_delegation(result)
       expect(out).to include("✗ explore")
       expect(out).not_to include("✓ explore")
+    end
+
+    # #35: the close-row name must be derived PER-CALL (from result.call_id), not
+    # from a shared mutable ivar. Two overlapping delegations interleave as
+    # started A, started B, finished A, finished B — a single shared ivar would
+    # label A's close row with B's name. Each row must show its OWN subagent.
+    it "labels each of two overlapping delegations with its OWN name (#35)" do
+      res_a = Rubino::Tools::Result.success(name: "task", call_id: "ca", output: "A done")
+      res_b = Rubino::Tools::Result.success(name: "task", call_id: "cb", output: "B done")
+      out = capture_stdout do
+        ui.tool_started("task", arguments: { subagent: "explore", prompt: "a" }, call_id: "ca")
+        ui.tool_started("task", arguments: { subagent: "general", prompt: "b" }, call_id: "cb")
+        ui.tool_finished("task", result: res_a)
+        ui.tool_finished("task", result: res_b)
+      end
+      lines = out.lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "") }
+      done  = lines.select { |l| l.include?("└ ✓") }
+      expect(done).to include(a_string_including("✓ explore · done"))
+      expect(done).to include(a_string_including("✓ general · done"))
+      expect(out).not_to include("✓ subagent")
+    end
+
+    # #35: a replay / post-detach render reconstructs the row from the persisted
+    # tool message — the start (carrying the persisted call_id + arguments) and
+    # the finish (a Result with the same call_id). The close row must show the
+    # REAL persisted subagent name, never the generic "subagent".
+    it "renders the real subagent name on a replay/post-detach render (#35)" do
+      replayed = Rubino::Tools::Result.success(
+        name: "task", call_id: "replay-1", output: "the bug is in lib/x.rb:42"
+      )
+      out = capture_stdout do
+        ui.tool_started("task", arguments: { subagent: "explore", prompt: "find it" },
+                                call_id: "replay-1")
+        ui.tool_finished("task", result: replayed)
+      end
+      expect(out).to include("✓ explore · done")
+      expect(out).not_to include("✓ subagent")
+    end
+
+    # #35: a replayed BACKGROUND spawn row recovers the name from the persisted
+    # handle output itself (no prior stash needed), so it labels correctly even
+    # if the start's arguments were absent.
+    it "recovers the name from the spawn handle on a background replay (#35)" do
+      replayed = Rubino::Tools::Result.success(
+        name: "task", call_id: "bg-1",
+        output: "Started background subagent 'general' as task sa_9. It is running now."
+      )
+      out = capture_stdout do
+        ui.tool_started("task", arguments: nil, call_id: "bg-1")
+        ui.tool_finished("task", result: replayed)
+      end
+      expect(out).to include("└ ▸ sa_9 · general · started")
+      expect(out).not_to include("subagent · started")
     end
   end
 
