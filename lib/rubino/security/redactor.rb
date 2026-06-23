@@ -92,8 +92,17 @@ module Rubino
       # Authorization headers.
       AUTH_HEADER_RE = /(Authorization:\s*Bearer\s+)(\S+)/i
 
-      # Telegram bot tokens: bot<digits>:<token> or <digits>:<token>.
-      TELEGRAM_RE = /(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})/
+      # Telegram bot tokens: `bot<id>:<token>` or `<id>:<token>`. The bot id is
+      # 8-10 digits and the token is EXACTLY 35 chars — the canonical Telegram
+      # format. The original `\d{8,}:[...]{30,}` was too broad: any 8+ digit
+      # number colon-joined to a 30+ char run (a unix-nanos timestamp, a long
+      # numeric id, a 32-char session value) false-matched and got FULL_MASK'd,
+      # so a plain `python3 -c` printing a non-secret dict had output replaced
+      # with `‹redacted by rubino›`. Pinning the id to 8-10 digits (with a
+      # word-boundary so a longer number can't lend its tail) and the token to
+      # the exact 35-char length keeps every real bot token caught while the
+      # arbitrary timestamp:value shapes no longer match.
+      TELEGRAM_RE = /(?<![A-Za-z0-9_-])(bot)?(\d{8,10}):([-A-Za-z0-9_]{35})(?![A-Za-z0-9_-])/
 
       # Private key blocks.
       PRIVATE_KEY_RE = /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/

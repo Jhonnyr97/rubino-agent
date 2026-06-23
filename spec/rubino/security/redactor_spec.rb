@@ -107,6 +107,26 @@ RSpec.describe Rubino::Security::Redactor do
       expect(out).not_to include(":***")
     end
 
+    it "still redacts a bare (no `bot` prefix) Telegram token" do
+      out = redactor.redact_sensitive_text("123456789:AAH#{"x" * 32}")
+      expect(out).to include("‹redacted by rubino›")
+    end
+
+    it "does NOT false-match a non-secret <digits>:<long-string> shape" do
+      # A plain dict / log line: a unix timestamp colon-joined to a 30+ char
+      # value is NOT a Telegram token. The old `\d{8,}:[...]{30,}` pattern
+      # FULL_MASK'd it; the canonical 8-10-digit-id + exact-35-char-token form
+      # leaves it untouched.
+      samples = [
+        "timestamp: 1700000000:abcdefghijklmnopqrstuvwxyz012345",
+        "result = 123456789:0123456789012345678901234567890123",
+        "1234567890123:#{"a" * 35}" # 13-digit id can't lend its tail
+      ]
+      samples.each do |s|
+        expect(redactor.redact_sensitive_text(s)).to eq(s)
+      end
+    end
+
     it "tags a sensitive query-string value with the explicit marker" do
       out = redactor.redact_sensitive_text("access_token=abc&id=1")
       expect(out).to eq("access_token=‹redacted by rubino›&id=1")
