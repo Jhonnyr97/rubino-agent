@@ -531,9 +531,30 @@ module Rubino
       # becomes the turn's final assistant content. Because tools are empty AND
       # this is the loop's terminal action, the summary can never re-enter the
       # tool loop. Ports conversation_loop.py:4296 / handle_max_iterations.
+      # The force-summary nudge, GROUNDED in this turn's actual action record
+      # (#36). MAX_ITERATIONS_SUMMARY_NUDGE alone gives the model no record of
+      # what it just did, so a model under cap-pressure can confabulate "I made
+      # no changes / did nothing" right after running tools and editing files.
+      # Feeding it the truthful ledger (tools run + mutating edits this turn —
+      # the SAME @tool_count / @edit_count the post-hoc #381 guard reconciles
+      # against) closes the contradiction at the source: the model can no longer
+      # truthfully say nothing happened. Falls back to the bare nudge when no
+      # tool ran this turn (nothing to ground), keeping that path unchanged.
+      def force_summary_nudge
+        return MAX_ITERATIONS_SUMMARY_NUDGE unless @tool_count.to_i.positive?
+
+        edits = @edit_count.to_i
+        edit_clause = edits.positive? ? ", including #{edits} file edit#{"s" unless edits == 1}" : ""
+        "#{MAX_ITERATIONS_SUMMARY_NUDGE} For the record, you ran " \
+          "#{@tool_count} tool call#{"s" unless @tool_count == 1} this turn" \
+          "#{edit_clause}; summarize what those actions accomplished and what " \
+          "remains — do not claim nothing was done."
+      end
+
       def force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
-        persist_user_message(MAX_ITERATIONS_SUMMARY_NUDGE)
-        messages << { role: "user", content: MAX_ITERATIONS_SUMMARY_NUDGE }
+        nudge = force_summary_nudge
+        persist_user_message(nudge)
+        messages << { role: "user", content: nudge }
 
         @event_bus.emit(Interaction::Events::MODEL_CALL_STARTED, iteration: iteration)
         @ui.thinking_started if streaming?
