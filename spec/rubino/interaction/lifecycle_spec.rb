@@ -447,5 +447,55 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       lc.send(:enqueue_post_turn_jobs)
       expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
     end
+
+    # #59: the polish must NOT fire on every turn. The interval/length gates mean
+    # the TYPICAL turn enqueues no row at all — yet the worker was kicked
+    # unconditionally, spawning a throwaway thread, binding the aux cancel token
+    # and flashing the dim "polishing memory… (Esc to skip)" indicator under the
+    # prompt before scanning an empty queue. That visual noise on a trivial turn
+    # is exactly the over-eager-trigger bug. The worker (and its indicator) must
+    # only fire when this turn actually produced durable work.
+    describe "polish trigger gate (#59)" do
+      def lifecycle_for(memory_interval:, distill: false, message_count: 1, turn_index: 1)
+        cfg = test_configuration(
+          "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+          "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => memory_interval },
+          "skills" => { "auto_distill" => distill }
+        )
+        lc = described_class.new(session: { id: "sess-gate-#{turn_index}-#{rand(1_000)}", model: "gpt-4o" },
+                                 event_bus: event_bus, ui: null_ui, config: cfg, polishing: polishing)
+        stub_message_count(lc, message_count)
+        allow(lc).to receive(:current_turn_index).and_return(turn_index)
+        lc
+      end
+
+      it "does NOT kick the polishing worker on a turn that enqueues nothing" do
+        # Non-interval turn (1 % 10 != 0), distill off, < 20 messages => no row.
+        lc = lifecycle_for(memory_interval: 10, turn_index: 1, message_count: 1)
+
+        lc.send(:enqueue_post_turn_jobs)
+
+        # Pre-fix: #start fired unconditionally → spurious worker + indicator.
+        expect(polishing).not_to have_received(:start)
+        expect(db_connection.db[:jobs].count).to eq(0)
+      end
+
+      it "kicks the polishing worker when a memory row was actually enqueued" do
+        lc = lifecycle_for(memory_interval: 1, turn_index: 1, message_count: 1)
+
+        lc.send(:enqueue_post_turn_jobs)
+
+        expect(polishing).to have_received(:start)
+      end
+
+      it "kicks the polishing worker when only a summarize row was enqueued" do
+        # No memory/distill row, but the >20-message summarize gate fires.
+        lc = lifecycle_for(memory_interval: 10, turn_index: 1, message_count: 21)
+
+        lc.send(:enqueue_post_turn_jobs)
+
+        expect(polishing).to have_received(:start)
+      end
+    end
   end
 end
