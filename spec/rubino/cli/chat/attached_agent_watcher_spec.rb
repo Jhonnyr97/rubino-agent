@@ -146,27 +146,50 @@ RSpec.describe Rubino::CLI::Chat::AttachedAgentWatcher do
     end
   end
 
-  # #82: the REPL rebuilds the composer every idle pass, so the watcher's focus
-  # guard is the host's PERSISTENT @attached_id, NOT composer identity. A
-  # composer-identity guard would falsely report "detached" the instant the
-  # loop swapped composers and freeze the live tail.
-  describe "#still_attached? (id-based, composer-identity-independent)" do
-    before { host.instance_variable_set(:@attached_id, "sa_1") }
-
-    it "is true while @attached_id matches, for ANY non-nil composer" do
-      expect(watcher.send(:still_attached?, composer)).to be(true)
-      # A DIFFERENT composer instance (the REPL rebuilt one) still counts as
-      # attached — the guard is the id, not the instance.
-      expect(watcher.send(:still_attached?, Object.new)).to be(true)
+  # #82/#85: the REPL rebuilds the composer every idle pass (and tears it down
+  # between passes), so the watcher's focus guard is the host's PERSISTENT
+  # @attached_id ALONE, NOT composer presence. A composer-identity or
+  # composer-presence guard would falsely report "detached" the instant the loop
+  # swapped or dropped the composer and freeze the live tail.
+  describe "#still_attached? (id-based, composer-independent)" do
+    it "is true while @attached_id matches" do
+      host.instance_variable_set(:@attached_id, "sa_1")
+      expect(watcher.send(:still_attached?)).to be(true)
     end
 
     it "is false once @attached_id no longer matches (detached / switched)" do
       host.instance_variable_set(:@attached_id, nil)
-      expect(watcher.send(:still_attached?, composer)).to be(false)
+      expect(watcher.send(:still_attached?)).to be(false)
     end
 
-    it "is false with no composer owning the screen (no TTY)" do
-      expect(watcher.send(:still_attached?, nil)).to be(false)
+    # #85: a momentarily-absent composer (between idle passes) is NOT a detach —
+    # the guard must stay true so the loop keeps ticking and the tail resumes the
+    # instant the next composer is built, rather than the ticker dying for good.
+    it "stays attached regardless of whether a composer currently owns the screen" do
+      host.instance_variable_set(:@attached_id, "sa_1")
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(nil)
+      expect(watcher.send(:still_attached?)).to be(true)
+    end
+  end
+
+  # #85: #attach_agent_view runs AFTER the idle read's `ensure` tore its composer
+  # down (BottomComposer.current => nil), so the start guard must key off the
+  # persistent TTY capability (.active?), not the transient .current — guarding on
+  # .current returned nil and the watcher never started, freezing the view.
+  describe "#start gating (TTY capability, not the live composer instance)" do
+    before { host.instance_variable_set(:@attached_id, "sa_1") }
+
+    it "does NOT start off a TTY (piped / tests): #active? false ⇒ nil thread" do
+      allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+      expect(watcher.start).to be_nil
+    end
+
+    it "STARTS on a real TTY even when no composer is current yet (post-teardown attach)" do
+      allow(Rubino::UI::BottomComposer).to receive_messages(active?: true, current: nil)
+      thread = watcher.start
+      expect(thread).to be_a(Thread)
+      thread.kill
+      thread.join
     end
   end
 
