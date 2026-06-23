@@ -85,6 +85,7 @@ Pasting **text** into the chat input goes through the file-backed paste pipeline
 - `--new` forces a fresh session; `--continue`/`-c` resumes the latest; `--resume`/`-r <id|title>` resumes a specific one.
 - `--resume` matches an ID prefix first, then a case-insensitive substring of the session title **or its full first prompt** — so a memorable phrase from the tail of a long first message works even though the stored title is truncated. More than one match is an error listing the candidates; no match exits non-zero with a pointer to `rubino sessions list`.
 - One-shot mode (`-q` / `prompt`) does **not** auto-resume — automation isn't silently hijacked onto a past session; pass `--resume`/`--continue` explicitly if you want it.
+- A bare **`rubino sessions`** on a real terminal opens an arrow-key resume picker over this directory's sessions (`--all` for every dir); ↑↓ select, Enter loads the chosen session into the chat REPL (the same as `rubino chat --session <id>`), Esc cancels. Off a TTY (piped/redirected) it prints the static `list` table so scripts stay deterministic; `rubino sessions list` is always the table.
 - One-shot output: when stdout is a **terminal** the answer renders through the same markdown pipeline as interactive chat (styled text, fitted tables, wrapping); when stdout is **piped/redirected** the answer stays plain raw text and diagnostics go to stderr, so `$(rubino prompt …)` stays clean.
 - Sessions are marked ended on clean exit, terminal close (SIGHUP), or kill (SIGTERM), so a closed window doesn't leave a session looking active.
 
@@ -134,6 +135,7 @@ rubino memory show ID
 rubino memory delete ID
 rubino memory backend [NAME] # show the active memory backend, or switch to NAME
 
+rubino sessions             # on a TTY: arrow-key resume picker (Enter loads, Esc cancels); piped: lists
 rubino sessions list
 rubino sessions show ID
 rubino sessions compact ID
