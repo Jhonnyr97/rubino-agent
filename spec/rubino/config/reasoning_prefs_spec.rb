@@ -70,6 +70,51 @@ RSpec.describe Rubino::Config::ReasoningPrefs do
     end
   end
 
+  describe ".effective_mode (#Y1A — effort off also hides the reasoning aside)" do
+    it "hides reasoning when effort is off and no explicit /reasoning mode is set" do
+      raw = { "thinking" => { "effort" => "off" } }
+      expect(described_class.mode(config(raw))).to eq(:collapsed) # configured mode unchanged
+      expect(described_class.effective_mode(config(raw))).to eq(:hidden)
+    end
+
+    it "hides reasoning when effort is the YAML-boolean off and no explicit mode" do
+      raw = YAML.safe_load("thinking:\n  effort: off\n")
+      expect(described_class.effective_mode(config(raw))).to eq(:hidden)
+    end
+
+    it "keeps an explicit /reasoning full even when effort is off" do
+      raw = { "thinking" => { "effort" => "off" }, "display" => { "reasoning" => "full" } }
+      expect(described_class.effective_mode(config(raw))).to eq(:full)
+    end
+
+    it "keeps an explicit /reasoning collapsed even when effort is off" do
+      raw = { "thinking" => { "effort" => "off" }, "display" => { "reasoning" => "collapsed" } }
+      expect(described_class.effective_mode(config(raw))).to eq(:collapsed)
+    end
+
+    it "leaves a non-off effort's render mode untouched" do
+      raw = { "thinking" => { "effort" => "medium" } }
+      expect(described_class.effective_mode(config(raw))).to eq(:collapsed)
+      raw = { "thinking" => { "effort" => "high" }, "display" => { "reasoning" => "full" } }
+      expect(described_class.effective_mode(config(raw))).to eq(:full)
+    end
+
+    it "does not treat the legacy show_reasoning boolean as an explicit mode" do
+      raw = { "thinking" => { "effort" => "off" }, "display" => { "show_reasoning" => true } }
+      expect(described_class.effective_mode(config(raw))).to eq(:hidden)
+    end
+  end
+
+  describe ".explicit_mode?" do
+    it "is true only when display.reasoning is a valid explicit mode" do
+      expect(described_class.explicit_mode?(config("display" => { "reasoning" => "full" }))).to be(true)
+      expect(described_class.explicit_mode?(config("display" => { "reasoning" => "bogus" }))).to be(false)
+      expect(described_class.explicit_mode?(config("display" => { "show_reasoning" => false }))).to be(false)
+      expect(described_class.explicit_mode?(config({}))).to be(false)
+      expect(described_class.explicit_mode?(nil)).to be(false)
+    end
+  end
+
   describe ".effort" do
     it "reads thinking.effort when valid" do
       %i[off low medium high].each do |e|

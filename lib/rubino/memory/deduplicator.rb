@@ -18,6 +18,18 @@ module Rubino
       # Similarity threshold (0.0 to 1.0) - above this is considered duplicate
       SIMILARITY_THRESHOLD = 0.85
 
+      # Normalize a fact for an EXACT-verbatim compare: collapse runs of
+      # whitespace to one space, strip the ends, and case-fold (#Y4). Two facts
+      # with the same normalized form are byte-equal-enough to be one fact, so a
+      # second save is a no-op. This is distinct from the 0.85 Jaccard near-dup
+      # (which a word-reordering rephrase can satisfy but #93-F4 showed misses
+      # the trivial "saved twice" repeat after the live set churns) and from the
+      # cross-instance semantic merge (#49). The single source of truth for what
+      # "the same fact" means at the write seam, shared by every backend.
+      def self.normalize_verbatim(text)
+        text.to_s.gsub(/\s+/, " ").strip.downcase
+      end
+
       def initialize(store: nil)
         @store = store || Store.new
       end

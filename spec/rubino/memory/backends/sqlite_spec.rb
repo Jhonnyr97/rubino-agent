@@ -65,6 +65,32 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(backend.store(kind: "project_context", content: "x")[:kind]).to eq("project")
       expect(backend.store(kind: "technical_decision", content: "y")[:kind]).to eq("fact")
     end
+
+    # #Y4 — the agent's MemoryTool#add writes straight through #store, bypassing
+    # the extraction near-dup gate, so the same fact saved twice used to mint two
+    # identical live rows. #store now dedups exact/normalized-verbatim repeats.
+    it "dedups an identical fact saved twice (one live row, idempotent id)" do
+      first  = backend.store(kind: "fact", content: "User lives in Lima.")
+      second = backend.store(kind: "fact", content: "User lives in Lima.")
+
+      expect(second[:id]).to eq(first[:id])
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(1)
+    end
+
+    it "dedups a whitespace/case variant of the same fact" do
+      first  = backend.store(kind: "fact", content: "User lives in Lima.")
+      second = backend.store(kind: "fact", content: "  user   LIVES in  lima. ")
+
+      expect(second[:id]).to eq(first[:id])
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(1)
+    end
+
+    it "still stores a genuinely different fact as its own row" do
+      backend.store(kind: "fact", content: "User lives in Lima.")
+      backend.store(kind: "fact", content: "User lives in Cusco.")
+
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(2)
+    end
   end
 
   describe "write-path guards (ThreatScanner + char-budget)" do

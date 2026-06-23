@@ -114,6 +114,20 @@ RSpec.describe Rubino::Security::Sandbox do
     end
   end
 
+  # #Y2A — .writable? lets a caller that already holds a concrete path (the
+  # DB-open read-only attribution) ask whether a write there is jailed, without
+  # pattern-matching an error string. Drive the roots directly so the assertion
+  # isn't muddied by the temp dir (every mktmpdir path sits under a temp root).
+  describe ".writable?" do
+    it "is true under a writable root and false outside it (incl. a not-yet-created file)" do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:writable_roots).and_return([File.realpath(workspace)])
+
+      expect(described_class.writable?(File.join(workspace, "a/b.sqlite3"))).to be(true)
+      expect(described_class.writable?(File.join(sibling, "db.sqlite3"))).to be(false)
+    end
+  end
+
   describe "Landlock helper resolution (trust anchor)" do
     # The helper is the trust anchor the jail execs; it must come ONLY from the
     # gem's installed extension build dir, never a ~/.rubino cache the confined
