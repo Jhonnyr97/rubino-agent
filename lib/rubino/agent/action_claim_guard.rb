@@ -61,7 +61,7 @@ module Rubino
     #     ("you can run…", "to run the tests…", "the test command is…").
     #   * A turn that ASKS the user something (ends on a question) is a legitimate
     #     clarify, not a fabricated completion — left alone.
-    class ActionClaimGuard
+    class ActionClaimGuard # rubocop:disable Metrics/ClassLength -- one cohesive anti-confabulation guard; the bulk is co-located narration/mutation/no-action regex tables that only make sense together
       # Absolute ceiling on corrective turns. After this many the guard becomes
       # BINDING (G1): it stops re-prompting and surfaces an honest deterministic
       # message rather than loop forever against a model that won't call the tool.
@@ -413,32 +413,46 @@ module Rubino
       # didn't add/implement it" — when the turn DID edit the relevant files. Same
       # ledger gate decides, so a false positive merely surfaces the truthful "N
       # tool calls ran — review the working tree" note, never an "I did X" claim.
+      # No interspersed comments inside this concatenation — a `#` breaks the `\`
+      # line-continuation (same gotcha as CD_INTENT / NO_ACTION_REQUEST).
+      # A genuine confabulation negates the WHOLE turn; an accurate summary's LOCAL
+      # caveat ("did not change the timeout", "not yet run the FULL suite", "no
+      # edit was needed") never does. So alt-1 REQUIRES a TOTALIZER (anything / any
+      # tool|file|edit / a single / at all / whatsoever / this turn) beside the
+      # negation+verb (the #36/#84 over-fire fix: the old un-totalized "not …
+      # <verb>" within 40 chars matched almost anything), and alt-2 ("no/zero
+      # <unit>") REQUIRES a real action predicate (were run/made/…). The rest are
+      # the totalizing "nothing was done" forms + #84 named-deliverable pessimism.
       NO_ACTION_CLAIM = Regexp.new(
         '\b(?:have\s+not|haven\s?\'?t|did\s+not|didn\s?\'?t|have\s+no|having\s+not|' \
-        'was\s+not\s+able\s+to|were\s+not\s+able\s+to|not)\b' \
-        '[^.!?\n]{0,40}?' \
-        '\b(?:read|run|ran|execute[d]?|use[d]?|call(?:ed)?|invoke[d]?|grep(?:ped)?|' \
-        "search(?:ed)?|made|make|edit(?:ed)?|written|wrote|create[d]?|change[d]?|" \
-        "modif(?:y|ied)|touch(?:ed)?|appl(?:y|ied)|do|done|perform(?:ed)?|take|taken|took|" \
-        'start(?:ed)?|begin|begun|add(?:ed)?|implement(?:ed)?|get\s+to|got\s+to)\b' \
-        '|\b(?:made|make|did|do|ran|run|read|wrote|written|applied|performed|took|taken)\b' \
-        '\s+(?:any\s+)?\bno\b\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|' \
-        'actions?|commands?|modifications?)\b' \
-        '|\b(?:no|zero)\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|actions?|' \
-        'commands?|modifications?)\b\s*' \
-        '(?:were\s+|was\s+|have\s+been\s+|been\s+|are\s+)?' \
-        '(?:run|ran|made|called|executed|invoked|read|performed|taken|applied)?\b' \
+        'was\s+not\s+able\s+to|were\s+not\s+able\s+to|made\s+no|make\s+no)\b[^.!?\n]{0,40}?' \
+        '\b(?:read|run|ran|execute[d]?|use[d]?|call(?:ed)?|invoke[d]?|grep(?:ped)?|search(?:ed)?|' \
+        "made|make|edit(?:ed)?|written|wrote|create[d]?|change[d]?|modif(?:y|ied)|touch(?:ed)?|" \
+        "appl(?:y|ied)|do|done|perform(?:ed)?|take|taken|took|start(?:ed)?|begin|begun|" \
+        'add(?:ed)?|implement(?:ed)?)\b[^.!?\n]{0,15}?' \
+        '\b(?:anything|any(?:thing)?\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|' \
+        'actions?|commands?|modifications?)|a\s+single\s+\w+|at\s+all|whatsoever|' \
+        'this\s+(?:whole\s+|entire\s+)?turn)\b' \
+        '|\b(?:made|make|did|do|ran|run|read|wrote|written|applied|took|taken)\b' \
+        '\s+(?:any\s+)?\bno\b\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|actions?|' \
+        'commands?|modifications?)\b' \
+        '|\b(?:no|zero)\s+(?:tool[\s-]*calls?|tools?|files?|edits?|changes?|actions?|commands?|' \
+        'modifications?)\b\s+(?:were\s+|was\s+|have\s+been\s+|been\s+|are\s+|have\s+|had\s+)?' \
+        '(?:run|ran|made|called|executed|invoked|read|performed|taken|applied)\b' \
         '|\b(?:nothing|no\s+action|no\s+work|not\s+a\s+single\s+\w+)\s+' \
         '(?:was|were|has\s+been|have\s+been|got)\s+' \
-        '(?:done|run|made|changed|read|executed|performed|taken|applied|edited|written)\b' \
-        '|\b(?:i|we)\s+(?:have\s+|had\s+)?(?:did|do|done|made|changed|read|run|' \
-        'executed|performed|accomplished)\s+(?:absolutely\s+|literally\s+)?nothing\b' \
+        '(?:done|run|made|changed|read|executed|performed|taken|applied|edited)\b' \
+        '|\b(?:i|we)\s+(?:have\s+|had\s+)?(?:did|do|done|made|changed|read|run|executed|' \
+        'performed|accomplished)\s+(?:absolutely\s+|literally\s+)?nothing\b' \
         '|\bnot\s+a\s+single\s+(?:file|tool|edit|command|change)\b' \
-        '|\b(?:not\s+(?:yet\s+)?(?:started|begun|added|implemented|created|done|' \
-        'applied|written|touched)|never\s+(?:started|added|implemented))\b' \
-        '|\b(?:queued\s+but\s+unstarted|(?:still\s+)?unstarted|still\s+(?:queued|' \
-        'pending|outstanding|to\s+do|to-do)|remains?\s+(?:queued|pending|unstarted|' \
-        'outstanding|undone|to\s+be\s+done))\b',
+        '|\b(?:(?:not|have\s+not|haven\s?\'?t|did\s+not|didn\s?\'?t)\s+(?:yet\s+)?' \
+        "(?:started|begun|begin|add(?:ed)?|implement(?:ed)?|creat(?:e|ed))|" \
+        'never\s+(?:started|added|implemented)|not\s+yet\s+(?:done|applied|written|touched)|' \
+        '(?:did\s+not|didn\s?\'?t|never)\s+get\s+(?:done|applied|added|implemented|started|' \
+        'created|written))\b' \
+        '|\b(?:queued\s+but\s+unstarted|(?:still\s+)?unstarted|still\s+(?:queued|pending|' \
+        'outstanding|to\s+do|to-do)|remains?\s+(?:queued|pending|unstarted|outstanding|undone|' \
+        'to\s+be\s+done))\b',
         Regexp::IGNORECASE
       )
 
@@ -658,6 +672,10 @@ module Rubino
         text = content.to_s
         ran  = tool_count.to_i
         return nil unless ran.positive?
+        # An EMPTY / blank summary is the signature of a DEGRADED turn (e.g. an
+        # HTTP 429 that returned no/garbled closing text): no pessimistic CLAIM to
+        # reconcile, so never manufacture a note out of silence (#WHATIF Bug B).
+        return nil if text.strip.empty?
         return nil unless NO_ACTION_CLAIM.match?(text)
         # The summary already reports the real count truthfully — don't pile on.
         return nil if already_acknowledges_ledger?(text, ran)
