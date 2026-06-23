@@ -388,4 +388,56 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       expect(described_class.http_status(StandardError.new("x"))).to be_nil
     end
   end
+
+  # Bug B (#WHATIF): a MiniMax HTTP 429 quota error reaches the STREAMING path,
+  # where ruby_llm's anthropic-compat parser re-wraps it as a 400 BadRequestError
+  # carrying the generic default message "Invalid request - please check your
+  # input". The original "rate_limit_error / Token Plan usage limit reached"
+  # signal survives ONLY in the response body, so the classifier must read the
+  # body — not just the clobbered message — to recover the rate-limit category.
+  describe ".classify — rate-limit mis-shaped on the streaming path (Bug B)" do
+    # message != body, the way the clobbered-429 case actually arrives.
+    def err_with_body(klass, status, message, body)
+      response = double("FaradayResponse", status: status, body: body, headers: {})
+      klass.new(response, message)
+    end
+
+    it "classifies a 429 clobbered to a 400 BadRequestError as RATE_LIMIT via the body" do
+      e = err_with_body(
+        RubyLLM::BadRequestError, 400,
+        "Invalid request - please check your input",
+        '{"type":"rate_limit_error","message":"Token Plan usage limit reached, check your plan"}'
+      )
+      c = described_class.classify(e)
+      expect(c.reason).to eq(FR::RATE_LIMIT)
+      expect(c.retryable).to be true
+    end
+
+    it "still classifies a GENUINE 400 (no rate-limit signal) as FORMAT_ERROR" do
+      e = err_with_body(
+        RubyLLM::BadRequestError, 400,
+        "Invalid request - please check your input",
+        '{"error":{"message":"malformed json near token 5"}}'
+      )
+      c = described_class.classify(e)
+      expect(c.reason).to eq(FR::FORMAT_ERROR)
+      expect(c.retryable).to be false
+    end
+
+    it "recognises the bare 'Token Plan usage limit reached' phrasing" do
+      e = err_with_body(RubyLLM::Error, nil, "Token Plan usage limit reached", "Token Plan usage limit reached")
+      expect(described_class.classify(e).reason).to eq(FR::RATE_LIMIT)
+    end
+
+    it "keeps a typed RubyLLM::RateLimitError on the rate-limit path" do
+      c = described_class.classify(ruby_llm_error(RubyLLM::RateLimitError, 429, "Rate limit exceeded"))
+      expect(c.reason).to eq(FR::RATE_LIMIT)
+      expect(c.retryable).to be true
+    end
+
+    it "does NOT mis-tag a real context-overflow as a rate limit" do
+      e = ruby_llm_error(RubyLLM::Error, 400, "prompt is too long: maximum context length exceeded")
+      expect(described_class.classify(e).reason).to eq(FR::CONTEXT_OVERFLOW)
+    end
+  end
 end

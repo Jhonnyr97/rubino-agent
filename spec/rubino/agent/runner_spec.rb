@@ -643,4 +643,53 @@ RSpec.describe Rubino::Agent::Runner do
       expect(runner.agent_definition).to eq(plan)
     end
   end
+
+  # Bug B (#WHATIF): a provider 429 quota error reaches the streaming path
+  # mis-shaped as a 400 BadRequestError "Invalid request - please check your
+  # input" (the original 429 survives only in the response body). The surfaced
+  # card must read as a rate-limit / quota error, NOT a 400 prompt-validation
+  # error, so a dev doesn't waste time editing a fine prompt. We exercise the
+  # private #friendly_error_message in isolation (no full Runner construction).
+  describe "#friendly_error_message — provider error categorisation" do
+    subject(:runner) do
+      r = described_class.allocate
+      r.instance_variable_set(:@model_id, "minimax/m3")
+      r
+    end
+
+    def bad_request_with_body(message, body)
+      response = double("FaradayResponse", status: 400, body: body, headers: {})
+      RubyLLM::BadRequestError.new(response, message)
+    end
+
+    it "maps a clobbered-400 quota error to a rate-limit / quota card" do
+      e = bad_request_with_body(
+        "Invalid request - please check your input",
+        '{"type":"rate_limit_error","message":"Token Plan usage limit reached"}'
+      )
+      card = runner.send(:friendly_error_message, e)
+      expect(card).to match(%r{rate limit / quota reached}i)
+      expect(card).to match(/NOT a problem with your prompt/i)
+      expect(card).not_to match(/Invalid request - please check your input\z/)
+    end
+
+    it "still maps a genuine 400 to an invalid-request card" do
+      e = bad_request_with_body(
+        "Invalid request - please check your input",
+        '{"error":{"message":"malformed json"}}'
+      )
+      card = runner.send(:friendly_error_message, e)
+      expect(card).to include("Invalid request - please check your input")
+      expect(card).not_to match(%r{rate limit / quota}i)
+    end
+
+    it "logs every surfaced error (the 429 was previously never logged)" do
+      logger = instance_double(Rubino::Logger)
+      allow(Rubino).to receive(:logger).and_return(logger)
+      expect(logger).to receive(:warn).with(hash_including(event: "llm.error.surfaced"))
+      e = bad_request_with_body("Invalid request - please check your input",
+                                '{"type":"rate_limit_error","message":"Token Plan usage limit reached"}')
+      runner.send(:friendly_error_message, e)
+    end
+  end
 end

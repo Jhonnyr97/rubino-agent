@@ -114,6 +114,7 @@ module Rubino
 
         result = classify_message(error, MESSAGE_STAGES_PRE_TRANSPORT) ||
                  classify_transport(error) ||
+                 classify_rate_limit(error) ||
                  classify_message(error, MESSAGE_STAGES_POST_TRANSPORT) ||
                  classify_typed(error) ||
                  (status && classify_by_status(status, error)) ||
@@ -218,6 +219,31 @@ module Rubino
         "invalid_request_error"
       ].freeze
 
+      # A rate-limit / quota / usage-plan rejection that a provider surfaces with
+      # the WRONG shape on the streaming path. The observed case (#WHATIF): a
+      # MiniMax HTTP 429 `{"type":"rate_limit_error","message":"Token Plan usage
+      # limit reached"}` reaches ruby_llm's anthropic-compatible STREAMING parser,
+      # which re-wraps it as a 400 BadRequestError carrying the generic default
+      # message "Invalid request - please check your input" — so the original 429
+      # is lost and the error is mis-shown as a 400 client/input error, sending a
+      # dev to edit a fine prompt. The original "rate_limit_error" / "usage limit"
+      # signal survives only in the response BODY, so this stage scans the body as
+      # well as the message (the only stage that does) and runs BEFORE
+      # invalid-params so it wins over the clobbered "invalid request" text.
+      # RATE_LIMIT is retryable (honours Retry-After), matching the typed-429 path.
+      RATE_LIMIT_PATTERNS = [
+        "rate_limit_error",
+        "rate limit",
+        "rate-limit",
+        "ratelimit",
+        "too many requests",
+        "usage limit reached",
+        "usage limit",
+        "token plan",
+        "quota",
+        "plan usage"
+      ].freeze
+
       # Ordered message-pattern classification stages. Each entry matches when
       # the downcased message contains any pattern (and, for missing-credential,
       # when the error is a RubyLLM::ConfigurationError). Order is PRECEDENCE:
@@ -246,6 +272,31 @@ module Rubino
         { patterns: INVALID_PARAMS_PATTERNS, reason: FailoverReason::FORMAT_ERROR,
           status: :http, skip_if_overflow: true }
       ].freeze
+
+      # A rate-limit / quota rejection mis-shaped by the provider's streaming
+      # path (the MiniMax 429→400 BadRequestError case). Scans BOTH the message
+      # and the response body — the only signal of the original 429 once ruby_llm
+      # has clobbered the message to its generic "Invalid request" 400 default
+      # lives in the body. A context-overflow phrasing wins instead (a "token
+      # limit" 429 is an overflow to compress, not a rate limit to back off).
+      # RATE_LIMIT is retryable and carries 429 so Retry-After/backoff applies.
+      def classify_rate_limit(error)
+        return if context_overflow?(error)
+
+        text = "#{error.message} #{error_body(error)}".downcase
+        return unless RATE_LIMIT_PATTERNS.any? { |p| text.include?(p) }
+
+        result_for(FailoverReason::RATE_LIMIT, http_status(error) || 429, error, retryable: true)
+      end
+
+      # The raw response body of a typed RubyLLM error (where a provider's
+      # original error frame survives after ruby_llm overwrote the message with a
+      # generic default), or "" when unavailable.
+      def error_body(error)
+        return "" unless error.respond_to?(:response) && error.response.respond_to?(:body)
+
+        error.response.body.to_s
+      end
 
       def classify_message(error, stages)
         msg = error.message.to_s.downcase

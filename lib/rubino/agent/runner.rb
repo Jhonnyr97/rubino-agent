@@ -305,8 +305,42 @@ module Rubino
 
       # Translates upstream errors into actionable messages instead of
       # bare stack-trace fragments. (issue #16)
+      #
+      # The CLASSIFIER decides the category FIRST (#WHATIF): a provider 429 can
+      # reach the streaming path mis-shaped as a 400 BadRequestError whose message
+      # is ruby_llm's generic "Invalid request - please check your input" — the
+      # original "rate_limit_error / Token Plan usage limit reached" survives only
+      # in the response body, which the classifier (not the bare message) reads.
+      # Keying the rate-limit / auth / model branches on the classified REASON
+      # stops a quota error from reading like a prompt-validation 400 and sending
+      # the dev to edit a fine prompt. We also LOG every surfaced error (the 429
+      # was previously never written to rubino.log — a diagnosis gap).
       def friendly_error_message(error)
-        msg = error.message.to_s
+        msg    = error.message.to_s
+        reason = safe_classify_reason(error)
+        log_surfaced_error(error, reason)
+
+        case reason
+        when LLM::FailoverReason::RATE_LIMIT
+          "rate limit / quota reached for the provider (#{msg}). Wait and retry, " \
+          "or check your plan / billing. This is NOT a problem with your prompt."
+        when LLM::FailoverReason::AUTH
+          "authentication failed (#{msg}). Check your API key in ~/.rubino/.env " \
+          "or run `rubino setup`."
+        when LLM::FailoverReason::MODEL_NOT_FOUND
+          "model '#{@model_id}' not available with the current provider/plan. " \
+          "Check `model.default` in config.yml; details: #{msg}"
+        when LLM::FailoverReason::TIMEOUT
+          "network error reaching the LLM (#{msg}). Check connectivity and retry."
+        else
+          friendly_error_by_message(msg)
+        end
+      end
+
+      # Message-shaped fallback for the residual cases the classifier leaves as
+      # UNKNOWN/SERVER/FORMAT/etc. — preserves the original issue-#16 phrasings
+      # for an error the classifier can't categorise from class/status/body.
+      def friendly_error_by_message(msg)
         case msg
         when /\b401\b|unauthorized|invalid[_ ]?api[_ ]?key/i
           "authentication failed (#{msg}). Check your API key in ~/.rubino/.env " \
@@ -315,12 +349,30 @@ module Rubino
           "model '#{@model_id}' not available with the current provider/plan. " \
           "Check `model.default` in config.yml; details: #{msg}"
         when /\b(429|rate[_ ]?limit)\b/i
-          "rate-limited by the provider. Wait a moment and retry. Details: #{msg}"
+          "rate limit / quota reached for the provider (#{msg}). Wait and retry, " \
+          "or check your plan / billing. This is NOT a problem with your prompt."
         when /\b(timeout|timed out|connection reset)\b/i
           "network error reaching the LLM (#{msg}). Check connectivity and retry."
         else
           "error: #{msg}"
         end
+      end
+
+      # Classify without ever letting a classifier hiccup mask the real error.
+      def safe_classify_reason(error)
+        LLM::ErrorClassifier.classify(error).reason
+      rescue StandardError
+        nil
+      end
+
+      # Record the surfaced model error to rubino.log — the streaming-path 429 was
+      # previously never logged (only the distill job's error was), leaving no
+      # trail to diagnose a quota outage. Best-effort; never raises into the UI.
+      def log_surfaced_error(error, reason)
+        Rubino.logger&.warn(event: "llm.error.surfaced", reason: reason,
+                            error_class: error.class.name, error: error.message.to_s[0, 500])
+      rescue StandardError
+        nil
       end
 
       def load_or_create_session(session_id)
