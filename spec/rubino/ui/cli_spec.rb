@@ -767,16 +767,61 @@ RSpec.describe Rubino::UI::CLI do
       old = $stdout
       $stdout = live_io
       begin
-        ui.stream(type: :content, text: "| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM")
+        # A loose list (a non-table multi-line block) exercises the raw rolling
+        # tail; tables now take the fitted-partial path (asserted separately).
+        ui.stream(type: :content, text: "1. one\n2. two\n3. thr")
       ensure
         $stdout = old
       end
 
       margin = described_class::MD_MARGIN
       expect(live_io.live_calls.last)
-        .to eq("#{margin}| Gem | Use |\n#{margin}| --- | --- |\n#{margin}| ruby_llm | LLM")
+        .to eq("#{margin}1. one\n#{margin}2. two\n#{margin}3. thr")
       rows = described_class::LIVE_TAIL_ROWS
       expect(live_io.live_calls).to all(satisfy { |s| s.split("\n").length <= rows })
+    end
+
+    # Streaming-table live render (Option B): while a GFM table is in flight the
+    # live region must show a FITTED, bordered partial table (header + completed
+    # rows) — NEVER the raw `| col | col |` rows, which soft-wrap mid-cell. The
+    # raw pipes used to leak here, then snap to the rendered table on the blank
+    # line (the streaming-table garble). The completed table still snaps in.
+    it "paints a fitted partial table live, never raw pipe rows (streaming-table)" do
+      live_io = Class.new(StringIO) do
+        attr_reader :live_calls
+
+        def live(str)
+          (@live_calls ||= []) << str
+          self
+        end
+      end.new
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM client |\n")
+        ui.stream(type: :content, text: "| tty | Table |\n")
+      ensure
+        $stdout = old
+      end
+
+      last = live_io.live_calls.last.to_s
+      plain = last.gsub(/\e\[[0-9;]*m/, "")
+      # The live frame is a real bordered table, not the raw markdown pipes.
+      expect(plain).to include("┌").and include("│").and include("└")
+      expect(plain).to include("ruby_llm").and include("tty")
+      # No raw markdown separator leaks (the `---` row never reaches the screen).
+      expect(plain).not_to include("---")
+      # And the live region never contained a raw, border-less `| … |` row.
+      live_io.live_calls.each do |frame|
+        frame.gsub(/\e\[[0-9;]*m/, "").each_line do |row|
+          next if row.include?("│") # a real table cell row is fine
+          next if row.strip.empty?
+
+          expect(row).not_to match(/\|\s*[^|]+\s*\|/),
+                             "raw pipe row leaked into the live region: #{row.inspect}"
+        end
+      end
     end
 
     it "does not crash on the plain path when $stdout has no #live" do
