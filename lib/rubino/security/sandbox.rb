@@ -68,13 +68,49 @@ module Rubino
           "floor are the only boundary. See tools.sandbox.mode."
       end
 
+      # True when the OS write-jail is actually ENFORCING (mode != off AND a
+      # Seatbelt/Landlock mechanism exists). This is the predicate the approval
+      # layer gates the conditional allowlist relaxation on (slice 2 Part C):
+      # when the jail confines writes, the pure-WRITE flag-forms no longer need
+      # a prompt; when it is off/degraded, the allowlist is the only guard so
+      # everything keeps prompting. False under degraded? (requested but no
+      # mechanism) and under mode == :off.
+      def active?
+        mode != :off && available_mechanism != :none
+      end
+
+      # True when the operator opted into FAIL-CLOSED: tools.sandbox.require.
+      # When set AND no mechanism exists, shell execution must REFUSE rather
+      # than fall open (slice 2 Part B). Default false (fail-open, §4).
+      def required?
+        raw = Rubino.configuration&.dig("tools", "sandbox", "require")
+        raw == true || raw.to_s == "true"
+      rescue StandardError
+        false
+      end
+
+      # nil when the shell may run; otherwise a one-line refusal message. Refuses
+      # ONLY when the operator REQUIRES the sandbox but no mechanism can enforce
+      # it (required? && available_mechanism == :none) — the fail-closed path the
+      # foreground and background shell spawns both consult before launching.
+      # When a mechanism IS available (or require is off) this returns nil and
+      # execution proceeds as before.
+      def refusal_reason
+        return nil unless required? && available_mechanism == :none
+
+        "sandbox required but unavailable on this host — " \
+          "set tools.sandbox.require=false to run unconfined"
+      end
+
       # Short status string for /status: e.g. "workspace-write (seatbelt)",
-      # "off", or "OFF (unavailable)".
+      # "off", or "OFF (unavailable)". Appends the enforcement posture
+      # (required vs best-effort) so the operator can tell a fail-closed
+      # require:true config from the fail-open default at a glance.
       def status_summary
-        return "OFF (unavailable)" if degraded?
+        return required? ? "OFF (unavailable, required)" : "OFF (unavailable)" if degraded?
         return "off" if mode == :off
 
-        "#{mode} (#{available_mechanism})"
+        "#{mode} (#{available_mechanism}, #{required? ? "required" : "best-effort"})"
       end
 
       # The argv prefix to splice before `bash …`. [] when off/unavailable.

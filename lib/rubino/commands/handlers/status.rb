@@ -142,9 +142,15 @@ module Rubino
         # The OS write-jail state (#290/#544): the configured mode plus whether
         # it is ACTIVE (a Seatbelt/Landlock mechanism is enforcing it) or
         # DEGRADED (requested but unavailable ⇒ fail-open, writes unconfined).
+        # When active, the summary already carries required/best-effort posture
+        # and we note that write flag-forms auto-run (the jail contains them);
+        # only exec/network forms still prompt (slice 2 Part C).
         def status_sandbox_line
           summary = Rubino::Security::Sandbox.status_summary
-          Rubino::Security::Sandbox.degraded? ? "#{summary} — writes NOT confined" : summary
+          return "#{summary} — writes NOT confined" if Rubino::Security::Sandbox.degraded?
+          return "#{summary} — write flag-forms auto-run" if Rubino::Security::Sandbox.active?
+
+          summary
         rescue StandardError
           "(unavailable)"
         end
