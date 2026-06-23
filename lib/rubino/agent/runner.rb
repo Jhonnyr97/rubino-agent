@@ -285,7 +285,8 @@ module Rubino
         if handoff
           return unless @config.memory_enabled? && @config.memory_auto_extract?
 
-          Jobs::Queue.new.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: false)
+          Jobs::Queue.new.enqueue("ExtractMemoryJob", { session_id: @session[:id] },
+                                  priority: Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY, drain_inline: false)
         else
           Memory::Flusher.new(config: @config).flush_on_session_end!(@session[:id])
         end

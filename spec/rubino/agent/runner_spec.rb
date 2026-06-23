@@ -333,11 +333,13 @@ RSpec.describe Rubino::Agent::Runner do
       # The synchronous aux-LLM flush (what froze the prompt 2-3s) must NOT run...
       expect(Rubino::Memory::Flusher).not_to receive(:new)
       # ...instead the SAME ExtractMemoryJob is enqueued detached (drain_inline: false),
+      # at the user-visible save priority (#79) so it jumps the summary backlog,
       # to be drained by the next runner's worker off the process-global queue.
       queue = instance_double(Rubino::Jobs::Queue)
       allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
       expect(queue).to receive(:enqueue)
-        .with("ExtractMemoryJob", { session_id: parent[:id] }, drain_inline: false)
+        .with("ExtractMemoryJob", { session_id: parent[:id] },
+              priority: Rubino::Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY, drain_inline: false)
 
       runner.end_session!(handoff: true)
     end
