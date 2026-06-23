@@ -145,4 +145,41 @@ RSpec.describe Rubino::CLI::Chat::AttachedAgentWatcher do
       expect(watcher.send(:live?)).to be(false)
     end
   end
+
+  # #82: the REPL rebuilds the composer every idle pass, so the watcher's focus
+  # guard is the host's PERSISTENT @attached_id, NOT composer identity. A
+  # composer-identity guard would falsely report "detached" the instant the
+  # loop swapped composers and freeze the live tail.
+  describe "#still_attached? (id-based, composer-identity-independent)" do
+    before { host.instance_variable_set(:@attached_id, "sa_1") }
+
+    it "is true while @attached_id matches, for ANY non-nil composer" do
+      expect(watcher.send(:still_attached?, composer)).to be(true)
+      # A DIFFERENT composer instance (the REPL rebuilt one) still counts as
+      # attached — the guard is the id, not the instance.
+      expect(watcher.send(:still_attached?, Object.new)).to be(true)
+    end
+
+    it "is false once @attached_id no longer matches (detached / switched)" do
+      host.instance_variable_set(:@attached_id, nil)
+      expect(watcher.send(:still_attached?, composer)).to be(false)
+    end
+
+    it "is false with no composer owning the screen (no TTY)" do
+      expect(watcher.send(:still_attached?, nil)).to be(false)
+    end
+  end
+
+  describe "live tail across a composer changeover (#82)" do
+    it "REPAINTS the ⟂ frame on a fresh composer even when the status is unchanged" do
+      tick! # paints onto the first composer
+      expect(composer.partials.size).to eq(1)
+      # The REPL rebuilt the composer (new idle pass); nothing about the sub
+      # changed. The unchanged-frame cache must reset so the live tail lands on
+      # the NEW screen instead of being skipped.
+      fresh = composer.class.new
+      watcher.send(:tick, fresh)
+      expect(fresh.partials.last).to include("explore", "running")
+    end
+  end
 end
