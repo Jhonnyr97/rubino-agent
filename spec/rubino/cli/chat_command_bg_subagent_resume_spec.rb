@@ -116,6 +116,35 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(queue.notices_pending?).to be(true)
     end
 
+    it "DEFERS while ATTACHED to a subagent — a resume here would be steered into the child (#51)" do
+      # The view is scoped to a subagent (the user drilled in / detached to it).
+      # A line returned from the idle read is intercepted by the REPL's
+      # attached-input handler and STEERED into the focused child, so firing the
+      # synthetic resume here would feed the parent's `[background subagents
+      # finished …]` prompt to the child and DRAIN the notices — the parent then
+      # never delivers the combined result. The resume must NOT fire while
+      # attached: the read BLOCKS (the notice stays parked) until the user returns
+      # to the main prompt.
+      command.instance_variable_set(:@attached_id, "sa_1")
+      queue.push_notice("[background-task] sa_1 completed.\nResult:\ndone")
+
+      # Pre-fix the unguarded resume fires immediately and returns the synthetic
+      # line; the read does NOT block, so this timeout never trips. The guard
+      # makes the read block while attached → the timeout fires, proving deferral.
+      expect { Timeout.timeout(0.4) { command.send(:read_idle_line, queue, nil, nil) } }
+        .to raise_error(Timeout::Error)
+      # The notice was NOT drained into a steer — it survives for the parent turn.
+      expect(queue.notices_pending?).to be(true)
+
+      # Returning to the main view (← / /back clears @attached_id) frees the
+      # resume: now the same parked notice drives the ONE parent follow-up turn.
+      command.instance_variable_set(:@attached_id, nil)
+      line = Timeout.timeout(3) { command.send(:read_idle_line, queue, nil, nil) }
+      expect(line).to include("[background-task] sa_1 completed")
+      expect(line).to include("background subagents finished")
+      expect(queue.notices_pending?).to be(false)
+    end
+
     it "a typed line waiting ALONGSIDE notices wins (the line consumes first)" do
       queue.push_notice("[background-task] sa_1 completed.\nResult:\ndone")
       queue.push("typed first")
