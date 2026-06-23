@@ -27,6 +27,16 @@ module Rubino
         "think" => "thinking.effort"
       }.freeze
 
+      # GET-only fallbacks (#66): a resolved key whose value, when unset, still
+      # lives under a legacy sibling. `/reasoning` and `/status` use
+      # display.reasoning (the SET target stays canonical), but a config carrying
+      # only the documented legacy display.show_reasoning boolean would otherwise
+      # report "not found" on `/config reasoning`. Read through to the legacy key
+      # so a value set either way resolves; set never touches the legacy key.
+      GET_FALLBACKS = {
+        "display.reasoning" => "display.show_reasoning"
+      }.freeze
+
       # Drop the `tree` command Thor injects into every subclass (#327): under a
       # registered subcommand its usage banner renders the doubled "rubino rubino
       # config tree" (the parent's `rubino` prefix + this class's own "rubino
@@ -64,12 +74,12 @@ module Rubino
       def self.render_get(key, ui:)
         key  = ALIASES.fetch(key, key)
         path = key.split(".")
-        value =
-          begin
-            Rubino.configuration.dig(*path)
-          rescue TypeError
-            nil
-          end
+        value = dig_config(path)
+        if value.nil? && (legacy = GET_FALLBACKS[key])
+          path  = legacy.split(".")
+          value = dig_config(path)
+          key   = legacy unless value.nil?
+        end
         return false if value.nil?
 
         # F4: annotate a value that comes from the built-in DEFAULTS rather than
@@ -80,6 +90,15 @@ module Rubino
         suffix = from_defaults?(path) ? " (default)" : ""
         ui.info("#{key} = #{redact(value, key: path.last)}#{suffix}")
         true
+      end
+
+      # Effective-config read for a dotted +path+. A scalar intermediate node
+      # (descending into a String) has no #dig; treat such a path as unset
+      # rather than crashing.
+      def self.dig_config(path)
+        Rubino.configuration.dig(*path)
+      rescue TypeError
+        nil
       end
 
       # True when +path+ has no value in the user's config.yml as written on disk

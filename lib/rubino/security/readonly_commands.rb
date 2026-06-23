@@ -125,11 +125,15 @@ module Rubino
 
       # Splits a command line into chain segments (|, ||, &&, ;, newline),
       # quote-aware. Returns nil — reject — on any construct that could smuggle
-      # a write or an execution: redirection (>), backgrounding (&), command
-      # substitution ($( or backtick in a live context), process substitution
-      # (<( / >( )), comments, trailing backslash, unterminated quotes. Plain
-      # `<` input redirection stays allowed. Single-quoted text is literal in
-      # POSIX shells, so substitutions inside it are safe to keep.
+      # a write or an execution: a file-writing redirection (`> file`, `>> log`,
+      # `2> err.txt`), backgrounding (&), command substitution ($( or backtick
+      # in a live context), process substitution (<( / >( )), comments, trailing
+      # backslash, unterminated quotes. Plain `<` input redirection stays
+      # allowed. NON-WRITE redirects (fd-dup `2>&1`, discard-to-`/dev/null`) are
+      # consumed and DROPPED so a read-only command carrying them still
+      # auto-allows (#68) — the model habitually appends `2>&1`/`>/dev/null`.
+      # Single-quoted text is literal in POSIX shells, so substitutions inside it
+      # are safe to keep.
       def split_segments(command)
         segments = []
         current = +""
@@ -150,19 +154,25 @@ module Rubino
 
             current << char << succ
             i += 1
-          when "`", ">", "#"
+          when "`", "#"
             return nil
+          when ">", "&", ";", "\n", "|"
+            # A NON-WRITE redirect (`2>&1`, `>/dev/null`, `&>/dev/null`) is
+            # dropped (segment kept); a chain operator (`;`/`\n`/`|`/`&&`) flushes
+            # the segment; a write-to-file redirect or lone `&` rejects.
+            redir = consume_redirect(command, i)
+            return nil if redir == :reject
+
+            unless redir # not a redirect → chain boundary
+              redir = flush_segment(char, succ, segments, current) or return nil
+              current = +""
+            end
+            i += redir
+            next
           when "$", "<"
             return nil if succ == "("
 
             current << char
-          when ";", "\n", "|", "&"
-            advance = flush_segment(char, succ, segments, current)
-            return nil unless advance
-
-            current = +""
-            i += advance
-            next
           else
             current << char
           end
@@ -170,6 +180,48 @@ module Rubino
         end
         segments << current
         segments.map(&:strip).reject(&:empty?)
+      end
+
+      # Resolves a redirect at +at+ (`>` or `&>`): returns the char count to skip
+      # for a NON-WRITE redirect (`2>&1`, `>/dev/null`, `&>/dev/null`), :reject
+      # for a write-to-file redirect, or nil when there is NO redirect here (a
+      # chain operator the caller flushes instead).
+      def consume_redirect(command, at)
+        redir = at                       # index of the `>`
+        redir += 1 if command[at] == "&" # `&>` redirects both streams
+        return nil unless command[redir] == ">"
+
+        consumed = consume_safe_redirect(command, redir)
+        return :reject unless consumed
+
+        consumed + (redir - at)
+      end
+
+      # The redirect targets that perform NO arbitrary-file write: an fd
+      # duplication (`>&1`, `>&2`) or a discard to the null device
+      # (`>/dev/null`). Anything else (`> out.txt`, `>> log`) writes a file and
+      # is rejected. Returns the number of chars consumed from `start` (the `>`),
+      # or nil to reject. `start` points at the FIRST `>` of the operator (a
+      # preceding fd digit like the `2` in `2>&1` is already in `current`, which
+      # is harmless — a bare `2` head fails the safe-command check anyway, and a
+      # real read-only head sits before it).
+      def consume_safe_redirect(command, start)
+        # Skip the `>` (and a second `>` for the `>>` append form).
+        i = start + 1
+        i += 1 if command[i] == ">"
+        rest = command[i..] || ""
+
+        # fd duplication: `>&1`, `>&2`, `>&-`.
+        return (i - start) + 2 if rest =~ /\A&[0-9-]/
+
+        # Discard to the null device: `>/dev/null` (optionally with leading
+        # whitespace, e.g. `> /dev/null`). The path must be EXACTLY /dev/null —
+        # anchored so `/dev/nullx` (an arbitrary file) is NOT treated as the
+        # device. A following redirect/chain/whitespace/EOL ends the token.
+        m = rest.match(%r{\A\s*/dev/null(?=[\s;&|>]|\z)})
+        return (i - start) + m.end(0) if m
+
+        nil # writes an arbitrary file → reject
       end
 
       # Flushes the segment ended by a chain operator and returns how many

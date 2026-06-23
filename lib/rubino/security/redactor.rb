@@ -80,8 +80,22 @@ module Rubino
       PREFIX_RE = /(?<![A-Za-z0-9_-])(#{PREFIX_PATTERNS.join("|")})(?![A-Za-z0-9_-])/
 
       # ENV assignment: KEY=value where KEY contains a secret-like name.
+      # The secret word must be a WHOLE underscore-delimited component of the
+      # identifier, not an arbitrary substring (#67): the old
+      # `[A-Z0-9_]{0,50}AUTH[A-Z0-9_]{0,50}` matched `AUTHORS` (AUTH + ORS) and
+      # mangled a plain `AUTHORS = {...}` dict into `‹redacted by rubino›`.
+      # Anchor each side of the secret word to a string edge or an underscore so
+      # API_KEY / OPENAI_API_KEY / GITHUB_TOKEN / AUTH_TOKEN / DB_PASSWORD still
+      # match while AUTHORS / TOKENIZE / SECRETARY do not.
       SECRET_ENV_NAMES = "(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
-      ENV_ASSIGN_RE = /([A-Z0-9_]{0,50}#{SECRET_ENV_NAMES}[A-Z0-9_]{0,50})\s*=\s*(['"]?)(\S+)\2/
+      ENV_ASSIGN_RE = /
+        (
+          (?:[A-Z0-9_]{0,49}_)?    # optional leading component(s), `_`-terminated
+          #{SECRET_ENV_NAMES}
+          (?:_[A-Z0-9_]{0,49})?    # optional trailing component(s), `_`-led
+        )
+        \s*=\s*(['"]?)(\S+)\2
+      /x
 
       # JSON field: "apiKey": "value", "token": "value", etc.
       JSON_KEY_NAMES = "(?:api_?[Kk]ey|token|secret|password|access_token|" \
