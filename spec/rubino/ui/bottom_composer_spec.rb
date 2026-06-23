@@ -2257,6 +2257,82 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # #87 — while ATTACHED to a sub, #37 hid the parent's subagent cards so the
+  # user lost the tab-switcher. The switcher must stay reachable: the compact
+  # `subs:` line lists the running subs and marks the focused one (picker
+  # closed), and ↓ still opens the navigable picker which Enter re-attaches.
+  describe "attached tab-switcher (#87)" do
+    let(:reg) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+
+    after { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "shows a compact switcher line listing the running subs with the focused one marked" do
+      a = reg.reserve(subagent: "explore", prompt: "first")
+      b = reg.reserve(subagent: "build", prompt: "second")
+      composer.suppress_main_render!(true, attached_id: b.id)
+
+      rows = composer.send(:below_input_rows)
+      line = rows.join
+
+      expect(line).to include("subs:")
+      expect(line).to include(a.id)        # the OTHER sub is visible at a glance
+      expect(line).to include("▸#{b.id}")  # the focused sub is marked
+      expect(line).to include("↓ to switch")
+    end
+
+    it "shows no switcher line while attached when no sub is live" do
+      composer.suppress_main_render!(true, attached_id: "sa_gone")
+      expect(composer.send(:below_input_rows)).to eq([])
+    end
+
+    it "lets ↓ open the picker while attached and Enter re-attaches to the chosen sub" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      target = reg.reserve(subagent: "build", prompt: "second")
+      composer.suppress_main_render!(true, attached_id: "sa_other")
+
+      # ↓ opens the navigable picker even while attached...
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      # ...and the open picker is the exempt face drawn below the input.
+      expect(composer.send(:below_input_rows)).to eq(composer.send(:agent_menu_rows))
+
+      # Selecting another sub queues its attach command (re-attach via the
+      # existing attach_agent_view path).
+      composer.send(:submit_agent_attach, target)
+      expect(queue.shift).to eq("/agents #{target.id} --attach")
+    end
+
+    it "clears the focused mark on detach (suppression lifted)" do
+      composer.suppress_main_render!(true, attached_id: "sa_x")
+      composer.suppress_main_render!(false)
+      expect(composer.instance_variable_get(:@attached_id)).to be_nil
+    end
+
+    # The REPL rebuilds a fresh composer per idle iteration / per turn, so the
+    # focused-sub id (like the suppression gate) must be SEEDED from the host's
+    # `attached:` arg at construction — an imperatively-set id on the previous
+    # composer is gone the moment the loop recreates one (#82/#87).
+    it "seeds the focused sub from the attached: id at construction" do
+      a = reg.reserve(subagent: "explore", prompt: "first")
+      b = reg.reserve(subagent: "build", prompt: "second")
+      c = described_class.new(input_queue: queue, input: input, output: output, attached: b.id)
+
+      expect(c.main_render_suppressed?).to be(true)
+      line = c.send(:below_input_rows).join
+      expect(line).to include(a.id)        # other sub visible
+      expect(line).to include("▸#{b.id}")  # focused sub seeded + marked
+    end
+
+    it "is NOT suppressed when built with attached: nil (at main)" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      c = described_class.new(input_queue: queue, input: input, output: output, attached: nil)
+
+      expect(c.main_render_suppressed?).to be(false)
+    end
+  end
+
   describe "render mutex serializes concurrent frames" do
     it "interleaved print_above + keystrokes never corrupt the buffer" do
       threads = []
