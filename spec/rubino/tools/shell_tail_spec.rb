@@ -62,10 +62,12 @@ RSpec.describe Rubino::Tools::ShellTailTool do
     # First call drains the "done" output.
     tool.call("run_id" => run_id, "timeout" => 1)
 
-    # Re-find the entry — first call removed it if status was non-running, so
-    # this confirms removal semantics.
+    # A finished entry is RETIRED, not dropped (#78), so it stays retrievable:
+    # the second call finds it and returns the terminal status (no fresh bytes),
+    # not a vanished "no background shell" string.
     second = tool.call("run_id" => run_id, "timeout" => 1)
-    expect(second).to include("no background shell with run_id=")
+    expect(second[:output]).not_to include("no background shell")
+    expect(second[:output]).to match(/status=(completed|failed)/)
   end
 
   it "returns an error for an unknown run_id" do

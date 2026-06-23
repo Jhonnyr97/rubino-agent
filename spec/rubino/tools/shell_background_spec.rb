@@ -46,8 +46,12 @@ RSpec.describe "Shell background tools" do
       killed = shell_kill.call("run_id" => run_id)
       expect(killed).to include("terminated")
 
-      # after the kill the registry entry is gone
-      expect(shell_output.call("run_id" => run_id)).to include("no background shell")
+      # after the kill the entry is RETIRED, not dropped (#78): its captured
+      # output stays retrievable on a later turn with a terminal status, rather
+      # than the entry vanishing as "no background shell".
+      after_kill = shell_output.call("run_id" => run_id, "mode" => "all")
+      expect(after_kill).not_to include("no background shell")
+      expect(after_kill).to match(/status=(failed|completed)/)
     end
 
     it "lets a short background command finish on its own and reports exit" do
