@@ -492,5 +492,69 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
       second = reconcile(first, tool_count: 4, edit_count: 1)
       expect(second).to be_nil
     end
+
+    # OVER-FIRE regression (r-WHATIF-tools ST-misc / r-WHATIF-render): the note
+    # fired on NEARLY EVERY turn — including accurate summaries and 1-tool no-op
+    # turns — because the old NO_ACTION_CLAIM matched any sentence with a negation
+    # ("not", "did not", "no edit") near a common verb within ~40 chars. That is
+    # an ACCURATE caveat on a turn that DID run tools, not a confabulation. The
+    # note must fire ONLY on a TOTALIZING "I did nothing this turn" claim. These
+    # are accurate closing summaries with a LOCAL negated caveat — they must stay
+    # SILENT even though tools ran and the prose doesn't enumerate them.
+    context "OVER-FIRE: accurate summaries with a LOCAL negation must stay silent" do
+      [
+        "I updated the model field but did not change the timeout.",
+        "I have not yet run the full suite, only the unit specs.",
+        "I read the file; it already contains the import, so no edit was needed.",
+        "I changed the model field. I did not touch the retry logic.",
+        "The fix is in foo.rb; no other files were affected.",
+        "Done. The config is updated and the suite is green.",
+        "Added the docstring; the change is in place.",
+        "I edited config.rb; the failing test now passes."
+      ].each do |summary|
+        it "stays silent on: #{summary.inspect}" do
+          expect(reconcile(summary, tool_count: 3, edit_count: 1))
+            .to(be_nil, "OVER-FIRE on an accurate summary: #{summary.inspect}")
+        end
+      end
+    end
+
+    # The genuine confabulations — TOTALIZING "nothing happened this turn" — must
+    # STILL fire (we tightened the trigger, we did not disable it).
+    context "still fires on a GENUINE totalizing 'I did nothing' claim" do
+      [
+        "I have not read a single file, run grep, or made any edits this turn.",
+        "Nothing was done this turn.",
+        "I did absolutely nothing.",
+        "I did not run anything at all.",
+        "I made no changes this turn."
+      ].each do |claim|
+        it "fires on: #{claim.inspect}" do
+          expect(reconcile(claim, tool_count: 3, edit_count: 1)).not_to be_nil
+        end
+      end
+    end
+
+    # QUOTA-CONFOUNDED (HTTP 429) degraded turns: batch-1 ran partly under 429s
+    # that returned empty/garbled closing text. An empty/blank summary carries NO
+    # pessimistic CLAIM, so the note must NOT be manufactured out of silence —
+    # otherwise the "degraded under quota" case reads as a confabulation over-fire.
+    context "degraded / empty summary under an API error must not trip the note" do
+      it "returns nil on an empty closing summary even when tools ran" do
+        expect(reconcile("", tool_count: 5, edit_count: 2)).to be_nil
+      end
+
+      it "returns nil on a blank / whitespace-only summary" do
+        expect(reconcile("   \n  ", tool_count: 5, edit_count: 2)).to be_nil
+      end
+    end
+
+    # #93's invariant must still hold: a turn whose tools were all BLOCKED/errored
+    # never bumps tool_count, so the note never fires (ledger gate at the call
+    # site). With zero ran tools the note is silent regardless of the prose.
+    it "stays silent on a blocked-only turn (#93 — zero tools actually ran)" do
+      claim = "I did nothing this turn — nothing was applied."
+      expect(reconcile(claim, tool_count: 0, edit_count: 0)).to be_nil
+    end
   end
 end
