@@ -94,9 +94,17 @@ module Rubino
         # -- WRITE path --
 
         def store(kind:, content:, source_session_id: nil, confidence: 1.0, metadata: {})
+          k = normalize_kind(kind)
+          # Exact/normalized-verbatim dedup at the direct write seam (#Y4):
+          # MemoryTool#add bypasses the extraction near-dup gate, so the same fact
+          # saved twice used to mint two identical rows. Idempotent — a verbatim
+          # repeat (or whitespace/case variant) returns the existing row.
+          existing = verbatim_duplicate(k, content)
+          return present(existing) if existing
+
           insert_fact(
             text: content,
-            kind: normalize_kind(kind),
+            kind: k,
             entities: Array(metadata[:entities]),
             source_session_id: source_session_id,
             confidence: confidence,
@@ -509,6 +517,16 @@ module Rubino
           str.to_s.downcase.split(/\W+/).reject(&:empty?).to_set
         end
 
+        # First LIVE fact of `kind` whose normalized-verbatim form equals the
+        # candidate's (trim/collapse-whitespace + case-fold, #Y4), or nil.
+        def verbatim_duplicate(kind, content)
+          target = Deduplicator.normalize_verbatim(content)
+          return nil if target.empty?
+
+          live_dataset.where(kind: kind).all
+                      .find { |row| Deduplicator.normalize_verbatim(row[:text]) == target }
+        end
+
         # ---- guards (ThreatScanner + char-budget, same floor as Store) ----
 
         def enforce_guards!(kind, text)
@@ -608,13 +626,9 @@ module Rubino
           nil
         end
 
-        def encode_embedding(vec)
-          vec.pack("e*")
-        end
+        def encode_embedding(vec) = vec.pack("e*")
 
-        def decode_embedding(blob)
-          blob && blob.to_s.unpack("e*")
-        end
+        def decode_embedding(blob) = blob && blob.to_s.unpack("e*")
 
         def cosine(a, b)
           return 0.0 if a.empty? || b.empty? || a.size != b.size
