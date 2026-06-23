@@ -440,6 +440,63 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
         # "Lorem ipsum" (the start of the wrapped cell) appears for BOTH columns.
         expect(body.scan("Lorem ipsum").size).to eq(2)
       end
+
+      # #Y1: a 5-column table whose natural width exceeds a NARROW pane must clamp
+      # the TOTAL rendered width to the budget (by DISPLAY columns) and wrap cells
+      # — never overflow / hard-wrap into garbled `│…│` fragments at column 0.
+      it "clamps a 5-column table to a narrow 40-col pane, keeping both borders (#Y1)" do
+        require "unicode/display_width"
+        width = 40
+        md = "| Feature | Status | Priority | Owner | Notes |\n" \
+             "|---|---|---|---|---|\n" \
+             "| TUI | In | Medium | Platform | Live region repaint ongoing |\n"
+        lines = lines_of(described_class.new(width: width).render(md))
+
+        # Every line fits the pane by DISPLAY width — no overflow, no garble.
+        lines.each { |line| expect(Unicode::DisplayWidth.of(line)).to be <= width }
+        # Both the top and bottom borders are intact (table not torn).
+        expect(lines.first).to match(/^┌.*┐$/)
+        expect(lines.last).to match(/^└.*┘$/)
+        # Every box row carries its closing right border.
+        box = lines.select { |l| l.start_with?("│") }
+        expect(box).not_to be_empty
+        expect(box).to all(end_with("│"))
+        # Content survived the wrap (cell text breaks across lines under its
+        # column, so check the characters survive rather than a contiguous word).
+        joined = lines.join.delete("│┌┐└┘├┤┬┴┼─ ")
+        expect(joined).to include("repaint")
+      end
+
+      # #Y1 / #Y1-REAL: a too-wide table in a 120-col pane must clamp and keep its
+      # closing right border (`│`) on every body/header row — no tear, no bleed.
+      it "keeps the right border intact for a too-wide table in a 120-col pane (#Y1)" do
+        require "unicode/display_width"
+        width = 120
+        long  = "WebAssembly, performance-critical systems programming and embedded " \
+                "targets where predictability really matters the most for everyone here"
+        md = "| Lang | Use |\n|---|---|\n| Rust | #{long} |\n"
+        lines = lines_of(described_class.new(width: width).render(md))
+
+        lines.each { |line| expect(Unicode::DisplayWidth.of(line)).to be <= width }
+        expect(lines.select { |l| l.start_with?("│") }).to all(end_with("│"))
+        # The long cell wrapped across lines rather than bleeding past the edge.
+        expect(lines.size).to be > 5
+      end
+
+      # #Y1: even when MIN_COL_WIDTH floors can't all fit (many columns in a tiny
+      # pane), the table clamps to the budget instead of overflowing — every
+      # column stays ≥ 1 and the frame still draws (no raise, no tear).
+      it "clamps a many-column table below the floor without overflowing (#Y1)" do
+        require "unicode/display_width"
+        width = 30
+        md = "| A | B | C | D | E | F | G |\n#{"|---" * 7}|\n| aa | bb | cc | dd | ee | ff | gg |\n"
+        lines = lines_of(described_class.new(width: width).render(md))
+
+        lines.each { |line| expect(Unicode::DisplayWidth.of(line)).to be <= width }
+        expect(lines.first).to match(/^┌.*┐$/)
+        expect(lines.last).to match(/^└.*┘$/)
+        expect(lines.select { |l| l.start_with?("│") }).to all(end_with("│"))
+      end
     end
 
     it "renders a table glued to the previous line (no blank separator) as a real table (L4)" do
@@ -454,6 +511,34 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       expect(texts.any? { |t| t.start_with?("┌") }).to be(true)
       # The "---" separator was NOT mangled into an em-dash paragraph.
       expect(texts.none? { |t| t.include?("——") }).to be(true)
+    end
+
+    # #R1: a table immediately FOLLOWED by prose with NO blank line between them
+    # must still parse as a bordered table, with the trailing prose rendered as
+    # its own paragraph — not collapse the whole run to raw `| col | col |` pipes
+    # (and the separator mangled to an em-dash). This is the committed-render
+    # equivalent of the streaming splitter's table-exit branch.
+    it "renders a table GLUED to trailing prose (no blank line) as a table THEN prose (#R1)" do
+      md = "| Component | State |\n| --- | --- |\n| API | Done |\n| CLI | Done |\n" \
+           "That concludes the status. Everything is shipped."
+      texts = described_class.new(width: 60).render(md).map { |l| text_of(l) }
+      # Bordered table — proves it parsed, not raw pipes.
+      expect(texts.any? { |t| t.start_with?("┌") }).to be(true)
+      expect(texts.any? { |t| t.start_with?("└") }).to be(true)
+      # No raw pipe row leaked into scrollback.
+      expect(texts.none? { |t| t.include?("| Component | State |") }).to be(true)
+      expect(texts.none? { |t| t.include?("| API | Done |") }).to be(true)
+      # The "---" separator was NOT mangled into an em-dash.
+      expect(texts.none? { |t| t.include?("—") }).to be(true)
+      # The trailing prose rendered as its OWN line (separate paragraph), intact.
+      expect(texts.any? { |t| t.include?("That concludes the status. Everything is shipped.") }).to be(true)
+    end
+
+    it "keeps a glued table at end-of-input rendering as a table (#R1 regression)" do
+      md = "Done:\n| A | B |\n|---|---|\n| 1 | 2 |"
+      texts = described_class.new(width: 40).render(md).map { |l| text_of(l) }
+      expect(texts.any? { |t| t.start_with?("┌") }).to be(true)
+      expect(texts.none? { |t| t.include?("| A | B |") }).to be(true)
     end
 
     describe "table edge cases" do
