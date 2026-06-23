@@ -1059,8 +1059,12 @@ module Rubino
       # raw reader is untouched — the user keeps typing into the sub prompt. A
       # plain assignment (read lock-free in the gated paths under @render); calling
       # it off a composer is a no-op (the CLI guards with `&.`).
-      def suppress_main_render!(value)
-        @main_render_suppressed = !!value
+      def suppress_main_render!(value, attached_id: nil)
+        suppressed = value ? true : false
+        @main_render_suppressed = suppressed
+        # While attached, the composer marks the FOCUSED sub in its compact
+        # switcher line (#87). Cleared on detach so the line never lingers.
+        @attached_id = suppressed ? attached_id : nil
       end
 
       def main_render_suppressed? = @main_render_suppressed
@@ -1690,15 +1694,43 @@ module Rubino
       # While ATTACHED to a sub (#main_render_suppressed?) the parent's idle
       # subagent CARDS belong to the main view, not this focused sub-view — every
       # render (watcher tail, draw_input) would otherwise redraw the last @cards
-      # set under the live block and clutter it (#37). Suppress the cards face
-      # here, at the single render source, so it holds regardless of what @cards
-      # carries. The PICKER stays exempt: it doubles as the while-attached
-      # agent switcher, so when it's open we still draw it.
+      # set under the live block and clutter it (#37). The full card BLOCK stays
+      # suppressed here, at the single render source, so it holds regardless of
+      # what @cards carries; the focused sub's transcript + live tail own the
+      # main area. But the user relies on the sub-list as a TAB SWITCHER to jump
+      # between running subs WHILE attached (#87), so we still surface a switcher:
+      #   - PICKER open (↓): the navigable AgentMenu — Enter re-attaches.
+      #   - otherwise: a single COMPACT line listing the running subs with the
+      #     focused one marked, plus the "↓ to switch" hint, so the other subs
+      #     are visible at a glance and ↓ opens the picker to jump.
       def below_input_rows
         return @agent_menu.rows(@cols) if @main_render_suppressed && @agent_menu.open?
-        return [] if @main_render_suppressed
+        return attached_switcher_rows if @main_render_suppressed
 
         @subagent_panel.rows(@cols)
+      end
+
+      # The COMPACT one-line switcher shown while attached (picker closed): the
+      # running subs as `▸focused sa_b sa_c` with the focused id marked, prefixed
+      # `subs:` and tailed with the dim `↓ to switch` affordance so the switcher
+      # is DISCOVERABLE from inside a sub. Empty (so the region clears) when no
+      # sub is live — there is nothing to switch between.
+      def attached_switcher_rows
+        running = agent_switch_entries
+        return [] if running.empty?
+
+        names = running.map do |entry|
+          entry.id == @attached_id ? pastel.cyan("▸#{entry.id}") : pastel.dim(entry.id)
+        end
+        ["#{pastel.dim("subs:")} #{names.join("  ")}#{pastel.dim("  · ↓ to switch · ← back")}"]
+      end
+
+      # The live subagent entries the switcher lists. Best-effort: a registry
+      # hiccup degrades to an empty list (no switcher) rather than a raised frame.
+      def agent_switch_entries
+        Array(Tools::BackgroundTasks.instance.running)
+      rescue StandardError
+        []
       end
 
       # The rendered completion-menu rows at the current width (also a spec
