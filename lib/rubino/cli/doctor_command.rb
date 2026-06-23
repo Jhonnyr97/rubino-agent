@@ -196,8 +196,14 @@ module Rubino
         migrator = Database::Migrator.new(Rubino.database)
 
         if migrator.pending?
-          ui.warning("Pending migrations exist")
-          { name: "migrations", status: :warn }
+          # A pending migration is a broken install, not a soft caution: it
+          # already flips the exit non-zero (:warn is not counted as :ok), but
+          # the ⚠ glyph + no fix hint understated it and read inconsistently
+          # against the ✗ + "run `rubino setup`" the missing-key/corrupt-config
+          # failures give (WHATIF-headless YELLOW-2). Surface it the same way:
+          # ✗ with the actionable fix, status :fail.
+          ui.error("pending migrations — schema is out of date. Run `rubino setup`")
+          { name: "migrations", status: :fail }
         else
           ui.success("Migrations up to date")
           { name: "migrations", status: :ok }

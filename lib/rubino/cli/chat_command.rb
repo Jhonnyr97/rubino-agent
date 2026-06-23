@@ -541,11 +541,15 @@ module Rubino
         # same as the text path.
         persist_oneshot_run!(runner, text, recorder)
 
-        # Drain the detached post-turn polishing before exit (#358), same as the
-        # text path: a headless JSON/stream-json run also exits the instant run!
-        # returns, so without joining the worker the post-turn jobs never run.
-        drain_post_turn_jobs!(runner, headless_ui)
-
+        # EMIT the result envelope BEFORE draining the post-turn jobs
+        # (WHATIF-headless RED-1). The drain runs each row as a full LLM call, so
+        # any work it does must NEVER stand between the computed answer and the
+        # consumer's stdout — under --output-format json the old order (drain,
+        # then emit) withheld ALL output until the queue cleared, and a timeout
+        # kill yielded no JSON at all. The stream-json turn frames and the
+        # success/fail-closed/budget result object are all computed from state
+        # `run!` already produced, so they emit immediately; #drain_post_turn_jobs!
+        # then runs (scoped to this session) just before the process exits.
         if fmt == :stream_json
           new_messages = store.for_session(runner.session[:id]).drop(baseline)
           Output::ResultSerializer.message_frames(new_messages).each { |f| emit_json(f) }
@@ -571,6 +575,8 @@ module Rubino
                                result_text: response.to_s,
                                message: block_msgs.join("; ") }
                     ))
+          $stdout.flush
+          drain_post_turn_jobs!(runner, headless_ui)
           exit(2)
         end
 
@@ -589,6 +595,8 @@ module Rubino
                                result_text: response.to_s,
                                message: "turn budget exhausted (--max-turns); run truncated" }
                     ))
+          $stdout.flush
+          drain_post_turn_jobs!(runner, headless_ui)
           exit(1)
         end
 
@@ -596,6 +604,13 @@ module Rubino
                     recorder: recorder, final_text: response.to_s, session: runner.session,
                     duration_ms: duration_ms, model: model_name
                   ))
+        $stdout.flush
+
+        # Drain the detached post-turn polishing AFTER the result is on stdout
+        # (#358 + WHATIF-headless RED-1): a headless run exits the instant run!
+        # returns, so without joining the worker the post-turn jobs never run —
+        # but the answer is already flushed, so the drain can never withhold it.
+        drain_post_turn_jobs!(runner, headless_ui)
       # A user interrupt (#335a) still emits a well-formed, parseable result
       # object on stdout (flagged interrupted) so automation never sees a raw
       # backtrace, then exits with the conventional 130. The Loop already
@@ -751,6 +766,14 @@ module Rubino
 
       def drain_post_turn_jobs!(runner, headless_ui = nil)
         runner.polishing.wait if runner.respond_to?(:polishing) && runner.polishing
+        # SCOPE the sweep to THIS run's own post-turn jobs (WHATIF-headless
+        # RED-1). The unscoped reaper drained the WHOLE due/queued backlog inline
+        # — a foreign backlog (each row a full LLM call) made a trivial one-shot
+        # block 9-15+ min past its answer. Pass the current session id so only
+        # the rows this turn enqueued (Extract/Distill/Summarize, all payload-
+        # tagged with the session id) are drained; a foreign backlog stays
+        # `queued` for the next run / the worker.
+        session_id = runner&.session && runner.session[:id]
         # Route the inline orphan-reaper through the headless (Null) UI (#372).
         # The detached polishing worker already runs under the runner's Null UI,
         # but #reap_inline_orphans runs on THIS main thread with no UI binding,
@@ -759,7 +782,7 @@ module Rubino
         # "✓ saved to memory …" banner onto stdout — polluting
         # `answer=$(rubino prompt …)`. Bind the Null UI so headless stdout stays
         # exactly the model answer.
-        reap = -> { Jobs::Queue.new.reap_inline_orphans }
+        reap = -> { Jobs::Queue.new.reap_inline_orphans(session_id: session_id) }
         headless_ui ? Rubino.with_ui(headless_ui, &reap) : reap.call
       rescue StandardError => e
         Rubino.logger.warn(event: "oneshot.drain_failed", error: e.class.name, message: e.message)
