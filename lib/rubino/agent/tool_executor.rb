@@ -263,6 +263,13 @@ module Rubino
         record_audit(name: name, call_id: call_id, arguments: arguments,
                      result: result, status: "completed")
         result
+      rescue Rubino::Interrupted
+        # Defense in depth (#41): a user interrupt raised from ANY tool must
+        # unwind the turn, never be recorded as a failed tool result. Folding it
+        # into a generic Result.error lets the loop continue and send a malformed
+        # continuation to the provider (rejected as "invalid params"). Re-raise so
+        # the cancel path produces a clean `⎿ interrupted` instead.
+        raise
       rescue StandardError => e
         result = Tools::Result.error(name: name, call_id: call_id, error: e.message)
         record_audit(name: name, call_id: call_id, arguments: arguments,

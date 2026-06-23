@@ -220,5 +220,21 @@ RSpec.describe Rubino::Tools::ShellTool do
 
       expect(payload(result)).to include("cancelled by user")
     end
+
+    # #41 — a user interrupt that surfaces as a RAISED Rubino::Interrupted
+    # mid-command (e.g. from the streaming chunk callback when the cancel token
+    # flipped while output was flowing) must NOT be swallowed by the generic
+    # `rescue StandardError` into a `shell_error` result. Rubino::Interrupted is
+    # a StandardError, so pre-fix it became `{ shell_error: true, text: "Shell
+    # error: interrupted by user" }`: the cancel went unobserved, the loop
+    # continued, and the next malformed model round-trip was rejected with a raw
+    # `✗ error: invalid params`. It must re-raise so the turn ends cleanly.
+    it "re-raises a user interrupt raised mid-command instead of returning a shell_error" do
+      # The chunk callback fires while stdout streams; raise an interrupt from it.
+      tool.stream_chunk = ->(_chunk) { raise Rubino::Interrupted }
+
+      expect { tool.call("command" => "printf 'one\\ntwo\\n'") }
+        .to raise_error(Rubino::Interrupted)
+    end
   end
 end

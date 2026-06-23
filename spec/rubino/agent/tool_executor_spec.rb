@@ -177,6 +177,20 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       result = cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
       expect(result.output).to eq("ok")
     end
+
+    # #41 — a Rubino::Interrupted raised from WITHIN a tool (the cancel landed
+    # mid-call, after the pre-tool checkpoint) is a StandardError, so the
+    # run_tool rescue used to fold it into a `status: "failed"` Result. The loop
+    # then continued and sent a malformed continuation (rejected as "invalid
+    # params"). It must re-raise so the cancel path ends the turn cleanly.
+    it "re-raises an Interrupted raised mid-call instead of recording a failed result" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(tool).to receive(:call).and_raise(Rubino::Interrupted)
+      expect(repo).not_to receive(:record).with(hash_including(status: "failed"))
+      expect do
+        cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+      end.to raise_error(Rubino::Interrupted)
+    end
   end
 
   # Regression: arguments.inspect on multi-line values collapsed everything
