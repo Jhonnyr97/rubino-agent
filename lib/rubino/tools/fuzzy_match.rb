@@ -48,6 +48,12 @@ module Rubino
       # is likely to have re-typed it. Operates per-character so the caller can
       # keep a normalized-char → original-byte map.
       def normalize_char(char)
+        # An invalid-UTF-8 byte (e.g. a lone \xC3 or Latin-1 \xE9) can never be a
+        # smart quote/dash/exotic space, and unicode_normalize/gsub would raise
+        # on it. Pass it through verbatim so the char→original-byte map stays 1:1
+        # and the invalid byte is written back unchanged.
+        return char unless char.valid_encoding?
+
         char = char.unicode_normalize(:nfkc)
         char = char.gsub(EXOTIC_SPACES_RE, " ")
         SMART_QUOTES.each { |from, to| char = char.gsub(from, to) }

@@ -57,6 +57,25 @@ RSpec.describe Rubino::Tools::FuzzyMatch do
       expect(finish - start).to eq(b("ﬁnd").bytesize)
     end
 
+    it "does not raise on invalid-UTF-8 bytes and matches past them" do
+      # A lone \xC3 / Latin-1 \xE9 are invalid UTF-8; unicode_normalize would
+      # raise on them. The needle sits AFTER the bad bytes, proving
+      # normalization continued past them rather than crashing.
+      content = b("caf\xE9 Andr\xC3\nreturn value")
+      spans = nil
+      expect { spans = described_class.find_spans(content, b("return value")) }
+        .not_to raise_error
+      expect(spans.size).to eq(1)
+      expect(slices(content, spans)).to eq(["return value"])
+    end
+
+    it "leaves invalid-UTF-8 bytes untouched when splicing a clean match" do
+      content = b("Andr\xC3 here:\nold line")
+      spans = described_class.find_spans(content, b("old line"))
+      out = described_class.splice(content, spans, b("new line"))
+      expect(out).to eq(b("Andr\xC3 here:\nnew line"))
+    end
+
     it "returns an empty array when the normalized needle is absent" do
       expect(described_class.find_spans(b("hello"), b("zzz"))).to eq([])
     end
