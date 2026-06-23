@@ -34,7 +34,7 @@ module Rubino
       # Capture the arguments at start so #tool_finished can render the same
       # `name hint` label the interactive card shows. The `task` subagent tool
       # renders its own delegation line on finish, so we skip it here.
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         super
         @pending_args[name.to_s] = arguments
       end

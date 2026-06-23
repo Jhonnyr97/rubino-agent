@@ -161,7 +161,7 @@ module Rubino
         false
       end
 
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         @messages << { level: :tool_started, message: name, arguments: arguments, at: at }
       end
 

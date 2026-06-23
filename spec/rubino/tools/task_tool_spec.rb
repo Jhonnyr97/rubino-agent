@@ -793,7 +793,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       let(:cli) { Rubino::UI::CLI.new }
 
       def render(output_text)
-        cli.instance_variable_set(:@delegation_subagent, "explore")
+        # The close-row name is resolved PER-CALL from result.call_id (#35): seed
+        # the per-call_id stash the way #delegation_started would, not a shared ivar.
+        cli.instance_variable_set(:@delegation_names, { "c1" => "explore" })
         original = $stdout
         $stdout = StringIO.new
         cli.send(
