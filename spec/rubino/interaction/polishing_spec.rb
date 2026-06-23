@@ -133,6 +133,42 @@ RSpec.describe Rubino::Interaction::Polishing do
     end
   end
 
+  # #79: the user-visible memory save (ExtractMemoryJob, priority 50) must drain
+  # AHEAD of the SummarizeSessionJobs (default priority 100) that pile up one per
+  # turn once a session passes 20 messages. The queue orders by `priority,
+  # run_at` (lower = first), so even when the slower summaries were enqueued
+  # FIRST, the higher-priority extract jumps the FIFO backlog — otherwise the
+  # fact the user is about to recall waits minutes behind the summary queue.
+  describe "post-turn job priority (#79 save→recall not starved by summaries)" do
+    let(:drain_order) { [] }
+    let(:handler_class) { Class.new { define_method(:perform) { |_payload| nil } } }
+
+    before do
+      order = drain_order
+      summarize = Class.new { define_method(:perform) { |_p| order.push("summary") } }
+      extract   = Class.new { define_method(:perform) { |_p| order.push("extract") } }
+      Rubino::Jobs::Registry.register("SummarizeSessionJob", summarize)
+      Rubino::Jobs::Registry.register("ExtractMemoryJob", extract)
+    end
+
+    it "drains the higher-priority ExtractMemoryJob before the summaries enqueued first" do
+      # Three summaries enqueued FIRST (default priority 100, FIFO by run_at)...
+      3.times { queue.enqueue("SummarizeSessionJob", {}, drain_inline: false) }
+      # ...then the user-visible save, enqueued LAST but at a higher priority.
+      queue.enqueue("ExtractMemoryJob", {},
+                    priority: Rubino::Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY,
+                    drain_inline: false)
+
+      polishing.start(ui: ui, event_bus: bus)
+      polishing.wait(5)
+
+      # One kick drains the whole due backlog; the extract leads despite being
+      # enqueued last, so recall is prompt instead of waiting behind the queue.
+      expect(drain_order.first).to eq("extract")
+      expect(drain_order).to eq(%w[extract summary summary summary])
+    end
+  end
+
   describe "drain busy-loop guard (persistent row-scan failure)" do
     # Regression: the queue DB torn down at session end made next_polishing_row
     # raise on EVERY iteration. The old `rescue StandardError` skipped-and-
