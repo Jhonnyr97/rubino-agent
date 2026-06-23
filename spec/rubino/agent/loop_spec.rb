@@ -594,9 +594,59 @@ RSpec.describe Rubino::Agent::Loop do
       loop_instance.run(messages: user_messages, tools: [looping_tool])
       # The last (summary) call carried no tools…
       expect(fake_llm.calls.last[:tools]).to eq([])
-      # …and the nudge was the final user message it saw.
+      # …and the nudge was the final user message it saw, grounded in the turn's
+      # action record (#36) so the model can't truthfully claim nothing was done.
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
-      expect(last_user[:content])
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to include("2 tool calls this turn")
+      expect(last_user[:content]).to include("do not claim nothing was done")
+    end
+
+    # #36: a turn that ran tools then hit the cap force-summarizes. The nudge
+    # must GROUND the model in the turn's real action record so it cannot
+    # truthfully produce a self-contradictory "I made no changes / did nothing"
+    # final after having run tools. We assert the prompt the model sees carries
+    # the ledger; the contradiction is then impossible without the model lying
+    # against text it was just handed (which the post-hoc #381 guard still
+    # reconciles). A deterministic prompt-content assertion, not a flaky
+    # LLM-output assertion.
+    it "grounds the force-summary nudge in the turn's tool/edit ledger (#36)" do
+      mutating_name = Rubino::Agent::ActionClaimGuard::MUTATING_TOOLS.first
+      mutating_tool = Class.new(Rubino::Tools::Base) do
+        define_method(:name) { mutating_name }
+        def description  = "Edits a file"
+        def input_schema = { type: "object", properties: {}, required: [] }
+        def risk_level   = :low
+        def call(_args) = "edited"
+      end.new
+      Rubino::Tools::Registry.register(mutating_tool)
+      2.times { fake_llm.enqueue_tool_call(mutating_name, {}) }
+      fake_llm.enqueue_text("I did nothing and made no changes.")
+
+      loop_instance = described_class.new(
+        session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: tight_budget, ui: null_ui,
+        event_bus: event_bus, config: tight_config
+      )
+      loop_instance.run(messages: user_messages, tools: [mutating_tool])
+
+      last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      # The model was told, factually, what it ran — including the edits — so a
+      # "did nothing" summary would now contradict its own prompt context.
+      expect(last_user[:content]).to include("2 tool calls this turn")
+      expect(last_user[:content]).to include("2 file edits")
+      expect(last_user[:content]).to include("do not claim nothing was done")
+    end
+
+    # When NO tool ran this turn there is nothing to ground, so the bare nudge is
+    # preserved byte-for-byte (the headless/API path stays identical).
+    it "uses the bare nudge unchanged when no tool ran this turn (#36)" do
+      loop_instance = described_class.new(
+        session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: tight_budget, ui: null_ui,
+        event_bus: event_bus, config: tight_config
+      )
+      expect(loop_instance.send(:force_summary_nudge))
         .to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
     end
 
@@ -837,10 +887,12 @@ RSpec.describe Rubino::Agent::Loop do
       result = loop_instance.run(messages: user_messages, tools: [looping_tool])
 
       expect(result).to eq("Here's what I accomplished.")
-      # The closing call carried no tools and the nudge was the last user message.
+      # The closing call carried no tools and the grounded nudge (#36) was the
+      # last user message.
       expect(fake_llm.calls.last[:tools]).to eq([])
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
-      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to include("2 tool calls this turn")
       # 2 tool iterations + 1 summary = 3 model calls, exactly like today.
       expect(fake_llm.call_count).to eq(3)
     end
@@ -877,7 +929,8 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to eq("Summary on the headless path.")
       expect(fake_llm.calls.last[:tools]).to eq([])
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
-      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to include("2 tool calls this turn")
       expect(fake_llm.call_count).to eq(3)
     end
 
