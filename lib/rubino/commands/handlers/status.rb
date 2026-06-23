@@ -22,6 +22,7 @@ module Rubino
           @ui.panel_line("mode", "#{Rubino::Modes.current} — #{Rubino::Modes.description}")
           @ui.panel_line("display", status_display_line, pointer: "(use /reasoning · /think)")
           @ui.panel_line("approvals", status_approvals_line)
+          @ui.panel_line("sandbox", status_sandbox_line)
           @ui.panel_line("session", status_session_line)
           @ui.panel_line("workspace", status_workspace_line)
           @ui.panel_line("tools", status_tools_line)
@@ -136,6 +137,16 @@ module Rubino
           else
             "dangerous_only — risky commands prompt; safe commands + in-workspace edits run automatically"
           end
+        end
+
+        # The OS write-jail state (#290/#544): the configured mode plus whether
+        # it is ACTIVE (a Seatbelt/Landlock mechanism is enforcing it) or
+        # DEGRADED (requested but unavailable ⇒ fail-open, writes unconfined).
+        def status_sandbox_line
+          summary = Rubino::Security::Sandbox.status_summary
+          Rubino::Security::Sandbox.degraded? ? "#{summary} — writes NOT confined" : summary
+        rescue StandardError
+          "(unavailable)"
         end
 
         # A compact roster of the tools the agent can actually use right now

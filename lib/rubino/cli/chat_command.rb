@@ -876,6 +876,7 @@ module Rubino
         note = Rubino::UpdateCheck.notice_from_cache
         ui.status(note) if note
         Rubino::UpdateCheck.refresh_async_if_stale
+        warn_sandbox_degraded(ui)
         ui.blank_line
 
         # Seed --add-dir roots and run the folder-trust gate before any turn
@@ -2740,6 +2741,20 @@ module Rubino
 
         warn "rubino: warning: model '#{id}' is not in the known model catalog " \
              "(accepted unverified; a typo here will hit the provider as-is)."
+      end
+
+      # One-time loud banner when the OS write-sandbox was requested (config mode
+      # != off) but no Seatbelt/Landlock mechanism is available — the §4 fail-
+      # open case (#290/#544). Honest about the gap (the lesson of #544): shell
+      # writes are NOT OS-confined; approval prompts + the hardline floor are the
+      # only boundary. Guarded once per process so it doesn't repeat on /status
+      # or a resume within the same session.
+      def warn_sandbox_degraded(ui)
+        return unless Rubino::Security::Sandbox.degraded?
+
+        ui.warning(Rubino::Security::Sandbox.degradation_notice)
+      rescue StandardError
+        nil
       end
 
       # A headless `--resume <id>` that LOSES the concurrent-claim race is

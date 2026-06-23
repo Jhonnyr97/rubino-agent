@@ -399,6 +399,25 @@ module Rubino
           "shell" => true,
           "ruby" => true,
 
+          # OS-level write jail around the shell tool's single Process.spawn
+          # (#290/#544). The per-command allowlist is a UX guard-rail, not a
+          # boundary; this is the real floor (Security::Sandbox).
+          #   mode: off | read-only | workspace-write   (default workspace-write)
+          #     off            — no OS confinement (byte-identical to pre-sandbox)
+          #     read-only      — workspace is read-only; writes only to temp/home
+          #     workspace-write— writes confined to workspace + temp + ~/.rubino
+          #   network: allow (slice 1; deny/proxy are slice 3+)
+          #   extra_writable: extra absolute paths added to the write jail
+          # Always-on when a mechanism exists, INCLUDING under --yolo (--yolo
+          # skips approval prompts, not the OS write-jail). Fails OPEN with a
+          # one-time loud banner where no mechanism is available (old kernel,
+          # non-mac/linux); set mode: off to silence it deliberately.
+          "sandbox" => {
+            "mode" => "workspace-write",
+            "network" => "allow",
+            "extra_writable" => []
+          },
+
           # Default ON, matching Hermes (web tools ship in the default toolset,
           # keyless via the DuckDuckGo backend) (#411). Gated at runtime on
           # backend reachability in Registry#web_backend_available? so an

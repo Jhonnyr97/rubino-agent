@@ -382,7 +382,18 @@ module Rubino
         # bash -o pipefail (instead of bare `/bin/sh -c`) so a crash in the
         # MIDDLE of a pipeline surfaces as the pipeline's exit status instead
         # of being masked by an innocuous last stage (#156).
-        pid = Process.spawn(GIT_HARDENED_ENV, "bash", "-o", "pipefail", "-c", wrapped, **spawn_opts)
+        #
+        # OS write-jail (#290/#544): prefix the argv with the platform sandbox
+        # launcher (sandbox-exec on macOS, rubino-landlock on Linux) so a write
+        # outside the workspace fails at the OS layer even if the command slips
+        # past the allowlist. The launcher `exec`s straight into bash in the
+        # SAME process, so chdir/pgroup/the out-err pipe/fd 3/timeout/cancel all
+        # apply unchanged. Empty prefix ([]) when sandbox is off/unavailable ⇒
+        # byte-identical to before. Writable roots go to the helper via env
+        # (never argv), merged on top of GIT_HARDENED_ENV.
+        prefix = Security::Sandbox.command_prefix(cwd: cwd)
+        env    = GIT_HARDENED_ENV.merge(Security::Sandbox.extra_env(cwd: cwd))
+        pid    = Process.spawn(env, *prefix, "bash", "-o", "pipefail", "-c", wrapped, **spawn_opts)
         pgid = pid
         wr.close
         cwd_wr&.close
