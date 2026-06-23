@@ -1502,8 +1502,9 @@ module Rubino
           # composer is rebuilt every idle pass, so a flag set on the previous
           # one at attach time is gone the moment the loop recreates it.
           # Reconcile it here so the parent cards stay suppressed and the
-          # focused sub's live tail owns the screen.
-          attached: attached_to_agent?
+          # focused sub's live tail owns the screen. The id (not just a bool)
+          # so the while-attached switcher marks the focused sub (#87).
+          attached: @attached_id
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -2103,8 +2104,9 @@ module Rubino
                                           # if a turn's composer is built while already attached to a
                                           # sub (attach happened mid-turn, the parent kept running), it
                                           # starts suppressed so the parent's stream/cards stay off the
-                                          # focused view.
-                                          attached: attached_to_agent?,
+                                          # focused view. The id (not just a bool) so the while-attached
+                                          # switcher marks the focused sub (#87).
+                                          attached: @attached_id,
                                           on_busy_command: busy)
         composer.start
         real_stdout = $stdout
@@ -2928,7 +2930,7 @@ module Rubino
         # away; the replay itself renders through the exempt seam below. No-op off
         # a composer (plain TTY / pipe / tests).
         composer = UI::BottomComposer.current
-        composer&.suppress_main_render!(true)
+        composer&.suppress_main_render!(true, attached_id: id)
         clear_terminal
         snapshot = Array(entry.messages)
         with_focused_view_replay(composer) do
@@ -2941,7 +2943,7 @@ module Rubino
           # region to the watcher; detach lifts suppression and the cards return.
           composer&.set_cards([])
           ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
-                  pastel.dim(" — type to steer · ← to go back"))
+                  pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
           session_resolver.replay_messages(ui, snapshot)
         end
         # Tail the sub's ongoing activity from where this snapshot left off, so
