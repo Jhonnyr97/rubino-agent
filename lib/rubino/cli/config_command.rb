@@ -14,6 +14,19 @@ module Rubino
         true
       end
 
+      # Discoverability aliases (#36-follow-up): /status advertises settings by
+      # the short label a user then types into `/config <key>`, but the real
+      # config key is nested — so `/config reasoning` reported "not found" even
+      # though /status shows "reasoning:" and `/reasoning` is a command. Map the
+      # advertised short names (and the names of the commands that WRITE them) to
+      # their dotted config paths so get/set resolve the same key /status shows.
+      # Dotted keys are unaffected (a user can still pass `display.reasoning`).
+      ALIASES = {
+        "reasoning" => "display.reasoning",
+        "effort" => "thinking.effort",
+        "think" => "thinking.effort"
+      }.freeze
+
       # Drop the `tree` command Thor injects into every subclass (#327): under a
       # registered subcommand its usage banner renders the doubled "rubino rubino
       # config tree" (the parent's `rubino` prefix + this class's own "rubino
@@ -49,6 +62,7 @@ module Rubino
       # returns found?; it isn't a pure predicate, and the name is the documented
       # shared-renderer seam (#187) referenced by the in-chat handler.
       def self.render_get(key, ui:)
+        key  = ALIASES.fetch(key, key)
         path = key.split(".")
         value =
           begin
@@ -85,6 +99,7 @@ module Rubino
 
       desc "set KEY VALUE", "Set a configuration value (dot-notation)"
       def set(key, value)
+        key    = ALIASES.fetch(key, key)
         writer = Config::Writer.new(config_path: config_path)
         writer.set(key, value)
         # Mask a secret-named value the SAME way `config get`/`show` do (#187):
