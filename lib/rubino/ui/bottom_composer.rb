@@ -1503,6 +1503,8 @@ module Rubino
             accept_completion
             return nil
           end
+          return nil if enter_view_subagent
+
           submit_line
           return :submit
         when "\t" # Tab: accept the menu selection, or open the menu if a token is typed.
@@ -2241,6 +2243,26 @@ module Rubino
         @render.synchronize do
           @agent_menu.down
           redraw
+        end
+      end
+
+      # Honor the card's "Enter to view" hint on an EMPTY prompt (#42 — the hint
+      # was dead because Enter only attached when the picker was ALREADY open).
+      # With a single live subagent there is nothing to choose, so attach to it in
+      # this one press; with several, open the picker exactly like ↓ does. Returns
+      # truthy when it handled Enter. #open! is a no-op (falsy) with nothing live,
+      # so this is inert with no subagents and Enter falls through to submit_line.
+      def enter_view_subagent # rubocop:disable Naming/PredicateMethod -- a command that also reports whether it handled Enter (like AgentMenu#up!), not a pure query
+        return false unless buffer.strip.empty? && !agent_menu_open?
+
+        if (only = @agent_menu.single_live)
+          submit_agent_attach(only)
+          true
+        elsif @agent_menu.open!
+          @render.synchronize { redraw }
+          true
+        else
+          false
         end
       end
 

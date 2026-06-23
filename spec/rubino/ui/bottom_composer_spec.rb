@@ -1599,6 +1599,38 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).not_to include("--attach")
     end
 
+    # #42 — the card hints "Enter to view", but Enter on an empty prompt used to
+    # fall through to submit_line (empty buffer → no-op): the picker only opened
+    # via ↓. Enter must honor the hint.
+    it "Enter on an empty prompt attaches directly to the SOLE live subagent (one-press 'Enter to view')" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+
+      result = composer.handle_key("\r")
+
+      expect(result).to be_nil # did NOT submit an empty line
+      expect(queue.shift).to eq("/agents #{entry.id} --attach")
+      expect(composer.agent_menu_open?).to be(false)
+    end
+
+    it "Enter on an empty prompt OPENS the picker when several subagents are live (nothing to pick yet)" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      reg.reserve(subagent: "build", prompt: "second")
+
+      result = composer.handle_key("\r")
+
+      expect(result).to be_nil # did NOT submit an empty line
+      expect(composer.agent_menu_open?).to be(true)
+      expect(queue.shift).to be_nil # nothing attached/submitted yet
+      expect(output.string).to include("subagents")
+    end
+
+    it "Enter on an empty prompt with NO live subagents submits as usual (open! inert)" do
+      result = composer.handle_key("\r")
+
+      expect(result).to eq(:submit)
+      expect(composer.agent_menu_open?).to be(false)
+    end
+
     it "navigates live subagents with arrows while preserving normal history Up" do
       first = reg.reserve(subagent: "explore", prompt: "first")
       second = reg.reserve(subagent: "build", prompt: "second")
