@@ -147,6 +147,80 @@ RSpec.describe Rubino::Agent::ToolExecutor do
         expect(executor.blocked_for_approval?).to be false
       end
     end
+
+    # #86: a SUBAGENT is non-interactive LOCALLY (no prompt of its own) but CAN
+    # escalate an approval to the PARENT. Its UI is a card-mode SubagentView
+    # WITH a wired approve handler, so #interactive? is TRUE — the :ask must
+    # route to that handler (park → parent card → run on grant), NOT to the
+    # headless :noninteractive fail-closed block a real no-parent one-shot gets.
+    describe "subagent :ask escalates to the parent instead of the noninteractive block (#86)" do
+      let(:registry_bg) { Rubino::Tools::BackgroundTasks.instance }
+      let(:entry)       { registry_bg.reserve(subagent: "explore", prompt: "x") }
+      # The exact handler TaskTool wires onto a background child's SubagentView:
+      # parks the entry on a per-entry ApprovalGate, returns the human's decision.
+      let(:approve)     { Rubino::Tools::TaskTool.new.send(:approval_handler_for, entry) }
+      let(:ui) do
+        Rubino::UI::SubagentView.new(agent_name: "explore", entry_id: entry.id, approve: approve)
+      end
+
+      before do
+        allow(policy).to receive(:decide).and_return(:ask)
+        allow(repo).to receive(:record)
+        # No real CLI live region under test: a Null root makes the handler's
+        # parent-card surface / repaint / notifier calls all natural no-ops
+        # (they guard on is_a?(UI::CLI) / respond_to?), so the escalation path
+        # runs without a terminal. The escalation gate itself is unaffected.
+        Rubino.ui = Rubino::UI::Null.new
+      end
+
+      after { Rubino.ui = nil }
+
+      it "PARKS the entry on :needs_approval and runs the tool when the parent grants" do
+        # interactive? is TRUE for a subagent WITH an escalation gate (NOT a
+        # headless one-shot) — the precise signal the noninteractive block keys on.
+        expect(ui.interactive?).to be(true)
+
+        result = nil
+        th = Thread.new do
+          result = executor.execute(name: "fake_tool",
+                                    arguments: { "command" => "touch x" }, call_id: "esc1")
+        end
+
+        # The :ask routed to the escalation gate: the entry is now awaiting the
+        # parent's decision — NOT denied with the noninteractive block.
+        deadline = Time.now + 2.0
+        sleep 0.01 until registry_bg.find(entry.id)&.status == :needs_approval || Time.now > deadline
+        expect(registry_bg.find(entry.id).status).to eq(:needs_approval)
+        expect(th).to be_alive # the child tool is parked, not failed
+
+        parked = registry_bg.find(entry.id)
+        parked.approval_gate.decide(parked.approval_id, true)
+        th.join(2)
+
+        expect(result.success?).to be(true)
+        expect(result.output).to eq("ok") # the tool actually ran on grant
+        expect(executor.blocked_for_approval?).to be(false) # never took the noninteractive path
+      end
+
+      it "fails the tool CLEANLY (denied by user, not noninteractive) when the parent denies" do
+        result = nil
+        th = Thread.new do
+          result = executor.execute(name: "fake_tool",
+                                    arguments: { "command" => "touch x" }, call_id: "esc2")
+        end
+        deadline = Time.now + 2.0
+        sleep 0.01 until registry_bg.find(entry.id)&.status == :needs_approval || Time.now > deadline
+
+        parked = registry_bg.find(entry.id)
+        parked.approval_gate.decide(parked.approval_id, false)
+        th.join(2)
+
+        expect(result.denied?).to be(true)
+        expect(result.output).to include("denied by user")
+        expect(result.output).not_to include("no interactive session")
+        expect(executor.blocked_for_approval?).to be(false)
+      end
+    end
   end
 
   # #335b: a cancel that flips while a previous tool was running (or during the
