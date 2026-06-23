@@ -202,6 +202,19 @@ RSpec.describe Rubino::Tools::EditTool do
       expect(File.read(path).force_encoding("UTF-8")).to eq("deﬁne and locate it")
     end
 
+    it "applies a fuzzy edit on a file with non-UTF-8 bytes without crashing" do
+      # The file carries raw Latin-1 é (0xE9), which is invalid UTF-8 and used
+      # to crash fuzzy normalization. The smart-quote needle forces the fuzzy
+      # fallback; the edit must apply and the invalid bytes survive verbatim.
+      path = File.join(tmp_dir, "enc.txt")
+      File.binwrite(path, "name: Andr\xE9\nputs \"hello\"\n")
+      result = tool.call("file_path" => path, "old_string" => %(“hello”), "new_string" => %("world"))
+      expect(result).to be_a(Hash) # not "Error editing … invalid byte sequence"
+      after = File.binread(path)
+      expect(after).to include(%(puts "world").b)
+      expect(after).to include("Andr\xE9".b) # untouched non-UTF-8 bytes verbatim
+    end
+
     it "still returns the not-found error when even fuzzy cannot match" do
       path = write_file("nf.txt", "alpha")
       result = tool.call("file_path" => path, "old_string" => "zzz", "new_string" => "y")
