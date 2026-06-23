@@ -32,6 +32,34 @@ RSpec.describe Rubino::Security::Redactor do
       expect(out).to eq("MAX_TOKENS=4096")
     end
 
+    # #67: the secret-name must be a WHOLE underscore-delimited component, not an
+    # arbitrary substring — `AUTHORS` (AUTH + ORS) is NOT a secret name, so a
+    # plain `AUTHORS = {...}` dict from a `python3 -c` print must pass through
+    # untouched (pre-fix it was mangled to `AUTHORS=‹redacted by rubino›`).
+    it "does NOT redact a non-secret assignment whose name merely CONTAINS a secret word" do
+      raw = %(AUTHORS = {"alice": "Alice Smith", "bob": "Bob Jones"})
+      expect(redactor.redact_sensitive_text(raw, force: true)).to eq(raw)
+    end
+
+    it "does NOT redact other substring-only matches (SECRETARY / TOKENIZER)" do
+      expect(redactor.redact_sensitive_text(%(SECRETARY = "Jane"), force: true))
+        .to eq(%(SECRETARY = "Jane"))
+      expect(redactor.redact_sensitive_text(%(TOKENIZER = "bpe"), force: true))
+        .to eq(%(TOKENIZER = "bpe"))
+    end
+
+    # Guard: a real secret assignment (the secret word as a whole component)
+    # still redacts, including when prefixed/suffixed by other components.
+    it "STILL redacts a real secret assignment to a long value" do
+      out = redactor.redact_sensitive_text(%(API_KEY = "sk-abcdefghijklmnop1234567890"), force: true)
+      expect(out).not_to include("sk-abcdefghijklmnop1234567890")
+
+      %w[GITHUB_TOKEN DB_PASSWORD AUTH_TOKEN MY_SECRET].each do |name|
+        masked = redactor.redact_sensitive_text(%(#{name} = "supersecretlongvalue12345"), force: true)
+        expect(masked).not_to include("supersecretlongvalue12345"), "expected #{name} value masked"
+      end
+    end
+
     it "masks JSON secret fields (non code_file)" do
       out = redactor.redact_sensitive_text('{"apiKey": "plainsecretvalue123"}')
       expect(out).not_to include("plainsecretvalue123")
