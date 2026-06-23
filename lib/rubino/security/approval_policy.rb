@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "shellwords"
+
 module Rubino
   module Security
     # Determines whether a tool execution requires user approval.
@@ -302,11 +304,36 @@ module Rubino
 
       # The confirm_policy shell gate (steps 7-8), extracted so #decide stays
       # under the complexity limit. confirm_all → always :ask; dangerous_only →
-      # :ask only for a DangerousPattern, else :allow.
+      # :ask for a DangerousPattern OR a dangerous WRITE/EXEC flag-form, else
+      # :allow.
+      #
+      # The flag-form screen (#dangerous_flag_form_present?) is the NARROW
+      # companion to DangerousPatterns: under the shipped dangerous_only default,
+      # patterns alone let genuinely dangerous flag-forms (`git -c alias.x=!cmd`,
+      # `python3 -c '…'`, `sed -i`, `find -delete`, `tee FILE`) auto-run
+      # unprompted (arbitrary write/RCE), while ordinary script/filter
+      # invocations (`python test.py`, `sed 's/a/b/'`) must keep running without
+      # a prompt for an acceptable coding-agent UX.
       def shell_confirm_decision(command_str)
         return :ask unless @confirm_policy == :dangerous_only
 
-        dangerous?(command_str) ? :ask : :allow
+        dangerous?(command_str) || dangerous_flag_form_present?(command_str) ? :ask : :allow
+      end
+
+      # True when ANY chain segment of the command is a dangerous WRITE/EXEC
+      # flag-form (ReadonlyCommands#dangerous_flag_form?). Reuses the same
+      # quote-aware chain split as the read-only auto-allow so `echo hi && sort
+      # -o /tmp/x f` is screened per-segment. Fails SAFE: a segment that does not
+      # parse (split returns nil, or Shellwords raises) is treated as dangerous.
+      def dangerous_flag_form_present?(command_str)
+        segments = ReadonlyCommands.split_segments(command_str.to_s)
+        return true if segments.nil?
+
+        segments.any? do |segment|
+          ReadonlyCommands.dangerous_flag_form?(Shellwords.split(segment))
+        rescue ArgumentError
+          true
+        end
       end
 
       # True when this call WRITES a secret/credential path and so must be

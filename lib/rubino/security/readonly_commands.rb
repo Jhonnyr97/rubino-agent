@@ -269,6 +269,85 @@ module Rubino
         end
       end
 
+      # Heads that load/run a SCRIPT FILE by default (a coding agent runs these
+      # constantly — `python test.py`, `node build.js`, `bash script.sh`). The
+      # bare file-arg form is SAFE; only specific inline-code/eval/exec/write
+      # flags below turn them into arbitrary code (dangerous_flag_form?).
+      #   - `-c <code>`           python/bash/sh/zsh/ksh/dash run inline source
+      #   - `-e` / `-E` / `--eval` ALONE  perl/ruby/node bare-eval program
+      #     (NOT `-pe`/`-ne`/`-pE`/`-nE` — those are stream READ filters, kept
+      #     ALLOW: the danger is arbitrary code, not a line-by-line filter).
+      INLINE_CODE_FLAGS = %w[-c -e -E --eval --exec].freeze
+      # `-pe`/`-ne`/`-pE`/`-nE` perl/ruby filters: the `-e` rides a read mode, so
+      # the invocation is a stream filter, not a bare eval. Kept ALLOW.
+      INLINE_CODE_FILTER_FLAGS = %w[-pe -ne -pE -nE -ape -nle].freeze
+
+      # The NARROW dangerous-flag-form screen used by the DEFAULT confirm gate
+      # (dangerous_only). UNLIKE the broad #dangerous_flags? (which rejects every
+      # CODE_EXEC_HEAD by its head, so even a bare `python test.py` / `sed
+      # 's/a/b/'` trips), this prompts ONLY for the genuinely dangerous WRITE/EXEC
+      # FLAG-FORMS and leaves ordinary script/filter invocations to auto-run.
+      # True ONLY for:
+      #   (a) git exec/config flag-forms (`-c`, `--config-env`, `--ext-diff`,
+      #       `diff.external=…`, …) — reuse git_exec_vector?;
+      #   (b) git `--output`/`-o` (a write) — reuse git_write_flag?;
+      #   (c) FORBIDDEN_FLAGS heads carrying their write/exec flag (find
+      #       -exec/-delete, sort -o/--output, date -s, tree -o);
+      #   (d) a CODE_EXEC_HEAD carrying an inline-code/eval/exec/write flag:
+      #       `-c` (python/bash/sh/…), a lone `-e`/`-E`/`--eval` (perl/ruby/node),
+      #       `sed -i`/`--in-place`, `tar --to-command`/`-O`, `tee` (always
+      #       writes), `dd of=…`, `xargs`/`env`/`eval` running another command.
+      # A CODE_EXEC_HEAD with ONLY a script/file arg, or a `-pe`/`-ne` read
+      # filter, is NOT flagged. A bare interpreter is NOT flagged. `tokens` is one
+      # already-split, non-chained segment.
+      def dangerous_flag_form?(tokens)
+        return false if tokens.empty?
+
+        head = tokens.first
+        return dangerous_git?(tokens) if head == "git"
+        return !safe_flags?(head, tokens) if FORBIDDEN_FLAGS.key?(head)
+        return dangerous_code_exec_form?(head, tokens) if CODE_EXEC_HEADS.include?(head)
+
+        false
+      end
+
+      # True when a CODE_EXEC_HEAD invocation carries an inline-code/eval/exec/
+      # write flag (vs. running a plain script/file). Heads that ALWAYS write or
+      # pipe to a shell (`tee`, `tar --to-command`, `dd of=`) are flagged on the
+      # head/operand; the rest need an explicit inline-code/eval flag.
+      def dangerous_code_exec_form?(head, tokens)
+        return true if head == "tee" # tee ALWAYS writes its operand
+
+        args = tokens.drop(1)
+        return true if head == "tar" && args.any? { |t| tar_exec_flag?(t) }
+        return true if head == "dd"  && args.any? { |t| t.start_with?("of=") }
+        return true if %w[xargs env eval].include?(head) && args.any? { |t| !t.start_with?("-") }
+
+        args.any? { |t| inline_code_flag?(t) } || sed_in_place?(head, args)
+      end
+
+      # `tar --to-command=PROG` pipes each member to a shell command, and `-O`
+      # extracts to stdout (used to pipe into a shell): both EXEC vectors.
+      def tar_exec_flag?(token)
+        token == "--to-command" || token.start_with?("--to-command=") || token == "-O"
+      end
+
+      # An inline-code/eval/exec flag (`-c`, lone `-e`/`-E`/`--eval`, `--exec`),
+      # excluding the `-pe`/`-ne` read-filter forms which stay ALLOW.
+      def inline_code_flag?(token)
+        return false if INLINE_CODE_FILTER_FLAGS.include?(token)
+
+        INLINE_CODE_FLAGS.include?(token)
+      end
+
+      # `sed -i` / `sed --in-place` (and the glued backup form `-i.bak`) edits
+      # the file in place — a write, so it is flagged.
+      def sed_in_place?(head, args)
+        return false unless head == "sed"
+
+        args.any? { |t| t == "-i" || t.start_with?("-i.") || t == "--in-place" || t.start_with?("--in-place=") }
+      end
+
       # Git GLOBAL flags (between `git` and the subcommand) that load or run
       # arbitrary code, and the dangerous subcommands an allowlisted bare `git`
       # would otherwise pre-approve. None of these belong to a read-only git
