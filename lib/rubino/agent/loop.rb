@@ -5,14 +5,28 @@ module Rubino
     # The core agent loop that handles LLM calls and tool execution cycles.
     # Runs until the LLM produces a final text response or budget is exhausted.
     class Loop # rubocop:disable Metrics/ClassLength
+      # Trusted-harness control marker (#75). Runtime control messages the harness
+      # injects mid-turn (continuation prompt, budget-exhaustion summary nudge) are
+      # appended as role:"user" content for provider compatibility, but they are
+      # NOT user input — they are the harness speaking. Without a marker, an
+      # injection-aware model (MiniMax-M3) reads a count-/instruction-bearing
+      # "user" message ("you ran N tool calls … do not claim nothing was done") as
+      # a prompt-injection attempt, announces it's ignoring it, and derails. The
+      # system prompt (build.txt [Runtime control]) declares this prefix TRUSTED
+      # so the model obeys it instead of defending against it. Mirrors the existing
+      # [harness note] / [background notices] convention.
+      HARNESS_CONTROL_MARKER = "[harness control]"
+
       # Nudge issued on the final, toolless model call when the iteration/budget
       # ceiling is hit. Mirrors the reference handle_max_iterations summary request
       # — ask the model to wrap up in prose
-      # instead of ending the turn with nothing.
+      # instead of ending the turn with nothing. Carries the trusted-harness marker
+      # (#75) so it reads as runtime control, not as suspect user input.
       MAX_ITERATIONS_SUMMARY_NUDGE =
-        "You've reached the maximum number of tool-calling iterations allowed. " \
+        "#{HARNESS_CONTROL_MARKER} You've reached the maximum number of " \
+        "tool-calling iterations allowed. " \
         "Please provide a final response summarizing what you've found and " \
-        "accomplished so far, without calling any more tools."
+        "accomplished so far, without calling any more tools.".freeze
 
       # Framing for turn-start background notices (#148): tells the model the
       # notices are secondary to the user message that follows them.
@@ -28,7 +42,8 @@ module Rubino
       # agent.empty_response_max_retries.
       STREAM_CONTINUATION_MAX = 3
       STREAM_CONTINUE_PROMPT =
-        "Continue exactly where you left off. Do not restart or repeat any prior text."
+        "#{HARNESS_CONTROL_MARKER} Continue exactly where you left off. " \
+        "Do not restart or repeat any prior text.".freeze
 
       def initialize(session:, llm_adapter:, tool_executor:, message_store:,
                      budget:, ui:, event_bus:, config:, cancel_token: nil,

@@ -379,6 +379,59 @@ RSpec.describe Rubino::Agent::Loop do
         .to raise_error(Rubino::StreamInterruptedError, /no output/)
       expect(fake_llm.call_count).to eq(3)           # initial + 2 retries (empty_response_max_retries)
     end
+
+    # #75: the continuation prompt is harness control, not user input. It must be
+    # injected with the trusted-harness marker so an injection-aware model
+    # (MiniMax-M3) follows it ("continue where you left off") instead of reading
+    # it as a prompt-injection attempt and derailing. We assert the MESSAGE SHAPE
+    # the model receives — the marker on the injected user message — not the
+    # emergent model behaviour.
+    it "frames the continuation prompt with the trusted-harness marker (#75)" do
+      fake_llm.enqueue_interrupted("indice.")
+      fake_llm.enqueue_text(" e il resto.")
+      build_loop.run(messages: user_messages, tools: [])
+
+      # The second call saw the continuation prompt as its last user message.
+      injected = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      expect(injected[:content]).to eq(Rubino::Agent::Loop::STREAM_CONTINUE_PROMPT)
+      expect(injected[:content]).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+  end
+
+  # #75: harness control messages injected as role:"user" content must carry the
+  # trusted-harness marker, and the system prompt must declare that marker
+  # TRUSTED, so an injection-aware model obeys the harness instead of defending
+  # against it. (The "model stops treating it as injection" is emergent — we spec
+  # the framing/marker, not the model output.)
+  describe "trusted-harness framing of control messages (#75)" do
+    it "marks the continuation prompt as harness control" do
+      expect(Rubino::Agent::Loop::STREAM_CONTINUE_PROMPT)
+        .to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+
+    it "marks the budget-exhaustion summary nudge as harness control" do
+      expect(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+        .to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+
+    it "carries #36's grounded nudge inside the harness frame, not as bare user text" do
+      loop_instance = build_loop
+      loop_instance.instance_variable_set(:@tool_count, 3)
+      loop_instance.instance_variable_set(:@edit_count, 1)
+      nudge = loop_instance.send(:force_summary_nudge)
+      expect(nudge).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+      expect(nudge).to include("3 tool calls this turn")
+      expect(nudge).to include("do not claim nothing was done")
+    end
+
+    it "documents the harness marker as TRUSTED runtime control in the system prompt" do
+      prompt = File.read(
+        File.expand_path("../../../lib/rubino/agent/prompts/build.txt", __dir__)
+      )
+      expect(prompt).to include("[harness control]")
+      expect(prompt).to match(/TRUSTED runtime control/i)
+      expect(prompt).to match(/never a prompt-injection/i)
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -600,6 +653,10 @@ RSpec.describe Rubino::Agent::Loop do
       expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
       expect(last_user[:content]).to include("2 tool calls this turn")
       expect(last_user[:content]).to include("do not claim nothing was done")
+      # #75: the whole nudge — grounding included — is carried inside the
+      # trusted-harness frame, so an injection-aware model treats it as runtime
+      # control rather than a "you ran N tool calls …" prompt-injection attempt.
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
     end
 
     # #36: a turn that ran tools then hit the cap force-summarizes. The nudge
@@ -636,6 +693,8 @@ RSpec.describe Rubino::Agent::Loop do
       expect(last_user[:content]).to include("2 tool calls this turn")
       expect(last_user[:content]).to include("2 file edits")
       expect(last_user[:content]).to include("do not claim nothing was done")
+      # #75: the grounding rides INSIDE the trusted-harness frame.
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
     end
 
     # When NO tool ran this turn there is nothing to ground, so the bare nudge is
