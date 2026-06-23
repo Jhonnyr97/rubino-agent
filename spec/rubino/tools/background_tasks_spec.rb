@@ -340,6 +340,45 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     end
   end
 
+  # R1 — #running is the SINGLE source feeding both the footer cards and the
+  # attached switcher. It must list every child the lifecycle still considers
+  # alive (LIVE_STATUSES), so a sibling that goes quiet / parks (mid-spawn,
+  # needs_approval, blocked_on_parent) never silently vanishes while alive.
+  describe "#running liveness oracle (R1 — switcher/footer source)" do
+    it "exposes LIVE_STATUSES and the shared class predicate" do
+      expect(described_class::LIVE_STATUSES).to include(:running, :needs_approval, :blocked_on_parent)
+      expect(described_class.live_status?(:blocked_on_parent)).to be(true)
+      expect(described_class.live_status?(:completed)).to be(false)
+    end
+
+    it "lists a RUNNING and a needs_approval child together (both alive)" do
+      run = reserve
+      apr = reserve
+      registry.begin_approval(apr.id, gate: Rubino::Run::ApprovalGate.new,
+                                      approval_id: apr.id, question: "q", command: "c")
+      expect(registry.running.map(&:id)).to include(run.id, apr.id)
+    end
+
+    it "keeps a :blocked_on_parent child in #running (it still holds a slot)" do
+      owner = reserve
+      child = registry.reserve(subagent: "explore", prompt: "p", owner_subagent_id: owner.id)
+      registry.begin_ask(child.id, gate: Rubino::Run::ApprovalGate.new, ask_id: child.id,
+                                   question: "may I?", blocking: true, owner_id: owner.id)
+
+      expect(registry.find(child.id).status).to eq(:blocked_on_parent)
+      expect(registry.running.map(&:id)).to include(child.id)
+    end
+
+    it "drops only TERMINAL children, never a live-but-quiet one" do
+      live = reserve
+      dead = reserve
+      registry.complete(dead, status: :completed, result: "ok")
+      ids = registry.running.map(&:id)
+      expect(ids).to include(live.id)
+      expect(ids).not_to include(dead.id)
+    end
+  end
+
   describe "#messages (child transcript)" do
     it "is empty when no runner/session is wired (sync/foreground/headless)" do
       expect(reserve.messages).to eq([])
