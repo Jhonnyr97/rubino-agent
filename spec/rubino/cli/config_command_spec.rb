@@ -172,6 +172,45 @@ RSpec.describe Rubino::CLI::ConfigCommand do
     end
   end
 
+  # #36 follow-up: /status advertises a setting by the short label a user then
+  # types into `/config <key>`, but the real key is nested. `/config reasoning`
+  # used to report "not found" though /status shows "reasoning:" and /reasoning
+  # writes display.reasoning. ConfigCommand::ALIASES bridges the short names to
+  # their dotted paths on both get and set.
+  describe "discoverability aliases (#36)" do
+    before do
+      File.write(config_path, { "display" => { "reasoning" => "full" },
+                                "thinking" => { "effort" => "high" } }.to_yaml)
+      Rubino.reload_configuration!
+    end
+
+    after { Rubino.reload_configuration! }
+
+    it "resolves `get reasoning` to display.reasoning instead of not-found" do
+      expect { described_class.new.get("reasoning") }.not_to raise_error
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message].to_s).to include("display.reasoning = full")
+    end
+
+    it "resolves `get effort` to thinking.effort" do
+      expect { described_class.new.get("effort") }.not_to raise_error
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message].to_s).to include("thinking.effort = high")
+    end
+
+    it "resolves `set reasoning <mode>` to display.reasoning" do
+      described_class.new.set("reasoning", "collapsed")
+      expect(Rubino::Config::Writer.new(config_path: config_path).get("display.reasoning"))
+        .to eq("collapsed")
+    end
+
+    it "leaves a fully-qualified dotted key untouched" do
+      expect { described_class.new.get("display.reasoning") }.not_to raise_error
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message].to_s).to include("display.reasoning = full")
+    end
+  end
+
   # #187: secret-named keys are MASKED on display by both `show` and `get`
   # (CLI::ConfigCommand.redact — the same rendering the in-chat /config
   # shares), instead of dumping credentials into the terminal scrollback.
