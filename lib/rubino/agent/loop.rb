@@ -308,6 +308,25 @@ module Rubino
             # workspace). Surface that, not the model's no-op claim.
             final = guard.is_a?(String) ? guard : response.content
 
+            # PESSIMISTIC reconciliation (#381/#84) on the NORMAL closing summary.
+            # #evaluate above returns nil the moment tools ran this turn, so a
+            # CONTINUE-path closing answer (the user accepted "Continue (+N)", the
+            # turn ran more tools/edits, then ended with an ordinary text answer —
+            # NOT the force-summary call) never reached the ledger guard. If that
+            # closing summary pessimistically calls real, on-disk work "not done /
+            # not started / queued but unstarted" while @tool_count shows tools ran
+            # (and @edit_count shows the files were edited), reconcile it with the
+            # same harness ledger note the force-summary path uses. Routed to
+            # stderr/event, never spliced into the answer (#418). nil when the guard
+            # already replaced the answer (no model summary to reconcile) or no
+            # tools ran.
+            if guard.nil?
+              note = @action_guard.pessimistic_summary_note(
+                content: final, tool_count: @tool_count, edit_count: @edit_count
+              )
+              emit_harness_note(note) if note
+            end
+
             persist_final_text(response, final)
             finalize_stream_text(response, final)
             emit_turn_summary(turn_started_at, token_total)
