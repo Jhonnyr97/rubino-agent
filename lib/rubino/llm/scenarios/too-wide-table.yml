@@ -1,0 +1,47 @@
+# #Y1 repro: a table with MORE columns than fit the pane. Drive at 40 cols (and
+# 120 cols) to exercise balanced_column_widths / the MIN_COL_WIDTH floor and the
+# total-width clamp. The natural table is far wider than any reasonable pane, so
+# the renderer must clamp the TOTAL rendered width to the budget and WRAP cells —
+# never overflow into garbled `│…│` fragments at column 0, never tear the closing
+# right border. Both the live partial render and the committed snap must agree.
+events:
+  - type: content
+    text: "Wide matrix:\n\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Feature | Status | Priority | Owner | Notes | Released |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| --- | --- | --- | --- | --- | --- |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| HTTP API | Done | High | Backend "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Stable in production since the v0.2 release | Yes |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| CLI Chat | Done | High | Frontend "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Live markdown blocks committed and styled cleanly | Yes |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| TUI Mode | In Progress | Medium | Platform "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Live region repaint work is currently ongoing | No |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "\nMatrix complete."
+  - type: delay_seconds
+    value: 0.20
