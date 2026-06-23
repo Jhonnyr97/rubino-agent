@@ -23,6 +23,7 @@ module Rubino
           @ui.panel_line("display", status_display_line, pointer: "(use /reasoning · /think)")
           @ui.panel_line("approvals", status_approvals_line)
           @ui.panel_line("session", status_session_line)
+          @ui.panel_line("workspace", status_workspace_line)
           @ui.panel_line("tools", status_tools_line)
           # MCP only when servers are configured (#182/#186) — a non-MCP user's
           # /status stays exactly as before, and MCP tools stop being invisibly
@@ -85,6 +86,18 @@ module Rubino
            ("#{failed} failed" if failed.positive?)].compact.join(" · ")
         rescue StandardError
           nil
+        end
+
+        # The workspace/cwd path the session runs in (#56b) — only the launch
+        # banner and the /sessions picker showed it, so a user juggling repos
+        # couldn't tell which window was which from /status. Matches the banner's
+        # `workspace  ~/path` form (primary root, home collapsed to ~).
+        def status_workspace_line
+          path = Rubino::Workspace.primary_root.to_s
+          home = Dir.home
+          path.start_with?(home) ? path.sub(home, "~") : path
+        rescue StandardError
+          "(unavailable)"
         end
 
         def status_model
