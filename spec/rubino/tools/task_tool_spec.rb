@@ -702,6 +702,53 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(notice).not_to include("use postgres")
     end
 
+    # #Y1B — "deny & tell" hands the child an ADVISORY note; the approval is
+    # already denied regardless. When the child finishes before folding it in,
+    # the still-queued copy (BackgroundTasks::DENY_NOTE_PREFIX) must NOT surface
+    # the alarming "steer note not delivered (task completed first)" warning: the
+    # denial applied and the explanation is moot.
+    it "does NOT report a finished sub's deny note as a scary undelivered warning (#Y1B)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = gated_runner("done", latch)
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      task_id = out[/sa_[0-9a-f]+/]
+      prefix  = Rubino::Tools::BackgroundTasks::DENY_NOTE_PREFIX
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}that file is out of scope")
+
+      latch << :go
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).not_to include("steer note was NOT delivered")
+      expect(notice).not_to include("not delivered")
+    end
+
+    # #Y1B invariant: filtering the deny note must not also swallow a GENUINE
+    # undelivered steer note that happens to be queued alongside it.
+    it "still reports a genuine undelivered steer note alongside a deny note (#Y1B)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = gated_runner("done", latch)
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      task_id = out[/sa_[0-9a-f]+/]
+      prefix  = Rubino::Tools::BackgroundTasks::DENY_NOTE_PREFIX
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}out of scope")
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "also say PINEAPPLE")
+
+      latch << :go
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).to include("steer note was NOT delivered (the task completed first)")
+      expect(notice).to include("PINEAPPLE")
+      expect(notice).not_to include("out of scope")
+    end
+
     # #150: the stopped notice must carry ground truth about partial progress
     # (tools already run + recent activity) so the parent model can't honestly
     # claim "nothing was produced" over completed side effects.

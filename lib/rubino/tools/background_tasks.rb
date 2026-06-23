@@ -147,6 +147,17 @@ module Rubino
       # deliver-or-report-undelivered invariant for real steer notes is intact.
       ANSWER_NOTE_PREFIX = "[parent answer] "
 
+      # Prefix the human's "deny & tell the agent why" reason carries when handed
+      # to the child as a steer note (#Y1B). The note is ADVISORY — the approval
+      # gate is already denied regardless — so when the child finishes before
+      # folding it in, the still-queued copy drained by #complete must NOT raise
+      # the scary "steer note not delivered (task completed first)" alarm: the
+      # denial applied correctly and the explanation is moot. The completion paths
+      # filter this prefix out of the undelivered WARNING (a calm note instead),
+      # exactly as they filter ANSWER_NOTE_PREFIX. A genuine `/agents <id> steer`
+      # note never carries it, so its deliver-or-report invariant is intact.
+      DENY_NOTE_PREFIX = "[approval denied by human] "
+
       # The statuses under which a child still holds a concurrency slot: its
       # worker thread is alive — actively running, parked on a human approval,
       # parked on an escalated ask_parent (waiting on the human OR its
