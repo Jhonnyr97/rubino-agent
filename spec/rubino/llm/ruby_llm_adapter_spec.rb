@@ -1066,6 +1066,60 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
+  # Streaming response must NOT re-surface tool_calls (#53 — the duplicate
+  # subagent "started" line).
+  #
+  # ruby_llm runs the WHOLE model↔tool loop inside one ask(): every tool is
+  # executed mid-stream via ToolBridge (→ Agent::ToolExecutor, the single
+  # source of truth for tool_started/tool_finished + audit). The Loop is told
+  # NOT to re-execute on the streaming path (Loop#run: "ruby_llm runs the tool
+  # mid-stream … and never returns through #execute_tool_calls"). It decides
+  # that off AdapterResponse#has_tool_calls?.
+  #
+  # On the anthropic-compatible streaming path (MiniMax /anthropic) the message
+  # ruby_llm's ask() RETURNS still carries the executed tool_calls, so a naive
+  # build_response handed them back, has_tool_calls? was true, and the Loop
+  # re-ran the SAME tool — firing tool_finished("task") a SECOND time and
+  # rendering the `└ ▸ sa_… · <name> · started` confirmation TWICE for one
+  # spawn. The streaming response must report NO tool_calls: they already ran.
+  # -----------------------------------------------------------------------
+  describe "#stream does not re-surface already-executed tool_calls (#53)" do
+    let(:tool_use_final_chat) do
+      c = double("Chat")
+      allow(c).to receive(:with_tool).and_return(c)
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      # The final message ruby_llm returns from ask() — on MiniMax /anthropic it
+      # STILL carries the tool_calls it already ran mid-stream via ToolBridge.
+      tool_call = double("ToolCall", id: "call_function_x_1", name: "task",
+                                     arguments: { "subagent" => "general", "prompt" => "read x" })
+      resp = double("Response", content: "spawning a subagent", input_tokens: 1,
+                                output_tokens: 1, tool_calls: [tool_call])
+      allow(c).to receive(:ask) do |_, &blk|
+        blk.call(double("Chunk", content: "spawning a subagent", thinking: nil))
+        resp
+      end
+      c
+    end
+
+    let(:adapter) do
+      cfg = test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o",
+                     "temperature" => 0.3, "context_length" => nil }
+      )
+      a = described_class.new(model_id: "gpt-4o", config: cfg)
+      allow(a).to receive(:build_chat).and_return(tool_use_final_chat)
+      a
+    end
+
+    it "returns has_tool_calls? false so the Loop never re-executes the mid-stream tool" do
+      result = adapter.stream(messages: [{ role: "user", content: "spawn a subagent" }]) { |_| }
+      expect(result.has_tool_calls?).to be false
+      expect(result.tool_calls).to eq([])
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # Hidden render mode (#76): the adapter no longer drops :thinking deltas at
   # the emit gate — the CLI buffers them unrendered so Ctrl-O can reveal the
   # last thought even in hidden mode; UI::API drops them at its own boundary.
