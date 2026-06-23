@@ -2613,7 +2613,15 @@ module Rubino
         # from the per-call_id stash made at #delegation_started. Falls back to the
         # generic word only when neither source has the name.
         sub = delegation_name_for(result, output)
-        if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
+        if delegation_capacity?(result)
+          # A cap REJECTION never launched anything: there is no `sa_…` id and no
+          # run to fail. Rendering it as `✗ <name> · failed` painted a phantom
+          # id-less failed card under the `● delegated →` header (the model's 4th
+          # parallel ask while the in-flight cap is 3). Surface it instead as a
+          # neutral, NAMED ⊝ close row that states the cap honestly, so the model
+          # (and the human) read "queued — retry when one finishes", not a failure.
+          emit("  └ ⊝ #{safe(sub)} · #{capacity_close_reason(output)}", style: :dim)
+        elsif !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
           # Background spawn: minimal "started" marker carrying the task id, so it
           # correlates with the standalone `✓ <id> · <name> · done` that lands far
           # below it once the child finishes (the parent keeps streaming between
@@ -2664,17 +2672,38 @@ module Rubino
 
       # True when a delegation result represents a failure. Mirrors how
       # #tool_finished decides (Result#errorish? — non-success status, an
-      # error_code, or an "Error:" output), and additionally treats the task
-      # tool's "At capacity:" string (a success-status Result that #errorish?
-      # does not catch) as a failure so the row shows ✗.
+      # error_code, or an "Error:" output). A cap REJECTION is NOT a failure (it
+      # never launched anything) and is handled separately by #delegation_capacity?
+      # so it never renders a phantom `✗ <name> · failed` card.
       def delegation_failed?(result)
         return false if result.nil?
+        return false if delegation_capacity?(result)
 
-        base = result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
-        return true if base
+        result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
+      end
 
-        output = result.respond_to?(:output) ? result.output : result
-        output.to_s.lstrip.start_with?("At capacity:")
+      # True when a delegation was REFUSED by a concurrency/depth cap — the task
+      # tool returns a success-status Result whose output is one of the
+      # TaskTool#capacity_message strings ("At capacity: …", "Max nesting depth
+      # reached: …"). No subagent was launched, so this is not a failure; the
+      # close row reads as a neutral, named "at capacity" line, not a ✗ failed.
+      def delegation_capacity?(result)
+        return false if result.nil?
+
+        output = (result.respond_to?(:output) ? result.output : result).to_s.lstrip
+        output.start_with?("At capacity:", "Max nesting depth reached:")
+      end
+
+      # A terse, honest close-row reason for a cap rejection, derived from WHICH
+      # cap the task tool reported. Names the concurrency ceiling the model hit so
+      # the row teaches "retry when one finishes" rather than reading as a failure.
+      def capacity_close_reason(output)
+        text = output.to_s.lstrip
+        if text.start_with?("Max nesting depth reached:")
+          "at capacity · nesting depth reached"
+        else
+          "at capacity · concurrency cap reached — retry when one finishes"
+        end
       end
 
       def delegation_field(arguments, key)

@@ -88,6 +88,41 @@ RSpec.describe Rubino::UI::SubagentCards do
       expect(hint).not_to match(%r{(?<!/agents <id> )--stop})
     end
 
+    # Concurrent approval toasts: several children parked on approval at once must
+    # render as a CALM, left-aligned, single-line stack — a consistent left margin
+    # and a bounded right edge, never one row wrapping mid-word onto a second
+    # physical line at a stray column. Each card row is clamped to the same
+    # display-column budget and elided on a glyph boundary (trailing "…"), so a
+    # long (model-chosen) approval command can't blow a row past the budget.
+    it "lays concurrent needs_approval rows at a consistent left margin within the width budget" do
+      long = "rm -rf /very/long/build/output/directory/that/keeps/going/and/going/and/going"
+      es = [
+        entry(id: "sa_f831b59a", subagent: "general", status: :needs_approval, approval_command: long),
+        entry(id: "sa_aa11bb22", subagent: "explore", status: :needs_approval, approval_command: long)
+      ]
+      rows = plain(cards.card_lines(es)).first(2)
+
+      width = Rubino::UI::SubagentCards::DEFAULT_CARD_WIDTH
+      rows.each do |row|
+        # Consistent LEFT margin: every card row starts at the same two-space indent.
+        expect(row).to start_with("  ●")
+        # Bounded RIGHT edge: no row exceeds the budget, so it can't wrap to a
+        # second physical line at a stray offset.
+        expect(Rubino::UI::LiveRegion.display_width(row)).to be <= width
+      end
+    end
+
+    # A row clamped to the budget must cut on a glyph boundary and signal the
+    # elision with a trailing "…" — never split a word across two physical lines.
+    it "elides an over-long approval row with a trailing … instead of wrapping mid-word" do
+      long = "fibonacci_with_a_really_long_unbroken_token_that_overflows_the_card_width_budget_#{"x" * 40}"
+      e = entry(id: "sa_f831b59a", subagent: "general", status: :needs_approval, approval_command: long)
+      row = plain(cards.card_lines([e])).first
+      width = Rubino::UI::SubagentCards::DEFAULT_CARD_WIDTH
+      expect(Rubino::UI::LiveRegion.display_width(row)).to be <= width
+      expect(row).to end_with("…")
+    end
+
     # #141: a multi-line ruby/shell command often STARTS with a blank line —
     # `.lines.first` rendered an empty "needs approval:" body. The preview must
     # be the first NON-BLANK line.
