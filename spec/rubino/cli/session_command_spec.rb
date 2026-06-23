@@ -296,23 +296,24 @@ RSpec.describe Rubino::CLI::SessionCommand do
     end
   end
 
-  # Item 3: bare `rubino sessions` LISTS rather than printing subcommand help —
-  # listing is the common intent. Thor's default_command makes the bare
-  # invocation route to #list.
+  # Item 3: bare `rubino sessions` LISTS (off a TTY) rather than printing the
+  # subcommand-help roster — listing is the common intent. Thor's
+  # default_command points at #browse, which routes a non-TTY invocation to
+  # #list. (The on-a-TTY picker is covered in the resume-picker block above.)
   describe "bare invocation lists (item 3)" do
-    it "rewrites only the no-subcommand invocation to list" do
-      expect(described_class.no_subcommand?([])).to be(true)
-      expect(described_class.no_subcommand?(["--all"])).to be(true)
-      expect(described_class.no_subcommand?(%w[show abc])).to be(false)
-      expect(described_class.no_subcommand?(%w[frobnicate])).to be(false)
+    it "browse is Thor's default_command for bare `rubino sessions`" do
+      expect(described_class.default_command).to eq("browse")
     end
 
-    it "renders the session table when invoked bare (routes to list)" do
+    it "renders the session table when invoked bare off a TTY (browse → list)" do
       repo.create(source: "cli", title: "listed-by-default")
       # Unscope the cwd filter so the seeded session lists regardless of test cwd.
       allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
+      allow($stdout).to receive(:tty?).and_return(false)
 
-      described_class.start([])
+      cmd = described_class.new
+      cmd.options = { limit: 20, all: false }
+      cmd.browse
 
       table = ui.messages.find { |m| m[:level] == :table }
       expect(table).not_to be_nil
@@ -329,6 +330,130 @@ RSpec.describe Rubino::CLI::SessionCommand do
         .to raise_error(Thor::Error, /nothing to compact/i)
       # And it must NOT have printed the fake-success token line.
       expect(ui.messages.map { |m| m[:level] }).not_to include(:compression_finished)
+    end
+  end
+
+  # CLI resume picker: bare `rubino sessions` on a TTY opens the SAME arrow-key
+  # picker the in-REPL `/sessions` uses (Session::Picker), and on Enter boots
+  # the chat REPL resumed at the chosen id via the EXACT path
+  # `rubino chat --session <id>` runs (ChatCommand). Off a TTY it stays the
+  # script-safe `list` table; `sessions list` (explicit) is always the table.
+  describe "bare `sessions` resume picker (CLI)" do
+    # `resume`/`list`/`browse` build a fresh Session::Repository (no db: kwarg)
+    # ⇒ they read Rubino.database, which the outer `before` already stubs.
+
+    # Drives the bare-`rubino sessions` entry the way Thor's subcommand dispatch
+    # does — through #browse (the default_command). +tty+ flips the same gate
+    # the real terminal does; the picker/list options are set on the instance.
+    def run_browse(tty:, opts: {})
+      allow($stdin).to receive(:tty?).and_return(tty)
+      allow($stdout).to receive(:tty?).and_return(tty)
+      cmd = described_class.new
+      cmd.options = { limit: 20, all: false }.merge(opts)
+      cmd.browse
+    end
+
+    it "off a TTY, bare `sessions` keeps the static list table (script-safe)" do
+      repo.create(source: "cli", title: "piped-list")
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
+      allow(ui).to receive(:select)
+
+      run_browse(tty: false)
+
+      table = ui.messages.find { |m| m[:level] == :table }
+      expect(table).not_to be_nil
+      titles = table[:message][:rows].map { |r| r[1].to_s }
+      expect(titles).to include("piped-list")
+      # Off a TTY it is the table, never the interactive picker.
+      expect(ui).not_to have_received(:select)
+    end
+
+    it "explicit `sessions list` lists even on a TTY (never the picker)" do
+      repo.create(source: "cli", title: "explicit-list")
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
+      allow($stdout).to receive(:tty?).and_return(true)
+      allow($stdin).to receive(:tty?).and_return(true)
+      allow(ui).to receive(:select)
+
+      cmd = described_class.new
+      cmd.options = { limit: 20, all: false }
+      cmd.list # the explicit verb, not browse
+
+      table = ui.messages.find { |m| m[:level] == :table }
+      expect(table).not_to be_nil
+      expect(ui).not_to have_received(:select)
+    end
+
+    it "hands the picked id to the chat resume path (rubino chat --session <id>)" do
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
+      s1 = repo.create(source: "cli", title: "first")
+      s2 = repo.create(source: "cli", title: "second")
+      # User highlights + Enter on the second row.
+      allow(ui).to receive(:select).and_return(s2[:id])
+
+      captured = nil
+      fake_chat = instance_double(Rubino::CLI::ChatCommand, execute: nil)
+      allow(Rubino::CLI::ChatCommand).to receive(:new) do |opts|
+        captured = opts
+        fake_chat
+      end
+
+      run_browse(tty: true)
+
+      # The picker was offered over the listed sessions as [label, id] pairs.
+      expect(ui).to have_received(:select) do |_prompt, choices|
+        expect(choices.map(&:last)).to include(s1[:id], s2[:id])
+        # Rows fold in msgs + recency, the shared Session::Picker label shape.
+        label = choices.find { |_l, id| id == s2[:id] }.first
+        expect(label).to include("second")
+        expect(label).to match(/\d+ msgs?/)
+      end
+      # The chosen id is handed to ChatCommand exactly as `--session <id>` does.
+      expect(captured[:session]).to eq(s2[:id])
+      expect(fake_chat).to have_received(:execute)
+    end
+
+    it "does NOT boot a chat when the picker is cancelled (Esc)" do
+      allow(Rubino::Workspace).to receive(:primary_root).and_return(nil)
+      repo.create(source: "cli", title: "only")
+      allow(ui).to receive(:select).and_return(nil) # Esc
+      allow(Rubino::CLI::ChatCommand).to receive(:new)
+
+      run_browse(tty: true)
+
+      expect(Rubino::CLI::ChatCommand).not_to have_received(:new)
+      expect(info_lines.join("\n")).to include("Cancelled")
+    end
+
+    it "shows the no-sessions message (not an empty picker) for an empty cwd" do
+      # cwd-scoped to a dir with no sessions; the OTHER dir's session is hidden.
+      repo.create(source: "cli", title: "elsewhere", cwd: "/home/dev/elsewhere")
+      allow(Rubino::Workspace).to receive(:primary_root).and_return("/home/dev/empty")
+      allow(ui).to receive(:select)
+      allow(Rubino::CLI::ChatCommand).to receive(:new)
+
+      run_browse(tty: true)
+
+      expect(ui).not_to have_received(:select)
+      expect(Rubino::CLI::ChatCommand).not_to have_received(:new)
+      expect(info_lines.join("\n")).to include("No sessions found in this directory (try --all)")
+    end
+
+    it "--all seeds an UNSCOPED picker over every directory's sessions" do
+      repo.create(source: "cli", title: "here", cwd: "/home/dev/here")
+      repo.create(source: "cli", title: "there", cwd: "/home/dev/there")
+      # Current dir has none — without --all this would be the no-sessions msg.
+      allow(Rubino::Workspace).to receive(:primary_root).and_return("/home/dev/empty")
+      allow(ui).to receive(:select).and_return(nil)
+      allow(Rubino::CLI::ChatCommand).to receive(:new)
+
+      run_browse(tty: true, opts: { all: true })
+
+      expect(ui).to have_received(:select) do |_prompt, choices|
+        labels = choices.map(&:first).join("\n")
+        expect(labels).to include("here")
+        expect(labels).to include("there")
+      end
     end
   end
 
