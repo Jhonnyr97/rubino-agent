@@ -1473,9 +1473,9 @@ module Rubino
       # Idempotent: the non-streaming path already closed the stream
       # (Loop#close_intermediate_stream), so this is a no-op there — the same
       # contract #confirm uses before the approval card.
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         finalize_stream
-        return delegation_started(arguments) if name == "task"
+        return delegation_started(arguments, call_id) if name == "task"
 
         hint = args_hint(arguments)
         activity_started(name, hint: hint)
@@ -2559,14 +2559,17 @@ module Rubino
 
       # --- Subagent delegation rows (the `task` tool) ---
 
-      # `● delegated → <subagent>  <prompt-preview>`. Stashes the subagent name so
-      # the matching #delegation_finished can label the close row even though
-      # tool_finished only receives the result, not the arguments.
-      def delegation_started(arguments)
+      # `● delegated → <subagent>  <prompt-preview>`. Stashes the subagent name
+      # KEYED BY call_id so the matching #delegation_finished labels its OWN close
+      # row even though tool_finished only receives the result, not the arguments.
+      # A single shared ivar would mislabel the row when two delegations overlap
+      # (started A, started B, finished A → A's row shows B's name) or when a
+      # replay/post-detach render mutates the live ivar (#35).
+      def delegation_started(arguments, call_id = nil)
         collapse_reasoning
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
-        @delegation_subagent = sub
+        (@delegation_names ||= {})[call_id] = sub if call_id
         # subagent name + prompt preview are UNTRUSTED (model-chosen args).
         # #truncate_inline flattens newlines but does NOT touch escape bytes, so
         # defang the preview source before clamping; the body's UNTRUSTED `sub`
@@ -2600,8 +2603,13 @@ module Rubino
       # the task tool emits, so a failed delegation renders the red ✗ variant.
       def delegation_finished(result)
         @activity_open = false
-        sub    = @delegation_subagent || "subagent"
         output = (result.respond_to?(:output) ? result.output : result).to_s
+        # Resolve the close-row label PER-CALL from an authoritative source, never
+        # a shared mutable ivar (#35): a background spawn carries the name in its
+        # handle output (parsed below); a synchronous/replayed call recovers it
+        # from the per-call_id stash made at #delegation_started. Falls back to the
+        # generic word only when neither source has the name.
+        sub = delegation_name_for(result, output)
         if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
           # Background spawn: minimal "started" marker carrying the task id, so it
           # correlates with the standalone `✓ <id> · <name> · done` that lands far
@@ -2619,9 +2627,27 @@ module Rubino
             end
           emit("  └ #{marker}", style: color)
         end
-        @delegation_subagent = nil
         @last_block = :tool
         status_back_to_thinking
+      end
+
+      # The close-row label for a finished delegation, derived PER-CALL so
+      # overlapping delegations and replays each render their OWN name (#35):
+      #   1. A background spawn's handle output names the subagent (m[1]) — the
+      #      authoritative source that needs no prior stash, so it also fixes
+      #      replays of a background spawn row.
+      #   2. Otherwise the name stashed by #delegation_started under this call's
+      #      call_id (a synchronous run, or a replayed sync row whose persisted
+      #      `arguments` carried the subagent). Consumed once so the stash doesn't
+      #      leak across a later same-id render.
+      #   3. The generic word only when neither source has it.
+      def delegation_name_for(result, output)
+        if (m = SPAWN_HANDLE_RE.match(output))
+          return m[1]
+        end
+
+        call_id = result.respond_to?(:call_id) ? result.call_id : nil
+        (@delegation_names ||= {}).delete(call_id) || "subagent"
       end
 
       # True when a delegation did nothing / was denied: the subagent produced no

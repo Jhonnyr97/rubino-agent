@@ -178,7 +178,9 @@ module Rubino
           when "tool"
             name      = msg.tool_name || "tool"
             arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
-            ui.tool_started(name, arguments: arguments, at: at)
+            # Pass the persisted call_id so a `task` row's close label resolves
+            # from the per-call_id name stash (#35) rather than a shared ivar.
+            ui.tool_started(name, arguments: arguments, at: at, call_id: msg.tool_call_id)
             ui.tool_finished(name, result: replay_tool_result(msg, name))
           end
         end

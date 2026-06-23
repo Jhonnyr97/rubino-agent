@@ -85,7 +85,7 @@ module Rubino
       def thinking_started = emit_event(:thinking_started)
       def table(headers:, rows:) = emit_event(:table, headers: headers, rows: rows)
 
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         emit_event(:tool_started, name: name, arguments: arguments, at: at)
       end
 

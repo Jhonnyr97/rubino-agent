@@ -134,7 +134,7 @@ module Rubino
         end
 
         notify_yolo_if_applicable(tool, arguments)
-        emit_started(name, arguments)
+        emit_started(name, arguments, call_id)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         result = nil
         begin
@@ -305,9 +305,9 @@ module Rubino
         now
       end
 
-      def emit_started(name, arguments)
+      def emit_started(name, arguments, call_id = nil)
         sanitized = sanitize_arguments_for_event(arguments)
-        @ui.tool_started(name, arguments: arguments) if @ui.respond_to?(:tool_started)
+        @ui.tool_started(name, arguments: arguments, call_id: call_id) if @ui.respond_to?(:tool_started)
         payload = { name: name, arguments: sanitized }
         # Boundary event for delegation: tag the `task` call with the target
         # subagent name (+ the task prompt) so an SSE consumer (the web UI)
