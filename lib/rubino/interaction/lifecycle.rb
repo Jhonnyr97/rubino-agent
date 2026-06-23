@@ -5,6 +5,11 @@ module Rubino
     # Orchestrates the full lifecycle of a single user interaction.
     # Coordinates all phases from input to final response and post-turn jobs.
     class Lifecycle
+      # Queue priority for the user-visible memory save (#79). Lower = drained
+      # first (the queue orders by `priority, run_at`). Below the default 100 the
+      # other post-turn jobs use, so an ExtractMemoryJob jumps ahead of the
+      # SummarizeSessionJob backlog and the "remember X" → recall is prompt.
+      PRIORITY_EXTRACT_MEMORY = 50
       # The session this lifecycle is currently bound to. Starts as the session
       # passed in, but an automatic budget-triggered compaction swaps it to the
       # compaction child (see #check_and_compact). The owning Runner reads this
@@ -353,7 +358,15 @@ module Rubino
         enqueued = false
 
         if @config.memory_auto_extract? && interval_due?(turn_no, @config.memory_auto_extract_interval)
-          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] }, drain_inline: drain_inline)
+          # ExtractMemoryJob is the user-visible save ("remember X" → recall):
+          # it must drain AHEAD of the SummarizeSessionJobs that pile up one per
+          # turn once a session passes 20 messages (#79). The drain orders by
+          # `priority, run_at` (lower = first), so a higher-priority (smaller
+          # number) extract jumps the queue of slower, less time-sensitive
+          # summaries that were enqueued before it — otherwise the save the user
+          # is about to recall waits minutes behind a FIFO backlog of summaries.
+          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] },
+                        priority: PRIORITY_EXTRACT_MEMORY, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
           enqueued = true
         end
