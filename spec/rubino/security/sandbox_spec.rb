@@ -198,6 +198,55 @@ RSpec.describe Rubino::Security::Sandbox do
     end
   end
 
+  describe ".enforcing? (runtime self-test)" do
+    it "is false when not active (no relaxation possible)" do
+      configure(mode: "off", mechanism: :seatbelt)
+      expect(described_class).not_to be_enforcing
+    end
+
+    it "is true when active AND the probe write is DENIED (file absent)" do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:probe_enforcement).and_return(true)
+      expect(described_class).to be_enforcing
+      expect(described_class).not_to be_present_but_not_enforcing
+    end
+
+    it "is false (DEGRADED) when active but the probe write SUCCEEDED (fails open)" do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:probe_enforcement).and_return(false)
+      expect(described_class).not_to be_enforcing
+      expect(described_class).to be_present_but_not_enforcing
+    end
+
+    it "memoises the probe (one spawn per process)" do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:probe_enforcement).and_return(true)
+      2.times { described_class.enforcing? }
+      expect(described_class).to have_received(:probe_enforcement).once
+    end
+  end
+
+  describe ".wrap_argv / .wrap_env" do
+    it "prepends the launcher prefix to an arbitrary argv" do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:landlock_helper).and_return("/h/rubino-landlock")
+      argv = described_class.wrap_argv(%w[ruby -e 1], cwd: workspace)
+      expect(argv).to eq(["/h/rubino-landlock", "--", "ruby", "-e", "1"])
+    end
+
+    it "is a no-op (identity argv) when off/unavailable" do
+      configure(mode: "workspace-write", mechanism: :none)
+      expect(described_class.wrap_argv(%w[ruby -e 1], cwd: workspace)).to eq(%w[ruby -e 1])
+      expect(described_class.wrap_env(cwd: workspace)).to eq({})
+    end
+
+    it "carries the writable roots env for Landlock" do
+      configure(mode: "workspace-write", mechanism: :landlock)
+      allow(described_class).to receive(:landlock_helper).and_return("/h/rubino-landlock")
+      expect(described_class.wrap_env(cwd: workspace)).to have_key("RUBINO_SANDBOX_WRITABLE_ROOTS")
+    end
+  end
+
   describe ".required? and .refusal_reason (fail-closed)" do
     it "does not require by default" do
       configure(mode: "workspace-write", mechanism: :none)

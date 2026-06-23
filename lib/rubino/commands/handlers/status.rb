@@ -148,6 +148,12 @@ module Rubino
         def status_sandbox_line
           summary = Rubino::Security::Sandbox.status_summary
           return "#{summary} — writes NOT confined" if Rubino::Security::Sandbox.degraded?
+          # Mechanism present but the runtime self-test proved it does NOT
+          # enforce (helper fails open) — be honest: writes are unconfined and
+          # the broad prompt stays.
+          if Rubino::Security::Sandbox.present_but_not_enforcing?
+            return "#{summary} — helper present but NOT enforcing, writes NOT confined"
+          end
           return "#{summary} — write flag-forms auto-run" if Rubino::Security::Sandbox.active?
 
           summary

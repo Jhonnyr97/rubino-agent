@@ -792,9 +792,10 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       end
 
       # The OS write-jail confines arbitrary writes (slice 2 Part C), so the
-      # flag-form screen is CONDITIONAL on whether it is ACTIVE. Pure-WRITE
-      # flag-forms still prompt when the jail is DEGRADED/off (the allowlist is
-      # the only guard) but auto-run when it is ACTIVE; EXEC/network forms prompt
+      # flag-form screen is CONDITIONAL on whether it PROVES enforcement
+      # (#enforcing?, NOT mere presence). Pure-WRITE flag-forms still prompt when
+      # the jail is DEGRADED/off/present-but-not-enforcing (the allowlist is the
+      # only guard) but auto-run when it is ENFORCING; EXEC/network forms prompt
       # EITHER WAY (they run arbitrary code the jail can't contain).
       write_class = {
         "git --output write flag" => "git diff --output=/tmp/x",
@@ -839,7 +840,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       }
 
       context "sandbox DEGRADED/off (allowlist is the only guard)" do
-        before { allow(Rubino::Security::Sandbox).to receive(:active?).and_return(false) }
+        before { allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false) }
 
         write_class.merge(exec_class).each do |label, cmd|
           it "prompts (:ask) for #{label}: #{cmd}" do
@@ -854,8 +855,24 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         end
       end
 
-      context "sandbox ACTIVE (the jail confines writes)" do
-        before { allow(Rubino::Security::Sandbox).to receive(:active?).and_return(true) }
+      context "sandbox PRESENT but NOT enforcing (helper fails open ⇒ broad screen stays)" do
+        # The HOLE-1 case: a mechanism is present (active?) but the runtime
+        # self-test proved it does not confine, so the pure-WRITE flag-forms
+        # MUST keep prompting — relaxation gates on enforcing?, not active?.
+        before do
+          allow(Rubino::Security::Sandbox).to receive(:active?).and_return(true)
+          allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false)
+        end
+
+        write_class.merge(exec_class).each do |label, cmd|
+          it "prompts (:ask) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+      end
+
+      context "sandbox ENFORCING (the jail confines writes)" do
+        before { allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(true) }
 
         # The pure-write flag-forms NOW auto-run (the jail contains them), same
         # as the ordinary script/filter invocations.

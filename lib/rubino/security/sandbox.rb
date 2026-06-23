@@ -68,15 +68,41 @@ module Rubino
           "floor are the only boundary. See tools.sandbox.mode."
       end
 
-      # True when the OS write-jail is actually ENFORCING (mode != off AND a
-      # Seatbelt/Landlock mechanism exists). This is the predicate the approval
-      # layer gates the conditional allowlist relaxation on (slice 2 Part C):
-      # when the jail confines writes, the pure-WRITE flag-forms no longer need
-      # a prompt; when it is off/degraded, the allowlist is the only guard so
-      # everything keeps prompting. False under degraded? (requested but no
-      # mechanism) and under mode == :off.
+      # True when the OS write-jail mechanism is PRESENT and configured on (mode
+      # != off AND a Seatbelt/Landlock mechanism exists). This is a PRESENCE
+      # check only — it does NOT prove the mechanism actually confines writes at
+      # runtime (the Landlock helper fails OPEN on a kernel without enforcement).
+      # Use it for the banner/status posture; the SECURITY-relaxation decision
+      # (slice 2 Part C) must use #enforcing? instead. False under degraded?
+      # (requested but no mechanism) and under mode == :off.
       def active?
         mode != :off && available_mechanism != :none
+      end
+
+      # True ONLY when the OS write-jail is PROVEN to confine writes at runtime.
+      # active? checks the mechanism is PRESENT; this runs the real launcher once
+      # against a throwaway command that tries to write a file OUTSIDE a writable
+      # root and returns true only if that write was DENIED. Closes the
+      # "helper present but Landlock not enforcing (fails open)" gap: a binary
+      # that execs unconfined produces the probe file ⇒ enforcing? == false.
+      # Memoised — one spawn at first use, like the mechanism probe.
+      #
+      # This is the predicate the approval layer gates the conditional allowlist
+      # relaxation on (slice 2 Part C): only relax the pure-WRITE flag-forms when
+      # the jail DEMONSTRABLY confines them. When present-but-not-enforcing the
+      # state is DEGRADED and the broad prompt stays.
+      def enforcing?
+        return @enforcing if defined?(@enforcing)
+
+        @enforcing = active? && probe_enforcement
+      end
+
+      # True when a sandbox mechanism is configured+present but does NOT actually
+      # enforce at runtime (helper fails open / kernel lacks Landlock). In this
+      # state writes are unconfined despite the mechanism appearing available, so
+      # callers must keep the broad write screen and say so honestly.
+      def present_but_not_enforcing?
+        active? && !enforcing?
       end
 
       # True when the operator opted into FAIL-CLOSED: tools.sandbox.require.
@@ -124,6 +150,22 @@ module Rubino
         end
       end
 
+      # Jail ANY argv (not just bash): prepend the launcher prefix so every
+      # process-spawning tool (shell, ruby, run_tests) goes through the same OS
+      # write-jail. [] prefix when off/unavailable ⇒ byte-identical to no
+      # sandbox. Callers splat the result into Process.spawn/Open3 and merge
+      # #wrap_env into their env. `argv` is the already-built command argv.
+      def wrap_argv(argv, cwd: nil)
+        [*command_prefix(cwd: cwd), *argv]
+      end
+
+      # The extra env every wrapped spawn must merge (writable roots for
+      # Landlock; {} for Seatbelt/off). Alias of #extra_env for symmetry with
+      # #wrap_argv at the call sites.
+      def wrap_env(cwd: nil)
+        extra_env(cwd: cwd)
+      end
+
       # Extra env merged into the spawn. Landlock receives the writable roots
       # here (never on argv, so a path with spaces/quotes is safe); Seatbelt
       # passes them as -D params, so it needs none.
@@ -150,7 +192,63 @@ module Rubino
       def reset!
         remove_instance_variable(:@available_mechanism) if defined?(@available_mechanism)
         remove_instance_variable(:@landlock_helper) if defined?(@landlock_helper)
+        remove_instance_variable(:@enforcing) if defined?(@enforcing)
       end
+
+      # ---- runtime enforcement self-test --------------------------------
+
+      # Run the REAL launcher once on a throwaway command that tries to write a
+      # file OUTSIDE the (single, throwaway) writable root we grant it. Returns
+      # true ONLY if the write was DENIED (probe file absent). A mechanism that
+      # fails open execs the command unconfined ⇒ the probe file appears ⇒ false.
+      #
+      # We must NOT reuse the live writable roots (they include /tmp + TMPDIR, so
+      # any temp-dir probe target would be legitimately granted): we build a
+      # probe-specific prefix that grants ONLY a fresh writable root, then target
+      # a sibling dir that is provably outside it. Any spawn/setup error fails
+      # SAFE (false → no relaxation). One spawn; memoised by #enforcing?.
+      def probe_enforcement
+        require "tmpdir"
+        require "open3"
+        require "shellwords"
+
+        Dir.mktmpdir("rubino-sbx") do |base|
+          root    = File.join(base, "root")
+          outside = File.join(base, "outside")
+          Dir.mkdir(root)
+          Dir.mkdir(outside)
+          probe = File.join(outside, "probe")
+
+          prefix, env = probe_launcher(root)
+          return false if prefix.empty? # no real mechanism ⇒ nothing enforces
+
+          argv = [*prefix, "bash", "-c", ": > #{probe.shellescape}"]
+          Open3.capture3(env, *argv)
+          !File.exist?(probe) # DENY (absent) ⇒ enforcing
+        end
+      rescue StandardError
+        false
+      end
+      private_class_method :probe_enforcement
+
+      # The launcher prefix + env that confine writes to EXACTLY `root` (one
+      # throwaway dir), used only by #probe_enforcement so the probe's "outside"
+      # target is unambiguously not granted. Mirrors command_prefix/extra_env but
+      # with a fixed single root instead of the live writable set.
+      def probe_launcher(root)
+        case available_mechanism
+        when :seatbelt
+          [[ABS_SANDBOX_EXEC, "-p", seatbelt_policy(1), "-DWRITABLE_ROOT_0=#{root}", "--"], {}]
+        when :landlock
+          helper = landlock_helper
+          return [[], {}] unless helper
+
+          [[helper, "--"], { "RUBINO_SANDBOX_WRITABLE_ROOTS" => root }]
+        else
+          [[], {}]
+        end
+      end
+      private_class_method :probe_launcher
 
       # ---- mechanism detection -------------------------------------------
 
