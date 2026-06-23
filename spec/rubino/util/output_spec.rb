@@ -128,6 +128,45 @@ RSpec.describe Rubino::Util::Output do
     end
   end
 
+  # #58 — clean_slice cleans the BOUNDED byteslices kept by the tail-bias byte
+  # path. A binary/latin-1 slice used to hit `.encode(UTF_8)`, which dies on any
+  # byte > 0x7F (Encoding::UndefinedConversionError "\xC3"). It must reinterpret
+  # the bytes as UTF-8 and scrub the invalid ones, never raising.
+  describe ".clean_slice" do
+    it "scrubs high bytes from a BINARY slice into valid UTF-8 without raising" do
+      result = nil
+      expect { result = described_class.clean_slice((+"Jos\xC3\xA9 caf\xC3").b) }.not_to raise_error
+      expect(result.encoding).to eq(Encoding::UTF_8)
+      expect(result).to be_valid_encoding
+      expect(result).to include("José") # complete "\xC3\xA9" kept
+      expect(result).to include("caf") # half-cut trailing "\xC3" dropped, leaving "caf"
+      expect(result).not_to include("\xC3".b.force_encoding(Encoding::UTF_8))
+    end
+
+    it "strips embedded NUL from a binary slice" do
+      result = described_class.clean_slice((+"a\x00b\xFFc").b)
+      expect(result).not_to include("\x00")
+      expect(result).to be_valid_encoding
+    end
+
+    it "leaves clean UTF-8 untouched" do
+      expect(described_class.clean_slice("plain text")).to eq("plain text")
+    end
+  end
+
+  # #58 — truncating a LARGE non-UTF-8/binary buffer (a big latin-1 file or a
+  # shell command dumping binary) routes through tail_bias_bytes → clean_slice;
+  # it must not raise and must yield a valid-UTF-8 string.
+  describe ".truncate on large binary output (#58)" do
+    it "does not raise and returns valid UTF-8 for a large latin-1/binary buffer" do
+      big = (+("caf\xC3\xA9 " * 200_000)).force_encoding(Encoding::ASCII_8BIT)
+      result = nil
+      expect { result = described_class.truncate(big, max_bytes: 1_000, max_lines: 100) }.not_to raise_error
+      expect(result.encoding).to eq(Encoding::UTF_8)
+      expect(result).to be_valid_encoding
+    end
+  end
+
   # #373 — preview() did `text.lines.map(&:chomp)` unconditionally: a ~1KB value
   # that happens to be one 2M-char line allocated a 2M-element array just to
   # learn it fit. The under-cap fits-check must be allocation-free, and trimming

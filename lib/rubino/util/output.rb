@@ -352,14 +352,17 @@ module Rubino
       # byte path slices BEFORE scrubbing (so the 128MB buffer is never scrubbed
       # whole); each kept slice still has to be cleaned exactly like scrub_utf8
       # (invalid bytes dropped, NUL deleted) so JSON/SQLite don't choke.
-      def self.clean_slice(bytes, encoding)
-        s = bytes.to_s.force_encoding(encoding).scrub("")
-        s = s.encode(Encoding::UTF_8) unless s.encoding == Encoding::UTF_8
+      def self.clean_slice(bytes)
+        # Reinterpret the bytes AS UTF-8 and drop the invalid ones, exactly like
+        # #scrub_encoding. Never `.encode` here: for a BINARY/ASCII-8BIT source
+        # `scrub` is a no-op (binary is always "valid") and `.encode` then dies
+        # on any byte > 0x7F (Encoding::UndefinedConversionError, e.g. "\xC3"),
+        # which is the crash a large non-UTF-8/binary tool output hit.
+        s = bytes.to_s.dup.force_encoding(Encoding::UTF_8).scrub("")
         s.include?(NUL) ? s.delete(NUL) : s
       end
 
       def self.tail_bias_bytes(text, max_bytes, spill_path = nil)
-        encoding        = text.encoding
         recover         = spill_path ? " · full output saved to #{spill_path} — read it with offset/limit" : ""
         marker_template = "\n... [%d bytes elided#{recover} · use grep/head to narrow] ...\n"
         marker_max      = (marker_template % 999_999_999).bytesize
@@ -370,13 +373,13 @@ module Rubino
         # to a simple head truncation (old behavior). Realistic caps go
         # through the head+tail path.
         if tail_budget <= 0
-          truncated = clean_slice(text.byteslice(0, max_bytes), encoding)
+          truncated = clean_slice(text.byteslice(0, max_bytes))
           tail_note = spill_path ? " · full output: #{spill_path}" : ""
           return "#{truncated}\n... [truncated at #{max_bytes} bytes#{tail_note}]"
         end
 
-        head   = clean_slice(text.byteslice(0, head_budget), encoding)
-        tail   = clean_slice(text.byteslice(-tail_budget, tail_budget), encoding)
+        head   = clean_slice(text.byteslice(0, head_budget))
+        tail   = clean_slice(text.byteslice(-tail_budget, tail_budget))
         elided = text.bytesize - head.bytesize - tail.bytesize
         "#{head}#{format(marker_template, elided)}#{tail}"
       end
