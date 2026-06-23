@@ -28,15 +28,23 @@ module Rubino
         end
       end
 
-      # Image attached but no native vision and no aux vision configured. If the
-      # in-process document converter can handle the file (e.g. a PDF that
-      # sniffed as a document, never a raster image), point at read_attachment;
-      # otherwise keep the shell-extraction hint.
+      # Image attached but no native vision and no aux vision configured. The
+      # shell fallback must match the attachment's KIND: `markitdown` is a
+      # document converter and is nonsensical for a raster image (PNG/JPEG),
+      # whose only text recovery is OCR. So suggest OCR (`tesseract`) for a true
+      # image and `markitdown` only for a PDF/document that merely sniffed as
+      # visual.
       def no_multimodal_warning(path, mime)
-        "[Attachment #{path} (#{mime}) is visual and cannot be read: no multimodal " \
-          "model is configured. Configure an auxiliary vision model, or -- if it is a " \
-          "PDF/document -- read its text with the `read_attachment` tool " \
-          "(fallback: extract with a shell tool such as `markitdown #{path}`).]"
+        if mime.to_s.start_with?("image/")
+          "[Attachment #{path} (#{mime}) is an image and cannot be read: no multimodal " \
+            "model is configured. Configure an auxiliary vision model to read it, or -- " \
+            "if it contains text -- run OCR via a shell tool such as `tesseract #{path} -`.]"
+        else
+          "[Attachment #{path} (#{mime}) is visual and cannot be read: no multimodal " \
+            "model is configured. Configure an auxiliary vision model, or -- if it is a " \
+            "PDF/document -- read its text with the `read_attachment` tool " \
+            "(fallback: extract with a shell tool such as `markitdown #{path}`).]"
+        end
       end
 
       # Attached non-image document. With the in-process converter available for
