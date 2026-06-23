@@ -11,11 +11,18 @@ module Rubino
     # It returns an argv PREFIX (and a little extra env) to put in front of the
     # `bash -o pipefail -c …` the shell tool already runs:
     #   macOS  → /usr/bin/sandbox-exec -p <SBPL> -D… -- bash …   (Seatbelt)
-    #   Linux  → <home>/bin/rubino-landlock -- bash …            (Landlock)
+    #   Linux  → <gem>/ext/landlock/rubino-landlock -- bash …    (Landlock)
     #   off / unavailable → []  (byte-identical to no sandbox)
     #
     # Asymmetry by design: reads stay broad everywhere (#406); only writes are
-    # confined to {workspace roots, $TMPDIR, /tmp, ~/.rubino, /dev/null}.
+    # confined to {workspace roots, $TMPDIR, /tmp, /dev/null}.
+    #
+    # ~/.rubino is DELIBERATELY NOT writable from the jailed shell: it holds the
+    # sandbox's own trust anchors (the resolved helper binary, config.yml, .env,
+    # the session DB, skills/, commands/). The agent persists all of those in
+    # the Ruby PROCESS, never by spawning the shell tool's bash — so confining
+    # the shell out of ~/.rubino loses no legitimate capability while closing
+    # the self-tamper persistence escape (helper/config poisoning).
     #
     # Graceful degradation: when mode != off but no mechanism exists (old
     # kernel, non-mac/linux, helper won't compile) we fail OPEN — empty prefix —
@@ -98,7 +105,6 @@ module Rubino
         roots = []
         roots.concat(Workspace.canonical_roots) unless mode == :"read-only"
         roots.concat(temp_roots)
-        roots << canonical(Rubino.home_path)
         roots.concat(extra_writable.filter_map { |p| canonical(p) })
         roots.compact.uniq.select { |p| File.directory?(p) }
       end
@@ -205,9 +211,8 @@ module Rubino
       end
       private_class_method :landlock_roots_env
 
-      # Absolute path to a usable `rubino-landlock`, compiling it on demand into
-      # <home>/bin/ and caching the result (nil ⇒ Linux mechanism unavailable →
-      # fail open). Memoised; only ever runs the build once per process.
+      # Absolute path to a usable `rubino-landlock`, or nil (⇒ Linux mechanism
+      # unavailable → fail open). Memoised; resolved once per process.
       def landlock_helper
         return @landlock_helper if defined?(@landlock_helper)
 
@@ -215,38 +220,19 @@ module Rubino
       end
       private_class_method :landlock_helper
 
+      # SECURITY: the helper is the trust anchor the jail execs in front of bash,
+      # so it MUST come from a location the jailed shell cannot write. We resolve
+      # ONLY from the gem's installed extension build dir (ext/landlock/, built by
+      # the gemspec extension at `gem install` time) — never from a writable cache
+      # under ~/.rubino, which the confined shell could overwrite to neuter the
+      # next run. Absent (helper not built) ⇒ nil ⇒ graceful fail-open + banner.
       def resolve_landlock_helper
-        # 1) A binary shipped/compiled by the gem's extension build, next to exe.
-        shipped = File.expand_path("../../../exe/rubino-landlock", __dir__)
-        return shipped if File.executable?(shipped)
-
-        # 2) A previously compiled cache under <home>/bin.
-        cached = File.join(Rubino.home_path, "bin", "rubino-landlock")
-        return cached if File.executable?(cached)
-
-        # 3) Compile it now from the gem source, if a compiler + headers exist.
-        compile_landlock_helper(cached)
+        built = File.expand_path("../../../ext/landlock/rubino-landlock", __dir__)
+        File.executable?(built) ? built : nil
       rescue StandardError
         nil
       end
       private_class_method :resolve_landlock_helper
-
-      def compile_landlock_helper(dest)
-        src = File.expand_path("../../../ext/landlock/landlock.c", __dir__)
-        return nil unless File.file?(src)
-
-        cc = ENV.fetch("CC", "").empty? ? "cc" : ENV.fetch("CC")
-        return nil unless system("command -v #{cc} > /dev/null 2>&1")
-
-        require "fileutils"
-        FileUtils.mkdir_p(File.dirname(dest))
-        ok = system(cc, "-O2", "-o", dest, src,
-                    out: File::NULL, err: File::NULL)
-        ok && File.executable?(dest) ? dest : nil
-      rescue StandardError
-        nil
-      end
-      private_class_method :compile_landlock_helper
 
       # ---- shared helpers -------------------------------------------------
 
