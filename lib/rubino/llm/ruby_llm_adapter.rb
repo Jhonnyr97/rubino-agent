@@ -696,6 +696,7 @@ module Rubino
                                         tool_executor: @tool_executor,
                                         cache_tools: tool_cache_breakpoint?,
                                         budget_exhausted: budget_exhausted,
+                                        cancel_token: @cancel_token,
                                         production: true)
         install_cache_middleware(chat)
         chat
