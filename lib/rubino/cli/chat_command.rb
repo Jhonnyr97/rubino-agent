@@ -2928,7 +2928,7 @@ module Rubino
         # away; the replay itself renders through the exempt seam below. No-op off
         # a composer (plain TTY / pipe / tests).
         composer = UI::BottomComposer.current
-        composer&.suppress_main_render!(true)
+        composer&.suppress_main_render!(true, attached_id: id)
         clear_terminal
         snapshot = Array(entry.messages)
         with_focused_view_replay(composer) do
@@ -2941,7 +2941,7 @@ module Rubino
           # region to the watcher; detach lifts suppression and the cards return.
           composer&.set_cards([])
           ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
-                  pastel.dim(" — type to steer · ← to go back"))
+                  pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
           session_resolver.replay_messages(ui, snapshot)
         end
         # Tail the sub's ongoing activity from where this snapshot left off, so
