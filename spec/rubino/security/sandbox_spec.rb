@@ -81,13 +81,23 @@ RSpec.describe Rubino::Security::Sandbox do
   end
 
   describe ".writable_roots" do
-    it "includes the workspace, temp and home but not a sibling dir" do
+    it "includes the workspace and temp but not a sibling dir" do
       configure(mode: "workspace-write", mechanism: :landlock)
       roots = described_class.writable_roots(cwd: workspace)
 
       expect(roots).to include(File.realpath(workspace))
       expect(roots).to include(File.realpath(Dir.tmpdir))
       expect(roots).not_to include(File.realpath(sibling))
+    end
+
+    it "EXCLUDES the agent home (~/.rubino): it holds the sandbox trust anchors" do
+      home = File.realpath(Dir.mktmpdir("sandbox-home"))
+      allow(Rubino).to receive(:home_path).and_return(home)
+      configure(mode: "workspace-write", mechanism: :landlock)
+
+      expect(described_class.writable_roots(cwd: workspace)).not_to include(home)
+    ensure
+      FileUtils.remove_entry(home) if home && File.directory?(home)
     end
 
     it "honors extra_writable absolute paths" do
@@ -100,6 +110,38 @@ RSpec.describe Rubino::Security::Sandbox do
       roots = described_class.writable_roots(cwd: workspace)
       expect(roots).not_to include(File.realpath(workspace))
       expect(roots).to include(File.realpath(Dir.tmpdir)) # temp stays writable
+    end
+  end
+
+  describe "Landlock helper resolution (trust anchor)" do
+    # The helper is the trust anchor the jail execs; it must come ONLY from the
+    # gem's installed extension build dir, never a ~/.rubino cache the confined
+    # shell could overwrite (the cached-helper-poisoning escape, R1).
+    let(:built) do
+      lib_dir = File.dirname(described_class.method(:reset!).source_location.first)
+      File.expand_path("../../../ext/landlock/rubino-landlock", lib_dir)
+    end
+
+    it "resolves to the gem's ext/landlock build when it is executable" do
+      allow(File).to receive(:executable?).and_call_original
+      allow(File).to receive(:executable?).with(built).and_return(true)
+      expect(described_class.send(:resolve_landlock_helper)).to eq(built)
+    end
+
+    it "does NOT fall back to a writable ~/.rubino/bin cache (returns nil)" do
+      home = File.realpath(Dir.mktmpdir("sandbox-home"))
+      allow(Rubino).to receive(:home_path).and_return(home)
+      FileUtils.mkdir_p(File.join(home, "bin"))
+      cache = File.join(home, "bin", "rubino-landlock")
+      File.write(cache, "#!/bin/sh\nexec \"$@\"\n")
+      File.chmod(0o755, cache)
+
+      allow(File).to receive(:executable?).and_call_original
+      allow(File).to receive(:executable?).with(built).and_return(false)
+
+      expect(described_class.send(:resolve_landlock_helper)).to be_nil
+    ensure
+      FileUtils.remove_entry(home) if home && File.directory?(home)
     end
   end
 
