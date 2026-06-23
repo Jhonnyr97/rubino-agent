@@ -105,9 +105,27 @@ module Rubino
         end
 
         command = build_command(root, framework, path)
-        run     = execute(command, root, timeout)
+        unless command
+          return { output: "Error: unsupported framework '#{framework}' — run_tests supports " \
+                           "rspec, minitest, and rake only. Use the shell tool for other " \
+                           "frameworks (e.g. pytest, jest).",
+                   error_code: :unsupported_framework }
+        end
+
+        run = execute(command, root, timeout)
+        # Attribute an OS write-jail denial (#74): a suite that writes outside the
+        # writable roots fails with a plain-looking EACCES; flag the jail as the
+        # cause so the model doesn't chase a perms fix.
+        run[:output] = append_jail_hint(run[:output], root)
 
         build_result(framework, command, run)
+      end
+
+      # Append the write-jail attribution (#74) when the suite's output carries
+      # an EACCES against a path outside the writable roots. Unchanged otherwise.
+      def append_jail_hint(text, cwd)
+        hint = Rubino::Security::Sandbox.write_jail_attribution(text, cwd: cwd)
+        hint ? "#{text}\n#{hint}" : text
       end
 
       private

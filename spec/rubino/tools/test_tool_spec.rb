@@ -33,6 +33,43 @@ RSpec.describe Rubino::Tools::TestTool do
     end
   end
 
+  # #77b: forced to a Python/unsupported framework, build_command returned nil
+  # and the runner crashed with a nil->String error. Return a clean
+  # "unsupported framework" message instead.
+  it "returns a clean message for an unsupported framework instead of crashing" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "spec")) # a detectable Ruby setup exists
+      in_workspace(dir) do
+        res = tool.call("framework" => "pytest")
+        expect(res[:error_code]).to eq(:unsupported_framework)
+        expect(res[:output]).to include("unsupported framework")
+        expect(res[:output]).to include("pytest")
+      end
+    end
+  end
+
+  # #74: a suite that writes outside the writable roots fails with a plain EACCES;
+  # the write-jail attribution is appended so the model doesn't chase a perms fix.
+  it "appends the write-jail attribution when the suite hits a jailed-write EACCES" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "spec"))
+      File.write(File.join(dir, ".rspec"), "--no-color\n")
+      File.write(File.join(dir, "spec", "w_spec.rb"), <<~SPEC)
+        RSpec.describe "w" do
+          it "writes outside" do
+            File.write("/usr/local/blocked.txt", "x")
+          end
+        end
+      SPEC
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution)
+        .and_return(Rubino::Security::Sandbox::WRITE_JAIL_HINT)
+      in_workspace(dir) do
+        res = tool.call({})
+        expect(res[:output]).to include("write-jail")
+      end
+    end
+  end
+
   context "with a passing RSpec suite" do
     around do |example|
       Dir.mktmpdir do |dir|
@@ -223,9 +260,8 @@ RSpec.describe Rubino::Tools::TestTool do
       Dir.mktmpdir do |dir|
         FileUtils.mkdir_p(File.join(dir, "spec"))
         File.write(File.join(dir, ".rspec"), "")
-        allow(Rubino::Security::Sandbox).to receive(:refusal_reason).and_return(nil)
         allow(Rubino::Security::Sandbox).to receive(:wrap_argv) { |argv, **| ["/jail", "--", *argv] }
-        allow(Rubino::Security::Sandbox).to receive(:wrap_env).and_return({})
+        allow(Rubino::Security::Sandbox).to receive_messages(refusal_reason: nil, wrap_env: {})
         captured = nil
         # Capture the spawn argv, then run a harmless real process so execute()
         # completes normally (it rescues StandardError, so we can't raise here).

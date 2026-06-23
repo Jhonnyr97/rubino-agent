@@ -102,14 +102,13 @@ RSpec.describe Rubino::Tools::WriteTool do
   describe "workspace sandbox" do
     it "refuses to write outside the workspace root" do
       # A non-denylisted absolute path (the #413 credential denylist would
-      # short-circuit /etc/passwd before the workspace check) so this still
-      # exercises the WORKSPACE boundary specifically.
-      outside = File.join(Dir.mktmpdir("ws_escape"), "loot.txt")
+      # short-circuit /etc/passwd before the workspace check) that is also NOT
+      # under the /tmp+$TMPDIR scratch set the guard now allows (#77a), so this
+      # still exercises the WORKSPACE boundary specifically.
+      outside = "/usr/local/rubino_ws_escape_loot.txt"
       out = tool.call("file_path" => outside, "content" => "pwned")
       expect(out).to include("refusing to access")
       expect(File.exist?(outside)).to be false
-    ensure
-      FileUtils.rm_rf(File.dirname(outside))
     end
 
     # SK-2: the #405 skill(create) gate is only a real boundary if the model
@@ -127,7 +126,11 @@ RSpec.describe Rubino::Tools::WriteTool do
     end
 
     it "refuses to write through ../../ traversal" do
-      out = tool.call("file_path" => File.join(tmp_dir, "..", "escape.txt"), "content" => "x")
+      # Traverse all the way to a NON-scratch root: #77a now accepts $TMPDIR/tmp
+      # scratch (and the test workspace lives under $TMPDIR), so a one-level `..`
+      # would land in scratch. Walking up to /usr keeps this a real escape.
+      out = tool.call("file_path" => File.join(tmp_dir, *Array.new(12, ".."), "usr", "escape.txt"),
+                      "content" => "x")
       expect(out).to include("refusing to access")
     end
 
