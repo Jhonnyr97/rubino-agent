@@ -3021,14 +3021,23 @@ module Rubino
         new_runner
       end
 
-      # Route a line typed while attached. `/detach` (or the child being gone)
-      # returns to the main view; a `/`-line is an agent-scoped command; plain
-      # text answers a blocked child or steers a running one. Everything reuses
-      # the existing /agents + /reply handlers via the executor, so no new command
-      # surface is introduced — it just makes the global `/agents <id> ...` forms
-      # redundant inside this view.
+      # Route a line typed while attached. `/back`/`/detach` (or the child being
+      # gone) return to the main view; a `/`-line is a COMMAND — the agent-scoped
+      # raw-text forms (bare `/stop`, `/reply`, `/probe`, `--attach`) are handled
+      # in place, and EVERY other `/`-command (`/stop <id>`, `/agents`, `/status`,
+      # …) routes through the SAME executor the main prompt uses (R3); only plain
+      # text answers a blocked child or steers a running one. Reuses the existing
+      # handlers, so no new command surface is introduced.
       def handle_attached_input(input, runner, ui, cmd_executor)
-        id    = @attached_id
+        id = @attached_id
+
+        # `/back` / `/detach` ALWAYS return to main, regardless of composer draft
+        # state (Y3): ← is eaten as cursor-left when a draft is present, so this
+        # is the key-independent way out. Handled FIRST so it works even on a dead
+        # scope and before any steer/dispatch routing below. (The idle + busy
+        # callers also pre-intercept it; this is the robust floor.)
+        return detach_agent_view(runner, ui) if %w[/back /detach].include?(input)
+
         entry = Tools::BackgroundTasks.instance.find(id)
 
         # The child's entry is GONE (reaped) while attached: nothing to show —
@@ -3046,6 +3055,15 @@ module Rubino
         # live_status? / AgentMenu#live? use; inlined since it's the only use here.)
         unless %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
           return attach_agent_view(Regexp.last_match(1), ui) if input =~ %r{\A/agents\s+(\S+)\s+--attach\z}
+
+          # A `/`-command still EXECUTES even when the sub you're parked on has
+          # finished (R3): `/stop <other-id>`, `/status`, `/agents` must work — only
+          # PLAIN text (which would steer a dead child) gets the calm notice.
+          if input.start_with?("/")
+            result = cmd_executor.try_execute(input)
+            attach_agent_view(result[:attach_agent], ui) if result.is_a?(Hash) && result[:attach_agent]
+            return
+          end
 
           ui.info(pastel.dim("◦ #{id} has finished · #{entry.status} — press ← or /back to return to main"))
           return
@@ -3067,6 +3085,18 @@ module Rubino
           agents_request_handler.deliver_reply(entry, Regexp.last_match(1))
         when %r{\A/probe\s+(.+)\z}m
           agents_request_handler.probe_agent(id, Regexp.last_match(1))
+        when %r{\A/}
+          # Any OTHER `/`-prefixed line is a COMMAND, not steer text (R3): a user
+          # attached to a sub who types `/stop <id>` (the exact syntax the footer
+          # advertises), `/agents`, `/status`, etc. expects it to EXECUTE — not be
+          # delivered to the child as an instruction. Route it through the SAME
+          # dispatcher the main prompt uses so every `/`-command works identically
+          # whether attached or not. (`/back`/`/detach`, the raw-text agent-scoped
+          # forms above, and bare `/stop` are handled before this.) A `{attach_agent:}`
+          # signal — `/agents <id> --attach` from the switcher — is acted on here
+          # (the executor only returns the signal), mirroring the idle/busy paths.
+          result = cmd_executor.try_execute(input)
+          attach_agent_view(result[:attach_agent], ui) if result.is_a?(Hash) && result[:attach_agent]
         else
           if %i[needs_approval blocked_on_human].include?(entry.status)
             # The child is blocked on YOU → the line is the answer.
