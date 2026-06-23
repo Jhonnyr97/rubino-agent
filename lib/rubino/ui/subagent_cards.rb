@@ -133,9 +133,9 @@ module Rubino
           subagents = blocked == 1 ? "subagent" : "subagents"
           @pastel.red("    \u26d4#{blocked} #{subagents} waiting on you · ↓ to navigate")
         elsif live.any? { |e| e.status == :needs_approval }
-          @pastel.dim("    └ ⚠ approval pending · ↓ to navigate · --stop to cancel")
+          @pastel.dim("    └ ⚠ approval pending · ↓ to navigate · /stop <id> to cancel")
         else
-          @pastel.dim("    └ ↓ to navigate · Enter to view · --stop to cancel")
+          @pastel.dim("    └ ↓ to navigate · Enter to view · /stop <id> to cancel")
         end
       end
 

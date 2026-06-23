@@ -71,6 +71,23 @@ RSpec.describe Rubino::UI::SubagentCards do
       expect(hint).to include("↓ to navigate")
     end
 
+    # FINDING #55: the cancel hint must teach the real slash command (/stop <id>,
+    # alias of /agents <id> --stop), NOT a bare `--stop` — typed at the main
+    # prompt a bare `--stop` is not a command and becomes a model-interpreted
+    # message rather than cancelling the sub.
+    it "teaches the /stop <id> command to cancel, not a bare --stop" do
+      hint = plain(cards.card_lines([entry])).last
+      expect(hint).to include("/stop <id> to cancel")
+      expect(hint).not_to match(%r{(?<!/agents <id> )--stop})
+    end
+
+    it "teaches the /stop <id> command on the approval-pending hint too" do
+      e = entry(id: "sa_x", status: :needs_approval, approval_command: "c")
+      hint = plain(cards.card_lines([e])).last
+      expect(hint).to include("/stop <id> to cancel")
+      expect(hint).not_to match(%r{(?<!/agents <id> )--stop})
+    end
+
     # #141: a multi-line ruby/shell command often STARTS with a blank line —
     # `.lines.first` rendered an empty "needs approval:" body. The preview must
     # be the first NON-BLANK line.
