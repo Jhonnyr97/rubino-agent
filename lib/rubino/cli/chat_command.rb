@@ -1603,9 +1603,17 @@ module Rubino
           #   in-progress prompt is never pre-empted;
           # - the buffer guard defers while the user is mid-line (the notice stays
           #   parked, never discarded, and rides the line the user submits);
+          # - the attach guard defers while the view is SCOPED to a subagent
+          #   (the user detached to it / drilled in): a line returned here is
+          #   intercepted by #handle_attached_input and STEERED into the focused
+          #   child, so firing the resume while attached would feed the parent's
+          #   `[background subagents finished …]` prompt to the child and DRAIN
+          #   the notices — the parent then sits idle forever, the combined
+          #   result never delivered (#51). Parked, they ride the parent turn the
+          #   moment the user returns to the main prompt (← / /back);
           # - the drain is atomic and one-shot, so the same completions can't
           #   re-trigger a second turn.
-          if input_queue.notices_pending? && idle_buffer_empty?(composer)
+          if input_queue.notices_pending? && idle_buffer_empty?(composer) && !attached_to_agent?
             notices = input_queue.drain_notices
             unless notices.empty?
               line = coalesced_resume_prompt(notices)
