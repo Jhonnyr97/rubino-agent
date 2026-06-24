@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **33 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **31 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
+The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
 
-Several tools share one config gate, so `rubino tools` shows **26 rows** (config groups), not 34: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **24 rows** (config groups), not 31: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -99,16 +99,6 @@ Risk: low
 Parameters: pattern, path, max_results
 ```
 
-### github
-
-GitHub integration: PRs, issues, reviews. Uses gh CLI or REST API.
-
-```
-Risk: medium
-Parameters: action, title, body, number, repo, base, labels
-Actions: pr_create, pr_list, pr_view, pr_checks, pr_diff, issue_create, issue_list, issue_view, repo_view, release_list
-```
-
 ### shell
 
 Execute a shell command. Foreground blocks until exit or `timeout`; pass `run_in_background: true` to fire-and-forget and get a `run_id`.
@@ -165,15 +155,6 @@ Evaluate Ruby code and return the result. The snippet runs in a **separate Ruby 
 ```
 Risk: medium
 Parameters: code
-```
-
-### run_tests
-
-Run the workspace project's test suite and return a **structured** result instead of the raw toolchain firehose. Auto-detects RSpec / Minitest / a Rakefile default task, prefers `bundle exec` when a Gemfile is present (falls back to the bare runner if the bundle is broken), and returns pass/fail counts plus the failing examples (name + file:line + short message) and a short raw tail. Distinguishes "the suite couldn't start" (toolchain error) from "the suite ran and N failed". Use this instead of driving `shell` by hand to run tests. (issue #101)
-
-```
-Risk: low
-Parameters: path (optional file/pattern), framework (optional: rspec|minitest|rake)
 ```
 
 ### apply_patch

@@ -75,9 +75,8 @@ RSpec.describe Rubino::Tools::RubyTool do
     end
 
     it "prefixes the spawned ruby argv with the launcher prefix" do
-      allow(Rubino::Security::Sandbox).to receive(:refusal_reason).and_return(nil)
       allow(Rubino::Security::Sandbox).to receive(:wrap_argv) { |argv, **| ["/jail", "--", *argv] }
-      allow(Rubino::Security::Sandbox).to receive(:wrap_env).and_return({})
+      allow(Rubino::Security::Sandbox).to receive_messages(refusal_reason: nil, wrap_env: {})
       captured = nil
       allow(Open3).to receive(:popen3) do |*args, **|
         captured = args

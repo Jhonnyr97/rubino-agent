@@ -89,12 +89,12 @@ module Rubino
       # we only reflect when rubino actually exposes a way to do the claimed
       # thing (no point nagging "I searched the web" if web tools are disabled).
       ACTION_TOOLS = {
-        "run" => %w[shell ruby test git github],
-        "ran" => %w[shell ruby test git github],
+        "run" => %w[shell ruby],
+        "ran" => %w[shell ruby],
         "execute" => %w[shell ruby],
         "executed" => %w[shell ruby],
-        "test" => %w[test shell],
-        "tested" => %w[test shell],
+        "test" => %w[shell],
+        "tested" => %w[shell],
         "save" => %w[write edit multi_edit patch],
         "saved" => %w[write edit multi_edit patch],
         "write" => %w[write edit multi_edit patch],
@@ -113,12 +113,12 @@ module Rubino
         "renamed" => %w[shell edit multi_edit],
         "install" => %w[shell],
         "installed" => %w[shell],
-        "commit" => %w[git shell],
-        "committed" => %w[git shell],
-        "push" => %w[git shell],
-        "pushed" => %w[git shell],
-        "fetch" => %w[web_fetch shell git],
-        "fetched" => %w[web_fetch shell git]
+        "commit" => %w[shell],
+        "committed" => %w[shell],
+        "push" => %w[shell],
+        "pushed" => %w[shell],
+        "fetch" => %w[web_fetch shell],
+        "fetched" => %w[web_fetch shell]
       }.freeze
 
       # File/state MUTATION verbs — the highest-cost class for a coding agent.
@@ -250,10 +250,9 @@ module Rubino
       WRITE_FAMILY = %w[write edit multi_edit patch].freeze
 
       # The VCS tools a fabricated git-mutation RESULT ("committed as <sha>")
-      # needs on offer for the guard to challenge it. Git runs through the
-      # shell (no dedicated git tool — #536/#553); `github` is the GitHub API
-      # tool.
-      GIT_TOOLS = %w[github shell].freeze
+      # needs on offer for the guard to challenge it. Git and GitHub operations
+      # both run through the shell (no dedicated git/github tool — #536/#553).
+      GIT_TOOLS = %w[shell].freeze
 
       # The text honestly reports the block instead of fabricating success —
       # "it was blocked", "nothing was applied", "not run/applied", "wasn't run",
