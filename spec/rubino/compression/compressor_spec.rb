@@ -147,14 +147,17 @@ RSpec.describe Rubino::Compression::Compressor do
 
     it "is a no-op passthrough for a language with no registered strategy" do
       result = compressor.compress(source, source_path: "geo.rb", content_type: :code,
-                                           full_file: true, language: :python)
+                                           full_file: true, language: :javascript)
       expect(result.applied?).to be(false)
       expect(result.strategy).to eq(:unsupported_language)
       expect(compressor.elided_ranges).to be_empty
     end
 
-    it "registers :ruby → RubyCodeSkeleton" do
-      expect(described_class::STRATEGIES).to eq(ruby: Rubino::Compression::RubyCodeSkeleton)
+    it "registers :ruby → RubyCodeSkeleton and :python → PythonCodeSkeleton" do
+      expect(described_class::STRATEGIES).to eq(
+        ruby: Rubino::Compression::RubyCodeSkeleton,
+        python: Rubino::Compression::PythonCodeSkeleton
+      )
     end
   end
 
