@@ -164,7 +164,7 @@ RSpec.describe Rubino::Tools::QuestionTool do
   end
 
   # #107: in non-interactive mode the UI's #ask returns nil (CLI off a TTY,
-  # Null, SubagentView). The tool must NEVER silently pick an option — it
+  # Null). The tool must NEVER silently pick an option — it
   # returns the structured no-answer result so the model knows no user was
   # available, regardless of what ambient stdin held.
   describe "#call with options when no user answer is available (#107)" do
