@@ -806,9 +806,45 @@ module Rubino
           end
         end
         chat.with_temperature(rendered.temperature) if !rendered.temperature.nil? && chat.respond_to?(:with_temperature)
+
+        # OpenAI-compatible passthrough (#extra_body): merge the configured
+        # free-form body hash into the params so ruby_llm deep-merges it into the
+        # /v1/chat/completions payload (Provider#complete: deep_merge(payload,
+        # params)). This reaches gateways like oMLX / Qwen that need
+        # chat_template_kwargs:{enable_thinking:false} to suppress CoT leakage and
+        # emit native tool_calls. Confined to the OpenAI-compatible path so the
+        # anthropic-family request shape and the thinking-budget logic above are
+        # untouched. Adapter-routed keys (max_tokens/thinking) win on conflict.
+        unless anthropic_family
+          eb = extra_body
+          params = eb.merge(params) unless eb.empty?
+        end
+
         # Single with_params call — ruby_llm REPLACES @params on every call,
         # so max_tokens and a params-routed thinking block must travel together.
         chat.with_params(**params) if params.any? && chat.respond_to?(:with_params)
+      end
+
+      # Free-form hash merged verbatim into the OpenAI-compatible request body
+      # (providers.<name>.extra_body). Symbolizes keys recursively so ruby_llm's
+      # with_params (kwargs) and the JSON payload deep-merge accept them. Returns
+      # an empty hash when unset/non-hash → inert, byte-identical to before.
+      def extra_body
+        raw = provider_cfg["extra_body"]
+        return {} unless raw.is_a?(Hash)
+
+        deep_symbolize(raw)
+      end
+
+      def deep_symbolize(value)
+        case value
+        when Hash
+          value.each_with_object({}) { |(k, v), h| h[k.to_sym] = deep_symbolize(v) }
+        when Array
+          value.map { |v| deep_symbolize(v) }
+        else
+          value
+        end
       end
 
       def reasoning_manager = @reasoning_manager ||= ReasoningManager.new
