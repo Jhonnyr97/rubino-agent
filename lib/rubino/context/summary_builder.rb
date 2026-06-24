@@ -144,12 +144,23 @@ module Rubino
         PROMPT
       end
 
+      # The conversation segment comes FIRST and the (volatile) previous summary
+      # LAST. Order matters only for prompt-cache prefix stability, not for the
+      # summary itself: the model receives exactly the same two pieces either
+      # way. The new segment is the byte-stable, append-only region across
+      # same-session summarize calls — earlier turns never change, the tail just
+      # grows — so leading with it lets the model server cache the shared prefix.
+      # The previous summary is rewritten on every compaction, so placing it at
+      # the FRONT (as before) put a volatile head ahead of the stable body and
+      # busted the cacheable prefix on every call. Both labels are explicit, so
+      # the "incorporate the previous summary" instruction is unambiguous
+      # regardless of order.
       def build_summary_prompt(content, previous_summary)
         parts = []
 
-        parts << "Previous summary to incorporate:\n#{previous_summary}\n\n---\n" if previous_summary
-
         parts << "New conversation segment to summarize:\n#{content}"
+        parts << "\n---\nPrevious summary to incorporate:\n#{previous_summary}" if previous_summary
+
         parts.join("\n")
       end
 

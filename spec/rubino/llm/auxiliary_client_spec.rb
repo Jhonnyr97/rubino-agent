@@ -73,6 +73,73 @@ RSpec.describe Rubino::LLM::AuxiliaryClient do
     end
   end
 
+  # The aux prompt PREFIX (the system message) is byte-stable across same-task
+  # calls — the task instructions never change — while the user transcript grows.
+  # When prompt caching is on we stamp a cache_control breakpoint on that stable
+  # head so the model server caches the shared prefix instead of paying full
+  # uncached input every turn (memory/skill/summary all fire ~every turn). When
+  # caching is off the messages must be byte-identical to before (plain strings).
+  describe "#call prompt-cache breakpoint" do
+    let(:adapter) { instance_double(Rubino::LLM::FakeProvider) }
+
+    before do
+      config.set("auxiliary", "summarize",
+                 { "provider" => "main", "model" => "", "base_url" => nil, "timeout" => 300 })
+      allow(Rubino::LLM::AdapterFactory).to receive(:build).and_return(adapter)
+    end
+
+    def capture_messages
+      captured = nil
+      allow(adapter).to receive(:chat) do |**kw|
+        captured = kw[:messages]
+        build_response("ok")
+      end
+      client.call(task: :summarize,
+                  messages: [{ role: "system", content: "STABLE SYSTEM PROMPT" },
+                             { role: "user", content: "the transcript" }])
+      captured
+    end
+
+    context "when prompts.prompt_cache is on (default)" do
+      it "wraps the system content in a Content::Raw block carrying a cache_control marker" do
+        config.set("prompts", "prompt_cache", true)
+        msgs = capture_messages
+
+        sys = msgs.find { |m| m[:role] == "system" }
+        expect(sys[:content]).to be_a(RubyLLM::Content::Raw)
+        block = sys[:content].value.first
+        expect(block["text"]).to eq("STABLE SYSTEM PROMPT")
+        expect(block["cache_control"]).to eq("type" => "ephemeral")
+      end
+
+      it "leaves the (growing) user message a plain string AFTER the cached head" do
+        config.set("prompts", "prompt_cache", true)
+        msgs = capture_messages
+
+        user = msgs.find { |m| m[:role] == "user" }
+        expect(user[:content]).to eq("the transcript")
+      end
+
+      it "is deterministic — two calls produce a byte-identical cached block" do
+        config.set("prompts", "prompt_cache", true)
+        first  = capture_messages.find { |m| m[:role] == "system" }[:content].value
+        second = capture_messages.find { |m| m[:role] == "system" }[:content].value
+        expect(first).to eq(second)
+      end
+    end
+
+    context "when prompts.prompt_cache is off" do
+      it "leaves the messages as plain strings, unchanged" do
+        config.set("prompts", "prompt_cache", false)
+        msgs = capture_messages
+
+        sys = msgs.find { |m| m[:role] == "system" }
+        expect(sys[:content]).to eq("STABLE SYSTEM PROMPT")
+        expect(sys[:content]).to be_a(String)
+      end
+    end
+  end
+
   def build_response(text)
     Rubino::LLM::AdapterResponse.new(
       content: text, tool_calls: [], input_tokens: 0, output_tokens: 0, model_id: "fake"
