@@ -8,8 +8,33 @@ A coding & automation **agent** — small, self-contained, and built to run *whe
 - **Persistent memory** — a tiny SQLite fact store that learns about you and the project across sessions.
 - **Context compaction** — automatic compression with session lineage when the conversation outgrows the window.
 - **CLI *and* HTTP API** — an interactive terminal session for humans, a bearer-protected JSON + SSE API for programs.
-- **Real tools, gated** — read/write/edit, shell, ruby, git/github, grep/glob, a structured test runner, vision, and more, behind an approval model with a non-bypassable hardline floor.
+- **Real tools, gated** — read/write/edit, shell, ruby, grep/glob, apply_patch, vision, and more (git, GitHub, and tests run through the hardened shell), behind an approval model with a non-bypassable hardline floor.
 - **Built on ruby_llm** — provider-agnostic: MiniMax, OpenAI, Anthropic, Gemini, or an OpenAI-compatible gateway.
+
+## Cache-friendly compaction (measured)
+
+A long agent session only stays cheap if the cached prompt prefix survives
+compaction. rubino is built so that when the conversation is compressed into a
+summary, the summary lands *after* the cached head (system + tools + stable
+history) — so the provider's prompt cache keeps **hitting** the head instead of
+re-encoding it cold every time the session is compacted.
+
+Measured with the model held fixed (local oMLX `Qwen3.6-35B-A3B`,
+Anthropic-style `cache_control`) on a 25-turn coding session that triggers
+compaction **9 times**:
+
+| metric | rubino |
+|---|---|
+| cached prefix retained right after each compaction | **44–94%** (survives — never resets to 0) |
+| cumulative cache-read over the whole session | **88%** |
+| prefix byte-stability across turns | **0.95** |
+| task solved through all 9 compactions | **10/10** hidden tests, 0 wasted work |
+
+Holding the model fixed isolates the **engine** — any difference is the
+scaffolding (prompt assembly, where the compaction summary is placed, cache
+breakpoints), not the model. This is a single model and a single scenario:
+indicative of the design, not a leaderboard. The harness lives in a separate
+benchmark project.
 
 ## Install
 
