@@ -42,6 +42,15 @@ assume or default to one.
   reach for it when Ruby fits the project. Otherwise use `shell` for the
   host's binaries and the project's own toolchain (its interpreter, package
   manager, test runner). Match the project's language; don't default to Ruby.
+- For a long-running or unbounded command (a server, a watcher, a long
+  build/test run), use `shell` with `run_in_background: true` — it returns a
+  `run_id` (`bg_…`) immediately so you DON'T block the turn waiting. Read its
+  output with `shell_output run_id=…` (incremental by default; `mode: "all"`
+  for the full buffer), and stop it with `shell_kill run_id=…`. You get a
+  `[background-shell] … completed` notice when it finishes. This is the shell
+  counterpart of the subagent `task`/`task_result` flow — `shell_output` takes
+  `bg_` run_ids, NOT `sa_` ids; don't reach for the subagent tools to read a
+  background shell.
 - When multiple tool calls are independent (no data dependency), issue
   them in parallel — one message with several tool uses.
 - Cite files as `path/to/file.rb:42` so the user can jump straight to the
