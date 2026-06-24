@@ -72,6 +72,26 @@ RSpec.describe Rubino::Context::SummaryBuilder do
       expect(captured).not_to include("CONTEXT COMPACTION")
     end
 
+    it "orders the byte-stable conversation segment BEFORE the volatile previous summary (cache-prefix stability)" do
+      captured = nil
+      allow(aux_client).to receive(:call) do |**kw|
+        captured = kw[:messages].last[:content]
+        instance_double(Rubino::LLM::AdapterResponse, content: "new")
+      end
+
+      builder.build(messages: [{ role: "user", content: "investigate the refactor" }],
+                    previous_summary: "earlier summary body")
+
+      # Same information reaches the model (both pieces present, both labelled),
+      # but the append-only segment leads so the prefix stays cacheable; the
+      # previous summary — rewritten every compaction — trails it.
+      seg = captured.index("New conversation segment")
+      prev = captured.index("Previous summary to incorporate")
+      expect(seg).to be < prev
+      expect(captured).to include("investigate the refactor")
+      expect(captured).to include("earlier summary body")
+    end
+
     it "passes the config through so AuxiliaryClient can honor the full auxiliary.compression block" do
       cfg = test_configuration(
         "auxiliary" => Rubino::Config::Defaults.to_hash["auxiliary"].merge(
