@@ -77,23 +77,6 @@ RSpec.describe Rubino::Tools::TaskTool do
         expect(tools).to include("task")
       end
     end
-
-    it "keeps ask_parent subagent-only (off the primary, on the subagent)" do
-      Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
-
-      # ask_parent is doubly-gated (#313): subagent-only at the Definition layer
-      # AND situational at the Registry layer (only when running AS a subagent —
-      # the current_subagent_id thread-local is set). A real child run resolves
-      # its tools INSIDE with_current_subagent_id (TaskTool wraps the child
-      # Runner#run!), so reproduce that context here.
-      explore_tools = Rubino.with_current_subagent_id("sa_test") do
-        Rubino.agent_registry.find("explore").resolved_tools.map(&:name)
-      end
-      expect(explore_tools).to include("ask_parent")
-
-      primary = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
-      expect(primary.resolved_tools.map(&:name)).not_to include("ask_parent")
-    end
   end
 
   # ---------------------------------------------------------------------------
@@ -1313,27 +1296,40 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch << :go # release so the worker thread exits cleanly
     end
 
-    # #197 — a child parked on a blocking ask_parent is LIVE (it holds a thread
+    # #197 — a child parked on a blocking ask gate is LIVE (it holds a thread
     # + a concurrency slot); task_stop must cancel its ask gate and unwind it,
     # not refuse with "already blocked_on_human — nothing to stop" and leave a
     # zombie holding its slot until the 15m gate timeout.
-    it "stops a child parked on a blocking ask_parent: gate cancelled, ⊘ stopped, slot freed (#197)" do
+    it "stops a child parked on a blocking ask gate: gate cancelled, ⊘ stopped, slot freed (#197)" do
       registry       = Rubino::Tools::BackgroundTasks.instance
       before_threads = Thread.list.size
       runner = Class.new do
         def initialize = @cancelled = false
 
         def run!(_input, **_opts)
-          out = Rubino::Tools::AskParentTool.new.call("question" => "which db?", "blocking" => true)
+          # Park the child's own thread on a real ask gate, exactly as a blocking
+          # cross-thread hand-off does: register the gate on the entry, flip it to
+          # :blocked_on_human, then await indefinitely until task_stop cancels it.
+          entry_id = Rubino.current_subagent_id
+          gate     = Rubino::Run::ApprovalGate.new
+          ask_id   = "ask_#{entry_id}"
+          gate.register(ask_id)
+          registry.begin_ask(entry_id, gate: gate, ask_id: ask_id,
+                                       question: "which db?", blocking: true)
+          gate.await(ask_id, timeout: nil)
           # Mimic the real Loop's cancel checkpoint: task_stop flips the runner
           # token BEFORE cancelling the gate, so the woken child unwinds with
           # Interrupted right after the cancelled ask returns.
           raise Rubino::Interrupted, "stopped" if @cancelled
-
-          out
+        ensure
+          registry.end_ask(entry_id) if entry_id
         end
 
         def cancel! = @cancelled = true
+
+        private
+
+        def registry = Rubino::Tools::BackgroundTasks.instance
       end.new
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
       out     = tool.call("subagent" => "explore", "prompt" => "x")
