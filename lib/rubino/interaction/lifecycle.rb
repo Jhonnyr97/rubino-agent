@@ -454,9 +454,10 @@ module Rubino
           enqueued = true
         end
 
-        # Summarize if session is getting long
+        # Summarize if session is getting long (gateable like the extract/distill
+        # background jobs, so the whole aux-LLM surface can be turned off together).
         message_count = @message_store.count(@session[:id])
-        if message_count > 20
+        if @config.memory_auto_summarize? && message_count > 20
           queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
           enqueued = true
