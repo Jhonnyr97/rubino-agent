@@ -76,18 +76,12 @@ module Rubino
           register(Rubino::Tools::MultiEditTool.new)
           register(Rubino::Tools::GrepTool.new)
           register(Rubino::Tools::GlobTool.new)
-          register(Rubino::Tools::GitHubTool.new)
           register(Rubino::Tools::ShellTool.new)
           register(Rubino::Tools::ShellOutputTool.new)
           register(Rubino::Tools::ShellTailTool.new)
           register(Rubino::Tools::ShellInputTool.new)
           register(Rubino::Tools::ShellKillTool.new)
           register(Rubino::Tools::RubyTool.new)
-          # Structured test-runner (issue #101): auto-detects rspec/minitest/
-          # rake, prefers `bundle exec` (falls back when the bundle is broken),
-          # and returns pass/fail counts + parsed failing examples instead of
-          # the raw toolchain firehose the `shell` tool would dump.
-          register(Rubino::Tools::TestTool.new)
           register(Rubino::Tools::PatchTool.new)
           register(Rubino::Tools::WebFetchTool.new)
           register(Rubino::Tools::WebSearchTool.new)

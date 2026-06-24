@@ -410,7 +410,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   end
 
   describe "approval question formatting" do
-    # #109: a no-args tool call (e.g. a bare run_tests) must not render a
+    # #109: a no-args tool call (e.g. a bare no-arg tool) must not render a
     # dangling "wants:" header followed by nothing — reading as truncated.
     it "omits the dangling 'wants:' header entirely when there are no arguments (#109)" do
       expect(executor.send(:approval_question, tool, {})).to eq("#{tool.name} wants to run")

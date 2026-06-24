@@ -67,7 +67,6 @@ module Rubino
           "indented_io" => "IndentedIO",
           "webfetch_tool" => "WebFetchTool",
           "websearch_tool" => "WebSearchTool",
-          "github_tool" => "GitHubTool",
           "skill_tool" => "SkillTool",
           "custom_tool_loader" => "CustomToolLoader",
           "custom_tool_builder" => "CustomToolBuilder",

@@ -151,7 +151,7 @@ module Rubino
       end
 
       # Jail ANY argv (not just bash): prepend the launcher prefix so every
-      # process-spawning tool (shell, ruby, run_tests) goes through the same OS
+      # process-spawning tool (shell, ruby) goes through the same OS
       # write-jail. [] prefix when off/unavailable ⇒ byte-identical to no
       # sandbox. Callers splat the result into Process.spawn/Open3 and merge
       # #wrap_env into their env. `argv` is the already-built command argv.
