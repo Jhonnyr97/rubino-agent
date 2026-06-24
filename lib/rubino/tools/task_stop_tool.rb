@@ -16,16 +16,15 @@ module Rubino
       end
 
       # The live statuses a stop applies to. A child parked on a human approval
-      # or an ask_parent gate still holds its thread + concurrency slot
-      # (BackgroundTasks#live_status?), so it MUST be stoppable — refusing left
-      # a blocked child as a zombie holding its slot until the ask-gate timeout
-      # (#197). :stopping is excluded: a second stop is honestly "already
-      # stopping — nothing to stop".
+      # still holds its thread + concurrency slot (BackgroundTasks#live_status?),
+      # so it MUST be stoppable — refusing left a blocked child as a zombie
+      # holding its slot until the approval gate timeout (#197). :stopping is
+      # excluded: a second stop is honestly "already stopping — nothing to stop".
       STOPPABLE = %i[running needs_approval blocked_on_human blocked_on_parent].freeze
 
       def description
         "Stop a running background subagent started by `task` — including one " \
-          "parked on an approval or an ask_parent question. Cancels the " \
+          "parked on an approval. Cancels the " \
           "subagent's nested run; its task_result will then report failed/cancelled."
       end
 
