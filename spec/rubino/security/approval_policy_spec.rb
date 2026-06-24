@@ -636,13 +636,12 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     # Code-execution tool symmetry (step 8c). Under dangerous_only, arbitrary
-    # safe `shell` runs unprompted, so the dedicated run_tests/ruby tools must
-    # NOT be gated HARDER than the raw shell they would otherwise be driven
-    # through (the field norm: Claude Code auto-mode / Codex full-auto / aider
-    # auto-run test/lint). They are aligned AT MOST to the safe-shell tier.
-    context "code-execution tool symmetry (run_tests / ruby)" do
-      let(:run_tests) { make_tool(name: "run_tests", risk_level: :medium, risky: true) }
-      let(:ruby)      { make_tool(name: "ruby",      risk_level: :medium, risky: true) }
+    # safe `shell` runs unprompted, so the dedicated `ruby` tool must NOT be
+    # gated HARDER than the raw shell it would otherwise be driven through (the
+    # field norm: Claude Code auto-mode / Codex full-auto / aider auto-run
+    # code). It is aligned AT MOST to the safe-shell tier.
+    context "code-execution tool symmetry (ruby)" do
+      let(:ruby) { make_tool(name: "ruby", risk_level: :medium, risky: true) }
 
       context "dangerous_only" do
         let(:pol) do
@@ -652,22 +651,18 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
           ))
         end
 
-        it "runs run_tests WITHOUT a prompt (lower-risk than safe shell)" do
-          expect(pol.decide(run_tests, arguments: {})).to eq(:allow)
-        end
-
         it "runs ruby WITHOUT a prompt (aligned to the safe-shell tier)" do
           expect(pol.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:allow)
         end
 
-        it "still honors an explicit permissions:deny on run_tests (deny-class wins)" do
+        it "still honors an explicit permissions:deny on ruby (deny-class wins)" do
           cfg = test_configuration(
             "approvals" => { "mode" => "manual" },
             "security" => { "confirm_policy" => "dangerous_only" },
-            "permissions" => { "run_tests *" => "deny" }
+            "permissions" => { "ruby *" => "deny" }
           )
           p = described_class.new(config: cfg)
-          expect(p.decide(run_tests, arguments: {})).to eq(:deny)
+          expect(p.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:deny)
         end
       end
 
@@ -677,10 +672,6 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
             "approvals" => { "mode" => "manual" },
             "security" => { "confirm_policy" => "confirm_all" }
           ))
-        end
-
-        it "asks for run_tests under confirm_all" do
-          expect(pol.decide(run_tests, arguments: {})).to eq(:ask)
         end
 
         it "asks for ruby under confirm_all" do
@@ -860,8 +851,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         # self-test proved it does not confine, so the pure-WRITE flag-forms
         # MUST keep prompting — relaxation gates on enforcing?, not active?.
         before do
-          allow(Rubino::Security::Sandbox).to receive(:active?).and_return(true)
-          allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false)
+          allow(Rubino::Security::Sandbox).to receive_messages(active?: true, enforcing?: false)
         end
 
         write_class.merge(exec_class).each do |label, cmd|
