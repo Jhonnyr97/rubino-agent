@@ -93,6 +93,22 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  describe "tool-output code-compression accessors" do
+    it "defaults the skeletoner languages to [ruby]" do
+      expect(config.tool_output_compression_code_languages).to eq(%w[ruby])
+    end
+
+    it "reads the languages list from the code block" do
+      cfg = test_configuration("tool_output_compression" => { "code" => { "languages" => %w[ruby python] } })
+      expect(cfg.tool_output_compression_code_languages).to eq(%w[ruby python])
+    end
+
+    it "returns [] when the languages key is absent" do
+      cfg = test_configuration("tool_output_compression" => { "code" => {} })
+      expect(cfg.tool_output_compression_code_languages).to eq([])
+    end
+  end
+
   describe "memory accessors" do
     it "returns memory enabled" do
       expect(config.memory_enabled?).to be true

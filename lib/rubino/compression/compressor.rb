@@ -23,6 +23,11 @@ module Rubino
       # round-trips it forces; send the original instead.
       MIN_SAVING_RATIO = 0.25
 
+      # Per-language skeleton strategies, keyed by language symbol. A LineSkeleton
+      # subclass per language; today only Ruby (Prism built-in). Later slices
+      # register Python/JS strategies here — the rest of the pipeline is unchanged.
+      STRATEGIES = { ruby: RubyCodeSkeleton }.freeze
+
       # The exact (1-based first line, line count) ranges the skeleton elided.
       # Carried OUT of #compress via an attr so the caller can record them for
       # drill-in detection without threading another return value.
@@ -36,9 +41,12 @@ module Rubino
 
       # content        — the raw file text (NOT line-numbered)
       # source_path     — display path embedded in pointer lines (`read <path> ...`)
-      # content_type    — :code (Ruby) is the only compressible type in Phase 1
+      # content_type    — :code is the only compressible type in Phase 1
       # full_file       — true only for a whole-file read (no offset/limit)
-      def compress(content, source_path:, content_type:, full_file:)
+      # language        — which per-language skeleton strategy to use (default :ruby
+      #                   so existing direct callers are unaffected); an
+      #                   unregistered language is a no-op passthrough.
+      def compress(content, source_path:, content_type:, full_file:, language: :ruby)
         original_bytes = content.bytesize
 
         return CompressionResult.noop(strategy: :not_full_file) unless full_file
@@ -47,14 +55,17 @@ module Rubino
         line_count = content.count("\n") + (content.end_with?("\n") ? 0 : 1)
         return CompressionResult.noop(strategy: :too_small) if line_count < @min_lines
 
-        skeletonise(content, source_path, original_bytes)
+        skeletonise(content, source_path, original_bytes, language)
       end
 
       private
 
-      def skeletonise(content, source_path, original_bytes)
+      def skeletonise(content, source_path, original_bytes, language)
         @elided_ranges = []
-        strategy = RubyCodeSkeleton.new(keep_method_body_max_lines: @keep_method_body_max_lines)
+        strategy_class = STRATEGIES[language&.to_sym]
+        return CompressionResult.noop(strategy: :unsupported_language) unless strategy_class
+
+        strategy = strategy_class.new(keep_method_body_max_lines: @keep_method_body_max_lines)
         skeleton = strategy.build(content, pointer_path: source_path) do |first_line, count|
           @elided_ranges << [first_line, count]
         end

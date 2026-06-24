@@ -211,12 +211,14 @@ module Rubino
         # the hint as `raw_source`; fall back to `text` for a direct caller.
         source = hint[:raw_source] || hint["raw_source"] || text
         source_path = hint[:source_path] || hint["source_path"]
+        lang = hint[:lang] || hint["lang"] || :ruby
         compressor = Compressor.new(
           min_lines: cfg.fetch("min_lines", 150),
           keep_method_body_max_lines: cfg.fetch("keep_method_body_max_lines", 8)
         )
         result = compressor.compress(source, source_path: source_path,
-                                             content_type: :code, full_file: true)
+                                             content_type: :code, full_file: true,
+                                             language: lang.to_sym)
         return Result.passthrough(:code) unless result.applied?
 
         # elided_ranges live on the Compressor; expose them via a side-channel

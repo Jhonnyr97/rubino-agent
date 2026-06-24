@@ -137,6 +137,27 @@ RSpec.describe Rubino::Compression::Compressor do
     end
   end
 
+  describe "the per-language strategy registry" do
+    it "defaults to :ruby and skeletonises Ruby exactly as before" do
+      # No language: argument — the default path existing callers use.
+      result = compress(source)
+      expect(result.applied?).to be(true)
+      expect(result.strategy).to eq(:skeleton)
+    end
+
+    it "is a no-op passthrough for a language with no registered strategy" do
+      result = compressor.compress(source, source_path: "geo.rb", content_type: :code,
+                                           full_file: true, language: :python)
+      expect(result.applied?).to be(false)
+      expect(result.strategy).to eq(:unsupported_language)
+      expect(compressor.elided_ranges).to be_empty
+    end
+
+    it "registers :ruby → RubyCodeSkeleton" do
+      expect(described_class::STRATEGIES).to eq(ruby: Rubino::Compression::RubyCodeSkeleton)
+    end
+  end
+
   describe "edge cases" do
     it "leaves one-line method definitions whole (nothing to point at)" do
       pad = (["# pad"] * 12).join("\n")

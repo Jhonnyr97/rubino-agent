@@ -328,6 +328,14 @@ module Rubino
         dig("tool_output_compression", "code") || {}
       end
 
+      # Source languages the code skeletoner is enabled for (e.g. ["ruby"]).
+      # A whole-file read whose language isn't in this list passes through
+      # verbatim. Ruby uses the built-in Prism parser; later languages need
+      # their own parser registered before being added here.
+      def tool_output_compression_code_languages
+        tool_output_compression_code["languages"] || []
+      end
+
       # DIFF compression config. Like `code`, it has NO own `enabled` sub-flag:
       # it is active whenever the master `tool_output_compression.enabled` is on.
       # The DiffCompressor's saving guard (min_lines + min_saving) is the real
