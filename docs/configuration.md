@@ -367,6 +367,7 @@ tool_output_compression:
     strategy: skeleton        # only "skeleton" is implemented; any other value = passthrough
     min_lines: 150            # files shorter than this are never skeletonised
     keep_method_body_max_lines: 8  # bodies up to N lines are kept inline; larger ones are elided
+    languages: [ruby]         # source languages to skeletonise (see note below); `rubino setup` lets you pick
   logs:
     enabled: false            # sub-gate: log compression only runs when BOTH this and the master are on
     min_lines: 40             # outputs shorter than this pass through unchanged
@@ -399,6 +400,15 @@ tool_output_compression:
     outlier_sigma: 3.0        # a numeric field > N σ from its column mean = a kept outlier row (lossy)
     max_string_chars: 400     # in a single object, string values longer than this collapse to `<elided N chars>` (key kept)
 ```
+
+> **`code.languages`** (default `["ruby"]`) selects which source languages get
+> whole-file skeletonisation; a read whose language isn't listed passes through
+> verbatim, so removing a language disables compression for it. Values: `ruby`
+> (built-in Prism parser, always available), `python` (stdlib `ast` via your
+> `python3` — a no-op if `python3` isn't on PATH), and `javascript` /
+> `typescript` / `tsx` (need the optional `tree_sitter_language_pack` gem — a
+> no-op until it's installed). `rubino setup` offers a language picker and, if you
+> choose JS/TS, asks before installing the parser gem.
 
 > `diff` and `json` have **no** own `enabled` sub-gate (like `code`): they are
 > active whenever the master flag is on, and the saving guard (`min_lines`/
