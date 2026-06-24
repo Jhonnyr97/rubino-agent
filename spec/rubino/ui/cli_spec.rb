@@ -2533,7 +2533,7 @@ RSpec.describe Rubino::UI::CLI do
       allow(composer).to receive(:set_turn_status)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
       ui.send(:paint_turn_status, "◆ writing")
-      expect(composer).to have_received(:set_turn_status).with("◆ writing")
+      expect(composer).to have_received(:set_turn_status).with("◆ writing", origin: :main)
     end
 
     it "is a no-op with no composer and a non-TTY stdout" do

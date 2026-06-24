@@ -49,8 +49,28 @@ module Rubino
       #   in-memory/process-lifetime anyway. Injectable for tests.
       # @param approval_cache [Run::SessionApprovalCache] shared cache so a
       #   prior "always" decision short-circuits the prompt, matching UI::API.
-      def initialize(session_id: nil, approval_cache: nil)
+      # @param agent_id [Symbol, String] which agent this CLI renders for. :main
+      #   is the top-level loop; a background subagent gets its registry entry id.
+      #   Every frame this CLI commits to the bottom composer carries it as
+      #   `origin:`, so the composer's focus-gate paints ONLY the focused agent and
+      #   drops the rest (tmux-style unified render). One UI::CLI instance per
+      #   agent, so the per-turn stream buffers (@stream_md, @reasoning_buffer, …)
+      #   never cross between concurrently-running agents.
+      # @param approval_handler [#call, nil] for a BACKGROUND subagent CLI: the
+      #   gate handler TaskTool wires (TaskTool#approval_handler_for). #confirm
+      #   delegates to it so an approval-gated child tool surfaces on the entry's
+      #   card and PARKS the child thread on a per-entry gate (the parent answers
+      #   via /agents <id>), instead of the TTY::Prompt path a real terminal uses
+      #   (a background thread has no terminal). nil ⇒ the normal CLI behaviour.
+      # @param budget_handler [#call, nil] the budget-extension handler TaskTool
+      #   wires (TaskTool#budget_handler_for); #select delegates to it when a
+      #   parked child hits its tool-iteration ceiling (#574). nil ⇒ normal CLI.
+      def initialize(session_id: nil, approval_cache: nil, agent_id: :main,
+                     approval_handler: nil, budget_handler: nil)
         super()
+        @agent_id           = agent_id
+        @approval_handler   = approval_handler
+        @budget_handler     = budget_handler
         @prompt             = TTY::Prompt.new
         @stream_type        = nil
         @stream_md          = nil # StreamingMarkdown buffer, lazily built per content stream
@@ -274,6 +294,12 @@ module Rubino
       # `rubino chat` run has no one to answer, so the executor fails closed
       # instead of hanging or auto-running.
       def interactive?
+        # A BACKGROUND subagent CLI has no terminal of its own, but WITH a wired
+        # gate handler it can still put an approval in front of a human (park the
+        # child on a per-entry gate a /agents <id> decision resolves), so it is
+        # interactive — the executor must escalate, not fail closed (#86/#260).
+        return true if @approval_handler
+
         interactive_terminal?
       end
 
@@ -287,6 +313,15 @@ module Rubino
       # own InputInterrupt; both land in the rescue below.
       def select(prompt, choices)
         return nil if choices.nil? || choices.empty?
+
+        # BACKGROUND subagent: the only #select a nested child reaches is the
+        # Loop's budget-extension prompt at the tool-iteration ceiling (#574). With
+        # a wired budget handler, surface it as a budget REQUEST on the card and
+        # park the child on the same per-entry gate the approval path uses; the
+        # handler maps the human's grant/deny to the Loop's :continue / :summarize
+        # contract. Without one (nil), the child can't park → nil, which the Loop
+        # reads as force-summarize (the headless guarantee), like UI::Null.
+        return @budget_handler.call(prompt) if @budget_handler
         return nil unless interactive_terminal?
 
         BottomComposer.run_in_terminal do
@@ -356,6 +391,16 @@ module Rubino
       # @return [Boolean] true when approved.
       def confirm(question, scope: nil, tool: nil, command: nil, pattern_key: nil, description: nil)
         return true if approval_cached?(scope)
+
+        # BACKGROUND subagent (Option 2 — approval-surfacing, #86): a child tool
+        # needing approval is NOT silently denied and does NOT reach TTY::Prompt
+        # (the child runs on a thread with no terminal). Hand off to the wired gate
+        # handler: it flips the entry to :needs_approval (card + parent note) and
+        # BLOCKS the child thread on a per-entry gate until the human answers via
+        # /agents <id>; the returned boolean is the child's decision. "Approve
+        # always" is persisted by the parent decision path's allowlist, so the
+        # handler only needs the boolean.
+        return @approval_handler.call(question, scope: scope, command: command) if @approval_handler
 
         # Finalize any live streaming state before the approval card so the card
         # header doesn't glue onto it ("thinking…⚠ shell wants:" or a
@@ -801,7 +846,7 @@ module Rubino
         rows = (gap ? [""] : []) + Array(lines)
         composer = BottomComposer.current
         if composer
-          composer.print_above(rows.join("\n"))
+          composer.print_above(rows.join("\n"), origin: @agent_id)
         else
           rows.each { |row| row.empty? ? emit_blank : emit_styled(row) }
         end
@@ -909,7 +954,7 @@ module Rubino
         return unless composer
 
         entries = Tools::BackgroundTasks.instance.running
-        composer.set_cards(subagent_cards.card_lines(entries))
+        composer.set_cards(subagent_cards.card_lines(entries), origin: @agent_id)
       rescue StandardError
         # A card repaint is cosmetic — never let it break the turn or the child.
       end
@@ -1396,10 +1441,16 @@ module Rubino
       #   * a pipe hosts nothing — raw escapes must not leak into the cooked
       #     output (#56).
       def paint_live(frame)
-        if $stdout.respond_to?(:live)
+        # The $stdout proxy belongs to the MAIN turn (the main thread swaps it in);
+        # only the main CLI may write through it. A background subagent's CLI runs
+        # on its own thread where the GLOBAL $stdout is the main's proxy (or real
+        # IO) — writing the sub's tail there would route with the wrong origin. So
+        # a non-:main CLI bypasses the proxy and paints the composer directly with
+        # its own origin, letting the focus-gate decide if it lands.
+        if $stdout.respond_to?(:live) && @agent_id == :main
           $stdout.live(frame)
         elsif (composer = BottomComposer.current)
-          composer.set_partial(frame)
+          composer.set_partial(frame, origin: @agent_id)
         elsif tty_stdout?
           # The bare-TTY repaint owns ONE row (CR + clear-line): show only the
           # last line of a multi-line frame so the in-place repaint can't wrap
@@ -1422,7 +1473,7 @@ module Rubino
       # #paint_live uses there. Into a pipe / between turns it is a no-op.
       def paint_turn_status(frame)
         if (composer = BottomComposer.current)
-          composer.set_turn_status(frame)
+          composer.set_turn_status(frame, origin: @agent_id)
         elsif tty_stdout?
           emit_frame("\r\e[2K#{frame.to_s.split("\n").last}")
         end
@@ -1810,6 +1861,44 @@ module Rubino
       end
 
       private
+
+      # True when the GLOBAL $stdout is the StdoutProxy a turn swapped in. That
+      # proxy belongs to the MAIN turn (the main thread installs it), so only the
+      # :main CLI may write committed/live frames through it; a background sub on
+      # its own thread sees the SAME global $stdout and must NOT (it would commit
+      # with the main's origin). Combined with `@agent_id == :main` at the call
+      # sites so a sub always routes straight to the composer with its own origin.
+      def proxy_owned? = $stdout.respond_to?(:live)
+
+      # Funnel override (committed lines). For the MAIN CLI, write through $stdout
+      # exactly as PrinterBase does — during a turn that's the StdoutProxy (line
+      # buffering + origin :main), off-turn the real IO. A NON-:main subagent CLI
+      # runs on its own thread where $stdout is the main turn's proxy (or real IO),
+      # so it bypasses $stdout and commits straight to the bottom composer with its
+      # own origin; the focus-gate drops the frame unless that sub is focused. With
+      # no composer (off-turn / plain / tests) it falls back to the real $stdout so
+      # headless/foreground subagent output is unchanged.
+      def write_line(line = nil)
+        return super if @agent_id == :main
+
+        composer = BottomComposer.current
+        return super unless composer
+
+        composer.print_above(line.to_s, origin: @agent_id)
+      end
+
+      # Funnel override (transient raw frames). Same split as #write_line: a sub's
+      # cursor-control frames route to the composer's transient row (set_partial)
+      # with its origin; the gate drops them when the sub isn't focused. The :main
+      # CLI keeps the raw $stdout print+flush so its stream cadence is unchanged.
+      def write_raw(raw)
+        return super if @agent_id == :main
+
+        composer = BottomComposer.current
+        return super unless composer
+
+        composer.set_partial(raw.to_s, origin: @agent_id)
+      end
 
       # True when a prior "always" decision covers this call — either the
       # exact (tool, args) scope or the tool-wide parent ("always this tool").
@@ -2262,12 +2351,15 @@ module Rubino
         note_live_tail("")
 
         composer = BottomComposer.current
-        if composer && $stdout.respond_to?(:live)
+        if composer && (proxy_owned? || @agent_id != :main)
           # Route around the StdoutProxy's per-line buffering: hand the whole
           # block to the composer so it commits in ONE frame that also clears the
           # live partial (no stranded raw tail). nil/empty lines stay as blank
-          # rows (the P3 rhythm) — LiveRegion#commit keeps them.
-          composer.print_above(lines.join("\n"))
+          # rows (the P3 rhythm) — LiveRegion#commit keeps them. A non-:main agent
+          # has no proxy of its own ($stdout is the main turn's), so it always
+          # commits straight to the composer with its origin; the focus-gate drops
+          # it when that agent isn't focused.
+          composer.print_above(lines.join("\n"), origin: @agent_id)
         else
           # No composer owns the screen (plain TTY / pipe / a #live-shaped test
           # double): clear the in-place raw tail through the SAME seam a live
