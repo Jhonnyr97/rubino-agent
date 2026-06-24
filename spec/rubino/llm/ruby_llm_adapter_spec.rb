@@ -951,6 +951,87 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(chat).not_to have_received(:with_params)
       end
     end
+
+    # providers.<name>.extra_body — a free-form hash merged into the
+    # OpenAI-compatible /v1/chat/completions body via with_params, so a gateway
+    # like oMLX/Qwen receives chat_template_kwargs:{enable_thinking:false} and
+    # suppresses chain-of-thought leakage. Inert when unset; never touches the
+    # anthropic-family path or the thinking-budget logic.
+    context "extra_body passthrough (OpenAI-compatible path)" do
+      def gateway_cfg(extra_body)
+        test_configuration(
+          "model" => { "provider" => "gateway", "default" => "Qwen3.6-35B-A3B-MLX-8bit",
+                       "temperature" => 0.5, "context_length" => nil },
+          "providers" => { "gateway" => {
+            "openai_compatible" => true, "assume_model_exists" => true,
+            "base_url" => "http://localhost:8000/v1", "api_key" => "fake",
+            "extra_body" => extra_body
+          } }
+        )
+      end
+
+      it "merges extra_body into the OpenAI-compatible with_params payload" do
+        cfg = gateway_cfg("chat_template_kwargs" => { "enable_thinking" => false })
+        adapter = described_class.new(model_id: "Qwen3.6-35B-A3B-MLX-8bit", config: cfg)
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        expect(chat).to have_received(:with_params)
+          .with(hash_including(chat_template_kwargs: { enable_thinking: false }))
+      end
+
+      it "symbolizes nested extra_body keys for with_params kwargs" do
+        cfg = gateway_cfg("chat_template_kwargs" => { "enable_thinking" => false })
+        adapter = described_class.new(model_id: "Qwen3.6-35B-A3B-MLX-8bit", config: cfg)
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        expect(chat).to have_received(:with_params) do |**params|
+          expect(params[:chat_template_kwargs]).to eq(enable_thinking: false)
+        end
+      end
+
+      it "is inert (no with_params) when extra_body is empty (byte-identical to today)" do
+        cfg = gateway_cfg({})
+        adapter = described_class.new(model_id: "Qwen3.6-35B-A3B-MLX-8bit", config: cfg)
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        # No thinking budget on the openai-compatible path and no extra_body ⇒
+        # no params to send at all, exactly as before this feature.
+        expect(chat).not_to have_received(:with_params)
+      end
+    end
+
+    # extra_body must NOT leak onto the anthropic-family request path: even when
+    # a provider config carries it, the anthropic branch keeps its existing
+    # max_tokens/thinking-only params and never folds in the free-form body.
+    context "extra_body is ignored on the anthropic-family path" do
+      let(:cfg) do
+        test_configuration(
+          "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7",
+                       "temperature" => 0.3, "context_length" => nil },
+          "providers" => { "minimax" => {
+            "anthropic_compatible" => true, "assume_model_exists" => true,
+            "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
+            "thinking_budget" => 0,
+            "extra_body" => { "chat_template_kwargs" => { "enable_thinking" => false } }
+          } }
+        )
+      end
+      let(:adapter) { described_class.new(model_id: "MiniMax-M2.7", config: cfg) }
+
+      it "does not merge extra_body into the anthropic with_params payload" do
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        # thinking disabled (budget 0) ⇒ only max_tokens travels; the extra_body
+        # key must be absent on this path.
+        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        expect(chat).not_to have_received(:with_params)
+          .with(hash_including(:chat_template_kwargs))
+      end
+    end
   end
 
   # -----------------------------------------------------------------------

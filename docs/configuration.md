@@ -65,9 +65,26 @@ providers:
     assume_model_exists: true
     base_url: null
     request_timeout_seconds: 600
+    extra_body: {}                 # free-form body merged into /v1/chat/completions
 ```
 
 Per-provider you may also set `api_key`, and for custom gateways `anthropic_compatible: true` (MiniMax) or `openai_compatible: true`. See [models-and-keys.md](models-and-keys.md).
+
+#### `extra_body` — OpenAI-compatible request passthrough
+
+`providers.<name>.extra_body` is a free-form hash deep-merged verbatim into the OpenAI-style `/v1/chat/completions` request body. It is honored **only on the OpenAI-compatible request path** (`openai_compatible: true`, or the native `openai` provider) and is never applied on the anthropic-family path, nor does it touch the thinking-budget logic. Adapter-routed keys (`max_tokens`, `thinking`) win on conflict. Left unset (the default `{}`) the request is byte-identical to before.
+
+Use it to pass provider-specific knobs the adapter does not model natively. The canonical case is suppressing chain-of-thought leakage on oMLX / Qwen-style backends that emit `<think>` text instead of native `tool_calls` unless the request carries `chat_template_kwargs: { enable_thinking: false }`:
+
+```yaml
+providers:
+  gateway:
+    openai_compatible: true
+    base_url: "http://localhost:8000/v1"
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+```
 
 Per-provider `supports_thinking: true | false` declares whether the backend handles an Anthropic-style thinking budget correctly; `false` means no budget is ever sent to it, regardless of `thinking.effort`. Unset, MiniMax-family model ids default to `false`, everything else to `true` — see [reasoning & thinking](#reasoning--thinking).
 
