@@ -189,10 +189,11 @@ module Rubino
         event_bus = Rubino.active_event_bus
         # The card host is the ROOT CLI, not the thread-local Rubino.ui. When a
         # SUBAGENT spawns a (grand)child (S1 nesting), the spawner runs under
-        # with_ui(its own SubagentView), so Rubino.ui here is that SubagentView —
-        # NOT a UI::CLI. nested_ui_for keys card-mode on `is_a?(UI::CLI)`, so the
-        # thread-local would make a nested child fall through to a Null view with
-        # NO approval handler: its approval-gated tools would then fail closed
+        # with_ui(its own per-sub UI), so Rubino.ui here is that wrapped sub UI —
+        # NOT the top-level UI::CLI. nested_ui_for keys card-mode on the parent
+        # being a UI::CLI, so the thread-local would make a nested child fall
+        # through to a Null view with NO approval handler: its approval-gated tools
+        # would then fail closed
         # with the headless :noninteractive block instead of escalating to the
         # parent (#86). The single live region is owned by the one top-level CLI
         # (the process-global @ui, the same host entry_parent_ui resolves), so
@@ -260,6 +261,12 @@ module Rubino
         text = result_or_noop(result, entry.subagent)
 
         record_completion(entry, text, sink, parent_ui)
+        # The OLD AttachedAgentWatcher closed its live tail with a "✓ finished —
+        # press ← to return" affordance shown only while the user was attached to
+        # THIS sub. Re-home it onto the sub's OWN UI: it commits with this sub's
+        # origin, so the bottom composer's focus-gate paints it only when the user
+        # is attached to this sub (and drops it otherwise) — no watcher needed.
+        finished_affordance(ui_for_child, entry)
         repaint_parent_cards(parent_ui)
         event_bus&.emit(Interaction::Events::SUBAGENT_COMPLETED,
                         task_id: entry.id, subagent: entry.subagent,
@@ -392,6 +399,18 @@ module Rubino
         # A UI hiccup must never wedge the worker's terminal-state bookkeeping.
       end
 
+      # Commits the terminal affordance on the SUB's own UI when it finishes —
+      # the "✓ <id> finished — press ← to return" line the old AttachedAgentWatcher
+      # printed at the end of its live tail. Routed through the sub's UI (origin =
+      # the sub) so the composer's focus-gate paints it only while attached to this
+      # sub; off a real terminal (Null/foreground) the note is a quiet no-op.
+      # Best-effort: a cosmetic note must never wedge the worker's bookkeeping.
+      def finished_affordance(ui, entry)
+        ui.info("✓ #{entry.id} finished · #{entry.status} — press ← or /back to return to main")
+      rescue StandardError
+        nil
+      end
+
       # Parks the notice on the parent's InputQueue if one is wired — as a
       # NOTICE, not a typed line: the parent loop folds it in at an iteration
       # boundary of a live turn, or at the start of the NEXT real turn, never
@@ -480,7 +499,7 @@ module Rubino
       # Builds the nested Runner for BOTH the sync and background paths.
       # Injectable via the constructor for tests (a FakeLLMAdapter can drive the
       # child loop). Both paths build the child UI via #nested_ui_for (the
-      # collapsed-card SubagentView on the CLI, Null off it) so neither floods
+      # per-sub UI::CLI on the interactive CLI, Null off it) so neither floods
       # $stdout with inline rows; they differ only in the event bus: the
       # background path injects a
       # fresh per-run EventBus so concurrent runs don't cross-contaminate, while
@@ -503,19 +522,25 @@ module Rubino
         end
       end
 
-      # Builds the child UI. In the interactive CLI it's a COLLAPSED-CARD
-      # SubagentView wired with this run's entry id (so its tool activity feeds
-      # the registry/card instead of flooding $stdout) and the parent CLI (whose
-      # live region hosts the card). Off the CLI it's Null (headless/API stays
+      # Builds the child UI (tmux-style unified render). In the interactive CLI
+      # the subagent gets its OWN UI::CLI instance, tagged with this run's entry id
+      # as its `agent_id` — so every frame it commits to the bottom composer
+      # carries that origin and the composer's focus-gate paints it ONLY while the
+      # user is attached to this sub (live tool rows + streaming prose, identical
+      # to main), and drops it otherwise. The per-sub CLI is wrapped in a
+      # UI::SubagentRecorder that keeps the registry counters (tool_count /
+      # last_activity / activity_log / output_tail) current so the OFF-screen
+      # surfaces — probe_tool, /agents drill-in, the ambient cards — still update
+      # even when this sub isn't focused. Off the CLI it's Null (headless/API stays
       # silent and auto-approves as before).
       #
-      # +approve+ is the handler the card calls when a child's tool needs human
-      # approval: the BACKGROUND path passes #approval_handler_for (surface on the
-      # card + park the child thread on a per-entry gate). The SYNC path passes
-      # NOTHING (nil) — a sync child runs on the PARENT TURN's own thread, so
-      # parking it on a 15-min human gate would block the whole REPL with no
-      # idle prompt to resolve it; nil keeps the historical fail-closed auto-deny
-      # until focus-gating makes mid-turn child interaction first-class.
+      # +approve+ is the handler the per-sub CLI's #confirm calls when a child's
+      # tool needs human approval: the BACKGROUND path passes #approval_handler_for
+      # (surface on the card + park the child thread on a per-entry gate). The SYNC
+      # path passes NOTHING (nil) — a sync child runs on the PARENT TURN's own
+      # thread, so parking it on a 15-min human gate would block the whole REPL
+      # with no idle prompt to resolve it; nil keeps the historical fail-closed
+      # auto-deny.
       #
       # +budget+ is the handler #select calls when a child hits its tool-iteration
       # ceiling and asks for more budget (#574). Same split as +approve+: the
@@ -524,19 +549,18 @@ module Rubino
       # force-summarizes (nil #select), exactly as today.
       def nested_ui_for(entry, parent_ui, approve: nil, budget: nil)
         if parent_ui.is_a?(UI::CLI)
-          UI::SubagentView.new(
-            agent_name: entry.subagent,
-            entry_id: entry.id,
-            parent_ui: parent_ui,
-            approve: approve,
-            budget: budget
+          cli = UI::CLI.new(
+            agent_id: entry.id,
+            approval_handler: approve,
+            budget_handler: budget
           )
+          UI::SubagentRecorder.new(cli, entry_id: entry.id)
         else
           UI::Null.new
         end
       end
 
-      # The approval handler the card-mode SubagentView calls when a background
+      # The approval handler the per-sub CLI's #confirm calls when a background
       # child's tool needs approval. It flips the entry to :needs_approval (the
       # card now shows `● needs approval: <command>` + a parent note), registers a
       # per-entry Run::ApprovalGate, and BLOCKS the child thread on the gate's
@@ -579,7 +603,7 @@ module Rubino
         end
       end
 
-      # The budget-request handler the card-mode SubagentView calls (via #select)
+      # The budget-request handler the per-sub CLI calls (via #select)
       # when a BACKGROUND child hits its tool-iteration ceiling (#574). It REUSES
       # the approval gate: flips the entry to :needs_approval flagged as a BUDGET
       # request (so the card / menu / resolve prompt read "wants +budget — grant?"
@@ -620,7 +644,7 @@ module Rubino
 
       # The parent CLI captured for repaints inside the approval handler. The
       # handler runs on the CHILD thread, where Rubino.ui is the child's
-      # SubagentView (bound by with_ui); the real parent CLI is the process-global
+      # per-sub UI (bound by with_ui); the real parent CLI is the process-global
       # adapter, which is what hosts the live region.
       def entry_parent_ui
         root_cli
@@ -628,8 +652,8 @@ module Rubino
 
       # The TOP-LEVEL CLI that owns the collapsed-card live region. This is the
       # process-global UI adapter, NOT the thread-local Rubino.ui: a nested
-      # subagent (S1) spawns from a thread bound by with_ui(its own SubagentView),
-      # so Rubino.ui there is that SubagentView, not the real CLI. Every card —
+      # subagent (S1) spawns from a thread bound by with_ui(its own per-sub UI),
+      # so Rubino.ui there is that wrapped UI, not the real CLI. Every card —
       # at any nesting depth — is hosted by the one top-level CLI, so resolving
       # the host here keeps both the card rendering and the approval escalation
       # (nested_ui_for's `is_a?(UI::CLI)` gate) working past depth 1 (#86).

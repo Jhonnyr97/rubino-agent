@@ -34,7 +34,7 @@ module Rubino
       MAX_CONCURRENT_TOTAL  = 8
 
       # last_activity / tool_count / activity_log — live-progress fields written
-      # by UI::SubagentView#tool_started / #tool_finished (via
+      # by UI::SubagentRecorder#tool_started / #tool_finished (via
       # #record_tool_started / #record_tool_finished) under the registry mutex
       # and read by the parent renderer (UI::SubagentCards) and
       # the /agents drill-in. activity_log is a bounded ring of the last few
@@ -308,7 +308,7 @@ module Rubino
 
       # Records a child tool STARTING: bumps the tool counter and sets the
       # last-activity string the card/list show so concurrent tasks stay
-      # distinguishable (#124/#127). Called from UI::SubagentView#tool_started,
+      # distinguishable (#124/#127). Called from UI::SubagentRecorder#tool_started,
       # which runs on the CHILD thread, so it MUST take the mutex (the parent
       # renderer reads these fields concurrently). No-op for an unknown id (a late event
       # after #remove).
@@ -342,7 +342,7 @@ module Rubino
       # Records a streamed chunk of the CURRENTLY RUNNING tool's output (#5):
       # splits on newlines into a bounded line buffer whose LAST slot carries
       # the in-flight partial line, so the /agents drill-in can tail it live.
-      # Called from UI::SubagentView#tool_chunk on the CHILD thread, so it MUST
+      # Called from UI::SubagentRecorder#tool_chunk on the CHILD thread, so it MUST
       # take the mutex like the other record_* writers. No-op for an unknown id.
       def record_tool_output(id, chunk)
         @mutex.synchronize do

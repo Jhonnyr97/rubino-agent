@@ -148,19 +148,19 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       end
     end
 
-    # #86: a SUBAGENT is non-interactive LOCALLY (no prompt of its own) but CAN
-    # escalate an approval to the PARENT. Its UI is a card-mode SubagentView
-    # WITH a wired approve handler, so #interactive? is TRUE — the :ask must
-    # route to that handler (park → parent card → run on grant), NOT to the
-    # headless :noninteractive fail-closed block a real no-parent one-shot gets.
+    # #86: a SUBAGENT is non-interactive LOCALLY (no terminal of its own) but CAN
+    # escalate an approval to the PARENT. Its UI is a per-sub UI::CLI WITH a wired
+    # approval handler, so #interactive? is TRUE — the :ask must route to that
+    # handler (park → parent card → run on grant), NOT to the headless
+    # :noninteractive fail-closed block a real no-parent one-shot gets.
     describe "subagent :ask escalates to the parent instead of the noninteractive block (#86)" do
       let(:registry_bg) { Rubino::Tools::BackgroundTasks.instance }
       let(:entry)       { registry_bg.reserve(subagent: "explore", prompt: "x") }
-      # The exact handler TaskTool wires onto a background child's SubagentView:
+      # The exact handler TaskTool wires onto a background child's per-sub CLI:
       # parks the entry on a per-entry ApprovalGate, returns the human's decision.
       let(:approve)     { Rubino::Tools::TaskTool.new.send(:approval_handler_for, entry) }
       let(:ui) do
-        Rubino::UI::SubagentView.new(agent_name: "explore", entry_id: entry.id, approve: approve)
+        Rubino::UI::CLI.new(agent_id: entry.id, approval_handler: approve)
       end
 
       before do
