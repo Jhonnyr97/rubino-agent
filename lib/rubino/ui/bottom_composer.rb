@@ -381,31 +381,31 @@ module Rubino
         # @in_takeover (which only neuters the nested suspend/resume).
         @takeover_active = false
 
-        # Focus-gating (agent-multiplexer Slice 3): while the REPL is ATTACHED to
-        # a background subagent's view, the parent turn KEEPS RUNNING in the
-        # background (its messages still persist) but its output must NOT paint
-        # the screen the sub now owns. @main_render_suppressed gates print_above /
-        # set_partial / set_cards (the spinner streams through set_partial too) so
-        # main-turn frames DROP — they are NOT parked: detach replays the parent's
-        # full session from the store, so a parked raw line would only duplicate
-        # it. Distinct from @suspended (run_in_terminal's takeover, which stops the
+        # Focus-gating (tmux-style unified render): EVERY agent — the main loop and
+        # each background subagent — paints through its own UI::CLI, and each frame
+        # carries an `origin:` (the CLI's agent_id). @focused_agent_id names the ONE
+        # agent whose frames may paint the screen right now; print_above /
+        # set_partial / set_turn_status / set_cards DROP a frame whose origin isn't
+        # the focused one (the spinner streams through set_partial too), so a
+        # non-focused agent keeps running and recording its session but paints
+        # nothing. Frames are NOT parked: a switch replays the newly-focused agent's
+        # full session from the store, so a parked raw line would only duplicate it.
+        # Distinct from @suspended (run_in_terminal's takeover, which stops the
         # reader): the reader stays fully live so the user keeps typing into the
-        # sub. @replaying exempts the attach/detach REPLAY (the focused view the
-        # user is meant to see) from the gate — see #with_replay_exempt.
+        # focused agent. @replaying exempts the attach/detach REPLAY (the focused
+        # view the user is meant to see) from the gate — see #with_replay_exempt.
         #
         # SEEDED from the persistent host attach-state (`attached:` — the focused
         # sub's id, or nil/false when at main): the REPL builds a FRESH composer
         # per idle iteration / per turn, so a flag set imperatively at attach time
         # on the previous composer would be lost the moment the loop recreates one
-        # (the parent cards bleed back and the focused sub's live tail never owns
-        # the screen — #82). Whether the view is scoped to a sub lives on the host
-        # (@attached_id), so the composer RECONCILES its gate from that at
-        # construction — every composer that owns the screen while attached starts
-        # already suppressed AND knows which sub is focused, so the while-attached
-        # switcher line marks it (#87).
-        @attached_id            = attached || nil
-        @main_render_suppressed = !@attached_id.nil?
-        @replaying              = false
+        # (the focused agent's live tail never owns the screen — #82). Which agent
+        # is focused lives on the host (@attached_id), so the composer RECONCILES
+        # its focus from that at construction — every composer that owns the screen
+        # while attached starts already focused on the right agent, so the
+        # while-attached switcher line marks it (#87). :main is the default focus.
+        @focused_agent_id = attached || :main
+        @replaying        = false
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -808,7 +808,7 @@ module Rubino
       # Any live streamed partial is cleared first so it doesn't duplicate.
       # A nil +str+ just repaints the prompt; an EMPTY string commits one
       # deliberate blank row (the P3 rhythm gaps — see LiveRegion#commit).
-      def print_above(str)
+      def print_above(str, origin: :main)
         @render.synchronize do
           # R1 write-park: while SUSPENDED (an approval / ask / auto-open dropdown
           # owns the real terminal) the agent thread may STILL be streaming. A raw
@@ -821,11 +821,13 @@ module Rubino
             (@parked_writes ||= []) << str
             return
           end
-          # Focus-gate: while ATTACHED to a sub's view, a parent turn keeps
-          # running but must not paint the sub's screen. DROP the frame (do NOT
-          # park — detach replays the parent's full session, so a parked line
-          # would duplicate it). The attach/detach REPLAY is exempt (@replaying).
-          return if @main_render_suppressed && !@replaying
+          # Focus-gate: only the FOCUSED agent's frames paint. A non-focused agent
+          # (the main loop while attached to a sub, or a sub while at main) keeps
+          # running and recording its session but must not paint the screen the
+          # focused agent owns. DROP the frame (do NOT park — a focus switch
+          # replays the newly-focused agent's full session, so a parked line would
+          # duplicate it). The attach/detach REPLAY is exempt (@replaying).
+          return if origin != @focused_agent_id && !@replaying
 
           @partial = +""
           render_frame(committed: str)
@@ -864,18 +866,20 @@ module Rubino
       # StdoutProxy for partial stream tokens that have no newline yet, so the
       # in-progress line appears live and grows in place — like prompt_toolkit
       # batching a partial line. {#print_above} (a committed line) clears it.
-      def set_partial(str)
+      def set_partial(str, origin: :main)
         # While SUSPENDED (run_in_terminal: an approval/ask owns the real
         # terminal) a live repaint here would draw the partial + prompt rows
         # straight over the interactive prompt. Drop the frame — the next
         # #resume redraws the region and the ticker's next frame lands normally.
         return if @suspended
-        # Focus-gate (Slice 3): the parent turn's live tail AND the status
-        # spinner (paint_live → set_partial) must NOT animate over the attached
-        # sub's view. Drop the frame; the replay path is exempt (@replaying).
-        return if @main_render_suppressed && !@replaying
 
         @render.synchronize do
+          # Focus-gate: a non-focused agent's live tail AND status spinner
+          # (paint_live → set_partial) must NOT animate over the focused agent's
+          # view. Drop the frame; the replay path is exempt (@replaying). Checked
+          # under @render so the focus read and the paint can't straddle a switch.
+          return if origin != @focused_agent_id && !@replaying
+
           @partial = (str || "").to_s
           render_frame(committed: nil)
         end
@@ -887,11 +891,12 @@ module Rubino
       # guards and @render-synchronized redraw) so the footer can't animate over
       # an attached sub's view. An empty string clears it; the footer then
       # reverts to the plain model/ctx bar on the next frame.
-      def set_turn_status(str)
+      def set_turn_status(str, origin: :main)
         return if @suspended
-        return if @main_render_suppressed && !@replaying
 
         @render.synchronize do
+          return if origin != @focused_agent_id && !@replaying
+
           @turn_status = (str || "").to_s
           render_frame(committed: nil)
         end
@@ -910,19 +915,25 @@ module Rubino
       # half-frame with a streamed token or a keystroke. The list is clamped to a
       # sane bound by the caller (UI::SubagentCards), but we also cap it here so a
       # buggy caller can never grow the live region past the screen.
-      def set_cards(lines)
+      def set_cards(lines, origin: :main)
         # While SUSPENDED (run_in_terminal: an approval/ask owns the real
         # terminal) a card repaint here would draw straight over the
         # interactive prompt and can abort its blocked TTY read (#144). Drop
         # the frame, like #set_partial — the cards converge from the registry
         # snapshot on the next repaint after #resume.
         return if @suspended
-        # Focus-gate (Slice 3): the parent's subagent-card stack belongs to the
-        # MAIN view; don't repaint it over the attached sub. Drop the frame.
-        return if @main_render_suppressed && !@replaying
+        # Focus-gate: the subagent-card stack belongs to the MAIN view; don't
+        # repaint it over a focused sub. Drop the frame when not focused. (The
+        # gate read is duplicated below under @render for the actual paint; this
+        # early return spares the Array#first when we know we'll drop it.)
+        return if origin != @focused_agent_id && !@replaying
 
         capped = Array(lines).first(MAX_CARD_ROWS)
         @render.synchronize do
+          # Re-check the focus gate under @render: the early return above can race
+          # a focus switch between its read and this block, so the authoritative
+          # drop happens here, where the focus read and the paint are atomic.
+          return if origin != @focused_agent_id && !@replaying
           # COALESCE: a card repaint that would draw the EXACT same rows is a
           # no-op. The idle ticker (1 Hz) and every child tool-start/finish poke
           # a repaint, but most carry no visible change (same cards, same
@@ -1060,22 +1071,26 @@ module Rubino
         end
       end
 
-      # Focus-gating seam (agent-multiplexer Slice 3): the REPL flips this true on
-      # attach to a subagent's view and false on detach back to main. While true,
-      # #print_above / #set_partial / #set_cards DROP main-turn frames so the
-      # parent turn (which keeps running) does not paint over the sub's view. The
-      # raw reader is untouched — the user keeps typing into the sub prompt. A
-      # plain assignment (read lock-free in the gated paths under @render); calling
-      # it off a composer is a no-op (the CLI guards with `&.`).
-      def suppress_main_render!(value, attached_id: nil)
-        suppressed = value ? true : false
-        @main_render_suppressed = suppressed
-        # While attached, the composer marks the FOCUSED sub in its compact
-        # switcher line (#87). Cleared on detach so the line never lingers.
-        @attached_id = suppressed ? attached_id : nil
+      # Focus-gating seam (tmux-style unified render): the REPL calls this on every
+      # view switch — `focus_agent!(sub_id)` on attach, `focus_agent!(:main)` on
+      # detach back to main. Only frames whose `origin:` equals the focused id
+      # paint; #print_above / #set_partial / #set_turn_status / #set_cards DROP a
+      # non-focused agent's frames so a background agent (the main loop while
+      # attached, or a sub while at main) keeps running and recording its session
+      # but does not paint over the focused view. The raw reader is untouched — the
+      # user keeps typing into the focused agent's prompt. The write takes @render
+      # so a concurrent gated paint can't read a half-updated focus; calling it off
+      # a composer is a no-op (the CLI guards with `&.`). The focused id also marks
+      # the FOCUSED sub in the compact switcher line (#87). nil ⇒ :main.
+      def focus_agent!(id)
+        @render.synchronize { @focused_agent_id = id || :main }
       end
 
-      def main_render_suppressed? = @main_render_suppressed
+      # The agent currently allowed to paint (the focused view). :main when not
+      # attached to any sub. Exposed for the while-attached switcher line and tests.
+      attr_reader :focused_agent_id
+
+      def main_render_suppressed? = @focused_agent_id != :main
 
       # Run +block+ with the main-render gate EXEMPTED, so the attach/detach
       # REPLAY (the focused view the user is meant to see) renders even while
@@ -1701,7 +1716,7 @@ module Rubino
       #
       # While ATTACHED to a sub (#main_render_suppressed?) the parent's idle
       # subagent CARDS belong to the main view, not this focused sub-view — every
-      # render (watcher tail, draw_input) would otherwise redraw the last @cards
+      # render (the sub's own live tail, draw_input) would otherwise redraw the last @cards
       # set under the live block and clutter it (#37). The full card BLOCK stays
       # suppressed here, at the single render source, so it holds regardless of
       # what @cards carries; the focused sub's transcript + live tail own the
@@ -1712,8 +1727,9 @@ module Rubino
       #     focused one marked, plus the "↓ to switch" hint, so the other subs
       #     are visible at a glance and ↓ opens the picker to jump.
       def below_input_rows
-        return @agent_menu.rows(@cols) if @main_render_suppressed && @agent_menu.open?
-        return attached_switcher_rows if @main_render_suppressed
+        attached = @focused_agent_id != :main
+        return @agent_menu.rows(@cols) if attached && @agent_menu.open?
+        return attached_switcher_rows if attached
 
         @subagent_panel.rows(@cols)
       end
@@ -1728,7 +1744,7 @@ module Rubino
         return [] if running.empty?
 
         names = running.map do |entry|
-          entry.id == @attached_id ? pastel.cyan("▸#{entry.id}") : pastel.dim(entry.id)
+          entry.id == @focused_agent_id ? pastel.cyan("▸#{entry.id}") : pastel.dim(entry.id)
         end
         ["#{pastel.dim("subs:")} #{names.join("  ")}#{pastel.dim("  · ↓ to switch · ← back")}"]
       end
