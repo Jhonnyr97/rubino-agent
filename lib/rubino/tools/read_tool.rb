@@ -156,19 +156,26 @@ module Rubino
         nil
       end
 
-      RUBY_EXTENSIONS   = %w[.rb .rake .gemspec].freeze
-      RUBY_FILENAMES    = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
-      PYTHON_EXTENSIONS = %w[.py .pyi].freeze
+      RUBY_EXTENSIONS       = %w[.rb .rake .gemspec].freeze
+      RUBY_FILENAMES        = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
+      PYTHON_EXTENSIONS     = %w[.py .pyi].freeze
+      JAVASCRIPT_EXTENSIONS = %w[.js .jsx .mjs .cjs].freeze
+      TYPESCRIPT_EXTENSIONS = %w[.ts].freeze
+      TSX_EXTENSIONS        = %w[.tsx].freeze
 
       # The skeletoner's language for `path`, or nil for a file no strategy
-      # handles. Ruby and Python today; later slices extend this to JS/TS by
-      # extension/filename. (Whether a detected language is actually compressed
-      # is gated separately by `enabled_language?` against the config list.)
+      # handles. Ruby/Python/JavaScript/TypeScript/TSX by extension/filename.
+      # (Whether a detected language is actually compressed is gated separately
+      # by `enabled_language?` against the config list, so JS/TS stay INERT until
+      # an operator adds them.)
       def code_language_for(path)
         ext = File.extname(path)
         return :ruby if RUBY_EXTENSIONS.include?(ext)
         return :ruby if RUBY_FILENAMES.include?(File.basename(path))
         return :python if PYTHON_EXTENSIONS.include?(ext)
+        return :javascript if JAVASCRIPT_EXTENSIONS.include?(ext)
+        return :typescript if TYPESCRIPT_EXTENSIONS.include?(ext)
+        return :tsx if TSX_EXTENSIONS.include?(ext)
 
         nil
       end
