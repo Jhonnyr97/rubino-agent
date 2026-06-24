@@ -36,6 +36,31 @@ breakpoints), not the model. This is a single model and a single scenario:
 indicative of the design, not a leaderboard. The harness lives in a separate
 benchmark project.
 
+## Tool-output compression (measured)
+
+Test logs, diffs and large command dumps are mostly noise. rubino can route
+each tool output through a **deterministic (no-ML)** compressor that keeps the
+signal and drops the rest — opt-in (`tool_output_compression`), with a
+byte-identical passthrough for anything already small and a `retrieve_output`
+pointer back to the full text. Token-honest: counts are the **exact**
+`prompt_tokens` reported by the server (local oMLX `Qwen3.6-35B-A3B`), not
+chars/4 estimates.
+
+| tool output | reduction | fidelity (verified) |
+|---|---:|---|
+| rspec full suite (21 failures, ~8k lines) | **97%** | all 21 failures + the tally kept |
+| `git log --stat` / `ls -R` | **94%** | boundary/keyword lines kept |
+| large source diff (9 files) | **42%** | all 575 ± lines, 13 hunks, 9 headers |
+| `package-lock.json` diff (60 bumps) | **99%** | file header + summary (body elided) |
+| whole-file Ruby read → skeleton | **27%** | signatures + structure kept |
+| JSON (kubectl / docker / gh, uniform rows) | **40–88%** | error rows + outliers always kept |
+| rubocop (already signal-dense) | 11% | floor — every offense kept |
+
+End-to-end A/B on real edit tasks: **12/12 tasks passed with compression ON and
+OFF** — it never broke a task, and every forced-failure run still recovered the
+single failing line out of a long log. Routing is verified (each output goes to
+the right strategy) and small inputs pass through **byte-identical**.
+
 ## Install
 
 One line, Linux and macOS (x86_64 / arm64). Installs a compatible Ruby, then the gem — all in user space, no sudo:
