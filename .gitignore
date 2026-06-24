@@ -49,3 +49,6 @@ Thumbs.db
 # Eval harness: raw per-run result JSON is generated output, not source.
 # Keep the directory (via .gitkeep) but ignore the timestamped result files.
 /eval/results/*.json
+
+# generated A/B eval result dumps (keep .gitkeep + .md analyses)
+eval/results/*.json
