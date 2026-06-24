@@ -41,7 +41,7 @@ RSpec.describe Rubino::Tools::Registry do
 
       it "drops every mutating tool" do
         names = described_class.enabled_tools.map(&:name)
-        %w[edit write multi_edit shell ruby apply_patch git github shell_kill].each do |banned|
+        %w[edit write multi_edit shell ruby apply_patch shell_kill].each do |banned|
           expect(names).not_to include(banned), "plan must NOT expose #{banned}"
         end
       end

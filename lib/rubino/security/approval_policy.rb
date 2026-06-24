@@ -38,22 +38,18 @@ module Rubino
       # Dedicated code-execution tools that, under dangerous_only, must run
       # unprompted — SYMMETRIC with (and never HARDER than) safe shell.
       #
-      # `run_tests` is strictly lower-risk than arbitrary safe shell (it only
-      # runs the project's detected test/lint runner) and the field standard
-      # (Claude Code auto-mode, Codex full-auto, aider) auto-runs test/lint/
-      # typecheck without prompting. `ruby` evaluates arbitrary code in a
-      # sandboxed child process and exposes NO reliable read-only signal, so it
-      # cannot be auto-allowed on a proven read-only basis the way step 6b
-      # auto-allows parse-validated read-only shell; instead it is aligned AT
-      # MOST to the same tier as raw safe shell (auto-run under dangerous_only,
-      # never gated harder than the `shell` path it would otherwise be driven
-      # through). It was the inversion: a dedicated test/eval tool prompting
-      # while arbitrary safe `shell` ran unprompted, pushing automation toward
-      # raw shell. Both are :medium and would otherwise fall through to step 9
-      # -> :ask. The hardline floor (step 1), permissions:deny (step 2) and
-      # doom guard (step 4) all run first and are unchanged; confirm_all
-      # (non-default) still routes these to step 9 -> :ask.
-      CODE_EXEC_TOOLS = %w[run_tests ruby].freeze
+      # `ruby` evaluates arbitrary code in a sandboxed child process and exposes
+      # NO reliable read-only signal, so it cannot be auto-allowed on a proven
+      # read-only basis the way step 6b auto-allows parse-validated read-only
+      # shell; instead it is aligned AT MOST to the same tier as raw safe shell
+      # (auto-run under dangerous_only, never gated harder than the `shell` path
+      # it would otherwise be driven through). It was the inversion: a dedicated
+      # eval tool prompting while arbitrary safe `shell` ran unprompted, pushing
+      # automation toward raw shell. It is :medium and would otherwise fall
+      # through to step 9 -> :ask. The hardline floor (step 1), permissions:deny
+      # (step 2) and doom guard (step 4) all run first and are unchanged;
+      # confirm_all (non-default) still routes it to step 9 -> :ask.
+      CODE_EXEC_TOOLS = %w[ruby].freeze
 
       # Why the most recent #decide returned :deny — :hardline (the
       # non-bypassable floor), :permission_rule (an explicit permissions deny
@@ -262,13 +258,13 @@ module Rubino
         #    (non-default) still routes them through step 9 -> :ask unchanged.
         #
         # 8c. Code-execution tool symmetry. Under dangerous_only, arbitrary safe
-        #    `shell` runs unprompted (step 7-8), yet the dedicated `run_tests`
-        #    and `ruby` tools are :medium and would fall through to step 9 ->
-        #    :ask — an INVERSION: a dedicated test/eval tool gated HARDER than
-        #    the raw shell it would otherwise be driven through. The field norm
-        #    (Claude Code auto-mode, Codex full-auto, aider) auto-runs test/lint
-        #    without prompting. So under dangerous_only these are non-prompting
-        #    too, aligned AT MOST to the safe-shell tier (see CODE_EXEC_TOOLS).
+        #    `shell` runs unprompted (step 7-8), yet the dedicated `ruby` tool
+        #    is :medium and would fall through to step 9 -> :ask — an INVERSION:
+        #    a dedicated eval tool gated HARDER than the raw shell it would
+        #    otherwise be driven through. The field norm (Claude Code auto-mode,
+        #    Codex full-auto, aider) auto-runs code without prompting. So under
+        #    dangerous_only it is non-prompting too, aligned AT MOST to the
+        #    safe-shell tier (see CODE_EXEC_TOOLS).
         #    Deny-class checks (hardline step 1, permissions:deny step 2, doom
         #    step 4) all ran first; confirm_all (non-default) still routes them
         #    through step 9 -> :ask unchanged.

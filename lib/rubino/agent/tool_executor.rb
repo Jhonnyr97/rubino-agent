@@ -241,7 +241,7 @@ module Rubino
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
         # Util::Output.preview of the captured stdout), so rendering it again
         # would duplicate every line in the timeline. Tools that don't stream
-        # (read, grep, edit, glob, github) still render their body here.
+        # (read, grep, edit, glob) still render their body here.
         @ui.tool_body(body, kind: body_kind.to_sym) if body && !body.to_s.empty? && !streamed
         # Content-routed compression of the MODEL-FACING text only (never the
         # human `body` preview). The router detects the type and dispatches; a
@@ -489,7 +489,7 @@ module Rubino
         # are args, and as a bare sentence when there are none. The old code mixed
         # "<tool> wants to run" (no-arg) with "<tool> wants:" (with-arg), so the
         # header read inconsistently and the dangling colon looked broken (#109).
-        # No arguments (e.g. a bare run_tests run) ⇒ no colon: a header followed
+        # No arguments (e.g. a bare no-arg tool call) ⇒ no colon: a header followed
         # by nothing reads as a truncated/broken card.
         return "#{tool.name} wants to run" if pairs.empty?
 
