@@ -31,6 +31,12 @@ module Rubino
       Entry = Struct.new(
         :id, :command, :cwd, :pid, :pgid, :wait_thr, :reader_thr,
         :buffer, :mutex, :started_at, :read_offset, :stdin, :retired_at,
+        # sink: the parent's background_sink captured at spawn (thread-locals
+        # don't propagate to the reader thread, so we stash it like a subagent
+        # does). notified: fire-once guard so a finished bg shell pushes its
+        # completion notice exactly once (US-5; avoids the Claude-Code
+        # duplicate-reminder leak).
+        :sink, :notified,
         keyword_init: true
       )
 
@@ -88,6 +94,11 @@ module Rubino
       # Spawns `command` detached in its own process group so a single kill
       # takes out the whole subtree. Returns the new entry.
       def spawn(command:, cwd:)
+        # Capture the parent's notification sink on the CALLING thread (the turn
+        # thread). The reader thread below can't read Rubino.background_sink —
+        # thread-locals don't propagate — so a finished bg shell would notify
+        # nothing (US-5 lost-completion). Stash it like a subagent does.
+        sink = Rubino.background_sink
         rd, wr = IO.pipe
         # Writable stdin pipe: the agent feeds answers to interactive prompts
         # (Y/N, "select region", apt-style) via the `shell_input` tool, which
@@ -125,7 +136,9 @@ module Rubino
           mutex: Mutex.new,
           started_at: Time.now,
           read_offset: 0,
-          stdin: in_wr
+          stdin: in_wr,
+          sink: sink,
+          notified: false
         )
         entry.reader_thr = Thread.new { drain_into(entry, rd) }
 
@@ -330,6 +343,39 @@ module Rubino
         # pipe closed — process exited
       ensure
         rd.close unless rd.closed?
+        # The reader thread ends exactly when the pipe closes = the process
+        # exited (normal, crash, or shell_kill). Push a completion notice to the
+        # parent so a finished background SHELL auto-wakes the model the same way
+        # a finished background SUBAGENT does — without this, a finished bg shell
+        # surfaced NOTHING (US-5 lost notification). Fire-once.
+        notify_completion(entry)
+      end
+
+      # Fire-once completion notice for a finished background shell, routed
+      # through the captured parent sink (drained at Agent::Loop's top-of-turn,
+      # like a subagent's `[background-task]` notice).
+      def notify_completion(entry)
+        fire = entry.mutex.synchronize do
+          next false if entry.notified
+
+          entry.notified = true
+        end
+        return unless fire
+        return unless entry.sink
+
+        code = begin
+          entry.wait_thr&.value&.exitstatus
+        rescue StandardError
+          nil
+        end
+        status = code.nil? || code.zero? ? "completed" : "exited (code #{code})"
+        entry.sink.push_notice(
+          "[background-shell] Shell #{entry.id} (`#{entry.command}`) #{status}. " \
+          "Read its output with `shell_output run_id=#{entry.id}`."
+        )
+      rescue StandardError
+        # Notification is best-effort — never let it crash the reader thread.
+        nil
       end
     end
   end
