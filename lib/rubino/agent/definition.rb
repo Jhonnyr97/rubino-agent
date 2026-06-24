@@ -68,14 +68,6 @@ module Rubino
       # the tool here — it is bounded in ONE place, Tools::BackgroundTasks#reserve,
       # by the depth / per-owner / global caps.
 
-      # Tools that ONLY make sense for a subagent and must be hidden from a
-      # primary/top-level agent. ask_parent escalates a question to the PARENT — a
-      # top-level agent has no parent, so exposing it there would be a dead tool.
-      # Subagents keep it; everyone else drops it. This is the single enforcement
-      # point and is UNCHANGED by S1 (re-enabling nesting does not expose
-      # ask_parent to top-level agents).
-      SUBAGENT_ONLY_TOOLS = %w[ask_parent].freeze
-
       def resolved_tools
         tools =
           case @tools
@@ -93,15 +85,7 @@ module Rubino
         # set (Lifecycle#load_tools, prompt assembler) goes through here, so
         # filtering MCP wrappers HERE is what actually keeps an out-of-scope
         # server's tools away from the model.
-        tools = reject_unscoped_mcp_tools(tools)
-
-        # ask_parent is subagent-only; a primary/top-level agent has no parent.
-        # Nesting is otherwise allowed for everyone — the delegation tools stay.
-        if subagent?
-          tools
-        else
-          tools.reject { |t| SUBAGENT_ONLY_TOOLS.include?(t.name) }
-        end
+        reject_unscoped_mcp_tools(tools)
       end
 
       private
