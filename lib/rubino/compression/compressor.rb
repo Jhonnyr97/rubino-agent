@@ -24,9 +24,10 @@ module Rubino
       MIN_SAVING_RATIO = 0.25
 
       # Per-language skeleton strategies, keyed by language symbol. A LineSkeleton
-      # subclass per language; today only Ruby (Prism built-in). Later slices
-      # register Python/JS strategies here — the rest of the pipeline is unchanged.
-      STRATEGIES = { ruby: RubyCodeSkeleton }.freeze
+      # subclass per language; Ruby (Prism built-in) and Python (shell-out to the
+      # python3 `ast` stdlib, no-op when python3 is absent). Later slices register
+      # JS/TS strategies here — the rest of the pipeline is unchanged.
+      STRATEGIES = { ruby: RubyCodeSkeleton, python: PythonCodeSkeleton }.freeze
 
       # The exact (1-based first line, line count) ranges the skeleton elided.
       # Carried OUT of #compress via an attr so the caller can record them for

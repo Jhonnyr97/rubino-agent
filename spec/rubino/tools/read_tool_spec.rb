@@ -254,6 +254,25 @@ RSpec.describe Rubino::Tools::ReadTool do
         expect(tool.call("file_path" => txt)[:compress_hint]).to be_nil
       end
 
+      # Python is DETECTED but stays inert until added to the languages list.
+      context "with a .py file (python detected, gated by the languages list)" do
+        let(:py_path) { File.join(tmp_dir, "mod.py") }
+
+        before { File.write(py_path, "def f(a):\n    return a + 1\n") }
+
+        it "emits NO hint while python is not in the languages list (default)" do
+          expect(tool.call("file_path" => py_path)[:compress_hint]).to be_nil
+        end
+
+        it "emits a python compress_hint once python is added to the languages list" do
+          Rubino.configuration.set("tool_output_compression", "code",
+                                   "strategy" => "skeleton", "min_lines" => 5,
+                                   "keep_method_body_max_lines" => 8, "languages" => %w[ruby python])
+          hint = tool.call("file_path" => py_path)[:compress_hint]
+          expect(hint).to include(full_file: true, content_type: :code, lang: :python)
+        end
+      end
+
       it "advertises the `compress` opt-out param when the feature is on" do
         expect(tool.input_schema[:properties]).to have_key(:compress)
         expect(tool.description).to include("compress:false")

@@ -156,16 +156,19 @@ module Rubino
         nil
       end
 
-      RUBY_EXTENSIONS = %w[.rb .rake .gemspec].freeze
-      RUBY_FILENAMES  = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
+      RUBY_EXTENSIONS   = %w[.rb .rake .gemspec].freeze
+      RUBY_FILENAMES    = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
+      PYTHON_EXTENSIONS = %w[.py .pyi].freeze
 
       # The skeletoner's language for `path`, or nil for a file no strategy
-      # handles. Today only Ruby; later slices extend this to Python/JS/TS by
-      # extension/filename.
+      # handles. Ruby and Python today; later slices extend this to JS/TS by
+      # extension/filename. (Whether a detected language is actually compressed
+      # is gated separately by `enabled_language?` against the config list.)
       def code_language_for(path)
         ext = File.extname(path)
         return :ruby if RUBY_EXTENSIONS.include?(ext)
         return :ruby if RUBY_FILENAMES.include?(File.basename(path))
+        return :python if PYTHON_EXTENSIONS.include?(ext)
 
         nil
       end
