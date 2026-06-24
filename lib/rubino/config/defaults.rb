@@ -61,7 +61,13 @@ module Rubino
             # within this window and is retried pre-first-token. Raise it for a
             # large local Ollama that cold-loads for minutes before token #1.
             "request_timeout_seconds" => 600,
-            "stale_timeout_seconds" => 300
+            "stale_timeout_seconds" => 300,
+            # Free-form hash merged verbatim into the OpenAI-style
+            # /v1/chat/completions request body (top level). Only honored on the
+            # OpenAI-compatible request path; ignored on the anthropic-family
+            # path. Empty ⇒ byte-identical request to before. See the gateway
+            # block below and docs/configuration.md for the canonical example.
+            "extra_body" => {}
           },
           "anthropic" => {
             "base_url" => nil,
@@ -83,7 +89,25 @@ module Rubino
             "openai_compatible" => true,
             "assume_model_exists" => true,
             "base_url" => nil,
-            "request_timeout_seconds" => 600
+            "request_timeout_seconds" => 600,
+            # Free-form hash merged verbatim into the OpenAI-style
+            # /v1/chat/completions request body (deep-merged at the top level via
+            # ruby_llm's with_params). Use it to pass provider-specific knobs the
+            # adapter does not model natively. The canonical case is suppressing
+            # chain-of-thought leakage on oMLX / Qwen-style backends that emit
+            # <think> text instead of native tool_calls unless the request
+            # carries:
+            #
+            #   providers:
+            #     gateway:
+            #       extra_body:
+            #         chat_template_kwargs:
+            #           enable_thinking: false
+            #
+            # Only applied on the OpenAI-compatible path; never on the
+            # anthropic-family path, and never touches the thinking-budget logic.
+            # Empty ⇒ byte-identical request to before.
+            "extra_body" => {}
           }
         },
         "auxiliary" => {
