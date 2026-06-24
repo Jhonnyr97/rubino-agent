@@ -273,6 +273,32 @@ RSpec.describe Rubino::Tools::ReadTool do
         end
       end
 
+      # JS/TS/TSX are DETECTED by extension but stay inert until added to the
+      # languages list (default is %w[ruby]).
+      {
+        ".js" => :javascript, ".jsx" => :javascript, ".mjs" => :javascript,
+        ".cjs" => :javascript, ".ts" => :typescript, ".tsx" => :tsx
+      }.each do |ext, lang|
+        context "with a #{ext} file (#{lang} detected, gated by the languages list)" do
+          let(:js_path) { File.join(tmp_dir, "mod#{ext}") }
+
+          before { File.write(js_path, "function f(a) {\n  return a + 1;\n}\n") }
+
+          it "emits NO hint while #{lang} is not in the languages list (default)" do
+            expect(tool.call("file_path" => js_path)[:compress_hint]).to be_nil
+          end
+
+          it "emits a #{lang} compress_hint once #{lang} is added to the languages list" do
+            Rubino.configuration.set("tool_output_compression", "code",
+                                     "strategy" => "skeleton", "min_lines" => 5,
+                                     "keep_method_body_max_lines" => 8,
+                                     "languages" => ["ruby", lang.to_s])
+            hint = tool.call("file_path" => js_path)[:compress_hint]
+            expect(hint).to include(full_file: true, content_type: :code, lang: lang)
+          end
+        end
+      end
+
       it "advertises the `compress` opt-out param when the feature is on" do
         expect(tool.input_schema[:properties]).to have_key(:compress)
         expect(tool.description).to include("compress:false")

@@ -47,6 +47,16 @@ module Rubino
 
       private
 
+      # The line-comment marker the pointer line opens with, so the pointer reads
+      # as a comment in the host language. Ruby/Python keep `#` (byte-identical
+      # with the original hardcoded prefix); a subclass for a `//`-comment
+      # language (JS/TS) overrides this. Drill-in detection is RANGE-based (the
+      # `elided_ranges` side-channel), so nothing parses this literal text — it is
+      # purely cosmetic for the reading model.
+      def comment_prefix
+        "#"
+      end
+
       # Subclass hook: parse `source` and return the elisions to splice, sorted by
       # first_line and non-overlapping. Return nil to signal an UNPARSEABLE source
       # (caller passes the original through), or [] when nothing is big enough to
@@ -67,7 +77,7 @@ module Rubino
           if el
             indent = lines[i][/\A[ \t]*/]
             unit = el.line_count == 1 ? "line" : "lines"
-            out << "#{indent}# … #{el.line_count} #{unit} elided — " \
+            out << "#{indent}#{comment_prefix} … #{el.line_count} #{unit} elided — " \
                    "read #{pointer_path} offset=#{el.first_line} limit=#{el.line_count}\n"
             i += el.line_count
           else
