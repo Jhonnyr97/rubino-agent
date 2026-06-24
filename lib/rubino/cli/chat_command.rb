@@ -2953,95 +2953,62 @@ module Rubino
         entry = Tools::BackgroundTasks.instance.find(id)
         return ui.error("no background subagent with id #{id}") unless entry
 
-        # Switching straight from one attached sub to another (the picker is a
-        # switcher while attached): stop the OLD sub's watcher before re-pointing
-        # the scope, so it can never paint the new sub's view.
-        stop_agent_watcher
         @attached_id = id
-        # Focus-gate the parent: while attached, a still-running parent turn
-        # keeps streaming to its session but must NOT paint this sub's screen.
-        # Set suppression BEFORE the replay so the parent's frames drop straight
-        # away; the replay itself renders through the exempt seam below. No-op off
-        # a composer (plain TTY / pipe / tests).
+        # Focus the composer on this sub (tmux-style unified render): only frames
+        # whose origin is this sub now paint. The still-running parent turn keeps
+        # streaming to its own session but its frames (origin :main) DROP; the sub
+        # paints its OWN live tool rows + streaming prose through its per-sub CLI.
+        # Focus BEFORE the replay so parent frames drop straight away; the replay
+        # itself renders through the exempt seam below. No-op off a composer.
         composer = UI::BottomComposer.current
-        composer&.suppress_main_render!(true, attached_id: id)
+        composer&.focus_agent!(id)
         clear_terminal
         snapshot = Array(entry.messages)
         with_focused_view_replay(composer) do
           # Drop the global subagent-card stack: while attached, the focused view
-          # (this sub's transcript + the watcher's live "doing now" block) owns the
-          # screen. The cards' own repaints are already focus-gated off while
-          # attached, but the LAST set persists in @cards and would redraw under
-          # every watcher frame, crowding/clobbering the live block. Clearing here
-          # (replay-exempt, so it lands past the suppression gate) hands the bottom
-          # region to the watcher; detach lifts suppression and the cards return.
+          # (this sub's transcript + its own live tail) owns the screen. The cards'
+          # own repaints are already focus-gated off while attached, but the LAST
+          # set persists in @cards and would redraw under every sub frame,
+          # crowding/clobbering it. Clearing here (replay-exempt, so it lands past
+          # the focus gate) hands the bottom region to the sub; detach refocuses
+          # main and the cards return.
           composer&.set_cards([])
           ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
                   pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
           session_resolver.replay_messages(ui, snapshot)
         end
-        # Tail the sub's ongoing activity from where this snapshot left off, so
-        # the attached view stays live instead of freezing. No-op off a composer.
-        start_agent_watcher(id, ui, snapshot.size)
+        # No watcher: the sub's OWN per-sub CLI now paints its ongoing activity
+        # live through the focus gate (it commits with this sub's origin), so the
+        # attached view stays live without a polling ticker.
       end
 
       # Leave the agent-view and return to the main session: clear the screen,
       # replay the main timeline, drop the scope (build_prompt returns the default
       # ❯ again on the next idle composer).
       def detach_agent_view(runner, ui)
-        # Stop the live-tail watcher BEFORE dropping the scope: with @attached_id
-        # still set its still_attached? guard is true, so a tick racing detach
-        # would paint over the main replay below. Clearing @attached_id next makes
-        # the guard false for any in-flight tick, and the join'd thread is gone.
-        stop_agent_watcher
         @attached_id = nil
         clear_terminal
         # Rebuild the main view from its full session — this captures everything
         # the parent turn streamed WHILE we were away (it kept persisting). Render
-        # it through the exempt seam (suppression is still on here), THEN lift
-        # suppression so a still-running parent turn paints normally again from
-        # its next frame.
+        # it through the exempt seam (focus is still on the sub here), THEN refocus
+        # :main so a still-running parent turn paints normally again from its next
+        # frame.
         composer = UI::BottomComposer.current
         with_focused_view_replay(composer) do
           ui.info(pastel.dim("◀ back to the main session"))
           session_resolver.replay_session(ui, runner.session[:id])
         end
-        composer&.suppress_main_render!(false)
+        composer&.focus_agent!(:main)
       end
 
       # Render the attach/detach REPLAY (the focused view the user is meant to
-      # see) through the composer's replay-exempt seam, so it paints even while
-      # main-render is suppressed. Yields plainly when no composer owns the screen
-      # (plain TTY / pipe / tests) — there is nothing to suppress there.
+      # see) through the composer's replay-exempt seam, so it paints regardless of
+      # which agent is currently focused. Yields plainly when no composer owns the
+      # screen (plain TTY / pipe / tests) — there is no focus gate there.
       def with_focused_view_replay(composer, &)
         return yield unless composer
 
         composer.with_replay_exempt(&)
-      end
-
-      # Start the live-tail watcher for the just-attached sub (after the initial
-      # snapshot replay committed `rendered` messages). The watcher tails the
-      # sub's ongoing activity through the focused-view seam so the attached
-      # screen stays live. No-op off a composer (the watcher's #start returns nil
-      # there) — plain TTY / pipe / tests have nothing to tail in place.
-      def start_agent_watcher(id, ui, rendered)
-        @agent_watcher = Chat::AttachedAgentWatcher.new(
-          host: self, id: id, ui: ui, rendered_count: rendered
-        ).start
-      end
-
-      # Stop the live-tail watcher (detach, or switching to another sub). The
-      # ticker also self-exits the moment its still_attached? guard goes false, so
-      # this kill is belt-and-suspenders; it joins so no stray tick paints after.
-      def stop_agent_watcher
-        watcher = @agent_watcher
-        @agent_watcher = nil
-        return unless watcher
-
-        watcher.kill
-        watcher.join
-      rescue StandardError
-        nil # teardown is cosmetic — never break the view switch.
       end
 
       # Adopt a new runner for the REPL and rebuild the command executor against

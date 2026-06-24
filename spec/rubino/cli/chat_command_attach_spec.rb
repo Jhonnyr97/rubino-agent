@@ -106,15 +106,18 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
-  # Focus-gating (Slice 3): attach/detach drive the composer's main-render gate
-  # so a still-running parent turn keeps streaming to its session but does NOT
-  # paint the attached sub's view; the replay is exempt so the focused view
-  # paints. A StringIO composer stands in for the live one.
-  describe "focus-gating wiring (composer suppression)" do
+  # Focus-gating (tmux-style unified render): attach/detach set the composer's
+  # FOCUSED agent so only the focused agent's frames paint. A still-running parent
+  # turn keeps streaming to its session (origin :main) but DROPS while a sub is
+  # focused; the sub's OWN per-sub CLI paints live through its origin; the replay
+  # is exempt so the focused view paints. A StringIO composer stands in for the
+  # live one.
+  describe "focus-gating wiring (composer focus + per-origin paint)" do
+    let(:out) { StringIO.new }
     let(:composer) do
       Rubino::UI::BottomComposer.new(
         input_queue: Rubino::Interaction::InputQueue.new,
-        input: StringIO.new, output: StringIO.new
+        input: StringIO.new, output: out
       )
     end
 
@@ -126,30 +129,59 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::UI::BottomComposer.current = prev
     end
 
-    # The StringIO composer stands in for the TTY-mode REPL: the watcher's start
-    # guard keys off the persistent TTY capability (#active?), not the live
-    # composer instance, because #attach_agent_view runs after the idle read tore
-    # its composer down (#85). Express composer-mode here so the watcher starts.
-    before { allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true) }
-
-    it "attach SUPPRESSES main render, and replays the sub through the exempt seam" do
+    it "attach FOCUSES the composer on the sub and replays it through the exempt seam" do
       expect(composer).to receive(:with_replay_exempt).and_yield
       attach!
+      expect(composer.focused_agent_id).to eq("sa_1")
       expect(composer.main_render_suppressed?).to be(true)
     end
 
-    it "detach CLEARS the suppression after replaying the main view" do
+    it "detach REFOCUSES :main after replaying the main view" do
       allow(cmd.send(:session_resolver)).to receive(:replay_session)
       attach!
-      expect(composer.main_render_suppressed?).to be(true)
+      expect(composer.focused_agent_id).to eq("sa_1")
       cmd.send(:detach_agent_view, runner, ui)
-      expect(composer.main_render_suppressed?).to be(false)
+      expect(composer.focused_agent_id).to eq(:main)
+    end
+
+    # The core of the unified render: a sub-CLI frame (its own UI::CLI tagged with
+    # the entry id) PAINTS when that sub is focused and is DROPPED when it isn't —
+    # exactly the origin-gate behavior. Drive the sub's CLI directly through one of
+    # its commit seams (stream → committed prose / tool_started → committed row).
+    describe "a sub-CLI's frames paint only while that sub is focused" do
+      let(:sub_cli) { Rubino::UI::CLI.new(agent_id: "sa_1") }
+
+      it "PAINTS the focused sub's committed line and DROPS the parent's (origin :main)" do
+        attach! # focus → sa_1
+        out.truncate(0)
+        out.rewind
+
+        # The still-running parent turn commits with origin :main → dropped.
+        composer.print_above("parent turn line", origin: :main)
+        # The focused sub commits its own row via its per-sub CLI → painted.
+        sub_cli.send(:commit_async_above, ["⟂ explore · grep needle"])
+
+        plain = out.string.gsub(/\e\[[0-9;]*m/, "")
+        expect(plain).not_to include("parent turn line")
+        expect(plain).to include("⟂ explore · grep needle")
+      end
+
+      it "DROPS the same sub-CLI frame once detached back to main" do
+        allow(cmd.send(:session_resolver)).to receive(:replay_session)
+        attach!
+        cmd.send(:detach_agent_view, runner, ui)
+        out.truncate(0)
+        out.rewind
+
+        # Focus is back on :main; the sub's frame (origin sa_1) now drops.
+        sub_cli.send(:commit_async_above, ["⟂ explore · late frame"])
+        expect(out.string.gsub(/\e\[[0-9;]*m/, "")).not_to include("late frame")
+      end
     end
 
     # #37: while ATTACHED the parent's idle subagent cards belong to the main
-    # view — they must NOT render under the focused sub-view (every watcher/
-    # input repaint would otherwise redraw the last card set and clutter it).
-    # They reappear once detached.
+    # view — they must NOT render under the focused sub-view. They reappear once
+    # detached.
     it "suppresses the parent's subagent cards while attached, restoring them on detach" do
       allow(cmd.send(:session_resolver)).to receive(:replay_session)
       composer.set_cards(["• explore — searching"])
@@ -161,30 +193,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:detach_agent_view, runner, ui)
       composer.set_cards(["• explore — searching"])
       expect(composer.send(:below_input_rows)).not_to be_empty
-    end
-
-    # The live-tail watcher (this slice): attach starts a thread that keeps the
-    # attached view fresh as the sub works; detach and switching away stop it so
-    # it never paints another view.
-    it "attach STARTS a live-tail watcher thread; detach stops it" do
-      allow(cmd.send(:session_resolver)).to receive(:replay_session)
-      attach!
-      watcher = cmd.instance_variable_get(:@agent_watcher)
-      expect(watcher).to be_a(Thread)
-      cmd.send(:detach_agent_view, runner, ui)
-      expect(watcher).not_to be_alive
-      expect(cmd.instance_variable_get(:@agent_watcher)).to be_nil
-    end
-
-    it "switching to ANOTHER agent stops the previous watcher before re-pointing" do
-      other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_2", subagent: "build", status: :running, messages: [])
-      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
-      attach!
-      first = cmd.instance_variable_get(:@agent_watcher)
-      cmd.send(:attach_agent_view, "sa_2", ui)
-      expect(first).not_to be_alive
-      expect(cmd.instance_variable_get(:@agent_watcher)).not_to eq(first)
     end
   end
 
