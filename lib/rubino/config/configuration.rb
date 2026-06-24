@@ -272,6 +272,14 @@ module Rubino
         dig("memory", "auto_extract") == true
       end
 
+      # Background session-summary aux-LLM job (SummarizeSessionJob). Default ON
+      # (absent ⇒ true), so existing behaviour is unchanged; an explicit false
+      # turns it off — letting the whole background aux-LLM surface
+      # (extract/distill/summarize) be disabled together.
+      def memory_auto_summarize?
+        dig("memory", "auto_summarize") != false
+      end
+
       # Throttle interval (in turns) for memory.auto_extract (#412). Returns a
       # positive Integer; nil/<=1 (or absent) ⇒ 1 = every turn. The lifecycle
       # only enqueues ExtractMemoryJob when turns-since-last >= this.
