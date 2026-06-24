@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Parent<->subagent communication: steer + probe + ask_parent (CLI).
+# Parent -> subagent communication: steer + probe (CLI).
 #
 # Targeted specs for each mechanism, on rubino's REAL primitives (Agent::Loop,
 # Run::ApprovalGate, BackgroundTasks, the spec FakeLLMAdapter). No network.
@@ -9,12 +9,8 @@
 #            Loop#inject_steered_input), the same wire human steering uses.
 #   probe  — an ephemeral peek returns an answer but writes NOTHING to the
 #            child's history (read-only, discarded).
-#   ask_parent(blocking:true)  — parks the child on the gate, /reply resumes it
-#            with the answer as the tool result (enters the child's context).
-#   ask_parent(blocking:false) — returns immediately; the answer is injected
-#            later via the steer queue at the child's next turn boundary.
-#   blocked-state — an escalated ask_parent surfaces as :blocked_on_human on the
-#            card (the ⛔ "waiting on you" marker).
+#   blocked-state — a child parked on a blocking ask gate surfaces as
+#            :blocked_on_human on the card (the ⛔ "waiting on you" marker).
 RSpec.describe "parent <-> subagent communication" do
   let(:db)            { test_database }
   let(:null_ui)       { Rubino::UI::Null.new }
@@ -126,73 +122,6 @@ RSpec.describe "parent <-> subagent communication" do
     end
   end
 
-  # --- ask_parent: child -> parent escalation --------------------------------
-  describe "ask_parent (child -> parent, persisted)" do
-    let(:tool) { Rubino::Tools::AskParentTool.new }
-
-    it "refuses gracefully when there is no parent (no subagent context)" do
-      out = tool.call("question" => "sqlite or postgres?")
-      expect(out).to include("only available to a background subagent")
-    end
-
-    it "blocking:true parks the child on the gate, /reply resumes it with the answer" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-
-      result = nil
-      child = Thread.new do
-        Rubino.with_current_subagent_id(entry.id) do
-          result = tool.call("question" => "sqlite or postgres?", "blocking" => true)
-        end
-      end
-
-      # The child parked → entry flips to :blocked_on_human, gate registered.
-      wait_until { Rubino::Tools::BackgroundTasks.instance.find(entry.id).status == :blocked_on_human }
-      reloaded = Rubino::Tools::BackgroundTasks.instance.find(entry.id)
-      expect(reloaded.ask_question).to eq("sqlite or postgres?")
-      expect(reloaded.ask_blocking).to be(true)
-
-      # The human answers (the /reply decide wire).
-      reloaded.ask_gate.decide(reloaded.ask_id, "use postgres")
-      child.join(2)
-
-      expect(result).to include("Your parent answered: use postgres")
-      expect(Rubino::Tools::BackgroundTasks.instance.find(entry.id).status).to eq(:running)
-    end
-
-    it "blocking:false returns immediately and the answer is injected later via the steer queue" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-
-      out = Rubino.with_current_subagent_id(entry.id) do
-        tool.call("question" => "any preference?", "blocking" => false)
-      end
-
-      # The child kept working (non-blocking ack), but the entry IS surfaced as
-      # blocked-on-human so the human can still answer it.
-      expect(out).to include("Keep working")
-      expect(Rubino::Tools::BackgroundTasks.instance.find(entry.id).status).to eq(:blocked_on_human)
-
-      # The answer is delivered later onto the steer queue (folded in next turn).
-      Rubino::Tools::BackgroundTasks.instance.steer(entry.id, "[parent answer] go with postgres")
-      expect(entry.steer_queue.drain).to include("[parent answer] go with postgres")
-    end
-
-    it "unwinds to a cancelled result when the gate is cancelled (stop)" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-
-      result = nil
-      child = Thread.new do
-        Rubino.with_current_subagent_id(entry.id) do
-          result = tool.call("question" => "q?", "blocking" => true)
-        end
-      end
-      wait_until { Rubino::Tools::BackgroundTasks.instance.find(entry.id).status == :blocked_on_human }
-
-      Rubino::Tools::BackgroundTasks.instance.find(entry.id).ask_gate.cancel!
-      child.join(2)
-      expect(result).to include("cancelled")
-    end
-  end
-
   # --- scoped nesting (S1): a subagent can spawn subagents, depth-stamped ------
   #
   # Exercises the REAL TaskTool background path + the REAL BackgroundTasks#reserve
@@ -286,23 +215,15 @@ RSpec.describe "parent <-> subagent communication" do
       expect(out).not_to include("Started background subagent")
     end
 
-    it "keeps ask_parent subagent-only after nesting is re-enabled" do
-      unless Rubino::Tools::Registry.find("ask_parent")
-        Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
-      end
+    it "keeps the delegation tool available to subagents (nesting) and the primary" do
       subagent = Rubino.agent_registry.find("explore")
       primary  = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
 
-      # ask_parent is also situationally gated (#313) on running AS a subagent
-      # (the current_subagent_id thread-local, set by TaskTool around a child
-      # run). Reproduce that context for the subagent assertion; the primary
-      # resolves outside it, exactly as a top-level agent does.
       subagent_tools = Rubino.with_current_subagent_id("sa_test") do
         subagent.resolved_tools.map(&:name)
       end
-      expect(subagent_tools).to include("ask_parent", "task")
+      expect(subagent_tools).to include("task")
       expect(primary.resolved_tools.map(&:name)).to include("task")
-      expect(primary.resolved_tools.map(&:name)).not_to include("ask_parent")
     end
 
     it "leaves the human-driven 2-level flow unchanged (owner nil / depth 0)" do
@@ -326,196 +247,6 @@ RSpec.describe "parent <-> subagent communication" do
 
       latch << :go
       wait_for { registry.find(id).status == :completed }
-    end
-  end
-
-  # --- #195: the [subagent-question] notice reaches the SPAWNING parent ------
-  #
-  # The bug: surface_and_notify read the thread-local Rubino.background_sink on
-  # the CHILD's thread — where the child Lifecycle had bound the child's OWN
-  # steer_queue — so the question was misrouted into the asking child itself
-  # and the parent MODEL never saw it. The notice now rides the spawn-captured
-  # sink stored on the registry Entry (entry.parent_sink), exactly like the
-  # [background-task] completion notice. Exercised on the REAL TaskTool
-  # background path + the REAL AskParentTool (2-level tree: parent agent →
-  # asking child).
-  describe "ask_parent notice routing to the spawning parent (#195)" do
-    before do
-      Rubino::Tools::Registry.register_defaults!
-      Rubino.agent_registry = Rubino::Agent::AgentRegistry.new
-    end
-
-    after { Rubino.agent_registry = nil }
-
-    it "pushes the [subagent-question] note onto the PARENT's input queue, not the child's own steer queue" do
-      registry       = Rubino::Tools::BackgroundTasks.instance
-      parent_queue   = Rubino::Interaction::InputQueue.new
-      before_threads = Thread.list.size
-      child_runner   = Class.new do
-        def run!(_prompt, **_opts)
-          Rubino::Tools::AskParentTool.new.call("question" => "split into how many files?", "blocking" => true)
-        end
-
-        def cancel!; end
-      end.new
-
-      # Spawn with the parent's input queue bound, the way Lifecycle#run_turn
-      # binds it around the parent loop's run.
-      handle = Rubino.with_background_sink(parent_queue) do
-        Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { child_runner })
-                               .call("subagent" => "general", "prompt" => "do it")
-      end
-      id = handle[/sa_[0-9a-f]+/]
-      wait_until { registry.find(id).status == :blocked_on_human }
-
-      # The note landed on the PARENT's queue (as a notice — it folds into the
-      # parent's next real turn instead of firing a standalone one, #13) …
-      note = parent_queue.drain.find { |n| n.include?("[subagent-question]") }
-      expect(note).to include("split into how many files?")
-      # … and it names the MODEL-callable answer_child, not the human-only /reply.
-      expect(note).to include("answer_child(task_id: \"#{id}\"")
-      # The asking child's OWN steer queue got NOTHING (the misroute).
-      expect(registry.find(id).steer_queue.drain).to eq([])
-
-      # The unbroken half of the chain still works: answering unblocks the child.
-      registry.deliver_answer(id, "three files")
-      wait_until { registry.find(id).status == :completed }
-      expect(registry.find(id).result).to include("Your parent answered: three files")
-      registry.find(id).thread&.join(2)
-      wait_until { Thread.list.size <= before_threads }
-    end
-  end
-
-  # --- #510: no double-draw of the ask on the mid-turn auto-open path --------
-  #
-  # When a child escalates a blocking ask_parent, #surface_and_notify both
-  # commits the ⛔ scrollback "a subagent needs you" banner AND fires the
-  # auto-open dropdown. On a live turn the dropdown's own `◆ … asks` header +
-  # picker already shows the question — so the scrollback banner is REDUNDANT
-  # and the human saw the same question drawn twice on open. The fix surfaces
-  # the dropdown first and, when a live composer owns the screen (auto-open
-  # WILL show it), rings ONLY the attention bell instead of re-printing the
-  # banner. The idle/no-composer path is unchanged: the full banner + /reply
-  # affordance still prints (the dropdown can't open then).
-  describe "auto-open does not double-draw the ask banner (#510)" do
-    # A CLI-typed stub: AskParentTool gates on parent_ui.is_a?(UI::CLI), so the
-    # stub subclasses the real CLI and only overrides the seam methods we assert.
-    def stub_cli(takes_over:)
-      Class.new(Rubino::UI::CLI) do
-        attr_reader :banner_calls, :bell_calls
-
-        def initialize(takes_over:)
-          super()
-          @takes_over = takes_over
-          @banner_calls = 0
-          @bell_calls = 0
-        end
-
-        def subagent_ask_banner(_id, _subagent, _question) = (@banner_calls += 1)
-        def ring_subagent_blocked(_id, _subagent) = (@bell_calls += 1)
-        def auto_open_human_ask(_entry = nil) = @takes_over
-        def set_subagent_cards = nil
-      end.new(takes_over: takes_over)
-    end
-
-    let(:entry) do
-      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "general", prompt: "x")
-    end
-
-    after { Rubino.instance_variable_set(:@ui, nil) }
-
-    it "SUPPRESSES the scrollback banner (rings the bell only) when the dropdown auto-opens" do
-      ui = stub_cli(takes_over: true)
-      Rubino.instance_variable_set(:@ui, ui)
-      Rubino::Tools::AskParentTool.new.send(:surface_and_notify, entry, "Which database?")
-      expect(ui.banner_calls).to eq(0) # no doubled question above the dropdown
-      expect(ui.bell_calls).to eq(1)   # attention still rings
-    end
-
-    it "STILL prints the full banner on the idle/no-composer path (unchanged)" do
-      ui = stub_cli(takes_over: false)
-      Rubino.instance_variable_set(:@ui, ui)
-      Rubino::Tools::AskParentTool.new.send(:surface_and_notify, entry, "Which database?")
-      expect(ui.banner_calls).to eq(1) # /reply affordance still surfaces
-      expect(ui.bell_calls).to eq(0)   # the banner rings its own bell internally
-    end
-  end
-
-  # --- #513: a REJECTED takeover must NOT suppress the banner -----------------
-  #
-  # The regression: #auto_open_human_ask used to hardcode `return true` after
-  # calling request_takeover, ignoring its real result. request_takeover returns
-  # FALSE when no takeover happened (composer suspended / no wake pipe), so a
-  # human-ask landing then surfaced NOTHING on screen yet the bogus `true` told
-  # #surface_and_notify to SUPPRESS the scrollback banner — the user got a bell
-  # and no /reply affordance, stranded. These drive the REAL #auto_open_human_ask
-  # (no stub) against a REAL composer in the rejecting states.
-  describe "rejected takeover keeps the banner (#513)" do
-    # A CLI subclass that records the banner/bell seams but runs the REAL
-    # #auto_open_human_ask (the method under test) and the REAL request_takeover.
-    def real_auto_open_cli
-      Class.new(Rubino::UI::CLI) do
-        attr_reader :banner_calls, :bell_calls
-
-        def initialize
-          super
-          @banner_calls = 0
-          @bell_calls = 0
-        end
-
-        def subagent_ask_banner(_id, _subagent, _question) = (@banner_calls += 1)
-        def ring_subagent_blocked(_id, _subagent) = (@bell_calls += 1)
-        def set_subagent_cards = nil
-      end.new
-    end
-
-    let(:entry) do
-      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "general", prompt: "x")
-    end
-
-    let(:composer) do
-      Rubino::UI::BottomComposer.new(
-        input_queue: Rubino::Interaction::InputQueue.new,
-        input: StringIO.new, output: StringIO.new
-      )
-    end
-
-    before { Rubino::UI::BottomComposer.current = composer }
-
-    after do
-      Rubino::UI::BottomComposer.current = nil
-      Rubino.instance_variable_set(:@ui, nil)
-    end
-
-    it "request_takeover => false AND auto_open_human_ask => false when SUSPENDED" do
-      composer.instance_variable_set(:@running, true)
-      composer.instance_variable_set(:@wake_pipe, StringIO.new)
-      composer.instance_variable_set(:@suspended, true)
-
-      ui = real_auto_open_cli
-      expect(composer.request_takeover { nil }).to be(false)
-      expect(ui.auto_open_human_ask(entry)).to be(false)
-    end
-
-    it "request_takeover => false AND auto_open_human_ask => false with NO wake pipe" do
-      composer.instance_variable_set(:@running, true)
-      composer.instance_variable_set(:@wake_pipe, nil)
-
-      ui = real_auto_open_cli
-      expect(composer.request_takeover { nil }).to be(false)
-      expect(ui.auto_open_human_ask(entry)).to be(false)
-    end
-
-    it "surface_and_notify then EMITS the banner (no suppression) on a rejected takeover" do
-      composer.instance_variable_set(:@running, true)
-      composer.instance_variable_set(:@wake_pipe, nil) # request_takeover will reject
-
-      ui = real_auto_open_cli
-      Rubino.instance_variable_set(:@ui, ui)
-      Rubino::Tools::AskParentTool.new.send(:surface_and_notify, entry, "Which database?")
-
-      expect(ui.banner_calls).to eq(1) # /reply affordance surfaces — user not stranded
-      expect(ui.bell_calls).to eq(0)   # the banner carries its own bell
     end
   end
 

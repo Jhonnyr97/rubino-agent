@@ -108,22 +108,12 @@ module Rubino
           # the same tools.task key — disabling delegation disables these too.
           register(Rubino::Tools::TaskResultTool.new)
           register(Rubino::Tools::TaskStopTool.new)
-          # ask_parent: the child->parent escalation tool. Registered globally
-          # (gated by the same tools.task key), but Definition#resolved_tools
-          # exposes it ONLY to subagents — a top-level agent has no parent to ask.
-          register(Rubino::Tools::AskParentTool.new)
           # steer / probe (S2/S3): the MODEL-callable parent->child channels,
           # registered for ALL agents and AUTHORIZED by ownership at call time
           # (a node with no children just gets a "not your child" error). NOT on
           # any strip list — scoping happens inside the tool, not in the registry.
           register(Rubino::Tools::SteerTool.new)
           register(Rubino::Tools::ProbeTool.new)
-          # answer_child (S4): the MODEL-callable answer to a child's ask_parent,
-          # the agent-parent twin of the human /reply. Registered for ALL agents
-          # and AUTHORIZED by ownership at call time (like steer/probe). NOT on
-          # any strip list — a node with no waiting child just gets a not-waiting
-          # / not-yours error.
-          register(Rubino::Tools::AnswerChildTool.new)
           # retrieve_output: the ONLY recovery path for compressed tool output.
           # Registered solely when tool_output_compression is enabled (the
           # default is OFF), so the shipped registry count is unchanged. When on,
@@ -160,11 +150,10 @@ module Rubino
         # Tools that act ON a LIVE child and are NOT named in the `task`
         # description — they only make sense once a child SUBAGENT exists, so
         # they stay gated on `any_subagent?`. Before any task is spawned a
-        # `steer`/`answer_child` with no child just errors ("not your child" /
-        # "no waiting child"), so hiding them costs no promised capability and
-        # keeps the common-turn schema lean. `task` itself (spawn) stays
-        # always-on. (#313)
-        TASK_DEPENDENT_TOOLS = %w[steer answer_child].freeze
+        # `steer` with no child just errors ("not your child"), so hiding it
+        # costs no promised capability and keeps the common-turn schema lean.
+        # `task` itself (spawn) stays always-on. (#313)
+        TASK_DEPENDENT_TOOLS = %w[steer].freeze
 
         # Tools that ONLY make sense once a background SHELL exists this session —
         # the shell-management channels. Before any `shell run_in_background:true`
@@ -180,23 +169,17 @@ module Rubino
         # common turn. Saves ~2k tokens on a normal file-edit turn that has
         # neither a child nor a background shell.
         #
-        #   - ask_parent: exposed ONLY when running AS a subagent (the
-        #     thread-local current_subagent_id is set ⇒ this run has a parent).
-        #     Mirrors Definition#resolved_tools' SUBAGENT_ONLY gate so the base
-        #     registry view is honest even outside an agent definition.
         #   - task_result / task_stop / probe (TASK_POLL_TOOLS): NOT situationally
         #     hidden — they ride with `task` (gated only by `tools.task`) because
         #     the `task` description references task_result/task_stop and the
         #     model must see the whole delegate+poll toolset to plan delegation.
-        #   - steer / answer_child (TASK_DEPENDENT_TOOLS): act on a LIVE child and
-        #     aren't named in the task description, so they're exposed only once
-        #     ≥1 child task exists in the BackgroundTasks registry.
+        #   - steer (TASK_DEPENDENT_TOOLS): acts on a LIVE child and isn't named
+        #     in the task description, so it's exposed only once ≥1 child task
+        #     exists in the BackgroundTasks registry.
         #   - shell_* management: exposed only once ≥1 background shell exists in
         #     the ShellRegistry.
         def situational_tool_hidden?(tool)
           case tool.name
-          when "ask_parent"
-            !running_as_subagent?
           when *TASK_DEPENDENT_TOOLS
             !any_subagent?
           when *SHELL_DEPENDENT_TOOLS
@@ -204,16 +187,6 @@ module Rubino
           else
             false
           end
-        end
-
-        # True when THIS run is executing as a subagent (has a parent). The
-        # thread-local is set by TaskTool around a child Runner#run!; nil on the
-        # top-level / parent thread, which is exactly the "no parent to ask"
-        # signal ask_parent itself uses to refuse.
-        def running_as_subagent?
-          !Rubino.current_subagent_id.nil?
-        rescue StandardError
-          false
         end
 
         # True once at least one child task (in any state) exists this session.

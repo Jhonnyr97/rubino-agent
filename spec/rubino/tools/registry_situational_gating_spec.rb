@@ -14,17 +14,6 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
   end
 
   describe "subagent-comm tools" do
-    it "hides ask_parent on a top-level run (no parent)" do
-      expect(Rubino.current_subagent_id).to be_nil
-      expect(enabled_names).not_to include("ask_parent")
-    end
-
-    it "exposes ask_parent when running AS a subagent" do
-      Rubino.with_current_subagent_id("sa_abc") do
-        expect(enabled_names).to include("ask_parent")
-      end
-    end
-
     it "exposes the poll tools (task_result/task_stop/probe) with task even with no child" do
       # These ride with `task` (the description references task_result/task_stop),
       # so the function list must match the description regardless of any child.
@@ -34,11 +23,9 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
       end
     end
 
-    it "hides the live-child tools (steer/answer_child) until ≥1 child task exists" do
+    it "hides the live-child tool (steer) until ≥1 child task exists" do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([])
-      %w[steer answer_child].each do |t|
-        expect(enabled_names).not_to include(t)
-      end
+      expect(enabled_names).not_to include("steer")
     end
 
     it "keeps task (spawn) always-on regardless of children" do
@@ -48,7 +35,7 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
 
     it "exposes the live-child tools once a child task exists" do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([Object.new])
-      %w[task_result task_stop steer probe answer_child].each do |t|
+      %w[task_result task_stop steer probe].each do |t|
         expect(enabled_names).to include(t)
       end
     end
@@ -90,7 +77,7 @@ RSpec.describe Rubino::Tools::Registry, "situational gating (#313)" do
       # task_result/task_stop/probe intentionally STAY (they ride with `task`,
       # whose description names them); only the live-child and shell-management
       # tools are situationally dropped on a normal turn.
-      situational = %w[ask_parent steer answer_child
+      situational = %w[steer
                        shell_input shell_output shell_tail shell_kill]
       expect(enabled_names & situational).to be_empty
     end
