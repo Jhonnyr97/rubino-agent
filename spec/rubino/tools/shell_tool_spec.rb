@@ -313,5 +313,32 @@ RSpec.describe Rubino::Tools::ShellTool do
       expect { tool.call("command" => "printf 'one\\ntwo\\n'") }
         .to raise_error(Rubino::Interrupted)
     end
+
+    # US-2 — the REAL orphan race: the async watchdog does `target.raise(
+    # Rubino::Interrupted)` straight into the thread running the wait loop, which
+    # unwinds it BEFORE the cooperative `cancellation_requested?` SIGTERM branch
+    # runs. Pre-fix there was no `ensure { kill_group }`, so the child group
+    # survived (a `sleep` outliving Esc) and could even paint a false ✓. The
+    # ensure must guarantee teardown on this path too.
+    it "kills the process group (no orphan) when Interrupted is raised into the wait loop" do
+      marker = "us2_orphan_#{SecureRandom.hex(4)}"
+      thread = Thread.new do
+        tool.call("command" => "sleep 30 # #{marker}")
+      rescue Rubino::Interrupted
+        :interrupted
+      end
+
+      # Let it spawn the child and settle into the wait loop.
+      sleep 0.4
+      expect(`pgrep -f #{marker}`.strip).not_to be_empty, "child never started"
+
+      # Async watchdog-style interrupt straight into the wait-loop thread.
+      thread.raise(Rubino::Interrupted)
+      expect(thread.value).to eq(:interrupted)
+
+      # The ensure must have torn down the whole group — no orphan survives.
+      sleep 0.3
+      expect(`pgrep -f #{marker}`.strip).to eq(""), "the child survived the interrupt as an orphan"
+    end
   end
 end

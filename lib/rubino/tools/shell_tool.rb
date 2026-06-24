@@ -535,12 +535,26 @@ module Rubino
         end
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
+        # Set true ONLY once THIS thread has reaped the process (normal/cancel/
+        # timeout/ECHILD). The `ensure` below kills the group when this is still
+        # false — i.e. when an async Rubino::Interrupted (raised by the watchdog
+        # mid-wait) unwound the loop BEFORE the cooperative cancel branch's kill
+        # ran. Without it the child group survived as an orphan (a `sleep 60`
+        # outliving Esc, US-2) and a false ✓ could paint. Reaping first also
+        # makes the ensure-kill safe against PID reuse: an unreaped process keeps
+        # its pid, so killpg can't hit a recycled group. (hermes
+        # base.py::_wait_for_process: kill the group on the interrupt path too.)
+        reaped = false
+
         begin
           deadline = Time.now + timeout
           status   = nil
           loop do
             wpid, status = Process.waitpid2(pid, Process::WNOHANG)
-            break if wpid
+            if wpid
+              reaped = true
+              break
+            end
 
             if cancellation_requested?
               terminate_group(pgid)
@@ -555,6 +569,7 @@ module Rubino
               rescue StandardError
                 nil
               end
+              reaped = true
               return foreground_result(
                 stdout: output_thr.value,
                 suffix: "[Command cancelled by user — SIGTERM sent]",
@@ -578,6 +593,7 @@ module Rubino
                 end
                 _, status = Process.waitpid2(pid)
               end
+              reaped = true
               return foreground_result(
                 stdout: output_thr.value,
                 suffix: "[Command timed out after #{timeout}s — SIGTERM sent]",
@@ -603,6 +619,8 @@ module Rubino
                             exit_code: code,
                             duration_ms: elapsed_ms(started_at))
         rescue Errno::ECHILD
+          # No child to wait on — already reaped/never there. Nothing to kill.
+          reaped = true
           foreground_result(stdout: output_thr.value,
                             duration_ms: elapsed_ms(started_at))
         end
@@ -619,6 +637,24 @@ module Rubino
         { text: "Shell error: #{e.message}", exit_code: nil, timed_out: false,
           cancelled: false, shell_error: true, duration_ms: 0 }
       ensure
+        # GUARANTEE process-group teardown on EVERY exit path (US-2). The async
+        # watchdog raises Rubino::Interrupted mid-wait, which unwinds the loop
+        # BEFORE the cooperative cancel branch's kill runs — so the child group
+        # would survive as an orphan (a `sleep 60` outliving Esc) and the cancel
+        # could even render a false ✓. Killing here closes that race: every path
+        # falls through this ensure. Only when we did NOT already reap (reaped is
+        # false/nil) — reaping first frees the pid, so this can't hit a recycled
+        # group; an unreaped process still holds its pid. kill_group is
+        # idempotent (ESRCH/EPERM swallowed). (hermes base.py::_wait_for_process
+        # kills the group on the interrupt path too.)
+        unless reaped
+          kill_group(pgid) if pgid
+          begin
+            Process.waitpid(pid) if pid
+          rescue StandardError
+            nil
+          end
+        end
         ShellRegistry.instance.unregister_pgid(pgid) if pgid
         rd.close if rd && !rd.closed?
         # fd 3 ends: cwd_wr is closed right after spawn; cwd_rd is drained+closed

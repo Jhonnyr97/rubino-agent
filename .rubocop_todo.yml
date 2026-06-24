@@ -538,6 +538,7 @@ RSpec/DescribeClass:
     - 'spec/rubino/skills/skills_spec.rb'
     - 'spec/rubino/tools/edit_read_gate_spec.rb'
     - 'spec/rubino/tools/shell_background_spec.rb'
+    - 'spec/rubino/tools/shell_background_completion_spec.rb'
     - 'spec/rubino/tools/shell_input_spec.rb'
     - 'spec/rubino/tools/tool_fixes_spec.rb'
     - 'spec/rubino/ui/bottom_composer_approval_handoff_pty_spec.rb'
