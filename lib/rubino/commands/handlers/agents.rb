@@ -479,7 +479,7 @@ module Rubino
 
         # #71 — LIVE drill-in for a running subagent. Renders the task summary and
         # the recent-activity ring (read live from the registry, which the child's
-        # UI::SubagentView keeps fresh), refreshing in place until the user presses a
+        # UI::SubagentRecorder keeps fresh), refreshing in place until the user presses a
         # key (Esc/Enter/q) or the task ends. Off an interactive terminal (#ask
         # returns nil — Null/API/pipe) it degrades to a SINGLE snapshot so the
         # non-interactive paths and unit tests never block on a redraw loop.
@@ -507,7 +507,7 @@ module Rubino
 
         # #5 — the live output: block under the ring: the tail of the CURRENTLY
         # RUNNING tool's streamed output (the registry's bounded output_tail,
-        # fed by the child's UI::SubagentView#tool_chunk and wiped at
+        # fed by the child's UI::SubagentRecorder#tool_chunk and wiped at
         # tool_finished), so a long shell call shows its lines as they print
         # instead of a frozen frame. Renders nothing when no tool is mid-run or
         # it hasn't produced output yet; the buffer's empty last slot just means
