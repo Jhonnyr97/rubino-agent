@@ -210,7 +210,7 @@ RSpec.describe Rubino::Tools::ReadTool do
       Rubino.configuration.set("tool_output_compression", "enabled", true)
       Rubino.configuration.set("tool_output_compression", "code",
                                "strategy" => "skeleton", "min_lines" => 5,
-                               "keep_method_body_max_lines" => 8)
+                               "keep_method_body_max_lines" => 8, "languages" => %w[ruby])
     end
 
     context "with the flag OFF (default)" do
@@ -230,10 +230,17 @@ RSpec.describe Rubino::Tools::ReadTool do
 
       it "emits a code compress_hint on a whole-file Ruby read (raw source + paths)" do
         hint = tool.call("file_path" => ruby_path)[:compress_hint]
-        expect(hint).to include(full_file: true, content_type: :code)
+        expect(hint).to include(full_file: true, content_type: :code, lang: :ruby)
         expect(hint[:source_path]).to eq(ruby_path)
         expect(hint[:tracker_path]).to eq(File.expand_path(ruby_path))
         expect(hint[:raw_source]).to eq(ruby_src)
+      end
+
+      it "emits NO hint when ruby is dropped from the languages list" do
+        Rubino.configuration.set("tool_output_compression", "code",
+                                 "strategy" => "skeleton", "min_lines" => 5,
+                                 "keep_method_body_max_lines" => 8, "languages" => [])
+        expect(tool.call("file_path" => ruby_path)[:compress_hint]).to be_nil
       end
 
       it "emits NO hint on a TARGETED (offset/limit) read — the drill-in path" do

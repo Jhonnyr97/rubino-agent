@@ -523,7 +523,12 @@ module Rubino
             "min_lines" => 150,
             # Method bodies up to this many lines are kept VERBATIM; only larger
             # bodies are elided behind a pointer.
-            "keep_method_body_max_lines" => 8
+            "keep_method_body_max_lines" => 8,
+            # Which source languages get skeletonised. Remove one ⇒ no compression
+            # for it (its whole-file reads pass through verbatim). Ruby uses the
+            # built-in Prism parser; other languages added in later slices need
+            # their own parser before they can be enabled here.
+            "languages" => %w[ruby]
           },
           # LOG/command-output compression (test runs, linters, build/shell
           # dumps). The high-ROI channel: the agent reads command output WHOLE,

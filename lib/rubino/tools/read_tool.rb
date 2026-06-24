@@ -144,12 +144,13 @@ module Rubino
       # that isn't a compressible whole-file Ruby read, so the router passes
       # through. Best-effort: a read of binary/huge content just yields no hint.
       def compress_hint(expanded, display_path, full_file)
-        return nil unless full_file && compression_enabled? && ruby_file?(expanded)
+        lang = code_language_for(expanded)
+        return nil unless full_file && compression_enabled? && lang && enabled_language?(lang)
 
         content = File.read(expanded, encoding: "UTF-8")
         return nil unless content.valid_encoding?
 
-        { full_file: true, content_type: :code, source_path: display_path,
+        { full_file: true, content_type: :code, lang: lang, source_path: display_path,
           tracker_path: expanded, raw_source: content }
       rescue StandardError
         nil
@@ -158,11 +159,25 @@ module Rubino
       RUBY_EXTENSIONS = %w[.rb .rake .gemspec].freeze
       RUBY_FILENAMES  = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
 
-      def ruby_file?(path)
+      # The skeletoner's language for `path`, or nil for a file no strategy
+      # handles. Today only Ruby; later slices extend this to Python/JS/TS by
+      # extension/filename.
+      def code_language_for(path)
         ext = File.extname(path)
-        return true if RUBY_EXTENSIONS.include?(ext)
+        return :ruby if RUBY_EXTENSIONS.include?(ext)
+        return :ruby if RUBY_FILENAMES.include?(File.basename(path))
 
-        RUBY_FILENAMES.include?(File.basename(path))
+        nil
+      end
+
+      # Is `lang` turned on in the config's languages list? Lets an operator
+      # drop a language (e.g. remove "ruby") to disable compression for it
+      # without touching the master flag.
+      def enabled_language?(lang)
+        Rubino.configuration.tool_output_compression_code_languages
+              .map(&:to_sym).include?(lang)
+      rescue StandardError
+        false
       end
 
       BINARY_SAMPLE_BYTES = 1024
