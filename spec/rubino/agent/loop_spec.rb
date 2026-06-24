@@ -993,15 +993,14 @@ RSpec.describe Rubino::Agent::Loop do
       expect(fake_llm.call_count).to eq(3)
     end
 
-    # Spec 5 (#574): a BACKGROUND subagent reaches the cap through a real
-    # SubagentView whose budget handler returns :continue (as if the human
-    # granted from the dropdown) → the Loop extends and resumes the turn, exactly
-    # as the scripted-UI continue path does. Proves the subagent #select →
-    # :continue → extend! wiring end-to-end (the view is the production adapter).
-    it "subagent (SubagentView + budget handler → :continue): extends and resumes" do
-      view = Rubino::UI::SubagentView.new(
-        agent_name: "explore", out: StringIO.new, entry_id: "sa_1",
-        budget: ->(_prompt) { :continue }
+    # Spec 5 (#574): a BACKGROUND subagent reaches the cap through a real per-sub
+    # UI::CLI whose budget handler returns :continue (as if the human granted from
+    # the dropdown) → the Loop extends and resumes the turn, exactly as the
+    # scripted-UI continue path does. Proves the subagent #select → :continue →
+    # extend! wiring end-to-end (the CLI is the production adapter).
+    it "subagent (per-sub CLI + budget handler → :continue): extends and resumes" do
+      view = Rubino::UI::CLI.new(
+        agent_id: "sa_1", budget_handler: ->(_prompt) { :continue }
       )
       budget = Rubino::Agent::IterationBudget.new(config: tight_config)
       4.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
@@ -1020,10 +1019,10 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to eq("Final summary after the granted budget.")
     end
 
-    # Spec 6 (#574): a subagent SubagentView with NO budget handler (foreground/
+    # Spec 6 (#574): a subagent per-sub CLI with NO budget handler (foreground/
     # sync/headless) keeps the nil #select → force-summarize guarantee.
-    it "subagent (SubagentView, no budget handler): force-summarizes (select → nil)" do
-      view = Rubino::UI::SubagentView.new(agent_name: "explore", out: StringIO.new, entry_id: "sa_1")
+    it "subagent (per-sub CLI, no budget handler): force-summarizes (select → nil)" do
+      view = Rubino::UI::CLI.new(agent_id: "sa_1")
       budget = Rubino::Agent::IterationBudget.new(config: tight_config)
       2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
       fake_llm.enqueue_text("Summary without a budget grant.")

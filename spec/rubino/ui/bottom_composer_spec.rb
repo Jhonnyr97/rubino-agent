@@ -2203,57 +2203,72 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
-  # Focus-gating (agent-multiplexer Slice 3): while ATTACHED to a subagent's
-  # view, the parent turn keeps running but its output must NOT paint the screen
-  # the sub now owns. The three main-turn render paths DROP their frames; the
-  # attach/detach REPLAY is exempt so the focused view the user wants still
-  # paints. The raw input reader is untouched (not asserted here — see the PTY
-  # spec — but the gate never stops it, unlike #suspend).
-  describe "main-render suppression (#suppress_main_render!)" do
-    it "DROPS print_above / set_partial / set_cards frames while suppressed" do
-      composer.suppress_main_render!(true)
+  # Focus-gating (tmux-style unified render): EVERY agent paints through its own
+  # CLI, and each frame carries an `origin:`. Only the FOCUSED agent's frames
+  # paint; a non-focused agent (the main loop while attached to a sub, OR a sub
+  # while at main) keeps running but DROPS its frames. The attach/detach REPLAY
+  # is exempt so the focused view the user wants still paints. The raw input
+  # reader is untouched (not asserted here — see the PTY spec — but the gate
+  # never stops it, unlike #suspend).
+  describe "per-origin focus gate (#focus_agent!)" do
+    it "PAINTS the focused agent's frames and DROPS a non-focused agent's" do
+      # Focus the sub: now a MAIN-origin frame (the still-running parent turn)
+      # drops, while the FOCUSED sub's frame paints.
+      composer.focus_agent!("sa_1")
       output.truncate(0)
       output.rewind
 
-      composer.print_above("parent turn line")
-      composer.set_partial("parent streaming tok")
-      composer.set_cards(["▸ sa_1 · running"])
-
-      # No main-turn frame reached the terminal, and no live state was mutated.
+      # Non-focused (origin :main) — dropped, no live state mutated.
+      composer.print_above("parent turn line", origin: :main)
+      composer.set_partial("parent streaming tok", origin: :main)
+      composer.set_cards(["▸ sa_x · running"], origin: :main)
       expect(output.string).to eq("")
       expect(composer.partial?).to be(false)
       expect(composer.cards).to eq([])
+
+      # Focused (origin "sa_1") — painted.
+      composer.print_above("focused sub line", origin: "sa_1")
+      expect(output.string).to include("focused sub line\r\n")
     end
 
-    it "renders again once suppression is lifted (detach resumes the main view)" do
-      composer.suppress_main_render!(true)
-      composer.suppress_main_render!(false)
-      composer.print_above("parent line back on screen")
+    it "defaults origin to :main so the main agent paints when focused on :main" do
+      composer.print_above("main line, default origin")
+      expect(output.string).to include("main line, default origin\r\n")
+    end
+
+    it "refocuses :main on detach so the main view paints again" do
+      composer.focus_agent!("sa_1")
+      composer.focus_agent!(:main)
+      composer.print_above("parent line back on screen", origin: :main)
       expect(output.string).to include("parent line back on screen\r\n")
     end
 
     it "EXEMPTS the attach/detach replay (#with_replay_exempt) from the gate" do
-      composer.suppress_main_render!(true)
+      composer.focus_agent!("sa_1")
       output.truncate(0)
       output.rewind
 
+      # A :main-origin frame inside the replay still paints (replay is exempt).
       composer.with_replay_exempt do
-        composer.print_above("replayed sub transcript row")
+        composer.print_above("replayed sub transcript row", origin: :main)
       end
-
-      # The replay paints even while main-render is suppressed...
       expect(output.string).to include("replayed sub transcript row\r\n")
-      # ...and the exemption is scoped: a main-turn frame after it still drops.
+
+      # ...and the exemption is scoped: a non-focused frame after it still drops.
       output.truncate(0)
       output.rewind
-      composer.print_above("parent line after replay")
+      composer.print_above("parent line after replay", origin: :main)
       expect(output.string).to eq("")
     end
 
-    it "is a harmless no-op query when never suppressed" do
+    it "tracks the focused id (and #main_render_suppressed? derives from it)" do
+      expect(composer.focused_agent_id).to eq(:main)
       expect(composer.main_render_suppressed?).to be(false)
-      composer.suppress_main_render!(true)
+      composer.focus_agent!("sa_1")
+      expect(composer.focused_agent_id).to eq("sa_1")
       expect(composer.main_render_suppressed?).to be(true)
+      composer.focus_agent!(nil) # nil normalizes to :main
+      expect(composer.focused_agent_id).to eq(:main)
     end
   end
 
@@ -2271,7 +2286,7 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "shows a compact switcher line listing the running subs with the focused one marked" do
       a = reg.reserve(subagent: "explore", prompt: "first")
       b = reg.reserve(subagent: "build", prompt: "second")
-      composer.suppress_main_render!(true, attached_id: b.id)
+      composer.focus_agent!(b.id)
 
       rows = composer.send(:below_input_rows)
       line = rows.join
@@ -2283,14 +2298,14 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
 
     it "shows no switcher line while attached when no sub is live" do
-      composer.suppress_main_render!(true, attached_id: "sa_gone")
+      composer.focus_agent!("sa_gone")
       expect(composer.send(:below_input_rows)).to eq([])
     end
 
     it "lets ↓ open the picker while attached and Enter re-attaches to the chosen sub" do
       reg.reserve(subagent: "explore", prompt: "first")
       target = reg.reserve(subagent: "build", prompt: "second")
-      composer.suppress_main_render!(true, attached_id: "sa_other")
+      composer.focus_agent!("sa_other")
 
       # ↓ opens the navigable picker even while attached...
       composer.send(:history_down)
@@ -2304,10 +2319,10 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(queue.shift).to eq("/agents #{target.id} --attach")
     end
 
-    it "clears the focused mark on detach (suppression lifted)" do
-      composer.suppress_main_render!(true, attached_id: "sa_x")
-      composer.suppress_main_render!(false)
-      expect(composer.instance_variable_get(:@attached_id)).to be_nil
+    it "clears the focused mark on detach (refocus :main)" do
+      composer.focus_agent!("sa_x")
+      composer.focus_agent!(:main)
+      expect(composer.focused_agent_id).to eq(:main)
     end
 
     # The REPL rebuilds a fresh composer per idle iteration / per turn, so the
@@ -3583,10 +3598,10 @@ RSpec.describe Rubino::UI::BottomComposer do
   # #82: attach must focus the view on the sub. The composer is REBUILT every
   # idle pass, so the focus-gate can't be set imperatively on a previous
   # instance — it is SEEDED from the host's persistent attach-state at
-  # construction (`attached:`). While the gate is on, the parent's subagent
-  # cards (set_cards) drop, but the attached sub's live ⟂ tail (set_partial,
-  # painted through the @replaying-exempt seam the watcher uses) still renders;
-  # detach (gate off) restores both.
+  # construction (`attached:`). While focused on a sub, the parent's subagent
+  # cards (set_cards, origin :main) drop, but the attach/detach REPLAY (painted
+  # through the @replaying-exempt seam) still renders; detach (refocus :main)
+  # restores both.
   describe "focus-gate seeded from attach-state (#82)" do
     it "starts SUPPRESSED when built with attached: true" do
       c = described_class.new(input_queue: queue, input: input, output: output,
@@ -3605,26 +3620,26 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(c.instance_variable_get(:@cards)).to eq([])
     end
 
-    it "still RENDERS the watcher's live ⟂ tail while attached (replay-exempt set_partial)" do
+    it "still RENDERS a replay frame while attached (replay-exempt set_partial)" do
       c = described_class.new(input_queue: queue, input: input, output: output,
                               attached: true)
-      # The watcher paints inside with_replay_exempt; that seam exempts the
-      # focus-gate, so the ⟂ frame lands even while main-render is suppressed.
+      # The attach replay paints inside with_replay_exempt; that seam exempts the
+      # focus-gate, so the frame lands even while focused on a sub.
       c.with_replay_exempt { c.set_partial("⟂ sa_1 · running · 2 tools") }
       expect(c.instance_variable_get(:@partial)).to eq("⟂ sa_1 · running · 2 tools")
     end
 
-    it "drops the watcher's ⟂ frame when NOT routed through the replay seam" do
+    it "drops a :main-origin frame when NOT routed through the replay seam" do
       c = described_class.new(input_queue: queue, input: input, output: output,
                               attached: true)
-      c.set_partial("⟂ sa_1 · running") # no with_replay_exempt → gated
+      c.set_partial("⟂ sa_1 · running") # no with_replay_exempt, origin :main → gated
       expect(c.instance_variable_get(:@partial).to_s).to eq("")
     end
 
-    it "RESTORES card painting once detached (suppress_main_render! false)" do
+    it "RESTORES card painting once detached (refocus :main)" do
       c = described_class.new(input_queue: queue, input: input, output: output,
                               attached: true)
-      c.suppress_main_render!(false)
+      c.focus_agent!(:main)
       c.set_cards(["▸ sa_1 · general · running · 2 tools · 47s"])
       expect(c.instance_variable_get(:@cards))
         .to eq(["▸ sa_1 · general · running · 2 tools · 47s"])

@@ -134,7 +134,7 @@ module Rubino
       # `ArgumentError: unknown keyword: :scope` on every interactive tool
       # approval. `**context` absorbs the enriched approval fields (tool/
       # command/pattern_key/description) that ToolExecutor passes for the /v1
-      # event — only UI::API consumes them; CLI/Null/SubagentView ignore them.
+      # event — only UI::API consumes them; CLI/Null ignore them.
       def confirm(question, scope: nil, **context)
         raise NotImplementedError, "#{self.class}#confirm not implemented"
       end
