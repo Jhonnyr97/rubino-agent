@@ -17,7 +17,9 @@ module Rubino
     # One source of truth: the adapter calls #render exactly once per chat build
     # to derive the params, and applies them; the inline Slice 0(c) logic that
     # used to live in RubyLLMAdapter#apply_generation_params now lives here.
-    class ReasoningManager
+    module ReasoningManager
+      module_function
+
       # The rendered wire params. +thinking+ is the Anthropic manual-mode block
       # (nil when disabled), +temperature+ is forced to 1 with thinking on (else
       # the configured value, possibly nil ⇒ provider default), +max_tokens+ is
@@ -54,8 +56,6 @@ module Rubino
           max_tokens: apply_max_tokens ? render_max_tokens(enabled, budget, max_tokens, text_headroom) : nil
         )
       end
-
-      private
 
       def render_temperature(enabled, temperature)
         return 1 if enabled
