@@ -41,6 +41,30 @@ RSpec.describe Rubino::Commands::Handlers::Sessions do
     expect(last_line).to match(/renamed/i)
   end
 
+  # #581 — a manual rename bypasses the auto-derive 60-char cap, so a 2000-char
+  # title would be STORED in full and blow out the /status panel + picker. The
+  # rename write seam now bounds the stored title to TITLE_MAX_CHARS (with an
+  # ellipsis) — the user still gets their title, just length-capped.
+  it "caps an over-long renamed title to TITLE_MAX_CHARS on write" do
+    session = repo.create(source: "cli", title: "say hi")
+    cap = Rubino::Session::Repository::TITLE_MAX_CHARS
+
+    handler.handle_sessions("rename #{session[:id][0, 8]} #{"L" * 2000}")
+
+    stored = repo.find(session[:id])[:title]
+    expect(stored.length).to be <= cap + 1 # cap chars + the "…" ellipsis
+    expect(stored).to end_with("…")
+    expect(stored).to start_with("L" * cap)
+  end
+
+  it "leaves a normal-length renamed title untouched" do
+    session = repo.create(source: "cli", title: "say hi")
+
+    handler.handle_sessions("rename #{session[:id][0, 8]} ship the release")
+
+    expect(repo.find(session[:id])[:title]).to eq("ship the release")
+  end
+
   it "teaches usage when no new title is given" do
     session = repo.create(source: "cli", title: "say hi")
 
