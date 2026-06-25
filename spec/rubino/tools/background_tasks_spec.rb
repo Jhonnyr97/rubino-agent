@@ -161,9 +161,11 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       humans.each do |h|
         break if registry.running.size >= described_class::MAX_CONCURRENT_TOTAL
 
-        until registry.children_of(h.id).size >= described_class::MAX_CHILDREN_PER_NODE ||
+        spawned = 0
+        until spawned >= described_class::MAX_CHILDREN_PER_NODE ||
               registry.running.size >= described_class::MAX_CONCURRENT_TOTAL
           registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: h.id)
+          spawned += 1
         end
       end
       expect(registry.running.size).to eq(described_class::MAX_CONCURRENT_TOTAL)
@@ -213,26 +215,10 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     let!(:a1)   { registry.reserve(subagent: "general", prompt: "a1", owner_subagent_id: a.id) }
     let!(:b)    { registry.reserve(subagent: "general", prompt: "b", owner_subagent_id: root.id) }
 
-    it "children_of returns only direct children" do
-      expect(registry.children_of(root.id).map(&:id)).to contain_exactly(a.id, b.id)
-      expect(registry.children_of(a.id).map(&:id)).to contain_exactly(a1.id)
-      expect(registry.children_of(a1.id)).to be_empty
-    end
-
-    it "children_of(nil) returns the human/top-level node's children" do
-      expect(registry.children_of(nil).map(&:id)).to contain_exactly(root.id)
-    end
-
     it "descendants_of returns the full transitive subtree (BFS)" do
       expect(registry.descendants_of(root.id).map(&:id)).to contain_exactly(a.id, b.id, a1.id)
       expect(registry.descendants_of(a.id).map(&:id)).to contain_exactly(a1.id)
       expect(registry.descendants_of(b.id)).to be_empty
-    end
-
-    it "ancestors_of walks owner_subagent_id up to the root, nearest first" do
-      expect(registry.ancestors_of(a1.id).map(&:id)).to eq([a.id, root.id])
-      expect(registry.ancestors_of(a.id).map(&:id)).to eq([root.id])
-      expect(registry.ancestors_of(root.id)).to be_empty
     end
 
     it "owned_by? is the direct-parent predicate" do

@@ -15,8 +15,7 @@ module Rubino
     # Reads order primarily by +seq+; +#for_run+ inherits that ordering.
     # When two inserts land in the same wall-clock second, the
     # +(created_at, rowid)+ tuple is the implicit tiebreaker for any
-    # consumer scanning by timestamp (Repository#last_for_session uses
-    # the same trick).
+    # consumer scanning by timestamp.
     class EventStore
       def initialize(db: nil)
         @db = db || Rubino.database.db
@@ -64,10 +63,6 @@ module Rubino
         ds = @db[:events].where(run_id: run_id).order(:seq)
         ds = ds.where { seq > after_seq } if after_seq
         ds.all
-      end
-
-      def last_seq_for_session(session_id)
-        @db[:events].where(session_id: session_id).max(:seq) || 0
       end
     end
   end

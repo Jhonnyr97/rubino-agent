@@ -183,14 +183,6 @@ module Rubino
           :handled
         end
 
-        # One picker row, delegated to the shared Session::Picker (#40) so the
-        # in-REPL chooser and the CLI `rubino sessions` picker render rows
-        # identically. Kept as a thin alias for the sessions_table_fallback and
-        # the existing label-shape spec.
-        def session_choice_label(session)
-          Session::Picker.session_choice_label(session)
-        end
-
         def resume_session(query)
           session = Session::Repository.new.find_by_id_or_title(query)
           if session.nil?

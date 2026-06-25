@@ -60,13 +60,6 @@ module Rubino
         Set.new
       end
 
-      # True when +language+ (case-insensitive) is among the detected languages
-      # for the root. Used by the skills registry to decide whether a
-      # language-gated built-in skill belongs in the auto-load catalogue.
-      def uses?(language, root: nil)
-        detect(root: root).include?(language.to_s.downcase)
-      end
-
       def detect_by_marker(root)
         MARKER_FILES.each_with_object(Set.new) do |(lang, files), acc|
           acc << lang if files.any? { |f| File.exist?(File.join(root, f)) }

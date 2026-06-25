@@ -25,9 +25,6 @@ module Rubino
     #     so the flag is recorded and surfaced to clients but does not
     #     actually halt an in-flight run; downstream agents should add the
     #     check inside Agent::Runner.
-    #
-    # +last_for_session+ uses a (created_at DESC, rowid DESC) tuple to
-    # disambiguate rows created in the same second.
     class Repository
       def initialize(db: nil)
         @db = db || Rubino.database.db
@@ -56,17 +53,6 @@ module Rubino
 
       def find(id)
         @db[:runs].where(id: id).first
-      end
-
-      def list_for_session(session_id)
-        @db[:runs].where(session_id: session_id).order(:created_at).all
-      end
-
-      def last_for_session(session_id)
-        @db[:runs]
-          .where(session_id: session_id)
-          .order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
-          .first
       end
 
       def mark_running!(id)

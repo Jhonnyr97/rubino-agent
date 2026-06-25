@@ -72,10 +72,6 @@ module Rubino
         @held = true
       end
 
-      def held?
-        @held
-      end
-
       # Releases the lock and closes the fd. Idempotent and best-effort; the
       # kernel also drops the flock on process exit, so an unreleased lock from a
       # crash never wedges the session.
