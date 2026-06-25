@@ -7,6 +7,23 @@ RSpec::Core::RakeTask.new(:spec)
 
 task default: :spec
 
+# API documentation. `rake rdoc` regenerates the HTML API docs into doc/rdoc
+# (gitignored); the .github/workflows/docs.yml workflow publishes the same
+# output to GitHub Pages. Guarded so the Rakefile still loads if the `rdoc`
+# default gem is somehow absent.
+begin
+  require "rdoc/task"
+
+  RDoc::Task.new(:rdoc) do |rdoc|
+    rdoc.rdoc_dir = "doc/rdoc"
+    rdoc.main     = "README.md"
+    rdoc.title    = "rubino-agent API documentation"
+    rdoc.rdoc_files.include("lib/**/*.rb", "exe/*", "README.md", "CHANGELOG.md", "docs/*.md")
+  end
+rescue LoadError
+  # `rdoc` unavailable -> the `rake rdoc` task is simply not defined.
+end
+
 # Parallel test execution across CPU cores via the `parallel_tests` gem.
 #
 #   rake parallel:spec            # auto: one worker per core
