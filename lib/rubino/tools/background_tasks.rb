@@ -94,7 +94,7 @@ module Rubino
         # child, or nil when the spawner is the human / top-level agent. depth is
         # 0 for a human-spawned child and owner.depth + 1 otherwise. The registry
         # stays a FLAT map keyed by id; the parent/child tree is computed over
-        # owner_subagent_id (see #children_of / #descendants_of / #ancestors_of).
+        # owner_subagent_id (see #descendants_of).
         :owner_subagent_id, :depth,
         # Model-driven LIVE-probe budget (S3). probe_count is how many BILLED
         # `probe(live:true)` peeks the owner has run against this child;
@@ -580,12 +580,6 @@ module Rubino
 
       # --- Tree over owner_subagent_id (the registry stays a flat map) ---------
 
-      # Direct children of `id`: entries whose owner_subagent_id == id. Pass nil
-      # for the human/top-level node's direct children.
-      def children_of(id)
-        @mutex.synchronize { @entries.values.select { |e| e.owner_subagent_id == id } }
-      end
-
       # All transitive descendants of `id` (BFS over owner_subagent_id), in
       # breadth order. Cycle-safe (an id is visited at most once).
       def descendants_of(id)
@@ -603,22 +597,6 @@ module Rubino
               nxt.concat(@entries.values.select { |c| c.owner_subagent_id == e.id })
             end
             frontier = nxt
-          end
-          out
-        end
-      end
-
-      # The chain of ancestors of `id`, nearest parent first, walking
-      # owner_subagent_id up to the human/top-level root. Cycle-safe.
-      def ancestors_of(id)
-        @mutex.synchronize do
-          out  = []
-          seen = { id => true }
-          cur  = @entries[id]&.owner_subagent_id
-          while cur && (entry = @entries[cur]) && !seen[cur]
-            seen[cur] = true
-            out << entry
-            cur = entry.owner_subagent_id
           end
           out
         end

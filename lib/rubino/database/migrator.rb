@@ -72,23 +72,6 @@ module Rubino
         false
       end
 
-      # Returns the current migration version: the highest version recorded in
-      # the `schema_info` bookkeeping table, or 0 when it is missing/empty.
-      #
-      # Read MAX(version) DIRECTLY: Sequel 5.105 dropped
-      # `Sequel::Migrator.get_current_migration_version`, so the old call raised
-      # NoMethodError on every invocation. The version row IS the schema version
-      # (IntegerMigrator writes the applied number there), so MAX(version) is the
-      # authoritative reading.
-      def current_version
-        db = @connection.db
-        return 0 unless db.table_exists?(:schema_info)
-
-        db[:schema_info].max(:version).to_i
-      rescue StandardError
-        0
-      end
-
       # Returns true if there are unapplied migrations.
       #
       # Intentionally does NOT rescue: a connection/schema error here is a real
@@ -96,15 +79,6 @@ module Rubino
       # failure instead of silently treating an unreachable DB as "up to date".
       def pending?
         !Sequel::Migrator.is_current?(@connection.db, MIGRATIONS_PATH)
-      end
-
-      # Returns list of pending migration files
-      def pending_migrations
-        Sequel::Migrator.migrator_class(MIGRATIONS_PATH)
-                        .new(@connection.db, MIGRATIONS_PATH)
-                        .files
-      rescue StandardError
-        []
       end
 
       private

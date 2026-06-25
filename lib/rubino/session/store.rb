@@ -69,17 +69,6 @@ module Rubino
         dataset.all.map { |row| hydrate(row) }
       end
 
-      # Returns the N most recent messages for a session
-      def recent(session_id, count:)
-        @db[:messages]
-          .where(session_id: session_id)
-          .order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
-          .limit(count)
-          .all
-          .reverse
-          .map { |row| hydrate(row) }
-      end
-
       # Returns messages strictly NEWER than +after_id+, in INSERTION order.
       # Used by the memory extractor's per-session cursor (#249): feeding only the
       # messages a turn actually added, instead of an overlapping recency window.
