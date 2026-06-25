@@ -36,6 +36,37 @@ RSpec.describe Rubino::Commands::Handlers::Status do
     expect(ui.panels["workspace"]).to eq("~/code/repo")
   end
 
+  # #581 — a long renamed title (or a pre-fix one) must be length-capped on the
+  # /status session row, else it soft-wraps and pushes the workspace/tools/
+  # memory rows off-screen. Belt-and-suspenders alongside the rename write cap.
+  describe "session row title length cap (#581)" do
+    let(:cap) { Rubino::Session::Repository::TITLE_MAX_CHARS }
+
+    before { allow(Rubino::Session::Store).to receive(:new).and_return(double(count: 3)) }
+
+    it "truncates a 2000-char session title on the /status row" do
+      runner = double("Runner", session: { id: "abc12345deadbeef", title: "L" * 2000 })
+      handler = described_class.new(ui: ui, runner: runner)
+
+      handler.show_status
+
+      line = ui.panels["session"]
+      # The interpolated title sits inside quotes; pull it back out to measure.
+      title = line[/"([^"]*)"/, 1]
+      expect(title.length).to be <= cap + 1 # cap chars + the "…" ellipsis
+      expect(title).to end_with("…")
+    end
+
+    it "leaves a normal-length session title untouched on the /status row" do
+      runner = double("Runner", session: { id: "abc12345deadbeef", title: "ship the release" })
+      handler = described_class.new(ui: ui, runner: runner)
+
+      handler.show_status
+
+      expect(ui.panels["session"]).to include(%("ship the release"))
+    end
+  end
+
   # The approvals line must tell the truth about what the default gate does:
   # under dangerous_only, risky commands prompt while safe commands and
   # in-workspace edits run automatically — NOT the old "mutating commands

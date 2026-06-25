@@ -311,6 +311,12 @@ module Rubino
       # become the session title and a useless one-char `--resume "y"` matcher.
       TITLE_MIN_CHARS = 3
 
+      # The display/storage ceiling for a session title (#581). The auto-derive
+      # path has always truncated to this; the manual `/sessions rename` write
+      # seam and the `/status`/picker render seams reuse the SAME bound so a
+      # 2000-char renamed title can't blow out the panel/picker layout.
+      TITLE_MAX_CHARS = 60
+
       # Derives a short, human-readable session title from the first user
       # message. Deterministic and model-free (#103): collapse whitespace, strip
       # a leading slash-command word, take the first line, and truncate on a word
@@ -318,7 +324,7 @@ module Rubino
       # (#128) — so the caller leaves the session untitled; the next MEANINGFUL
       # prompt titles it instead (Lifecycle#maybe_set_title retries every turn
       # until a title sticks), and the resume hint falls back to the session id.
-      def self.derive_title(text, max: 60)
+      def self.derive_title(text, max: TITLE_MAX_CHARS)
         cleaned = text.to_s.split("\n").first.to_s.strip.gsub(/\s+/, " ")
         cleaned = cleaned.sub(%r{\A/\S+\s*}, "") # drop a leading slash command
         return nil if cleaned.length < TITLE_MIN_CHARS
