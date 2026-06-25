@@ -31,6 +31,14 @@ module Rubino
       def allow_kind?(kind)
         allow_kinds.include?(kind.to_sym)
       end
+
+      # Egress kill-switch for routing an image to an EXTERNAL auxiliary vision
+      # model (the `vision` tool). On by default to preserve aux-vision
+      # behaviour; an operator sets it false to forbid shipping image bytes
+      # off-host. Only an explicit `false` disables egress (opt-out model).
+      def aux_vision_egress?
+        config["aux_vision_egress"] != false
+      end
     end
   end
 end
