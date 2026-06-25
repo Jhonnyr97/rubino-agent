@@ -402,9 +402,20 @@ module Rubino
         servers = Rubino.configuration.dig("mcp", "servers") || {}
         manager = MCP::Manager.new
         servers.each { |name, server_config| manager.start_server(name, server_config) }
+        # Actually consume tools/list so a connected-but-broken server (#575)
+        # records its registration error and reports degraded below instead of
+        # a misleading ✓ reachable. stop_all! deregisters the wrappers again, so
+        # doctor stays read-only (no tools leak into the live registry).
+        manager.register_all_tools!
 
         manager.health_check.each do |status|
-          if status[:alive]
+          if status[:degraded]
+            # Alive but tools/list/registration failed (#575) — not a healthy
+            # "reachable", so surface the recorded reason instead of a green ✓.
+            err = manager.last_errors[status[:name]]
+            ui.warning("MCP server '#{status[:name]}' connected but tool listing failed" \
+                       "#{" (#{err})" if err}")
+          elsif status[:alive]
             ui.success("MCP server '#{status[:name]}' reachable")
           else
             ui.warning("MCP server '#{status[:name]}' not reachable")
