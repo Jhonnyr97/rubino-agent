@@ -55,6 +55,80 @@ RSpec.describe Rubino::MCP::Manager do
         )
       )
     end
+
+    # #576 — servers are connected CONCURRENTLY (one thread each) so N hanging
+    # servers cost ~the slowest single server, not the sum. A server that hangs
+    # on connect must NOT prevent the others from starting and registering.
+    it "isolates a hanging server: the others still start and register" do
+      ready = Queue.new
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        if opts[:name] == "filesystem"
+          ready.pop # block until the fast server has connected — proves concurrency
+          fake_client(%w[read_file])
+        else
+          ready.push(:go) # api connects immediately, then unblocks filesystem
+          fake_client(%w[query])
+        end
+      end
+
+      manager.start_all!
+
+      # Both completed despite filesystem only finishing AFTER api — they ran in
+      # parallel, and no shared-state write was lost.
+      expect(manager.clients.keys).to contain_exactly("filesystem", "api")
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
+      expect(Rubino::Tools::Registry.find("api_query")).to be_a(Rubino::MCP::MCPToolWrapper)
+      expect(manager.last_errors).to be_empty
+    end
+
+    # #576 — one server raising during connect is recorded in last_errors and
+    # does not abort the parallel batch (best-effort boot preserved).
+    it "records a per-server connect failure without blocking the healthy server" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        raise StandardError, "connection refused" if opts[:name] == "api"
+
+        fake_client(%w[read_file])
+      end
+
+      manager.start_all!
+
+      expect(manager.clients.keys).to eq(["filesystem"])
+      expect(manager.last_errors["api"]).to eq("connection refused")
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
+    end
+
+    # #576 — @clients is populated in connect-COMPLETION order under parallelism,
+    # so tool registration is sorted by server name to stay deterministic across
+    # boots regardless of which server's connect finishes first.
+    it "registers tools in a deterministic (sorted) server order" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        opts[:name] == "filesystem" ? fake_client(%w[read_file]) : fake_client(%w[query])
+      end
+
+      manager.start_all!
+
+      registered = Rubino::Tools::Registry.all
+                                          .grep(Rubino::MCP::MCPToolWrapper)
+                                          .map(&:server_name)
+      expect(registered).to eq(%w[api filesystem]) # sorted, not insertion order
+    end
+
+    # #576 — concurrent connects must not corrupt @clients / @last_errors: every
+    # healthy client lands and nothing is dropped under the mutex. Use a wider
+    # fan-out to make a missed write or torn Hash likely if the lock were absent.
+    it "does not lose any client under many concurrent connects" do
+      servers = (1..12).to_h { |i| ["s#{i}", { "transport" => "sse", "url" => "https://x.test/#{i}" }] }
+      wide = Rubino::Config::Configuration.new(
+        raw: { "mcp" => { "servers" => servers } }, home_path: TEST_HOME
+      )
+      mgr = described_class.new(config: wide)
+      allow(RubyLLM::MCP).to receive(:client) { |**opts| fake_client(["#{opts[:name]}_tool"]) }
+
+      mgr.start_all!
+
+      expect(mgr.clients.keys).to match_array(servers.keys)
+      expect(mgr.last_errors).to be_empty
+    end
   end
 
   describe "#start_server" do
