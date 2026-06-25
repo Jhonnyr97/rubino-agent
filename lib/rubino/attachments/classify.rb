@@ -33,7 +33,6 @@ module Rubino
         application/x-7z-compressed application/x-rar-compressed application/vnd.rar
         application/x-bzip2 application/x-xz
       ].freeze
-      IMAGE_EXTS = %w[.png .jpg .jpeg .gif .webp .bmp .tiff .tif].freeze
 
       # Leading magic bytes per recognised image/document MIME (WebP is
       # special-cased: RIFF container + WEBP tag). Marcel lets the file NAME

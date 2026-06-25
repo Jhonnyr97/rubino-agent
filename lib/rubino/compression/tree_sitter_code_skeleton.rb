@@ -111,7 +111,7 @@ module Rubino
         line_count = inner_last - inner_first + 1
         return nil unless line_count > @keep_max
 
-        Elision.new(first_line: inner_first, line_count: line_count, indent: nil)
+        Elision.new(first_line: inner_first, line_count: line_count)
       end
     end
   end

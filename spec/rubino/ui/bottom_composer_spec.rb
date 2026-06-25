@@ -2121,7 +2121,7 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "renders the partial on a transient row above the prompt" do
       composer.handle_key("q")
       composer.set_partial("streaming tok")
-      expect(composer.partial?).to be(true)
+      expect(composer.instance_variable_get(:@partial)).not_to be_empty
       # partial row, then CRLF, then the prompt row
       expect(output.string).to include("streaming tok\r\n")
       expect(output.string).to end_with("#{PROMPT}q")
@@ -2130,7 +2130,7 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "a committed print_above clears the live partial" do
       composer.set_partial("half a line")
       composer.print_above("finished line")
-      expect(composer.partial?).to be(false)
+      expect(composer.instance_variable_get(:@partial)).to be_empty
       expect(output.string).to include("finished line\r\n")
     end
 
@@ -2191,7 +2191,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       # The streamed partial renders above the input; the subagent panel below it.
       expect(s.index("streaming token")).to be < s.rindex("▸ sa_1 · running")
       expect(composer.cards.size).to eq(1)
-      expect(composer.partial?).to be(true)
+      expect(composer.instance_variable_get(:@partial)).not_to be_empty
     end
 
     it "a committed print_above keeps the subagent panel (persistent live-region state)" do
@@ -2223,7 +2223,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.set_partial("parent streaming tok", origin: :main)
       composer.set_cards(["▸ sa_x · running"], origin: :main)
       expect(output.string).to eq("")
-      expect(composer.partial?).to be(false)
+      expect(composer.instance_variable_get(:@partial)).to be_empty
       expect(composer.cards).to eq([])
 
       # Focused (origin "sa_1") — painted.
@@ -2311,7 +2311,9 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.send(:history_down)
       expect(composer.agent_menu_open?).to be(true)
       # ...and the open picker is the exempt face drawn below the input.
-      expect(composer.send(:below_input_rows)).to eq(composer.send(:agent_menu_rows))
+      agent_menu = composer.instance_variable_get(:@agent_menu)
+      cols = composer.instance_variable_get(:@cols)
+      expect(composer.send(:below_input_rows)).to eq(agent_menu.rows(cols))
 
       # Selecting another sub queues its attach command (re-attach via the
       # existing attach_agent_view path).
@@ -3252,7 +3254,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("x")
         composer.begin_turn
         composer.set_turn_status("◆ writing")
-        composer.clear_turn_status
+        composer.set_turn_status("")
         expect(composer.send(:status_row)).to eq("m3  #{composer.send(:interrupt_hint)}")
       end
 

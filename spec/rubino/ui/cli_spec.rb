@@ -2342,23 +2342,6 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  describe "#approval_requested" do
-    it "renders summary with ◆ prefix and choice keys" do
-      out = capture_stdout do
-        ui.approval_requested(
-          summary: "Apply changes?",
-          choices: [
-            { key: "y", label: "apply" },
-            { key: "n", label: "cancel" }
-          ]
-        )
-      end
-      expect(out).to include("◆ Apply changes?")
-      expect(out).to include("[y] apply")
-      expect(out).to include("[n] cancel")
-    end
-  end
-
   # TUI-6: ONE arrow-key approval component (#approval_menu) backs every
   # approval surface — main-agent tool approvals, MCP, and the subagent shell
   # approval (#subagent_approval_choice). No flat single-line letter prompt.

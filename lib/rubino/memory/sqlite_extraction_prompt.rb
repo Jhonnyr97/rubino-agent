@@ -9,8 +9,6 @@ module Rubino
     # facts to `supersede`. The doctrine ("durable declarative facts, not
     # imperatives, not stale artifacts") is lifted from the reference MEMORY_GUIDANCE.
     module SqliteExtractionPrompt
-      KINDS = %w[user_profile preference project fact env].freeze
-
       SYSTEM = <<~PROMPT
         You maintain a long-term memory of durable facts about the user and their project.
         You will see the latest conversation turn and the facts already in memory.

@@ -16,8 +16,8 @@ module Rubino
   # because the message format depends on both values; always use
   # +raise NotFoundError.new("session", id)+, not +raise NotFoundError, "..."+.
   #
-  # Domain errors (ConfigurationError, DatabaseError, SessionError, ToolError,
-  # CompactionError, JobError) also subclass Error and live in lib/rubino.rb.
+  # Domain errors (ConfigurationError, SessionError, ToolError,
+  # CompactionError) also subclass Error and live in lib/rubino.rb.
 
   module Database
     # Raised when a DB connection can't be established because a peer held the

@@ -132,15 +132,6 @@ module Rubino
           "#{m[:client]}#{m[:flag]}#{MASK}"
         end
       end
-
-      # Convenience for Hash arguments: returns a new Hash with sensitive
-      # values masked, leaving the original untouched (the real value still
-      # has to reach the tool).
-      def self.mask_hash(hash)
-        return hash unless hash.is_a?(Hash)
-
-        hash.each_with_object({}) { |(k, v), out| out[k] = mask_value(v, key: k) }
-      end
     end
   end
 end

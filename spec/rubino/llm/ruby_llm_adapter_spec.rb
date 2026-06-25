@@ -486,27 +486,6 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
-  # context_window
-  # -----------------------------------------------------------------------
-
-  describe "#context_window" do
-    it "returns config override when set" do
-      cfg = test_configuration("model" => { "context_length" => 32_000,
-                                            "default" => "gpt-4o",
-                                            "provider" => "auto",
-                                            "temperature" => 0.3 })
-      adapter = described_class.new(model_id: "gpt-4o", config: cfg)
-      expect(adapter.context_window).to eq(32_000)
-    end
-
-    it "falls back to 128_000 when model info unavailable" do
-      adapter = described_class.new(model_id: "unknown-model-xyz", config: config)
-      allow(adapter).to receive(:model_info).and_return(nil)
-      expect(adapter.context_window).to eq(128_000)
-    end
-  end
-
-  # -----------------------------------------------------------------------
   # Audit fixes — provider auto-detect for reasoning models (#5)
   # -----------------------------------------------------------------------
 

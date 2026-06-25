@@ -134,14 +134,6 @@ RSpec.describe Rubino::UI::InputHistory do
       expect(history.down).to be_nil
     end
 
-    it "#navigating? is true only while walking the ring" do
-      expect(history.navigating?).to be(false)
-      history.up("d")
-      expect(history.navigating?).to be(true)
-      history.down # back to draft
-      expect(history.navigating?).to be(false)
-    end
-
     it "remember resets navigation so a fresh ↑ starts from newest" do
       history.up("d")
       history.remember("four")

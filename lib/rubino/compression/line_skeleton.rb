@@ -23,7 +23,7 @@ module Rubino
       # leaves behind. `first_line`/`line_count` are the 1-based read window into
       # the ORIGINAL file (so a `read offset=first_line limit=line_count` returns
       # exactly these bytes — the drill-in invariant).
-      Elision = Struct.new(:first_line, :line_count, :indent, keyword_init: true)
+      Elision = Struct.new(:first_line, :line_count, keyword_init: true)
 
       def initialize(keep_method_body_max_lines:)
         @keep_max = keep_method_body_max_lines.to_i

@@ -29,7 +29,7 @@ RSpec.describe Rubino::Compression::LineSkeleton do
   end
 
   def elision(first, count)
-    described_class::Elision.new(first_line: first, line_count: count, indent: nil)
+    described_class::Elision.new(first_line: first, line_count: count)
   end
 
   describe "#build contract" do

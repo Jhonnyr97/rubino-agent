@@ -93,11 +93,4 @@ RSpec.describe Rubino::Context::TokenBudget do
       end
     end
   end
-
-  describe "#compaction_target" do
-    it "returns target based on ratio" do
-      # 128_000 * 0.20 = 25_600
-      expect(budget.compaction_target).to eq(25_600)
-    end
-  end
 end

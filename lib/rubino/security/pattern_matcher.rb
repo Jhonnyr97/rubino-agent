@@ -14,8 +14,6 @@ module Rubino
     #
     # Actions: "allow", "ask", "deny"
     class PatternMatcher
-      ACTIONS = %w[allow ask deny].freeze
-
       def initialize(rules: {})
         @rules = parse_rules(rules)
       end

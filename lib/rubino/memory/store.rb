@@ -156,25 +156,6 @@ module Rubino
           .all
       end
 
-      # Returns all memories within the character limit
-      def within_limit(char_limit:)
-        memories = @db[:memories]
-                   .order(Sequel.desc(:confidence), Sequel.desc(:updated_at))
-                   .all
-
-        selected = []
-        total_chars = 0
-
-        memories.each do |m|
-          break if total_chars + m[:content].length > char_limit
-
-          selected << m
-          total_chars += m[:content].length
-        end
-
-        selected
-      end
-
       # Returns the total count of stored memories
       def count
         @db[:memories].count
