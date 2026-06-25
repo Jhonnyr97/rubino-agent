@@ -179,7 +179,7 @@ ui:
 
 ### notifications
 
-Attention signals for the moments the agent needs human eyes: a long turn finishing, an approval prompt parking the run on a decision, or a background subagent escalating an `ask_parent` to you (the ⛔ banner).
+Attention signals for the moments the agent needs human eyes: a long turn finishing, or an approval prompt parking the run on a decision (the main agent's card or a background subagent flipping to `needs_approval`).
 
 ```yaml
 notifications:
@@ -189,7 +189,7 @@ notifications:
   min_turn_seconds: 10   # a turn must run at least this long before its completion notifies; quick turns stay silent
 ```
 
-- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`), `blocked` (a background child escalated `ask_parent` to the human).
+- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`). A third event, `blocked`, exists in the enum for a child parked on the human; with subagents now non-blocking it is not raised in normal operation.
 - **Bell hygiene**: the BEL byte is only ever written to a real terminal — never into a pipe — and is routed to the real terminal IO even while the bottom composer owns the screen (BEL doesn't move the cursor).
 - **`command` hook**: runs detached and best-effort (stdio nulled, errors swallowed to the log) with `RUBINO_EVENT` (`turn_finished` | `needs_approval` | `blocked`) and `RUBINO_MESSAGE` in its environment — the seam for `osascript` (macOS), `notify-send` (Linux), or any custom notifier.
 - **Spam control**: events within ~1s of the last emitted one coalesce into a single signal.
@@ -303,7 +303,7 @@ tasks:
   max_children_per_node: 3       # max LIVE direct children per node
   max_concurrent_total: 8        # hard ceiling on total LIVE subagents across the tree
   max_live_probes_per_child: 5   # per-child budget for billed live probes (probe(live: true))
-  ask_parent_timeout: 900        # seconds a blocking ask_parent waits before the child self-heals
+  ask_parent_timeout: 900        # vestigial: governed the removed child→parent ask channel; no effect now
 ```
 
 ### tools
@@ -491,9 +491,17 @@ attachments:
     inline_text_budget_bytes: 100000
     allow_kinds: [image, text, document, archive, binary]
     auto_extract_documents: false
-    aux_vision_egress: true
+    aux_vision_egress: true          # allow the `vision` tool to send an image to an EXTERNAL aux model (data egress; see below)
     archive: { max_entries: 2000, max_uncompressed_bytes: 268435456, max_entry_ratio: 100, max_total_ratio: 50, max_nesting_depth: 1 }
 ```
+
+`aux_vision_egress` (default `true`) gates the **`vision` tool**: routing an
+image to an external auxiliary vision model is data egress, so set it to `false`
+to refuse — the tool then returns a clean error instead of sending the bytes
+(#578). Independently, before any egress the tool **content-sniffs** the file
+(magic bytes win over the extension, fail-closed): a path that isn't actually an
+image is rejected, so a mislabelled or non-image file can't be smuggled to the
+external host (#579).
 
 ### security
 

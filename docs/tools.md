@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **31 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **29 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
+The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **24 rows** (config groups), not 31: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **24 rows** (config groups), not 29: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -316,15 +316,6 @@ Risk: medium
 Parameters: task_id
 ```
 
-### ask_parent
-
-Child→parent escalation: a subagent asks its parent a question it cannot resolve from its sealed prompt. `blocking: true` pauses the child until the answer arrives; `blocking: false` (default) lets it keep working and folds the answer in later as a note. The parent (agent or human) answers via `answer_child` / `/reply`. Only available to subagents — a top-level agent has no parent to ask. Gated by `tools.task`.
-
-```
-Risk: low
-Parameters: question, blocking
-```
-
 ### steer
 
 Parent→child steering note: park a short note on one of YOUR OWN running subagents; it is folded into the child's context at its next turn boundary and persists (it changes the child's trajectory). Ownership-scoped at call time — only your direct children. The model counterpart of the human `/agents <id> steer "…"`. Gated by `tools.task`.
@@ -341,15 +332,6 @@ Parent→child ephemeral peek: check on one of YOUR OWN running subagents withou
 ```
 Risk: low
 Parameters: task_id, question, live
-```
-
-### answer_child
-
-Parent→child answer to an `ask_parent` question: delivers the answer into the asking child's context (unblocks a blocking ask; folds in for a non-blocking one). Ownership-scoped — only a direct child that is actually waiting. The model counterpart of the human `/reply <id> <answer>`. Gated by `tools.task`.
-
-```
-Risk: low
-Parameters: task_id, answer
 ```
 
 ---

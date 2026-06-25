@@ -28,8 +28,63 @@
   replaces the bounded registry snapshot the picker's Enter used to show with the
   agent's real conversation, and makes the global `/agents <id> steer/probe` and
   `/reply <id>` forms redundant while attached.
+- **Multi-language code compression.** The whole-file source-skeleton compressor
+  now covers more than Ruby. `tool_output_compression.code.languages` (default
+  `["ruby"]`) selects which languages get skeletonised: Ruby (built-in Prism
+  parser), Python (stdlib `ast` via your `python3` — a no-op if `python3` isn't
+  on PATH), and JavaScript / TypeScript / TSX (via the optional
+  `tree_sitter_language_pack` gem — a no-op until it's installed). A read in an
+  unlisted language passes through verbatim. `rubino setup` adds a language
+  picker and, if you choose JS/TS, offers to install the parser gem.
+- **`api.allow_public_bind` gate.** Because the API server can execute shell
+  tools, binding it to a non-loopback address (`--host 0.0.0.0`,
+  `RUBINO_API_HOST`) now **refuses to boot** unless `api.allow_public_bind: true`
+  is set in `config.yml`; when opted in, the server prints a one-time exposure
+  warning. Loopback binds are unaffected (#577).
+- **MCP tool transparency + parallel startup.** An MCP tool's display label now
+  carries its source — the live tool card and the approval card both show
+  `<bare> (mcp:<server>)`, so you can tell at a glance that an out-of-process
+  server is running (the model-facing tool name is unchanged) (#582). MCP
+  servers also now connect **in parallel** at boot, so one hanging server no
+  longer serializes startup (#576).
+
+### Changed
+
+- **Blocked-tool results are now typed errors.** When a tool call is blocked
+  (denied by approval, sandbox, or policy), its result is returned to the model
+  as a typed error with explicit anti-confabulation wording, so the model is told
+  the action did NOT happen instead of being free to assume success (#583).
+
+### Removed
+
+- **Child→parent `ask_parent` / `answer_child` tools.** Subagents are
+  non-blocking background workers and can no longer pause mid-task to ask their
+  parent (or the human) a question; instead they make sensible default calls and
+  surface open decisions in their result. The two model-facing tools that
+  implemented that channel — `ask_parent` (the child→parent escalation) and
+  `answer_child` (the parent's reply) — are gone. The parent→child `steer` /
+  `probe` tools and the human approval gate (`/reply` for a child parked on an
+  approval) are unchanged. `tasks.ask_parent_timeout` is now vestigial.
+
+### Security
+
+- **Vision egress hardening.** The `vision` tool now honours
+  `attachments.policy.aux_vision_egress` (default `true`): set it to `false` and
+  the tool refuses to send an image to an external auxiliary model, returning a
+  clean error instead of egressing the bytes (#578). Before any egress it also
+  **content-sniffs** the file (magic bytes win over the extension, fail-closed),
+  so a mislabelled or non-image file can't be smuggled to the external host
+  (#579).
 
 ### Fixed
+
+- **MCP `degraded` server state.** `/mcp` and `rubino doctor` now distinguish a
+  reachable server (`●`) from a **degraded** one (`⚠` — the process is alive but
+  a protocol call such as `tools/list` failed), instead of reporting it as plain
+  reachable (#575).
+- **Session-title length cap.** A renamed session title is now length-capped at
+  rename and truncated on render, so an over-long title can't disrupt status /
+  session-list layout (#581).
 
 - **MiniMax-M3 pre-tool-call "freeze".** Thinking/reasoning now defaults ON for
   every provider (it was deliberately off for MiniMax-family ids). On the

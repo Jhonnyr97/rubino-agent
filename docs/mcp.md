@@ -44,10 +44,10 @@ mcp:
 
 ## How It Works
 
-1. At chat boot (and in `rubino tools`), `MCP::Manager` connects to all configured servers — best-effort: a server that fails to start prints a warning and is skipped, it never blocks the session
+1. At chat boot (and in `rubino tools`), `MCP::Manager` connects to all configured servers **in parallel** (#576), so one hanging server no longer serializes startup — best-effort: a server that fails to start prints a warning and is skipped, it never blocks the session
 2. Each server's tools are wrapped in `MCPToolWrapper` (adapts to `Tools::Base` interface), forwarding the server-declared input schema so the model calls them with the right argument names
 3. Wrapped tools are registered in `Tools::Registry` with a prefix (`servername_toolname`)
-4. The agent can use MCP tools like any built-in tool; a failed MCP call (including a server-side argument rejection) surfaces as an `Error: …` tool result and renders ✗ like any failed built-in tool
+4. The agent can use MCP tools like any built-in tool; a failed MCP call (including a server-side argument rejection) surfaces as an `Error: …` tool result and renders ✗ like any failed built-in tool. To keep external code visible, an MCP tool's **display label** is suffixed with its source — the live tool card and the approval card both show `<bare> (mcp:<server>)` (e.g. `echo (mcp:chaos)`), so you can tell at a glance that an out-of-process server is running (#582). The model-facing tool name is unchanged.
 5. `ruby_llm-mcp`'s own log lines (including everything a stdio server prints on its stderr) go to `<home>/logs/mcp.log`, never to stdout — one-shot `rubino prompt` output stays machine-readable
 
 MCP tools are dynamic — they come from whatever servers you configure — so they are not part of the drift-checked built-in tool list in [tools.md](tools.md) and have no `tools.<key>` config gate; disable a server (`/mcp <server> off` for the session, or set `mcp.enabled: false`) to remove its tools.
@@ -95,7 +95,7 @@ An `oauth` hash on a `streamable` server is forwarded verbatim to `ruby_llm-mcp`
 /mcp reload          # re-read config.yml and reconnect every server (no chat restart needed)
 ```
 
-`off`/`on` are session-scoped — config is untouched. `/mcp reload` is how a server added to `config.yml` mid-session becomes usable. When servers are configured, `/status` includes an `mcp` line (`2 servers · 1 reachable · 14 tools`).
+`/mcp`'s server list glyphs each server by health: green `●` **reachable**, yellow `⚠` **degraded** (#575 — the process is alive but a protocol call such as `tools/list` failed, so it's up but not fully serving), and a stopped/failed server shows its last start error in the drill-in. `off`/`on` are session-scoped — config is untouched. `/mcp reload` is how a server added to `config.yml` mid-session becomes usable. When servers are configured, `/status` includes an `mcp` line (`2 servers · 1 reachable · 14 tools`).
 
 ## Manual Management
 
