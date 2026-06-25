@@ -262,6 +262,19 @@ module Rubino
         # to hold (#107). Fail closed: no prompt, deterministic nil.
         return nil unless interactive_terminal?
 
+        # A MULTI-LINE prompt (the `question` tool builds question + numbered
+        # options + a final "Your choice:" line) handed WHOLE to TTY::Prompt#ask
+        # corrupts the screen: the instant the typed answer wraps the input row,
+        # TTY::Prompt's redraw over-counts rows and clears lines ABOVE the prompt,
+        # erasing the conversation scrollback. Fix: emit the prompt BODY (every
+        # line but the last) as committed output so it lands in scrollback and
+        # stays put, and hand TTY::Prompt only the SHORT final line. The API UI
+        # (UI::API#ask) still gets the full multi-line prompt for its clarify
+        # event — this split is CLI-only.
+        lines    = prompt.to_s.split("\n")
+        ask_line = lines.pop.to_s
+        lines.each { |line| emit(line) }
+
         # A mid-turn prompt must own the real terminal: pause the bottom composer
         # so TTY::Prompt reads the real $stdin and tty-screen probes the real
         # $stdout (not the write-only StdoutProxy). No-op when no composer is
@@ -275,7 +288,7 @@ module Rubino
         # queue line + in-flight keystrokes and PREFILL them as the answer — the
         # user sees it and confirms/edits with Enter (never auto-submitted).
         BottomComposer.run_in_terminal_with_pending do |pending|
-          pending && !pending.empty? ? @prompt.ask(prompt, value: pending) : @prompt.ask(prompt)
+          pending && !pending.empty? ? @prompt.ask(ask_line, value: pending) : @prompt.ask(ask_line)
         end
       end
 
