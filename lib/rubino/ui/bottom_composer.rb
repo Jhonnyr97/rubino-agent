@@ -1108,10 +1108,10 @@ module Rubino
       # streams (D7e). Idempotent.
       def begin_turn
         @turn_active = true
-        # Repaint so the "(esc to interrupt)" affordance (#421) appears in the
-        # status row for the whole turn. Guarded: dropped while suspended, like
-        # every other live repaint.
-        @render.synchronize { redraw } unless @suspended
+        # A fresh turn starts with no leftover streaming transients, and the
+        # redraw paints the "(esc to interrupt)" affordance (#421). See
+        # #reset_turn_transients. Idempotent.
+        reset_turn_transients
       end
 
       # Marks the END of a turn — the chat loop's run_turn `ensure` calls this
@@ -1122,9 +1122,52 @@ module Rubino
       # "⏳ queued:" indicator instead of a post-footer echo.)
       def end_turn
         @turn_active = false
-        # Repaint so the "(esc to interrupt)" affordance (#421) clears from the
-        # status row once the turn ends. Guarded like every other live repaint.
-        @render.synchronize { redraw } unless @suspended
+        # Wipe the per-turn transients so they can't bleed into the idle prompt
+        # that follows (the redraw also clears the "(esc to interrupt)" row).
+        reset_turn_transients
+      end
+
+      # Re-point the PER-PHASE configuration on a single long-lived composer (BUG
+      # 02). The REPL builds ONE composer per interactive session and #start /
+      # #stop it ONCE — the native machinery (reader thread, self/wake pipes,
+      # raw-mode entry, traps, the LiveRegion) is allocated once and torn down
+      # once, instead of churning a fresh BottomComposer per turn (the superlinear
+      # RSS growth). What DIFFERS between the idle prompt and an in-turn composer
+      # is only this config: the prompt string, the echo discipline and the key
+      # hooks. They are swapped here at each phase boundary (idle read ↔ run_turn)
+      # so the same instance behaves identically to the per-phase composers it
+      # replaced. Each keyword defaults to nil = "clear that hook for this phase"
+      # so a hook wired for the idle prompt (on_double_esc, on_idle_interrupt,
+      # on_escape) never leaks into a turn and vice-versa (on_interrupt,
+      # on_busy_command). The session-stable collaborators (input_queue, history,
+      # completion_source, paste_store, rail, the reader/pipes) are NOT touched —
+      # they were set at construction and stay put. Takes @render so a concurrent
+      # reader keystroke can't observe a half-swapped hook set.
+      def reconfigure(prompt: nil, echo: :queued, on_ctrl_o: nil, on_mode_cycle: nil,
+                      on_agent_cycle: nil, on_interrupt: nil, on_double_esc: nil,
+                      on_idle_interrupt: nil, on_escape: nil, on_back: nil,
+                      on_busy_command: nil, status_line: nil, attached: false)
+        @render.synchronize do
+          @prompt        = prompt.to_s.empty? ? PROMPT : prompt
+          @prompt_width  = @prompt.gsub(ANSI_RE, "").length
+          @prefix_width  = @rail.gsub(ANSI_RE, "").length + @prompt_width
+          @echo              = echo
+          @on_ctrl_o         = on_ctrl_o
+          @on_mode_cycle     = on_mode_cycle
+          @on_agent_cycle    = on_agent_cycle
+          @on_interrupt      = on_interrupt
+          @on_double_esc     = on_double_esc
+          @on_idle_interrupt = on_idle_interrupt
+          @on_escape         = on_escape
+          @on_back           = on_back
+          @on_busy_command   = on_busy_command
+          @status            = (status_line || "").to_s
+          # Re-seed the focus-gate from the persistent attach-state, exactly as the
+          # per-phase constructor used to (#82): the id (not a bool) so the
+          # while-attached switcher marks the focused sub (#87).
+          @focused_agent_id  = attached || :main
+        end
+        self
       end
 
       # Sets the TRANSIENT announcement row (the Shift+Tab mode confirmation).
@@ -1270,6 +1313,23 @@ module Rubino
           @input_line.replace(text.to_s)
           @history.reset!
           redraw
+        end
+      end
+
+      # Empty the editable buffer + close any open menu, without the history
+      # reset or the eager redraw #prefill does (BUG 02). The REPL now REUSES one
+      # composer across turns, so an unsubmitted draft left in the buffer at turn
+      # end survives into the next idle read; the chat loop carries that draft
+      # explicitly (@pending_draft → #seed_draft), so the buffer must start EMPTY
+      # before the carried draft is re-seeded — otherwise it would double
+      # ("foo" + seeded "foo" ⇒ "foofoo"). On the OLD per-turn composer the fresh
+      # instance was already empty; this restores that baseline on the reused one.
+      # The follow-up #seed_draft (or the prompt's own first frame) repaints, so
+      # no redraw here.
+      def reset_input
+        @render.synchronize do
+          @menu.close!
+          @input_line.clear
         end
       end
 
@@ -1746,6 +1806,23 @@ module Rubino
       end
 
       private
+
+      # Wipe the per-turn streaming transients on the single long-lived composer
+      # (BUG 02). The old per-turn `#stop` used to clear these on teardown; a
+      # reused composer clears them via #begin_turn / #end_turn instead — at BOTH
+      # boundaries so neither a fresh turn nor the idle prompt that follows
+      # inherits a stale partial / activity row / toast / stream flag. @cards are
+      # NOT touched: the subagent panel is session-scoped (children outlive a
+      # turn) and the CLI repaints it from the live registry. Idempotent; the
+      # repaint is dropped while suspended, like every other live repaint.
+      def reset_turn_transients
+        @partial           = +""
+        @turn_status       = +""
+        @announce          = +""
+        @content_streaming = false
+        @deferred_reveal   = false
+        @render.synchronize { redraw } unless @suspended
+      end
 
       # Draws one atomic frame via the {LiveRegion}. Layout (top → bottom):
       #

@@ -973,6 +973,31 @@ module Rubino
         # the loop commits as normal messages when their turn runs.
         @pending_queued = []
 
+        # ONE BottomComposer per interactive session (BUG 02). The REPL used to
+        # build a FRESH composer for EVERY idle read AND every turn and #start /
+        # #stop it each time; each new/start→stop cycle churned native-backed
+        # state (the raw-mode/IO.console buffers, the reader thread + self/wake
+        # pipes, the escape-reader buffers, the frame strings) that malloc freed
+        # but never returned to the OS — so RSS climbed superlinearly with the
+        # turn count. Construct it ONCE here, #start it once (the reader thread,
+        # pipes and raw-mode entry are now allocated a single time and stay live
+        # for the whole session), and swap $stdout for the proxy once. Each phase
+        # (idle read ↔ run_turn) only RECONFIGURES the per-phase hooks/echo/prompt
+        # (#reconfigure) and brackets a turn with #begin_turn / #end_turn — no more
+        # per-turn native alloc/free. Torn down ONCE in the ensure below. nil when
+        # the composer can't run (piped / -q / non-TTY): the cooked fallback path
+        # in #next_input is unchanged there.
+        @composer = start_session_composer(input_queue, runner)
+        @composer_stdout = nil
+        if @composer
+          @composer_stdout = $stdout
+          # Force the lazily-built logger to bind to the REAL $stdout NOW, before
+          # the swap — otherwise the first log call would build a Logger against
+          # the proxy and route diagnostic lines into the chat.
+          Rubino.logger
+          $stdout = UI::StdoutProxy.new(@composer)
+        end
+
         # Keep structured JSON log lines OUT of the raw-mode TUI (#125): for the
         # whole interactive session the logger writes to a file in the logs dir
         # instead of the terminal $stdout the renderer owns. A warn/info event
@@ -1195,6 +1220,11 @@ module Rubino
           Tools::BackgroundTasks.instance.shutdown!
           restore_signal_traps(prev_signal_traps)
           restore_logger(prev_log_io)
+          # Tear the single session composer down ONCE (BUG 02): restore the real
+          # $stdout (flushing any held partial through the still-live composer),
+          # then stop the reader thread / leave raw mode / restore the traps. No-op
+          # when no composer ran (piped / -q).
+          stop_session_composer
         end
 
         # Mark the session ended on a clean teardown (#100) so it stops showing
@@ -1461,7 +1491,15 @@ module Rubino
         # Shift+Tab, and hosts
         # the background-subagent card region (F1) when children are live. The
         # plain cooked readline is the fallback for non-TTY / piped / -q input.
-        if UI::BottomComposer.active?
+        #
+        # BUG 02: gate on @composer, NOT a live UI::BottomComposer.active? check.
+        # The session composer is built once when active? was true, and $stdout is
+        # now the StdoutProxy (swapped at session setup) whose #tty? is false — so
+        # a fresh active? here would read FALSE and wrongly fall to the cooked
+        # branch (a blocking $stdin.gets that fights the live raw reader for stdin
+        # — the "dead idle prompt" regression). @composer is non-nil exactly when
+        # the composer is running, so it is the correct, proxy-immune gate.
+        if @composer
           read_idle_line(input_queue, draft, runner)
         else
           cooked_input(build_prompt, draft)
@@ -1496,20 +1534,19 @@ module Rubino
         # to run the clear/two-tap-exit through #idle_interrupt — declared here so
         # the lambda captures it.
         int_pending = false
-        composer = UI::BottomComposer.new(
-          input_queue: input_queue,
+        # RECONFIGURE the single session composer for the IDLE prompt (BUG 02):
+        # it was built + #started ONCE at session setup and $stdout already routes
+        # through its proxy, so the idle read no longer allocates a fresh composer
+        # or re-swaps $stdout — it only re-points the per-phase hooks/echo/prompt.
+        # nil ⇒ no composer (this method isn't reached on the cooked fallback).
+        composer = @composer
+        composer.reconfigure(
           prompt: build_prompt,
-          rail: composer_rail,
           on_ctrl_o: ctrl_o_handler,
           on_mode_cycle: mode_cycle_handler(runner),
           on_agent_cycle: agent_cycle_handler(runner),
-          completion_source: @completion_source,
-          history: @input_history,
           echo: :prompt,
-          pending_queued: pending_queued,
           status_line: build_status_line(runner),
-          max_input_rows: Rubino.configuration.display_input_max_rows,
-          paste_store: paste_store,
           on_double_esc: runner ? -> { rewind_pending = true } : nil,
           on_idle_interrupt: -> { int_pending = true },
           # ONE Esc cancels the detached post-turn polishing (#319): only when
@@ -1521,24 +1558,22 @@ module Rubino
           # the same). Routed through the input queue so the idle loop runs it the
           # same way a typed /detach would. nil when not attached.
           on_back: (attached_to_agent? ? -> { input_queue.push("/detach") } : nil),
-          # Seed the focus-gate from the PERSISTENT attach-state (#82): this
-          # composer is rebuilt every idle pass, so a flag set on the previous
-          # one at attach time is gone the moment the loop recreates it.
-          # Reconcile it here so the parent cards stay suppressed and the
-          # focused sub's live tail owns the screen. The id (not just a bool)
-          # so the while-attached switcher marks the focused sub (#87).
+          # Seed the focus-gate from the PERSISTENT attach-state (#82) so the
+          # parent cards stay suppressed and the focused sub's live tail owns the
+          # screen. The id (not just a bool) marks the focused sub (#87).
           attached: @attached_id
         )
-        composer.start
-        # Route $stdout through the composer for the whole idle read — the SAME
-        # StdoutProxy swap a turn gets — so anything printed while the idle
-        # prompt is pinned (a background subagent's completion note, a late
-        # status line) commits ABOVE the input under the composer's render
-        # mutex instead of raw-painting over the prompt row (#169). The logger
-        # is forced to bind to the real IO first, exactly as in #start_composer.
-        real_stdout = $stdout
-        Rubino.logger
-        $stdout = UI::StdoutProxy.new(composer)
+        # The composer's reader is already live and $stdout is on the proxy for the
+        # whole session, so anything printed while the idle prompt is pinned (a
+        # background subagent's completion note, a late status line) commits ABOVE
+        # the input under the render mutex (#169) — no per-read swap needed.
+        #
+        # BUG 02: the composer is REUSED, so an unsubmitted draft from the prior
+        # turn may still sit in the buffer. The chat loop carries that draft
+        # explicitly via @pending_draft → +draft+ here, so clear the buffer first
+        # and re-seed it — otherwise the carried draft would DOUBLE. On the old
+        # per-turn composer the fresh instance was already empty.
+        composer.reset_input
         seed_draft(composer, draft)
         idle_cards.paint
         ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
@@ -1676,18 +1711,15 @@ module Rubino
         restore_idle_int(prev_int)
         ticker&.kill
         ticker&.join
-        # Mirror #stop_composer: restore the real $stdout, then flush any held
-        # partial line through the still-live composer before tearing it down.
-        if real_stdout
-          proxy = $stdout
-          $stdout = real_stdout
-          proxy.finish if proxy.respond_to?(:finish)
-        end
+        # The session composer is NOT stopped here (BUG 02) — its reader/raw mode
+        # live for the whole session and $stdout stays on the proxy; the single
+        # teardown is #stop_session_composer on REPL exit. Just preserve an
+        # un-submitted draft so the NEXT prompt pre-fills with it (a submitted
+        # line already cleared the buffer).
         if composer
           pending = composer.buffer.to_s
           @pending_draft = pending unless pending.strip.empty?
         end
-        composer&.stop
       end
 
       # The idle composer's single-Esc hook (#319): cancel the detached post-turn
@@ -2102,60 +2134,101 @@ module Rubino
       # the runner or the agent loop, so it cannot race the turn own work — the
       # parked text is consumed by the loop at a safe iteration boundary (atomic
       # #drain), or by #next_input between turns for anything typed in the gap.
-      def start_composer(input_queue, runner)
-        return [nil, nil] unless input_queue && UI::BottomComposer.active?
+      # Build + #start the SINGLE long-lived composer for this interactive
+      # session (BUG 02). Only the SESSION-STABLE collaborators are wired here —
+      # the input queue, the shared completion source + history, the explicit-
+      # queue stack, the paste store, the rail, the row cap — plus the reader
+      # thread / self+wake pipes / raw-mode entry the #start allocates ONCE. The
+      # PER-PHASE config (prompt, echo, key hooks, status line, focus) is left at
+      # its construction default and re-pointed by #reconfigure at each idle read
+      # / run_turn boundary, so the same instance serves both phases without a
+      # fresh native alloc. Returns the composer, or nil when it can't run (no
+      # queue / non-TTY) — the cooked fallback then runs exactly as before.
+      def start_session_composer(input_queue, runner)
+        return nil unless input_queue && UI::BottomComposer.active?
 
-        # The mode/branch/skill context rides the STATUS BAR (build_status_line);
-        # the prompt itself is the constant clean "❯ " behind the red rail.
-        # `runner` is threaded in (not captured from an enclosing scope) so the
-        # interrupt lambda resolves it — it is a parameter of #run_turn, not in
-        # scope here, and there is no @runner ivar, so capturing it implicitly
-        # raised NameError the instant an Enter-during-turn fired (BH-1).
-        # Same completion + history wiring as the idle composer: the prompt is
-        # pinned and editable for the WHOLE turn — including the post-turn
-        # window where inline jobs (memory auto-extract, skill distill) spend
-        # aux-LLM seconds after the `↳ turn` footer — so `/` and `@` dropdowns
-        # and ↑↓ history work whenever the prompt is visible (#169).
-        busy = busy_command_handler(runner)
-        composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
-                                          rail: composer_rail,
-                                          on_ctrl_o: ctrl_o_handler,
-                                          on_mode_cycle: mode_cycle_handler(runner),
-                                          on_interrupt: interrupt_handler(runner),
-                                          completion_source: @completion_source,
-                                          history: @input_history,
-                                          pending_queued: pending_queued,
-                                          status_line: build_status_line(runner),
-                                          max_input_rows: Rubino.configuration.display_input_max_rows,
-                                          paste_store: paste_store,
-                                          # ← on an empty prompt backs out of an attached subagent view to the
-                                          # main timeline MID-TURN too (slice 3): routed through the SAME busy
-                                          # handler typed lines use so the detach happens IMMEDIATELY on the
-                                          # reader thread (not queued behind the still-running turn). Guarded by
-                                          # attached_to_agent? so it's a no-op cursor key when not attached.
-                                          on_back: -> { busy.call("/back") if attached_to_agent? },
-                                          # Seed the focus-gate from the persistent attach-state (#82):
-                                          # if a turn's composer is built while already attached to a
-                                          # sub (attach happened mid-turn, the parent kept running), it
-                                          # starts suppressed so the parent's stream/cards stay off the
-                                          # focused view. The id (not just a bool) so the while-attached
-                                          # switcher marks the focused sub (#87).
-                                          attached: @attached_id,
-                                          on_busy_command: busy)
+        composer = UI::BottomComposer.new(
+          input_queue: input_queue,
+          prompt: build_prompt,
+          rail: composer_rail,
+          completion_source: @completion_source,
+          history: @input_history,
+          pending_queued: pending_queued,
+          status_line: build_status_line(runner),
+          max_input_rows: Rubino.configuration.display_input_max_rows,
+          paste_store: paste_store,
+          attached: @attached_id
+        )
         composer.start
-        real_stdout = $stdout
-        # Force the lazily-built logger to bind to the REAL $stdout NOW, before
-        # the swap — otherwise the first log call during the turn would build a
-        # Logger against the proxy and route diagnostic lines into the chat (and,
-        # after the turn, into a dead proxy). The logger stays on the real IO.
-        Rubino.logger
-        $stdout = UI::StdoutProxy.new(composer)
-        [composer, real_stdout]
+        composer
       rescue StandardError
-        # Setup failed — fall back to the plain path so the turn still runs
-        # (no raw, no proxy).
+        # Setup failed — fall back to the plain path so the session still runs
+        # (no raw, no proxy), exactly as the old per-turn #start_composer did.
         composer&.stop
-        $stdout = real_stdout if real_stdout
+        nil
+      end
+
+      # Tear the single session composer down ONCE on REPL exit (BUG 02): restore
+      # the real $stdout (flushing any held partial line through the still-live
+      # composer first), then #stop it — stopping the reader thread, leaving raw
+      # mode and restoring the WINCH/CONT traps. Mirrors the old #stop_composer
+      # teardown, run once per session instead of once per turn. Safe on nil.
+      def stop_session_composer
+        composer = @composer
+        @composer = nil
+        if @composer_stdout
+          proxy = $stdout
+          $stdout = @composer_stdout
+          @composer_stdout = nil
+          proxy.finish if proxy.respond_to?(:finish)
+        end
+        composer&.stop
+      rescue IOError, Errno::ENOTTY, Errno::EIO
+        nil
+      end
+
+      # RECONFIGURE the single session composer for a turn (BUG 02). The composer
+      # was built + #started ONCE at session setup and $stdout already routes
+      # through its proxy, so a turn no longer allocates a fresh one or re-swaps
+      # $stdout — it only re-points the per-phase hooks/echo/prompt onto the
+      # shared instance. Returns [composer, nil]; the nil second slot keeps the
+      # `composer, real_stdout = start_composer(...)` call site and #stop_composer
+      # signature unchanged (the stdout restore is now the session-level teardown,
+      # not per-turn). Returns [nil, nil] when no composer is running (piped / -q /
+      # non-TTY), so the plain path runs exactly as before.
+      #
+      # `runner` is threaded in (not captured) so the interrupt lambda resolves it
+      # — it is a parameter of #run_turn, not in scope on the helpers (BH-1). The
+      # in-turn config differs from the idle prompt only in these hooks/echo: Esc
+      # interrupts the turn (on_interrupt), a typed control command runs NOW
+      # (on_busy_command), ← detaches mid-turn through the same busy handler, and
+      # the idle-only chords (on_double_esc / on_idle_interrupt / on_escape) are
+      # cleared so they can't fire during a turn.
+      def start_composer(_input_queue, runner)
+        return [nil, nil] unless @composer
+
+        busy = busy_command_handler(runner)
+        @composer.reconfigure(
+          prompt: build_prompt,
+          echo: :queued,
+          on_ctrl_o: ctrl_o_handler,
+          on_mode_cycle: mode_cycle_handler(runner),
+          on_interrupt: interrupt_handler(runner),
+          # ← on an empty prompt backs out of an attached subagent view to the main
+          # timeline MID-TURN (slice 3): routed through the SAME busy handler typed
+          # lines use so the detach happens IMMEDIATELY on the reader thread (not
+          # queued behind the still-running turn). A no-op cursor key when not attached.
+          on_back: -> { busy.call("/back") if attached_to_agent? },
+          on_busy_command: busy,
+          status_line: build_status_line(runner),
+          # Seed the focus-gate from the persistent attach-state (#82): a turn that
+          # opens while attached to a sub starts suppressed so the parent's stream/
+          # cards stay off the focused view. The id (not a bool) marks the sub (#87).
+          attached: @attached_id
+        )
+        [@composer, nil]
+      rescue StandardError
+        # Reconfig failed — fall back to the plain path so the turn still runs.
         [nil, nil]
       end
 
@@ -2223,23 +2296,21 @@ module Rubino
         end
       end
 
-      # Tears down the composer: restores the real $stdout, flushes any held
-      # partial line into scrollback, stops the reader and restores cooked mode.
-      # Safe to call with nils (no composer was started).
-      def stop_composer(composer, real_stdout)
-        proxy = $stdout
-        $stdout = real_stdout if real_stdout
-        proxy.finish if proxy.respond_to?(:finish)
-        # Preserve an un-submitted draft (text typed during the turn with no
-        # Enter) before tearing the composer down; #next_input pre-fills the next
-        # prompt with it. A submitted line clears the buffer, so this only ever
-        # carries genuinely-pending input. An empty buffer leaves any prior draft
-        # untouched so it survives queued steering turns in between.
-        if composer
-          draft = composer.buffer.to_s
-          @pending_draft = draft unless draft.strip.empty?
-        end
-        composer&.stop
+      # End-of-turn handoff for the SINGLE session composer (BUG 02). The
+      # composer is NO LONGER stopped or torn down per turn (its reader thread,
+      # pipes and raw mode live for the whole session, and $stdout stays on the
+      # proxy) — #stop_session_composer does that ONCE on REPL exit. This now only
+      # preserves an un-submitted draft (text typed during the turn with no Enter)
+      # so #next_input pre-fills the next prompt with it. A submitted line cleared
+      # the buffer, so this only ever carries genuinely-pending input; an empty
+      # buffer leaves any prior draft untouched so it survives queued steering
+      # turns in between. +real_stdout+ is retained (nil from #start_composer now)
+      # so the `stop_composer(composer, real_stdout)` call site is unchanged.
+      def stop_composer(composer, _real_stdout = nil)
+        return unless composer
+
+        draft = composer.buffer.to_s
+        @pending_draft = draft unless draft.strip.empty?
       rescue IOError, Errno::ENOTTY, Errno::EIO
         nil
       end
