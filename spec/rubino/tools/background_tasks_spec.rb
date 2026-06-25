@@ -57,7 +57,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
   end
 
   # #5 — the live output tail of the CURRENTLY RUNNING tool, fed by
-  # UI::SubagentRecorder#tool_chunk and tailed by the /agents drill-in's output:
+  # a subagent's UI::CLI#tool_chunk and tailed by the /agents drill-in's output:
   # block. Bounded (lines + bytes per line), carries the in-flight partial line
   # in its last slot, and is wiped when the tool finishes.
   describe "live output tail (#5)" do
