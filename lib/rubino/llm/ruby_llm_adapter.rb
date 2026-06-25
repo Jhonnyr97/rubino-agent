@@ -792,7 +792,7 @@ module Rubino
       def apply_generation_params(chat)
         anthropic_family = anthropic_generation_path?
 
-        rendered = reasoning_manager.render(
+        rendered = ReasoningManager.render(
           budget: anthropic_family ? thinking_budget : 0,
           temperature: @temperature,
           max_tokens: max_output_tokens,
@@ -850,8 +850,6 @@ module Rubino
           value
         end
       end
-
-      def reasoning_manager = @reasoning_manager ||= ReasoningManager.new
 
       # True when generation runs through ruby_llm's anthropic provider — the
       # only path where thinking budgets and the 4096 max_tokens default apply.
