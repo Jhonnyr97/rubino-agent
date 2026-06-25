@@ -29,16 +29,17 @@ RSpec.describe Rubino::CLI::ChatCommand do
         start: nil,
         buffer: "",
         stop: nil,
+        reconfigure: nil,
+        reset_input: nil,
         quit_pending?: true,
         clear_quit_pending: nil
       )
     end
 
     before do
-      allow(Rubino::UI::BottomComposer).to receive(:new).and_return(composer)
-      # Route the StdoutProxy swap to a harmless object so the read does not
-      # touch the real terminal.
-      allow(Rubino::UI::StdoutProxy).to receive(:new).and_return($stdout)
+      # BUG 02: ONE composer per session; #read_idle_line RECONFIGURES the shared
+      # @composer instead of building a fresh one. Inject the fake as @composer.
+      command.instance_variable_set(:@composer, composer)
       # Neutralize the idle-loop side-helpers so only the EOF path drives.
       allow(command).to receive_messages(
         seed_draft: nil,

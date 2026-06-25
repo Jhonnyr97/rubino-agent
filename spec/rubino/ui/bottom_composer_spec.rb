@@ -3645,4 +3645,108 @@ RSpec.describe Rubino::UI::BottomComposer do
         .to eq(["▸ sa_1 · general · running · 2 tools · 47s"])
     end
   end
+
+  # BUG 02 — the composer is REUSED across turns (one instance per session),
+  # driven by #reconfigure + #begin_turn / #end_turn, instead of a fresh
+  # #new/#start…#stop per turn. The fresh-per-turn cycle churned native-backed
+  # state (raw-mode/IO.console buffers, the reader thread + self/wake pipes, the
+  # escape-reader buffers, the frame strings) that malloc freed but never
+  # returned to the OS, so RSS climbed superlinearly with the turn count. These
+  # specs pin the reuse CONTRACT: the native machinery is set up ONCE across N
+  # turns; #reconfigure re-points the per-phase hooks/echo/prompt without
+  # leaking one phase's config into the next; and #begin_turn / #end_turn reset
+  # the per-turn streaming transients so a value set in turn 1 can't bleed into
+  # turn 2.
+  describe "BUG 02 — composer reuse across turns" do
+    describe "native machinery is set up ONCE across N turns (not per turn)" do
+      it "spawns the raw reader thread exactly once for N turns" do
+        starts = 0
+        # Don't run the raw reader on a StringIO (no #raw); just COUNT the spawns
+        # and hand back a harmless joined thread so #stop's join returns.
+        allow(composer).to receive(:start_reader) do
+          starts += 1
+          Thread.new { nil }
+        end
+
+        composer.start
+        20.times do
+          composer.begin_turn
+          composer.end_turn
+        end
+        composer.stop
+
+        # ONE reader for the whole session — NOT per turn (the per-turn churn
+        # that grew RSS superlinearly is gone).
+        expect(starts).to eq(1)
+      end
+
+      it "is idempotent on a second #start (no second reader)" do
+        allow(composer).to receive(:start_reader).and_return(Thread.new { nil })
+        composer.start
+        expect { composer.start }.not_to(change { composer.instance_variable_get(:@reader) })
+        composer.stop
+      end
+    end
+
+    describe "#reconfigure re-points per-phase config without leaking it" do
+      it "swaps the prompt, echo and per-phase hooks atomically" do
+        composer.reconfigure(prompt: "turn> ", echo: :queued, on_interrupt: -> {})
+        expect(composer.instance_variable_get(:@prompt)).to eq("turn> ")
+        expect(composer.instance_variable_get(:@echo)).to eq(:queued)
+        expect(composer.instance_variable_get(:@on_interrupt)).not_to be_nil
+
+        # The IDLE phase: an unspecified hook CLEARS — turn-only on_interrupt
+        # must not survive into the idle prompt; idle-only on_double_esc appears.
+        composer.reconfigure(prompt: PROMPT, echo: :prompt, on_double_esc: -> {})
+        expect(composer.instance_variable_get(:@echo)).to eq(:prompt)
+        expect(composer.instance_variable_get(:@on_interrupt)).to be_nil
+        expect(composer.instance_variable_get(:@on_double_esc)).not_to be_nil
+      end
+
+      it "recomputes the prefix width when the prompt changes (caret/wrap math)" do
+        composer.reconfigure(prompt: "longer-prompt> ")
+        expect(composer.instance_variable_get(:@prompt_width)).to eq("longer-prompt> ".length)
+      end
+
+      it "reconciles the focus-gate from the persistent attach-state" do
+        composer.reconfigure(attached: "sub-7")
+        expect(composer.focused_agent_id).to eq("sub-7")
+        composer.reconfigure(attached: nil)
+        expect(composer.focused_agent_id).to eq(:main)
+      end
+    end
+
+    describe "#begin_turn / #end_turn reset per-turn transients (no turn-to-turn leak)" do
+      it "clears a partial / activity / toast / stream flag left by the prior turn" do
+        composer.begin_turn
+        composer.set_partial("half a streamed line")
+        composer.set_turn_status("◆ writing · 3s")
+        composer.announce("mode: plan")
+        composer.begin_content_stream
+        composer.instance_variable_set(:@deferred_reveal, true)
+
+        composer.end_turn
+
+        expect(composer.instance_variable_get(:@partial)).to eq("")
+        expect(composer.instance_variable_get(:@turn_status)).to eq("")
+        expect(composer.instance_variable_get(:@announce)).to eq("")
+        expect(composer.streaming?).to be(false)
+        expect(composer.instance_variable_get(:@deferred_reveal)).to be(false)
+
+        # The NEXT turn starts from a clean baseline too.
+        composer.set_partial("turn-2 partial")
+        composer.begin_turn
+        expect(composer.instance_variable_get(:@partial)).to eq("")
+      end
+
+      it "leaves the subagent CARDS intact across the turn boundary (session-scoped)" do
+        composer.set_cards(["▸ sub-1 · working"])
+        composer.begin_turn
+        composer.end_turn
+        # Children outlive a turn; the panel is repainted from the live registry,
+        # not wiped at the boundary.
+        expect(composer.cards).to eq(["▸ sub-1 · working"])
+      end
+    end
+  end
 end

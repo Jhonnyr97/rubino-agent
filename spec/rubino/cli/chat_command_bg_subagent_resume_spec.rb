@@ -31,14 +31,17 @@ RSpec.describe Rubino::CLI::ChatCommand do
       start: nil,
       buffer: buffer,
       stop: nil,
+      reconfigure: nil,
+      reset_input: nil,
       quit_pending?: false,
       clear_quit_pending: nil
     )
   end
 
   before do
-    allow(Rubino::UI::BottomComposer).to receive(:new).and_return(composer)
-    allow(Rubino::UI::StdoutProxy).to receive(:new).and_return($stdout)
+    # BUG 02: ONE composer per session; #read_idle_line RECONFIGURES the shared
+    # @composer instead of constructing a fresh one. Inject the fake as @composer.
+    command.instance_variable_set(:@composer, composer)
     allow(command).to receive_messages(
       seed_draft: nil,
       idle_cards: instance_double(Rubino::CLI::Chat::IdleCardHost, paint: nil, children_live?: false),
@@ -95,7 +98,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "DEFERS while the user is mid-line (non-empty buffer never pre-empted)" do
       typing = build_composer(buffer: "half-typed prompt")
-      allow(Rubino::UI::BottomComposer).to receive(:new).and_return(typing)
+      command.instance_variable_set(:@composer, typing)
       queue.push_notice("[background-task] sa_1 completed.\nResult:\ndone")
 
       # The notice must NOT pre-empt the draft: the buffer guard defers, so the

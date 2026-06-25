@@ -1116,8 +1116,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
       let(:registry)    { Rubino::Tools::BackgroundTasks.instance }
 
       before do
-        # Both ends look like a TTY so the composer idle path is eligible.
-        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
+        # BUG 02: the routing now gates on the live @composer (built once per
+        # session), NOT a fresh BottomComposer.active? — because $stdout is the
+        # StdoutProxy by now and its #tty? is false. Stand in a session composer.
+        cmd.instance_variable_set(:@composer, instance_double(Rubino::UI::BottomComposer))
       end
 
       it "reads the next line through the bottom composer (NOT the cooked fallback)" do
@@ -1134,8 +1136,22 @@ RSpec.describe Rubino::CLI::ChatCommand do
         expect(cmd.send(:next_input, input_queue)).to eq("typed with cards up")
       end
 
-      it "uses the cooked fallback when NOT a TTY" do
-        allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(false)
+      # BUG 02 regression (the dead idle prompt): once $stdout is the StdoutProxy
+      # a live BottomComposer.active? reads FALSE (proxy #tty? is false), so the
+      # OLD active?-gated routing fell to a blocking cooked $stdin.gets that
+      # fought the live raw reader — the idle prompt accepted no input. Gating on
+      # @composer keeps the composer path even with the proxy installed.
+      it "stays on the composer path even when $stdout is the (non-tty) StdoutProxy" do
+        proxy = Rubino::UI::StdoutProxy.new(cmd.instance_variable_get(:@composer))
+        expect(Rubino::UI::BottomComposer.active?(output: proxy)).to be(false) # the trap
+        expect(cmd).to receive(:read_idle_line).and_return("still composer")
+        expect(cmd).not_to receive(:cooked_input)
+
+        expect(cmd.send(:next_input, input_queue)).to eq("still composer")
+      end
+
+      it "uses the cooked fallback when there is no session composer (piped / -q)" do
+        cmd.instance_variable_set(:@composer, nil)
         allow(cmd).to receive(:cooked_input).and_return("plain line")
         expect(cmd).not_to receive(:read_idle_line)
 
@@ -1210,8 +1226,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
         # Avoid spawning the real raw reader thread (no TTY here); we feed
         # keystrokes synchronously through #handle_key instead.
         allow(fake_composer).to receive(:start_reader).and_return(Thread.new { nil })
-        allow(Rubino::UI::BottomComposer).to receive(:new).and_return(fake_composer)
+        # BUG 02: the composer is built + #started ONCE per session and
+        # #read_idle_line now RECONFIGURES the shared @composer rather than
+        # constructing a fresh one. Inject the fake as the session composer and
+        # #start it once (sets BottomComposer.current, which the idle-card host
+        # paints onto) — the session setup does this once at boot.
+        cmd.instance_variable_set(:@composer, fake_composer)
+        fake_composer.start
       end
+
+      after { fake_composer.stop }
 
       it "returns the submitted line typed at the idle prompt" do
         typist = Thread.new do
@@ -1255,6 +1279,27 @@ RSpec.describe Rubino::CLI::ChatCommand do
         typist.join
 
         expect(line).to eq("hello world")
+      end
+
+      # BUG 02 regression: the composer is REUSED, so an unsubmitted draft left in
+      # its buffer at turn end must NOT double when the SAME draft is carried back
+      # (@pending_draft → seed). #read_idle_line clears the buffer before seeding,
+      # so a carried "foo" re-seeds to "foo", not "foofoo".
+      it "does not DOUBLE the carried draft when the reused buffer already holds it" do
+        # Simulate the leftover: the prior turn's unsubmitted draft is still in the
+        # reused composer's buffer when the idle read begins.
+        "foo".each_char { |c| fake_composer.handle_key(c) }
+
+        typist = Thread.new do
+          sleep 0.05
+          fake_composer.handle_key("\r") # submit whatever the buffer now holds
+        end
+
+        # The chat loop carries that same draft back in via the +draft+ arg.
+        line = cmd.send(:read_idle_line, input_queue, "foo")
+        typist.join
+
+        expect(line).to eq("foo") # NOT "foofoo"
       end
 
       # BH-2 wiring: a real SIGINT at the idle prompt is routed THROUGH the
@@ -1324,7 +1369,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
         ui  = Rubino::UI::CLI.new
         old = $stdout
         idle_tty = StringIO.new
-        $stdout = idle_tty
+        # BUG 02: the StdoutProxy swap is now SESSION-level (done once at setup),
+        # not per idle read. Mimic that here by swapping to the proxy ourselves so
+        # the seam under test — a note routing through the composer rather than raw
+        # onto the pinned terminal — still holds with the reused composer.
+        $stdout = Rubino::UI::StdoutProxy.new(fake_composer)
         begin
           typist = Thread.new do
             sleep 0.05
@@ -1339,10 +1388,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
           expect(line).to eq("ok")
           # The note went through the composer's machinery...
           expect(output.string).to include("saved to memory")
-          # ...not raw onto the terminal the composer owns.
+          # ...not raw onto a bystander terminal.
           expect(idle_tty.string).not_to include("saved to memory")
-          # And the real stdout is restored after the read.
-          expect($stdout).to be(idle_tty)
         ensure
           $stdout = old
         end
@@ -1354,9 +1401,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # wiring as the idle one: the post-turn window (inline memory/skill jobs
     # spending aux-LLM seconds after the `↳ turn` footer) keeps the turn
     # composer on screen, and `/` + `@` must open their dropdowns there too.
-    describe "#start_composer completion wiring (#169)" do
-      # rubocop:disable RSpec/ExpectOutput -- start_composer swaps $stdout itself; restore it.
-      it "wires the turn composer with the shared completion source and history" do
+    describe "#start_session_composer completion wiring (#169, BUG 02)" do
+      it "wires the SINGLE session composer with the shared completion source and history" do
         cmd = described_class.new({})
         source  = instance_double(Rubino::UI::CompletionSource)
         history = Rubino::UI::InputHistory.new
@@ -1365,22 +1411,43 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
         composer = instance_double(Rubino::UI::BottomComposer, start: nil)
         allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
+        # BUG 02: the composer is built ONCE per session (here), and #start_composer
+        # only RECONFIGURES it per turn — so the shared completion source + history
+        # are wired at this single construction site.
         expect(Rubino::UI::BottomComposer).to receive(:new)
           .with(hash_including(completion_source: source, history: history))
           .and_return(composer)
 
         runner = instance_double(Rubino::Agent::Runner, cancel!: nil,
                                                         session: { id: "sess-x", model: "m" })
-        old = $stdout
-        begin
-          got, real = cmd.send(:start_composer, Rubino::Interaction::InputQueue.new, runner)
-          expect(got).to be(composer)
-          expect(real).to be(old)
-        ensure
-          $stdout = old
-        end
+        got = cmd.send(:start_session_composer, Rubino::Interaction::InputQueue.new, runner)
+        expect(got).to be(composer)
       end
-      # rubocop:enable RSpec/ExpectOutput
+    end
+
+    # BUG 02: a turn now RECONFIGURES the shared composer (no fresh #new/#start),
+    # re-pointing the in-turn hooks (Esc interrupt, busy commands) onto it.
+    describe "#start_composer reconfigures the shared composer (BUG 02)" do
+      it "reconfigures the pre-built @composer with the in-turn hooks and returns it" do
+        cmd = described_class.new({})
+        composer = instance_double(Rubino::UI::BottomComposer)
+        cmd.instance_variable_set(:@composer, composer)
+        runner = instance_double(Rubino::Agent::Runner, cancel!: nil,
+                                                        session: { id: "sess-x", model: "m" })
+
+        expect(composer).to receive(:reconfigure)
+          .with(hash_including(echo: :queued))
+        got, real = cmd.send(:start_composer, Rubino::Interaction::InputQueue.new, runner)
+        expect(got).to be(composer)
+        expect(real).to be_nil # the stdout swap is session-level now
+      end
+
+      it "returns [nil, nil] when no session composer is running (piped / -q)" do
+        cmd = described_class.new({})
+        cmd.instance_variable_set(:@composer, nil)
+        runner = instance_double(Rubino::Agent::Runner)
+        expect(cmd.send(:start_composer, Rubino::Interaction::InputQueue.new, runner)).to eq([nil, nil])
+      end
     end
 
     # Drives run_turn with a runner that blocks on a latch until the test has
@@ -1424,13 +1491,22 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       before do
         allow(Rubino::UI::BottomComposer).to receive(:active?).and_return(true)
-        # Real composers over StringIO (no raw reader thread / termios).
+        # Real composer over StringIO (no raw reader thread / termios).
         allow(Rubino::UI::BottomComposer).to receive(:new).and_wrap_original do |orig, **kw|
           composer = orig.call(**kw, input: StringIO.new, output: StringIO.new)
           allow(composer).to receive(:start_reader).and_return(Thread.new { nil })
           composer
         end
+        # BUG 02: ONE composer per session, reconfigured per turn. Build it up
+        # front so #run_turn drives the SHARED instance (BottomComposer.current).
+        cmd.instance_variable_set(:@completion_source, nil)
+        cmd.instance_variable_set(:@input_history, Rubino::UI::InputHistory.new)
+        cmd.instance_variable_set(:@composer, cmd.send(:start_session_composer, input_queue, runner))
       end
+
+      # Tear the session composer down so BottomComposer.current never leaks into
+      # a later example (it would paint frames onto an unrelated test's $stdout).
+      after { cmd.send(:stop_session_composer) }
 
       it "queues each Enter line in FIFO order and drains them after the turn" do
         runs = []
@@ -1530,7 +1606,17 @@ RSpec.describe Rubino::CLI::ChatCommand do
           .to receive(:start_reader).and_return(Thread.new { nil })
         allow($stdin).to receive(:cooked!)
         allow(runner).to receive(:cancel!)
+        # BUG 02: the composer is built ONCE per session and #run_turn now
+        # RECONFIGURES it (no fresh #new per turn). Build the session composer up
+        # front so the real in-turn wiring (#start_composer → #reconfigure) runs
+        # against it — the whole point of this BH-1 seam.
+        cmd.instance_variable_set(:@completion_source, nil)
+        cmd.instance_variable_set(:@input_history, Rubino::UI::InputHistory.new)
+        cmd.instance_variable_set(:@composer, cmd.send(:start_session_composer, input_queue, runner))
       end
+
+      # Tear the session composer down so BottomComposer.current never leaks.
+      after { cmd.send(:stop_session_composer) }
 
       # Drive the WHOLE production seam: #run_turn builds the composer via the
       # real #start_composer and runs the runner. We stand in for the reader by
@@ -1572,7 +1658,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
 
-      it "restores cooked mode and $stdout in ensure when the turn raises (TTY path)" do
+      # rubocop:disable RSpec/ExpectOutput -- the seam under test IS the session-level $stdout swap/restore.
+      it "restores cooked mode and $stdout in ensure when the SESSION composer is torn down (TTY path)" do
         allow($stdin).to receive(:tty?).and_return(true)
         allow($stdout).to receive(:tty?).and_return(true)
         allow($stdout).to receive(:winsize).and_return([24, 80])
@@ -1586,16 +1673,30 @@ RSpec.describe Rubino::CLI::ChatCommand do
         allow(runner).to receive(:cancel!)
         allow(runner).to receive(:run).and_raise(RuntimeError, "boom")
 
+        # BUG 02: the composer is built + #started ONCE per session and the
+        # raw-mode / $stdout teardown is the single #stop_session_composer on REPL
+        # exit, NOT per turn. Build the session composer, swap $stdout for the
+        # proxy (as setup does), run the raising turn (it no longer tears the
+        # composer down), then assert the SESSION teardown restores cooked mode +
+        # $stdout — the leak guarantee, now session-scoped.
+        cmd.instance_variable_set(:@completion_source, nil)
+        cmd.instance_variable_set(:@input_history, Rubino::UI::InputHistory.new)
+        cmd.instance_variable_set(:@composer, cmd.send(:start_session_composer, input_queue, runner))
         before = $stdout
+        cmd.instance_variable_set(:@composer_stdout, before)
+        $stdout = Rubino::UI::StdoutProxy.new(cmd.instance_variable_get(:@composer))
+
         expect do
           cmd.send(:run_turn, runner, "hello", ui, input_queue)
         end.to raise_error(RuntimeError, "boom")
 
+        cmd.send(:stop_session_composer)
         expect($stdin).to have_received(:cooked!).at_least(:once)
-        expect($stdout).to be(before) # real $stdout restored after the swap
+        expect($stdout).to be(before) # real $stdout restored after the session swap
+        # rubocop:enable RSpec/ExpectOutput
       end
 
-      it "stop_composer restores cooked mode even with a nil composer" do
+      it "stop_composer is a safe no-op with a nil composer" do
         allow($stdin).to receive(:tty?).and_return(true)
         allow($stdin).to receive(:cooked!)
 
