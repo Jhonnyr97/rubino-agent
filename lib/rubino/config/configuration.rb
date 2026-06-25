@@ -448,6 +448,14 @@ module Rubino
         LLM::ContentBuilder.supports_vision?(dig("model", "default").to_s)
       end
 
+      # -- API section --
+      # Whether the HTTP API server may bind to a non-loopback address. SAFE BY
+      # DEFAULT (#577): false REFUSES a routable bind (the API runs shell tools);
+      # set true to deliberately publish the listener (use TLS + a strong key).
+      def api_allow_public_bind?
+        dig("api", "allow_public_bind") == true
+      end
+
       # -- Generic access --
       def dig(*keys)
         @raw.dig(*keys)

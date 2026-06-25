@@ -4,6 +4,10 @@ module Rubino
   module CLI
     # Starts the HTTP API server (Rack + Puma).
     class ServerCommand
+      # Loopback bind addresses that never need the public-bind opt-in. Anything
+      # else (0.0.0.0, ::, a routable IP, a hostname) is treated as non-loopback.
+      LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"].freeze
+
       def initialize(options = {})
         @options = options
       end
@@ -23,6 +27,11 @@ module Rubino
         # Loopback by default (#69); a routable bind is an explicit opt-in.
         host = @options[:host] || ENV.fetch("RUBINO_API_HOST", "127.0.0.1")
         api_key = @options[:api_key] || ENV.fetch("RUBINO_API_KEY", nil)
+
+        # The API can execute shell tools. Binding it to a non-loopback address
+        # publishes an RCE-capable surface, so it is config-gated and refused by
+        # default (#577); a loopback bind is unaffected.
+        guard_public_bind!(host)
 
         # When TLS is enabled (RUBINO_TLS=1 or a cert already exists), make
         # sure a self-signed cert+key exist under RUBINO_HOME and serve over
@@ -107,6 +116,39 @@ module Rubino
       end
 
       private
+
+      # Refuse to publish the shell-exec API to the network unless the operator
+      # explicitly opted in via api.allow_public_bind (#577). A loopback bind is
+      # always allowed and silent; a non-loopback bind requires the config and,
+      # when granted, prints a one-time exposure WARNING banner. Mirrors the
+      # guard_fake_provider! refusal pattern.
+      def guard_public_bind!(host)
+        return if loopback_host?(host)
+
+        unless Rubino.configuration.api_allow_public_bind?
+          warn <<~MSG
+            REFUSING to start: host #{host.inspect} is non-loopback.
+            The API can execute shell tools, so binding to a routable address
+            exposes a remote-code-execution surface — and with TLS off the bearer
+            token and all traffic travel in cleartext.
+            To opt in, set `api.allow_public_bind: true` in config.yml.
+            Strongly recommended when you do: enable TLS (RUBINO_TLS=1) and set a
+            strong RUBINO_API_KEY (prefer a reverse proxy over a direct bind).
+          MSG
+          exit(1)
+        end
+
+        warn <<~MSG
+          WARNING: binding to #{host} (non-loopback) — the API can execute shell
+          tools, so it is now reachable from the network. With TLS off the bearer
+          token and all traffic are in cleartext. Enable TLS (RUBINO_TLS=1) and a
+          strong RUBINO_API_KEY, and prefer a reverse proxy. (api.allow_public_bind)
+        MSG
+      end
+
+      def loopback_host?(host)
+        LOOPBACK_HOSTS.include?(host.to_s.strip.downcase)
+      end
 
       def guard_fake_provider!
         provider = Rubino.configuration.dig("model", "provider")

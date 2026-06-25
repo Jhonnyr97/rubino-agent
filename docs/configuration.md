@@ -662,7 +662,21 @@ api:
   rate_limit_enabled: true
   rate_limit_unauth_per_minute: 60
   rate_limit_auth_per_minute: 600
+  allow_public_bind: false       # gate for a non-loopback bind (see below)
 ```
+
+`allow_public_bind` is **false by default (safe)**. The API can execute shell
+tools, so binding it to a non-loopback address (`--host 0.0.0.0`,
+`RUBINO_API_HOST` set to anything other than `127.0.0.1` / `::1` / `localhost`)
+publishes a remote-code-execution surface to the network — and with TLS off the
+bearer token and all traffic travel in cleartext. While this is `false`, the
+server **refuses to boot** on a non-loopback host with an actionable error.
+Loopback binds (the default) are unaffected and need no opt-in.
+
+To deliberately expose the listener, set `allow_public_bind: true`. The server
+then boots on the routable host but prints a one-time exposure **WARNING** at
+startup. When you opt in, enable TLS (`RUBINO_TLS=1`) and a strong
+`RUBINO_API_KEY`, and prefer a reverse proxy over a direct bind.
 
 ---
 
