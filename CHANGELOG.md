@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.1] - 2026-06-25
 
 ### Added
 
@@ -18,6 +18,14 @@
   verbatim output. Master switch `tool_output_compression.enabled` (default
   `false`); `rubino setup` offers to turn it on. See
   [configuration.md](docs/configuration.md#tool_output_compression).
+- **Multi-language code compression.** The whole-file source-skeleton compressor
+  now covers more than Ruby. `tool_output_compression.code.languages` (default
+  `["ruby"]`) selects which languages get skeletonised: Ruby (built-in Prism
+  parser), Python (stdlib `ast` via your `python3` — a no-op if `python3` isn't
+  on PATH), and JavaScript / TypeScript / TSX (via the optional
+  `tree_sitter_language_pack` gem — a no-op until it's installed). A read in an
+  unlisted language passes through verbatim. `rubino setup` adds a language
+  picker and, if you choose JS/TS, offers to install the parser gem.
 - **Agent-attach view.** At the idle prompt, `↓` opens the subagent picker and
   `Enter` now **attaches** to the highlighted background subagent: the screen
   switches to that agent's OWN full timeline (its tool calls and what it said,
@@ -27,15 +35,10 @@
   to the main timeline, and the picker doubles as a switcher between agents. This
   replaces the bounded registry snapshot the picker's Enter used to show with the
   agent's real conversation, and makes the global `/agents <id> steer/probe` and
-  `/reply <id>` forms redundant while attached.
-- **Multi-language code compression.** The whole-file source-skeleton compressor
-  now covers more than Ruby. `tool_output_compression.code.languages` (default
-  `["ruby"]`) selects which languages get skeletonised: Ruby (built-in Prism
-  parser), Python (stdlib `ast` via your `python3` — a no-op if `python3` isn't
-  on PATH), and JavaScript / TypeScript / TSX (via the optional
-  `tree_sitter_language_pack` gem — a no-op until it's installed). A read in an
-  unlisted language passes through verbatim. `rubino setup` adds a language
-  picker and, if you choose JS/TS, offers to install the parser gem.
+  `/reply <id>` forms redundant while attached. The attached view **live-tails**
+  the child's stream (tool rows and streaming prose) exactly like the main agent
+  instead of freezing on a snapshot, and `/back` / `/detach` return to the main
+  agent regardless of composer-draft state (#82, #85, #87).
 - **`api.allow_public_bind` gate.** Because the API server can execute shell
   tools, binding it to a non-loopback address (`--host 0.0.0.0`,
   `RUBINO_API_HOST`) now **refuses to boot** unless `api.allow_public_bind: true`
@@ -47,69 +50,6 @@
   server is running (the model-facing tool name is unchanged) (#582). MCP
   servers also now connect **in parallel** at boot, so one hanging server no
   longer serializes startup (#576).
-
-### Changed
-
-- **Blocked-tool results are now typed errors.** When a tool call is blocked
-  (denied by approval, sandbox, or policy), its result is returned to the model
-  as a typed error with explicit anti-confabulation wording, so the model is told
-  the action did NOT happen instead of being free to assume success (#583).
-
-### Removed
-
-- **Child→parent `ask_parent` / `answer_child` tools.** Subagents are
-  non-blocking background workers and can no longer pause mid-task to ask their
-  parent (or the human) a question; instead they make sensible default calls and
-  surface open decisions in their result. The two model-facing tools that
-  implemented that channel — `ask_parent` (the child→parent escalation) and
-  `answer_child` (the parent's reply) — are gone. The parent→child `steer` /
-  `probe` tools and the human approval gate (`/reply` for a child parked on an
-  approval) are unchanged. `tasks.ask_parent_timeout` is now vestigial.
-
-### Security
-
-- **Vision egress hardening.** The `vision` tool now honours
-  `attachments.policy.aux_vision_egress` (default `true`): set it to `false` and
-  the tool refuses to send an image to an external auxiliary model, returning a
-  clean error instead of egressing the bytes (#578). Before any egress it also
-  **content-sniffs** the file (magic bytes win over the extension, fail-closed),
-  so a mislabelled or non-image file can't be smuggled to the external host
-  (#579).
-
-### Fixed
-
-- **MCP `degraded` server state.** `/mcp` and `rubino doctor` now distinguish a
-  reachable server (`●`) from a **degraded** one (`⚠` — the process is alive but
-  a protocol call such as `tools/list` failed), instead of reporting it as plain
-  reachable (#575).
-- **Session-title length cap.** A renamed session title is now length-capped at
-  rename and truncated on render, so an over-long title can't disrupt status /
-  session-list layout (#581).
-
-- **MiniMax-M3 pre-tool-call "freeze".** Thinking/reasoning now defaults ON for
-  every provider (it was deliberately off for MiniMax-family ids). On the
-  anthropic-compatible path rubino now sends `thinking: {type: enabled,
-  budget_tokens: …}` and streams the model's reasoning deltas — so the multi-
-  second window where M3 reasons toward a tool-call is filled with visible
-  streamed reasoning instead of dead air (the symptom that read as the agent
-  "freezing" when it spawned subagents). Matches the reference agent's default
-  `reasoning_effort: medium`. A backend that rejects the budget is caught and
-  retried once without it (#75), so default-on is safe; set
-  `providers.<name>.supports_thinking: false` to opt out.
-
-## [0.5.1] - 2026-06-18
-
-### Added
-
-- **Mid-turn auto-open `ask_parent` answer dropdown (#474).** When a sub-agent
-  blocks on `ask_parent`, the parent's chat input auto-opens an answer dropdown
-  **while the parent turn keeps streaming** — no need to interrupt or wait for
-  the turn to finish. Arrow-select one of the options the child supplied, or
-  type a free-text answer. Multiple blocked children are answered in **FIFO
-  order**, and a `⛔N` count shows how many sub-agents are waiting on you. Your
-  in-progress draft is snapshotted and restored byte-for-byte after you answer,
-  and committed stream lines that arrive while the dropdown is open are buffered
-  and flushed in order on resume.
 - **Read-only meta-commands run immediately while a turn is active.** A small
   set of non-mutating slash commands (`/agents`, `/tasks`, `/stop`, `/status`,
   `/jobs`, `/help`, `/commands`, `/dirs`) now execute **immediately** mid-turn
@@ -118,6 +58,20 @@
   `/new`, `/config`, `/mode`, …) show a transient `⚠ <cmd> is not available
   during an active turn — press Esc to interrupt first` notice; plain text still
   queues, and `Esc` interrupts.
+- **Interactive CLI session picker.** A bare `rubino sessions` on a TTY opens an
+  interactive picker (id, title, message count, dir, age; arrow-key highlight,
+  type-to-filter, `Esc` cancels) and `Enter` resumes the chosen session. On a
+  pipe / non-TTY it prints a script-safe list; `sessions list` stays list-only.
+  The picker is cwd-scoped by default; `--all` unscopes it.
+- **`/sessions rename <id|title> <new title>`.** Rename a session from the REPL
+  (#45).
+- **Aux-LLM session titles.** When `auxiliary.title` names a concrete backend,
+  new sessions get an LLM-generated, length-capped summary title; the
+  deterministic derivation stays the default and the fallback (#45).
+- **Streaming GFM table rendering (#89).** A markdown table now renders as a
+  live, correctly-fitted table as it streams — a sliding window of recent rows
+  grows in place — instead of leaking raw `| col | col |` pipes that only snap
+  into a table once the message completes.
 
 ### Changed
 
@@ -137,11 +91,65 @@
   `confirm_policy: confirm_all` to restore prompt-on-everything. The
   non-bypassable hardline floor and `permissions: deny` always run first
   regardless of policy.
+- **Removed the built-in `run_tests` and `github` tools.** Running tests and
+  GitHub/git operations now go through the generic `shell` tool (with its
+  hardened git arg parsing), matching the field norm and shrinking the tool
+  surface.
+- **Blocked-tool results are now typed errors.** When a tool call is blocked
+  (denied by approval, sandbox, or policy), its result is returned to the model
+  as a typed error with explicit anti-confabulation wording, so the model is told
+  the action did NOT happen instead of being free to assume success (#583).
+- **Single status bar during a turn.** The animated facet activity row is folded
+  into the model/ctx footer (one bar, not two); the "esc to interrupt" hint shows
+  exactly once, and a mid-stream **waiting indicator** resurfaces beneath the
+  in-flight tail after a short window of model/transport silence and drops away
+  the instant tokens resume (#21, #56b — `/status` now also shows the workspace
+  cwd line).
+- **FIFO approval queue for concurrent subagents.** When multiple subagents need
+  approval at once, one modal shows at a time with an "(N more queued)"
+  indicator that dequeues on resolve, and async-completion notices no longer
+  print over an active modal. Subagent approvals also **escalate to the parent's
+  approval card at any nesting depth**, so a nested child no longer fail-closes
+  with a noninteractive block (#86).
+- **Slash commands dispatch while attached to a subagent** (`/stop <id>`,
+  `/agents`, `/status`, …) instead of being steered into the child as text;
+  `/skills list` / `/skills ls` show the skills list rather than trying to
+  activate a skill named `list`; `/think off` hides the reasoning aside for
+  always-thinking models unless an explicit `/reasoning` is set; `/config <key>`
+  resolves the short labels `/status` advertises (`reasoning`, `effort`,
+  `think`) (#62, #66, #87).
+- **`/new` returns instantly.** The end-of-session memory flush is enqueued as a
+  background job instead of running a synchronous aux-LLM extract, so starting a
+  new session no longer freezes the prompt for 2–3s.
+- **Headless one-shot drains only its own jobs.** `rubino -q` now emits and
+  flushes the JSON result envelope before draining, and scopes the post-turn job
+  drain to the run's own session, so a one-shot returns immediately even with a
+  background job backlog.
+- **Subagent cards are distinguishable + carry the task id.** Concurrent
+  subagent cards label by a dimension drawn from the task prompt (rather than the
+  bare agent type), background "done" markers carry the task id, and the live
+  elapsed counter shows seconds (`1m05s`) so it visibly advances (#44, #570).
+- **Pastes coalesce into a single placeholder**, input history is recalled and
+  persisted, `Enter` accepts the highlighted dropdown candidate, and
+  `task_result` running-polls no longer flood the transcript (#524, #525).
+- **System-prompt grounding for control + tools.** The cap / continuation /
+  summary control is framed as trusted `[harness control]` so MiniMax-M3 stops
+  treating it as prompt-injection (#75); the background-shell lifecycle is primed
+  so the model uses `shell_output` / `shell_kill` correctly; the verification
+  step is scoped to never modify the environment and to stop honestly.
 - **Memory-flush best-effort boundary** made airtight (#471), so a failure
   flushing memory at shutdown can't take down the run.
 
 ### Removed
 
+- **Child→parent `ask_parent` / `answer_child` tools.** Subagents are
+  non-blocking background workers and can no longer pause mid-task to ask their
+  parent (or the human) a question; instead they make sensible default calls and
+  surface open decisions in their result. The two model-facing tools that
+  implemented that channel — `ask_parent` (the child→parent escalation) and
+  `answer_child` (the parent's reply) — are gone. The parent→child `steer` /
+  `probe` tools and the human approval gate (`/reply` for a child parked on an
+  approval) are unchanged. `tasks.ask_parent_timeout` is now vestigial.
 - **`streaming.cursor` config key.** It was dead config (assigned, never read)
   and is no longer accepted — remove it from any `config.yml`.
 - **`security.require_confirmation_for_shell` config key.** Replaced by
@@ -157,7 +165,35 @@
   `summarize`, and `read_attachment` (#511/#512). A `security.redact_secrets`
   toggle (default **on**) controls redaction. The earlier per-read secret-file
   approval gate was removed in favour of this block-list + redaction model
-  (#480).
+  (#480). Over-broad redaction was then narrowed: the `ENV_ASSIGN` pattern is
+  anchored so `AUTHORS` / `SECRETARY` pass through while `API_KEY` / `AUTH_TOKEN`
+  still redact, the Telegram-token pattern is pinned to its canonical shape, and
+  fully-masked secrets carry an explicit marker rather than a bare `***`
+  (#67, #516).
+- **Secrets are no longer persisted to memory (#99).** A `Security::SecretDetector`
+  is wired into the memory write path (it refuses an explicit save and the
+  auto-extract persist path) and into the redactor, catching prefixed key
+  shapes, prefix-less AWS secret keys, and a high-entropy heuristic — previously
+  an `sk-proj-…` key could be saved verbatim and re-injected into every future
+  system prompt.
+- **Removed the dedicated `git` tool (RCE bypass).** Git now runs through the
+  hardened `shell` with strict arg parsing that rejects exec vectors
+  (`--ext-diff`, `-c`, textconv, …) plus a `GIT_HARDENED_ENV`, instead of a tool
+  that could be steered into arbitrary command execution (#536/#553).
+- **Dangerous write/exec flag-forms prompt under the default gate (#61).**
+  `git -c` / `--output`, `sed -i`, `sort -o`, `find -delete` / `-exec`,
+  `tar --to-command`, `tee`, interpreter `-c` / `-e` / `--eval`, etc. no longer
+  auto-run under `dangerous_only`, while bare interpreters and read-only forms
+  still auto-run. A shared `Security::CommandNormalizer` also closes
+  line-continuation evasion (e.g. `rm -r\<newline>f` no longer slips past the
+  danger/approval layer).
+- **Extended HOME credential read-block.** Reading credential stores under HOME
+  is blocked and a base64-decode-pipe-to-shell (`echo … | base64 -d | sh`) is
+  flagged dangerous (#519); the denylist now covers `.ssh`, `.aws`, `.netrc`,
+  `.git-credentials`, `.kube`, `.docker`, `.gnupg`, `.azure`, and `.config/gh`
+  (#537). A write through a **dangling in-workspace symlink** can no longer
+  escape the sandbox — the link target is resolved before the create-new-file
+  fallback (#62).
 - **Tighten the `ruby_llm` floor to `>= 1.16` (#508).** The adapter wires native
   providers through ruby_llm's generic `<provider>_api_base=` setters
   (deepseek/mistral/etc., #482), which only exist from ruby_llm 1.16.0. The
@@ -169,33 +205,117 @@
   `authorization`, …) and when the value itself contains inline credentials
   (`key=value`, `Bearer …`, URL userinfo, `curl -u`, `mysql -p…`), so keys are
   not printed in the clear to the terminal/scrollback.
+- **Sanitized untrusted text rendered to the terminal (CWE-150).** Text that
+  originates from the model, tools, or filenames (subagent cards, `/`-palette and
+  `@`-picker menu labels, and the remaining CLI aside sinks — probe, reasoning,
+  open-fence, branch title) is now defanged of ANSI/OSC escape sequences before
+  it is written, closing an escape-injection class (#563/#564/#565–#568).
+- **Vision egress hardening.** The `vision` tool now honours
+  `attachments.policy.aux_vision_egress` (default `true`): set it to `false` and
+  the tool refuses to send an image to an external auxiliary model, returning a
+  clean error instead of egressing the bytes (#578). Before any egress it also
+  **content-sniffs** the file (magic bytes win over the extension, fail-closed),
+  so a mislabelled or non-image file can't be smuggled to the external host
+  (#579).
+- **OS sandbox covers more executors.** The OS write-jail (Landlock / Seatbelt)
+  now also confines background shells, `ruby`, and `run_tests`, with relaxation
+  gated on verified enforcement; a write-jail `EACCES` outside the workspace
+  produces an attributable "blocked by write-jail" hint (#74).
 
 ### Fixed
 
+- **MiniMax-M3 pre-tool-call "freeze".** Thinking/reasoning now defaults ON for
+  every provider (it was deliberately off for MiniMax-family ids). On the
+  anthropic-compatible path rubino now sends `thinking: {type: enabled,
+  budget_tokens: …}` and streams the model's reasoning deltas — so the multi-
+  second window where M3 reasons toward a tool-call is filled with visible
+  streamed reasoning instead of dead air (the symptom that read as the agent
+  "freezing" when it spawned subagents). Matches the reference agent's default
+  `reasoning_effort: medium`. A backend that rejects the budget is caught and
+  retried once without it (#75), so default-on is safe; set
+  `providers.<name>.supports_thinking: false` to opt out.
+- **MCP `degraded` server state.** `/mcp` and `rubino doctor` now distinguish a
+  reachable server (`●`) from a **degraded** one (`⚠` — the process is alive but
+  a protocol call such as `tools/list` failed), instead of reporting it as plain
+  reachable (#575).
+- **Session-title length cap.** A renamed session title is now length-capped at
+  rename and truncated on render, so an over-long title can't disrupt status /
+  session-list layout (#581).
+- **Streaming fidelity.** A streaming turn no longer re-executes or re-surfaces
+  tool calls it already ran (no double "started" line or duplicate final tool)
+  (#53), and a split think/fence sentinel is held across the message-boundary
+  flush so reasoning no longer leaks into the body and prose isn't torn apart
+  (#43/#54). A committed markdown table glued to trailing prose no longer leaks
+  raw pipes, and a too-wide table fits the pane instead of tearing the border.
+- **Subagent / multiplexer UI.** A running `blocked_on_parent` sub stays visible
+  in the footer while listed; cap-rejected delegation renders a neutral
+  "at capacity" row instead of a phantom failed card; the close-row / replay use
+  the per-call subagent name instead of a shared stale one (#35); the agent
+  picker opens reliably on `↓` and `←`/`↑` backs out; picking `◂ main` returns to
+  main immediately mid-turn; a nested child's menu no longer crashes it; and the
+  parent autonomously resumes at idle when background subagents finish while
+  detached (#37, #44, #51, #561).
+- **Interrupt handling.** `Esc` at the tool-dispatch boundary raises a clean
+  interrupt instead of a malformed continuation that the backend rejects as
+  "invalid params"; a stray `Ctrl-C` exits cleanly (130) with no raw `net/http`
+  backtrace; and a background thread never dumps a backtrace on death.
+- **Input papercuts.** Backspace (`DEL 0x7f`) deletes instead of inserting a
+  space (#522); a single `Ctrl-D` at an idle empty composer no longer hangs, and
+  fast input bursts coalesce their redraws (#520). Several composer
+  render/input races and resize-while-typing reflows that duplicated the
+  in-progress input into the scrollback are fixed, including chained resizes and
+  the resize REPAINT path (#481/#485/#486/#499/#500/#501/#503).
+- **`edit` no longer crashes on non-UTF-8 / binary buffers.** Fuzzy-match
+  normalization passes invalid-encoding bytes through verbatim (#47), atomic
+  writes are binmode'd so binary buffers never transcode (the intermittent
+  in-session edit crash on accented files) (#65), and `clean_slice` reinterprets
+  binary as UTF-8 rather than calling `.encode` (#58). A failed edit / read /
+  write now shows `✗` instead of a green `✓`.
+- **Background jobs and shells.** The job queue drains reliably — stale `running`
+  rows are reclaimed after the lease expires (#76) and `ExtractMemoryJob` is
+  prioritized over `SummarizeSessionJob` so save→recall doesn't lag (#79);
+  finished background shells are retired with their buffer and exit status
+  retained, so `shell_output` / `shell_tail` / `shell_kill` stay reachable next
+  turn (#78); shell cancel no longer orphans the child process group, and a
+  finished background shell auto-wakes the model.
+- **Turn-ledger honesty.** Blocked / errored tools no longer count toward the
+  "N tools ran / M edits" ledger, so a turn whose only tool was refused stops
+  telling you to review nonexistent changes; the force-summary and closing-summary
+  nudges are grounded in the truthful turn ledger so the model can't confabulate
+  having done nothing (#36/#84). MiniMax HTTP 429 / quota errors are categorized
+  as retryable rate-limit (honouring `Retry-After`) instead of "Invalid request",
+  and the anti-confabulation note no longer over-fires on accurate local caveats.
+- **Sessions / resume / doctor.** A per-session `flock` guard stops a concurrent
+  `--continue` from forking a moving transcript (#543), replay renders only the
+  new tail of a restated final message (#542), `--resume <id>` is validated
+  before the boot banner (#521), and `doctor` warns instead of false-green when
+  no usable credential exists and no longer implies an unverified key is
+  validated (#541/#546).
 - **Non-native provider wiring (#482).** Fixed the preflight that falsely
   reported non-native providers (deepseek/mistral/…) as ready; they are now
   wired through the generic `<provider>_api_base=` setters and the run stops
-  on an unreachable endpoint instead of failing later.
+  on an unreachable endpoint instead of failing later. Transient name-resolution
+  failures (`EAI_AGAIN`) are retried rather than fatal, and a stream that ends
+  without a finish signal is recovered instead of failing the turn.
 - **Parent-death reaps child shells (#478).** When the agent process dies, the
   long-running child shells it spawned are reaped instead of being orphaned,
   using a trap-safe SIGTERM/SIGHUP handler (no `Mutex` inside the signal trap).
 - **Compaction no-op loop (#484).** Stopped a busy-loop on an over-budget
-  session that has too few messages to compact.
-- **Composer resize/wrap repaint (#481/#485/#486/#499/#500/#501/#503).** Fixed
-  several composer render/input races and resize-while-typing reflows that
-  duplicated the in-progress input into the scrollback, including chained
-  resizes and the resize REPAINT path.
-- **`ask_parent` blocking timeout (#488).** A blocking `ask_parent` now honours
-  the configured 900s timeout instead of timing out at ~300s.
-- **CLI DX papercuts.** Fixed the bare-`rubino "prompt"` one-shot path, the
-  `ask_parent` escalation prompt, help-session clutter, and a bare-prompt
-  did-you-mean edge case.
+  session that has too few messages to compact. The `doom_loop.threshold`
+  default is also no longer rejected by its own validator (#60).
+- **Memory polish indicator no longer flashes every turn (#59).** The polish
+  worker starts only when a row was actually enqueued, the indicator composes
+  alongside the ctx bar instead of replacing it, and a verbatim repeat
+  short-circuits to the existing row at the write seam.
+- **`/exit` and exit codes.** `/exit` routes through the quit-guard, and an
+  interactive session exits non-zero on an auth/credential error (#154).
+- **CLI DX papercuts.** Fixed the bare-`rubino "prompt"` one-shot path, help-
+  session clutter, a bare-prompt did-you-mean edge case, and a `read_attachment`
+  hint that suggested markitdown for raster images instead of OCR.
 - **Input hardening.** Fixed a raw SQLite3 exception on session input with
   hostile/NUL bytes (#498) and cleaned up `Errno` error messages on the failure
   paths; tightened mcp args validation and assorted low-severity
   config/sessions/resume/CLI papercuts.
-- **TUI: ask_parent dropdown double-draw (#510).** Stopped the mid-turn
-  auto-open `ask_parent` dropdown from drawing the ask twice.
 
 ## [0.5.0] - 2026-06-15
 
