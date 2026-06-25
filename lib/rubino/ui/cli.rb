@@ -266,7 +266,17 @@ module Rubino
         # so TTY::Prompt reads the real $stdin and tty-screen probes the real
         # $stdout (not the write-only StdoutProxy). No-op when no composer is
         # active (between-turns / piped input).
-        BottomComposer.run_in_terminal { @prompt.ask(prompt) }
+        #
+        # BUG 01: while a turn streams, anything the user types is parked in the
+        # type-ahead queue. A clarification/`question` opening mid-turn used to
+        # read $stdin blind to that queue, so a line the user typed the instant
+        # the prompt appeared fired as a stray NEW turn afterwards instead of
+        # answering the prompt (Symptom C). Reconcile the seam: drain the pending
+        # queue line + in-flight keystrokes and PREFILL them as the answer — the
+        # user sees it and confirms/edits with Enter (never auto-submitted).
+        BottomComposer.run_in_terminal_with_pending do |pending|
+          pending && !pending.empty? ? @prompt.ask(prompt, value: pending) : @prompt.ask(prompt)
+        end
       end
 
       # True when both ends are a real interactive terminal — the shared gate
@@ -324,7 +334,10 @@ module Rubino
         return @budget_handler.call(prompt) if @budget_handler
         return nil unless interactive_terminal?
 
-        BottomComposer.run_in_terminal do
+        # BUG 01 (Symptom B): drain in-flight keystrokes before the picker grabs
+        # $stdin so a mid-turn type-ahead can't leak into its filter. A filtering
+        # menu is a CHOICE, not a freeform answer — no queue line is consumed.
+        BottomComposer.run_in_terminal_with_pending(consume_queue: false) do
           cancellable_prompt.select(prompt, cycle: false, filter: true) do |menu|
             menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }
@@ -2053,7 +2066,14 @@ module Rubino
       # keystroke + Enter can no longer approve. Arrow-key ↑/↓ + Enter on a real
       # option is unaffected; backspace clears the filter and restores the rows.
       def approval_menu(prompt, choices)
-        BottomComposer.run_in_terminal do
+        # BUG 01 (Symptom B): in-flight keystrokes the user typed the instant the
+        # approval card opened mid-turn used to leak into TTY::Prompt's filter
+        # field (filtering the menu to empty so the next Enter no-op'd, reading as
+        # "the tool was denied"). Drain those bytes BEFORE the picker grabs $stdin
+        # so the menu opens clean. consume_queue: false — a parked queue line is
+        # NOT pulled into a destructive approval; it stays queued (it has nowhere
+        # safe to land in a grant/deny menu, and prefilling a "yes" is unsafe).
+        BottomComposer.run_in_terminal_with_pending(consume_queue: false) do
           approval_prompt.select(prompt, cycle: false, filter: true) do |menu|
             menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }

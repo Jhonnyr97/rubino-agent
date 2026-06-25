@@ -446,6 +446,29 @@ module Rubino
         end
       end
 
+      # Like {run_in_terminal}, but FIRST reconciles the mid-turn type-ahead queue
+      # with the prompt about to open (BUG 01): once the composer is suspended (its
+      # reader thread stopped, @input back in cooked mode), it drains the in-flight
+      # keystrokes + (when +consume_queue+) the oldest parked queue line and YIELDS
+      # that pending answer string to the block, which uses it to PREFILL the
+      # prompt. With no active composer it yields nil (nothing was parked — the
+      # prompt reads $stdin directly as before). Used by UI::CLI#ask / #confirm so
+      # a line a user types the instant an approval/clarification opens reaches
+      # THAT prompt instead of firing as a stray later turn (or leaking into the
+      # picker filter). See BottomComposer#take_pending_for_prompt.
+      def self.run_in_terminal_with_pending(consume_queue: true)
+        composer = current
+        return yield(nil) unless composer
+
+        composer.suspend
+        pending = composer.take_pending_for_prompt(consume_queue: consume_queue)
+        begin
+          yield(pending)
+        ensure
+          composer.resume
+        end
+      end
+
       # Starts the keystroke reader thread and draws the initial prompt. Installs
       # a SIGWINCH handler that recomputes the width and redraws under the mutex.
       # Returns self.
@@ -774,6 +797,84 @@ module Rubino
         nil
       end
 
+      # MAIN-AGENT MID-TURN PROMPT (BUG 01) — reconcile the two uncoordinated
+      # mid-turn input sinks at the confirm/ask ↔ composer seam. While a turn
+      # streams, the reader parks typed lines into @input_queue (the type-ahead
+      # queue) under a "⏳ queued:" indicator. When the SAME turn opens an
+      # interactive prompt (a tool-approval card or a `question`/clarification),
+      # that prompt was reading $stdin with NO knowledge of the queue — so a line
+      # parked the instant the prompt opened was invisible to it (it fired as a
+      # stray NEW turn afterwards), and in-flight keystrokes still queued on the
+      # kernel TTY leaked into TTY::Prompt's filter field.
+      #
+      # Called from UI::CLI#ask / #confirm AFTER the composer is suspended (the
+      # reader thread is stopped and @input is back in cooked mode, so we are the
+      # only reader of the kernel TTY queue) and BEFORE TTY::Prompt grabs $stdin.
+      # It:
+      #
+      #   1. DRAINS every byte ALREADY queued on the kernel TTY (the in-flight
+      #      keystrokes typed in the race window before/while the prompt opened)
+      #      so they can NOT leak into the picker's filter — bounded/non-blocking,
+      #      the same #wait_readable(0) gate #drain_pending_input uses. Bytes up to
+      #      the first CR/LF become the in-flight text; a CR/LF ends the drain (the
+      #      human "submitted" that prefill);
+      #   2. when +consume_queue+ (the freeform #ask / clarification path), POPS
+      #      the OLDEST line off @input_queue and clears its "⏳ queued:" indicator,
+      #      so it is delivered to THIS prompt instead of running as a later turn.
+      #
+      # Returns the pending answer string (queued line, then any in-flight typed
+      # text appended) to PREFILL into the prompt — the human sees it and
+      # confirms/edits with Enter (never an auto-submit). Returns nil when nothing
+      # was pending. For the APPROVAL menu the caller passes consume_queue: false:
+      # the in-flight bytes are still drained (so they don't reach the filter), the
+      # queued line is left in place (a destructive grant must not be auto-filled),
+      # and nil is returned.
+      def take_pending_for_prompt(consume_queue: true)
+        inflight = drain_inflight_bytes
+        queued   = consume_queue ? consume_queued_line : nil
+        parts    = [queued, inflight].compact.reject(&:empty?)
+        return nil if parts.empty?
+
+        parts.join(queued && inflight && !inflight.empty? ? " " : "")
+      end
+
+      # Pop the OLDEST line off the type-ahead queue (FIFO, same as #next_input)
+      # and clear its "⏳ queued:" indicator so it visibly moves off the
+      # pending-rows into the open prompt. Returns the line, or nil when none is
+      # parked.
+      def consume_queued_line
+        line = @input_queue&.shift
+        return nil unless line
+
+        commit_queued(line) # drop its "⏳ queued:" row
+        line
+      end
+
+      # Drain the raw bytes ALREADY queued on @input (the kernel TTY buffer) into
+      # a plain string, WITHOUT routing them through #handle_key — so a buffered
+      # newline can't trip #submit_line (which would push the half-typed line back
+      # into @input_queue) and the bytes never reach TTY::Prompt's filter. Bounded
+      # and non-blocking exactly like #drain_pending_input: gate each #getc on a
+      # zero-timeout #wait_readable for a real TTY (a StringIO #getc is already
+      # nil-terminated). Stops at the first CR/LF — that is the human submitting
+      # the prefill — and keeps only printable bytes (control bytes are dropped).
+      def drain_inflight_bytes
+        out        = +""
+        selectable = real_io_input?
+        loop do
+          break if selectable && !@input.wait_readable(0)
+
+          ch = @input.getc
+          break if ch.nil?
+          break if ["\r", "\n"].include?(ch)
+
+          out << ch if ch =~ /[[:print:]]/
+        end
+        out
+      rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
+        out
+      end
+
       # True when @input is a real IO whose #wait_readable(0) can poll the queue
       # without blocking — i.e. it exposes an integer fileno. A StringIO answers
       # #fileno but raises NotImplementedError, so it falls to the plain #getc
@@ -1007,10 +1108,10 @@ module Rubino
       # streams (D7e). Idempotent.
       def begin_turn
         @turn_active = true
-        # Repaint so the "(esc to interrupt)" affordance (#421) appears in the
-        # status row for the whole turn. Guarded: dropped while suspended, like
-        # every other live repaint.
-        @render.synchronize { redraw } unless @suspended
+        # A fresh turn starts with no leftover streaming transients, and the
+        # redraw paints the "(esc to interrupt)" affordance (#421). See
+        # #reset_turn_transients. Idempotent.
+        reset_turn_transients
       end
 
       # Marks the END of a turn — the chat loop's run_turn `ensure` calls this
@@ -1021,9 +1122,52 @@ module Rubino
       # "⏳ queued:" indicator instead of a post-footer echo.)
       def end_turn
         @turn_active = false
-        # Repaint so the "(esc to interrupt)" affordance (#421) clears from the
-        # status row once the turn ends. Guarded like every other live repaint.
-        @render.synchronize { redraw } unless @suspended
+        # Wipe the per-turn transients so they can't bleed into the idle prompt
+        # that follows (the redraw also clears the "(esc to interrupt)" row).
+        reset_turn_transients
+      end
+
+      # Re-point the PER-PHASE configuration on a single long-lived composer (BUG
+      # 02). The REPL builds ONE composer per interactive session and #start /
+      # #stop it ONCE — the native machinery (reader thread, self/wake pipes,
+      # raw-mode entry, traps, the LiveRegion) is allocated once and torn down
+      # once, instead of churning a fresh BottomComposer per turn (the superlinear
+      # RSS growth). What DIFFERS between the idle prompt and an in-turn composer
+      # is only this config: the prompt string, the echo discipline and the key
+      # hooks. They are swapped here at each phase boundary (idle read ↔ run_turn)
+      # so the same instance behaves identically to the per-phase composers it
+      # replaced. Each keyword defaults to nil = "clear that hook for this phase"
+      # so a hook wired for the idle prompt (on_double_esc, on_idle_interrupt,
+      # on_escape) never leaks into a turn and vice-versa (on_interrupt,
+      # on_busy_command). The session-stable collaborators (input_queue, history,
+      # completion_source, paste_store, rail, the reader/pipes) are NOT touched —
+      # they were set at construction and stay put. Takes @render so a concurrent
+      # reader keystroke can't observe a half-swapped hook set.
+      def reconfigure(prompt: nil, echo: :queued, on_ctrl_o: nil, on_mode_cycle: nil,
+                      on_agent_cycle: nil, on_interrupt: nil, on_double_esc: nil,
+                      on_idle_interrupt: nil, on_escape: nil, on_back: nil,
+                      on_busy_command: nil, status_line: nil, attached: false)
+        @render.synchronize do
+          @prompt        = prompt.to_s.empty? ? PROMPT : prompt
+          @prompt_width  = @prompt.gsub(ANSI_RE, "").length
+          @prefix_width  = @rail.gsub(ANSI_RE, "").length + @prompt_width
+          @echo              = echo
+          @on_ctrl_o         = on_ctrl_o
+          @on_mode_cycle     = on_mode_cycle
+          @on_agent_cycle    = on_agent_cycle
+          @on_interrupt      = on_interrupt
+          @on_double_esc     = on_double_esc
+          @on_idle_interrupt = on_idle_interrupt
+          @on_escape         = on_escape
+          @on_back           = on_back
+          @on_busy_command   = on_busy_command
+          @status            = (status_line || "").to_s
+          # Re-seed the focus-gate from the persistent attach-state, exactly as the
+          # per-phase constructor used to (#82): the id (not a bool) so the
+          # while-attached switcher marks the focused sub (#87).
+          @focused_agent_id  = attached || :main
+        end
+        self
       end
 
       # Sets the TRANSIENT announcement row (the Shift+Tab mode confirmation).
@@ -1169,6 +1313,23 @@ module Rubino
           @input_line.replace(text.to_s)
           @history.reset!
           redraw
+        end
+      end
+
+      # Empty the editable buffer + close any open menu, without the history
+      # reset or the eager redraw #prefill does (BUG 02). The REPL now REUSES one
+      # composer across turns, so an unsubmitted draft left in the buffer at turn
+      # end survives into the next idle read; the chat loop carries that draft
+      # explicitly (@pending_draft → #seed_draft), so the buffer must start EMPTY
+      # before the carried draft is re-seeded — otherwise it would double
+      # ("foo" + seeded "foo" ⇒ "foofoo"). On the OLD per-turn composer the fresh
+      # instance was already empty; this restores that baseline on the reused one.
+      # The follow-up #seed_draft (or the prompt's own first frame) repaints, so
+      # no redraw here.
+      def reset_input
+        @render.synchronize do
+          @menu.close!
+          @input_line.clear
         end
       end
 
@@ -1645,6 +1806,23 @@ module Rubino
       end
 
       private
+
+      # Wipe the per-turn streaming transients on the single long-lived composer
+      # (BUG 02). The old per-turn `#stop` used to clear these on teardown; a
+      # reused composer clears them via #begin_turn / #end_turn instead — at BOTH
+      # boundaries so neither a fresh turn nor the idle prompt that follows
+      # inherits a stale partial / activity row / toast / stream flag. @cards are
+      # NOT touched: the subagent panel is session-scoped (children outlive a
+      # turn) and the CLI repaints it from the live registry. Idempotent; the
+      # repaint is dropped while suspended, like every other live repaint.
+      def reset_turn_transients
+        @partial           = +""
+        @turn_status       = +""
+        @announce          = +""
+        @content_streaming = false
+        @deferred_reveal   = false
+        @render.synchronize { redraw } unless @suspended
+      end
 
       # Draws one atomic frame via the {LiveRegion}. Layout (top → bottom):
       #
