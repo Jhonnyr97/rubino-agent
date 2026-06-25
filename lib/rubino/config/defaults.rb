@@ -827,10 +827,6 @@ module Rubino
         "permissions" => {},
         "formatters" => {},
         "agents" => {},
-        "server" => {
-          "port" => 4820,
-          "auth" => false
-        },
         "api" => {
           # Hard cap on JSON request bodies. Anything past this (whether
           # advertised by Content-Length or revealed mid-read) is rejected
