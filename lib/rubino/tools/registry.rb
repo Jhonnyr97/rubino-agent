@@ -23,6 +23,22 @@ module Rubino
           @tools[name.to_s]
         end
 
+        # The DISPLAY label for a registered tool name — the single resolution
+        # point both the live tool card and the approval card route through, so
+        # an MCP tool shows its `<bare> (mcp:<server>)` source while a built-in
+        # renders unchanged. Detection is driven off the registered object being
+        # an MCP wrapper (#mcp?), NEVER off the name's shape, so a built-in whose
+        # name legitimately contains an underscore (read_attachment, shell_output)
+        # is never mistaken for a `<server>_<tool>` MCP name. Falls back to the
+        # bare name when the tool isn't registered (defensive — the model-facing
+        # name is always a safe label).
+        def display_label(name)
+          tool = find(name)
+          return name.to_s unless tool.respond_to?(:mcp?) && tool.mcp?
+
+          tool.display_name
+        end
+
         # Removes a tool by name (#182): stopping an MCP server must also drop
         # its MCPToolWrapper instances, or the model keeps seeing tools whose
         # client is gone and every call fails.

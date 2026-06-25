@@ -47,6 +47,30 @@ module Rubino
         :medium
       end
 
+      # True: this tool's code runs on an external MCP server. The display layer
+      # reads this (NOT the name shape) to mark the call/approval card.
+      def mcp?
+        true
+      end
+
+      # The MCP server this tool is provided by, used in the display marker.
+      def mcp_server
+        @server_name
+      end
+
+      # The original, UNPREFIXED tool name the server advertised (#name returns
+      # the collision-safe `<server>_<tool>` registry/model-facing name).
+      def bare_name
+        @mcp_tool.name
+      end
+
+      # The display label for the live tool card and approval card:
+      # `"<bare_tool> (mcp:<server>)"` — e.g. `echo (mcp:chaos)`. The
+      # model-facing #name (`chaos_echo`) is unchanged; this is display-only.
+      def display_name
+        "#{bare_name} (mcp:#{@server_name})"
+      end
+
       def call(arguments)
         result = @mcp_tool.execute(**symbolize_keys(arguments))
         # ruby_llm-mcp reports tool failures by RETURNING `{ error: "…" }`

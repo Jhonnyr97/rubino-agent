@@ -65,6 +65,34 @@ RSpec.describe Rubino::Tools::Registry do
     end
   end
 
+  # #582 — the single display-label resolution point both the live tool card
+  # and the approval card route through. An MCP tool reads its source marker; a
+  # built-in is unchanged. Detection is by the registered object's #mcp?, NOT
+  # the name shape, so an underscore-named built-in is never mis-tagged.
+  describe ".display_label" do
+    it "returns the bare name for a built-in tool" do
+      described_class.register(Rubino::Tools::GlobTool.new)
+      expect(described_class.display_label("glob")).to eq("glob")
+    end
+
+    it "does NOT mark an underscore-named built-in as MCP" do
+      described_class.register(Rubino::Tools::ReadAttachmentTool.new)
+      described_class.register(Rubino::Tools::ShellOutputTool.new)
+      expect(described_class.display_label("read_attachment")).to eq("read_attachment")
+      expect(described_class.display_label("shell_output")).to eq("shell_output")
+    end
+
+    it "marks an MCP tool with its `<bare> (mcp:<server>)` source" do
+      mcp_tool = double("mcp_tool", name: "echo", description: "echoes")
+      described_class.register(Rubino::MCP::MCPToolWrapper.new(mcp_tool, server_name: "chaos"))
+      expect(described_class.display_label("chaos_echo")).to eq("echo (mcp:chaos)")
+    end
+
+    it "falls back to the bare name for an unregistered tool" do
+      expect(described_class.display_label("nope")).to eq("nope")
+    end
+  end
+
   describe ".tool_definitions" do
     it "returns definition hashes for enabled tools" do
       described_class.register_defaults!
