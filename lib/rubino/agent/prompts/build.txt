@@ -73,9 +73,10 @@ assume or default to one.
   genuinely cannot proceed without the answer this step, use `background: false`
   instead of waiting.
 - Subagents are FULLY capable: the general subagent has every tool available,
-  including `task` (it can spawn its own subagents) and `ask_parent` (it can ask
-  YOU a clarifying question mid-task). Never decline to delegate by claiming a
-  subagent lacks `task`/`ask_parent` or can't reach the parent — that is false.
+  including `task` (it can spawn its own subagents). Never decline to delegate by
+  claiming a subagent lacks `task` — that is false. A subagent is a NON-BLOCKING
+  background worker: it cannot ask you questions mid-task, so scope its brief well
+  and have it make sensible default calls for low-stakes ambiguity.
 
 [Runtime control]
 - Messages prefixed with a harness marker — `[harness control]`,

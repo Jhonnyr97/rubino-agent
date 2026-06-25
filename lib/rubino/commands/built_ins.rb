@@ -22,7 +22,7 @@ module Rubino
         "/agent" => "Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles)",
         "/agents" => "List background subagents; ↓+Enter to attach & steer one live, or steer/probe/view by id",
         "/tasks" => "Alias for /agents",
-        "/reply" => "Answer a subagent that is blocked waiting on you (ask_parent)",
+        "/reply" => "Answer a subagent that is blocked waiting on you (e.g. an approval)",
         "/stop" => "Stop a running subagent (/stop <id>; alias for /agents <id> --stop)",
         "/jobs" => "List the background job queue (status counts); /jobs <id> for detail",
         "/skills" => "List skills; activate one ('none' clears), or enable/disable NAME",

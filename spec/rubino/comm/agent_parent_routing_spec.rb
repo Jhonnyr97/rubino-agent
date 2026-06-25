@@ -1,49 +1,13 @@
 # frozen_string_literal: true
 
-# S4 — route ask_parent by OWNER: an agent-parent-owned child blocks
-# :blocked_on_parent with the question on the OWNER's steer_queue (the agent
-# answers via answer_child); a human/top-level-owned child blocks
-# :blocked_on_human as before. Plus the tree-aware awaiting_human / live_status.
+# Route a blocking ask gate by OWNER: an agent-parent-owned child blocks
+# :blocked_on_parent (counted live but NOT awaiting_human); a human/top-level-
+# owned child blocks :blocked_on_human. The tree-aware awaiting_human /
+# live_status is the surviving registry plumbing under test here.
 #
-# Unit coverage on rubino's REAL primitives (AskParentTool, BackgroundTasks,
-# Run::ApprovalGate). The model-callable answer_child + the 3-level integration
-# live in their own specs.
+# Unit coverage on rubino's REAL primitives (BackgroundTasks, Run::ApprovalGate).
 RSpec.describe "agent-parent routing (S4)" do
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
-
-  # --- S4.1 routing: agent-parent vs human owner -----------------------------
-  describe "ask_parent routing by owner" do
-    let(:tool) { Rubino::Tools::AskParentTool.new }
-
-    it "an AGENT-parent-owned child → :blocked_on_parent + question on the OWNER's steer_queue" do
-      owner = registry.reserve(subagent: "build", prompt: "root")
-      child = registry.reserve(subagent: "explore", prompt: "x", owner_subagent_id: owner.id)
-
-      out = Rubino.with_current_subagent_id(child.id) do
-        tool.call("question" => "sqlite or postgres?", "blocking" => false)
-      end
-
-      expect(out).to include("Keep working")
-      expect(registry.find(child.id).status).to eq(:blocked_on_parent)
-      # The question lands on the PARENT's steer queue (the agent-parent answers),
-      # NOT on a human escalation surface.
-      note = owner.steer_queue.drain.join
-      expect(note).to include("[subagent-question]")
-      expect(note).to include("sqlite or postgres?")
-      expect(note).to include("answer_child")
-    end
-
-    it "a HUMAN/top-level-owned child → :blocked_on_human as before" do
-      child = registry.reserve(subagent: "explore", prompt: "x", owner_subagent_id: nil)
-
-      out = Rubino.with_current_subagent_id(child.id) do
-        tool.call("question" => "any preference?", "blocking" => false)
-      end
-
-      expect(out).to include("Keep working")
-      expect(registry.find(child.id).status).to eq(:blocked_on_human)
-    end
-  end
 
   # --- S4.3 awaiting_human excludes :blocked_on_parent; live includes it ------
   describe "tree-aware awaiting_human / live_status" do
