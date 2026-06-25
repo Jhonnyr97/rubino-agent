@@ -17,7 +17,7 @@ RSpec.describe Rubino::Memory::Flusher do
   end
 
   describe "#flush_on_session_end! — gates" do
-    let(:backend) { instance_double(Rubino::Memory::Backends::Default) }
+    let(:backend) { instance_double(Rubino::Memory::Backends::Sqlite) }
 
     it "mines the session's un-extracted turns through the backend extract path" do
       allow(backend).to receive(:extract).with("sess-1").and_return([{ id: "m1" }, { id: "m2" }])

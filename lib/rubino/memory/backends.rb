@@ -63,7 +63,7 @@ module Rubino
         end
       end
 
-      DEFAULT_NAME = "default"
+      DEFAULT_NAME = "sqlite"
     end
   end
 end

@@ -6,14 +6,12 @@ RSpec.describe Rubino::Tools::MemoryTool do
     test_configuration("memory" => {
                          "enabled" => true,
                          "memory_char_limit" => 200,
+                         "ingest_char_limit" => 200,
                          "user_char_limit" => 100
                        })
   end
-  let(:store) { Rubino::Memory::Store.new(db: db_connection.db, config: config) }
-  let(:backend) { Rubino::Memory::Backends::Default.new(config: config, store: store) }
+  let(:backend) { Rubino::Memory::Backends::Sqlite.new(config: config, db: db_connection.db) }
   let(:tool) { described_class.new(backend: backend) }
-
-  before { db_connection.db[:memories].delete }
 
   describe "metadata" do
     it "is registered as a low-risk (autonomous) tool" do
@@ -40,13 +38,13 @@ RSpec.describe Rubino::Tools::MemoryTool do
     it "stores into the fact kind for target=memory" do
       result = tool.call("action" => "add", "target" => "memory", "content" => "user uses zsh")
       expect(result).to match(/Memory added.*kind=fact/)
-      expect(store.by_kind("fact").size).to eq(1)
+      expect(backend.list(kind: "fact").size).to eq(1)
     end
 
     it "stores into user_profile for target=user" do
       result = tool.call("action" => "add", "target" => "user", "content" => "prefers terse replies")
       expect(result).to include("kind=user_profile")
-      expect(store.by_kind("user_profile").size).to eq(1)
+      expect(backend.list(kind: "user_profile").size).to eq(1)
     end
 
     it "errors when content is missing" do
@@ -57,7 +55,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
 
   describe "replace" do
     it "updates the first matching memory by substring" do
-      store.create(kind: "fact", content: "the user lives in Rome")
+      backend.store(kind: "fact", content: "the user lives in Rome")
       result = tool.call(
         "action" => "replace",
         "target" => "memory",
@@ -65,7 +63,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
         "content" => "the user lives in Milan"
       )
       expect(result).to include("Memory replaced")
-      expect(store.by_kind("fact").first[:content]).to eq("the user lives in Milan")
+      expect(backend.list(kind: "fact").first[:content]).to eq("the user lives in Milan")
     end
 
     it "errors when no memory matches the substring" do
@@ -81,10 +79,10 @@ RSpec.describe Rubino::Tools::MemoryTool do
 
   describe "remove" do
     it "deletes the first matching memory by substring" do
-      store.create(kind: "user_profile", content: "loves Ruby")
+      backend.store(kind: "user_profile", content: "loves Ruby")
       result = tool.call("action" => "remove", "target" => "user", "old_text" => "Ruby")
       expect(result).to include("Memory removed")
-      expect(store.by_kind("user_profile")).to be_empty
+      expect(backend.list(kind: "user_profile")).to be_empty
     end
   end
 
@@ -101,7 +99,7 @@ RSpec.describe Rubino::Tools::MemoryTool do
     end
 
     it "refuses writes that exceed the budget" do
-      store.create(kind: "fact", content: "a" * 180)
+      backend.store(kind: "fact", content: "a" * 180)
       result = tool.call("action" => "add", "target" => "memory", "content" => "b" * 50)
       expect(result).to be_a(Hash)
       expect(result[:error_code]).to eq(:memory_budget_exceeded)

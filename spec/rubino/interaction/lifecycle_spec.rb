@@ -336,7 +336,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
 
     it "routes recall through the configured memory backend, passing the query" do
       backend = instance_double(
-        Rubino::Memory::Backends::Default,
+        Rubino::Memory::Backends::Sqlite,
         user_profile: "UP", project_context: "PC", retrieve: %i[m1]
       )
       allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
