@@ -49,8 +49,16 @@ RSpec.describe Rubino::Tools::Result do
   describe ".denied" do
     it "defaults to the user-decision message" do
       result = described_class.denied(name: "shell", call_id: "d1")
-      expect(result.output).to eq("Tool execution denied by user.")
+      expect(result.output).to include("Tool execution denied by user.")
       expect(result).to be_denied
+    end
+
+    # #583: the human/blocked denials now carry the anti-confabulation clause so
+    # the model can't paper the soft denial over with a fabricated answer.
+    it "appends the anti-confabulation clause to the user denial" do
+      result = described_class.denied(name: "shell", call_id: "d1b")
+      expect(result.output).to include("produced NO output")
+      expect(result.output).to include("Do NOT fabricate")
     end
 
     it "names the doom-loop guard and nudges a strategy change" do
@@ -75,7 +83,26 @@ RSpec.describe Rubino::Tools::Result do
 
     it "maps an unknown reason to the generic policy message, never to the user" do
       result = described_class.denied(name: "shell", call_id: "d5", reason: :whatever)
-      expect(result.output).to eq("Tool execution denied by policy (not by the user).")
+      expect(result.output).to include("Tool execution denied by policy (not by the user).")
+      expect(result.output).not_to include("denied by user")
+    end
+
+    # #583: the headless fail-closed denial keeps the "no interactive session"
+    # substring (Agent::Loop's binding-guard keys off it) AND carries the
+    # strengthened anti-confabulation wording + the actionable --yolo hint.
+    it "blocks headless with the anti-confabulation wording and keeps the guard substring" do
+      result = described_class.denied(name: "chaos_add", call_id: "d6", reason: :noninteractive)
+      expect(result.output).to include("no interactive session")
+      expect(result.output).to include("produced NO output")
+      expect(result.output).to include("Do NOT fabricate")
+      expect(result.output).to include("--yolo")
+    end
+
+    # The doom-loop denial steers to a different strategy and must NOT carry the
+    # generic "don't fabricate" clause (it has its own specific guidance).
+    it "omits the anti-confabulation clause from the doom-loop denial" do
+      result = described_class.denied(name: "task_result", call_id: "d7", reason: :doom_loop)
+      expect(result.output).not_to include("produced NO output")
     end
   end
 

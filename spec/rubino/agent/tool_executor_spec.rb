@@ -84,14 +84,15 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       it "a policy deny without an exposed reason still reads as policy, not user" do
         allow(policy).to receive(:decide).and_return(:deny) # no last_deny_reason on the double
         result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c11")
-        expect(result.output).to eq("Tool execution denied by policy (not by the user).")
+        expect(result.output).to include("Tool execution denied by policy (not by the user).")
+        expect(result.output).not_to include("denied by user")
       end
 
       it "a user rejection still reads 'denied by user'" do
         allow(policy).to receive(:decide).and_return(:ask)
         allow(ui).to receive(:confirm).and_return(false)
         result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c12")
-        expect(result.output).to eq("Tool execution denied by user.")
+        expect(result.output).to include("Tool execution denied by user.")
       end
     end
 

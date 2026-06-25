@@ -34,7 +34,7 @@ module Rubino
 
       # rubocop:disable Metrics/ParameterLists
       def self.for(agent_tool, ui: nil, event_bus: nil, tool_executor: nil, call_id_provider: nil,
-                   cache_breakpoint: false, budget_exhausted: nil, cancel_token: nil)
+                   cache_breakpoint: false, budget_exhausted: nil, cancel_token: nil, error_marker: false)
         klass = bridge_class_for(agent_tool.name)
         klass.new(agent_tool,
                   ui: ui || Rubino.ui,
@@ -43,7 +43,8 @@ module Rubino
                   call_id_provider: call_id_provider,
                   cache_breakpoint: cache_breakpoint,
                   budget_exhausted: budget_exhausted,
-                  cancel_token: cancel_token)
+                  cancel_token: cancel_token,
+                  error_marker: error_marker)
       end
       # rubocop:enable Metrics/ParameterLists
 
@@ -56,7 +57,7 @@ module Rubino
       # has no id and spill_full_output / messages.tool_call_id die (STRM-2).
       # rubocop:disable Metrics/ParameterLists
       def self.install(chat, tools, ui: nil, event_bus: nil, tool_executor: nil, cache_tools: false,
-                       budget_exhausted: nil, production: nil, cancel_token: nil)
+                       budget_exhausted: nil, production: nil, cancel_token: nil, error_marker: false)
         list = Array(tools)
 
         # Security invariant (#355 defensive): approval + audit only fire when a
@@ -87,7 +88,8 @@ module Rubino
                                         call_id_provider: -> { current_call_id },
                                         cache_breakpoint: cache_tools && idx == last_index,
                                         budget_exhausted: budget_exhausted,
-                                        cancel_token: cancel_token))
+                                        cancel_token: cancel_token,
+                                        error_marker: error_marker))
         end
       end
       # rubocop:enable Metrics/ParameterLists
@@ -103,6 +105,29 @@ module Rubino
         Rubino::Tools::Result.success(name: name, call_id: nil, output: output.to_s)
       end
 
+      # The value handed back to ruby_llm for a tool that ran MID-STREAM (#583).
+      # A SUCCESS is the plain output string — byte-identical to before, so a
+      # passing tool's result is unchanged. A denied/errored result on the
+      # anthropic-family path (error_marker true) is wrapped as a typed-error
+      # tool_result block (Content::Raw → Anthropic is_error:true), so the model
+      # sees it as an error it must not confabulate over, not as a normal
+      # result. Without a tool_use_id (the test/one-shot fallback has none) or
+      # off the anthropic path, fall back to the plain string + stronger wording.
+      def self.tool_result_payload(result, call_id, error_marker)
+        output = result.output
+        errored = (result.respond_to?(:denied?) && result.denied?) ||
+                  (result.respond_to?(:errorish?) && result.errorish?)
+        return output unless error_marker && errored && call_id
+
+        block = {
+          type: "tool_result",
+          tool_use_id: call_id,
+          content: output.to_s,
+          is_error: true
+        }
+        ::RubyLLM::Content::Raw.new([block])
+      end
+
       # rubocop:disable Metrics/ParameterLists, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity
       def self.build_class(tool_name)
         klass = Class.new(::RubyLLM::Tool) do
@@ -110,13 +135,21 @@ module Rubino
 
           define_method(:initialize) do |agent_tool, ui:, event_bus:, tool_executor:,
                                           call_id_provider: nil, cache_breakpoint: false,
-                                          budget_exhausted: nil, cancel_token: nil|
+                                          budget_exhausted: nil, cancel_token: nil,
+                                          error_marker: false|
             @agent_tool       = agent_tool
             @ui               = ui
             @event_bus        = event_bus
             @tool_executor    = tool_executor
             @call_id_provider = call_id_provider
             @cache_breakpoint = cache_breakpoint
+            # #583: when true (anthropic-family path), a denied/errored result
+            # run MID-STREAM is handed back to ruby_llm as a typed-error
+            # tool_result (Content::Raw with is_error:true) instead of a plain
+            # string, so the model can't read the denial as an ordinary result
+            # and fabricate an answer. The non-streaming Loop path does the same
+            # via RubyLLMAdapter#build_tool_message on the next turn's history.
+            @error_marker     = error_marker
             # 0-arity predicate the Loop wires so a tool dispatched mid-stream can
             # be HALTED once the per-turn iteration/time budget is spent (#355a).
             @budget_exhausted = budget_exhausted
@@ -183,7 +216,7 @@ module Rubino
                   arguments: args,
                   call_id: call_id
                 )
-                result.output
+                Rubino::LLM::ToolBridge.tool_result_payload(result, call_id, @error_marker)
               else
                 # Fallback: direct call (tests / one-shot mode without full Lifecycle)
                 @event_bus&.emit(Rubino::Interaction::Events::TOOL_STARTED, name: name)

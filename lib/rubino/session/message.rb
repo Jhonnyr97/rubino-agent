@@ -65,10 +65,30 @@ module Rubino
         # Surface assistant tool_calls (persisted as metadata) so the adapter
         # can rebuild the toolUse block expected by strict providers on resume.
         msg[:tool_calls] = @metadata[:tool_calls] if @metadata.is_a?(Hash) && @metadata[:tool_calls]
+        # #583: re-derive the error flag from the persisted outcome so a
+        # denied/errored tool result replays to the model marked as an error
+        # (is_error) on the next turn, exactly as it was sent live — never as a
+        # plain result the model can confabulate over. Old rows lack the keys
+        # and hydrate as a normal (non-error) tool result, unchanged.
+        msg[:is_error] = true if @role == "tool" && tool_outcome_errored?
         msg
       end
 
       private
+
+      # True when this tool row's persisted outcome (status / error_code, written
+      # by Agent::Loop#persist_tool_result) marks it as denied or errored — the
+      # signal that re-flags the replayed tool_result as an error for the model
+      # (#583). status is stored as a String ("denied"/"error"); a present
+      # error_code (any value) is the #errorish? soft-failure signal.
+      def tool_outcome_errored?
+        return false unless @metadata.is_a?(Hash)
+
+        status = @metadata[:status].to_s
+        return true if %w[denied error].include?(status)
+
+        !@metadata[:error_code].to_s.empty?
+      end
 
       # Strip persist-fatal bytes (NUL et al.) from a free-text column at the
       # write seam (#498), preserving nil so a content-less tool/assistant row
