@@ -60,6 +60,63 @@ RSpec.describe Rubino::Tools::VisionTool do
       expect(out).to include("unsupported image extension")
       expect(out).to include(".png")
     end
+
+    # #579: a .png-named file whose BYTES are not an image must be rejected by
+    # CONTENT (magic-byte sniff) BEFORE egress — the executor attachment path
+    # demotes such spoofs, the tool path must not ship them to the aux model.
+    it "rejects a .png-named non-image by content with NOTHING egressed (#579)" do
+      spoof = File.join(tmp_dir, "fake_image.png")
+      File.write(spoof, "this is plain text, not an image\n")
+
+      # Aux must never be constructed: rejection fires before any LLM call.
+      allow(Rubino::LLM::AuxiliaryClient).to receive(:new) { raise "aux must not be called" }
+
+      out = tool.call("file_path" => spoof)
+      expect(out).to include("not a valid image")
+      expect(out).to include("nothing was sent to the vision model")
+    end
+
+    it "rejects a truncated/corrupt PNG by content (#579)" do
+      corrupt = File.join(tmp_dir, "corrupt.png")
+      # Random non-signature bytes — not a recognised image format.
+      File.binwrite(corrupt, "\x00\x01\x02not-a-real-png-header")
+
+      allow(Rubino::LLM::AuxiliaryClient).to receive(:new) { raise "aux must not be called" }
+
+      expect(tool.call("file_path" => corrupt)).to include("not a valid image")
+    end
+  end
+
+  describe "aux_vision_egress kill-switch (#578)" do
+    let(:png_path) { File.join(tmp_dir, "img.png") }
+
+    before { File.binwrite(png_path, "\x89PNG\r\n\x1A\nfake-image-bytes") }
+
+    after { Rubino.configuration.set("attachments", "policy", nil) }
+
+    it "refuses to egress when attachments.policy.aux_vision_egress is false" do
+      Rubino.configuration.set("attachments", "policy", { "aux_vision_egress" => false })
+
+      # Aux must never be constructed when egress is disabled.
+      allow(Rubino::LLM::AuxiliaryClient).to receive(:new) { raise "aux must not be called" }
+
+      out = tool.call("file_path" => png_path)
+      expect(out).to include("image egress is disabled by config")
+      expect(out).to include("attachments.policy.aux_vision_egress: false")
+    end
+
+    it "egresses as before when aux_vision_egress is true (default)" do
+      Rubino.configuration.set("attachments", "policy", { "aux_vision_egress" => true })
+
+      response = Rubino::LLM::AdapterResponse.new(
+        content: "ok", tool_calls: [], input_tokens: 0, output_tokens: 0, model_id: "fake"
+      )
+      aux = instance_double(Rubino::LLM::AuxiliaryClient, call: response)
+      allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux)
+
+      expect(tool.call("file_path" => png_path)).to eq("ok")
+      expect(aux).to have_received(:call).with(hash_including(task: :vision))
+    end
   end
 
   describe "happy path" do
