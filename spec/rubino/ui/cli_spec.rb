@@ -881,6 +881,32 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to match(/· \S/)
     end
 
+    # #582 — an MCP tool's live card shows it is external code: the printed
+    # label is `<bare> (mcp:<server>)` while the model-facing name (chaos_echo)
+    # is unchanged. A built-in renders unchanged (no marker). Detection is keyed
+    # off the registered object being an MCP wrapper, NOT the name shape.
+    describe "MCP tool card marker (#582)" do
+      let(:mcp_wrapper) do
+        Rubino::MCP::MCPToolWrapper.new(
+          double("mcp_tool", name: "echo", description: "echoes"), server_name: "chaos"
+        )
+      end
+
+      it "renders the MCP source marker on the open row" do
+        Rubino::Tools::Registry.register(mcp_wrapper)
+        out = capture_stdout { ui.tool_started("chaos_echo", arguments: { text: "BANANA" }) }
+        expect(out).to include("● echo (mcp:chaos)")
+        expect(out).not_to include("● chaos_echo")
+      end
+
+      it "leaves a built-in with an underscore name unchanged (no MCP marker)" do
+        Rubino::Tools::Registry.register(Rubino::Tools::ShellOutputTool.new)
+        out = capture_stdout { ui.tool_started("shell_output", arguments: nil) }
+        expect(out).to include("● shell_output")
+        expect(out).not_to include("mcp:")
+      end
+    end
+
     it "truncates long arg hints with an ellipsis" do
       long = "x" * 200
       expect { ui.tool_started("shell", arguments: { command: long }) }

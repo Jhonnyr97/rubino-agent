@@ -462,6 +462,38 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(question.length).to be < 400
     end
 
+    # #582 — an MCP tool's approval card must mark it as external code: the
+    # header reads `<bare> (mcp:<server>)` and an extra line names the server.
+    # A built-in (the underscore-named `fake_tool` above) is unchanged.
+    describe "MCP external-code marker (#582)" do
+      let(:mcp_tool) do
+        Rubino::MCP::MCPToolWrapper.new(
+          double("mcp_tool", name: "echo", description: "echoes"), server_name: "chaos"
+        )
+      end
+
+      it "uses the `<bare> (mcp:<server>)` label in the header" do
+        question = executor.send(:approval_question, mcp_tool, { "text" => "BANANA" })
+        expect(question).to start_with("echo (mcp:chaos) wants to run: BANANA")
+      end
+
+      it "appends the external-code disclosure line naming the server" do
+        question = executor.send(:approval_question, mcp_tool, { "text" => "BANANA" })
+        expect(question).to include("runs external code on MCP server 'chaos'")
+      end
+
+      it "adds the disclosure even for a no-arg MCP call" do
+        question = executor.send(:approval_question, mcp_tool, {})
+        expect(question).to eq("echo (mcp:chaos) wants to run\n   runs external code on MCP server 'chaos'")
+      end
+
+      it "does NOT add the external-code line for a built-in (underscore name)" do
+        question = executor.send(:approval_question, tool, { "command" => "ls" })
+        expect(question).to eq("fake_tool wants to run: ls")
+        expect(question).not_to include("runs external code")
+      end
+    end
+
     # multi_edit carries an `edits` array; the generic renderer would dump an
     # unreadable escaped Ruby hash. It must preview as clean per-edit blocks.
     describe "multi_edit preview" do

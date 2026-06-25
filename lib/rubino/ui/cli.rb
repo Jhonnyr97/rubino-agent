@@ -589,7 +589,12 @@ module Rubino
         # whole row is rubino-built → PATH 2 (#emit_styled) keeps the cyan/dim
         # SGR AND the now-OSC8-preserving sanitizer keeps the legit hyperlink,
         # while still neutralizing any residual danger byte (Cat 2 + Cat 3).
-        emit_styled("#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}")
+        # DISPLAY-ONLY label resolution: an MCP tool shows `echo (mcp:chaos)`
+        # so the user sees external code is running; a built-in is unchanged.
+        # The model-facing `name` (and @activity_name, used as a status key) is
+        # untouched — this only changes the printed row (#582).
+        label = Tools::Registry.display_label(name)
+        emit_styled("#{@pastel.cyan("●")} #{@pastel.dim("#{label}#{hint_str}")}")
         @activity_open = true
         @activity_name = name
         @last_block = :tool

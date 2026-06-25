@@ -483,6 +483,28 @@ module Rubino
       # model actually sent. Lay each key out on its own line; clip long
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
+        with_mcp_note(tool, build_approval_question(tool, arguments))
+      end
+
+      # Appends the external-code disclosure line ONLY for MCP tools, so the human
+      # authorising the call knows it runs third-party code on an MCP server
+      # (#582). Built-ins return the question unchanged. The line sits under the
+      # ⚠ header the CLI prints, on its own indented row.
+      def with_mcp_note(tool, question)
+        return question unless tool.respond_to?(:mcp?) && tool.mcp?
+
+        "#{question}\n   runs external code on MCP server '#{tool.mcp_server}'"
+      end
+
+      # The DISPLAY label for the approval header — an MCP tool reads
+      # `echo (mcp:chaos)`, a built-in its bare name. The model-facing tool.name
+      # is unaffected (#582).
+      def approval_label(tool)
+        tool.respond_to?(:display_name) ? tool.display_name : tool.name
+      end
+
+      def build_approval_question(tool, arguments)
+        label = approval_label(tool)
         pairs = Array(arguments)
         # ONE header verb across every approval card (#558): always
         # "<tool> wants to run" — with the call laid out after a colon when there
@@ -491,7 +513,7 @@ module Rubino
         # header read inconsistently and the dangling colon looked broken (#109).
         # No arguments (e.g. a bare no-arg tool call) ⇒ no colon: a header followed
         # by nothing reads as a truncated/broken card.
-        return "#{tool.name} wants to run" if pairs.empty?
+        return "#{label} wants to run" if pairs.empty?
 
         # multi_edit carries an `edits` ARRAY whose generic .to_s render is an
         # unreadable escaped Ruby hash (literal \n, truncated). Lay it out as
@@ -507,10 +529,10 @@ module Rubino
         if pairs.size == 1
           key, value = pairs.first
           text = Util::SecretsMask.mask_value(value, key: key).to_s
-          return "#{tool.name} wants to run: #{text}" if !text.include?("\n") && text.length <= 120
+          return "#{label} wants to run: #{text}" if !text.include?("\n") && text.length <= 120
         end
 
-        lines = ["#{tool.name} wants to run:"]
+        lines = ["#{label} wants to run:"]
         pairs.each { |key, value| lines.concat(format_arg_pair(key, value)) }
         lines.join("\n")
       end
