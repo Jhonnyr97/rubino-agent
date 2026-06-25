@@ -189,7 +189,9 @@ module Rubino
 
           id    = session[:id].to_s[0..7]
           title = session[:title].to_s.strip
-          title = title.empty? ? "(untitled)" : %("#{title}")
+          # Length-cap on render (#581): a long renamed title would otherwise
+          # soft-wrap and push the workspace/tools/memory rows off-screen.
+          title = title.empty? ? "(untitled)" : %("#{Rubino::Util::Output.elide(title, Session::Repository::TITLE_MAX_CHARS)}")
           msgs  = status_message_count(session)
           "#{id}  #{title}#{" · #{msgs} msgs" if msgs}"
         end

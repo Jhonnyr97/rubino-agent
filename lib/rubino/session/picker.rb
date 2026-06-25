@@ -60,7 +60,12 @@ module Rubino
       # Neutralize to caret notation at this single title funnel.
       def self.session_title(session)
         title = Rubino::Util::Output.sanitize_terminal(session[:title].to_s).strip
-        title.empty? ? "(untitled)" : title
+        return "(untitled)" if title.empty?
+
+        # Length-cap on render (#581) as belt-and-suspenders: the rename write
+        # seam now bounds new titles, but pre-fix or other-path titles could
+        # still be 2000 chars and soft-wrap the picker across the whole screen.
+        Rubino::Util::Output.elide(title, Rubino::Session::Repository::TITLE_MAX_CHARS)
       end
 
       # The session's launch dir (r5 MF-4), home-collapsed and terminal-escape
