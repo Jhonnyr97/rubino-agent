@@ -167,8 +167,8 @@ RSpec.describe Rubino::CLI::MemoryCommand do
     end
 
     it "persists memory.backend for a registered backend" do
-      command.backend("default")
-      expect(writer.get("memory.backend")).to eq("default")
+      command.backend("sqlite")
+      expect(writer.get("memory.backend")).to eq("sqlite")
     end
 
     it "refuses an unregistered backend and writes nothing (Thor::Error, non-zero)" do
@@ -180,7 +180,7 @@ RSpec.describe Rubino::CLI::MemoryCommand do
     it "shows the active backend and available list when given no name" do
       allow(Rubino).to receive(:configuration).and_return(test_configuration)
       expect(Rubino.ui).to receive(:info).with(/Active backend:/)
-      expect(Rubino.ui).to receive(:info).with(/Available:.*default/)
+      expect(Rubino.ui).to receive(:info).with(/Available:.*sqlite/)
       command.backend
     end
   end
