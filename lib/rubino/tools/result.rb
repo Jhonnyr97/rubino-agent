@@ -107,17 +107,31 @@ module Rubino
       # may read "denied by user" — an automatic denial must name the policy
       # that fired, otherwise a child agent reports (and propagates upward)
       # that "the user denied my tools" when no human ever decided anything.
+      # Anti-confabulation clause (#583) appended to the human/blocked denials.
+      # A blocked tool produced NO output; without this the model can paper over
+      # the soft denial string with a fabricated "result" (e.g. answering "5"
+      # for an add it never ran). "produced NO output" + "Do NOT fabricate"
+      # attacks the confabulation; "do not retry/rephrase/substitute" is the
+      # hermes-proven evasion-blocking clause. Kept out of the doom-loop denial,
+      # which already steers the model to a different strategy.
+      NO_CONFAB_CLAUSE =
+        "It was NOT run and produced NO output. Do NOT fabricate, guess, or " \
+        "assume its result. Do not retry the same call, rephrase it, or " \
+        "substitute a different tool to achieve the same effect. If this tool " \
+        "was required, state that the task is blocked pending approval and stop."
+
       DENIED_OUTPUTS = {
-        user: "Tool execution denied by user.",
-        policy: "Tool execution denied by policy (not by the user).",
+        user: "Tool execution denied by user. #{NO_CONFAB_CLAUSE}",
+        policy: "Tool execution denied by policy (not by the user). #{NO_CONFAB_CLAUSE}",
         hardline: "Tool execution blocked by policy (hardline safety floor, not by the user): " \
-                  "this command is never allowed.",
+                  "this command is never allowed. #{NO_CONFAB_CLAUSE}",
         permission_rule: "Tool execution blocked by policy (a configured permissions deny rule, " \
-                         "not by the user).",
-        noninteractive: "Tool execution blocked: this tool needs approval but there is no " \
-                        "interactive session to ask (headless/one-shot run). It was NOT run. " \
-                        "Re-run with --yolo to auto-approve, or add it to the permissions " \
-                        "allowlist.",
+                         "not by the user). #{NO_CONFAB_CLAUSE}",
+        # NOTE: keep the substring "no interactive session" — Agent::Loop's
+        # noninteractive-block detection (loop.rb) keys the binding guard off it.
+        noninteractive: "Tool execution BLOCKED: this tool needs approval but there is no " \
+                        "interactive session to ask (headless/one-shot run). #{NO_CONFAB_CLAUSE} " \
+                        "To allow it, re-run with --yolo or add it to the permissions allowlist.",
         doom_loop: "Tool execution blocked by the doom-loop guard (policy, not by the user): " \
                    "this exact call was already made repeatedly. Change strategy instead of " \
                    "retrying it — e.g. wait for the background-task completion notice instead " \
