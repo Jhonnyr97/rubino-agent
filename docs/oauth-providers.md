@@ -1,5 +1,26 @@
 # OAuth provider connectors
 
+> **Status: NOT WIRED END-TO-END (WIP).** The pieces below exist and the HTTP
+> surface works — the `/v1/oauth/...` API endpoints perform the PKCE flow and
+> store **encrypted** tokens in the `oauth_connections` table. But the subsystem
+> is **API-only and not yet consumed**:
+> - **No tool uses the stored tokens.** Nothing reads `ConnectionRepository`
+>   outside the API operations — there is no `GithubTool`/`GoogleTool` etc. that
+>   pulls a connection's token to call a provider, so a connected account is not
+>   actually actionable by the agent yet.
+> - **No CLI surface.** There is no `rubino oauth` command; the connect/callback
+>   flow needs a browser redirect, so it lives only on the API. The CLI treats
+>   `RUBINO_ENCRYPTION_KEY` as optional (`doctor`: "only needed for the
+>   API/OAuth server").
+> - **Token sharing, when consumption lands:** tokens are not "passed" between
+>   CLI and API — both read the **same SQLite DB** (same `RUBINO_HOME`) and
+>   decrypt with the **same `RUBINO_ENCRYPTION_KEY`**. So wiring CLI consumption
+>   = read `ConnectionRepository` + require the key on the CLI too.
+>
+> Open design question (issue #590): finish the native subsystem, or deprecate
+> it and delegate third-party connections to an MCP server (which does its own
+> OAuth and holds its own tokens). Don't depend on native OAuth in production yet.
+
 Built-in OAuth integration lets users connect third-party accounts (Github, Google, etc.) so tools running inside rubino can act on their behalf.
 
 ## Design
