@@ -52,4 +52,42 @@ RSpec.describe Rubino::Session::Message do
       expect(reloaded.to_context[:content]).to eq(body)
     end
   end
+
+  # #583: a denied/errored tool row must replay to the model marked as an error
+  # (is_error) on the next turn — derived from the persisted outcome (status /
+  # error_code written by Agent::Loop#persist_tool_result), so resume sends the
+  # SAME typed-error tool_result the live session sent.
+  describe "#to_context — tool-result error flag (#583)" do
+    def tool_msg(metadata)
+      described_class.new(session_id: "s1", role: "tool", content: "BLOCKED ...",
+                          tool_name: "chaos_add", tool_call_id: "toolu_1",
+                          metadata: metadata)
+    end
+
+    it "flags a denied tool row as an error" do
+      expect(tool_msg(status: "denied").to_context[:is_error]).to be(true)
+    end
+
+    it "flags an errored tool row as an error" do
+      expect(tool_msg(status: "error").to_context[:is_error]).to be(true)
+    end
+
+    it "flags a soft-error tool row carrying an error_code" do
+      expect(tool_msg(status: "success", error_code: "stale_read").to_context[:is_error]).to be(true)
+    end
+
+    it "does NOT flag a plain successful tool row" do
+      expect(tool_msg(status: "success").to_context).not_to have_key(:is_error)
+    end
+
+    it "does NOT flag an old row that pre-dates the persisted outcome keys" do
+      expect(tool_msg({}).to_context).not_to have_key(:is_error)
+    end
+
+    it "never flags a non-tool row" do
+      msg = described_class.new(session_id: "s1", role: "user", content: "hi",
+                                metadata: { status: "denied" })
+      expect(msg.to_context).not_to have_key(:is_error)
+    end
+  end
 end

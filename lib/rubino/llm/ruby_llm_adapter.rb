@@ -699,6 +699,10 @@ module Rubino
                                         cache_tools: tool_cache_breakpoint?,
                                         budget_exhausted: budget_exhausted,
                                         cancel_token: @cancel_token,
+                                        # #583: only the anthropic-family path can carry a typed
+                                        # is_error on a mid-stream tool_result (Content::Raw block);
+                                        # other providers get the plain string + the stronger wording.
+                                        error_marker: anthropic_generation_path?,
                                         production: true)
         install_cache_middleware(chat)
         chat
@@ -1095,13 +1099,40 @@ module Rubino
               tool_calls: tool_calls
             )
           when :tool
-            chat_instance.messages << RubyLLM::Message.new(
-              role: role,
+            chat_instance.messages << build_tool_message(
               content: content,
-              tool_call_id: msg[:tool_call_id] || msg["tool_call_id"]
+              tool_call_id: msg[:tool_call_id] || msg["tool_call_id"],
+              is_error: msg[:is_error] || msg["is_error"]
             )
           end
         end
+      end
+
+      # Builds the RubyLLM::Message for a tool result. A denied/errored result
+      # (#583) must reach the model marked as an ERROR so it can't read the
+      # denial text as an ordinary result and fabricate an answer. ruby_llm's
+      # tool-result formatter has no is_error knob, but on the anthropic-family
+      # path it passes a Content::Raw value straight through as the message's
+      # content blocks (Anthropic::Tools.format_tool_result). So we hand it the
+      # native tool_result block carrying Anthropic's is_error:true. A normal
+      # (success) result, and every non-anthropic provider, build the plain
+      # string content exactly as before — byte-identical to the prior path.
+      def build_tool_message(content:, tool_call_id:, is_error:)
+        if is_error && anthropic_generation_path?
+          block = {
+            type: "tool_result",
+            tool_use_id: tool_call_id,
+            content: content.to_s,
+            is_error: true
+          }
+          return RubyLLM::Message.new(
+            role: :tool,
+            content: RubyLLM::Content::Raw.new([block]),
+            tool_call_id: tool_call_id
+          )
+        end
+
+        RubyLLM::Message.new(role: :tool, content: content, tool_call_id: tool_call_id)
       end
 
       # Prefill-to-continue (Slice 5, rung 4): seat the model's own interim text
