@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "../llm/auxiliary_client"
+require_relative "../attachments/classify"
+require_relative "../attachments/policy"
 
 module Rubino
   module Tools
@@ -10,10 +12,13 @@ module Rubino
     # in control, calls this tool with a focused question, and receives a
     # structured (text) reply — no conversation handoff, no shared history.
     #
-    # The aux model is resolved from `auxiliary.vision` in config. When the
-    # primary already supports vision (per Configuration#model_supports_vision?)
-    # AND no aux is configured, Registry hides this tool — there's no useful
-    # delegation to perform.
+    # The aux model is resolved from `auxiliary.vision` in config. Registry
+    # hides this tool ONLY when no aux vision model is configured AND the
+    # primary itself can't see (per Configuration#model_supports_vision?) —
+    # the one case where calling it could only error. Whenever the primary
+    # supports vision OR an aux model is set, the tool stays EXPOSED (see
+    # Tools::Registry#aux_dependency_satisfied?), since the model may still
+    # prefer to delegate to a better-suited aux model.
     class VisionTool < Base
       def name
         "vision"
@@ -67,6 +72,29 @@ module Rubino
         unless LLM::ContentBuilder::SUPPORTED_IMAGE_TYPES.include?(ext)
           return "Error: unsupported image extension '#{ext}'. " \
                  "Supported: #{LLM::ContentBuilder::SUPPORTED_IMAGE_TYPES.join(", ")}"
+        end
+
+        # Egress kill-switch (#578): routing the bytes to the aux vision model
+        # is data egress. When attachments.policy.aux_vision_egress is set to
+        # false, refuse BEFORE reading/shipping anything so the operator's
+        # opt-out is real and not a dead config key.
+        unless Attachments::Policy.aux_vision_egress?
+          return "Error: image egress is disabled by config " \
+                 "(attachments.policy.aux_vision_egress: false). " \
+                 "The vision tool will not send image bytes to the auxiliary model."
+        end
+
+        # Content-sniff BEFORE egress (#579): the extension check above can be
+        # spoofed (a text/binary file renamed `.png`), and on the bare tool
+        # path the raw bytes would otherwise reach the EXTERNAL aux/vision model
+        # before the model itself rejects them — the bytes have already left the
+        # host. Reuse Attachments::Classify (magic wins, fail-closed; same
+        # detector the executor's native-attachment path uses) and reject when
+        # the real content isn't an image, so nothing is shipped off-host.
+        classification = Attachments::Classify.call(expanded)
+        unless classification&.safe && classification.kind == :image
+          return "Error: '#{path}' is not a valid image (extension spoof or corrupt file?). " \
+                 "Its content is not a recognised image format, so nothing was sent to the vision model."
         end
 
         # Pass the image through ruby_llm's native `with:` slot (image_paths),
