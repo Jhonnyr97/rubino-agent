@@ -179,7 +179,7 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/agent` | Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles) |
 | `/agents` | List background subagents; ↓+Enter to attach & steer one live, or steer/probe/view by id |
 | `/tasks` | Alias for /agents |
-| `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
+| `/reply` | Answer a subagent that is blocked waiting on you (e.g. an approval) |
 | `/stop` | Stop a running subagent (/stop <id>; alias for /agents <id> --stop) |
 | `/jobs` | List the background job queue (status counts); /jobs <id> for detail |
 | `/skills` | List skills; activate one ('none' clears), or enable/disable NAME |
@@ -327,7 +327,7 @@ The agent spawns background subagents with its `task` tool; these commands are t
 /agents <id> --stop           # cancel a running subagent (blocked descendants unwind too)
 /agents <id> steer "note"     # park a note folded into the child's context at its next turn
 /agents <id> probe "question" # ephemeral read-only peek — nothing is saved to the child
-/reply <id> <answer>          # answer a subagent blocked on an ask_parent question
+/reply <id> <answer>          # answer a subagent blocked on you (e.g. an approval)
 /reply                        # bare: list the subagents currently blocked on you
 ```
 
