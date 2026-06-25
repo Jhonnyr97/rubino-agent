@@ -1570,6 +1570,7 @@ module Rubino
       # (Loop#close_intermediate_stream), so this is a no-op there — the same
       # contract #confirm uses before the approval card.
       def tool_started(name, arguments: nil, at: nil, call_id: nil)
+        record_subagent_tool_started(name, arguments)
         finalize_stream
         return delegation_started(arguments, call_id) if name == "task"
 
@@ -1611,6 +1612,7 @@ module Rubino
       # silently; #activity_finished flushes the `… +N lines` marker right
       # before the close row.
       def tool_chunk(_name, chunk, kind: :plain)
+        record_subagent_tool_output(chunk)
         return if chunk.nil? || chunk.to_s.empty?
 
         # A diff the user asked to SEE (`git diff`, `git show`): colorize the
@@ -1656,6 +1658,7 @@ module Rubino
       # `└ ✗ failed · name · error` in red (P10).
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
       def tool_finished(name, result: nil)
+        record_subagent_tool_finished(name, result)
         return delegation_finished(result) if name == "task"
         return status_back_to_thinking if result.respond_to?(:transcript_card?) && !result.transcript_card?
 
@@ -2942,6 +2945,89 @@ module Rubino
         # escape here would drive the terminal on every frame (R3C-1, CWE-150).
         first = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s).lines.first.to_s.strip
         first.length > 30 ? "#{first[0, 29]}…" : first
+      end
+
+      # --- Subagent activity recording (off-screen surfaces) -----------------
+      # A per-subagent CLI also keeps the BackgroundTasks registry counters
+      # (tool_count / last_activity / activity_log / output_tail) current, so the
+      # OFF-screen surfaces — probe_tool, the /agents drill-in, the ambient cards
+      # — update even when this sub isn't focused (its frames are dropped, but its
+      # registry entry must stay live). The MAIN agent's CLI records nothing (its
+      # @agent_id is the :main sentinel, not a registry entry id). These run on the
+      # CHILD thread, so the record_* writers take the registry mutex; they are
+      # best-effort — a registry hiccup must never break the child's run, and the
+      # on-screen render still happens regardless.
+
+      # @agent_id is :main for the top-level loop (cli.rb #initialize default) and
+      # the BackgroundTasks entry id for a background subagent (set by
+      # TaskTool#nested_ui_for). Record only when this CLI belongs to a subagent.
+      def record_subagent_activity? = @agent_id != :main
+
+      # Bump the tool counter + last-activity string the cards/list/drill-in show.
+      def record_subagent_tool_started(name, arguments)
+        return unless record_subagent_activity?
+
+        hint     = subagent_args_hint(arguments)
+        activity = hint ? "#{name} #{hint}" : name.to_s
+        record_subagent { Tools::BackgroundTasks.instance.record_tool_started(@agent_id, activity) }
+      end
+
+      # Append the terse finish line to the entry's activity ring (the drill-in
+      # tails it).
+      def record_subagent_tool_finished(name, result)
+        return unless record_subagent_activity?
+
+        record_subagent { Tools::BackgroundTasks.instance.record_tool_finished(@agent_id, subagent_finish_line(name, result)) }
+      end
+
+      # Append the streamed chunk to the entry's bounded output tail (the
+      # /agents <id> watch tails it).
+      def record_subagent_tool_output(chunk)
+        return unless record_subagent_activity?
+
+        record_subagent { Tools::BackgroundTasks.instance.record_tool_output(@agent_id, chunk) }
+      end
+
+      # A registry update is bookkeeping for off-screen surfaces — never let it
+      # break the child's run (the on-screen render still happens regardless).
+      def record_subagent
+        yield
+      rescue StandardError
+        nil
+      end
+
+      # The terse `✓ name · metric` / `✗ name · metric` line the activity ring
+      # keeps. Distinct from the on-screen #args_hint (which masks + OSC-8 wraps for
+      # display): the recorded activity is plain, first-line, elided text.
+      def subagent_finish_line(name, result)
+        failed = result.respond_to?(:success?) && !result.success?
+        icon   = failed ? "✗" : "✓"
+        suffix = subagent_result_metric(result)
+        suffix ? "#{icon} #{name} · #{suffix}" : "#{icon} #{name}"
+      end
+
+      # A compact metric for the finish line: prefer the tool's own metrics, else
+      # a truncated preview of the output.
+      def subagent_result_metric(result)
+        return nil unless result
+
+        metric = result.metrics if result.respond_to?(:metrics)
+        return Util::Output.first_line(metric, 60) if metric && !metric.to_s.strip.empty?
+
+        preview = result.truncated_preview if result.respond_to?(:truncated_preview)
+        preview && !preview.to_s.strip.empty? ? Util::Output.first_line(preview, 60) : nil
+      end
+
+      # Short identifier piece (path/pattern/command) from the tool arguments,
+      # as PLAIN elided text for the recorded last-activity string.
+      def subagent_args_hint(arguments)
+        return nil unless arguments.is_a?(Hash)
+
+        %i[file_path path pattern command].each do |k|
+          v = arguments[k] || arguments[k.to_s]
+          return Util::Output.first_line(v, 60) if v && !v.to_s.strip.empty?
+        end
+        nil
       end
 
       def path_key?(key)

@@ -527,12 +527,13 @@ module Rubino
       # as its `agent_id` — so every frame it commits to the bottom composer
       # carries that origin and the composer's focus-gate paints it ONLY while the
       # user is attached to this sub (live tool rows + streaming prose, identical
-      # to main), and drops it otherwise. The per-sub CLI is wrapped in a
-      # UI::SubagentRecorder that keeps the registry counters (tool_count /
-      # last_activity / activity_log / output_tail) current so the OFF-screen
-      # surfaces — probe_tool, /agents drill-in, the ambient cards — still update
-      # even when this sub isn't focused. Off the CLI it's Null (headless/API stays
-      # silent and auto-approves as before).
+      # to main), and drops it otherwise. The per-sub CLI ALSO keeps the registry
+      # counters (tool_count / last_activity / activity_log / output_tail) current
+      # — its tool_started/finished/chunk record to BackgroundTasks inline (gated
+      # on agent_id != :main) before rendering — so the OFF-screen surfaces —
+      # probe_tool, /agents drill-in, the ambient cards — still update even when
+      # this sub isn't focused. Off the CLI it's Null (headless/API stays silent
+      # and auto-approves as before).
       #
       # +approve+ is the handler the per-sub CLI's #confirm calls when a child's
       # tool needs human approval: the BACKGROUND path passes #approval_handler_for
@@ -549,12 +550,11 @@ module Rubino
       # force-summarizes (nil #select), exactly as today.
       def nested_ui_for(entry, parent_ui, approve: nil, budget: nil)
         if parent_ui.is_a?(UI::CLI)
-          cli = UI::CLI.new(
+          UI::CLI.new(
             agent_id: entry.id,
             approval_handler: approve,
             budget_handler: budget
           )
-          UI::SubagentRecorder.new(cli, entry_id: entry.id)
         else
           UI::Null.new
         end

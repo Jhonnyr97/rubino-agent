@@ -1247,6 +1247,81 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
+  # Inlined SubagentRecorder: a per-subagent CLI (agent_id = a registry entry id)
+  # records its tool activity into BackgroundTasks (the OFF-screen counters /
+  # activity ring / output tail that feed the cards, /agents drill-in, probe)
+  # BEFORE rendering — while still rendering exactly as the main CLI does. A MAIN
+  # CLI (agent_id :main) records NOTHING. Replaces subagent_recorder_spec.rb.
+  describe "subagent activity recording (inlined SubagentRecorder)" do
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+    after  { Rubino::Tools::BackgroundTasks.reset! }
+
+    def silence_stdout
+      old = $stdout
+      $stdout = StringIO.new
+      yield
+    ensure
+      $stdout = old
+    end
+
+    it "records a subagent CLI's tool_started/finished/chunk into the registry" do
+      entry = registry.reserve(subagent: "explore", prompt: "go")
+      sub   = described_class.new(agent_id: entry.id)
+
+      result = Rubino::Tools::Result.success(
+        name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
+      )
+
+      silence_stdout do
+        sub.tool_started("grep", arguments: { "pattern" => "needle" })
+        sub.tool_chunk("grep", "first line of output\n")
+        sub.tool_finished("grep", result: result)
+      end
+
+      e = registry.find(entry.id)
+      expect(e.tool_count).to eq(1)
+      expect(e.last_activity).to eq("grep needle")
+      expect(e.activity_log.last).to include("✓ grep · 3 matches")
+    end
+
+    it "still RENDERS the tool box on a subagent CLI (recording does not replace render)" do
+      entry = registry.reserve(subagent: "explore", prompt: "go")
+      sub   = described_class.new(agent_id: entry.id)
+
+      out = capture_stdout { sub.tool_started("grep", arguments: { "pattern" => "needle" }) }
+      expect(out).to include("● ")
+      expect(out).to include("grep")
+    end
+
+    it "a MAIN CLI (agent_id :main) records NOTHING into the registry" do
+      entry = registry.reserve(subagent: "explore", prompt: "go")
+      main  = described_class.new # agent_id defaults to :main
+
+      result = Rubino::Tools::Result.success(
+        name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
+      )
+
+      silence_stdout do
+        main.tool_started("grep", arguments: { "pattern" => "needle" })
+        main.tool_chunk("grep", "out\n")
+        main.tool_finished("grep", result: result)
+      end
+
+      e = registry.find(entry.id)
+      expect(e.tool_count).to eq(0)
+      expect(e.last_activity).to be_nil.or eq("")
+      expect(Array(e.activity_log)).to be_empty
+    end
+
+    it "is best-effort: a registry hiccup never breaks the subagent's render" do
+      sub = described_class.new(agent_id: "sa_deadbeef") # no such entry — record_* no-ops
+      expect { capture_stdout { sub.tool_started("grep", arguments: { "pattern" => "x" }) } }
+        .not_to raise_error
+    end
+  end
+
   # #106/#107: off a real terminal TTY::Prompt would leak raw cursor-control
   # escapes (ESC[4A / ESC[2K / ESC[1G) into the piped stream and read whatever
   # ambient stdin held. #ask must fail closed: deterministic nil, zero output.
