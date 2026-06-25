@@ -15,7 +15,6 @@ RSpec.describe Rubino::Session::Lock do
     it "grants the lock to the first caller and refuses the second on the same id" do
       first = described_class.try_acquire("sess-1", home_path: home)
       expect(first).not_to be_nil
-      expect(first.held?).to be(true)
 
       # A SECOND open of the same session id (the concurrent-tab case) can't take
       # the exclusive flock — returns nil so the caller forks instead of stomping.

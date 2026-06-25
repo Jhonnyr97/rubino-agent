@@ -22,7 +22,7 @@ RSpec.describe "Rubino::Jobs::Handlers" do
 
   describe Rubino::Jobs::Handlers::ExtractMemoryJob do
     it "delegates to the configured memory backend for the given session_id" do
-      backend = instance_double(Rubino::Memory::Backends::Default, extract: [])
+      backend = instance_double(Rubino::Memory::Backends::Sqlite, extract: [])
       expect(Rubino::Memory::Backends).to receive(:build).and_return(backend)
       expect(backend).to receive(:extract).with("sid-9")
       described_class.new.perform(session_id: "sid-9")
