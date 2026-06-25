@@ -122,6 +122,12 @@ module Rubino
             return :handled
           end
 
+          # Bound the STORED title to the same ceiling the auto-derive path uses
+          # (#581) so a 2000-char manual rename can't blow out the /status panel
+          # or the picker. Truncate (with an ellipsis) rather than reject — the
+          # user still gets their title, just length-capped.
+          new_title = Rubino::Util::Output.elide(new_title, Session::Repository::TITLE_MAX_CHARS)
+
           session_verb(query, "rename") do |session|
             Session::Repository.new.update(session[:id], title: new_title)
             # If this is the session the live runner sits on, refresh its
