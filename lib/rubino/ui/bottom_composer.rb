@@ -446,6 +446,29 @@ module Rubino
         end
       end
 
+      # Like {run_in_terminal}, but FIRST reconciles the mid-turn type-ahead queue
+      # with the prompt about to open (BUG 01): once the composer is suspended (its
+      # reader thread stopped, @input back in cooked mode), it drains the in-flight
+      # keystrokes + (when +consume_queue+) the oldest parked queue line and YIELDS
+      # that pending answer string to the block, which uses it to PREFILL the
+      # prompt. With no active composer it yields nil (nothing was parked — the
+      # prompt reads $stdin directly as before). Used by UI::CLI#ask / #confirm so
+      # a line a user types the instant an approval/clarification opens reaches
+      # THAT prompt instead of firing as a stray later turn (or leaking into the
+      # picker filter). See BottomComposer#take_pending_for_prompt.
+      def self.run_in_terminal_with_pending(consume_queue: true)
+        composer = current
+        return yield(nil) unless composer
+
+        composer.suspend
+        pending = composer.take_pending_for_prompt(consume_queue: consume_queue)
+        begin
+          yield(pending)
+        ensure
+          composer.resume
+        end
+      end
+
       # Starts the keystroke reader thread and draws the initial prompt. Installs
       # a SIGWINCH handler that recomputes the width and redraws under the mutex.
       # Returns self.
@@ -772,6 +795,84 @@ module Rubino
         end
       rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
         nil
+      end
+
+      # MAIN-AGENT MID-TURN PROMPT (BUG 01) — reconcile the two uncoordinated
+      # mid-turn input sinks at the confirm/ask ↔ composer seam. While a turn
+      # streams, the reader parks typed lines into @input_queue (the type-ahead
+      # queue) under a "⏳ queued:" indicator. When the SAME turn opens an
+      # interactive prompt (a tool-approval card or a `question`/clarification),
+      # that prompt was reading $stdin with NO knowledge of the queue — so a line
+      # parked the instant the prompt opened was invisible to it (it fired as a
+      # stray NEW turn afterwards), and in-flight keystrokes still queued on the
+      # kernel TTY leaked into TTY::Prompt's filter field.
+      #
+      # Called from UI::CLI#ask / #confirm AFTER the composer is suspended (the
+      # reader thread is stopped and @input is back in cooked mode, so we are the
+      # only reader of the kernel TTY queue) and BEFORE TTY::Prompt grabs $stdin.
+      # It:
+      #
+      #   1. DRAINS every byte ALREADY queued on the kernel TTY (the in-flight
+      #      keystrokes typed in the race window before/while the prompt opened)
+      #      so they can NOT leak into the picker's filter — bounded/non-blocking,
+      #      the same #wait_readable(0) gate #drain_pending_input uses. Bytes up to
+      #      the first CR/LF become the in-flight text; a CR/LF ends the drain (the
+      #      human "submitted" that prefill);
+      #   2. when +consume_queue+ (the freeform #ask / clarification path), POPS
+      #      the OLDEST line off @input_queue and clears its "⏳ queued:" indicator,
+      #      so it is delivered to THIS prompt instead of running as a later turn.
+      #
+      # Returns the pending answer string (queued line, then any in-flight typed
+      # text appended) to PREFILL into the prompt — the human sees it and
+      # confirms/edits with Enter (never an auto-submit). Returns nil when nothing
+      # was pending. For the APPROVAL menu the caller passes consume_queue: false:
+      # the in-flight bytes are still drained (so they don't reach the filter), the
+      # queued line is left in place (a destructive grant must not be auto-filled),
+      # and nil is returned.
+      def take_pending_for_prompt(consume_queue: true)
+        inflight = drain_inflight_bytes
+        queued   = consume_queue ? consume_queued_line : nil
+        parts    = [queued, inflight].compact.reject(&:empty?)
+        return nil if parts.empty?
+
+        parts.join(queued && inflight && !inflight.empty? ? " " : "")
+      end
+
+      # Pop the OLDEST line off the type-ahead queue (FIFO, same as #next_input)
+      # and clear its "⏳ queued:" indicator so it visibly moves off the
+      # pending-rows into the open prompt. Returns the line, or nil when none is
+      # parked.
+      def consume_queued_line
+        line = @input_queue&.shift
+        return nil unless line
+
+        commit_queued(line) # drop its "⏳ queued:" row
+        line
+      end
+
+      # Drain the raw bytes ALREADY queued on @input (the kernel TTY buffer) into
+      # a plain string, WITHOUT routing them through #handle_key — so a buffered
+      # newline can't trip #submit_line (which would push the half-typed line back
+      # into @input_queue) and the bytes never reach TTY::Prompt's filter. Bounded
+      # and non-blocking exactly like #drain_pending_input: gate each #getc on a
+      # zero-timeout #wait_readable for a real TTY (a StringIO #getc is already
+      # nil-terminated). Stops at the first CR/LF — that is the human submitting
+      # the prefill — and keeps only printable bytes (control bytes are dropped).
+      def drain_inflight_bytes
+        out        = +""
+        selectable = real_io_input?
+        loop do
+          break if selectable && !@input.wait_readable(0)
+
+          ch = @input.getc
+          break if ch.nil?
+          break if ["\r", "\n"].include?(ch)
+
+          out << ch if ch =~ /[[:print:]]/
+        end
+        out
+      rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
+        out
       end
 
       # True when @input is a real IO whose #wait_readable(0) can poll the queue
