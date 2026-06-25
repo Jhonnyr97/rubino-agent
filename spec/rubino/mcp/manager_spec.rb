@@ -163,6 +163,31 @@ RSpec.describe Rubino::MCP::Manager do
       expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
       expect(Rubino::Tools::Registry.find("api_query")).to be_nil
     end
+
+    # #575 — a connected-but-broken server (initialize OK, tools/list errors)
+    # used to swallow the failure with only a warning, leaving /mcp's drill-in
+    # with no last_error. Record it like start_server does.
+    it "records last_errors when tools/list fails for an alive client" do
+      broken = double("mcp_client", alive?: true, stop: nil)
+      allow(broken).to receive(:tools).and_raise(StandardError, "Request timed out after 8 seconds")
+      allow(RubyLLM::MCP).to receive(:client).and_return(broken)
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+
+      manager.register_server_tools("filesystem")
+
+      expect(manager.last_errors["filesystem"]).to eq("Request timed out after 8 seconds")
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_nil
+    end
+
+    it "clears a prior registration error once tools/list succeeds again" do
+      allow(RubyLLM::MCP).to receive(:client).and_return(fake_client(%w[read_file]))
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+      manager.last_errors["filesystem"] = "old failure"
+
+      manager.register_server_tools("filesystem")
+
+      expect(manager.last_errors).not_to have_key("filesystem")
+    end
   end
 
   # Per-agent mcp_servers scoping is enforced in Agent::Definition#resolved_tools
@@ -194,9 +219,33 @@ RSpec.describe Rubino::MCP::Manager do
       manager.start_server("api", raw["mcp"]["servers"]["api"])
 
       expect(manager.health_check).to contain_exactly(
-        { name: "filesystem", alive: true },
-        { name: "api", alive: false }
+        { name: "filesystem", alive: true, degraded: false },
+        { name: "api", alive: false, degraded: false }
       )
+    end
+
+    # #575 — an alive client whose tools/list errored (recorded last_error) is
+    # PROTOCOL-broken: degraded, not a healthy "reachable".
+    it "reports degraded for an alive client that recorded a registration error" do
+      broken = double("mcp_client", alive?: true, stop: nil)
+      allow(broken).to receive(:tools).and_raise(StandardError, "garbage")
+      allow(RubyLLM::MCP).to receive(:client).and_return(broken)
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+      manager.register_server_tools("filesystem")
+
+      expect(manager.health_check)
+        .to contain_exactly(hash_including(name: "filesystem", alive: true, degraded: true))
+    end
+
+    # An alive server that legitimately exposes ZERO tools (no error) is healthy,
+    # NOT degraded — the degraded signal must come from a recorded error.
+    it "does not mark an alive zero-tools server with no error as degraded" do
+      allow(RubyLLM::MCP).to receive(:client).and_return(fake_client([]))
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+      manager.register_server_tools("filesystem")
+
+      expect(manager.health_check)
+        .to contain_exactly(hash_including(name: "filesystem", alive: true, degraded: false))
     end
   end
 

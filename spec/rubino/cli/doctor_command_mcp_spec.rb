@@ -26,7 +26,8 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "reports per-server reachability and stops every server again" do
       stub_configuration(mcp_raw(servers))
-      manager = instance_double(Rubino::MCP::Manager, start_server: nil, stop_all!: nil)
+      manager = instance_double(Rubino::MCP::Manager,
+                                start_server: nil, register_all_tools!: nil, stop_all!: nil)
       allow(manager).to receive(:health_check).and_return(
         [{ name: "filesystem", alive: true }, { name: "api", alive: false }]
       )
@@ -39,6 +40,27 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       texts = ui.messages.map { |m| m[:message].to_s }
       expect(texts).to include("MCP server 'filesystem' reachable")
       expect(texts).to include("MCP server 'api' not reachable")
+    end
+
+    # #575 — alive but tools/list failed: report degraded with the recorded
+    # reason, not a green ✓ reachable.
+    it "reports a connected-but-broken server as degraded with its error, not reachable" do
+      stub_configuration(mcp_raw("garbage" => { "command" => "node" }))
+      manager = instance_double(Rubino::MCP::Manager,
+                                start_server: nil, register_all_tools!: nil, stop_all!: nil,
+                                last_errors: { "garbage" => "Request timed out after 8 seconds" })
+      allow(manager).to receive(:health_check).and_return(
+        [{ name: "garbage", alive: true, degraded: true }]
+      )
+      allow(Rubino::MCP::Manager).to receive(:new).and_return(manager)
+
+      doctor.send(:check_mcp_servers)
+
+      texts = ui.messages.map { |m| m[:message].to_s }
+      expect(texts).to include(
+        "MCP server 'garbage' connected but tool listing failed (Request timed out after 8 seconds)"
+      )
+      expect(texts.grep(/'garbage' reachable/)).to be_empty
     end
 
     it "degrades any unexpected error to a warning (never raises)" do
@@ -78,7 +100,8 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "reports a down MCP server without failing doctor (stays informational)" do
       stub_configuration(mcp_raw("filesystem" => { "command" => "fake-mcp" }))
-      manager = instance_double(Rubino::MCP::Manager, start_server: nil, stop_all!: nil)
+      manager = instance_double(Rubino::MCP::Manager,
+                                start_server: nil, register_all_tools!: nil, stop_all!: nil)
       allow(manager).to receive(:health_check).and_return([{ name: "filesystem", alive: false }])
       allow(Rubino::MCP::Manager).to receive(:new).and_return(manager)
 

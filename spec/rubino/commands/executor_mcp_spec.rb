@@ -161,6 +161,36 @@ RSpec.describe Rubino::Commands::Executor do
     end
   end
 
+  # #575 — a server that connects (alive?) but whose tools/list errors must NOT
+  # render as `● reachable` with no error. It records last_errors and renders a
+  # distinct degraded (⚠) glyph, with the error surfaced in the drill-in.
+  describe "connected-but-broken server (#575)" do
+    let(:raw_servers) do
+      { "garbage" => { "transport" => "stdio", "command" => "node", "args" => %w[chaos.js garbage] } }
+    end
+
+    before do
+      broken = double("mcp_client", alive?: true, stop: nil)
+      allow(broken).to receive(:tools).and_raise(StandardError, "Request timed out after 8 seconds")
+      allow(RubyLLM::MCP).to receive(:client).and_return(broken)
+      # Re-boot the manager against the broken server (the outer before already
+      # ran start_all! against the healthy doubles).
+      manager.stop_all!
+      manager.start_all!
+    end
+
+    it "lists the server as degraded, not reachable, with zero tools" do
+      exec.try_execute("/mcp")
+      expect(output).to include("garbage", "(stdio)", "degraded", "0 tools")
+      expect(output).not_to include("reachable")
+    end
+
+    it "surfaces the recorded registration error in the drill-in" do
+      exec.try_execute("/mcp garbage")
+      expect(output).to include("last error", "Request timed out after 8 seconds")
+    end
+  end
+
   describe "/mcp reload" do
     it "reboots via MCP.reload! and lists the fresh state" do
       allow(Rubino::MCP).to receive(:reload!).and_return(manager)
