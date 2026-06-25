@@ -15,35 +15,28 @@ module Rubino
     #
     # The YAML file must contain a top-level `events:` key with an array
     # of event hashes — see scenarios/happy-path.yml for the shape.
-    class ScenarioLoader
+    module ScenarioLoader
       class NotFound < Rubino::Error; end
 
       DEFAULT_DIR = File.expand_path("scenarios", __dir__)
 
-      def self.load(name, scenarios_dir: nil)
-        new(scenarios_dir: scenarios_dir).load(name)
-      end
-
-      def initialize(scenarios_dir: nil)
-        @scenarios_dir = scenarios_dir || configured_dir
-      end
+      module_function
 
       # Returns the array of event hashes under the YAML `events:` key.
       # Raises NotFound when the scenario can't be located under either
       # path, citing both so the operator can fix the misconfiguration.
-      def load(name)
-        path = resolve_path(name)
-        raise NotFound, build_not_found_message(name) unless path
+      def load(name, scenarios_dir: nil)
+        dir = scenarios_dir || configured_dir
+        path = resolve_path(name, dir)
+        raise NotFound, build_not_found_message(name, dir) unless path
 
         data = YAML.safe_load_file(path, permitted_classes: [Symbol], aliases: true) || {}
         Array(data["events"] || data[:events])
       end
 
-      private
-
-      def resolve_path(name)
+      def resolve_path(name, scenarios_dir)
         filename = "#{name}.yml"
-        [@scenarios_dir, DEFAULT_DIR].compact.uniq.each do |dir|
+        [scenarios_dir, DEFAULT_DIR].compact.uniq.each do |dir|
           candidate = File.join(dir, filename)
           return candidate if File.file?(candidate)
         end
@@ -59,8 +52,8 @@ module Rubino
         nil
       end
 
-      def build_not_found_message(name)
-        tried = [@scenarios_dir, DEFAULT_DIR].compact.uniq.map { |d| File.join(d, "#{name}.yml") }
+      def build_not_found_message(name, scenarios_dir)
+        tried = [scenarios_dir, DEFAULT_DIR].compact.uniq.map { |d| File.join(d, "#{name}.yml") }
         "fake scenario '#{name}' not found. Tried:\n  #{tried.join("\n  ")}"
       end
     end

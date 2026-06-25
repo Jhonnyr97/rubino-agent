@@ -19,7 +19,7 @@ module Rubino
             id = request.params.fetch("id")
             raise NotFoundError.new("cron_job", id) unless @repository.find(id)
 
-            updated = @repository.set_enabled(id, enabled: false)
+            updated = @repository.update(id, enabled: false)
             @scheduler.unschedule(id)
             [200, Serializer.call(updated)]
           end
