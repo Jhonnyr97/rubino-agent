@@ -74,9 +74,14 @@ RSpec.describe Rubino::Agent::IterationBudget do
     end
 
     it "raises the cap above the config default when asked" do
-      high = config.agent_max_tool_iterations + 50
-      budget = described_class.new(config: config, max_tool_iterations: high)
-      expect(budget.can_continue?(config.agent_max_tool_iterations + 1)).to be(true)
+      # Needs rail headroom: the shipped default now equals max_turns (90), so use
+      # a config whose outer max_turns rail sits above the override under test.
+      cfg = test_configuration("agent" => {
+                                 "max_turns" => 500, "max_tool_iterations" => 25, "max_turn_seconds" => 600
+                               })
+      high = cfg.agent_max_tool_iterations + 50
+      budget = described_class.new(config: cfg, max_tool_iterations: high)
+      expect(budget.can_continue?(cfg.agent_max_tool_iterations + 1)).to be(true)
       expect(budget.can_continue?(high)).to be(true)
       expect(budget.can_continue?(high + 1)).to be(false)
     end

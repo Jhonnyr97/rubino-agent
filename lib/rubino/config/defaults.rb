@@ -165,12 +165,14 @@ module Rubino
           # max_turns). Previously DEAD config (assigned, never read); now wired as
           # a real ceiling. `--max-turns N` overrides max_tool_iterations directly.
           "max_turns" => 90,
-          # Per-turn model↔tool round-trip cap. Raised 8→25 (#399): 8 was a
-          # rubino-only outlier (the Hermes reference uses 90; peer tools cluster
-          # 10–25 for "stop-and-ask"). 25 matches Cursor's tuned interactive cap —
-          # high enough that real multi-file tasks finish, low enough to still
-          # catch runaways. Kept at 25 (a deliberate prior decision, #414).
-          "max_tool_iterations" => 25,
+          # Per-turn model↔tool round-trip cap. Aligned to the Hermes reference
+          # (90), which is also the outer `max_turns` rail — so a real multi-step
+          # task runs to completion instead of stopping to ask after a couple
+          # dozen tool calls (the prior 25 was a deliberate Cursor-aligned cap,
+          # #414, but read as too eager for genuine multi-file work). The
+          # budget-extension prompt + the runaway backstops below still bound a
+          # truly looping turn. `--max-turns N` overrides this directly.
+          "max_tool_iterations" => 90,
           # At the iteration cap, in INTERACTIVE mode, prompt the user to
           # continue/summarize/abort instead of silently force-summarizing (#399).
           # false forces the old always-summarize behaviour; headless/non-TTY

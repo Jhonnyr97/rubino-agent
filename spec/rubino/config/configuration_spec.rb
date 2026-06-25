@@ -161,8 +161,8 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
-      # Default raised 8→25 (#399); max_turn_seconds raised to a 600s safety-net (#408).
-      expect(config.agent_max_tool_iterations).to eq(25)
+      # Default aligned to the Hermes reference (90); max_turn_seconds is a 600s safety-net (#408).
+      expect(config.agent_max_tool_iterations).to eq(90)
       expect(config.agent_max_turn_seconds).to eq(600)
     end
 
@@ -174,7 +174,7 @@ RSpec.describe Rubino::Config::Configuration do
                                  "max_tool_iterations" => nil,
                                  "max_turn_seconds" => nil
                                })
-      expect(cfg.agent_max_tool_iterations).to eq(25)
+      expect(cfg.agent_max_tool_iterations).to eq(90)
       expect(cfg.agent_max_turn_seconds).to eq(600)
     end
   end
