@@ -872,21 +872,20 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(chat).to have_received(:with_params).once.with(hash_including(max_tokens: 16_384))
       end
 
-      it "drives the wire params through LLM::ReasoningManager#render (single source of truth)" do
+      it "drives the wire params through LLM::ReasoningManager.render (single source of truth)" do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         # The manager is the only place that decides the wire shape; the adapter
-        # just applies what it renders. Spy on the manager to prove no duplicate
+        # just applies what it renders. Spy on the module to prove no duplicate
         # inline rendering remains in the adapter.
         rendered = Rubino::LLM::ReasoningManager::Rendered.new(
           thinking: { type: :enabled, budget_tokens: 8000 }, temperature: 1, max_tokens: 16_384
         )
-        manager = instance_double(Rubino::LLM::ReasoningManager, render: rendered)
-        allow(adapter).to receive(:reasoning_manager).and_return(manager)
+        allow(Rubino::LLM::ReasoningManager).to receive(:render).and_return(rendered)
 
         adapter.send(:build_chat)
 
-        expect(manager).to have_received(:render).with(
+        expect(Rubino::LLM::ReasoningManager).to have_received(:render).with(
           budget: 8000, temperature: 0.3, max_tokens: 16_384,
           text_headroom: 4096, apply_max_tokens: true
         )

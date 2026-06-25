@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Rubino::LLM::ReasoningManager do
-  subject(:manager) { described_class.new }
+  subject(:manager) { described_class }
 
   # Port of anthropic_adapter.py:2238-2241 (manual thinking mode): enable
   # thinking with a budget, force temperature=1, raise max_tokens to fit the

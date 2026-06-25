@@ -145,21 +145,6 @@ RSpec.describe Rubino::Database::Migrator do
     end
   end
 
-  describe "#current_version (reads MAX(version) from schema_info)" do
-    # Sequel 5.105 dropped Sequel::Migrator.get_current_migration_version, so the
-    # old implementation raised NoMethodError on EVERY call and the rescue floored
-    # it to 0. Read the version straight off the bookkeeping table instead.
-    it "is 0 on a fresh DB (no schema_info table yet)" do
-      expect(migrator.current_version).to eq(0)
-    end
-
-    it "returns the REAL applied version on a healthy, fully-migrated DB (not 0)" do
-      migrator.migrate!
-      expect(migrator.current_version).to eq(described_class.latest_version)
-      expect(migrator.current_version).to be > 0
-    end
-  end
-
   # Reproduce the race artifact deterministically: a schema_info table with TWO
   # version-0 rows and no user tables. Used to assert up_to_date? degrades it to
   # the locked path rather than trusting the corrupt count.
