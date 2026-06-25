@@ -502,10 +502,7 @@ end
 # Setup autoloading
 Rubino.loader.setup
 
-# Register the built-in memory backends. The default backend wraps the
-# existing Store/Retriever/Extractor, so an unset `memory.backend` is
-# byte-identical to the pre-pluggable behavior.
-Rubino::Memory::Backends.register(Rubino::Memory::Backends::Default)
+# Register the built-in memory backends.
 # The SQLite memory backend: LLM-extracted atomic facts, bi-temporal
 # supersession, and hybrid FTS5 + recency recall. Switch with
 # `rubino memory backend sqlite`.
