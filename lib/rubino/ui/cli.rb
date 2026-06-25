@@ -669,18 +669,6 @@ module Rubino
         rows[1..].each { |row| emit_styled(yield("#{indent}#{row}")) }
       end
 
-      # Approval requested: renders as `◆ summary`
-      def approval_requested(summary:, choices:)
-        emit_blank
-        # The summary is derived from the proposed tool/command (untrusted) — the
-        # funnel's PATH 1 (#emit) strips escapes before the trusted wrap (R3C-1,
-        # CWE-150). Choice labels are rubino's own fixed menu text (trusted).
-        emit("◆ #{summary}", style: :yellow)
-        choices.each do |choice|
-          emit("  [#{choice[:key]}] #{choice[:label]}", style: :dim)
-        end
-      end
-
       # Body text rendered with modest indentation (no big box).
       def body(text)
         return if text.nil? || text.to_s.empty?
@@ -1755,17 +1743,6 @@ module Rubino
 
       def job_status_label(type)
         JOB_STATUS_LABELS[type.to_s] || type.to_s
-      end
-
-      def with_spinner(message, &block)
-        spinner = TTY::Spinner.new("[:spinner] #{message}", format: :dots)
-        spinner.auto_spin
-        result = block.call
-        spinner.success
-        result
-      rescue StandardError => e
-        spinner.error
-        raise e
       end
 
       # --- Legacy box methods (used by print_session_history replay) ---

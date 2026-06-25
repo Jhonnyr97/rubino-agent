@@ -126,11 +126,6 @@ module Rubino
         end
       end
 
-      # True while the cursor is walking the history ring (not on the draft).
-      def navigating?
-        !@index.nil?
-      end
-
       # Drop navigation state (called on submit / any direct edit so a fresh ↑
       # starts from the newest entry and a typed edit isn't treated as history).
       def reset!

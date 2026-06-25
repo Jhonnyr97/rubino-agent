@@ -118,10 +118,6 @@ module Rubino
         )
       end
 
-      def model_info
-        nil
-      end
-
       def context_window
         @config.dig("model", "context_length") || 128_000
       end

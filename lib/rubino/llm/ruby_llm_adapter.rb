@@ -128,21 +128,6 @@ module Rubino
                     on_round_trip: on_round_trip, budget_exhausted: budget_exhausted, &)
       end
 
-      # Returns model information (context window, etc.)
-      def model_info
-        RubyLLM.models.find(@model_id)
-      rescue StandardError
-        nil
-      end
-
-      # Returns the context window size for the current model
-      def context_window
-        info = model_info
-        return @config.dig("model", "context_length") if @config.dig("model", "context_length")
-
-        info&.context_window || 128_000
-      end
-
       private
 
       # The raw #call dispatch (streaming vs non-streaming), shared by the

@@ -83,18 +83,10 @@ module Rubino
         # owner_subagent_id.
         :owner_subagent_id, :depth,
         # Model-driven LIVE-probe budget (S3). probe_count is how many BILLED
-        # `probe(live:true)` peeks the owner has run against this child;
-        # last_probe_at is when the last one ran (for an optional min-interval).
-        # Free snapshot probes (live:false) never touch these. Per-process, dies
+        # `probe(live:true)` peeks the owner has run against this child.
+        # Free snapshot probes (live:false) never touch this. Per-process, dies
         # with the registry like the rest of the live-progress state.
-        :probe_count, :last_probe_at,
-        # The SPAWNING side's input queue, captured on the PARENT thread at
-        # spawn time (TaskTool#run_background) — the spawn-captured sink the
-        # [background-task] completion notice rides (reading the thread-local
-        # Rubino.background_sink on the CHILD's thread would resolve to the
-        # child's OWN steer_queue and misroute the notice). nil ⇒ no queue was
-        # wired (sync/foreground spawn, headless).
-        :parent_sink,
+        :probe_count,
         keyword_init: true
       ) do
         # The child subagent's FULL persisted transcript. A background child runs
@@ -392,18 +384,17 @@ module Rubino
         end
       end
 
-      # Records a BILLED live probe against a child (S3): bumps probe_count and
-      # stamps last_probe_at, under the mutex (the owner runs this on its own
-      # thread while the parent renderer may read the entry). Returns the new
-      # count, or nil for an unknown id. Free snapshot probes (live:false) never
-      # call this — only `probe(live:true)` does, after the budget check passes.
+      # Records a BILLED live probe against a child (S3): bumps probe_count
+      # under the mutex (the owner runs this on its own thread while the parent
+      # renderer may read the entry). Returns the new count, or nil for an
+      # unknown id. Free snapshot probes (live:false) never call this — only
+      # `probe(live:true)` does, after the budget check passes.
       def record_live_probe(id)
         @mutex.synchronize do
           entry = @entries[id]
           return nil unless entry
 
-          entry.probe_count   = entry.probe_count.to_i + 1
-          entry.last_probe_at = Time.now
+          entry.probe_count = entry.probe_count.to_i + 1
           entry.probe_count
         end
       end

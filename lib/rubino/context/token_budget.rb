@@ -73,11 +73,6 @@ module Rubino
         [floored, ceiling].min
       end
 
-      # Returns the target token count after compaction
-      def compaction_target
-        (available_tokens * @config.dig("compression", "target_ratio")).to_i
-      end
-
       private
 
       # Single source of truth: the user's `model.context_length` config

@@ -153,25 +153,6 @@ RSpec.describe Rubino::Memory::Store do
     end
   end
 
-  describe "#within_limit" do
-    it "returns memories that fit within char limit" do
-      store.create(kind: "fact", content: "a" * 100)
-      store.create(kind: "fact", content: "b" * 100)
-      store.create(kind: "fact", content: "c" * 100)
-
-      # Only 2 fit within 250 chars (100 + 100 = 200 < 250, but 100+100+100=300 > 250)
-      results = store.within_limit(char_limit: 250)
-      expect(results.size).to eq(2)
-    end
-
-    it "returns all memories when limit is large enough" do
-      store.create(kind: "fact", content: "short")
-      store.create(kind: "fact", content: "also short")
-      results = store.within_limit(char_limit: 1_000)
-      expect(results.size).to eq(2)
-    end
-  end
-
   describe "#count" do
     it "returns total memory count" do
       store.create(kind: "fact", content: "one")

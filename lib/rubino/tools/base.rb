@@ -342,22 +342,6 @@ module Rubino
         false
       end
 
-      # Reads a file and scrubs a stray non-UTF-8 byte (e.g. a Latin-1 `é` in a
-      # legacy/EU source) to the replacement char. Shared by EditTool and
-      # MultiEditTool so a single bad byte doesn't raise "invalid byte sequence
-      # in UTF-8" out of the include?/scan/sub that follow and leave the file
-      # uneditable. Lossy on the offending byte, graceful for everything else.
-      #
-      # IMPORTANT (#326): this is for MODEL CONTEXT only — NEVER feed the
-      # scrubbed buffer to a File.write, because `scrub` rewrites every
-      # non-UTF-8 byte on UNTOUCHED lines to U+FFFD, so a one-line ASCII edit
-      # would lossily corrupt the whole file. Use #read_for_edit for the
-      # read-modify-write path.
-      def read_scrubbed(path)
-        content = File.read(path)
-        content.valid_encoding? ? content : content.scrub
-      end
-
       # Reads a file for the edit/multi_edit READ-MODIFY-WRITE path (#326).
       #
       # Returns the raw bytes as BINARY (ASCII-8BIT) so the literal

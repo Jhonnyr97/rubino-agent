@@ -724,10 +724,6 @@ module Rubino
         end
       end
 
-      def clear_turn_status
-        set_turn_status("")
-      end
-
       # Sets the SUBAGENT CARD block — a small list of collapsed live rows shown
       # above the streamed partial and the prompt (Variant A). Each frame redraws
       # them in place from this list, so concurrent background subagents appear as
@@ -785,11 +781,6 @@ module Rubino
           redraw if removed
         end
         removed
-      end
-
-      # True when a live partial line is currently shown above the prompt.
-      def partial?
-        !@partial.empty?
       end
 
       # True while the model's ANSWER content is actively streaming. The CLI's
@@ -1219,11 +1210,6 @@ module Rubino
       # The current editable text (test/inspection helper + the draft accessor
       # chat_command reads). Delegates to the input-line model.
       def buffer = @input_line.text
-
-      # True while the composer has yielded the screen (a run_in_terminal block
-      # owns $stdin/$stdout for an interactive prompt). Callers read this to bail
-      # when the composer is already mid-surface, so only one path claims it.
-      def suspended? = @suspended
 
       # Lays out buffer into wrapped VISUAL rows at the current width.
       # Returns [rows, caret_row, caret_col] where each row is
@@ -1659,10 +1645,6 @@ module Rubino
       # inspection seam).
       def menu_rows
         @menu.rows(@cols)
-      end
-
-      def agent_menu_rows
-        @agent_menu.rows(@cols)
       end
 
       # The partial as drawn: its last MAX_PARTIAL_ROWS lines, one row each.

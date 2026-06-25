@@ -199,11 +199,6 @@ module Rubino
         # (the process-global @ui, the same host entry_parent_ui resolves), so
         # EVERY card — depth-1 or nested — renders and escalates through it.
         parent_ui = root_cli
-        # Stash the spawn-captured sink on the entry so a tool running on the
-        # CHILD's thread can notify the parent MODEL without reading the child's
-        # own thread-local sink — which is the child's own steer_queue, not the
-        # parent's queue (#195).
-        entry.parent_sink = sink
         # Build the child UI on the PARENT thread so the collapsed-card view is
         # wired with this run's entry id + the parent CLI (whose live region hosts
         # the card) + the approval handler. In card mode the child's per-tool

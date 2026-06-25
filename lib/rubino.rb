@@ -10,7 +10,6 @@ require "fileutils"
 module Rubino
   class Error < StandardError; end
   class ConfigurationError < Error; end
-  class DatabaseError < Error; end
   class SessionError < Error; end
 
   # Raised when --resume <query> matches more than one session by id-prefix
@@ -39,7 +38,6 @@ module Rubino
 
   class ToolError < Error; end
   class CompactionError < Error; end
-  class JobError < Error; end
 end
 
 require_relative "rubino/errors"

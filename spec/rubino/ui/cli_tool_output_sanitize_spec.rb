@@ -122,15 +122,6 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  describe "#approval_requested sanitizes the summary (R3C-1)" do
-    it "neutralizes escapes in the proposed-tool summary" do
-      out = capture_stdout do
-        ui.approval_requested(summary: pwn, choices: [{ key: "y", label: "Yes" }])
-      end
-      expect_neutralized(out)
-    end
-  end
-
   describe "#activity_finished sanitizes the metric / close row (R3C-1)" do
     it "neutralizes escapes carried in a success metric" do
       out = capture_stdout { ui.activity_finished("shell_output", metric: pwn) }
