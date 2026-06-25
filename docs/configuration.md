@@ -656,13 +656,14 @@ agents:
     mcp_servers: []
 ```
 
-### server / api
+### api
+
+The API server's listen port and bind host come from the CLI, not config:
+`rubino server --port <n>` (or `RUBINO_API_PORT`, default `4820`) and `--host`
+(or `RUBINO_API_HOST`). The bearer token is `RUBINO_API_KEY`. The `api` block
+configures payload caps, rate limiting, and the public-bind gate:
 
 ```yaml
-server:
-  port: 4820
-  auth: false
-
 api:
   max_body_bytes: 5242880        # 5 MB cap on JSON request bodies (413 past this)
   max_upload_bytes: 52428800     # 50 MB cap on multipart uploads
