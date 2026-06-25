@@ -852,7 +852,17 @@ module Rubino
           # gives meaningful protection across workers.
           "rate_limit_enabled" => true,
           "rate_limit_unauth_per_minute" => 60,
-          "rate_limit_auth_per_minute" => 600
+          "rate_limit_auth_per_minute" => 600,
+          # SAFE BY DEFAULT (#577). The API can execute shell tools, so binding
+          # it to a non-loopback address (--host 0.0.0.0 / RUBINO_API_HOST set to
+          # anything other than 127.0.0.1 / ::1 / localhost) publishes an
+          # RCE-capable surface to the network. TLS is off by default, so the
+          # bearer token and all traffic would travel in cleartext. Booting on a
+          # non-loopback host is therefore REFUSED unless this is explicitly set
+          # to true; loopback binds are unaffected. When you do opt in, enable
+          # TLS (RUBINO_TLS=1) + a strong RUBINO_API_KEY and prefer a reverse
+          # proxy over exposing the listener directly.
+          "allow_public_bind" => false
         }
       }.freeze
 

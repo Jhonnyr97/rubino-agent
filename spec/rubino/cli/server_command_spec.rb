@@ -121,4 +121,63 @@ RSpec.describe Rubino::CLI::ServerCommand do
         .with(hash_including(tls_cert: nil, tls_key: nil))
     end
   end
+
+  # The API can execute shell tools, so binding it to a non-loopback address
+  # publishes an RCE-capable surface over (by default) plaintext HTTP. That bind
+  # is config-gated (#577): refused unless api.allow_public_bind is true, and
+  # loud when it is. Loopback binds are unaffected.
+  describe "public-bind guard" do
+    before do
+      allow(Rubino::Boot::EncryptionKey).to receive(:validate!)
+      allow(Rubino::OAuth::Registry).to receive(:load_from_config!)
+      scheduler = instance_double(Rubino::Jobs::Scheduler, load_all!: nil, resume_pending_webhooks!: nil)
+      allow(Rubino::Jobs::Scheduler).to receive(:instance).and_return(scheduler)
+      server = instance_double(Rubino::API::Server, start!: nil)
+      allow(Rubino::API::Server).to receive(:new).and_return(server)
+    end
+
+    def stub_config(allow_public_bind: false)
+      api = Rubino::Config::Defaults.to_hash["api"].merge("allow_public_bind" => allow_public_bind)
+      cfg = test_configuration("api" => api)
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+      cfg
+    end
+
+    it "boots the loopback default with no config opt-in and no warning" do
+      stub_config(allow_public_bind: false)
+
+      expect { described_class.new({}).execute }.not_to output(/WARNING|REFUSING/).to_stderr
+      expect(Rubino::API::Server).to have_received(:new).with(hash_including(host: "127.0.0.1"))
+    end
+
+    %w[::1 localhost].each do |loopback|
+      it "treats #{loopback} as loopback (no opt-in, no warning)" do
+        stub_config(allow_public_bind: false)
+
+        expect { described_class.new(host: loopback).execute }
+          .not_to output(/WARNING|REFUSING/).to_stderr
+        expect(Rubino::API::Server).to have_received(:new).with(hash_including(host: loopback))
+      end
+    end
+
+    it "REFUSES a non-loopback bind when allow_public_bind is false (no server started)" do
+      stub_config(allow_public_bind: false)
+
+      expect do
+        expect { described_class.new(host: "0.0.0.0").execute }
+          .to raise_error(SystemExit) { |err| expect(err.status).to eq(1) }
+      end.to output(/REFUSING to start.*non-loopback.*allow_public_bind: true.*RUBINO_TLS=1/m).to_stderr
+
+      expect(Rubino::API::Server).not_to have_received(:new)
+    end
+
+    it "boots a non-loopback bind when allow_public_bind is true, emitting the warning banner" do
+      stub_config(allow_public_bind: true)
+
+      expect { described_class.new(host: "0.0.0.0").execute }
+        .to output(/WARNING: binding to 0.0.0.0 \(non-loopback\).*RUBINO_TLS=1/m).to_stderr
+
+      expect(Rubino::API::Server).to have_received(:new).with(hash_including(host: "0.0.0.0"))
+    end
+  end
 end
