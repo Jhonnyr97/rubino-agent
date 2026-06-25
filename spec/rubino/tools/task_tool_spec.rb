@@ -260,9 +260,9 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
   # nested UI selection: BOTH paths (sync and background) build the child UI via
   # #nested_ui_for — the subagent gets its OWN UI::CLI (tagged agent_id = entry.id,
-  # tmux-style unified render) wrapped in a UI::SubagentRecorder that keeps the
-  # registry counters fresh; the focus-gate paints it only while attached. Silent
-  # Null everywhere off the interactive CLI.
+  # tmux-style unified render) which ALSO keeps the registry counters fresh inline
+  # (its tool events record to BackgroundTasks, gated on agent_id != :main); the
+  # focus-gate paints it only while attached. Silent Null off the interactive CLI.
   # ---------------------------------------------------------------------------
 
   describe "nested UI selection" do
@@ -273,19 +273,15 @@ RSpec.describe Rubino::Tools::TaskTool do
       described_class.new.send(:nested_ui_for, entry, Rubino.ui)
     end
 
-    # The wrapped per-sub CLI (SimpleDelegator's __getobj__) for tag assertions.
-    def wrapped_cli(ui) = ui.__getobj__
-
     after { Rubino.ui = nil }
 
-    it "wires a per-sub UI::CLI (recorder-wrapped, tagged with the entry id) when the parent UI is the CLI" do
+    it "wires a per-sub UI::CLI tagged with the entry id when the parent UI is the CLI" do
       Rubino.ui = Rubino::UI::CLI.new
       ui = built_child_ui
-      expect(ui).to be_a(Rubino::UI::SubagentRecorder)
-      cli = wrapped_cli(ui)
-      expect(cli).to be_a(Rubino::UI::CLI)
-      # The CLI is tagged with this run's entry id as its render origin.
-      expect(cli.instance_variable_get(:@agent_id)).to eq(entry.id)
+      expect(ui).to be_a(Rubino::UI::CLI)
+      # The CLI is tagged with this run's entry id as its render origin (and the
+      # gate that makes it record subagent activity into the registry inline).
+      expect(ui.instance_variable_get(:@agent_id)).to eq(entry.id)
     end
 
     it "keeps the child silent (Null) when the parent UI is Null" do
@@ -316,16 +312,14 @@ RSpec.describe Rubino::Tools::TaskTool do
 
     # #86 — NESTED escalation. A subagent that spawns a (grand)child runs under
     # with_ui(its own per-sub UI), so the thread-local Rubino.ui at the spawn is a
-    # SubagentRecorder, NOT a UI::CLI. The card host (#root_cli) must still resolve
-    # to the TOP-LEVEL CLI (the process-global @ui), otherwise nested_ui_for's
-    # `is_a?(UI::CLI)` gate falls through to a silent Null view with NO approve
-    # handler — and the grandchild's approval-gated tools fail closed with the
-    # headless :noninteractive block instead of escalating.
+    # per-sub UI::CLI tagged with the PARENT sub's entry id, NOT the top-level CLI.
+    # The card host (#root_cli) must still resolve to the TOP-LEVEL CLI (the
+    # process-global @ui), otherwise the grandchild's per-sub CLI gets a NO approve
+    # handler — and its approval-gated tools fail closed with the headless
+    # :noninteractive block instead of escalating.
     describe "nested spawn (subagent spawns subagent) — card host is the root CLI (#86)" do
       let(:root_cli)   { Rubino::UI::CLI.new }
-      let(:parent_sub) do
-        Rubino::UI::SubagentRecorder.new(Rubino::UI::CLI.new(agent_id: "sa_parent"), entry_id: "sa_parent")
-      end
+      let(:parent_sub) { Rubino::UI::CLI.new(agent_id: "sa_parent") }
 
       before { Rubino.ui = root_cli } # the process-global @ui = the one live region
 
@@ -346,8 +340,7 @@ RSpec.describe Rubino::Tools::TaskTool do
           host = described_class.new.send(:root_cli)
           described_class.new.send(:nested_ui_for, entry, host, approve: handler)
         end
-        expect(ui).to be_a(Rubino::UI::SubagentRecorder)
-        expect(wrapped_cli(ui)).to be_a(Rubino::UI::CLI)
+        expect(ui).to be_a(Rubino::UI::CLI)
         expect(ui.interactive?).to be(true) # the approve handler is wired ⇒ escalation, not noninteractive
       end
     end
@@ -369,19 +362,17 @@ RSpec.describe Rubino::Tools::TaskTool do
     after  { Rubino.ui = nil }
 
     # A runner factory that drives the per-sub child UI the way a real nested loop
-    # would: it fires a tool_started/finished pair on the SubagentRecorder-wrapped
-    # CLI wired to THIS run's reserved entry (the same view #nested_ui_for builds),
-    # so the activity feeds the REGISTRY counters — the recorder records them
-    # before delegating render to the per-sub CLI. The entry id is the bound
+    # would: it fires a tool_started/finished pair on the per-sub UI::CLI wired to
+    # THIS run's reserved entry (the same view #nested_ui_for builds), so the
+    # activity feeds the REGISTRY counters — the CLI records them inline (gated on
+    # agent_id != :main) before rendering. The entry id is the bound
     # current-subagent id (run_subagent binds it before running the child).
     def cli_task_tool(_out)
       factory = lambda do |_definition|
         Class.new do
           define_method(:run!) do |_input, **_opts|
             entry_id = Rubino.current_subagent_id
-            view = Rubino::UI::SubagentRecorder.new(
-              Rubino::UI::CLI.new(agent_id: entry_id), entry_id: entry_id
-            )
+            view = Rubino::UI::CLI.new(agent_id: entry_id)
             view.tool_started("grep", arguments: { "pattern" => "needle" })
             result = Rubino::Tools::Result.success(
               name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
@@ -909,7 +900,7 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
   # Variant A: a background child's tool activity feeds the registry (the card /
   # drill-in source) instead of flooding the parent — and the parent's card is
-  # repainted. End-to-end through the per-sub CLI's SubagentRecorder.
+  # repainted. End-to-end through the per-sub CLI's inline registry recording.
   # ---------------------------------------------------------------------------
 
   describe "live-activity card feed (Variant A, #124/#71)" do
@@ -923,7 +914,7 @@ RSpec.describe Rubino::Tools::TaskTool do
     def activity_runner(final, latch)
       Class.new do
         define_method(:run!) do |_input, **_opts|
-          view = Rubino.ui # the SubagentRecorder-wrapped per-sub CLI bound by with_ui
+          view = Rubino.ui # the per-sub CLI bound by with_ui (records to the registry inline)
           view.tool_started("grep", arguments: { "pattern" => "needle" })
           result = Rubino::Tools::Result.success(name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches")
           view.tool_finished("grep", result: result)
