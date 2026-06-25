@@ -176,13 +176,6 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("\e]0;")
       expect(out).to include("PWN")
     end
-
-    it "#subagent_ask_banner neutralizes escapes in the child's question" do
-      out = capture_stdout { ui.subagent_ask_banner("sa_1", "explore", pwn) }
-      expect(out).not_to include("\e[2J")
-      expect(out).not_to include("\e]0;")
-      expect(out).to include("PWN")
-    end
   end
 
   describe "#table sanitizes untrusted cells (R3C-1, MCP/memory rows)" do

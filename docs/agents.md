@@ -4,7 +4,7 @@ rubino has two distinct multi-agent surfaces, and **both ship today**:
 
 1. **Background subagents** (✅ shipping) — the agent delegates bounded sub-tasks
    to isolated subagent runs via its `task` tool, and you supervise them with
-   `/agents` and `/reply`.
+   `/agents`.
 2. **Primary-agent switching** (✅ shipping) — pick the primary agent that
    handles your turns: `/agent <name>` (or a bare `/<name>` for a primary)
    pins it for the session, **Tab** cycles through the primaries, and a one-shot
@@ -68,9 +68,7 @@ message instead of fanning out unbounded work:
 | Glyph | Status | Meaning | You act via |
 |---|---|---|---|
 | `●` | `running` | Working (last activity shown) | — |
-| `●` | `needs_approval` | A child tool needs your approval (or a budget request) | `/agents <id>` or `/reply <id>` |
-| `⛔` | `blocked_on_human` | Vocabulary glyph for a child parked on the human (not raised in normal operation now that subagents are non-blocking) | `/reply <id> <answer>` |
-| `◷` | `blocked_on_parent` | Vocabulary glyph for a child parked on its agent-parent (likewise not raised now that subagents are non-blocking) | (optional) `/reply <id>` |
+| `●` | `needs_approval` | A child tool needs your approval (or a budget request) | `/agents <id>` |
 | `◌` | `stopping` | Stop requested; unwinding at its next checkpoint | — |
 | `✓` | `done` | Finished; result available | `/agents <id>` |
 | `✗` | `failed` | Errored; error available | `/agents <id>` |
@@ -79,25 +77,20 @@ message instead of fanning out unbounded work:
 Subagents are **non-blocking** background workers: they never pause to ask you a
 mid-task question. The one way a child waits on you is an **approval** — its next
 tool needs your go-ahead, so it parks as `needs_approval` and a marker persists
-until you resolve it (via `/agents <id>` or `/reply <id>`). The `⛔
-blocked_on_human` / `◷ blocked_on_parent` glyphs remain in the status vocabulary
-the `/agents` surface can render, but with the child→parent ask channel removed
-they are no longer raised in normal operation.
+until you resolve it (via `/agents <id>`).
 
-### Supervising from the CLI: `/agents` and `/reply`
+### Supervising from the CLI: `/agents`
 
 ```
 /agents                       # list background subagents (status, tools run, activity)
 /agents <id>                  # drill in: live watch while running, result/error when done
-/agents <id> --stop           # cancel a running subagent (blocked descendants unwind too)
+/agents <id> --stop           # cancel a running subagent
 /agents <id> steer "note"     # park a note folded into the child's context at its next turn
 /agents <id> probe "question" # ephemeral read-only peek — nothing is saved to the child
-/reply <id> <answer>          # answer a child blocked on you (e.g. an approval)
-/reply                        # bare: list the subagents currently blocked on you
 ```
 
-`/tasks` is an alias for `/agents`. Stopping a node cancels its descendants'
-approval gates too, so anything parked anywhere in the subtree unwinds at once.
+`/tasks` is an alias for `/agents`. Stopping a node cancels its approval gate so
+a parked child unwinds at once.
 
 #### Attach to a subagent (agent-view)
 
@@ -109,12 +102,11 @@ subagent picker, arrow to one, and `Enter`:
   what it said, replayed from its session (not the bounded activity snapshot the
   picker used to show);
 - the prompt becomes **scoped** to it: `sa_xxxx ❯`;
-- while attached, just **type** to steer the running child (or answer it if it's
-  blocked on you) — no id needed; `←` on the empty prompt (or `/detach`) returns
-  to the main timeline.
+- while attached, just **type** to steer the running child — no id needed; `←` on
+  the empty prompt (or `/detach`) returns to the main timeline.
 
-So attaching makes `/agents <id> steer/probe` and `/reply <id>` redundant for the
-focused child — they're the same operations, just addressed by id. Attach is a
+So attaching makes `/agents <id> steer/probe` redundant for the focused child —
+they're the same operations, just addressed by id. Attach is a
 between-turns action (it owns the screen): while a parent turn is still streaming
 the picker's `Enter` toasts "attach when the turn ends" — attach once it's idle.
 

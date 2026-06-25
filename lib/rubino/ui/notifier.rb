@@ -3,9 +3,9 @@
 module Rubino
   module UI
     # Attention notifications for the moments the agent needs human eyes:
-    # a long agentic turn finishing, an approval prompt parking the run on a
-    # human decision, or a background subagent blocking on the human (an
-    # escalated ask_parent).
+    # a long agentic turn finishing, or an approval prompt parking the run on a
+    # human decision (the main agent's confirm card, or a background child
+    # flipped to :needs_approval).
     #
     # Channels — mirroring the dominant pattern across coding agents (Claude
     # Code's terminal bell + hooks, Codex's notify hook, aider's
@@ -20,7 +20,7 @@ module Rubino
     #     notification.
     #   * notifications.command — an optional shell command spawned
     #     NON-BLOCKING and best-effort per event with RUBINO_EVENT
-    #     (turn_finished | needs_approval | blocked) and RUBINO_MESSAGE in
+    #     (turn_finished | needs_approval) and RUBINO_MESSAGE in
     #     its environment; failures are swallowed to the structured log.
     #     Covers osascript / notify-send users.
     #
@@ -55,12 +55,6 @@ module Rubino
       # card, or a background child flipped to :needs_approval.
       def needs_approval(message = "approval required")
         notify(:needs_approval, message)
-      end
-
-      # A background child is blocked on the human (the ⛔ escalated
-      # ask_parent banner).
-      def blocked(message = "a subagent is waiting on you")
-        notify(:blocked, message)
       end
 
       # Emits one notification through every enabled channel. Best-effort: a

@@ -192,18 +192,10 @@ module Rubino
         dig("tasks", "max_live_probes_per_child") || Defaults.dig("tasks", "max_live_probes_per_child")
       end
 
-      # Bound (seconds) a BLOCKING ask_parent waits for an answer before the child
-      # self-heals and proceeds with its best judgement (S5a). Reuses the
-      # approval-gate timeout convention — a sane upper bound, never "forever" —
-      # so an abandoned ask never parks the child's thread indefinitely. Default 900.
-      def tasks_ask_parent_timeout
-        dig("tasks", "ask_parent_timeout") || Defaults.dig("tasks", "ask_parent_timeout")
-      end
-
       # Bound (seconds) an interactive `question`/clarify waits for the human to
       # answer before it EXPIRES CLEANLY and the agent proceeds with its best
-      # judgement (#552). Mirrors the ask_parent / Hermes clarify_timeout
-      # convention — a generous upper bound (default 600s = 10 min, well above
+      # judgement (#552). Mirrors the Hermes clarify_timeout convention — a
+      # generous upper bound (default 600s = 10 min, well above
       # human reading/deliberation time), never the 30s stale-chunk window and
       # never "forever". An abandoned clarify self-heals into the NO_ANSWER
       # outcome instead of hanging the run or being killed by the stale watchdog.

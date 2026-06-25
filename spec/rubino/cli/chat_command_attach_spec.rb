@@ -15,7 +15,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
   let(:runner)       { instance_double(Rubino::Agent::Runner, session: { id: "main-sess" }) }
   let(:agents_handler) do
     instance_double(Rubino::Commands::Handlers::Agents,
-                    steer_agent: nil, probe_agent: nil, deliver_reply: nil)
+                    steer_agent: nil, probe_agent: nil)
   end
   let(:entry) do
     instance_double(Rubino::Tools::BackgroundTasks::Entry,
@@ -242,10 +242,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(agents_handler).to have_received(:steer_agent).with("sa_1", 'make it say "hi"')
     end
 
-    it "ANSWERS a blocked child with the raw plain text" do
-      allow(entry).to receive(:status).and_return(:blocked_on_human)
+    it "STEERS a child parked on an approval with the raw plain text (folded in on resume)" do
+      allow(entry).to receive(:status).and_return(:needs_approval)
       cmd.send(:handle_attached_input, "use postgres", runner, ui, cmd_executor)
-      expect(agents_handler).to have_received(:deliver_reply).with(entry, "use postgres")
+      expect(agents_handler).to have_received(:steer_agent).with("sa_1", "use postgres")
     end
 
     it "/stop cancels the agent" do

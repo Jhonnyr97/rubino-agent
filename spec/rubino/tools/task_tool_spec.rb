@@ -637,58 +637,6 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(sink.drain.join("\n")).not_to include("steer note")
     end
 
-    # #457 regression — a /reply answer is delivered to the child via its ask
-    # gate AND mirrored onto the steer queue. When the child resumes via the gate
-    # and finishes without another turn, the mirror is drained at completion. It
-    # was NOT undelivered (the gate delivered it), so it must NOT surface the
-    # alarming "steer note not delivered (task completed first)" warning on the
-    # /reply happy path. A GENUINE steer note (no [parent answer] prefix) still
-    # reports undelivered (the test above), preserving #457's invariant.
-    it "does NOT report a gate-delivered [parent answer] copy as undelivered (#457)" do
-      sink   = Rubino::Interaction::InputQueue.new
-      latch  = Queue.new
-      runner = gated_runner("done", latch)
-      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
-
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
-      task_id = out[/sa_[0-9a-f]+/]
-      # The answer copy #deliver_answer leaves on the queue after the gate
-      # already delivered it (the prefix is BackgroundTasks::ANSWER_NOTE_PREFIX).
-      prefix = Rubino::Tools::BackgroundTasks::ANSWER_NOTE_PREFIX
-      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}use postgres")
-
-      latch << :go
-      wait_until { sink.pending? }
-
-      notice = sink.drain.join("\n")
-      expect(notice).not_to include("steer note was NOT delivered")
-      expect(notice).not_to include("not delivered")
-    end
-
-    # #457 invariant intact: a genuine steer note (no [parent answer] prefix) is
-    # STILL reported undelivered even when a gate-delivered answer copy is also
-    # on the queue — only the answer copy is filtered, not real steer notes.
-    it "still reports a genuine undelivered steer note alongside a [parent answer] copy (#457)" do
-      sink   = Rubino::Interaction::InputQueue.new
-      latch  = Queue.new
-      runner = gated_runner("done", latch)
-      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
-
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
-      task_id = out[/sa_[0-9a-f]+/]
-      prefix  = Rubino::Tools::BackgroundTasks::ANSWER_NOTE_PREFIX
-      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}use postgres")
-      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "also say PINEAPPLE")
-
-      latch << :go
-      wait_until { sink.pending? }
-
-      notice = sink.drain.join("\n")
-      expect(notice).to include("steer note was NOT delivered (the task completed first)")
-      expect(notice).to include("PINEAPPLE")
-      expect(notice).not_to include("use postgres")
-    end
-
     # #Y1B — "deny & tell" hands the child an ADVISORY note; the approval is
     # already denied regardless. When the child finishes before folding it in,
     # the still-queued copy (BackgroundTasks::DENY_NOTE_PREFIX) must NOT surface
@@ -1287,33 +1235,34 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch << :go # release so the worker thread exits cleanly
     end
 
-    # #197 — a child parked on a blocking ask gate is LIVE (it holds a thread
-    # + a concurrency slot); task_stop must cancel its ask gate and unwind it,
-    # not refuse with "already blocked_on_human — nothing to stop" and leave a
-    # zombie holding its slot until the 15m gate timeout.
-    it "stops a child parked on a blocking ask gate: gate cancelled, ⊘ stopped, slot freed (#197)" do
+    # #197 — a child parked on its approval gate is LIVE (it holds a thread
+    # + a concurrency slot); task_stop must cancel its gate and unwind it,
+    # not refuse with "nothing to stop" and leave a zombie holding its slot
+    # until the gate timeout.
+    it "stops a child parked on its approval gate: gate cancelled, ⊘ stopped, slot freed (#197)" do
       registry       = Rubino::Tools::BackgroundTasks.instance
       before_threads = Thread.list.size
       runner = Class.new do
         def initialize = @cancelled = false
 
         def run!(_input, **_opts)
-          # Park the child's own thread on a real ask gate, exactly as a blocking
-          # cross-thread hand-off does: register the gate on the entry, flip it to
-          # :blocked_on_human, then await indefinitely until task_stop cancels it.
-          entry_id = Rubino.current_subagent_id
-          gate     = Rubino::Run::ApprovalGate.new
-          ask_id   = "ask_#{entry_id}"
-          gate.register(ask_id)
-          registry.begin_ask(entry_id, gate: gate, ask_id: ask_id,
-                                       question: "which db?", blocking: true)
-          gate.await(ask_id, timeout: nil)
+          # Park the child's own thread on a real approval gate, exactly as the
+          # background approval-surfacing path does: register the gate on the
+          # entry, flip it to :needs_approval, then await indefinitely until
+          # task_stop cancels it.
+          entry_id    = Rubino.current_subagent_id
+          gate        = Rubino::Run::ApprovalGate.new
+          approval_id = "ap_#{entry_id}"
+          gate.register(approval_id)
+          registry.begin_approval(entry_id, gate: gate, approval_id: approval_id,
+                                            question: "run rm -rf?", command: "rm -rf x")
+          gate.await(approval_id, timeout: nil)
           # Mimic the real Loop's cancel checkpoint: task_stop flips the runner
           # token BEFORE cancelling the gate, so the woken child unwinds with
-          # Interrupted right after the cancelled ask returns.
+          # Interrupted right after the cancelled await returns.
           raise Rubino::Interrupted, "stopped" if @cancelled
         ensure
-          registry.end_ask(entry_id) if entry_id
+          registry.end_approval(entry_id) if entry_id
         end
 
         def cancel! = @cancelled = true
@@ -1325,7 +1274,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
       out     = tool.call("subagent" => "explore", "prompt" => "x")
       task_id = out[/sa_[0-9a-f]+/]
-      wait_until { registry.find(task_id).status == :blocked_on_human }
+      wait_until { registry.find(task_id).status == :needs_approval }
 
       stop_out = Rubino::Tools::TaskStopTool.new.call("task_id" => task_id)
       expect(stop_out).to include("stop requested")

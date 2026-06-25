@@ -1537,26 +1537,9 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  describe "#subagent_ask_banner" do
-    # #145: the banner claimed "no timeout" while tasks.ask_parent_timeout
-    # defaults to 900s — the child auto-resumes. The banner must tell the truth.
-    it "reads the configured ask_parent timeout instead of claiming 'no timeout' (#145)" do
-      out = capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
-      expect(out).to include("auto-resumes with its best judgement in 15m")
-      expect(out).not_to include("no timeout")
-    end
-
-    it "says 'no timeout' only when the bound is explicitly disabled (#145)" do
-      allow(Rubino.configuration).to receive(:tasks_ask_parent_timeout).and_return(nil)
-      out = capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
-      expect(out).to include("no timeout")
-    end
-  end
-
   # Attention notifications: the UI seams ring the Notifier (bell/command
   # hook) exactly when the human is needed — turn end (long turns only, the
-  # notifier's own min_turn_seconds gate), an approval prompt parking the run,
-  # a ⛔ blocked subagent.
+  # notifier's own min_turn_seconds gate) and an approval prompt parking the run.
   describe "attention notification seams" do
     let(:notifier) { instance_spy(Rubino::UI::Notifier) }
 
@@ -1612,11 +1595,6 @@ RSpec.describe Rubino::UI::CLI do
       allow(ui).to receive(:approval_cached?).and_return(true)
       capture_stdout { ui.confirm("shell wants to run: ls", scope: "shell:ls", tool: "shell") }
       expect(notifier).not_to have_received(:needs_approval)
-    end
-
-    it "rings blocked when the ⛔ ask_parent banner surfaces" do
-      capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
-      expect(notifier).to have_received(:blocked).with("sa_1 (general) is waiting on your answer")
     end
   end
 

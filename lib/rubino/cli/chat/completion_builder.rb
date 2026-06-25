@@ -62,7 +62,6 @@ module Rubino
           #   * /agents (alias /tasks) — the live subagent ids, then the
           #     steer/probe/--stop subcommand grammar, so the comm surface is
           #     discoverable from the composer (#39).
-          #   * /reply — the ids of children blocked waiting on the human.
           #   * /mcp — the configured server names (+ reload), then on/off for a
           #     named server (#182), same grammar shape as /agents.
           #   * /mode, /reasoning, /think — the closed enums (#185), via the
@@ -95,7 +94,6 @@ module Rubino
             "agents" => ->(args) { agents_arg_candidates(args) },
             "tasks" => ->(args) { agents_arg_candidates(args) },
             "agent" => ->(args) { args.empty? ? primary_agent_names : [] },
-            "reply" => ->(args) { args.empty? ? blocked_subagent_ids : [] },
             "mcp" => ->(args) { mcp_arg_candidates(args) },
             "mode" => ->(args) { args.empty? ? Rubino::Modes::ALL.map(&:to_s) : [] },
             "model" => ->(args) { args.empty? ? model_arg_candidates : [] },
@@ -146,12 +144,6 @@ module Rubino
           when 1 then AGENTS_SUBCOMMANDS
           else []
           end
-        end
-
-        # Children parked on an ask_parent waiting for the human — the ids /reply
-        # answers.
-        def blocked_subagent_ids
-          Tools::BackgroundTasks.instance.awaiting_human.map(&:id)
         end
 
         # The /model candidates: the registry's model ids for the provider the

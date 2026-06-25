@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 
-# H5 — a subagent's parent answer must never be SILENTLY LOST while reported
+# H5 — a parent's steer note must never be SILENTLY LOST while reported
 # delivered. Before the fix, a child finishing did `drain` (InputQueue lock)
 # then `complete` (registry lock) under DIFFERENT locks; an answer steered in
 # the gap landed on a now-dead queue: it was dropped, OMITTED from the
-# `undelivered` report, YET `steer`/`deliver_answer` reported SUCCESS.
+# `undelivered` report, YET `steer` reported SUCCESS.
 #
 # The invariant these specs pin down: an answer is reported delivered ONLY if
 # the child actually received it (the note is on a queue someone will still
 # drain — the child at its next turn, or #complete into the undelivered report);
-# otherwise it is reported undelivered (steer/deliver_answer return false). It is
+# otherwise it is reported undelivered (steer returns false). It is
 # never dropped-but-reported-success.
 #
 # These drive the REAL registry classes (no doubles) so the locking contract is
@@ -126,35 +126,6 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
         # its own note, so the accumulating singleton registry never cross-talks
         # — no per-round reset needed.
       end
-    end
-  end
-
-  describe "#deliver_answer reports honestly (no false success for a finished child)" do
-    it "returns false when the child already finished — neither path delivered" do
-      entry = reserve
-      gate  = Rubino::Run::ApprovalGate.new
-      ask_id = "ask_#{entry.id}"
-      gate.register(ask_id)
-      registry.begin_ask(entry.id, gate: gate, ask_id: ask_id, question: "q?", blocking: false)
-
-      # The child finishes before the parent answers (the ask_gate is still set,
-      # but the entry is terminal so steer rejects and the gate is undecided→ok
-      # would be the only true path; here the child finished without awaiting).
-      registry.complete(entry, status: :completed, result: "done")
-
-      expect(registry.deliver_answer(entry.id, "use postgres")).to be(false)
-      expect(entry.steer_queue.drain).to eq([])
-    end
-
-    it "returns true and delivers when the child is still blocked (live)" do
-      entry = reserve
-      gate  = Rubino::Run::ApprovalGate.new
-      ask_id = "ask_#{entry.id}"
-      gate.register(ask_id)
-      registry.begin_ask(entry.id, gate: gate, ask_id: ask_id, question: "q?", blocking: false)
-
-      expect(registry.deliver_answer(entry.id, "use postgres")).to be(true)
-      expect(entry.steer_queue.drain).to eq(["[parent answer] use postgres"])
     end
   end
 end

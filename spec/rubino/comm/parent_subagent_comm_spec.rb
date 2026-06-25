@@ -9,8 +9,6 @@
 #            Loop#inject_steered_input), the same wire human steering uses.
 #   probe  — an ephemeral peek returns an answer but writes NOTHING to the
 #            child's history (read-only, discarded).
-#   blocked-state — a child parked on a blocking ask gate surfaces as
-#            :blocked_on_human on the card (the ⛔ "waiting on you" marker).
 RSpec.describe "parent <-> subagent communication" do
   let(:db)            { test_database }
   let(:null_ui)       { Rubino::UI::Null.new }
@@ -24,12 +22,6 @@ RSpec.describe "parent <-> subagent communication" do
 
   before do
     allow(Rubino).to receive(:database).and_return(db)
-  end
-
-  def wait_until(timeout: 2.0)
-    deadline = Time.now + timeout
-    sleep 0.005 until yield || Time.now > deadline
-    raise "wait_until timed out" unless yield
   end
 
   # --- steer: parent note reaches the child's NEXT-turn context --------------
@@ -247,29 +239,6 @@ RSpec.describe "parent <-> subagent communication" do
 
       latch << :go
       wait_for { registry.find(id).status == :completed }
-    end
-  end
-
-  # --- blocked-state surfaces on the card ------------------------------------
-  describe "blocked-state visibility" do
-    it "renders the ⛔ waiting-on-you card + counts it as live" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-      gate  = Rubino::Run::ApprovalGate.new
-      Rubino::Tools::BackgroundTasks.instance.begin_ask(
-        entry.id, gate: gate, ask_id: "ask_#{entry.id}",
-                  question: "migrate v1 -> v2 or keep both?", blocking: true
-      )
-
-      expect(Rubino::Tools::BackgroundTasks.instance.running.map(&:id)).to include(entry.id)
-      expect(Rubino::Tools::BackgroundTasks.instance.awaiting_human.map(&:id)).to include(entry.id)
-
-      lines = Rubino::UI::SubagentCards.new.card_lines(Rubino::Tools::BackgroundTasks.instance.running)
-      joined = lines.join("\n")
-      expect(joined).to include("⛔")
-      expect(joined).to include("waiting on you")
-      # The card moved to arrow-nav: the reply prompt auto-opens and the card
-      # advertises "↓ to answer" instead of the old typed "/reply <id>" hint.
-      expect(joined).to include("↓ to answer")
     end
   end
 

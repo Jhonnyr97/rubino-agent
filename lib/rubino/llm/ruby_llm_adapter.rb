@@ -200,12 +200,12 @@ module Rubino
         last_chunk_at = monotonic_now
         stale_after   = stale_chunk_timeout
         chunks_seen   = 0
-        # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking ask_parent
-        # parked on a human answer for up to tasks.ask_parent_timeout = 900s)
-        # produces no chunks while it runs, so the stale watchdog below would
-        # otherwise count that legitimate tool runtime as stream-idle and fire at
-        # `stale_after` (300s default), pre-empting the configured ask timeout and
-        # making the "auto-resumes in 15m" banner a lie. While a tool is in flight
+        # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking
+        # `question`/clarify parked on a human answer for up to the clarify
+        # timeout) produces no chunks while it runs, so the stale watchdog below
+        # would otherwise count that legitimate tool runtime as stream-idle and
+        # fire at `stale_after` (300s default), pre-empting the configured wait and
+        # making the "auto-resumes" banner a lie. While a tool is in flight
         # the stream is intentionally paused, not stalled: suspend idle accrual for
         # its duration. Set when a tool-use message closes (tools are about to
         # run); cleared when the next message begins (tools returned).
@@ -282,8 +282,8 @@ module Rubino
           @event_bus&.emit(Interaction::Events::MESSAGE_COMPLETED, message_id: message_block_id)
           # #488: a tool-use message just closed ⇒ ruby_llm is about to run those
           # tools mid-stream. Suspend the stale watchdog's idle accrual for the
-          # tool's runtime so a long, legitimate tool (a blocking ask_parent
-          # waiting on the human) is not killed at `stale_after`.
+          # tool's runtime so a long, legitimate tool (a blocking
+          # `question`/clarify waiting on the human) is not killed at `stale_after`.
           tool_running = true if intermediate_tool_message?(msg)
         end
         if chat_instance.respond_to?(:after_message)
@@ -298,8 +298,8 @@ module Rubino
         # only flips `tool_running` when the tool-use assistant message closes
         # AND intermediate_tool_message?(msg) recognises it — which is unreliable
         # on the anthropic-compatible streaming path (MiniMax /anthropic), where
-        # a blocking interactive tool (`question`/clarify parked on stdin, or
-        # ask_parent) starts running while the watchdog still sees
+        # a blocking interactive tool (`question`/clarify parked on stdin)
+        # starts running while the watchdog still sees
         # tool_running == false and fires at `stale_after` (30s for the
         # anthropic-compatible provider) before the human can answer. Keying the
         # suspend off before_tool_call closes that window: the instant ANY tool

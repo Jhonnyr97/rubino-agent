@@ -309,14 +309,14 @@ module Rubino
         },
         "notifications" => {
           # Attention signals (UI::Notifier) for the moments the agent needs
-          # human eyes: a long turn finishing, an approval prompt, a blocked
-          # subagent. CLI-only; never emitted into a pipe.
+          # human eyes: a long turn finishing, or an approval prompt. CLI-only;
+          # never emitted into a pipe.
           "enabled" => true,
           # Ring the terminal bell (BEL). On iTerm2 an OSC 9 escape is also
           # sent so it surfaces as a native macOS notification.
           "bell" => true,
           # Optional shell command spawned non-blocking per event with
-          # RUBINO_EVENT (turn_finished|needs_approval|blocked) and
+          # RUBINO_EVENT (turn_finished|needs_approval) and
           # RUBINO_MESSAGE in its env — e.g. osascript / notify-send.
           "command" => nil,
           # A turn must run at least this many seconds before its completion
@@ -432,11 +432,7 @@ module Rubino
           # times an owner may run a one-shot model peek over a single child's
           # transcript. Over budget → the model is told to use the FREE
           # live:false snapshot instead. Free snapshots are unlimited.
-          "max_live_probes_per_child" => 5,
-          # Bound (seconds) a BLOCKING ask_parent waits before the child
-          # self-heals and proceeds with its best judgement (S5a). Matches the
-          # approvals wait-timeout default — never "forever".
-          "ask_parent_timeout" => 900
+          "max_live_probes_per_child" => 5
         },
         "tools" => {
           # Sandbox write/edit/delete tools to workspace_root (terminal.cwd
@@ -745,7 +741,7 @@ module Rubino
         },
         # #552: how long an interactive `question`/clarify waits for the human
         # before it EXPIRES CLEANLY (the agent proceeds with its best judgement),
-        # mirroring tasks.ask_parent_timeout and Hermes' agent.clarify_timeout.
+        # mirroring Hermes' agent.clarify_timeout.
         # Generous (10 min) — long enough to read a multi-option menu and answer,
         # short enough that an abandoned prompt eventually unblocks the run. This
         # is the BLOCKING-tool wait bound; the stale-chunk watchdog is separately

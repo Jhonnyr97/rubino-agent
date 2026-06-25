@@ -39,7 +39,7 @@ RSpec.describe Rubino::CLI::Chat::CompletionBuilder do
 
     # #39: the dropdown carries the same one-liners /help shows, plus the
     # /agents subcommand usage hints, and completes the steer/probe/--stop
-    # grammar (ids first) for /agents, /tasks and the /reply blocked ids.
+    # grammar (ids first) for /agents and /tasks.
     it "registers the BuiltIns descriptions plus the /agents grammar hints" do
       cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
       source = described_class.new(cmd_loader).build
