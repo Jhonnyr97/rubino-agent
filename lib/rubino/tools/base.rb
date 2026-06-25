@@ -77,6 +77,22 @@ module Rubino
         :low
       end
 
+      # True only for tools whose code runs on an external MCP server
+      # (MCPToolWrapper overrides this). Built-ins are NEVER MCP — the display
+      # layer keys the `(mcp:server)` marker off this predicate, NOT off the
+      # tool name's shape, so a built-in with an underscore in its name
+      # (read_attachment, shell_output) is never mistaken for `server_tool`.
+      def mcp?
+        false
+      end
+
+      # The label shown in the live tool card / approval card. Built-ins render
+      # under their bare name; MCPToolWrapper overrides this to append the
+      # `(mcp:server)` source marker. The MODEL-FACING #name is unaffected.
+      def display_name
+        name
+      end
+
       # Executes the tool with given arguments, returns output string
       def call(arguments)
         raise NotImplementedError, "#{self.class}#call not implemented"
