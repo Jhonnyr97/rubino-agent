@@ -41,6 +41,13 @@ module Rubino
 end
 
 require_relative "rubino/errors"
+# version.rb defines Rubino::VERSION + Rubino::TAGLINE (plain constants, not a
+# Rubino::Version module), so Zeitwerk can't autoload it on a TAGLINE/VERSION
+# reference. Require it eagerly here — without this an INSTALLED gem (`gem
+# install rubino-agent && rubino`) crashes at CLI load with "uninitialized
+# constant Rubino::TAGLINE"; it only worked under `bundle exec` because the
+# gemspec's own require_relative loads it. (Ignored by the loader below.)
+require_relative "rubino/version"
 
 module Rubino
   class << self
@@ -78,6 +85,9 @@ module Rubino
         # errors.rb defines multiple constants in Rubino (NotFoundError, ...),
         # not a single Rubino::Errors module — loaded manually via require_relative.
         loader.ignore(File.expand_path("rubino/errors.rb", __dir__))
+        # version.rb defines Rubino::VERSION + Rubino::TAGLINE, not a
+        # Rubino::Version module — loaded manually via require_relative above.
+        loader.ignore(File.expand_path("rubino/version.rb", __dir__))
         # rubino-agent.rb is a require shim matching the gem name; it maps to no
         # Rubino constant (and "Rubino-agent" isn't a valid cname). Zeitwerk must
         # not try to manage it.
