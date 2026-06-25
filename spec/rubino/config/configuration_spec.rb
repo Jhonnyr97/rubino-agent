@@ -5,11 +5,11 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "model accessors" do
     it "returns model default" do
-      expect(config.model_default).to eq("openai/gpt-4.1")
+      expect(config.dig("model", "default")).to eq("openai/gpt-4.1")
     end
 
     it "defaults temperature to nil (inherit provider default, #414)" do
-      expect(config.model_temperature).to be_nil
+      expect(config.dig("model", "temperature")).to be_nil
     end
 
     it "returns model temperature" do
@@ -19,11 +19,11 @@ RSpec.describe Rubino::Config::Configuration do
                                  "context_length" => nil,
                                  "temperature" => 0.3
                                })
-      expect(cfg.model_temperature).to eq(0.3)
+      expect(cfg.dig("model", "temperature")).to eq(0.3)
     end
 
     it "returns model provider" do
-      expect(config.model_provider).to eq("auto")
+      expect(config.dig("model", "provider")).to eq("auto")
     end
   end
 
@@ -80,7 +80,7 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "compression accessors" do
     it "returns compression threshold" do
-      expect(config.compression_threshold).to eq(0.50)
+      expect(config.dig("compression", "threshold")).to eq(0.50)
     end
 
     it "returns compression enabled" do
@@ -88,8 +88,24 @@ RSpec.describe Rubino::Config::Configuration do
     end
 
     it "returns protect first/last N" do
-      expect(config.compression_protect_first_n).to eq(3)
-      expect(config.compression_protect_last_n).to eq(20)
+      expect(config.dig("compression", "protect_first_n")).to eq(3)
+      expect(config.dig("compression", "protect_last_n")).to eq(20)
+    end
+  end
+
+  describe "tool-output code-compression accessors" do
+    it "defaults the skeletoner languages to [ruby]" do
+      expect(config.tool_output_compression_code_languages).to eq(%w[ruby])
+    end
+
+    it "reads the languages list from the code block" do
+      cfg = test_configuration("tool_output_compression" => { "code" => { "languages" => %w[ruby python] } })
+      expect(cfg.tool_output_compression_code_languages).to eq(%w[ruby python])
+    end
+
+    it "returns [] when the languages key is absent" do
+      cfg = test_configuration("tool_output_compression" => { "code" => {} })
+      expect(cfg.tool_output_compression_code_languages).to eq([])
     end
   end
 
@@ -99,14 +115,22 @@ RSpec.describe Rubino::Config::Configuration do
     end
 
     it "returns memory char limits" do
-      expect(config.memory_char_limit).to eq(2200)
-      expect(config.memory_user_char_limit).to eq(1375)
+      expect(config.dig("memory", "memory_char_limit")).to eq(2200)
+      expect(config.dig("memory", "user_char_limit")).to eq(1375)
+    end
+
+    it "auto_summarize defaults ON and only an explicit false disables it" do
+      expect(config.memory_auto_summarize?).to be true
+      off = described_class.new(raw: { "memory" => { "auto_summarize" => false } })
+      expect(off.memory_auto_summarize?).to be false
+      absent = described_class.new(raw: { "memory" => {} })
+      expect(absent.memory_auto_summarize?).to be true
     end
   end
 
   describe "tool accessors" do
     it "returns tool enabled status" do
-      expect(config.tool_enabled?("git")).to be true
+      expect(config.tool_enabled?("ruby")).to be true
       # shell ships ON by default: the agent runs in an isolated per-customer
       # VM where running commands is the whole point. Dangerous commands stay
       # gated behind the approval prompt via security.confirm_policy.

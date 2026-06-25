@@ -330,29 +330,6 @@ RSpec.describe Rubino::Tools::GrepTool do
 end
 
 # ---------------------------------------------------------------------------
-# GitTool — IO.popen argv form prevents shell injection
-# ---------------------------------------------------------------------------
-RSpec.describe Rubino::Tools::GitTool do
-  subject(:tool) { described_class.new }
-
-  it "does not execute shell commands embedded in args" do
-    sentinel = "/tmp/git_injection_test_#{Process.pid}"
-    FileUtils.rm_f(sentinel)
-
-    # Even if git is not available this should not execute the injected command
-    tool.call("command" => "status", "args" => "; touch #{sentinel}")
-    expect(File.exist?(sentinel)).to be false
-  ensure
-    FileUtils.rm_f(sentinel)
-  end
-
-  it "returns a string result for the status command" do
-    result = tool.call("command" => "status")
-    expect(result).to be_a(String)
-  end
-end
-
-# ---------------------------------------------------------------------------
 # QuestionTool — multiple selection now works
 # ---------------------------------------------------------------------------
 RSpec.describe Rubino::Tools::QuestionTool do

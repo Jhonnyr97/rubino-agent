@@ -118,8 +118,53 @@ RSpec.describe Rubino::Tools::QuestionTool do
     end
   end
 
+  # #552: a human deliberating over a clarify menu must not be cut off by the
+  # 30s stale-chunk watchdog (suspended for the tool's runtime in
+  # RubyLLMAdapter#stream_once) — but an ABANDONED clarify must still expire
+  # CLEANLY after the generous clarify.timeout, with NO raised error.
+  describe "clarify timeout (#552)" do
+    before { allow(Rubino).to receive(:configuration).and_return(config) }
+
+    let(:config) { instance_double(Rubino::Config::Configuration, clarify_timeout: 0.2) }
+
+    it "expires CLEANLY (no raise) with the TIMED_OUT outcome when the human never answers" do
+      # ui.ask blocks past the configured timeout, simulating a user who walks away.
+      allow(ui).to receive(:ask) do
+        sleep 1.0
+        "too late"
+      end
+
+      result = nil
+      expect { result = tool.call("question" => "Favourite colour?") }.not_to raise_error
+      expect(result).to eq(described_class::TIMED_OUT)
+      expect(result).to include("timed out")
+    end
+
+    it "still resumes with the answer when the human replies within the timeout (no regression)" do
+      allow(ui).to receive(:ask).and_return("green")
+
+      result = tool.call("question" => "Favourite colour?")
+
+      expect(result).to eq("User answered: green")
+    end
+
+    it "expires cleanly for an options menu too" do
+      allow(ui).to receive(:ask) do
+        sleep 1.0
+        "1"
+      end
+
+      result = tool.call(
+        "question" => "Which datastore?",
+        "options" => [{ "label" => "Postgres" }, { "label" => "Redis" }]
+      )
+
+      expect(result).to eq(described_class::TIMED_OUT)
+    end
+  end
+
   # #107: in non-interactive mode the UI's #ask returns nil (CLI off a TTY,
-  # Null, SubagentView). The tool must NEVER silently pick an option — it
+  # Null). The tool must NEVER silently pick an option — it
   # returns the structured no-answer result so the model knows no user was
   # available, regardless of what ambient stdin held.
   describe "#call with options when no user answer is available (#107)" do

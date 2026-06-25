@@ -16,8 +16,8 @@ RSpec.describe "API contract: files" do
     read   = Rubino::API::Operations::Files::ReadOperation.new(workspace: workspace)
     upload = Rubino::API::Operations::Files::UploadOperation.new(workspace: workspace)
     router = Rubino::API::Router.new
-    router.get  "/v1/files", to: ->(req) { read.call(req) }
-    router.post "/v1/files", to: ->(req) { upload.call(req) }
+    router.get  "/v1/files", to: route_to(read)
+    router.post "/v1/files", to: route_to(upload)
     router
   end
 

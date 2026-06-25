@@ -114,6 +114,30 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(info_lines.join("\n")).to include("rubino")
     end
 
+    # #559: the welcome chrome opens with the ONE shared tagline and stays in a
+    # non-conversational voice — no first-person "I" leaks into menus/hints.
+    describe "welcome chrome voice + tagline (#559)" do
+      before { Rubino::Commands::Executor.welcome(runner: nil, ui: ui) }
+
+      it "uses the single shared tagline (Rubino::TAGLINE)" do
+        expect(info_lines.join("\n")).to include(Rubino::TAGLINE)
+      end
+
+      it "does not say the old second tagline variant" do
+        expect(info_lines.join("\n")).not_to include("ask in plain language")
+      end
+
+      it "has no first-person 'I' in the chrome copy" do
+        chrome = info_lines.join("\n")
+        expect(chrome).not_to match(/\bI\b/)
+        expect(chrome).not_to include("what I recall")
+      end
+
+      it "phrases the /memory hint without first person" do
+        expect(info_lines.join("\n")).to include("what rubino remembers about you")
+      end
+    end
+
     # #82: /status is the at-a-glance STATE panel — it earns its place with
     # the things a status check wants beyond the boot header.
     it "adds approval-policy, provider, and tool-roster lines (#82)" do
@@ -259,7 +283,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
   # -----------------------------------------------------------------------
   # Regression for #106: the in-chat `/memory` handler must read/write the SAME
   # active backend the agent loop, the `rubino memory` CLI (#94) and the
-  # HTTP /v1/memory ops use (the configured sqlite tiny-Zep backend), not the
+  # HTTP /v1/memory ops use (the configured sqlite backend), not the
   # legacy `:memories` table that `Memory::Store` is hardwired to. Facts stored
   # through the active backend must be visible to `/memory` / `/memory <query>`
   # and removable by `/memory forget`.
@@ -553,6 +577,11 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(cells).to include("explore")
     end
 
+    it "hands the id back to the REPL on --attach (the picker's Enter action)" do
+      e = reg.reserve(subagent: "explore", prompt: "do a thing")
+      expect(exec.try_execute("/agents #{e.id} --attach")).to eq({ attach_agent: e.id })
+    end
+
     it "drills into a running subagent with a live recent-activity snapshot (#71)" do
       e = reg.reserve(subagent: "explore", prompt: "do a thing")
       reg.record_tool_started(e.id, "read lib/foo.rb")
@@ -564,6 +593,20 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
       expect(text).to include("recent:")
       expect(text).to include("✓ read · 120 lines")
       expect(text).to include("grep current_user") # the live last_activity ● line
+    end
+
+    it "renders a one-frame subagent snapshot without starting the live watch loop" do
+      e = reg.reserve(subagent: "explore", prompt: "do a thing")
+      reg.record_tool_started(e.id, "read lib/foo.rb")
+
+      exec.try_execute("/agents #{e.id} --snapshot")
+
+      text = info_lines.join("\n")
+      expect(text).to include(e.id)
+      expect(text).to include("recent:")
+      expect(text).to include("read lib/foo.rb")
+      expect(text).not_to include("watching live")
+      expect(text).not_to include("stopped watching")
     end
 
     # #5: while the running tool streams, the drill-in frame grows an output:

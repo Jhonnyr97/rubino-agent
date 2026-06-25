@@ -76,7 +76,7 @@ module Rubino
       # API consumers, so the gate lives here now.
       def stream(chunk)
         return if chunk.is_a?(Hash) && chunk[:type] == :thinking &&
-                  Config::ReasoningPrefs.mode(Rubino.configuration) == :hidden
+                  Config::ReasoningPrefs.effective_mode(Rubino.configuration) == :hidden
 
         emit_event(:stream, chunk: chunk)
       end
@@ -85,7 +85,7 @@ module Rubino
       def thinking_started = emit_event(:thinking_started)
       def table(headers:, rows:) = emit_event(:table, headers: headers, rows: rows)
 
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         emit_event(:tool_started, name: name, arguments: arguments, at: at)
       end
 

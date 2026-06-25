@@ -136,31 +136,46 @@ module Rubino
         false
       end
 
-      # Idle completion affordance (item 5): when a BACKGROUND subagent finishes
-      # while the parent is sitting at the idle prompt, surface a non-blocking
-      # one-liner — `✓ sa_… finished — /agents <id> for the result` — so the
-      # parent stays free (no blocking, no polling, no narrating "waiting"). The
-      # maintainer's decision: a background subagent runs async and the human is
-      # NOTIFIED when it finishes, rather than the parent pretending to wait.
-      #
-      # Announced ONCE per entry (tracked in @announced_finished_subagents) so the
-      # ~50ms poll doesn't repeat the line, and only for entries that finished
-      # cleanly (:completed) — a :failed / :stopped child already gets its own
-      # worker-surfaced notice, so re-announcing here would double-report. The
-      # line commits ABOVE the pinned composer through the StdoutProxy already
-      # swapped in for the idle read, exactly like a background-task note. Best
-      # effort: a hiccup must never break the idle prompt.
-      def surface_finished_subagents
-        announced = (@announced_finished_subagents ||= {})
-        Tools::BackgroundTasks.instance.list.each do |entry|
-          next unless entry.status == :completed
-          next if announced[entry.id]
+      # NOTE: the idle "✓ sa_… finished — /agents <id> for the result" affordance
+      # (the old #surface_finished_subagents idle poll) was REMOVED here: the
+      # agent-multiplexer slice-1 worker marker (UI::CLI#subagent_finished →
+      # `✓ <id> · <name> · done`, emitted by TaskTool#record_completion the moment
+      # the child reaches a terminal state) now announces every completion exactly
+      # once — immediately at idle, or deferred to the parent turn's footer. This
+      # idle poll re-announced :completed children the worker already surfaced, so
+      # the main timeline showed the SAME finish twice (`✓ … · done` AND
+      # `✓ … finished — /agents …`). The poll's own comment already skipped
+      # :failed/:stopped "because the worker surfaces those"; :completed simply
+      # joined them once the multiplexer added its marker. Viewing a finished
+      # child's result is now the dropdown's `↓ + Enter` drill-in, not `/agents`.
 
-          announced[entry.id] = true
-          Rubino.ui.note("✓ #{entry.id} (#{entry.subagent}) finished — /agents #{entry.id} for the result")
-        end
+      # True when the idle input buffer holds nothing the user is mid-typing, so
+      # an autonomous background-subagent resume (#561) is safe to start without
+      # pre-empting a half-written line. A composer-less path (piped / -q) has no
+      # buffer to protect, so it's treated as empty. Best-effort: any hiccup
+      # reading the buffer defers the resume (returns false) rather than risking
+      # stomping a draft.
+      def idle_buffer_empty?(composer)
+        return true unless composer
+
+        composer.buffer.to_s.strip.empty?
       rescue StandardError
-        nil # the idle completion affordance is cosmetic — never break the prompt.
+        false
+      end
+
+      # Builds the SINGLE coalesced follow-up prompt that the autonomous resume
+      # (#561) hands back at idle when one or more background subagents finished
+      # after the parent's turn ended. All parked `[background-task]` completion
+      # notices are joined into one turn (never one turn per child) and framed as
+      # an instruction to act — fold in the results and deliver the combined
+      # summary the parent owed the user. Mirrors Loop::NOTICES_PREAMBLE's intent
+      # (notices are context to act on), shaped for a turn whose ONLY content is
+      # the notices (there is no trailing user message to defer to here).
+      def coalesced_resume_prompt(notices)
+        "[background subagents finished — the work you delegated is done. " \
+          "Fold in the results below and deliver the combined answer/summary " \
+          "you owe the user; do not re-delegate or wait further.]\n\n" \
+          "#{notices.join("\n\n")}"
       end
 
       # Emits a single warn for each distinct swallowed auto-resolve error so a
@@ -250,6 +265,24 @@ module Rubino
         exit(exit_code)
       end
 
+      # Shared one-shot preamble for the text and JSON paths: resolve @image
+      # tokens + --image flags into the native vision slot, build the headless
+      # runner, surface the resume-forked / resuming-compacted notices, and
+      # attach the per-run usage recorder (the SAME summed-usage seam both paths
+      # persist). Returns the shared pieces by position so each caller layers its
+      # own bits (text: model echo + activity trace + skill capture; JSON: the
+      # system_init frame + transcript baseline) around it.
+      def setup_oneshot(query, ui:, announce_session: true)
+        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
+        requested_session_id = session_resolver.resolve_session_id
+        runner = build_runner(session_id: requested_session_id, ui: ui,
+                              announce_session: announce_session)
+        warn_if_resume_forked(requested_session_id, runner)
+        note_if_resuming_compacted_parent(runner)
+        recorder = Output::TurnRecorder.new.attach!
+        [runner, text, image_paths, recorder]
+      end
+
       def run_oneshot(query)
         resolve_yolo!
         # Clear the cross-adapter fail-closed latch (F1-subagents) so a reused
@@ -278,13 +311,6 @@ module Rubino
         # prompt is skipped (an untrusted dir simply runs in restricted mode).
         setup_workspace_and_trust!(Rubino.ui, interactive: false)
 
-        # Headless/scripted attachment: honour @image tokens in the prompt AND
-        # explicit --image PATH flags, both routed to the native vision slot
-        # (image_paths) — the same path the interactive REPL uses. Without this,
-        # `-q` / `prompt` / `chat "..."` had no way to attach an image at all
-        # (attachment was REPL-only); automation, jobs and tests can now drive it.
-        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
-
         # Default-on per-tool ACTIVITY TRACE for the one-shot TEXT path (#418
         # follow-up): a plain UI::Null swallows every tool event, so a scripted
         # `rubino prompt` showed only the final answer with no window onto what
@@ -299,9 +325,13 @@ module Rubino
                       else
                         UI::HeadlessTrace.new(verbose: verbose?)
                       end
-        requested_session_id = session_resolver.resolve_session_id
-        runner = build_runner(session_id: requested_session_id, ui: headless_ui)
-        warn_if_resume_forked(requested_session_id, runner)
+        # Shared preamble: resolve @image/--image attachments, build the runner,
+        # surface the resume notices, attach the usage recorder (#382). The runner
+        # is run! (not run) below so a model/credential failure PROPAGATES instead
+        # of being swallowed into a nil and printed as an empty line with exit 0
+        # (#93): a no-key user would otherwise see ~80s of silent retries then an
+        # empty prompt and a success exit.
+        runner, text, image_paths, recorder = setup_oneshot(query, ui: headless_ui)
 
         # Capture skills distilled during this turn (#369b). SKILL_CREATED is
         # emitted by an inline skill(create) call AND by the post-turn distill
@@ -311,20 +341,6 @@ module Rubino
         # surface them to STDERR after the answer (mirroring the #372 routing:
         # post-turn notices stay off the clean stdout answer).
         created_skills = subscribe_created_skills
-
-        # Use run! (not run) so a model/credential failure PROPAGATES instead of
-        # being swallowed into a nil and printed as an empty line with exit 0.
-        # A brand-new user with no key would otherwise see ~80s of silent retries
-        # then an empty prompt and a success exit (#93) — here we surface the
-        # actionable error to stderr and exit non-zero so automation/the user can
-        # actually tell it failed.
-        # Persist per-run usage on the headless path (#382). The interactive REPL
-        # never wrote a `runs` row from the CLI either, but headless is where the
-        # gap bites: automation has no other window onto a scripted turn's token
-        # spend. Attach a TurnRecorder around the turn (the SAME summed-usage seam
-        # the JSON path uses) and write one runs row with the real input/output
-        # token counts after run! returns.
-        recorder = Output::TurnRecorder.new.attach!
 
         announce_attachment_upload(image_paths)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -492,15 +508,13 @@ module Rubino
         warn_unknown_model if model_override_given?
         setup_workspace_and_trust!(Rubino.ui, interactive: false)
 
-        text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
+        # Shared preamble (same seam the text path uses), but with a silent Null
+        # UI and announce_session:false so nothing prints to the stdout JSON
+        # contract.
         headless_ui = UI::Null.new
-        requested_session_id = session_resolver.resolve_session_id
-        runner = build_runner(session_id: requested_session_id,
-                              ui: headless_ui, announce_session: false)
-        warn_if_resume_forked(requested_session_id, runner)
-
-        recorder = Output::TurnRecorder.new.attach!
-        store    = ::Rubino::Session::Store.new
+        runner, text, image_paths, recorder =
+          setup_oneshot(query, ui: headless_ui, announce_session: false)
+        store = ::Rubino::Session::Store.new
         # Snapshot the transcript length so stream-json replays only THIS turn's
         # newly-persisted messages (the user prompt, assistant/tool steps).
         baseline = store.for_session(runner.session[:id]).length
@@ -527,11 +541,15 @@ module Rubino
         # same as the text path.
         persist_oneshot_run!(runner, text, recorder)
 
-        # Drain the detached post-turn polishing before exit (#358), same as the
-        # text path: a headless JSON/stream-json run also exits the instant run!
-        # returns, so without joining the worker the post-turn jobs never run.
-        drain_post_turn_jobs!(runner, headless_ui)
-
+        # EMIT the result envelope BEFORE draining the post-turn jobs
+        # (WHATIF-headless RED-1). The drain runs each row as a full LLM call, so
+        # any work it does must NEVER stand between the computed answer and the
+        # consumer's stdout — under --output-format json the old order (drain,
+        # then emit) withheld ALL output until the queue cleared, and a timeout
+        # kill yielded no JSON at all. The stream-json turn frames and the
+        # success/fail-closed/budget result object are all computed from state
+        # `run!` already produced, so they emit immediately; #drain_post_turn_jobs!
+        # then runs (scoped to this session) just before the process exits.
         if fmt == :stream_json
           new_messages = store.for_session(runner.session[:id]).drop(baseline)
           Output::ResultSerializer.message_frames(new_messages).each { |f| emit_json(f) }
@@ -557,6 +575,8 @@ module Rubino
                                result_text: response.to_s,
                                message: block_msgs.join("; ") }
                     ))
+          $stdout.flush
+          drain_post_turn_jobs!(runner, headless_ui)
           exit(2)
         end
 
@@ -575,6 +595,8 @@ module Rubino
                                result_text: response.to_s,
                                message: "turn budget exhausted (--max-turns); run truncated" }
                     ))
+          $stdout.flush
+          drain_post_turn_jobs!(runner, headless_ui)
           exit(1)
         end
 
@@ -582,6 +604,13 @@ module Rubino
                     recorder: recorder, final_text: response.to_s, session: runner.session,
                     duration_ms: duration_ms, model: model_name
                   ))
+        $stdout.flush
+
+        # Drain the detached post-turn polishing AFTER the result is on stdout
+        # (#358 + WHATIF-headless RED-1): a headless run exits the instant run!
+        # returns, so without joining the worker the post-turn jobs never run —
+        # but the answer is already flushed, so the drain can never withhold it.
+        drain_post_turn_jobs!(runner, headless_ui)
       # A user interrupt (#335a) still emits a well-formed, parseable result
       # object on stdout (flagged interrupted) so automation never sees a raw
       # backtrace, then exits with the conventional 130. The Loop already
@@ -737,6 +766,14 @@ module Rubino
 
       def drain_post_turn_jobs!(runner, headless_ui = nil)
         runner.polishing.wait if runner.respond_to?(:polishing) && runner.polishing
+        # SCOPE the sweep to THIS run's own post-turn jobs (WHATIF-headless
+        # RED-1). The unscoped reaper drained the WHOLE due/queued backlog inline
+        # — a foreign backlog (each row a full LLM call) made a trivial one-shot
+        # block 9-15+ min past its answer. Pass the current session id so only
+        # the rows this turn enqueued (Extract/Distill/Summarize, all payload-
+        # tagged with the session id) are drained; a foreign backlog stays
+        # `queued` for the next run / the worker.
+        session_id = runner&.session && runner.session[:id]
         # Route the inline orphan-reaper through the headless (Null) UI (#372).
         # The detached polishing worker already runs under the runner's Null UI,
         # but #reap_inline_orphans runs on THIS main thread with no UI binding,
@@ -745,7 +782,7 @@ module Rubino
         # "✓ saved to memory …" banner onto stdout — polluting
         # `answer=$(rubino prompt …)`. Bind the Null UI so headless stdout stays
         # exactly the model answer.
-        reap = -> { Jobs::Queue.new.reap_inline_orphans }
+        reap = -> { Jobs::Queue.new.reap_inline_orphans(session_id: session_id) }
         headless_ui ? Rubino.with_ui(headless_ui, &reap) : reap.call
       rescue StandardError => e
         Rubino.logger.warn(event: "oneshot.drain_failed", error: e.class.name, message: e.message)
@@ -834,6 +871,15 @@ module Rubino
 
         ui = Rubino.ui
 
+        # Validate an EXPLICIT --resume/--session id BEFORE the boot banner
+        # (#resume-banner-order): a bad id used to print the rubino/workspace/
+        # branch/model banner on stdout and THEN the "Session not found" error on
+        # stderr — making a failed resume look like a session was starting. Fail
+        # cleanly first (stderr + exit 1, via the SessionError rescue in #chat)
+        # so no misleading banner is emitted. The happy path (valid id) is
+        # untouched: build_runner below does the authoritative resume.
+        validate_explicit_resume!
+
         # Capture git context before creating runner (session not yet available)
         git = git_context
 
@@ -853,6 +899,7 @@ module Rubino
         note = Rubino::UpdateCheck.notice_from_cache
         ui.status(note) if note
         Rubino::UpdateCheck.refresh_async_if_stale
+        warn_sandbox_degraded(ui)
         ui.blank_line
 
         # Seed --add-dir roots and run the folder-trust gate before any turn
@@ -875,8 +922,8 @@ module Rubino
         # Best-effort: a closed terminal / kill marks the session ended too (#100).
         prev_signal_traps = install_session_end_traps(runner)
 
-        cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
-        cmd_loader   = Rubino::Commands::Loader.new
+        swap_runner!(runner, ui)
+        cmd_loader = Rubino::Commands::Loader.new
 
         # The bottom composer is now the SINGLE input path (idle AND in-turn): one
         # pinned-bottom editor with full editing parity, so output/reasoning/
@@ -892,6 +939,7 @@ module Rubino
           # that we picked up their last session and how to start fresh —
           # otherwise the continuation is silent and looks like a fresh boot.
           session_resolver.print_auto_resume_line(ui, runner.session) if session_resolver.auto_resumed_session
+          note_if_resuming_compacted_parent(runner, ui: ui)
           session_resolver.print_session_history(ui, runner.session[:id])
         else
           # First-run welcome panel: the same assembler /status uses, trimmed.
@@ -944,8 +992,7 @@ module Rubino
             # same swap-in-place /branch and /compact do).
             if (rewound = @rewound_runner)
               @rewound_runner = nil
-              runner = rewound
-              cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+              runner = swap_runner!(rewound, ui)
             end
             if input.nil? || exit_command?(input)
               break if confirm_quit?(ui)
@@ -961,6 +1008,26 @@ module Rubino
             # multi-thousand-token turn to answer what `/help` shows instantly.
             # Treat these aliases as the slash command so they dispatch locally.
             input = help_alias_to_command(input)
+
+            # Return to the main session — from the ← back-out, the picker's "◂
+            # main" row, or a typed /detach: detach if attached, a harmless no-op
+            # at the main prompt. Handled before the attached-input intercept so it
+            # works in both states.
+            if %w[/detach /back].include?(input)
+              detach_agent_view(runner, ui) if attached_to_agent?
+              next
+            end
+
+            # While ATTACHED to a subagent (the agent-view), the prompt is scoped
+            # to it: the line NEVER runs a parent turn. A `/`-line is an
+            # agent-scoped command; anything else steers the child (or answers it
+            # when it is blocked on you). The `--attach` command that ENTERS this
+            # mode (from the main prompt) arrives while @attached_id is still nil,
+            # so it falls through to normal dispatch below.
+            if attached_to_agent?
+              handle_attached_input(input, runner, ui, @cmd_executor)
+              next
+            end
 
             # Image-input commands manipulate the pending-attachment state local
             # to this REPL (not the agent), so they're handled here before the
@@ -1021,9 +1088,22 @@ module Rubino
               # (#192). Commit it here — echo + drop the indicator — before the
               # command runs, whatever the dispatch result is.
               commit_queued_dispatch
-              result = cmd_executor.try_execute(input)
+              result = @cmd_executor.try_execute(input)
               case result
-              when :exit    then break
+              when :exit
+                # `/exit` / `/quit` dispatched through the slash executor must
+                # honour the SAME quit-guard as Ctrl+D / a bare `exit` (#154):
+                # confirm before killing in-flight background subagents instead
+                # of breaking silently. The idle pre-filter above (#exit_command?)
+                # already routes the bare/`/`-prefixed forms through
+                # #confirm_quit?, but a slash form that reaches the executor (e.g.
+                # an alias / a future quit verb that bypasses the pre-filter) must
+                # not be a silent-kill back door — gate it here too so EVERY quit
+                # path is consistent. Decline (live children + `n`) returns to the
+                # prompt instead of exiting.
+                break if confirm_quit?(ui)
+
+                next
               when :handled then next
               when Hash
                 if result[:probe]
@@ -1037,8 +1117,14 @@ module Rubino
                   # /branch [name]: fork the current session here into a new
                   # saved one (inheriting context + any preceding probe) and
                   # SWITCH into it, leaving the original intact.
-                  runner = branch_runner(ui, runner, result[:title])
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(branch_runner(ui, runner, result[:title]), ui)
+                  next
+                end
+                if result[:attach_agent]
+                  # Enter on the subagent picker: switch the whole timeline to
+                  # that agent's (clear + replay) and scope the input to it. No
+                  # turn runs; subsequent input is intercepted above until detach.
+                  attach_agent_view(result[:attach_agent], ui)
                   next
                 end
                 if result[:resume_session_id]
@@ -1047,8 +1133,7 @@ module Rubino
                   # prompt — no process restart needed. Leaving a branch (e.g.
                   # back to the parent) drops the branch token from the status bar.
                   @branch_short_id = nil
-                  runner = resume_runner(ui, result[:resume_session_id])
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(resume_runner(ui, result[:resume_session_id]), ui)
                   next
                 end
                 if result[:compact_into]
@@ -1056,17 +1141,19 @@ module Rubino
                   # child session (the source is now status "compacted") —
                   # swap the runner into the child WITHOUT replaying history,
                   # so the next turn runs on the compacted context.
-                  runner = build_runner(session_id: result[:compact_into], ui: ui)
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner = swap_runner!(build_runner(session_id: result[:compact_into], ui: ui), ui)
                   next
                 end
                 if result[:new_session]
                   # /new: end the current session and rebuild the runner on a
                   # fresh one in place — the counterpart to the bare-chat resume.
+                  # handoff: the REPL stays interactive, so the end-of-session
+                  # memory flush is enqueued detached instead of blocking the
+                  # prompt 2-3s on its aux-LLM extract (the new runner's worker
+                  # drains it).
                   @branch_short_id = nil
-                  runner.end_session!
-                  runner = fresh_runner(ui)
-                  cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: runner)
+                  runner.end_session!(handoff: true)
+                  runner = swap_runner!(fresh_runner(ui), ui)
                   interacted = false
                   next
                 end
@@ -1100,10 +1187,12 @@ module Rubino
           # before we return. Without this a child blocked on ask_parent(blocking)
           # stays parked on its gate for the full ask_parent_timeout (~900s) — the
           # parent that owed it an answer is gone, but nothing wakes its gate.
-          # #cancel_all wakes each within one WAKE_TICK so it unwinds via its
-          # `rescue Rubino::Interrupted` with the clean "cancelled" message. No-op
+          # #shutdown! wakes each within one WAKE_TICK so it unwinds via its
+          # `rescue Rubino::Interrupted` with the clean "cancelled" message. If a
+          # child is stuck in a provider read and never observes the cancel token,
+          # it force-kills the Ruby thread so the REPL can actually exit. No-op
           # when there are no children.
-          Tools::BackgroundTasks.instance.cancel_all
+          Tools::BackgroundTasks.instance.shutdown!
           restore_signal_traps(prev_signal_traps)
           restore_logger(prev_log_io)
         end
@@ -1115,6 +1204,15 @@ module Rubino
         ui.blank_line
         ui.info("Session ended.")
         session_resolver.print_resume_hint(ui, runner.session) if interacted
+
+        # Field standard: a session that surfaced an AUTH/credential error must
+        # NOT report success on exit (git/gh/Claude Code/Codex all exit non-zero
+        # on a credential failure). The interactive REPL deliberately stays alive
+        # after a failed turn (the user can fix their key and retry), so the
+        # failure is latched on the runner and the NON-ZERO exit is deferred to
+        # here — after the clean teardown. A session that never hit an auth error
+        # keeps its normal exit 0, so clean-quit behaviour is unchanged.
+        exit(1) if runner.respond_to?(:auth_error?) && runner.auth_error?
       end
 
       # Best-effort: on a terminal close (SIGHUP) or kill (SIGTERM) mark the
@@ -1134,15 +1232,19 @@ module Rubino
             # truthfully ("interrupted by external signal"), not "by user"
             # (#361b). Trap-safe — cancel! only flips lock-free booleans.
             runner.cancel!(reason: :external)
-            # The process is about to exit(0): cancel every live subagent so a
-            # child blocked on ask_parent(blocking) wakes and unwinds NOW instead
-            # of dying with its thread mid-park (and so its terminal :stopped
-            # ensure can run). #cancel_all only flips one-shot cancel tokens and
-            # pushes the gate's queue sentinel under the registry/gate mutexes —
-            # the same short, non-self-reentrant locking the adjacent
-            # end_session! DB update already does in this trap; no I/O. No-op when
-            # there are no children.
-            Tools::BackgroundTasks.instance.cancel_all
+            # The process is about to exit(0): reap every shell process group a
+            # subagent spawned (each its own pgid) so it does NOT reparent to
+            # init as a live orphan (MED-2 / #465). This MUST stay trap-safe:
+            # Ruby forbids Mutex#synchronize from a signal-trap context, so we do
+            # NOT route through BackgroundTasks#cancel_all here (its #running /
+            # #stop_entry / and the old #kill_all_groups all take a mutex →
+            # ThreadError, which killed the whole trap and left the shells
+            # orphaned, #478). #kill_all_groups now reads a lock-free pgid
+            # snapshot and only calls Process.kill/sleep — both async-signal-safe.
+            # The cooperative subagent-gate cancel #cancel_all also does is moot
+            # here: the threads die with this process at exit, and waking their
+            # gates would need the forbidden lock.
+            Tools::ShellRegistry.instance.kill_all_groups
             runner.end_session!
             exit(0)
           end
@@ -1387,6 +1489,13 @@ module Rubino
         # Declared BEFORE the composer so the lambda captures this local.
         # Without a runner there is no session to rewind, so no hook.
         rewind_pending = false
+        # Idle Ctrl+C (#551): the composer reads \x03 as a BYTE and calls this
+        # hook (raw(intr: true) does NOT reliably keep ISIG on — on Darwin Ctrl+C
+        # is swallowed without raising SIGINT, so the in-band byte is the only
+        # dependable signal). It just flips the flag the poll loop below drains
+        # to run the clear/two-tap-exit through #idle_interrupt — declared here so
+        # the lambda captures it.
+        int_pending = false
         composer = UI::BottomComposer.new(
           input_queue: input_queue,
           prompt: build_prompt,
@@ -1402,10 +1511,23 @@ module Rubino
           max_input_rows: Rubino.configuration.display_input_max_rows,
           paste_store: paste_store,
           on_double_esc: runner ? -> { rewind_pending = true } : nil,
+          on_idle_interrupt: -> { int_pending = true },
           # ONE Esc cancels the detached post-turn polishing (#319): only when
           # it's actually in flight, so a stray idle Esc still falls through to
           # the rewind chord. Trap-safe — flips the polishing cancel token only.
-          on_escape: idle_polishing_escape(runner)
+          on_escape: idle_polishing_escape(runner),
+          # While attached to a subagent, ← on the empty scoped prompt detaches to
+          # the main timeline (arrows + Enter only — the picker's "◂ main" row does
+          # the same). Routed through the input queue so the idle loop runs it the
+          # same way a typed /detach would. nil when not attached.
+          on_back: (attached_to_agent? ? -> { input_queue.push("/detach") } : nil),
+          # Seed the focus-gate from the PERSISTENT attach-state (#82): this
+          # composer is rebuilt every idle pass, so a flag set on the previous
+          # one at attach time is gone the moment the loop recreates it.
+          # Reconcile it here so the parent cards stay suppressed and the
+          # focused sub's live tail owns the screen. The id (not just a bool)
+          # so the while-attached switcher marks the focused sub (#87).
+          attached: @attached_id
         )
         composer.start
         # Route $stdout through the composer for the whole idle read — the SAME
@@ -1421,16 +1543,16 @@ module Rubino
         idle_cards.paint
         ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
 
-        # Gate idle Ctrl+C through the composer (BH-2): the composer runs under
-        # raw(intr: true), so a single Ctrl+C still raises SIGINT — which would
-        # otherwise hit the session-end / default handler and quit, silently
-        # discarding a typed draft. Trap INT here so a draft is never nuked: the
-        # trap body stays trap-safe (flip a flag only — Mutex#lock is forbidden
-        # in a trap, Ruby #14222), and the poll loop below performs the actual
-        # clear/hint/exit through the composer OUTSIDE trap context. Restored in
-        # the ensure so the trap never leaks past the idle read.
-        int_pending = false
-        prev_int    = trap_idle_int { int_pending = true }
+        # SIGINT trap as a FALLBACK only (BH-2 / #551): the dependable idle Ctrl+C
+        # path is now the in-band \x03 byte (on_idle_interrupt above), because
+        # raw(intr: true) does NOT reliably raise SIGINT (Darwin swallows it). On
+        # the platforms where the signal DOES still arrive we keep this trap so a
+        # stray SIGINT flips the SAME int_pending flag (the poll loop drains it
+        # via #idle_interrupt) instead of hitting the default handler and quitting,
+        # silently discarding a typed draft. Trap-safe (flip a flag only — Mutex
+        # is forbidden in a trap, Ruby #14222); restored in the ensure so it never
+        # leaks past the idle read.
+        prev_int = trap_idle_int { int_pending = true }
 
         # Non-blocking "polishing… (Esc to skip)" indicator (#319): the detached
         # post-turn polishing is still running while THIS idle prompt is live, so
@@ -1450,6 +1572,19 @@ module Rubino
             break if composer.idle_interrupt(window: DOUBLE_TAP_SECONDS) == :exit
           end
 
+          # Single Ctrl+D at the empty idle prompt (or a closed stdin): the
+          # reader saw an EOF/quit and STOPPED — surface it here as nil (EOF) so
+          # #read_idle_line returns and the REPL quit-guard (#confirm_quit?)
+          # runs. Without this the loop would sleep-spin forever (the reader is
+          # gone and never pushes a line). Mirrors the Ctrl+C path above. A
+          # Ctrl+D on a NON-empty buffer is delete-forward, not quit, so it never
+          # sets the flag — that affordance is preserved.
+          if composer.quit_pending?
+            composer.clear_quit_pending
+            line = nil
+            break
+          end
+
           # Auto-open the EXISTING approval / reply prompt for a pending subagent
           # request (#421): a parked child needs a human decision, so the
           # affordance presents ITSELF here at idle instead of leaving a passive
@@ -1467,11 +1602,6 @@ module Rubino
             next
           end
 
-          # Non-blocking idle completion affordance (item 5): announce any
-          # background subagent that finished while we've been idle, then carry on
-          # reading input — the parent never blocks or polls for a child.
-          surface_finished_subagents
-
           # Take ONE parked line (FIFO) so several items queued at idle each run
           # as their OWN turn (B4), in submission order — never coalesced. The
           # rest stay parked for the next #next_input / loop pass. Checked
@@ -1488,6 +1618,43 @@ module Rubino
             @input_from_queue = pending_queued.include?(queued) ? [queued] : nil
             line = queued
             break
+          end
+
+          # AUTONOMOUS background-subagent resume (#561): no typed line is
+          # waiting, but one or more children finished AFTER the parent's turn
+          # ended and parked their `[background-task]` completion notices. The
+          # mid-turn fold-in (Loop#inject_steered_input) only fires while the
+          # parent is still iterating, so two children + "wait for both" left the
+          # parent idle forever — the combined result never delivered. Here we
+          # COALESCE every parked notice into ONE follow-up turn and return it as
+          # the next prompt, so the parent resumes on its own and summarises the
+          # results. Guards:
+          # - notices_pending? is false the moment a typed line exists (it wins
+          #   via #shift above and folds the notices in on its own turn), so an
+          #   in-progress prompt is never pre-empted;
+          # - the buffer guard defers while the user is mid-line (the notice stays
+          #   parked, never discarded, and rides the line the user submits);
+          # - the attach guard defers while the view is SCOPED to a subagent
+          #   (the user detached to it / drilled in): a line returned here is
+          #   intercepted by #handle_attached_input and STEERED into the focused
+          #   child, so firing the resume while attached would feed the parent's
+          #   `[background subagents finished …]` prompt to the child and DRAIN
+          #   the notices — the parent then sits idle forever, the combined
+          #   result never delivered (#51). Parked, they ride the parent turn the
+          #   moment the user returns to the main prompt (← / /back);
+          # - the drain is atomic and one-shot, so the same completions can't
+          #   re-trigger a second turn.
+          if input_queue.notices_pending? && idle_buffer_empty?(composer) && !attached_to_agent?
+            notices = input_queue.drain_notices
+            unless notices.empty?
+              line = coalesced_resume_prompt(notices)
+              # Synthetic resume, not a user submission: do NOT echo it as a typed
+              # message (no @input_from_queue). Each finished child was already
+              # surfaced above the prompt by its worker `✓ <id> · <name> · done`
+              # marker (UI::CLI#subagent_finished).
+              @input_from_queue = nil
+              break
+            end
           end
 
           # Drain an Esc-Esc the reader recorded: open the rewind picker (it
@@ -1547,11 +1714,17 @@ module Rubino
       # model/context status bar. A cosmetic repaint must never break the prompt.
       def update_polishing_indicator(composer, runner, shown)
         return shown unless composer.respond_to?(:set_status)
+        # The polishing indicator belongs to the MAIN session the user stepped
+        # away from; while ATTACHED to a sub the focused view owns the screen, so
+        # this dim "polishing memory…" status must NOT bleed into it (#82). It's
+        # driven through #set_status (the status BAR), which is not behind the
+        # main-render gate, so suppress it at the source here.
+        return shown if attached_to_agent?
 
         running = runner&.polishing? || false
         return shown if running == shown
 
-        composer.set_status(running ? polishing_status_line : build_status_line(runner))
+        composer.set_status(running ? polishing_status_line(runner) : build_status_line(runner))
         running
       rescue StandardError
         shown
@@ -1559,10 +1732,21 @@ module Rubino
 
       # The dim, non-blocking indicator text. Reads as background (not a block)
       # precisely because the composer stays editable beneath it (#319).
-      def polishing_status_line
-        pastel.dim("polishing memory… (Esc to skip)")
+      #
+      # The polish worker runs for >1min after almost every turn, so it must NOT
+      # OCCLUDE the `ctx ~Xk/128k (Y%)` saturation bar for that whole window —
+      # ctx% at idle is the at-a-glance "how full am I / when will it compact"
+      # signal (S7 F2). Render the indicator ALONGSIDE the normal status bar
+      # (`polishing memory… (Esc to skip) · <mode · model · ctx …>`) so both stay
+      # visible; fall back to the bare indicator when there is no status bar.
+      def polishing_status_line(runner = nil)
+        indicator = pastel.dim("polishing memory… (Esc to skip)")
+        bar = runner && build_status_line(runner)
+        return indicator if bar.nil? || bar.to_s.strip.empty?
+
+        "#{indicator}#{pastel.dim(" · ")}#{bar.to_s.lstrip}"
       rescue StandardError
-        "polishing memory… (Esc to skip)"
+        pastel.dim("polishing memory… (Esc to skip)")
       end
 
       # Seed a carried-over draft into the composer char-by-char so cursor/delete
@@ -1713,6 +1897,19 @@ module Rubino
         # flushed, after the footer) in the ensure below.
         composer.begin_turn if composer.respond_to?(:begin_turn)
 
+        # Keep the collapsed subagent panel painted for the WHOLE turn, not just
+        # at idle. When the user submits a new prompt WHILE background subagents
+        # are still live, run_turn starts a FRESH composer (empty @cards) and the
+        # idle ticker that had been repainting the panel died when the idle read
+        # returned — so without this the panel vanishes through the thinking
+        # phase and only reappears when the first child tap (a tool start/finish
+        # repaint) fires. Paint the registry snapshot onto the new composer now
+        # and run the SAME low-frequency ticker the idle prompt uses, so the
+        # cards stay visible and their elapsed time advances until the turn ends.
+        # Killed in the ensure below.
+        idle_cards.paint
+        card_ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
+
         # If this turn's prompt came off the input queue (interrupt-by-default
         # Enter, Alt+Enter, or "/queued" during the previous turn), commit it now
         # as a NORMAL "<prompt><line>" message above the input — the same echo an
@@ -1772,6 +1969,10 @@ module Rubino
         # time the runner returns, so the facet has already landed in the
         # footer and the engine thread must not outlive the turn.
         ui.turn_finished if ui.respond_to?(:turn_finished)
+        # Stop the during-turn panel ticker before tearing the composer down, so
+        # it can't repaint over the next idle prompt (the idle read starts its
+        # own ticker). Idempotent if it already exited on its own (no live child).
+        card_ticker&.kill
         composer.end_turn if composer.respond_to?(:end_turn)
         # Refresh the status bar (model + context saturation) now that the
         # turn's messages are persisted — the "after each footer" boundary.
@@ -1915,6 +2116,7 @@ module Rubino
         # window where inline jobs (memory auto-extract, skill distill) spend
         # aux-LLM seconds after the `↳ turn` footer — so `/` and `@` dropdowns
         # and ↑↓ history work whenever the prompt is visible (#169).
+        busy = busy_command_handler(runner)
         composer = UI::BottomComposer.new(input_queue: input_queue, prompt: build_prompt,
                                           rail: composer_rail,
                                           on_ctrl_o: ctrl_o_handler,
@@ -1926,7 +2128,20 @@ module Rubino
                                           status_line: build_status_line(runner),
                                           max_input_rows: Rubino.configuration.display_input_max_rows,
                                           paste_store: paste_store,
-                                          on_busy_command: busy_command_handler(runner))
+                                          # ← on an empty prompt backs out of an attached subagent view to the
+                                          # main timeline MID-TURN too (slice 3): routed through the SAME busy
+                                          # handler typed lines use so the detach happens IMMEDIATELY on the
+                                          # reader thread (not queued behind the still-running turn). Guarded by
+                                          # attached_to_agent? so it's a no-op cursor key when not attached.
+                                          on_back: -> { busy.call("/back") if attached_to_agent? },
+                                          # Seed the focus-gate from the persistent attach-state (#82):
+                                          # if a turn's composer is built while already attached to a
+                                          # sub (attach happened mid-turn, the parent kept running), it
+                                          # starts suppressed so the parent's stream/cards stay off the
+                                          # focused view. The id (not just a bool) so the while-attached
+                                          # switcher marks the focused sub (#87).
+                                          attached: @attached_id,
+                                          on_busy_command: busy)
         composer.start
         real_stdout = $stdout
         # Force the lazily-built logger to bind to the REAL $stdout NOW, before
@@ -1977,8 +2192,31 @@ module Rubino
       def busy_command_handler(runner)
         executor = Rubino::Commands::Executor.new(ui: Rubino.ui, runner: runner)
         lambda do |line|
+          # While ATTACHED to a sub mid-turn (Slice 3): every typed line is
+          # SCOPED to the sub, not the running parent — detach on /back|/detach,
+          # otherwise steer/answer the child (the same routing the idle loop's
+          # #handle_attached_input does). Return :immediate so the composer does
+          # NOT queue it as a parent steer. The parent turn keeps running.
+          if attached_to_agent?
+            ui = Rubino.ui
+            if %w[/detach /back].include?(line.strip)
+              detach_agent_view(runner, ui)
+            else
+              handle_attached_input(line, runner, ui, executor)
+            end
+            next :immediate
+          end
+
           disposition = executor.busy_disposition(line)
-          executor.try_execute(line) if disposition == :immediate
+          if disposition == :immediate
+            result = executor.try_execute(line)
+            # `/agents <id> --attach` mid-turn (Slice 3): the post-turn dispatch
+            # acts on the {attach_agent:} signal, but during a turn the REPL is
+            # blocked in #run_turn — so do the view switch HERE, on the reader
+            # thread (clear + replay the sub + scope the prompt). attach_agent_view
+            # suppresses the parent's painting; the parent turn keeps running.
+            attach_agent_view(result[:attach_agent], Rubino.ui) if result.is_a?(Hash) && result[:attach_agent]
+          end
           disposition
         rescue StandardError
           :pass
@@ -2412,6 +2650,12 @@ module Rubino
       # rail itself (#composer_rail), so committed echoes built from this
       # ("❯ <line>") stay rail-free in scrollback.
       def build_prompt
+        # While attached to a subagent the prompt is SCOPED to it, so the next
+        # idle composer signals "you're talking to this agent" (the input steers
+        # /answers it, never runs a parent turn). build_prompt is the single place
+        # the idle composer's label comes from, so the scope rides every rebuild.
+        return "#{@attached_id} #{PROMPT_CARET} " if @attached_id
+
         "#{PROMPT_CARET} "
       end
 
@@ -2522,7 +2766,7 @@ module Rubino
       end
 
       def model_name
-        opt(:model) || opt(:m) || Rubino.configuration.model_default
+        opt(:model) || opt(:m) || Rubino.configuration.dig("model", "default")
       end
 
       def model_override_given?
@@ -2553,6 +2797,27 @@ module Rubino
              "(accepted unverified; a typo here will hit the provider as-is)."
       end
 
+      # One-time loud banner when the OS write-sandbox was requested (config mode
+      # != off) but no Seatbelt/Landlock mechanism is available — the §4 fail-
+      # open case (#290/#544). Honest about the gap (the lesson of #544): shell
+      # writes are NOT OS-confined; approval prompts + the hardline floor are the
+      # only boundary. Guarded once per process so it doesn't repeat on /status
+      # or a resume within the same session.
+      def warn_sandbox_degraded(ui)
+        if Rubino::Security::Sandbox.degraded?
+          ui.warning(Rubino::Security::Sandbox.degradation_notice)
+        elsif Rubino::Security::Sandbox.present_but_not_enforcing?
+          ui.warning(
+            "OS write-sandbox helper present but NOT enforcing on this host " \
+            "(runtime self-test denied no write — Landlock/Seatbelt not active); " \
+            "shell writes are NOT confined. Approval prompts + the hardline floor " \
+            "are the only boundary."
+          )
+        end
+      rescue StandardError
+        nil
+      end
+
       # A headless `--resume <id>` that LOSES the concurrent-claim race is
       # silently re-routed to a FORK (the Runner copies history into a fresh
       # session so two writers never interleave). The Runner's status line for
@@ -2570,6 +2835,52 @@ module Rubino
 
         warn "rubino: session #{requested_session_id.to_s[0, 8]} is in use by another " \
              "rubino — resumed a forked copy: #{session[:id].to_s[0, 8]}"
+      end
+
+      # An EXPLICIT `--resume <id>` of a session that was later COMPACTED resumes
+      # the literal un-compacted parent (status "compacted") — intentional, since
+      # an explicit id means "this exact session". But a compacted continuation
+      # (a child carrying the summarised context) exists, and the user got no
+      # hint of it (#501). Print a note that the original was compacted and how
+      # to pick up the continuation instead; do NOT change which session loads.
+      # Only fires for explicit --resume (not --continue / auto-resume, which
+      # already land on the freshest resumable row) and only when the resolved
+      # session is itself a compacted parent. +ui+ surfaces it inline for the
+      # interactive REPL; the headless paths pass nil and it goes to STDERR,
+      # mirroring warn_if_resume_forked.
+      def note_if_resuming_compacted_parent(runner, ui: nil)
+        return unless opt(:resume) || opt(:r)
+
+        session = runner.session
+        return unless session && session[:status].to_s == "compacted"
+
+        msg = "session #{session[:id].to_s[0, 8]} was compacted — resuming the " \
+              "original; use --continue for the compacted continuation."
+        ui ? ui.info(msg) : warn("rubino: #{msg}")
+      end
+
+      # Pre-flight existence check for an EXPLICIT --resume/-r/--session/-s id,
+      # run BEFORE the boot banner so a bad id errors cleanly with no misleading
+      # banner (#resume-banner-order). Mirrors the runner's own lookup
+      # (find_by_id_or_title) and raises the SAME SessionError when the id is
+      # unknown — the #chat rescue turns it into a stderr line + exit 1. A
+      # KNOWN id (or any non-explicit path: --continue / bare-chat auto-resume)
+      # is a no-op, so build_runner stays the authoritative resume and the happy
+      # path is unchanged. Best-effort: a repository hiccup falls through to the
+      # normal path rather than blocking a valid resume.
+      def validate_explicit_resume!
+        id = opt(:session) || opt(:resume) || opt(:r)
+        return if id.nil? || id.to_s.strip.empty?
+
+        return if Session::Repository.new.find_by_id_or_title(id)
+
+        raise Rubino::SessionError,
+              "Session not found: #{id}. " \
+              "Try `rubino sessions list`, or resume by id prefix."
+      rescue Rubino::SessionError
+        raise
+      rescue StandardError
+        nil
       end
 
       # True when the model id resolves in ruby_llm's registry. A fake/* id (the
@@ -2624,6 +2935,189 @@ module Rubino
         build_runner(session_id: nil, ui: ui)
       end
 
+      # --- agent-attach view (timeline switch + scoped input) ------------------
+
+      # True while the prompt is scoped to a background subagent: the on-screen
+      # timeline IS that agent's and typed input steers/answers it.
+      def attached_to_agent?
+        !@attached_id.nil?
+      end
+
+      # Switch the view to a background subagent: clear the screen and replay ITS
+      # OWN full transcript (each child runs its own runner+session), then scope
+      # the prompt to it (build_prompt picks up @attached_id on the next idle
+      # composer). This replaces the bounded registry snapshot the old `/agents
+      # <id>` drill-in showed with the agent's REAL conversation — its tool calls
+      # and what it said.
+      def attach_agent_view(id, ui)
+        entry = Tools::BackgroundTasks.instance.find(id)
+        return ui.error("no background subagent with id #{id}") unless entry
+
+        @attached_id = id
+        # Focus the composer on this sub (tmux-style unified render): only frames
+        # whose origin is this sub now paint. The still-running parent turn keeps
+        # streaming to its own session but its frames (origin :main) DROP; the sub
+        # paints its OWN live tool rows + streaming prose through its per-sub CLI.
+        # Focus BEFORE the replay so parent frames drop straight away; the replay
+        # itself renders through the exempt seam below. No-op off a composer.
+        composer = UI::BottomComposer.current
+        composer&.focus_agent!(id)
+        clear_terminal
+        snapshot = Array(entry.messages)
+        with_focused_view_replay(composer) do
+          # Drop the global subagent-card stack: while attached, the focused view
+          # (this sub's transcript + its own live tail) owns the screen. The cards'
+          # own repaints are already focus-gated off while attached, but the LAST
+          # set persists in @cards and would redraw under every sub frame,
+          # crowding/clobbering it. Clearing here (replay-exempt, so it lands past
+          # the focus gate) hands the bottom region to the sub; detach refocuses
+          # main and the cards return.
+          composer&.set_cards([])
+          ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
+                  pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
+          session_resolver.replay_messages(ui, snapshot)
+        end
+        # No watcher: the sub's OWN per-sub CLI now paints its ongoing activity
+        # live through the focus gate (it commits with this sub's origin), so the
+        # attached view stays live without a polling ticker.
+      end
+
+      # Leave the agent-view and return to the main session: clear the screen,
+      # replay the main timeline, drop the scope (build_prompt returns the default
+      # ❯ again on the next idle composer).
+      def detach_agent_view(runner, ui)
+        @attached_id = nil
+        clear_terminal
+        # Rebuild the main view from its full session — this captures everything
+        # the parent turn streamed WHILE we were away (it kept persisting). Render
+        # it through the exempt seam (focus is still on the sub here), THEN refocus
+        # :main so a still-running parent turn paints normally again from its next
+        # frame.
+        composer = UI::BottomComposer.current
+        with_focused_view_replay(composer) do
+          ui.info(pastel.dim("◀ back to the main session"))
+          session_resolver.replay_session(ui, runner.session[:id])
+        end
+        composer&.focus_agent!(:main)
+      end
+
+      # Render the attach/detach REPLAY (the focused view the user is meant to
+      # see) through the composer's replay-exempt seam, so it paints regardless of
+      # which agent is currently focused. Yields plainly when no composer owns the
+      # screen (plain TTY / pipe / tests) — there is no focus gate there.
+      def with_focused_view_replay(composer, &)
+        return yield unless composer
+
+        composer.with_replay_exempt(&)
+      end
+
+      # Adopt a new runner for the REPL and rebuild the command executor against
+      # it in ONE place. Every branch that swaps the live runner (rewind, /branch,
+      # /sessions, /compact, /new, plus the initial build) routes through here, so
+      # the "runner changed → executor must follow" invariant can't be forgotten
+      # by a future branch and leave a stale executor wired to the old runner.
+      # Returns the new runner so callers can write `runner = swap_runner!(...)`.
+      def swap_runner!(new_runner, ui)
+        @cmd_executor = Rubino::Commands::Executor.new(ui: ui, runner: new_runner)
+        new_runner
+      end
+
+      # Route a line typed while attached. `/back`/`/detach` (or the child being
+      # gone) return to the main view; a `/`-line is a COMMAND — the agent-scoped
+      # raw-text forms (bare `/stop`, `/reply`, `/probe`, `--attach`) are handled
+      # in place, and EVERY other `/`-command (`/stop <id>`, `/agents`, `/status`,
+      # …) routes through the SAME executor the main prompt uses (R3); only plain
+      # text answers a blocked child or steers a running one. Reuses the existing
+      # handlers, so no new command surface is introduced.
+      def handle_attached_input(input, runner, ui, cmd_executor)
+        id = @attached_id
+
+        # `/back` / `/detach` ALWAYS return to main, regardless of composer draft
+        # state (Y3): ← is eaten as cursor-left when a draft is present, so this
+        # is the key-independent way out. Handled FIRST so it works even on a dead
+        # scope and before any steer/dispatch routing below. (The idle + busy
+        # callers also pre-intercept it; this is the robust floor.)
+        return detach_agent_view(runner, ui) if %w[/back /detach].include?(input)
+
+        entry = Tools::BackgroundTasks.instance.find(id)
+
+        # The child's entry is GONE (reaped) while attached: nothing to show —
+        # fall back to the main view so the user is never stranded on a dead scope.
+        return detach_agent_view(runner, ui) if entry.nil?
+
+        # The child reached a TERMINAL state (completed/failed/stopped) WHILE you're
+        # attached: its entry still exists (so you keep its final snapshot on
+        # screen), but it can no longer be steered/answered. DON'T route typed text
+        # to steer — that returned the alarming "✗ cannot steer <id> — no such
+        # running subagent (subagents reset when rubino restarts)" and left the
+        # prompt wedged on a dead scope (the user's "forced to restart" report).
+        # Switching to another live subagent still works; anything else gets a calm
+        # notice — ← / /back returns to main. (Live = the same set BackgroundTasks#
+        # live_status? / AgentMenu#live? use; inlined since it's the only use here.)
+        unless %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
+          return attach_agent_view(Regexp.last_match(1), ui) if input =~ %r{\A/agents\s+(\S+)\s+--attach\z}
+
+          # A `/`-command still EXECUTES even when the sub you're parked on has
+          # finished (R3): `/stop <other-id>`, `/status`, `/agents` must work — only
+          # PLAIN text (which would steer a dead child) gets the calm notice.
+          if input.start_with?("/")
+            result = cmd_executor.try_execute(input)
+            attach_agent_view(result[:attach_agent], ui) if result.is_a?(Hash) && result[:attach_agent]
+            return
+          end
+
+          ui.info(pastel.dim("◦ #{id} has finished · #{entry.status} — press ← or /back to return to main"))
+          return
+        end
+
+        # Call the agent handlers DIRECTLY with the raw text (not by serializing a
+        # `/agents <id> steer "…"` string and re-parsing it through the executor,
+        # which whitespace-splits + single-pair dequotes and so mangles any note
+        # containing a quote). /stop carries no free text, so its command form is
+        # fine.
+        case input
+        when "/stop"
+          cmd_executor.try_execute("/agents #{id} --stop")
+        when %r{\A/agents\s+(\S+)\s+--attach\z}
+          # The picker is a switcher while attached: selecting another subagent
+          # SWITCHES the view to it (re-clear + replay) rather than steering.
+          attach_agent_view(Regexp.last_match(1), ui)
+        when %r{\A/(?:reply|answer)\s+(.+)\z}m
+          agents_request_handler.deliver_reply(entry, Regexp.last_match(1))
+        when %r{\A/probe\s+(.+)\z}m
+          agents_request_handler.probe_agent(id, Regexp.last_match(1))
+        when %r{\A/}
+          # Any OTHER `/`-prefixed line is a COMMAND, not steer text (R3): a user
+          # attached to a sub who types `/stop <id>` (the exact syntax the footer
+          # advertises), `/agents`, `/status`, etc. expects it to EXECUTE — not be
+          # delivered to the child as an instruction. Route it through the SAME
+          # dispatcher the main prompt uses so every `/`-command works identically
+          # whether attached or not. (`/back`/`/detach`, the raw-text agent-scoped
+          # forms above, and bare `/stop` are handled before this.) A `{attach_agent:}`
+          # signal — `/agents <id> --attach` from the switcher — is acted on here
+          # (the executor only returns the signal), mirroring the idle/busy paths.
+          result = cmd_executor.try_execute(input)
+          attach_agent_view(result[:attach_agent], ui) if result.is_a?(Hash) && result[:attach_agent]
+        else
+          if %i[needs_approval blocked_on_human].include?(entry.status)
+            # The child is blocked on YOU → the line is the answer.
+            agents_request_handler.deliver_reply(entry, input)
+          else
+            # The child is running → the line is a steer note folded at its next turn.
+            agents_request_handler.steer_agent(id, input)
+          end
+        end
+      end
+
+      # Hard screen clear (clear + scrollback + home) for the attach/detach view
+      # switch — the "whole timeline changes" effect. Printed straight to the real
+      # terminal: the idle composer is torn down between reads, so $stdout is the
+      # bare TTY here (the same point resume_runner replays into).
+      def clear_terminal
+        $stdout.print("\e[2J\e[3J\e[H")
+        $stdout.flush
+      end
+
       # Resolves the yolo (skip-all-approvals) mode for this invocation (#260).
       #
       # yolo is the explicit, full-auto opt-in, so — like Gemini CLI — it may be
@@ -2656,7 +3150,7 @@ module Rubino
 
         # Same opt-in gate as ServerCommand: fake provider is dev-only and
         # must not be reachable without RUBINO_ALLOW_FAKE=1.
-        if Rubino.configuration.model_provider.to_s == "fake" &&
+        if Rubino.configuration.dig("model", "provider").to_s == "fake" &&
            ENV["RUBINO_ALLOW_FAKE"] != "1"
           warn "fake provider is dev-only — set RUBINO_ALLOW_FAKE=1 to opt in."
           exit(1)

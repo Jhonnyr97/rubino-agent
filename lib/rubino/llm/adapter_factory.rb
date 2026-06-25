@@ -23,7 +23,7 @@ module Rubino
         # Bedrock-bearer override) in one place. RubyLLMAdapter then trusts the
         # value it receives and no longer re-runs resolution.
         explicit = provider
-        explicit = config&.model_provider if explicit.nil?
+        explicit = config&.dig("model", "provider") if explicit.nil?
         resolved = ProviderResolver.resolve(model_id, explicit_provider: explicit)
 
         klass = resolved == "fake" ? FakeProvider : RubyLLMAdapter

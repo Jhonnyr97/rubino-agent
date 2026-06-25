@@ -74,21 +74,30 @@ module Rubino
         content = format_messages_for_summary(messages)
 
         prompt = build_summary_prompt(content, previous_summary)
-        @config.compression_max_summary_tokens
+        @config.dig("compression", "max_summary_tokens")
 
-        # Use the auxiliary compression model if configured
-        model = compression_model
-        adapter = LLM::RubyLLMAdapter.new(model_id: model)
-
-        response = adapter.chat(messages: [
-                                  { role: "system", content: summary_system_prompt },
-                                  { role: "user", content: prompt }
-                                ])
+        # Route through AuxiliaryClient so the WHOLE `auxiliary.compression` block
+        # is honored — provider, model AND base_url — exactly like the other aux
+        # tasks (vision/approval/summarize). The summary used to build the adapter
+        # directly from only `auxiliary.compression.model`, silently ignoring
+        # provider/base_url, so a configured summary endpoint did nothing. At the
+        # defaults (provider:"main", model:"") AuxiliaryClient resolves to the
+        # primary model, so existing behaviour is unchanged.
+        response = LLM::AuxiliaryClient.new(config: @config).call(
+          task: "compression",
+          messages: [
+            { role: "system", content: summary_system_prompt },
+            { role: "user", content: prompt }
+          ]
+        )
 
         body = response&.content || fallback_summary(messages, previous_summary)
         with_summary_prefix(body)
-      rescue StandardError
-        # If LLM fails, produce a basic extractive summary
+      rescue StandardError => e
+        # If the LLM summary fails, degrade to a basic extractive summary. Log so
+        # a persistently-failing compression endpoint (which silently produces a
+        # worse summary every turn) is observable instead of invisible.
+        Rubino.logger&.debug(event: "summary_builder.llm_failed", error: e.message)
         with_summary_prefix(fallback_summary(messages, previous_summary))
       end
 
@@ -135,12 +144,23 @@ module Rubino
         PROMPT
       end
 
+      # The conversation segment comes FIRST and the (volatile) previous summary
+      # LAST. Order matters only for prompt-cache prefix stability, not for the
+      # summary itself: the model receives exactly the same two pieces either
+      # way. The new segment is the byte-stable, append-only region across
+      # same-session summarize calls — earlier turns never change, the tail just
+      # grows — so leading with it lets the model server cache the shared prefix.
+      # The previous summary is rewritten on every compaction, so placing it at
+      # the FRONT (as before) put a volatile head ahead of the stable body and
+      # busted the cacheable prefix on every call. Both labels are explicit, so
+      # the "incorporate the previous summary" instruction is unambiguous
+      # regardless of order.
       def build_summary_prompt(content, previous_summary)
         parts = []
 
-        parts << "Previous summary to incorporate:\n#{previous_summary}\n\n---\n" if previous_summary
-
         parts << "New conversation segment to summarize:\n#{content}"
+        parts << "\n---\nPrevious summary to incorporate:\n#{previous_summary}" if previous_summary
+
         parts.join("\n")
       end
 
@@ -150,17 +170,6 @@ module Rubino
           content = msg.respond_to?(:content) ? msg.content : msg[:content]
           "[#{role}] #{content}"
         end.join("\n\n")
-      end
-
-      def compression_model
-        aux_config = @config.auxiliary_compression_config
-        model = aux_config["model"]
-
-        if model && !model.empty?
-          model
-        else
-          @config.model_default
-        end
       end
 
       def summary_store

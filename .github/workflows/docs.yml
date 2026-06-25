@@ -1,0 +1,64 @@
+name: Docs (RDoc → Pages)
+
+# Builds the RDoc API documentation and publishes it to GitHub Pages.
+# RDoc only parses source (it does not load the gem), so this job deliberately
+# does NOT `bundle install` the project's runtime deps — it just installs the
+# `rdoc` gem and runs it, matching the local `rake rdoc` task.
+
+on:
+  push:
+    branches: [main, test/pre-release-gate]
+    paths:
+      - "lib/**"
+      - "exe/**"
+      - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "Rakefile"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Least-privilege token + the scopes the Pages deploy action needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Generate RDoc
+        run: |
+          gem install rdoc --no-document
+          rdoc --op doc/rdoc \
+               --main README.md \
+               --title "rubino-agent API documentation" \
+               lib exe README.md CHANGELOG.md docs
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: doc/rdoc
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

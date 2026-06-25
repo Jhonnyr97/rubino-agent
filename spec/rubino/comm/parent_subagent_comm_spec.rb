@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Parent<->subagent communication: steer + probe + ask_parent (CLI).
+# Parent -> subagent communication: steer + probe (CLI).
 #
 # Targeted specs for each mechanism, on rubino's REAL primitives (Agent::Loop,
 # Run::ApprovalGate, BackgroundTasks, the spec FakeLLMAdapter). No network.
@@ -9,12 +9,8 @@
 #            Loop#inject_steered_input), the same wire human steering uses.
 #   probe  — an ephemeral peek returns an answer but writes NOTHING to the
 #            child's history (read-only, discarded).
-#   ask_parent(blocking:true)  — parks the child on the gate, /reply resumes it
-#            with the answer as the tool result (enters the child's context).
-#   ask_parent(blocking:false) — returns immediately; the answer is injected
-#            later via the steer queue at the child's next turn boundary.
-#   blocked-state — an escalated ask_parent surfaces as :blocked_on_human on the
-#            card (the ⛔ "waiting on you" marker).
+#   blocked-state — a child parked on a blocking ask gate surfaces as
+#            :blocked_on_human on the card (the ⛔ "waiting on you" marker).
 RSpec.describe "parent <-> subagent communication" do
   let(:db)            { test_database }
   let(:null_ui)       { Rubino::UI::Null.new }
@@ -126,73 +122,6 @@ RSpec.describe "parent <-> subagent communication" do
     end
   end
 
-  # --- ask_parent: child -> parent escalation --------------------------------
-  describe "ask_parent (child -> parent, persisted)" do
-    let(:tool) { Rubino::Tools::AskParentTool.new }
-
-    it "refuses gracefully when there is no parent (no subagent context)" do
-      out = tool.call("question" => "sqlite or postgres?")
-      expect(out).to include("only available to a background subagent")
-    end
-
-    it "blocking:true parks the child on the gate, /reply resumes it with the answer" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-
-      result = nil
-      child = Thread.new do
-        Rubino.with_current_subagent_id(entry.id) do
-          result = tool.call("question" => "sqlite or postgres?", "blocking" => true)
-        end
-      end
-
-      # The child parked → entry flips to :blocked_on_human, gate registered.
-      wait_until { Rubino::Tools::BackgroundTasks.instance.find(entry.id).status == :blocked_on_human }
-      reloaded = Rubino::Tools::BackgroundTasks.instance.find(entry.id)
-      expect(reloaded.ask_question).to eq("sqlite or postgres?")
-      expect(reloaded.ask_blocking).to be(true)
-
-      # The human answers (the /reply decide wire).
-      reloaded.ask_gate.decide(reloaded.ask_id, "use postgres")
-      child.join(2)
-
-      expect(result).to include("Your parent answered: use postgres")
-      expect(Rubino::Tools::BackgroundTasks.instance.find(entry.id).status).to eq(:running)
-    end
-
-    it "blocking:false returns immediately and the answer is injected later via the steer queue" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-
-      out = Rubino.with_current_subagent_id(entry.id) do
-        tool.call("question" => "any preference?", "blocking" => false)
-      end
-
-      # The child kept working (non-blocking ack), but the entry IS surfaced as
-      # blocked-on-human so the human can still answer it.
-      expect(out).to include("Keep working")
-      expect(Rubino::Tools::BackgroundTasks.instance.find(entry.id).status).to eq(:blocked_on_human)
-
-      # The answer is delivered later onto the steer queue (folded in next turn).
-      Rubino::Tools::BackgroundTasks.instance.steer(entry.id, "[parent answer] go with postgres")
-      expect(entry.steer_queue.drain).to include("[parent answer] go with postgres")
-    end
-
-    it "unwinds to a cancelled result when the gate is cancelled (stop)" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-
-      result = nil
-      child = Thread.new do
-        Rubino.with_current_subagent_id(entry.id) do
-          result = tool.call("question" => "q?", "blocking" => true)
-        end
-      end
-      wait_until { Rubino::Tools::BackgroundTasks.instance.find(entry.id).status == :blocked_on_human }
-
-      Rubino::Tools::BackgroundTasks.instance.find(entry.id).ask_gate.cancel!
-      child.join(2)
-      expect(result).to include("cancelled")
-    end
-  end
-
   # --- scoped nesting (S1): a subagent can spawn subagents, depth-stamped ------
   #
   # Exercises the REAL TaskTool background path + the REAL BackgroundTasks#reserve
@@ -286,23 +215,15 @@ RSpec.describe "parent <-> subagent communication" do
       expect(out).not_to include("Started background subagent")
     end
 
-    it "keeps ask_parent subagent-only after nesting is re-enabled" do
-      unless Rubino::Tools::Registry.find("ask_parent")
-        Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
-      end
+    it "keeps the delegation tool available to subagents (nesting) and the primary" do
       subagent = Rubino.agent_registry.find("explore")
       primary  = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
 
-      # ask_parent is also situationally gated (#313) on running AS a subagent
-      # (the current_subagent_id thread-local, set by TaskTool around a child
-      # run). Reproduce that context for the subagent assertion; the primary
-      # resolves outside it, exactly as a top-level agent does.
       subagent_tools = Rubino.with_current_subagent_id("sa_test") do
         subagent.resolved_tools.map(&:name)
       end
-      expect(subagent_tools).to include("ask_parent", "task")
+      expect(subagent_tools).to include("task")
       expect(primary.resolved_tools.map(&:name)).to include("task")
-      expect(primary.resolved_tools.map(&:name)).not_to include("ask_parent")
     end
 
     it "leaves the human-driven 2-level flow unchanged (owner nil / depth 0)" do
@@ -329,63 +250,6 @@ RSpec.describe "parent <-> subagent communication" do
     end
   end
 
-  # --- #195: the [subagent-question] notice reaches the SPAWNING parent ------
-  #
-  # The bug: surface_and_notify read the thread-local Rubino.background_sink on
-  # the CHILD's thread — where the child Lifecycle had bound the child's OWN
-  # steer_queue — so the question was misrouted into the asking child itself
-  # and the parent MODEL never saw it. The notice now rides the spawn-captured
-  # sink stored on the registry Entry (entry.parent_sink), exactly like the
-  # [background-task] completion notice. Exercised on the REAL TaskTool
-  # background path + the REAL AskParentTool (2-level tree: parent agent →
-  # asking child).
-  describe "ask_parent notice routing to the spawning parent (#195)" do
-    before do
-      Rubino::Tools::Registry.register_defaults!
-      Rubino.agent_registry = Rubino::Agent::AgentRegistry.new
-    end
-
-    after { Rubino.agent_registry = nil }
-
-    it "pushes the [subagent-question] note onto the PARENT's input queue, not the child's own steer queue" do
-      registry       = Rubino::Tools::BackgroundTasks.instance
-      parent_queue   = Rubino::Interaction::InputQueue.new
-      before_threads = Thread.list.size
-      child_runner   = Class.new do
-        def run!(_prompt, **_opts)
-          Rubino::Tools::AskParentTool.new.call("question" => "split into how many files?", "blocking" => true)
-        end
-
-        def cancel!; end
-      end.new
-
-      # Spawn with the parent's input queue bound, the way Lifecycle#run_turn
-      # binds it around the parent loop's run.
-      handle = Rubino.with_background_sink(parent_queue) do
-        Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { child_runner })
-                               .call("subagent" => "general", "prompt" => "do it")
-      end
-      id = handle[/sa_[0-9a-f]+/]
-      wait_until { registry.find(id).status == :blocked_on_human }
-
-      # The note landed on the PARENT's queue (as a notice — it folds into the
-      # parent's next real turn instead of firing a standalone one, #13) …
-      note = parent_queue.drain.find { |n| n.include?("[subagent-question]") }
-      expect(note).to include("split into how many files?")
-      # … and it names the MODEL-callable answer_child, not the human-only /reply.
-      expect(note).to include("answer_child(task_id: \"#{id}\"")
-      # The asking child's OWN steer queue got NOTHING (the misroute).
-      expect(registry.find(id).steer_queue.drain).to eq([])
-
-      # The unbroken half of the chain still works: answering unblocks the child.
-      registry.deliver_answer(id, "three files")
-      wait_until { registry.find(id).status == :completed }
-      expect(registry.find(id).result).to include("Your parent answered: three files")
-      registry.find(id).thread&.join(2)
-      wait_until { Thread.list.size <= before_threads }
-    end
-  end
-
   # --- blocked-state surfaces on the card ------------------------------------
   describe "blocked-state visibility" do
     it "renders the ⛔ waiting-on-you card + counts it as live" do
@@ -403,7 +267,9 @@ RSpec.describe "parent <-> subagent communication" do
       joined = lines.join("\n")
       expect(joined).to include("⛔")
       expect(joined).to include("waiting on you")
-      expect(joined).to include("/reply #{entry.id}")
+      # The card moved to arrow-nav: the reply prompt auto-opens and the card
+      # advertises "↓ to answer" instead of the old typed "/reply <id>" hint.
+      expect(joined).to include("↓ to answer")
     end
   end
 

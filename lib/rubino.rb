@@ -67,7 +67,6 @@ module Rubino
           "indented_io" => "IndentedIO",
           "webfetch_tool" => "WebFetchTool",
           "websearch_tool" => "WebSearchTool",
-          "github_tool" => "GitHubTool",
           "skill_tool" => "SkillTool",
           "custom_tool_loader" => "CustomToolLoader",
           "custom_tool_builder" => "CustomToolBuilder",
@@ -118,7 +117,7 @@ module Rubino
     # gate-less global that would silently drop interactive prompts (the
     # clarify/`question` flow) and could cross-talk between runs.
     def ui
-      Thread.current[:rubino_ui] || (@ui ||= UI.build(configuration.ui_adapter))
+      Thread.current[:rubino_ui] || (@ui ||= UI.build(configuration.dig("ui", "adapter")))
     end
 
     # Sets the process-global UI adapter (CLI boot, tests).
@@ -299,8 +298,10 @@ module Rubino
         # cheap dir-writability probe, no DB write — and raise the accurate
         # "not writable" diagnosis instead, matching the migrate-path branch
         # below. A real (writable) home passes through untouched.
-        raise ConfigurationError, "rubino home / database is not writable: #{home_path}" \
-          unless home_writable?
+        unless home_writable?
+          raise ConfigurationError,
+                "rubino home / database is not writable: #{home_path}#{write_jail_db_hint}"
+        end
 
         return true
       end
@@ -334,10 +335,30 @@ module Rubino
       # set up". Everything else still degrades to false.
       if not_writable_error?(e)
         raise ConfigurationError,
-              "rubino home / database is not writable: #{home_path} (#{clean_errno_message(e.message)})"
+              "rubino home / database is not writable: #{home_path} " \
+              "(#{clean_errno_message(e.message)})#{write_jail_db_hint}"
       end
 
       false
+    end
+
+    # When the home/DB is read-only AND sits OUTSIDE the OS write-jail, the cause
+    # is almost always a nested `rubino` launched from inside the agent's own
+    # jailed shell tool: the shell is confined away from ~/.rubino, so it can't
+    # write the session DB. Reuse the #74 write-jail framing so a bare "not
+    # writable" becomes attributable (#Y2A). Empty string (no extra hint) unless
+    # the jail is PROVEN enforcing and the home is outside its writable roots;
+    # best-effort, never raises into the boot path.
+    def write_jail_db_hint
+      return "" unless defined?(Security::Sandbox) && Security::Sandbox.respond_to?(:enforcing?)
+      return "" unless Security::Sandbox.enforcing?
+      return "" if Security::Sandbox.writable?(home_path)
+
+      " — #{home_path} is outside the workspace write-jail, so a nested rubino " \
+        "launched from inside the agent's shell tool can't write the session DB " \
+        "(tools.sandbox). Run rubino outside the jailed shell."
+    rescue StandardError
+      ""
     end
 
     # Cheap, side-effect-free check that the home directory accepts writes — the
@@ -420,16 +441,6 @@ module Rubino
     # Sets the agent registry (useful for testing / custom boots).
     attr_writer :agent_registry
 
-    # Returns the plugin registry
-    def plugin_registry
-      Plugins.registry
-    end
-
-    # DSL for defining plugins
-    def plugin(&)
-      Plugins.registry.instance_eval(&)
-    end
-
     # Resets all memoized state (useful for testing)
     def reset!
       @configuration = nil
@@ -437,7 +448,6 @@ module Rubino
       @database = nil
       @event_bus = nil
       @agent_registry = nil
-      Plugins.reset!
     end
 
     # Returns the home directory path. Delegates to the SAME resolver the
@@ -478,7 +488,7 @@ module Rubino
         # rescue so a non-writable home yields the SAME clean one-line domain
         # error + exit 1, no trace.
         File.chmod(0o700, home)
-        %w[memories sessions logs skills commands tools plugins].each do |subdir|
+        %w[memories sessions logs skills commands tools].each do |subdir|
           dir = File.join(home, subdir)
           FileUtils.mkdir_p(dir) unless File.directory?(dir)
         end
@@ -492,11 +502,8 @@ end
 # Setup autoloading
 Rubino.loader.setup
 
-# Register the built-in memory backends. The default backend wraps the
-# existing Store/Retriever/Extractor, so an unset `memory.backend` is
-# byte-identical to the pre-pluggable behavior.
-Rubino::Memory::Backends.register(Rubino::Memory::Backends::Default)
-# The "tiny-Zep" SQLite backend: LLM-extracted atomic facts, bi-temporal
+# Register the built-in memory backends.
+# The SQLite memory backend: LLM-extracted atomic facts, bi-temporal
 # supersession, and hybrid FTS5 + recency recall. Switch with
 # `rubino memory backend sqlite`.
 Rubino::Memory::Backends.register(Rubino::Memory::Backends::Sqlite)

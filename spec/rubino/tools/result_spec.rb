@@ -49,8 +49,16 @@ RSpec.describe Rubino::Tools::Result do
   describe ".denied" do
     it "defaults to the user-decision message" do
       result = described_class.denied(name: "shell", call_id: "d1")
-      expect(result.output).to eq("Tool execution denied by user.")
+      expect(result.output).to include("Tool execution denied by user.")
       expect(result).to be_denied
+    end
+
+    # #583: the human/blocked denials now carry the anti-confabulation clause so
+    # the model can't paper the soft denial over with a fabricated answer.
+    it "appends the anti-confabulation clause to the user denial" do
+      result = described_class.denied(name: "shell", call_id: "d1b")
+      expect(result.output).to include("produced NO output")
+      expect(result.output).to include("Do NOT fabricate")
     end
 
     it "names the doom-loop guard and nudges a strategy change" do
@@ -75,7 +83,55 @@ RSpec.describe Rubino::Tools::Result do
 
     it "maps an unknown reason to the generic policy message, never to the user" do
       result = described_class.denied(name: "shell", call_id: "d5", reason: :whatever)
-      expect(result.output).to eq("Tool execution denied by policy (not by the user).")
+      expect(result.output).to include("Tool execution denied by policy (not by the user).")
+      expect(result.output).not_to include("denied by user")
+    end
+
+    # #583: the headless fail-closed denial keeps the "no interactive session"
+    # substring (Agent::Loop's binding-guard keys off it) AND carries the
+    # strengthened anti-confabulation wording + the actionable --yolo hint.
+    it "blocks headless with the anti-confabulation wording and keeps the guard substring" do
+      result = described_class.denied(name: "chaos_add", call_id: "d6", reason: :noninteractive)
+      expect(result.output).to include("no interactive session")
+      expect(result.output).to include("produced NO output")
+      expect(result.output).to include("Do NOT fabricate")
+      expect(result.output).to include("--yolo")
+    end
+
+    # The doom-loop denial steers to a different strategy and must NOT carry the
+    # generic "don't fabricate" clause (it has its own specific guidance).
+    it "omits the anti-confabulation clause from the doom-loop denial" do
+      result = described_class.denied(name: "task_result", call_id: "d7", reason: :doom_loop)
+      expect(result.output).not_to include("produced NO output")
+    end
+  end
+
+  describe "#errorish?" do
+    it "is true for a soft-error output with the canonical 'Error:' prefix" do
+      result = described_class.success(name: "edit", call_id: "e1", output: "Error: old_string not found")
+      expect(result).to be_errorish
+    end
+
+    # FINDING #65 mislabel: the file tools' rescue returns "Error editing …" /
+    # "Error reading …" / "Error writing …" — NO colon after "Error". The old
+    # start_with?("Error:") check missed those, so a failed edit (e.g. the
+    # accented-file write crash) rendered with a green ✓ instead of ✗.
+    it "is true for the file tools' colon-less 'Error <verb>ing …' messages" do
+      %w[edit read write].each do |verb|
+        out = "Error #{verb}ing notes/format.py: some failure"
+        result = described_class.success(name: verb, call_id: "e2", output: out)
+        expect(result).to be_errorish, "expected #{out.inspect} to be errorish"
+      end
+    end
+
+    it "is false for a normal success output that merely mentions errors" do
+      result = described_class.success(name: "shell", call_id: "e3", output: "Errors found: 0\n")
+      expect(result).not_to be_errorish
+    end
+
+    it "is true whenever an error_code is set, regardless of the text" do
+      result = described_class.success(name: "read", call_id: "e4", output: "ok", error_code: :stale_read)
+      expect(result).to be_errorish
     end
   end
 end

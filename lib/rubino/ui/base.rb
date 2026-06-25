@@ -134,7 +134,7 @@ module Rubino
       # `ArgumentError: unknown keyword: :scope` on every interactive tool
       # approval. `**context` absorbs the enriched approval fields (tool/
       # command/pattern_key/description) that ToolExecutor passes for the /v1
-      # event — only UI::API consumes them; CLI/Null/SubagentView ignore them.
+      # event — only UI::API consumes them; CLI/Null ignore them.
       def confirm(question, scope: nil, **context)
         raise NotImplementedError, "#{self.class}#confirm not implemented"
       end
@@ -162,7 +162,7 @@ module Rubino
       # `at:` overrides the timestamp on the tool box top — replay uses it so
       # historical tool calls show when they actually happened, not "now".
       # Live calls leave `at:` nil and get current time.
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
         raise NotImplementedError, "#{self.class}#tool_started not implemented"
       end
 

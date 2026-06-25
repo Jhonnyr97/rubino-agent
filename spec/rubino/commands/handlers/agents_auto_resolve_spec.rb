@@ -19,10 +19,11 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
     Class.new do
       attr_reader :lines
 
-      def initialize(answers, decisions)
-        @answers   = answers
-        @decisions = decisions
-        @lines     = []
+      def initialize(answers, decisions, selections = [])
+        @answers    = answers
+        @decisions  = decisions
+        @selections = selections
+        @lines      = []
       end
 
       def info(msg = "")    = @lines << msg.to_s
@@ -30,16 +31,22 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       def error(msg = "")   = @lines << msg.to_s
       def separator         = nil
       def ask(_prompt)      = @answers.shift
+      # The reply affordance's options-or-text dropdown (#select), scripted: pop
+      # the next queued selection, defaulting to :answer so the no-options
+      # [Answer/Dismiss] menu routes straight to the free-text @ask the existing
+      # tests drive (so the reply flow is unchanged unless a test scripts a pick).
+      def select(_prompt, _choices) = @selections.empty? ? :answer : @selections.shift
       # The shared arrow-key approval component, scripted: pop the next queued
       # decision symbol (:once/:always_command/:no/:deny_explain) or nil.
       def subagent_approval_choice = @decisions.shift
       def respond_to_missing?(_name, _priv = false) = true
       def method_missing(_name, *_args) = nil
-    end.new(answers, decisions)
+    end.new(answers, decisions, selections)
   end
 
-  let(:answers)   { [] }
-  let(:decisions) { [] }
+  let(:answers)    { [] }
+  let(:decisions)  { [] }
+  let(:selections) { [] }
   let(:handler) { described_class.new(ui: ui) }
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
@@ -143,6 +150,44 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       registry.reserve(subagent: "explore", prompt: "idle child")
       expect(handler.auto_resolve_pending).to be(false)
       expect(ui.lines).to be_empty
+    end
+
+    # R2 — two children raise an approval at once. Only ONE modal is presented
+    # per call (the FIFO head); it advertises "(1 more queued)" so the user knows
+    # the second is waiting, and resolving the first lets the second present
+    # (with no backlog) on the next idle pass. The modals never overlap.
+    it "presents ONE approval modal at a time and advertises the queued backlog (R2)" do
+      first, first_gate   = stage_approval
+      second, second_gate = stage_approval
+      allow(first_gate).to receive(:decide)
+      allow(second_gate).to receive(:decide)
+
+      # The FIFO head is the child that parked FIRST.
+      expect(registry.awaiting_approval.first.id).to eq(first.id)
+
+      decisions << :once
+      handler.auto_resolve_pending
+      joined = ui.lines.join("\n")
+      # The active modal is the head AND it tells the user another is queued.
+      expect(joined).to include(first.id).and include("(1 more queued)")
+      # The SECOND child's modal body did NOT render — no overlap.
+      expect(joined).not_to include("(0 more queued)")
+      expect(first_gate).to have_received(:decide)
+      expect(second_gate).not_to have_received(:decide)
+
+      # The child's approval handler clears the gate state in its ensure once the
+      # decision is delivered; simulate that resume so the entry leaves the queue.
+      registry.end_approval(first.id)
+
+      # After the first resolves it is no longer parked; the second is now the
+      # sole head with no backlog, and the NEXT idle pass presents it.
+      ui.lines.clear
+      decisions << :once
+      handler.auto_resolve_pending
+      joined2 = ui.lines.join("\n")
+      expect(joined2).to include(second.id)
+      expect(joined2).not_to include("more queued")
+      expect(second_gate).to have_received(:decide)
     end
 
     it "leaves the child waiting (no answer delivered) on an empty reply" do

@@ -55,6 +55,80 @@ RSpec.describe Rubino::MCP::Manager do
         )
       )
     end
+
+    # #576 — servers are connected CONCURRENTLY (one thread each) so N hanging
+    # servers cost ~the slowest single server, not the sum. A server that hangs
+    # on connect must NOT prevent the others from starting and registering.
+    it "isolates a hanging server: the others still start and register" do
+      ready = Queue.new
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        if opts[:name] == "filesystem"
+          ready.pop # block until the fast server has connected — proves concurrency
+          fake_client(%w[read_file])
+        else
+          ready.push(:go) # api connects immediately, then unblocks filesystem
+          fake_client(%w[query])
+        end
+      end
+
+      manager.start_all!
+
+      # Both completed despite filesystem only finishing AFTER api — they ran in
+      # parallel, and no shared-state write was lost.
+      expect(manager.clients.keys).to contain_exactly("filesystem", "api")
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
+      expect(Rubino::Tools::Registry.find("api_query")).to be_a(Rubino::MCP::MCPToolWrapper)
+      expect(manager.last_errors).to be_empty
+    end
+
+    # #576 — one server raising during connect is recorded in last_errors and
+    # does not abort the parallel batch (best-effort boot preserved).
+    it "records a per-server connect failure without blocking the healthy server" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        raise StandardError, "connection refused" if opts[:name] == "api"
+
+        fake_client(%w[read_file])
+      end
+
+      manager.start_all!
+
+      expect(manager.clients.keys).to eq(["filesystem"])
+      expect(manager.last_errors["api"]).to eq("connection refused")
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
+    end
+
+    # #576 — @clients is populated in connect-COMPLETION order under parallelism,
+    # so tool registration is sorted by server name to stay deterministic across
+    # boots regardless of which server's connect finishes first.
+    it "registers tools in a deterministic (sorted) server order" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        opts[:name] == "filesystem" ? fake_client(%w[read_file]) : fake_client(%w[query])
+      end
+
+      manager.start_all!
+
+      registered = Rubino::Tools::Registry.all
+                                          .grep(Rubino::MCP::MCPToolWrapper)
+                                          .map(&:server_name)
+      expect(registered).to eq(%w[api filesystem]) # sorted, not insertion order
+    end
+
+    # #576 — concurrent connects must not corrupt @clients / @last_errors: every
+    # healthy client lands and nothing is dropped under the mutex. Use a wider
+    # fan-out to make a missed write or torn Hash likely if the lock were absent.
+    it "does not lose any client under many concurrent connects" do
+      servers = (1..12).to_h { |i| ["s#{i}", { "transport" => "sse", "url" => "https://x.test/#{i}" }] }
+      wide = Rubino::Config::Configuration.new(
+        raw: { "mcp" => { "servers" => servers } }, home_path: TEST_HOME
+      )
+      mgr = described_class.new(config: wide)
+      allow(RubyLLM::MCP).to receive(:client) { |**opts| fake_client(["#{opts[:name]}_tool"]) }
+
+      mgr.start_all!
+
+      expect(mgr.clients.keys).to match_array(servers.keys)
+      expect(mgr.last_errors).to be_empty
+    end
   end
 
   describe "#start_server" do
@@ -163,6 +237,31 @@ RSpec.describe Rubino::MCP::Manager do
       expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
       expect(Rubino::Tools::Registry.find("api_query")).to be_nil
     end
+
+    # #575 — a connected-but-broken server (initialize OK, tools/list errors)
+    # used to swallow the failure with only a warning, leaving /mcp's drill-in
+    # with no last_error. Record it like start_server does.
+    it "records last_errors when tools/list fails for an alive client" do
+      broken = double("mcp_client", alive?: true, stop: nil)
+      allow(broken).to receive(:tools).and_raise(StandardError, "Request timed out after 8 seconds")
+      allow(RubyLLM::MCP).to receive(:client).and_return(broken)
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+
+      manager.register_server_tools("filesystem")
+
+      expect(manager.last_errors["filesystem"]).to eq("Request timed out after 8 seconds")
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_nil
+    end
+
+    it "clears a prior registration error once tools/list succeeds again" do
+      allow(RubyLLM::MCP).to receive(:client).and_return(fake_client(%w[read_file]))
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+      manager.last_errors["filesystem"] = "old failure"
+
+      manager.register_server_tools("filesystem")
+
+      expect(manager.last_errors).not_to have_key("filesystem")
+    end
   end
 
   # Per-agent mcp_servers scoping is enforced in Agent::Definition#resolved_tools
@@ -194,9 +293,33 @@ RSpec.describe Rubino::MCP::Manager do
       manager.start_server("api", raw["mcp"]["servers"]["api"])
 
       expect(manager.health_check).to contain_exactly(
-        { name: "filesystem", alive: true },
-        { name: "api", alive: false }
+        { name: "filesystem", alive: true, degraded: false },
+        { name: "api", alive: false, degraded: false }
       )
+    end
+
+    # #575 — an alive client whose tools/list errored (recorded last_error) is
+    # PROTOCOL-broken: degraded, not a healthy "reachable".
+    it "reports degraded for an alive client that recorded a registration error" do
+      broken = double("mcp_client", alive?: true, stop: nil)
+      allow(broken).to receive(:tools).and_raise(StandardError, "garbage")
+      allow(RubyLLM::MCP).to receive(:client).and_return(broken)
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+      manager.register_server_tools("filesystem")
+
+      expect(manager.health_check)
+        .to contain_exactly(hash_including(name: "filesystem", alive: true, degraded: true))
+    end
+
+    # An alive server that legitimately exposes ZERO tools (no error) is healthy,
+    # NOT degraded — the degraded signal must come from a recorded error.
+    it "does not mark an alive zero-tools server with no error as degraded" do
+      allow(RubyLLM::MCP).to receive(:client).and_return(fake_client([]))
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+      manager.register_server_tools("filesystem")
+
+      expect(manager.health_check)
+        .to contain_exactly(hash_including(name: "filesystem", alive: true, degraded: false))
     end
   end
 

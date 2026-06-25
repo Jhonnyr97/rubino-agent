@@ -23,7 +23,8 @@ module Rubino
       # ARTIFACT_CREATED bus event so SSE consumers (the web UI, the CLI)
       # can offer a download.
       def initialize(name:, call_id:, output:, status:, error: nil,
-                     metrics: nil, error_code: nil, artifact: nil)
+                     metrics: nil, error_code: nil, artifact: nil,
+                     transcript_card: true)
         @name = name
         @call_id = call_id
         @output = output
@@ -32,6 +33,7 @@ module Rubino
         @metrics = metrics
         @error_code = error_code
         @artifact = artifact
+        @transcript_card = transcript_card
         @session_id = nil
       end
 
@@ -47,6 +49,10 @@ module Rubino
         @status == :denied
       end
 
+      def transcript_card?
+        @transcript_card != false
+      end
+
       # True when this result represents a failure for DISPLAY purposes, even
       # when the tool didn't raise. Many tools (read, edit, …) report a soft
       # failure by RETURNING an "Error: …" string (status stays :success) or by
@@ -54,11 +60,20 @@ module Rubino
       # as a green "✓ done" because it only checked #success?. This is the
       # single predicate the UI uses so an errored tool shows "✗" regardless of
       # which failure convention the tool used.
+      #
+      # Matches "Error:" AND the verb forms the file tools use in their rescue —
+      # "Error editing …", "Error reading …", "Error writing …" (note: NO colon
+      # after "Error"). The old `start_with?("Error:")` check missed those, so a
+      # failed edit (e.g. the accented-file write crash) rendered with a green ✓
+      # instead of ✗. Anchored `Error` + (`:` | whitespace) so a non-error line
+      # like "Errors found: 0" still doesn't trip it.
+      ERROR_PREFIX_RE = /\AError[:\s]/
+
       def errorish?
         return true unless success?
         return true unless @error_code.nil?
 
-        @output.to_s.start_with?("Error:")
+        ERROR_PREFIX_RE.match?(@output.to_s)
       end
 
       # Returns a truncated preview for display
@@ -74,9 +89,11 @@ module Rubino
       EMPTY_OUTPUT_PLACEHOLDER = "(no output)"
 
       # Factory methods
-      def self.success(name:, call_id:, output:, metrics: nil, error_code: nil, artifact: nil)
+      def self.success(name:, call_id:, output:, metrics: nil, error_code: nil, artifact: nil,
+                       transcript_card: true)
         new(name: name, call_id: call_id, output: normalize_output(output),
-            status: :success, metrics: metrics, error_code: error_code, artifact: artifact)
+            status: :success, metrics: metrics, error_code: error_code, artifact: artifact,
+            transcript_card: transcript_card)
       end
 
       def self.error(name:, call_id:, error:, error_code: nil)
@@ -90,17 +107,31 @@ module Rubino
       # may read "denied by user" — an automatic denial must name the policy
       # that fired, otherwise a child agent reports (and propagates upward)
       # that "the user denied my tools" when no human ever decided anything.
+      # Anti-confabulation clause (#583) appended to the human/blocked denials.
+      # A blocked tool produced NO output; without this the model can paper over
+      # the soft denial string with a fabricated "result" (e.g. answering "5"
+      # for an add it never ran). "produced NO output" + "Do NOT fabricate"
+      # attacks the confabulation; "do not retry/rephrase/substitute" is the
+      # hermes-proven evasion-blocking clause. Kept out of the doom-loop denial,
+      # which already steers the model to a different strategy.
+      NO_CONFAB_CLAUSE =
+        "It was NOT run and produced NO output. Do NOT fabricate, guess, or " \
+        "assume its result. Do not retry the same call, rephrase it, or " \
+        "substitute a different tool to achieve the same effect. If this tool " \
+        "was required, state that the task is blocked pending approval and stop."
+
       DENIED_OUTPUTS = {
-        user: "Tool execution denied by user.",
-        policy: "Tool execution denied by policy (not by the user).",
+        user: "Tool execution denied by user. #{NO_CONFAB_CLAUSE}",
+        policy: "Tool execution denied by policy (not by the user). #{NO_CONFAB_CLAUSE}",
         hardline: "Tool execution blocked by policy (hardline safety floor, not by the user): " \
-                  "this command is never allowed.",
+                  "this command is never allowed. #{NO_CONFAB_CLAUSE}",
         permission_rule: "Tool execution blocked by policy (a configured permissions deny rule, " \
-                         "not by the user).",
-        noninteractive: "Tool execution blocked: this tool needs approval but there is no " \
-                        "interactive session to ask (headless/one-shot run). It was NOT run. " \
-                        "Re-run with --yolo to auto-approve, or add it to the permissions " \
-                        "allowlist.",
+                         "not by the user). #{NO_CONFAB_CLAUSE}",
+        # NOTE: keep the substring "no interactive session" — Agent::Loop's
+        # noninteractive-block detection (loop.rb) keys the binding guard off it.
+        noninteractive: "Tool execution BLOCKED: this tool needs approval but there is no " \
+                        "interactive session to ask (headless/one-shot run). #{NO_CONFAB_CLAUSE} " \
+                        "To allow it, re-run with --yolo or add it to the permissions allowlist.",
         doom_loop: "Tool execution blocked by the doom-loop guard (policy, not by the user): " \
                    "this exact call was already made repeatedly. Change strategy instead of " \
                    "retrying it — e.g. wait for the background-task completion notice instead " \

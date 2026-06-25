@@ -124,6 +124,39 @@ RSpec.describe Rubino::Commands::Executor do
     end
   end
 
+  # `/skills list` / `/skills ls` must show the catalogue, NOT be parsed as
+  # "activate the skill named 'list'" (which used to error `✗ unknown skill:
+  # list`). It is the same LIST action as bare `/skills`.
+  describe "/skills list (and ls) — explicit list verbs" do
+    %w[list ls].each do |verb|
+      it "lists the catalogue for `/skills #{verb}` without changing the active skill" do
+        Rubino::ActiveSkill.set("data-helper")
+        exec.try_execute("/skills #{verb}")
+
+        expect(Rubino::ActiveSkill.current).to eq("data-helper")
+        err = ui.messages.find { |m| m[:level] == :error }
+        expect(err).to be_nil
+        lines = ui.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
+        expect(lines).to include(include("data-helper"))
+      end
+    end
+  end
+
+  # DX parity with /commands: the authoring affordance must appear EVEN WHEN a
+  # skill is already installed (previously the "create" hint fired only on an
+  # empty list), advertising the searched paths + the SKILL.md format.
+  describe "/skills authoring affordance" do
+    it "advertises the searched paths and SKILL.md format with a skill installed" do
+      exec.try_execute("/skills")
+
+      joined = ui.messages.map { |m| m[:message].to_s }.join("\n")
+      expect(joined).to include("data-helper") # the installed skill still listed
+      expect(joined).to include("frontmatter")
+      expect(joined).to include("SKILL.md")
+      expect(joined).to include(fixtures_dir) # the real searched path, not a literal ~/.rubino
+    end
+  end
+
   # #188: the enable/disable toggle, previously reachable only through the
   # HTTP API. Writes through the SAME Skills::Toggle/StateRepository pair, so
   # the flag persists and every surface (index, list markers, activation)

@@ -224,13 +224,65 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       expect(out).to include("┄ thinking ┄")
-      expect(out).to include("┊  Let me check the failing test first.")
+      expect(out).to include("Let me check the failing test first.")
       # A shown aside is append-only scrollback that can't be un-shown, so its
       # close line carries NO toggle promise (neither "to hide" nor "to show").
       expect(out).to match(/┄ thought for \d+s ┄/)
       expect(out).not_to include("ctrl-o to hide")
       expect(out).not_to include("ctrl-o to show")
       expect(out).to include("done")
+    end
+
+    # In :full the reasoning STREAMS live during the thinking window: a completed
+    # reasoning block is committed (dim `┊` aside) as it finishes — BEFORE the
+    # answer arrives — instead of being dumped only at collapse, so the
+    # pre-tool-call window fills with flowing thought (matches Hermes).
+    it "streams reasoning live in full mode (committed during the phase, not only at collapse)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "full")
+      mid = capture_stdout do
+        ui.thinking_started
+        # A blank line completes the first prose block, so it commits LIVE while
+        # the model is still thinking (no content token has arrived yet).
+        ui.stream(type: :thinking, text: "First I will read the file.\n\n")
+      end
+      # The opening rail and the first reasoning line are already on screen DURING
+      # the thinking phase — proof it streamed live, not buffered to collapse.
+      expect(mid).to include("┄ thinking ┄")
+      expect(mid).to include("First I will read the file.")
+      # The aside is NOT double-rendered when the answer arrives: the close rail
+      # appears once, the first line is not re-emitted.
+      after = capture_stdout do
+        ui.stream(type: :thinking, text: "Then I will reply.\n")
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(after).to include("Then I will reply.")
+      expect(after).to match(/┄ thought for \d+s ┄/)
+      expect(after).not_to include("First I will read the file.") # not re-rendered
+      expect(after).to include("answer")
+    end
+
+    # :collapsed (the DEFAULT) does NOT stream reasoning: nothing reasoning-shaped
+    # appears during the phase — only the one-liner cue lands at collapse.
+    it "does NOT stream reasoning live in collapsed mode (cue only at the end)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
+      Rubino.configuration.set("display", "reasoning", "collapsed")
+      mid = capture_stdout do
+        ui.thinking_started
+        ui.stream(type: :thinking, text: "musing one.\n\nmusing two.\n")
+      end
+      # No reasoning rail/body/text during the phase — just the (live) spinner.
+      expect(mid).not_to include("┄ thinking ┄")
+      expect(mid).not_to include("┊")
+      expect(mid).not_to include("musing")
+      end_out = capture_stdout do
+        ui.stream(type: :content, text: "answer")
+        ui.stream_end
+      end
+      expect(end_out).to match(/┄ ✻ thought for \d+s · ctrl-o to show ┄/)
+      expect(end_out).not_to include("musing")
+      expect(end_out).to include("answer")
     end
 
     it "commits nothing for reasoning in hidden mode" do
@@ -263,7 +315,7 @@ RSpec.describe Rubino::UI::CLI do
 
       out = capture_stdout { ui.reveal_last_reasoning }
       expect(out).to include("┄ thinking ┄")
-      expect(out).to include("┊  secret musing")
+      expect(out).to include("secret musing")
     end
 
     it "reveals the last retained reasoning buffer via ctrl-o (one-way)" do
@@ -277,7 +329,7 @@ RSpec.describe Rubino::UI::CLI do
       end
       out = capture_stdout { ui.reveal_last_reasoning }
       expect(out).to include("┄ thinking ┄")
-      expect(out).to include("┊  Let me check the failing test first.")
+      expect(out).to include("Let me check the failing test first.")
       # The reveal JUST showed the reasoning, so its close line must NOT promise
       # "to show" (redundant) nor "to hide" (a scrollback aside can't be hidden).
       expect(out).to match(/┄ thought for \d+s ┄/)
@@ -296,10 +348,10 @@ RSpec.describe Rubino::UI::CLI do
       first  = capture_stdout { ui.reveal_last_reasoning }
       second = capture_stdout { ui.reveal_last_reasoning }
       third  = capture_stdout { ui.reveal_last_reasoning }
-      expect(first).to include("┊  first thought.")
+      expect(first).to include("first thought.")
       # Every subsequent press prints NOTHING — no aside, and no ack line
       # ("┄ already shown ┄" was scrollback spam; D2 removed it). True silence.
-      expect(second).not_to include("┊  first thought.")
+      expect(second).not_to include("first thought.")
       expect(second).not_to include("┄ thinking ┄")
       expect(second).not_to include("already shown")
       expect(second).to eq("")
@@ -323,7 +375,7 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       out = capture_stdout { ui.reveal_last_reasoning }
-      expect(out).to include("┊  thought two.")
+      expect(out).to include("thought two.")
       expect(out).not_to include("┄ already shown ┄")
     end
 
@@ -365,15 +417,16 @@ RSpec.describe Rubino::UI::CLI do
       expect { ui.stream(type: :content, text: "") }.not_to output.to_stdout
     end
 
-    it "animates the thinking row through #live and stops the timer cleanly" do
-      # A live-capable stdout double drives the animated path (not the static
-      # plain-mode print). The timer thread must start, then be joined/killed by
+    it "animates the thinking facet into the composer footer and stops the timer cleanly" do
+      # An ACTIVE composer owns the screen, so the facet ticker routes its frames
+      # to the single footer bar (#set_turn_status), NOT a row above the prompt.
+      # The timer thread must start, then be joined/killed by
       # clear_thinking_indicator with no leak.
-      live = Class.new(StringIO) do
-        def live(str) = print(str)
-      end.new
-      old = $stdout
-      $stdout = live
+      frames = []
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:set_turn_status) { |f| frames << f }
+      allow(composer).to receive(:set_partial) # the teardown clears the partial too
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
       begin
         ui.thinking_started
         expect(ui.instance_variable_get(:@thinking_thread)).to be_a(Thread)
@@ -381,9 +434,9 @@ RSpec.describe Rubino::UI::CLI do
         ui.send(:clear_thinking_indicator)
         expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
         expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
-        expect(live.string).to include("thinking")
+        expect(frames.join).to include("thinking")
       ensure
-        $stdout = old
+        allow(Rubino::UI::BottomComposer).to receive(:current).and_call_original
       end
     end
 
@@ -452,6 +505,7 @@ RSpec.describe Rubino::UI::CLI do
       allow(composer).to receive(:finalize_region) { events << :finalize_region }
       allow(composer).to receive(:print_above) { |s| events << [:print_above, s] }
       allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:set_turn_status)
       allow(composer).to receive(:begin_content_stream)
       allow(composer).to receive(:end_content_stream)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
@@ -489,6 +543,7 @@ RSpec.describe Rubino::UI::CLI do
       composer = instance_double(Rubino::UI::BottomComposer)
       allow(composer).to receive(:finalize_region)
       allow(composer).to receive(:set_partial)
+      allow(composer).to receive(:set_turn_status)
       allow(composer).to receive(:print_above)
       allow(composer).to receive(:begin_content_stream)
       allow(composer).to receive(:end_content_stream)
@@ -712,16 +767,61 @@ RSpec.describe Rubino::UI::CLI do
       old = $stdout
       $stdout = live_io
       begin
-        ui.stream(type: :content, text: "| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM")
+        # A loose list (a non-table multi-line block) exercises the raw rolling
+        # tail; tables now take the fitted-partial path (asserted separately).
+        ui.stream(type: :content, text: "1. one\n2. two\n3. thr")
       ensure
         $stdout = old
       end
 
       margin = described_class::MD_MARGIN
       expect(live_io.live_calls.last)
-        .to eq("#{margin}| Gem | Use |\n#{margin}| --- | --- |\n#{margin}| ruby_llm | LLM")
+        .to eq("#{margin}1. one\n#{margin}2. two\n#{margin}3. thr")
       rows = described_class::LIVE_TAIL_ROWS
       expect(live_io.live_calls).to all(satisfy { |s| s.split("\n").length <= rows })
+    end
+
+    # Streaming-table live render (Option B): while a GFM table is in flight the
+    # live region must show a FITTED, bordered partial table (header + completed
+    # rows) — NEVER the raw `| col | col |` rows, which soft-wrap mid-cell. The
+    # raw pipes used to leak here, then snap to the rendered table on the blank
+    # line (the streaming-table garble). The completed table still snaps in.
+    it "paints a fitted partial table live, never raw pipe rows (streaming-table)" do
+      live_io = Class.new(StringIO) do
+        attr_reader :live_calls
+
+        def live(str)
+          (@live_calls ||= []) << str
+          self
+        end
+      end.new
+
+      old = $stdout
+      $stdout = live_io
+      begin
+        ui.stream(type: :content, text: "| Gem | Use |\n| --- | --- |\n| ruby_llm | LLM client |\n")
+        ui.stream(type: :content, text: "| tty | Table |\n")
+      ensure
+        $stdout = old
+      end
+
+      last = live_io.live_calls.last.to_s
+      plain = last.gsub(/\e\[[0-9;]*m/, "")
+      # The live frame is a real bordered table, not the raw markdown pipes.
+      expect(plain).to include("┌").and include("│").and include("└")
+      expect(plain).to include("ruby_llm").and include("tty")
+      # No raw markdown separator leaks (the `---` row never reaches the screen).
+      expect(plain).not_to include("---")
+      # And the live region never contained a raw, border-less `| … |` row.
+      live_io.live_calls.each do |frame|
+        frame.gsub(/\e\[[0-9;]*m/, "").each_line do |row|
+          next if row.include?("│") # a real table cell row is fine
+          next if row.strip.empty?
+
+          expect(row).not_to match(/\|\s*[^|]+\s*\|/),
+                             "raw pipe row leaked into the live region: #{row.inspect}"
+        end
+      end
     end
 
     it "does not crash on the plain path when $stdout has no #live" do
@@ -779,6 +879,32 @@ RSpec.describe Rubino::UI::CLI do
       out = capture_stdout { ui.tool_started("ping", arguments: nil) }
       expect(out).to include("● ping")
       expect(out).not_to match(/· \S/)
+    end
+
+    # #582 — an MCP tool's live card shows it is external code: the printed
+    # label is `<bare> (mcp:<server>)` while the model-facing name (chaos_echo)
+    # is unchanged. A built-in renders unchanged (no marker). Detection is keyed
+    # off the registered object being an MCP wrapper, NOT the name shape.
+    describe "MCP tool card marker (#582)" do
+      let(:mcp_wrapper) do
+        Rubino::MCP::MCPToolWrapper.new(
+          double("mcp_tool", name: "echo", description: "echoes"), server_name: "chaos"
+        )
+      end
+
+      it "renders the MCP source marker on the open row" do
+        Rubino::Tools::Registry.register(mcp_wrapper)
+        out = capture_stdout { ui.tool_started("chaos_echo", arguments: { text: "BANANA" }) }
+        expect(out).to include("● echo (mcp:chaos)")
+        expect(out).not_to include("● chaos_echo")
+      end
+
+      it "leaves a built-in with an underscore name unchanged (no MCP marker)" do
+        Rubino::Tools::Registry.register(Rubino::Tools::ShellOutputTool.new)
+        out = capture_stdout { ui.tool_started("shell_output", arguments: nil) }
+        expect(out).to include("● shell_output")
+        expect(out).not_to include("mcp:")
+      end
     end
 
     it "truncates long arg hints with an ellipsis" do
@@ -954,7 +1080,10 @@ RSpec.describe Rubino::UI::CLI do
   describe "#tool_finished (task delegation card)" do
     def render_delegation(result)
       capture_stdout do
-        ui.tool_started("task", arguments: { subagent: "explore", prompt: "hi" })
+        # The executor always threads the call's call_id into tool_started so the
+        # close row resolves its OWN name (#35); mirror that here.
+        cid = result.respond_to?(:call_id) ? result.call_id : nil
+        ui.tool_started("task", arguments: { subagent: "explore", prompt: "hi" }, call_id: cid)
         ui.tool_finished("task", result: result)
       end
     end
@@ -967,15 +1096,18 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("delegato")
     end
 
-    # P6: a background spawn only STARTED — the close row reuses the live-card
-    # shape, dim, with no green ✓ and none of the verbose spawn-handle sentence.
-    it "renders a quiet '▸ <id> · <name> · started' row for a background spawn (P6)" do
+    # Slice 1: a background spawn only STARTED — the minimal dim marker `▸ <name>
+    # · started` (the matching `done`/`failed` arrives later), no green ✓ and
+    # none of the verbose spawn-handle sentence.
+    it "renders a minimal '▸ <id> · <name> · started' marker for a background spawn" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1",
         output: "Started background subagent 'explore' as task sa_1. " \
                 "It is running now — keep working on other things."
       )
       out = render_delegation(result)
+      # The id leads so this row correlates with the standalone done marker that
+      # lands far below it once the child finishes.
       expect(out).to include("└ ▸ sa_1 · explore · started")
       expect(out).not_to include("✓")
       expect(out).not_to include("It is running now")
@@ -1000,14 +1132,37 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("✓ explore")
     end
 
-    it "renders ✗ when the task tool returned an At capacity: string" do
+    # A cap REJECTION never launched a subagent — there is no `sa_…` id and no
+    # run to fail. It must NOT render the phantom `✗ <name> · failed` card the
+    # model's capped 4th parallel delegate used to produce; surface a neutral,
+    # NAMED "at capacity" close row that explains the concurrency cap instead.
+    it "renders a neutral, named 'at capacity' close row (not ✗ failed) when the cap rejected it" do
       result = Rubino::Tools::Result.success(
         name: "task", call_id: "t1",
-        output: "At capacity: 3 background subagents are already running."
+        output: "At capacity: this agent already has 3 subagents running. " \
+                "Wait for one to finish (you'll get a `[background-task]` message), " \
+                "check it with task_result, or do the work directly."
       )
       out = render_delegation(result)
-      expect(out).to include("✗ explore")
+      expect(out).to include("⊝ explore")
+      expect(out).to include("at capacity")
+      expect(out).to include("concurrency cap reached")
+      expect(out).not_to include("✗ explore")
+      expect(out).not_to include("✗ failed")
       expect(out).not_to include("✓ explore")
+    end
+
+    # The depth cap (a subagent nesting too deep) reads as its OWN reason, still
+    # neutral and named — never a ✗ failed phantom.
+    it "renders a named depth-cap close row when the nesting-depth cap rejected it" do
+      result = Rubino::Tools::Result.success(
+        name: "task", call_id: "t1",
+        output: "Max nesting depth reached: subagents can only nest 2 levels deep."
+      )
+      out = render_delegation(result)
+      expect(out).to include("⊝ explore")
+      expect(out).to include("nesting depth reached")
+      expect(out).not_to include("✗ explore")
     end
 
     it "renders ✗ when the result has error status (synchronous subagent raised)" do
@@ -1017,6 +1172,153 @@ RSpec.describe Rubino::UI::CLI do
       out = render_delegation(result)
       expect(out).to include("✗ explore")
       expect(out).not_to include("✓ explore")
+    end
+
+    # #35: the close-row name must be derived PER-CALL (from result.call_id), not
+    # from a shared mutable ivar. Two overlapping delegations interleave as
+    # started A, started B, finished A, finished B — a single shared ivar would
+    # label A's close row with B's name. Each row must show its OWN subagent.
+    it "labels each of two overlapping delegations with its OWN name (#35)" do
+      res_a = Rubino::Tools::Result.success(name: "task", call_id: "ca", output: "A done")
+      res_b = Rubino::Tools::Result.success(name: "task", call_id: "cb", output: "B done")
+      out = capture_stdout do
+        ui.tool_started("task", arguments: { subagent: "explore", prompt: "a" }, call_id: "ca")
+        ui.tool_started("task", arguments: { subagent: "general", prompt: "b" }, call_id: "cb")
+        ui.tool_finished("task", result: res_a)
+        ui.tool_finished("task", result: res_b)
+      end
+      lines = out.lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "") }
+      done  = lines.select { |l| l.include?("└ ✓") }
+      expect(done).to include(a_string_including("✓ explore · done"))
+      expect(done).to include(a_string_including("✓ general · done"))
+      expect(out).not_to include("✓ subagent")
+    end
+
+    # #35: a replay / post-detach render reconstructs the row from the persisted
+    # tool message — the start (carrying the persisted call_id + arguments) and
+    # the finish (a Result with the same call_id). The close row must show the
+    # REAL persisted subagent name, never the generic "subagent".
+    it "renders the real subagent name on a replay/post-detach render (#35)" do
+      replayed = Rubino::Tools::Result.success(
+        name: "task", call_id: "replay-1", output: "the bug is in lib/x.rb:42"
+      )
+      out = capture_stdout do
+        ui.tool_started("task", arguments: { subagent: "explore", prompt: "find it" },
+                                call_id: "replay-1")
+        ui.tool_finished("task", result: replayed)
+      end
+      expect(out).to include("✓ explore · done")
+      expect(out).not_to include("✓ subagent")
+    end
+
+    # #35: a replayed BACKGROUND spawn row recovers the name from the persisted
+    # handle output itself (no prior stash needed), so it labels correctly even
+    # if the start's arguments were absent.
+    it "recovers the name from the spawn handle on a background replay (#35)" do
+      replayed = Rubino::Tools::Result.success(
+        name: "task", call_id: "bg-1",
+        output: "Started background subagent 'general' as task sa_9. It is running now."
+      )
+      out = capture_stdout do
+        ui.tool_started("task", arguments: nil, call_id: "bg-1")
+        ui.tool_finished("task", result: replayed)
+      end
+      expect(out).to include("└ ▸ sa_9 · general · started")
+      expect(out).not_to include("subagent · started")
+    end
+  end
+
+  # The turn status ticker advances the live subagent cards too, so a child's
+  # elapsed never freezes mid-turn while it sits in a long, event-less LLM call
+  # (the idle card ticker is dormant during a turn).
+  describe "#refresh_live_cards" do
+    before { Rubino::Tools::BackgroundTasks.reset! }
+    after  { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "repaints the cards while a background child is live" do
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "go")
+      expect(ui).to receive(:set_subagent_cards)
+      ui.send(:refresh_live_cards)
+    end
+
+    it "is a no-op when no child is live (a plain turn pays nothing)" do
+      expect(ui).not_to receive(:set_subagent_cards)
+      ui.send(:refresh_live_cards)
+    end
+  end
+
+  # Inlined SubagentRecorder: a per-subagent CLI (agent_id = a registry entry id)
+  # records its tool activity into BackgroundTasks (the OFF-screen counters /
+  # activity ring / output tail that feed the cards, /agents drill-in, probe)
+  # BEFORE rendering — while still rendering exactly as the main CLI does. A MAIN
+  # CLI (agent_id :main) records NOTHING. Replaces subagent_recorder_spec.rb.
+  describe "subagent activity recording (inlined SubagentRecorder)" do
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+    after  { Rubino::Tools::BackgroundTasks.reset! }
+
+    def silence_stdout
+      old = $stdout
+      $stdout = StringIO.new
+      yield
+    ensure
+      $stdout = old
+    end
+
+    it "records a subagent CLI's tool_started/finished/chunk into the registry" do
+      entry = registry.reserve(subagent: "explore", prompt: "go")
+      sub   = described_class.new(agent_id: entry.id)
+
+      result = Rubino::Tools::Result.success(
+        name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
+      )
+
+      silence_stdout do
+        sub.tool_started("grep", arguments: { "pattern" => "needle" })
+        sub.tool_chunk("grep", "first line of output\n")
+        sub.tool_finished("grep", result: result)
+      end
+
+      e = registry.find(entry.id)
+      expect(e.tool_count).to eq(1)
+      expect(e.last_activity).to eq("grep needle")
+      expect(e.activity_log.last).to include("✓ grep · 3 matches")
+    end
+
+    it "still RENDERS the tool box on a subagent CLI (recording does not replace render)" do
+      entry = registry.reserve(subagent: "explore", prompt: "go")
+      sub   = described_class.new(agent_id: entry.id)
+
+      out = capture_stdout { sub.tool_started("grep", arguments: { "pattern" => "needle" }) }
+      expect(out).to include("● ")
+      expect(out).to include("grep")
+    end
+
+    it "a MAIN CLI (agent_id :main) records NOTHING into the registry" do
+      entry = registry.reserve(subagent: "explore", prompt: "go")
+      main  = described_class.new # agent_id defaults to :main
+
+      result = Rubino::Tools::Result.success(
+        name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
+      )
+
+      silence_stdout do
+        main.tool_started("grep", arguments: { "pattern" => "needle" })
+        main.tool_chunk("grep", "out\n")
+        main.tool_finished("grep", result: result)
+      end
+
+      e = registry.find(entry.id)
+      expect(e.tool_count).to eq(0)
+      expect(e.last_activity).to be_nil.or eq("")
+      expect(Array(e.activity_log)).to be_empty
+    end
+
+    it "is best-effort: a registry hiccup never breaks the subagent's render" do
+      sub = described_class.new(agent_id: "sa_deadbeef") # no such entry — record_* no-ops
+      expect { capture_stdout { sub.tool_started("grep", arguments: { "pattern" => "x" }) } }
+        .not_to raise_error
     end
   end
 
@@ -1059,6 +1361,36 @@ RSpec.describe Rubino::UI::CLI do
 
     it "stringifies non-string content without raising" do
       expect { ui.replay_user_input(nil) }.not_to raise_error
+    end
+
+    # CWE-150 (H1): the submit/echo sink must route USER-SUPPLIED input through
+    # Util::Output.sanitize_terminal so an embedded OSC title-set / screen-clear
+    # in the just-submitted line is neutralized to visible caret notation,
+    # instead of EXECUTING against the emulator when echoed back to scrollback.
+    it "neutralizes an OSC title-set escape in the echoed user input" do
+      payload = "pwn\e]0;HIJACKED\aafter"
+      out = capture_stdout { ui.replay_user_input(payload) }
+
+      # No raw OSC introducer (ESC ] / ESC ]0;) survives to the terminal.
+      expect(out).not_to include("\e]0;")
+      expect(out).not_to include("\e]")
+      # The escape is shown inertly as caret notation, and the literal text
+      # around it is preserved so the user still SEES what was submitted.
+      expect(out).to include("^[")
+      expect(out).to include("pwn")
+      expect(out).to include("after")
+    end
+
+    it "neutralizes a CSI screen-clear escape in the echoed user input" do
+      out = capture_stdout { ui.replay_user_input("a\e[2J\e[3J\e[Hb") }
+
+      # No raw clear-screen / cursor-home CSI reaches the terminal.
+      expect(out).not_to include("\e[2J")
+      expect(out).not_to include("\e[3J")
+      expect(out).not_to include("\e[H")
+      expect(out).to include("^[")
+      expect(out).to include("a")
+      expect(out).to include("b")
     end
   end
 
@@ -1146,6 +1478,38 @@ RSpec.describe Rubino::UI::CLI do
     it "renders a free line wrapped in `┄` bookends" do
       expect { ui.note("turn · 9s · 0 tools · 1.3k tok") }
         .to output(/┄ turn · 9s · 0 tools · 1\.3k tok ┄/).to_stdout
+    end
+
+    # R2/Y4 — an async parent-surface notice (a 2nd subagent's `● … needs
+    # approval` line / a `✓ … done` completion) can fire from a worker thread
+    # WHILE an approval modal owns the raw terminal. It MUST go through the
+    # composer's committed paint (#print_above), which PARKS the line while the
+    # composer is suspended and flushes it at column 0 on resume — NOT a raw
+    # $stdout.puts that lands mid-line over the modal at an offset column.
+    it "routes the async note through the composer's parked-paint, not raw stdout (R2/Y4)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      committed = []
+      allow(composer).to receive(:print_above) { |s| committed << s }
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      out = capture_stdout { ui.note("● sa_69 · needs approval: rm -rf /tmp/x — /agents sa_69") }
+
+      # The notice rode #print_above (so suspend can park it), carrying the body.
+      expect(committed.join("\n")).to include("● sa_69 · needs approval: rm -rf /tmp/x")
+      # Nothing leaked straight to the raw terminal where it would tear the modal.
+      expect(out).to eq("")
+    end
+
+    it "routes the async subagent completion line through the parked-paint too (Y4)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      committed = []
+      allow(composer).to receive(:print_above) { |s| committed << s }
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      out = capture_stdout { ui.subagent_lifecycle("✓ sa_fc · general · done", status: "done", id: "sa_fc") }
+
+      expect(committed.join("\n")).to include("✓ sa_fc · general · done")
+      expect(out).to eq("")
     end
   end
 
@@ -1354,76 +1718,44 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  # P6: one lifecycle grammar — terminal-state events reuse the live-card row
-  # shape, and the child's report renders WHOLE (markdown) under `↳ report:`.
-  describe "#subagent_finished lifecycle rendering (P6)" do
-    it "renders the dim ▸ row plus the FULL report, markdown-rendered" do
+  # Agent-multiplexer Slice 1: the MAIN-timeline lifecycle marker is MINIMAL —
+  # just the close line, NO result summary or report dumped into scrollback. All
+  # per-tool detail lives in the BackgroundTasks registry (the card / drill-in);
+  # the full result still reaches the MODEL via the injected completion notice.
+  describe "#subagent_finished lifecycle rendering (minimal marker)" do
+    it "renders ONLY the minimal close marker, no report body" do
       report = "## Findings\n\n- first\n- second\n\nA much longer closing paragraph of the report."
       out = capture_stdout do
-        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
-                             id: "sa_e488", status: "done", report: report)
+        ui.subagent_finished("✓ explore · done", id: "sa_e488", status: "done", report: report)
       end
-      expect(out).to include("▸ sa_e488 · explore · completed · 1 tool · 12s")
-      expect(out).to include("↳ report:")
-      expect(out).to include("Findings")
-      expect(out).to include("closing paragraph of the report.") # not amputated
-      expect(out).not_to include("##") # markdown-rendered, not raw
+      expect(out).to include("✓ explore · done")
+      expect(out).not_to include("↳ report:") # detail stays in the registry, not main
+      expect(out).not_to include("Findings")
+      expect(out).not_to include("closing paragraph of the report.")
     end
 
-    it "renders a failed lifecycle row in red" do
+    it "renders a failed lifecycle marker in red" do
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
       out = capture_stdout do
-        ui.subagent_finished("▸ sa_e488 · explore · failed: boom", id: "sa_e488", status: "failed")
+        ui.subagent_finished("✗ explore · failed", id: "sa_e488", status: "failed")
       end
       expect(out).to include("\e[31m")
     end
 
-    it "skips the report block when there is none" do
-      out = capture_stdout do
-        ui.subagent_finished("▸ sa_1 · explore · no-op · 0 tools", id: "sa_1", status: "no-op")
-      end
-      expect(out).not_to include("↳ report:")
-    end
-
-    # A between-turns completion renders the FULL report immediately; the
-    # queued completion notice injected next turn must not ECHO the same
-    # report body a second time — the head line still confirms the model
-    # received it, the body is elided once already shown.
-    it "does not render the same report twice when the completion notice is injected later" do
-      report = "## Findings\n\n- the bug is in lib/x.rb:42\n\nClosing paragraph."
+    # The injected completion notice still carries the FULL result to the model;
+    # since the report is no longer rendered into main, the notice echoes whole
+    # (no "report shown above" elision) — the user reads the result once, here.
+    it "echoes the full injected completion notice (result not shown in main)" do
       notice = "[background-task] Task sa_e488 (subagent 'explore') completed.\n" \
-               "Result:\n#{report}\n(full result via task_result(\"sa_e488\"))"
+               "Result:\nthe bug is in lib/x.rb:42\n(full result via task_result(\"sa_e488\"))"
       out = capture_stdout do
-        ui.subagent_finished("▸ sa_e488 · explore · completed · 1 tool · 12s",
-                             id: "sa_e488", status: "done", report: report)
+        ui.subagent_finished("✓ explore · done", id: "sa_e488", status: "done", report: "the bug is in lib/x.rb:42")
         ui.input_injected(notice)
       end
-      expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # shown once, at completion
+      expect(out).to include("✓ explore · done")
       expect(out).to include("↳ received while working: [background-task] Task sa_e488")
-      expect(out).to include("report shown above")
-    end
-
-    it "still echoes the full injected notice for a report that was NEVER lifecycle-rendered" do
-      notice = "[background-task] Task sa_x1 (subagent 'explore') completed.\n" \
-               "Result:\nFOUND: lib/y.rb:7\n(full result via task_result(\"sa_x1\"))"
-      out = capture_stdout { ui.input_injected(notice) }
-      expect(out).to include("FOUND: lib/y.rb:7")
+      expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # only in the injected notice
       expect(out).not_to include("report shown above")
-    end
-
-    it "elides only the matching notice when several are injected together" do
-      shown = "shown-report body"
-      other = "other-report body"
-      coalesced = "[background-task] Task sa_a (subagent 'explore') completed.\n" \
-                  "Result:\n#{shown}\n(full result via task_result(\"sa_a\"))\n" \
-                  "[background-task] Task sa_b (subagent 'explore') completed.\n" \
-                  "Result:\n#{other}\n(full result via task_result(\"sa_b\"))"
-      out = capture_stdout do
-        ui.subagent_finished("▸ sa_a · explore · completed", id: "sa_a", status: "done", report: shown)
-        ui.input_injected(coalesced)
-      end
-      expect(out.scan(shown).size).to eq(1) # elided in the echo
-      expect(out.scan(other).size).to eq(1) # untouched
     end
   end
 
@@ -1838,6 +2170,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -1859,6 +2192,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = {}
         allow(menu).to receive(:choice) { |label, sym| offered[sym] = label }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -1949,6 +2283,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk.call(menu)
         :no
       end
@@ -2057,6 +2392,7 @@ RSpec.describe Rubino::UI::CLI do
         menu = double("menu")
         offered = []
         allow(menu).to receive(:choice) { |label, sym| offered << [label, sym] }
+        allow(menu).to receive(:help)
         blk&.call(menu)
         symbol
       end
@@ -2101,7 +2437,10 @@ RSpec.describe Rubino::UI::CLI do
       prompt = instance_double(TTY::Prompt)
       allow(prompt).to receive(:select) do |_q, **opts, &blk|
         captured_opts = opts
-        blk&.call(double("menu").tap { |m| allow(m).to receive(:choice) })
+        blk&.call(double("menu").tap do |m|
+          allow(m).to receive(:choice)
+          allow(m).to receive(:help)
+        end)
         :once
       end
       ui.instance_variable_set(:@approval_prompt, prompt)
@@ -2109,6 +2448,47 @@ RSpec.describe Rubino::UI::CLI do
 
       ui.send(:approval_menu, "approve?", [["Approve once", :once], ["Deny once", :no]])
       expect(captured_opts).to include(filter: true)
+    end
+
+    # Filter-hint discoverability (#513-filter): the menu advertises how to UNDO a
+    # filter, since clearing it is otherwise undiscoverable and Esc must NOT be
+    # bound here (it would read as a deny). tty-prompt already binds Delete →
+    # @filter.clear and Backspace → @filter.pop; we surface them in the help line.
+    it "sets a help line advertising Del clears the filter / Backspace one char" do
+      captured_help = nil
+      prompt = instance_double(TTY::Prompt)
+      allow(prompt).to receive(:select) do |_q, **_opts, &blk|
+        menu = double("menu")
+        allow(menu).to receive(:choice)
+        allow(menu).to receive(:help) { |h| captured_help = h }
+        blk&.call(menu)
+        :once
+      end
+      ui.instance_variable_set(:@approval_prompt, prompt)
+      allow(Rubino::UI::BottomComposer).to receive(:run_in_terminal).and_yield
+
+      ui.send(:approval_menu, "approve?", [["Approve once", :once], ["Deny once", :no]])
+      expect(captured_help).to be_a(String)
+      expect(captured_help).to match(/Del/i).and match(/filter/i)
+      expect(captured_help).to match(/Backspace/i)
+      expect(captured_help).not_to match(/Esc/i) # Esc stays a deny — never bound here
+    end
+
+    # Behavioral guard: the Delete key the hint advertises really clears the WHOLE
+    # filter in one keystroke (tty-prompt list.rb keydelete → @filter.clear).
+    it "Delete clears the whole filter (the key the hint advertises)" do
+      list = TTY::Prompt::List.new(TTY::Prompt.new, filter: true)
+      list.choice "Approve once", :once
+      list.choice "Deny", :no
+
+      "appr".each_char do |c|
+        list.send(:keypress, double("ev", value: c, key: double(name: nil)))
+      end
+      expect(list.instance_variable_get(:@filter)).not_to be_empty
+
+      list.send(:keydelete) # the Delete key
+      expect(list.instance_variable_get(:@filter)).to be_empty
+      expect(list.choices).not_to be_empty # all rows restored
     end
 
     # Behavioral guard at the tty-prompt boundary: a `/status` filter matches NO
@@ -2228,6 +2608,38 @@ RSpec.describe Rubino::UI::CLI do
   describe "#thinking_finished" do
     it "is a quiet no-op when nothing is showing" do
       out = capture_stdout { ui.thinking_finished }
+      expect(out).to eq("")
+    end
+  end
+
+  # ONE status bar: the activity facet now rides the composer footer, which owns
+  # the single "(esc to interrupt)" hint — so the facet TEXT must no longer carry
+  # its own "esc to interrupt" piece (that double-hint was the user's complaint).
+  describe "#status_text" do
+    it "no longer carries an 'esc to interrupt' piece (the footer owns the hint)" do
+      now = ui.send(:monotonic_now)
+      ui.instance_variable_set(:@turn_active, true)
+      ui.instance_variable_set(:@turn_started_at, now - 5)
+      ui.instance_variable_set(:@status, { label: "thinking", phase: :thinking,
+                                           phase_started_at: now - 5 })
+      expect(ui.send(:status_text, now)).not_to include("esc to interrupt")
+    end
+  end
+
+  # The ticker routes STATUS/STALL frames to the composer FOOTER (#set_turn_status),
+  # not the partial above the prompt; the CONTENT/REASONING tails keep #paint_live.
+  describe "#paint_turn_status" do
+    it "routes the frame to the composer's footer turn-status slot" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(composer).to receive(:set_turn_status)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      ui.send(:paint_turn_status, "◆ writing")
+      expect(composer).to have_received(:set_turn_status).with("◆ writing", origin: :main)
+    end
+
+    it "is a no-op with no composer and a non-TTY stdout" do
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(nil)
+      out = capture_stdout { ui.send(:paint_turn_status, "◆ writing") }
       expect(out).to eq("")
     end
   end

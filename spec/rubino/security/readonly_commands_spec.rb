@@ -82,6 +82,32 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
         expect(allowed?("ls 2> err.log")).to be false
         expect(allowed?("cat a.txt | tee copy.txt")).to be false
       end
+
+      # #68: a read-only command keeps auto-running when it carries a NON-WRITE
+      # redirect the model habitually appends — fd-dup (`2>&1`) and discard to
+      # the null device (`>/dev/null`, `&>/dev/null`, `1>/dev/null`). Pre-fix any
+      # `>` rejected outright, so these over-prompted pervasively.
+      it "allows non-write redirects (2>&1, discard to /dev/null)" do
+        expect(allowed?("ls -la 2>&1")).to be true
+        expect(allowed?("git log --oneline 2>&1 | head")).to be true
+        expect(allowed?("ls /tmp 2>/dev/null")).to be true
+        expect(allowed?("cat file >/dev/null")).to be true
+        expect(allowed?("grep foo bar &>/dev/null")).to be true
+        expect(allowed?("cat x 1>/dev/null")).to be true
+        expect(allowed?("ls >/dev/null 2>&1")).to be true
+        expect(allowed?("ls > /dev/null")).to be true
+        expect(allowed?("ls >>/dev/null")).to be true
+      end
+
+      # Guard: a redirect that writes an ARBITRARY file is still rejected — the
+      # /dev/null match is anchored so `/dev/nullx` (a real file) doesn't slip.
+      it "still rejects a redirect that writes an arbitrary file" do
+        expect(allowed?("cat secret > out.txt")).to be false
+        expect(allowed?("echo hi >> log")).to be false
+        expect(allowed?("find . 2> err.txt")).to be false
+        expect(allowed?("ls > /dev/nullx")).to be false
+        expect(allowed?("ls > /dev/null; rm x")).to be false
+      end
     end
 
     context "with command / process substitution" do
@@ -130,6 +156,57 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
       end
     end
 
+    # #536: `git diff --ext-diff` runs an external `diff.<n>.command` driver =
+    # arbitrary command execution with NO approval. The read-only subcommand
+    # (`diff`/`log`/`show`) is NOT enough to auto-allow — an exec-capable vector
+    # anywhere on the line must drop the command to the prompt.
+    context "with git exec-capable config/driver vectors (#536)" do
+      it "rejects --ext-diff / --textconv external-driver flags" do
+        ["git diff --ext-diff", "git diff --textconv", "git diff --textconv prog",
+         "git log --ext-diff", "git show --ext-diff"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (ext-diff/textconv = RCE)"
+        end
+      end
+
+      it "rejects -c / --config-env config overrides that run a command" do
+        ['git -c diff.external=touch\ /tmp/x diff',
+         "git -c core.pager=cmd log",
+         "git -cdiff.external=cmd diff",
+         "git -c core.sshCommand=cmd log",
+         "git -c core.fsmonitor=cmd status",
+         "git -c core.hooksPath=/tmp status",
+         "git -c core.editor=cmd log",
+         "git -c sequence.editor=cmd log",
+         "git --config-env diff.external=PWNVAR diff"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (-c config override = RCE)"
+        end
+      end
+
+      it "rejects per-name diff.<n>.command / .textconv and filter.<n>.clean drivers" do
+        ["git -c diff.foo.command=cmd diff",
+         "git -c diff.foo.textconv=cmd diff",
+         "git -c filter.lfs.clean=cmd diff",
+         "git -c filter.lfs.smudge=cmd diff"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (per-name driver = RCE)"
+        end
+      end
+
+      it "rejects path-redirect global flags (-C/--git-dir/--work-tree) pointing elsewhere" do
+        ["git -C /etc diff", "git --git-dir=/tmp/x status", "git --work-tree=/ status",
+         "git --exec-path=/tmp status"].each do |cmd|
+          expect(allowed?(cmd)).to be(false), "#{cmd.inspect} must NOT auto-allow (workspace/exec redirect)"
+        end
+      end
+
+      it "still auto-allows plain read-only git (no regression)" do
+        ["git diff", "git status", "git log", "git show", "git diff --stat",
+         "git log --oneline", "git rev-parse HEAD", "git blame lib/foo.rb",
+         "git diff --no-ext-diff", "git branch -a", "git remote -v"].each do |cmd|
+          expect(allowed?(cmd)).to be(true), "#{cmd.inspect} is read-only and must still auto-allow"
+        end
+      end
+    end
+
     context "with mutating flags on otherwise-safe heads" do
       it "rejects date -s and tree -o" do
         expect(allowed?("date -s '2026-01-01'")).to be false
@@ -172,6 +249,57 @@ RSpec.describe Rubino::Security::ReadonlyCommands do
       it "still refuses DangerousPatterns matches for extended commands" do
         expect(allowed?("rm -rf /tmp/x", extra: ["rm"])).to be false
       end
+    end
+  end
+
+  # Slice 2 Part C: the EXEC/network/system SUBSET of dangerous_flag_form? — the
+  # forms the OS write-jail does NOT contain, so they still prompt when it is
+  # active. The pure-WRITE forms must NOT be in this subset.
+  describe ".exec_flag_form?" do
+    def exec?(cmd) = described_class.exec_flag_form?(Shellwords.split(cmd))
+
+    # EXEC / network / system → still prompt even with the jail active.
+    {
+      "git -c alias exec" => "git -c alias.x='!sh' x",
+      "git -c core.pager exec" => "git -c core.pager='!sh' log",
+      "git --ext-diff" => "git diff --ext-diff",
+      "git push (network)" => "git push origin main",
+      "git fetch (network)" => "git fetch",
+      "python -c inline" => "python3 -c print(1)",
+      "bash -c inline" => "bash -c 'echo hi'",
+      "perl -e eval" => "perl -e 'print 1'",
+      "node --eval" => "node --eval 'console.log(1)'",
+      "find -exec" => "find . -exec rm {} ;",
+      "date -s clock" => "date -s '2020-01-01'",
+      "tar --to-command" => "tar --to-command=sh -xf a.tar",
+      "xargs running cmd" => "xargs rm"
+    }.each do |label, cmd|
+      it "flags EXEC form #{label}: #{cmd}" do
+        expect(exec?(cmd)).to be true
+      end
+    end
+
+    # Pure WRITE (jail-contained) → NOT in the exec subset.
+    {
+      "sort -o" => "sort -o /tmp/x f",
+      "tree -o" => "tree -o /tmp/out .",
+      "sed -i" => "sed -i s/a/b/ f",
+      "tee" => "tee /tmp/x",
+      "dd of=" => "dd of=/tmp/x if=/dev/zero",
+      "git --output" => "git diff --output=/tmp/x",
+      "find -delete (write)" => "find . -delete",
+      "find -fprintf (write)" => "find . -fprintf /tmp/x %p"
+    }.each do |label, cmd|
+      it "does NOT flag pure-write form #{label}: #{cmd}" do
+        expect(exec?(cmd)).to be false
+      end
+    end
+
+    it "does not flag ordinary read/script invocations" do
+      expect(exec?("python3 test.py")).to be false
+      expect(exec?("sed 's/a/b/' f")).to be false
+      expect(exec?("git diff")).to be false
+      expect(exec?("ls -la")).to be false
     end
   end
 end

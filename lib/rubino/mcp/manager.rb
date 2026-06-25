@@ -18,16 +18,37 @@ module Rubino
         @config = config || Rubino.configuration
         @clients = {}
         @last_errors = {}
+        # Guards @clients / @last_errors writes during the PARALLEL connect phase
+        # (start_all!). The single-server path (start_server) takes it too, so the
+        # invariant "shared-state mutations are serialized" holds on every caller.
+        @state_mutex = Mutex.new
         route_mcp_logging!
       end
 
-      # Initializes all configured MCP servers
+      # Initializes all configured MCP servers.
+      #
+      # The connect handshake is the slow part: each RubyLLM::MCP.client(**opts)
+      # blocks up to the per-server request_timeout (default 8 s) while it spawns
+      # the child / opens the socket and waits for `initialize`. Done SERIALLY, N
+      # hanging servers cost the SUM of their timeouts (#576 measured 17.6 s with
+      # two stalling servers). So we connect every server CONCURRENTLY — one
+      # thread each (the count is small and these threads are I/O-bound) — which
+      # bounds total connect time to roughly the slowest SINGLE server.
+      #
+      # Thread-safety: each thread only does the network/subprocess connect and
+      # writes its result into @clients/@last_errors UNDER @state_mutex (plain
+      # Hashes are not thread-safe). Tool registration is deferred to the MAIN
+      # thread (register_all_tools! below, after every join) because
+      # Tools::Registry is a process-wide singleton over a plain Hash and is NOT
+      # thread-safe. Best-effort semantics are preserved: start_server rescues
+      # per-server, so one server raising/stalling never aborts the others.
       def start_all!
         server_configs = @config.dig("mcp", "servers") || {}
 
-        server_configs.each do |name, server_config|
-          start_server(name, server_config)
+        threads = server_configs.map do |name, server_config|
+          Thread.new { start_server(name, server_config) }
         end
+        threads.each(&:join)
 
         register_all_tools!
         @clients
@@ -38,14 +59,19 @@ module Rubino
         transport = server_config["transport"] || "stdio"
         client_opts = build_client_options(name, transport, server_config)
 
+        # The slow, blocking connect runs OUTSIDE the lock so concurrent
+        # start_all! threads actually overlap; only the shared-Hash writes are
+        # serialized under @state_mutex.
         client = RubyLLM::MCP.client(**client_opts)
-        @clients[name.to_s] = client
-        @last_errors.delete(name.to_s)
+        @state_mutex.synchronize do
+          @clients[name.to_s] = client
+          @last_errors.delete(name.to_s)
+        end
 
         Rubino.event_bus.emit(:mcp_server_started, name: name)
         client
       rescue StandardError => e
-        @last_errors[name.to_s] = e.message
+        @state_mutex.synchronize { @last_errors[name.to_s] = e.message }
         Rubino.ui.warning("MCP server '#{name}' failed to start: #{e.message}")
         nil
       end
@@ -79,8 +105,13 @@ module Rubino
       # Per-agent mcp_servers scoping is NOT applied here — it lives in
       # Agent::Definition#resolved_tools (#173), the single seam every
       # consumer of an agent's tool set goes through.
+      # Registers in a STABLE order (sorted by server name) rather than @clients'
+      # insertion order — under the parallel start_all! @clients is populated in
+      # connect-COMPLETION order, which is nondeterministic. Sorting keeps the
+      # resulting tool-registration order (and anything downstream that reads it)
+      # deterministic across boots.
       def register_all_tools!
-        @clients.each_key { |server_name| register_server_tools(server_name) }
+        @clients.keys.sort.each { |server_name| register_server_tools(server_name) }
       end
 
       # Registers ONE started server's tools — the `/mcp <server> on` path
@@ -94,11 +125,24 @@ module Rubino
           wrapped = MCPToolWrapper.new(mcp_tool, server_name: name.to_s)
           Tools::Registry.register(wrapped)
         end
+        # A clean tools/list clears any prior failure so a recovered server
+        # stops showing degraded (mirrors start_server clearing on success).
+        @last_errors.delete(name.to_s)
       rescue StandardError => e
+        # Record the failure so /mcp's drill-in (and the degraded glyph below)
+        # can explain a connected-but-toolless server (#575) — start_server
+        # records start failures the same way; a swallowed warning alone left
+        # the broken state invisible.
+        @last_errors[name.to_s] = e.message
         Rubino.ui.warning("Failed to load tools from '#{name}': #{e.message}")
       end
 
-      # Checks health of all connected servers
+      # Checks health of all connected servers. `alive` is process-liveness
+      # (the child is up); `degraded` is protocol-liveness (#575): the process
+      # is alive but tools/list/registration failed, so a recorded last_error
+      # exists despite a live client. Callers render degraded distinctly from
+      # plain reachable — an alive server that legitimately exposes zero tools
+      # has NO last_error and is NOT degraded.
       def health_check
         @clients.map do |name, client|
           alive = begin
@@ -106,7 +150,7 @@ module Rubino
           rescue StandardError
             false
           end
-          { name: name, alive: alive }
+          { name: name, alive: alive, degraded: alive && @last_errors.key?(name.to_s) }
         end
       end
 

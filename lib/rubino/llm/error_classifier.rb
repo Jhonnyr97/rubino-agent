@@ -25,24 +25,12 @@ module Rubino
       MODEL_NOT_FOUND  = :model_not_found   # 404 / invalid model — fallback to another model
       FORMAT_ERROR     = :format_error      # 400 bad request — abort + fallback
       UNKNOWN          = :unknown           # unclassifiable — retry with backoff
-
-      ALL = [
-        AUTH, BILLING, RATE_LIMIT, OVERLOADED, SERVER_ERROR, TIMEOUT,
-        CONTEXT_OVERFLOW, MODEL_NOT_FOUND, FORMAT_ERROR, UNKNOWN
-      ].freeze
     end
 
     # Structured classification of an API error with recovery hints, mirroring
     # the reference ClassifiedError. The retry loop checks
-    # these hints instead of re-classifying the error itself.
-    #
-    # `should_rotate_credential` is recorded for fidelity but is a NO-OP in this
-    # gem: there is no credential pool to rotate. `should_fallback` is likewise
-    # advisory until the FallbackChain lands (Slice 7).
-    ClassifiedError = Data.define(
-      :reason, :status_code, :message,
-      :retryable, :should_compress, :should_rotate_credential, :should_fallback
-    ) do
+    # the `retryable` hint instead of re-classifying the error itself.
+    ClassifiedError = Data.define(:reason, :status_code, :message, :retryable) do
       def auth?
         reason == FailoverReason::AUTH
       end
@@ -124,12 +112,10 @@ module Rubino
       def classify(error)
         status = http_status(error)
 
-        result = classify_missing_credential(error) ||
-                 classify_invalid_credential(error) ||
-                 classify_unresolvable_host(error) ||
+        result = classify_message(error, MESSAGE_STAGES_PRE_TRANSPORT) ||
                  classify_transport(error) ||
-                 classify_invalid_media(error) ||
-                 classify_invalid_params(error) ||
+                 classify_rate_limit(error) ||
+                 classify_message(error, MESSAGE_STAGES_POST_TRANSPORT) ||
                  classify_typed(error) ||
                  (status && classify_by_status(status, error)) ||
                  classify_statusless(error)
@@ -166,16 +152,6 @@ module Rubino
         "_api_key"
       ].freeze
 
-      def classify_missing_credential(error)
-        is_config_error =
-          defined?(RubyLLM::ConfigurationError) && error.is_a?(RubyLLM::ConfigurationError)
-        msg = error.message.to_s.downcase
-        return unless is_config_error || MISSING_CREDENTIAL_PATTERNS.any? { |p| msg.include?(p) }
-
-        result_for(FailoverReason::AUTH, http_status(error), error,
-                   retryable: false, should_rotate_credential: true, should_fallback: true)
-      end
-
       # A PRESENT but INVALID credential rejected by the provider via a
       # statusless / untyped error body (MiniMax's Anthropic-compatible
       # endpoint says "login fail" with no 401), which used to fall through to
@@ -192,50 +168,25 @@ module Rubino
         "authentication failed"
       ].freeze
 
-      def classify_invalid_credential(error)
-        msg = error.message.to_s.downcase
-        return unless INVALID_CREDENTIAL_PATTERNS.any? { |p| msg.include?(p) }
-
-        result_for(FailoverReason::AUTH, http_status(error), error,
-                   retryable: false, should_rotate_credential: true, should_fallback: true)
-      end
-
-      # An UNRESOLVABLE host is a PERMANENT misconfiguration, not a transient
-      # transport blip: every retry re-runs the same DNS lookup and fails
-      # identically, so retrying burns the whole budget (~81s) on a typo'd
-      # base_url (#361a). faraday-net_http wraps the underlying SocketError
-      # ("getaddrinfo: Name or service not known" / "nodename nor servname
-      # provided" / "Temporary failure in name resolution") in a
-      # Faraday::ConnectionFailed, so we match on the literal resolver phrasings
-      # rather than the wrapper class. Kept narrow so a genuine connection
-      # reset/refused (transient) still retries via classify_transport below.
+      # A PERMANENTLY unresolvable host is a misconfiguration, not a transient
+      # blip: every retry re-runs the same DNS lookup and fails identically, so
+      # retrying burns the whole budget (~81s) on a typo'd base_url (#361a).
+      # faraday-net_http wraps the underlying SocketError in a
+      # Faraday::ConnectionFailed, so we match on the literal resolver phrasings.
+      #
+      # CRUCIAL distinction: only the PERMANENT resolver errors (EAI_NONAME — the
+      # host genuinely does not exist) belong here. "Temporary failure in name
+      # resolution" (EAI_AGAIN) is the TRANSIENT case — the resolver was
+      # momentarily unavailable, e.g. a getaddrinfo storm when several background
+      # subagents dial the SAME provider host at once — and the next lookup
+      # usually succeeds. It must NOT be marked permanent: left out of this list
+      # it falls through to #classify_transport (Faraday::ConnectionFailed →
+      # retryable) and recovers, matching Hermes' transport-retry behaviour.
       DNS_FAILURE_PATTERNS = [
-        "getaddrinfo",
         "name or service not known",
         "nodename nor servname provided",
-        "temporary failure in name resolution",
-        "no address associated with hostname",
-        "failure in name resolution"
+        "no address associated with hostname"
       ].freeze
-
-      def classify_unresolvable_host(error)
-        msg = error.message.to_s.downcase
-        return unless DNS_FAILURE_PATTERNS.any? { |p| msg.include?(p) }
-
-        result_for(FailoverReason::FORMAT_ERROR, nil, error,
-                   retryable: false, should_fallback: true)
-      end
-
-      # Transport drops (Faraday::ConnectionFailed for the MiniMax EOF, read/
-      # connect timeouts, …) are retryable regardless of message — they never
-      # reach an HTTP status. STREAM_DROP_ERRORS lives on the adapter. An
-      # unresolvable host is caught BEFORE this (in #classify) so a permanent
-      # DNS failure does not get swept into the retryable timeout bucket.
-      def classify_transport(error)
-        return unless STREAM_DROP_ERRORS.any? { |klass| error.is_a?(klass) }
-
-        result_for(FailoverReason::TIMEOUT, nil, error, retryable: true)
-      end
 
       # Provider media/image validation rejections — a PERMANENT 4xx-class
       # complaint about the attachment itself, which some providers (MiniMax
@@ -250,14 +201,6 @@ module Rubino
         "could not process image"
       ].freeze
 
-      def classify_invalid_media(error)
-        msg = error.message.to_s.downcase
-        return unless INVALID_MEDIA_PATTERNS.any? { |p| msg.include?(p) }
-
-        result_for(FailoverReason::FORMAT_ERROR, http_status(error), error,
-                   retryable: false, should_fallback: true)
-      end
-
       # A deterministic request-VALIDATION rejection (a 4xx "invalid params" /
       # "invalid request" / unprocessable body) that some providers surface
       # STATUSLESS, so it used to fall through to the unknown→retryable default
@@ -265,8 +208,8 @@ module Rubino
       # fails identically every time (#327). The same body is rejected on every
       # retry, so fail fast. Kept narrow (literal provider phrasings) and ordered
       # AFTER the media check so an image rejection keeps its own reason. The
-      # context-overflow phrases are deliberately excluded — those are handled by
-      # the compress-not-fail path above.
+      # context-overflow phrases are deliberately excluded (skip_if_overflow) —
+      # those are handled by the compress-not-fail path above.
       INVALID_PARAMS_PATTERNS = [
         "invalid params",
         "invalid parameter",
@@ -276,14 +219,109 @@ module Rubino
         "invalid_request_error"
       ].freeze
 
-      def classify_invalid_params(error)
+      # A rate-limit / quota / usage-plan rejection that a provider surfaces with
+      # the WRONG shape on the streaming path. The observed case (#WHATIF): a
+      # MiniMax HTTP 429 `{"type":"rate_limit_error","message":"Token Plan usage
+      # limit reached"}` reaches ruby_llm's anthropic-compatible STREAMING parser,
+      # which re-wraps it as a 400 BadRequestError carrying the generic default
+      # message "Invalid request - please check your input" — so the original 429
+      # is lost and the error is mis-shown as a 400 client/input error, sending a
+      # dev to edit a fine prompt. The original "rate_limit_error" / "usage limit"
+      # signal survives only in the response BODY, so this stage scans the body as
+      # well as the message (the only stage that does) and runs BEFORE
+      # invalid-params so it wins over the clobbered "invalid request" text.
+      # RATE_LIMIT is retryable (honours Retry-After), matching the typed-429 path.
+      RATE_LIMIT_PATTERNS = [
+        "rate_limit_error",
+        "rate limit",
+        "rate-limit",
+        "ratelimit",
+        "too many requests",
+        "usage limit reached",
+        "usage limit",
+        "token plan",
+        "quota",
+        "plan usage"
+      ].freeze
+
+      # Ordered message-pattern classification stages. Each entry matches when
+      # the downcased message contains any pattern (and, for missing-credential,
+      # when the error is a RubyLLM::ConfigurationError). Order is PRECEDENCE:
+      # the first matching entry wins, mirroring the original `||` chain.
+      #   :status   :http  → carry the wrapped HTTP status; :none → force nil
+      #                      (an unresolvable host is statusless by definition).
+      #   :skip_if_overflow → defer on any context-overflow phrasing so a
+      #                       compressible overflow keeps the compress-not-fail
+      #                       path (only invalid-params needs this guard).
+      #   :config_error     → also match RubyLLM::ConfigurationError by class.
+      # The transport (class-based) stage runs BETWEEN the pre- and post-transport
+      # groups, so an unresolvable host is caught before transport but a media /
+      # params rejection is checked after — exactly as the original chain ordered.
+      MESSAGE_STAGES_PRE_TRANSPORT = [
+        { patterns: MISSING_CREDENTIAL_PATTERNS, reason: FailoverReason::AUTH,
+          status: :http, config_error: true },
+        { patterns: INVALID_CREDENTIAL_PATTERNS, reason: FailoverReason::AUTH,
+          status: :http },
+        { patterns: DNS_FAILURE_PATTERNS, reason: FailoverReason::FORMAT_ERROR,
+          status: :none }
+      ].freeze
+
+      MESSAGE_STAGES_POST_TRANSPORT = [
+        { patterns: INVALID_MEDIA_PATTERNS, reason: FailoverReason::FORMAT_ERROR,
+          status: :http },
+        { patterns: INVALID_PARAMS_PATTERNS, reason: FailoverReason::FORMAT_ERROR,
+          status: :http, skip_if_overflow: true }
+      ].freeze
+
+      # A rate-limit / quota rejection mis-shaped by the provider's streaming
+      # path (the MiniMax 429→400 BadRequestError case). Scans BOTH the message
+      # and the response body — the only signal of the original 429 once ruby_llm
+      # has clobbered the message to its generic "Invalid request" 400 default
+      # lives in the body. A context-overflow phrasing wins instead (a "token
+      # limit" 429 is an overflow to compress, not a rate limit to back off).
+      # RATE_LIMIT is retryable and carries 429 so Retry-After/backoff applies.
+      def classify_rate_limit(error)
         return if context_overflow?(error)
 
-        msg = error.message.to_s.downcase
-        return unless INVALID_PARAMS_PATTERNS.any? { |p| msg.include?(p) }
+        text = "#{error.message} #{error_body(error)}".downcase
+        return unless RATE_LIMIT_PATTERNS.any? { |p| text.include?(p) }
 
-        result_for(FailoverReason::FORMAT_ERROR, http_status(error), error,
-                   retryable: false, should_fallback: true)
+        result_for(FailoverReason::RATE_LIMIT, http_status(error) || 429, error, retryable: true)
+      end
+
+      # The raw response body of a typed RubyLLM error (where a provider's
+      # original error frame survives after ruby_llm overwrote the message with a
+      # generic default), or "" when unavailable.
+      def error_body(error)
+        return "" unless error.respond_to?(:response) && error.response.respond_to?(:body)
+
+        error.response.body.to_s
+      end
+
+      def classify_message(error, stages)
+        msg = error.message.to_s.downcase
+        stages.each do |stage|
+          next if stage[:skip_if_overflow] && context_overflow?(error)
+
+          matched = (stage[:config_error] && config_error?(error)) ||
+                    stage[:patterns].any? { |p| msg.include?(p) }
+          next unless matched
+
+          status = stage[:status] == :http ? http_status(error) : nil
+          return result_for(stage[:reason], status, error, retryable: false)
+        end
+        nil
+      end
+
+      # Transport drops (Faraday::ConnectionFailed for the MiniMax EOF, read/
+      # connect timeouts, …) are retryable regardless of message — they never
+      # reach an HTTP status. STREAM_DROP_ERRORS lives on the adapter. An
+      # unresolvable host is caught BEFORE this (in #classify) so a permanent
+      # DNS failure does not get swept into the retryable timeout bucket.
+      def classify_transport(error)
+        return unless STREAM_DROP_ERRORS.any? { |klass| error.is_a?(klass) }
+
+        result_for(FailoverReason::TIMEOUT, nil, error, retryable: true)
       end
 
       # Typed ruby_llm errors we can name without a status lookup.
@@ -296,14 +334,12 @@ module Rubino
         # check FIRST so an overflow masquerading as 5xx routes to
         # compress-not-retry, regardless of the wrapping error class.
         if context_overflow?(error)
-          return result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error,
-                            retryable: false, should_compress: true)
+          return result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error, retryable: false)
         end
 
         case error
         when RubyLLM::ContextLengthExceededError
-          result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error,
-                     retryable: false, should_compress: true)
+          result_for(FailoverReason::CONTEXT_OVERFLOW, http_status(error), error, retryable: false)
         when RubyLLM::ModelNotFoundError
           # A deterministic CONFIG error: ruby_llm raises ModelNotFoundError
           # ("Unknown model: ...") BEFORE any HTTP call when the configured model
@@ -312,17 +348,13 @@ module Rubino
           # (~73s) on a request that can NEVER succeed (#417). The model id is
           # fixed for the run, so every retry re-fails identically: fail fast as a
           # non-retryable config error with the actionable message.
-          result_for(FailoverReason::MODEL_NOT_FOUND, http_status(error), error,
-                     retryable: false, should_fallback: true)
+          result_for(FailoverReason::MODEL_NOT_FOUND, http_status(error), error, retryable: false)
         when RubyLLM::UnauthorizedError, RubyLLM::ForbiddenError
-          result_for(FailoverReason::AUTH, http_status(error), error,
-                     retryable: false, should_rotate_credential: true, should_fallback: true)
+          result_for(FailoverReason::AUTH, http_status(error), error, retryable: false)
         when RubyLLM::PaymentRequiredError
-          result_for(FailoverReason::BILLING, http_status(error), error,
-                     retryable: false, should_rotate_credential: true, should_fallback: true)
+          result_for(FailoverReason::BILLING, http_status(error), error, retryable: false)
         when RubyLLM::RateLimitError
-          result_for(FailoverReason::RATE_LIMIT, http_status(error) || 429, error,
-                     retryable: true, should_rotate_credential: true, should_fallback: true)
+          result_for(FailoverReason::RATE_LIMIT, http_status(error) || 429, error, retryable: true)
         when RubyLLM::OverloadedError, RubyLLM::ServiceUnavailableError
           result_for(FailoverReason::OVERLOADED, http_status(error), error, retryable: true)
         when RubyLLM::ServerError
@@ -335,43 +367,35 @@ module Rubino
       def classify_by_status(status, error)
         case status
         when 401, 403
-          result_for(FailoverReason::AUTH, status, error,
-                     retryable: false, should_rotate_credential: true, should_fallback: true)
+          result_for(FailoverReason::AUTH, status, error, retryable: false)
         when 402
-          result_for(FailoverReason::BILLING, status, error,
-                     retryable: false, should_rotate_credential: true, should_fallback: true)
+          result_for(FailoverReason::BILLING, status, error, retryable: false)
         when 404
           # Generic 404 with no "model not found" signal is treated as unknown
           # (retryable) per the reference: a misconfigured
           # endpoint or proxy glitch shouldn't masquerade as a missing model.
           if model_not_found?(error)
-            result_for(FailoverReason::MODEL_NOT_FOUND, status, error,
-                       retryable: false, should_fallback: true)
+            result_for(FailoverReason::MODEL_NOT_FOUND, status, error, retryable: false)
           else
             result_for(FailoverReason::UNKNOWN, status, error, retryable: true)
           end
         when 429
-          result_for(FailoverReason::RATE_LIMIT, status, error,
-                     retryable: true, should_rotate_credential: true, should_fallback: true)
+          result_for(FailoverReason::RATE_LIMIT, status, error, retryable: true)
         when 503, 529
           result_for(FailoverReason::OVERLOADED, status, error, retryable: true)
         when 400
           if context_overflow?(error)
-            result_for(FailoverReason::CONTEXT_OVERFLOW, status, error,
-                       retryable: false, should_compress: true)
+            result_for(FailoverReason::CONTEXT_OVERFLOW, status, error, retryable: false)
           elsif model_not_found?(error)
-            result_for(FailoverReason::MODEL_NOT_FOUND, status, error,
-                       retryable: false, should_fallback: true)
+            result_for(FailoverReason::MODEL_NOT_FOUND, status, error, retryable: false)
           else
-            result_for(FailoverReason::FORMAT_ERROR, status, error,
-                       retryable: false, should_fallback: true)
+            result_for(FailoverReason::FORMAT_ERROR, status, error, retryable: false)
           end
         else
           if status >= 500
             result_for(FailoverReason::SERVER_ERROR, status, error, retryable: true)
           elsif status >= 400
-            result_for(FailoverReason::FORMAT_ERROR, status, error,
-                       retryable: false, should_fallback: true)
+            result_for(FailoverReason::FORMAT_ERROR, status, error, retryable: false)
           end
         end
       end
@@ -391,26 +415,19 @@ module Rubino
         # ruby_llm's pre-flight, report it as an untyped error rather than a
         # ModelNotFoundError) is a deterministic config error — fail fast instead
         # of the unknown→retryable backoff storm (#417).
-        if model_not_found?(error)
-          return result_for(FailoverReason::MODEL_NOT_FOUND, nil, error,
-                            retryable: false, should_fallback: true)
-        end
+        return result_for(FailoverReason::MODEL_NOT_FOUND, nil, error, retryable: false) if model_not_found?(error)
 
         nil
       end
 
       # ── helpers ──────────────────────────────────────────────────────────
 
-      def result_for(reason, status, error, retryable:, should_compress: false,
-                     should_rotate_credential: false, should_fallback: false)
+      def result_for(reason, status, error, retryable:)
         ClassifiedError.new(
           reason: reason,
           status_code: status,
           message: error.respond_to?(:message) ? error.message.to_s[0, 500] : error.to_s[0, 500],
-          retryable: retryable,
-          should_compress: should_compress,
-          should_rotate_credential: should_rotate_credential,
-          should_fallback: should_fallback
+          retryable: retryable
         )
       end
 
@@ -446,6 +463,10 @@ module Rubino
 
       def local_programming_error?(error)
         LOCAL_PROGRAMMING_ERRORS.any? { |klass| error.is_a?(klass) }
+      end
+
+      def config_error?(error)
+        defined?(RubyLLM::ConfigurationError) && error.is_a?(RubyLLM::ConfigurationError)
       end
     end
   end

@@ -61,7 +61,7 @@ module Rubino
         # are gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask): an
         # APPROVED edit of your .env actually applies, a denied/headless one
         # never reaches #call. The workspace sandbox below is unchanged.
-        return workspace_violation_message(file_path) unless within_workspace?(expanded)
+        return workspace_violation_message(file_path) unless writable_workspace?(expanded)
 
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
 
@@ -76,25 +76,13 @@ module Rubino
         old_bytes  = to_match_bytes(old_string)
         new_bytes  = to_match_bytes(new_string)
 
-        unless content.include?(old_bytes)
-          # The model's mental model of the file was wrong (hallucinated text).
-          # Flag a recovery so its next read of this path bypasses dedup and
-          # returns FRESH bytes instead of a stale "[DUPLICATE READ]" nudge
-          # (r5 B3).
-          @read_tracker&.note_edit_failure(expanded)
-          return "Error: old_string not found in file content. " \
-                 "Make sure the text matches exactly including whitespace."
-        end
+        # Resolve the match (byte-exact first, FUZZY fallback on a miss) into
+        # the replaced buffer + count, or an error string the model recovers
+        # from. Kept out of #call so it stays under the complexity/length gate.
+        resolved = resolve_edit(content, old_bytes, new_bytes, replace_all, expanded)
+        return resolved if resolved.is_a?(String)
 
-        # Count occurrences
-        count = content.scan(old_bytes).size
-        if count > 1 && !replace_all
-          return "Error: Found #{count} matches for old_string. " \
-                 "Provide more surrounding context to make it unique, " \
-                 "or set replace_all: true to replace all occurrences."
-        end
-
-        new_content = replace_literal(content, old_bytes, new_bytes, replace_all)
+        new_content, replaced_count = resolved
         # Crash-safe write: temp-in-same-dir + fsync + atomic rename, so a
         # SIGINT/crash mid-flush can't destroy the user's existing file content
         # (this is a read-modify-write of an existing file — HIGH-1).
@@ -104,7 +92,6 @@ module Rubino
         # "changed on disk since last read" (r5 B2).
         @read_tracker&.note_write(expanded, new_content)
 
-        replaced_count = replace_all ? count : 1
         added   = new_string.to_s.lines.size
         removed = old_string.to_s.lines.size
         { output: "Edit applied: #{replaced_count} replacement(s) in #{file_path}",
@@ -140,6 +127,49 @@ module Rubino
          arguments["old_string"] || arguments[:old_string],
          arguments["new_string"] || arguments[:new_string],
          arguments["replace_all"] || arguments[:replace_all] || false]
+      end
+
+      # Resolves the edit to [new_content, replaced_count], or returns an error
+      # String. Tries the byte-EXACT path first (unchanged behavior/errors);
+      # on a miss, falls back to a FUZZY normalized match (smart quotes/dashes/
+      # exotic spaces/trailing-whitespace/Unicode-form drift) located in — and
+      # spliced into — the ORIGINAL bytes (normalized text is never written).
+      def resolve_edit(content, old_bytes, new_bytes, replace_all, expanded)
+        if content.include?(old_bytes)
+          count = content.scan(old_bytes).size
+          if count > 1 && !replace_all
+            return "Error: Found #{count} matches for old_string. " \
+                   "Provide more surrounding context to make it unique, " \
+                   "or set replace_all: true to replace all occurrences."
+          end
+
+          new_content = replace_literal(content, old_bytes, new_bytes, replace_all)
+          return [new_content, replace_all ? count : 1]
+        end
+
+        resolve_fuzzy(content, old_bytes, new_bytes, replace_all, expanded)
+      end
+
+      # FUZZY fallback for #resolve_edit. Same uniqueness/not-found errors as
+      # the exact path so the model's recovery prompts are identical.
+      def resolve_fuzzy(content, old_bytes, new_bytes, replace_all, expanded)
+        spans = FuzzyMatch.find_spans(content, old_bytes)
+        if spans.nil? || spans.empty?
+          # The model's mental model of the file was wrong (hallucinated text).
+          # Flag a recovery so its next read of this path bypasses dedup and
+          # returns FRESH bytes instead of a stale "[DUPLICATE READ]" nudge
+          # (r5 B3).
+          @read_tracker&.note_edit_failure(expanded)
+          return "Error: old_string not found in file content. " \
+                 "Make sure the text matches exactly including whitespace."
+        end
+        if spans.size > 1 && !replace_all
+          return "Error: Found #{spans.size} matches for old_string. " \
+                 "Provide more surrounding context to make it unique, " \
+                 "or set replace_all: true to replace all occurrences."
+        end
+
+        [FuzzyMatch.splice(content, spans, new_bytes), spans.size]
       end
 
       # Block form so new_string is treated as a literal replacement, not a

@@ -26,6 +26,32 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
     expect(wrapper.risk_level).to eq(:medium)
   end
 
+  # #582 — the display layer marks MCP calls as external code. The contract is
+  # driven off #mcp? (an object predicate), NOT the name shape, so a built-in
+  # with an underscore name is never mistaken for `<server>_<tool>`.
+  describe "MCP display contract (#582)" do
+    it "reports it is an MCP tool" do
+      expect(wrapper.mcp?).to be(true)
+    end
+
+    it "exposes the source server name" do
+      expect(wrapper.mcp_server).to eq("filesystem")
+    end
+
+    it "exposes the bare (unprefixed) tool name the server advertised" do
+      expect(wrapper.bare_name).to eq("read_file")
+    end
+
+    it "builds a `<bare> (mcp:<server>)` display label" do
+      expect(wrapper.display_name).to eq("read_file (mcp:filesystem)")
+    end
+
+    it "leaves the model-facing #name as the prefixed name (display is separate)" do
+      expect(wrapper.name).to eq("filesystem_read_file")
+      expect(wrapper.display_name).not_to eq(wrapper.name)
+    end
+  end
+
   describe "#input_schema" do
     # #170 — the server-advertised JSON schema lives in params_schema; the
     # inherited RubyLLM::Tool#parameters DSL accessor is always empty for MCP

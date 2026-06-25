@@ -9,10 +9,6 @@ module Rubino
         # CLI /status line and the web dashboard's memory card need without
         # paging the whole store.
         class StatsOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate backend for tests.
           def initialize(backend: nil)
             @backend = backend || ::Rubino::Memory::Backends.build

@@ -192,6 +192,37 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(shell, arguments: { "command" => "find / -delete" })).to eq(:ask)
     end
 
+    # #536 (live repro: `git diff --ext-diff` created /tmp/PWNED_LIVE). A git
+    # command that activates a repo-config driver / config override is arbitrary
+    # command execution; decide must NOT return :allow for it. It still RUNS
+    # with approval (:ask under confirm_all) — never silently.
+    it "does NOT auto-allow git commands carrying an exec-capable vector (#536)" do
+      pol = described_class.new(config: manual_cfg)
+      [
+        "git diff --ext-diff",
+        "git diff --textconv",
+        'git -c diff.external=touch\ /tmp/x diff',
+        "git -c core.pager=cmd log",
+        "git -c diff.foo.textconv=cmd diff",
+        "git -c core.fsmonitor=cmd status",
+        "git -C /etc diff"
+      ].each do |cmd|
+        expect(pol.decide(shell, arguments: { "command" => cmd })).not_to eq(:allow), cmd
+      end
+    end
+
+    it "still auto-allows plain read-only git after the #536 fix (no regression)" do
+      pol = described_class.new(config: manual_cfg)
+      ["git diff", "git status", "git log", "git show", "git diff --stat"].each do |cmd|
+        expect(pol.decide(shell, arguments: { "command" => cmd })).to eq(:allow), cmd
+      end
+    end
+
+    it "HardlineGuard still denies catastrophic commands below the auto-allow" do
+      pol = described_class.new(config: manual_cfg)
+      expect(pol.decide(shell, arguments: { "command" => "rm -rf /" })).to eq(:deny)
+    end
+
     it "is gated by approvals.auto_allow_readonly: false" do
       # Pin confirm_all so a non-read-only fall-through is :ask (the default is
       # now dangerous_only, under which a safe `ls -la` would :allow anyway).
@@ -603,6 +634,51 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         end
       end
     end
+
+    # Code-execution tool symmetry (step 8c). Under dangerous_only, arbitrary
+    # safe `shell` runs unprompted, so the dedicated `ruby` tool must NOT be
+    # gated HARDER than the raw shell it would otherwise be driven through (the
+    # field norm: Claude Code auto-mode / Codex full-auto / aider auto-run
+    # code). It is aligned AT MOST to the safe-shell tier.
+    context "code-execution tool symmetry (ruby)" do
+      let(:ruby) { make_tool(name: "ruby", risk_level: :medium, risky: true) }
+
+      context "dangerous_only" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" }
+          ))
+        end
+
+        it "runs ruby WITHOUT a prompt (aligned to the safe-shell tier)" do
+          expect(pol.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:allow)
+        end
+
+        it "still honors an explicit permissions:deny on ruby (deny-class wins)" do
+          cfg = test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "dangerous_only" },
+            "permissions" => { "ruby *" => "deny" }
+          )
+          p = described_class.new(config: cfg)
+          expect(p.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:deny)
+        end
+      end
+
+      context "confirm_all (opt-in) keeps the prompt, unchanged" do
+        let(:pol) do
+          described_class.new(config: test_configuration(
+            "approvals" => { "mode" => "manual" },
+            "security" => { "confirm_policy" => "confirm_all" }
+          ))
+        end
+
+        it "asks for ruby under confirm_all" do
+          expect(pol.decide(ruby, arguments: { "code" => "1 + 1" })).to eq(:ask)
+        end
+      end
+    end
   end
 
   describe "#dangerous?" do
@@ -685,6 +761,130 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         )
         p = described_class.new(config: cfg)
         expect(p.decide(shell, arguments: { "command" => "rm -rf /tmp/x" })).to eq(:deny)
+      end
+    end
+
+    # NARROW dangerous WRITE/EXEC flag-form screen for the default gate.
+    # Under dangerous_only, DangerousPatterns alone let genuinely dangerous
+    # flag-forms (git config/exec, inline-code interpreters, in-place edits,
+    # find -delete, tee) auto-run unprompted. shell_confirm_decision now also
+    # prompts for those, WITHOUT prompting on ordinary script/filter invocations
+    # a coding agent runs constantly (`python test.py`, `sed 's/a/b/'`).
+    context "dangerous_only flag-form screen (narrow)" do
+      let(:pol) do
+        described_class.new(config: test_configuration(
+          "approvals" => { "mode" => "manual" },
+          "security" => { "confirm_policy" => "dangerous_only" }
+        ))
+      end
+
+      def decide(cmd)
+        pol.decide(shell, arguments: { "command" => cmd })
+      end
+
+      # The OS write-jail confines arbitrary writes (slice 2 Part C), so the
+      # flag-form screen is CONDITIONAL on whether it PROVES enforcement
+      # (#enforcing?, NOT mere presence). Pure-WRITE flag-forms still prompt when
+      # the jail is DEGRADED/off/present-but-not-enforcing (the allowlist is the
+      # only guard) but auto-run when it is ENFORCING; EXEC/network forms prompt
+      # EITHER WAY (they run arbitrary code the jail can't contain).
+      write_class = {
+        "git --output write flag" => "git diff --output=/tmp/x",
+        "sort -o write" => "sort -o /tmp/x f",
+        "sort --output write" => "sort --output=/tmp/x f",
+        "sed -i in-place" => "sed -i s/a/b/ f",
+        "sed --in-place" => "sed --in-place s/a/b/ f",
+        "tree -o write" => "tree -o /tmp/out .",
+        "tee always writes" => "tee /tmp/x",
+        "chained sort -o after echo" => "echo hi && sort -o /tmp/x f"
+      }
+      exec_class = {
+        "git -c alias exec" => "git -c alias.x='!touch /tmp/p' x",
+        "git -c core.pager exec" => "git -c core.pager='!sh' log",
+        "git push (network)" => "git push origin main",
+        "python3 -c inline" => 'python3 -c "import os;os.system(\'id\')"',
+        "bash -c inline" => "bash -c 'rm x'",
+        "sh -c inline" => "sh -c 'echo hi'",
+        "perl -e eval" => "perl -e 'print 1'",
+        "ruby -e eval" => "ruby -e 'puts 1'",
+        "node -e eval" => "node -e 'console.log(1)'",
+        "node --eval" => "node --eval 'console.log(1)'",
+        "find -exec" => "find . -exec rm {} ;",
+        "tar --to-command" => "tar --to-command=sh -xf a.tar"
+      }
+      must_allow = {
+        "python script file" => "python3 test.py",
+        "node script file" => "node build.js",
+        "bash script file" => "bash script.sh",
+        "ruby script file" => "ruby app.rb",
+        "sed stream filter" => "sed 's/a/b/' f",
+        "awk stream filter" => "awk '{print $1}' f",
+        "perl -pe read filter" => "perl -pe 's/a/b/' f",
+        "git diff" => "git diff",
+        "git log" => "git log",
+        "git status" => "git status",
+        "sort plain" => "sort f",
+        "grep" => "grep x f",
+        "cat" => "cat f",
+        "make build" => "make build",
+        "ls -la" => "ls -la"
+      }
+
+      context "sandbox DEGRADED/off (allowlist is the only guard)" do
+        before { allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false) }
+
+        write_class.merge(exec_class).each do |label, cmd|
+          it "prompts (:ask) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+
+        must_allow.each do |label, cmd|
+          it "auto-runs (:allow) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:allow)
+          end
+        end
+      end
+
+      context "sandbox PRESENT but NOT enforcing (helper fails open ⇒ broad screen stays)" do
+        # The HOLE-1 case: a mechanism is present (active?) but the runtime
+        # self-test proved it does not confine, so the pure-WRITE flag-forms
+        # MUST keep prompting — relaxation gates on enforcing?, not active?.
+        before do
+          allow(Rubino::Security::Sandbox).to receive_messages(active?: true, enforcing?: false)
+        end
+
+        write_class.merge(exec_class).each do |label, cmd|
+          it "prompts (:ask) for #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+      end
+
+      context "sandbox ENFORCING (the jail confines writes)" do
+        before { allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(true) }
+
+        # The pure-write flag-forms NOW auto-run (the jail contains them), same
+        # as the ordinary script/filter invocations.
+        write_class.merge(must_allow).each do |label, cmd|
+          it "auto-runs (:allow) #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:allow)
+          end
+        end
+
+        exec_class.each do |label, cmd|
+          it "STILL prompts (:ask) the exec/network form #{label}: #{cmd}" do
+            expect(decide(cmd)).to eq(:ask)
+          end
+        end
+
+        it "DangerousPatterns still prompt regardless (rm -rf in-workspace)" do
+          expect(decide("rm -rf ./build")).to eq(:ask)
+        end
+
+        it "find -delete still prompts (it is a DangerousPattern, not a jailed write)" do
+          expect(decide("find . -delete")).to eq(:ask)
+        end
       end
     end
 

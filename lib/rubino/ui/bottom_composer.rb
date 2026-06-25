@@ -18,7 +18,7 @@ module Rubino
     # writer and the keystroke handler never interleave a half-frame.
     #
     # Responsibilities:
-    #   * own the editable +@buffer+ and draw it ({#draw_input})
+    #   * own the editable +buffer+ and draw it ({#draw_input})
     #   * funnel all turn output through {#print_above} so it never clobbers the
     #     input line (the {StdoutProxy} swaps +$stdout+ for the turn so the ~30
     #     existing +$stdout.print/puts+ call sites need zero changes)
@@ -63,8 +63,13 @@ module Rubino
       MAX_CARD_ROWS = 6
 
       # Hard ceiling on the live partial rows so a runaway caller can never push
-      # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block).
-      MAX_PARTIAL_ROWS = 4
+      # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block). Sized
+      # for the tallest legitimate partial: the GROWING table live-render — a
+      # fitted bordered table of the header + the last LIVE_TAIL_ROWS (3)
+      # completed rows is top-border + header + header-separator + 3 rows +
+      # bottom-border = 7 physical rows. Prose/reasoning tails arrive pre-capped
+      # to LIVE_TAIL_ROWS upstream, so this ceiling only ever clamps a runaway.
+      MAX_PARTIAL_ROWS = 7
 
       # Default cap on the input block's visual rows (config:
       # display.input_max_rows, threaded in by the chat command). Past it the
@@ -172,13 +177,14 @@ module Rubino
       #   over a menu reads dismiss-then-rewind. The hook runs on the reader
       #   thread — callers must only flip a flag, never block or take the
       #   composer's locks (the idle loop drains it, like the Ctrl+C trap).
-      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT,
+      def initialize(input_queue:, input: $stdin, output: $stdout, prompt: PROMPT, # rubocop:disable Metrics/MethodLength,Metrics/AbcSize -- one assignment per injected collaborator/hook; a wide DI constructor, not a complex body
                      rail: nil, on_ctrl_o: nil, on_mode_cycle: nil,
                      completion_source: nil, history: nil, echo: :queued,
                      on_interrupt: nil, pending_queued: nil,
                      status_line: nil, max_input_rows: nil, paste_store: nil,
                      on_double_esc: nil, on_agent_cycle: nil, on_escape: nil,
-                     on_busy_command: nil)
+                     on_busy_command: nil, on_back: nil, on_idle_interrupt: nil,
+                     attached: false)
         @input_queue   = input_queue
         @input         = input
         @output        = output
@@ -189,7 +195,7 @@ module Rubino
         # — the agent counterpart of @on_mode_cycle (Shift+Tab). nil ⇒ Tab stays
         # a plain completion key.
         @on_agent_cycle = on_agent_cycle
-        @on_double_esc = on_double_esc
+        @on_double_esc  = on_double_esc
         # Invoked on a LONE Esc at the idle prompt with no menu open, BEFORE the
         # Esc-Esc rewind chord arms (#319). Returns truthy to CONSUME the Esc
         # (the idle "polishing… (Esc to skip)" cancel): a single Esc then cancels
@@ -201,10 +207,25 @@ module Rubino
         # default; only read behind `&&` (the double-tap rewind chord window).
         @echo          = echo
         @on_interrupt  = on_interrupt
+        # Invoked when Ctrl+C (\x03) is read at the IDLE prompt (#551). The raw
+        # reader runs under +raw(intr: true)+, but on Darwin/macOS (and other
+        # platforms) that does NOT reliably keep ISIG on — Ctrl+C is swallowed by
+        # the terminal discipline WITHOUT raising SIGINT and WITHOUT delivering a
+        # byte the loop could act on. So we no longer depend on a SIGINT trap for
+        # the in-band interrupt: \x03 is read as a byte here (ISIG-off raw still
+        # delivers it) and routed to this hook, which drives the existing idle
+        # two-tap clear/exit. nil ⇒ the legacy ignore (the in-turn composer uses
+        # @on_interrupt instead). Runs on the reader thread — flip a flag only.
+        @on_idle_interrupt = on_idle_interrupt
         # @on_busy_command classifies a line typed mid-turn so a read-only/control
         # meta-command runs NOW (Executor#busy_disposition); a state-mutating one
         # gets a transient notice; free text queues. nil ⇒ legacy queue-all.
         @on_busy_command = on_busy_command
+        # Optional "back out" gesture: ← (or Ctrl+B) on an EMPTY prompt fires this
+        # instead of a no-op cursor move. The agent-attach view wires it to detach
+        # to the main timeline, so going back is a single keypress (or the picker's
+        # "◂ main" row) rather than a typed /detach. nil ⇒ ← stays a plain cursor move.
+        @on_back = on_back
         # Per-session paste store (file-backed paste pipeline). nil ⇒ inline
         # pastes, the exact legacy behavior.
         @paste_store = paste_store
@@ -221,11 +242,11 @@ module Rubino
         @history       = history || InputHistory.new
         # The /command + @file dropdown: open/refine/accept/dismiss state and
         # the rendered rows (see CompletionMenu). Inert without a source.
-        @menu          = CompletionMenu.new(completion_source)
+        @menu, @agent_menu = build_menus(completion_source)
         # Escape-sequence reader: consumes the byte tail of an ESC keystroke
         # from @input and returns the semantic action (see EscapeReader). The
         # callable indirection keeps it on the composer's CURRENT input.
-        @escapes       = EscapeReader.new(-> { @input })
+        @escapes = EscapeReader.new(-> { @input })
         @prompt = prompt.to_s.empty? ? PROMPT : prompt
         # The brand rail (red "▍"): the first column of EVERY input row.
         # Empty ⇒ railless, the exact legacy geometry.
@@ -237,12 +258,18 @@ module Rubino
         # anchors to it.
         @prompt_width = @prompt.gsub(ANSI_RE, "").length
         @prefix_width = @rail.gsub(ANSI_RE, "").length + @prompt_width
-        @buffer      = +""
-        # Insertion point, measured in CHARACTERS (codepoints) into @buffer.
-        # Always in 0..@buffer.length; the terminal cursor is parked here on
-        # every redraw. Replaces the old append-only model.
-        @cursor      = 0
+        # The editable input line — text + cursor + the pure codepoint editing
+        # math — extracted into Composer::InputLine so it lives in one unit-tested
+        # model instead of the composer. Read via #buffer/#cursor; every mutation
+        # goes through @input_line under the @render mutex, then a #redraw.
+        @input_line  = Composer::InputLine.new
         @partial     = +"" # live, un-committed streamed line shown above the prompt
+        # The live TURN activity (the animated facet: "◆ writing · 47s · 18 tools
+        # · ~202 tok"), set by the CLI status ticker via #set_turn_status. When
+        # non-empty the footer (#status_row) prepends it to the model/ctx bar so
+        # there is ONE status bar during a turn instead of a separate row above
+        # the prompt. Cleared at turn end so the footer reverts to model/ctx.
+        @turn_status = +""
         # TRANSIENT announcement row (e.g. the Shift+Tab mode confirmation):
         # rendered in the live region directly above the partial/prompt, redrawn
         # in place every frame and NEVER committed to scrollback. Cleared on the
@@ -267,10 +294,12 @@ module Rubino
         # once the stream ends so the `┊` aside renders cleanly AFTER the answer
         # instead of between chunks (D1). nil ⇒ nothing deferred.
         @deferred_reveal = false
-        # Subagent CARD block (Variant A): zero or more collapsed live rows shown
-        # ABOVE the streamed partial and the prompt, redrawn in place each frame.
-        # Driven by UI::CLI#set_subagent_cards from the BackgroundTasks registry.
+        # Subagent CARD rows, fed by UI::CLI#set_subagent_cards from the
+        # BackgroundTasks registry. Now rendered BELOW the input (next to the
+        # status footer) by @subagent_panel — the single live representation of
+        # running children, no longer a duplicate block above the timeline.
         @cards = []
+        @subagent_panel = Composer::SubagentPanel.new(agent_menu: @agent_menu, cards: -> { @cards })
         # The live-region renderer: owns the count of rows currently drawn ABOVE
         # the prompt and the scroll-safe erase→commit→redraw frame discipline
         # (see LiveRegion).
@@ -290,8 +319,93 @@ module Rubino
         @stop_pipe   = nil # self-pipe write end used to wake the reader's select
         @running     = false
         @suspended   = false
-        @saved_stdout = nil
+        init_takeover_state(attached: attached)
         @cols = compute_cols
+      end
+
+      # Mid-turn auto-open (Option A) + R1 write-park state, factored out of
+      # #initialize. @parked_writes buffers committed stream lines #print_above
+      # receives while @suspended (flushed in order on resume); @pending_takeover
+      # is the dropdown block queued for the input thread and @takeover_snapshot
+      # the [buffer, cursor] draft captured when it was queued (restored
+      # verbatim after the dropdown closes).
+      def init_takeover_state(attached: false)
+        # Set when the reader sees an EOF/quit (empty-buffer Ctrl+D or a closed
+        # stdin) so the idle poll loop can OBSERVE it and return nil (EOF),
+        # mirroring how #idle_interrupt surfaces a Ctrl+C. Without this the reader
+        # thread just stops and the idle loop spins forever (the Ctrl+D hang).
+        @quit_pending      = false
+        @saved_stdout      = nil # the real $stdout, parked while suspended for a takeover
+        @wake_pipe         = nil # self-pipe write end that asks the reader to run a takeover
+        @parked_writes     = nil
+        @pending_takeover  = nil
+        @takeover_snapshot = nil
+        @input_cols        = nil # width the on-screen input block was laid out at (#481)
+        # WORST-CASE above-caret row count the current input block has occupied
+        # across EVERY width it's been laid out at since the last CLEAN full draw
+        # (#481, chained resize). A single resize-then-wrap is recovered by the
+        # old-vs-live max in #draw_input, but a SECOND consecutive SIGWINCH
+        # (120→50→40) strands the row the 50-col frame itself under-cleared from
+        # the 120-col footprint — neither the 50- nor the 40-col count covers it.
+        # We carry the max footprint forward here and clear up to it on the next
+        # reflow, so the clear walks the worst case across the WHOLE resize chain.
+        # Reset to 0 when a full live-region clear blanks the block (no residue
+        # survives a clean frame), so it never over-clears past a clean draw.
+        @input_above_high_water = 0
+        # An optional callable the CLI registers (UI::CLI#auto_open_human_ask) so
+        # that the SUBAGENT CARD block — whose last row is the aggregated
+        # `⛔N subagents waiting on you` hint — is REPAINTED from the live registry
+        # the instant the dropdown takeover ends. #enter_takeover_mode clears the
+        # live region (the cards with it) and #leave_takeover_mode only redraws the
+        # prompt, so without this the ⛔N count vanishes for the rest of the turn
+        # whenever ≥1 child is still awaiting_human after the takeover (the human
+        # answered one of several, or cancelled). Run AFTER resume (outside the
+        # render lock — it calls #set_cards, which re-takes it), then cleared.
+        @on_takeover_resume = nil
+        # True only while #run_pending_takeover owns the suspend/resume lifecycle
+        # on the reader thread. The dropdown it runs calls @ui.select/@ui.ask,
+        # which wrap themselves in BottomComposer.run_in_terminal — its ensure
+        # fires #suspend then #resume. With the reader-thread takeover ALREADY
+        # suspended-for-takeover (and intentionally NOT stopped — it is us), that
+        # nested #resume would spawn a SECOND reader thread and reassign @wake_pipe
+        # mid-takeover, leaving two readers contending for raw $stdin and the next
+        # #request_takeover wake signal landing on a torn reader — the auto-open
+        # then fires exactly ONCE per session. While this flag is set #suspend and
+        # #resume are no-ops, so run_in_terminal nests harmlessly inside the
+        # takeover the reader already drives.
+        @in_takeover = false
+        # True from the moment #run_pending_takeover adopts a queued block until
+        # the dropdown loop has fully resolved and the composer resumed. The
+        # one-at-a-time guard #request_takeover honours so two near-simultaneous
+        # asks can never spawn OVERLAPPING takeover loops (#486); distinct from
+        # @in_takeover (which only neuters the nested suspend/resume).
+        @takeover_active = false
+
+        # Focus-gating (tmux-style unified render): EVERY agent — the main loop and
+        # each background subagent — paints through its own UI::CLI, and each frame
+        # carries an `origin:` (the CLI's agent_id). @focused_agent_id names the ONE
+        # agent whose frames may paint the screen right now; print_above /
+        # set_partial / set_turn_status / set_cards DROP a frame whose origin isn't
+        # the focused one (the spinner streams through set_partial too), so a
+        # non-focused agent keeps running and recording its session but paints
+        # nothing. Frames are NOT parked: a switch replays the newly-focused agent's
+        # full session from the store, so a parked raw line would only duplicate it.
+        # Distinct from @suspended (run_in_terminal's takeover, which stops the
+        # reader): the reader stays fully live so the user keeps typing into the
+        # focused agent. @replaying exempts the attach/detach REPLAY (the focused
+        # view the user is meant to see) from the gate — see #with_replay_exempt.
+        #
+        # SEEDED from the persistent host attach-state (`attached:` — the focused
+        # sub's id, or nil/false when at main): the REPL builds a FRESH composer
+        # per idle iteration / per turn, so a flag set imperatively at attach time
+        # on the previous composer would be lost the moment the loop recreates one
+        # (the focused agent's live tail never owns the screen — #82). Which agent
+        # is focused lives on the host (@attached_id), so the composer RECONCILES
+        # its focus from that at construction — every composer that owns the screen
+        # while attached starts already focused on the right agent, so the
+        # while-attached switcher line marks it (#87). :main is the default focus.
+        @focused_agent_id = attached || :main
+        @replaying        = false
       end
 
       # True only when both ends are real TTYs. Off this path the composer is a
@@ -376,20 +490,15 @@ module Rubino
       # (see {run_in_terminal}). Stops the raw reader and leaves cooked mode so
       # TTY::Prompt can read $stdin uncontended, restores the REAL $stdout (the
       # composer's @output — built BEFORE the StdoutProxy swap) so tty-screen
-      # probes the real terminal, and clears the prompt rows. The typed @buffer
+      # probes the real terminal, and clears the prompt rows. The typed buffer
       # draft is preserved for #resume. Idempotent: a no-op once already
       # suspended (or never started).
       def suspend
+        return if @in_takeover # the reader-thread takeover already owns the lifecycle
         return unless @running && !@suspended
 
-        @suspended = true
-        @saved_stdout = $stdout
-        $stdout = @output
         stop_reader
-        restore_winch_trap
-        restore_cont_trap
-        @input.cooked! if tty?
-        @render.synchronize { clear_live_region_to_clean_line }
+        enter_takeover_mode
       rescue IOError, Errno::ENOTTY, Errno::EIO
         nil
       end
@@ -397,21 +506,297 @@ module Rubino
       # RESUME after {suspend}: restore the StdoutProxy, re-enter raw mode,
       # restart the reader, and redraw the input line from the preserved buffer.
       def resume
+        return if @in_takeover # paired with #suspend: the takeover restores on its own
         return unless @suspended
 
-        @suspended = false
-        $stdout = @saved_stdout if @saved_stdout
+        leave_takeover_mode
+        @reader = start_reader
+        self
+      rescue IOError, Errno::ENOTTY, Errno::EIO
+        nil
+      end
+
+      # The TERMINAL-STATE half of #suspend, WITHOUT touching the reader thread's
+      # lifecycle (caller owns that): flip @suspended, restore the REAL $stdout
+      # (so tty-screen probes the real terminal, not the write-only StdoutProxy),
+      # leave raw mode, drop the WINCH/CONT traps, and clear the prompt rows. The
+      # typed buffer draft is left untouched (preserved for the resume redraw).
+      # Shared by #suspend (which stops the reader first) AND the mid-turn
+      # auto-open running ON the reader thread (which cannot stop_reader without
+      # joining itself, so it breaks its own select loop instead and calls this).
+      def enter_takeover_mode
+        @suspended    = true
+        @saved_stdout = $stdout
+        $stdout       = @output
+        restore_winch_trap
+        restore_cont_trap
+        @input.cooked! if tty?
+        @render.synchronize { clear_live_region_to_clean_line }
+      end
+
+      # The TERMINAL-STATE half of #resume, WITHOUT restarting the reader (caller
+      # owns that): restore the StdoutProxy, re-arm the traps, FLUSH any stream
+      # lines parked while suspended (R1 write-park) so they land in scrollback in
+      # order, then redraw the prompt from the preserved buffer. Re-entering raw
+      # mode is done by the caller's reader (its `@input.raw` block).
+      def leave_takeover_mode
+        @suspended    = false
+        $stdout       = @saved_stdout if @saved_stdout
         @saved_stdout = nil
         install_winch_trap
         install_cont_trap
         @render.synchronize do
           @output.print(PASTE_ON)
+          flush_parked_writes
           draw_input
         end
-        @reader = start_reader
-        self
-      rescue IOError, Errno::ENOTTY, Errno::EIO
+      end
+
+      # Replays the committed lines #print_above parked while @suspended, in
+      # arrival order, as one quiet batch before the prompt redraws — so a turn
+      # that kept streaming behind the dropdown shows its output the instant the
+      # dropdown closes, with no interleaving. Must be called under @render.
+      def flush_parked_writes
+        parked = @parked_writes
+        @parked_writes = nil
+        return unless parked && !parked.empty?
+
+        @partial = +""
+        parked.each { |str| render_frame(committed: str) }
+      end
+
+      # MID-TURN AUTO-OPEN (Option A) — request that +block+ runs as a takeover on
+      # the INPUT thread, by itself, while the parent turn keeps streaming. Called
+      # from ANOTHER thread (the child that just blocked on ask_parent): we record
+      # the block under @render — atomically against the keystroke handler's
+      # buffer edits — SNAPSHOT the in-progress draft + cursor right there (so a
+      # keystroke in flight can't tear it), and signal the wake self-pipe. The
+      # reader's IO.select returns, sees the pending takeover, breaks its raw loop
+      # and runs #run_pending_takeover ON ITS OWN thread. No-op (returns false)
+      # when no composer is reading (not running / already suspended / no wake
+      # pipe) — the idle poll covers the not-in-a-turn case.
+      #
+      # ONE takeover at a time: a second request while one is pending/running is
+      # dropped here (the FIFO re-read after delivery picks up the newcomer), so
+      # the snapshot is never overwritten mid-takeover.
+      def request_takeover(on_resume: nil, &block) # rubocop:disable Naming/PredicateMethod -- queues a takeover and reports whether it was accepted, not a pure query
+        return false unless @running && !@suspended && @wake_pipe
+
+        @render.synchronize do
+          # ONE dropdown loop at a time (#486). Reject when a takeover is already
+          # QUEUED (@pending_takeover) OR currently RUNNING (@takeover_active) —
+          # the latter closes the gap between #run_pending_takeover clearing
+          # @pending_takeover and the dropdown suspending the composer (where a
+          # 2nd near-simultaneous ask would otherwise slip past, arm a SECOND
+          # pending takeover, and spawn an overlapping #answer_all_human loop with
+          # duplicated dropdown frames + a stale "still waiting" id). The dropped
+          # ask is not lost: #answer_all_human's FIFO re-read of awaiting_human
+          # surfaces it the instant the first loop resolves the current head.
+          return false if @pending_takeover || @takeover_active
+
+          @pending_takeover   = block
+          @takeover_snapshot  = [buffer.dup, cursor]
+          # Repaint hook run once the dropdown closes and the composer has resumed
+          # — see @on_takeover_resume. The cards (with the ⛔N hint) are wiped on
+          # suspend; this makes them come back from the live registry on resume.
+          @on_takeover_resume = on_resume
+        end
+        begin
+          @wake_pipe.write("x")
+        rescue Errno::EPIPE, IOError
+          # The reader already tore down between our guard and the signal; clear
+          # the pending state so it can't leak into the next reader.
+          @render.synchronize { clear_pending_takeover }
+          return false
+        end
+        true
+      end
+
+      # Drops the queued takeover + its draft snapshot. Must be called under
+      # @render (the same lock #request_takeover sets them under).
+      def clear_pending_takeover
+        @pending_takeover   = nil
+        @takeover_snapshot  = nil
+        @on_takeover_resume = nil
+      end
+
+      # Runs the queued mid-turn takeover ON the reader thread, between raw
+      # sessions (the prior `@input.raw` block has already left cooked mode). The
+      # draft was SNAPSHOTTED at request time; here we first COMPLETE that
+      # snapshot — keystrokes the human typed but the dying raw session never
+      # +getc+'d are still sitting in the kernel TTY queue, so we drain them
+      # THROUGH the normal key handler into buffer and re-snapshot (see
+      # #drain_inflight_into_draft) BEFORE the dropdown starts reading $stdin.
+      # Without that, those in-flight bytes leak into TTY::Prompt's filter field
+      # and the restored draft is short. Then we enter takeover terminal mode
+      # (restore real $stdout, clear prompt rows — the reader is NOT stopped, it
+      # IS us), run the dropdown block (it reads the real $stdin and delivers the
+      # answer down the child's gate), then RESTORE the exact draft + cursor and
+      # leave takeover mode (flush parked stream lines, redraw the prompt). The
+      # caller's outer loop then re-enters a fresh raw session, so the human
+      # continues typing the preserved draft seamlessly. Every failure path still
+      # restores terminal state + draft so raw mode never leaks past the dropdown.
+      def run_pending_takeover
+        block = nil
+        @render.synchronize do
+          block = @pending_takeover
+          @pending_takeover = nil
+          # Mark the takeover RUNNING the instant we adopt the block, BEFORE the
+          # drain/suspend, so a 2nd ask arriving in the gap before #suspend flips
+          # @suspended is rejected by #request_takeover's guard (#486 — one
+          # dropdown loop at a time; the FIFO re-read surfaces it after).
+          @takeover_active = true if block
+        end
+        return unless block
+
+        drain_inflight_into_draft
+        enter_takeover_mode
+        # The dropdown's @ui.select/@ui.ask nest BottomComposer.run_in_terminal,
+        # whose ensure would otherwise #suspend/#resume THIS composer and spawn a
+        # second reader mid-takeover (the one-shot-per-session corruption). The
+        # reader-thread takeover already owns the lifecycle, so neuter that nested
+        # suspend/resume for the duration of the block (cleared in the ensure,
+        # before our own leave_takeover_mode restores the terminal).
+        @in_takeover = true
+        begin
+          # RESIDUAL B: catch keystrokes that accrued during the suspend
+          # transition (after the request-time drain) before the picker grabs
+          # $stdin, so they land in the draft, not the picker's filter.
+          final_drain_into_draft
+          block.call
+        rescue StandardError
+          # A dropdown hiccup must never leave the terminal wedged or lose the
+          # draft — fall through to the restore in the ensure.
+          nil
+        ensure
+          @in_takeover = false
+          restore_draft_snapshot
+          leave_takeover_mode
+          repaint_after_takeover
+          # Release the one-at-a-time guard only after the dropdown loop has fully
+          # resolved and the composer has resumed — so the NEXT pending ask (a
+          # sibling that blocked while this loop ran) is taken cleanly on the
+          # reader's next session rather than overlapping this one (#486).
+          @render.synchronize { @takeover_active = false }
+        end
+      end
+
+      # Run the resume-repaint hook (set at #request_takeover time) once the
+      # composer has fully left takeover mode, so the SUBAGENT CARD block — and
+      # its aggregated `⛔N subagents waiting on you` last row — is repainted from
+      # the live registry. Run OUTSIDE the @render lock (the hook calls
+      # #set_cards, which re-takes @render) and only when the composer settled
+      # back un-suspended; cleared each time so it never fires for a later, hook-
+      # less takeover. Best-effort: a cosmetic repaint must never wedge the turn.
+      def repaint_after_takeover
+        hook = nil
+        @render.synchronize do
+          hook = @on_takeover_resume
+          @on_takeover_resume = nil
+        end
+        hook&.call unless @suspended
+      rescue StandardError
         nil
+      end
+
+      # COMPLETE the request-time draft snapshot just before the dropdown opens,
+      # on the reader thread (the only thread allowed to +getc+ @input). Runs
+      # BETWEEN raw sessions, so @input is in cooked mode but the bytes the human
+      # typed before the auto-open raced in are still queued in the kernel TTY
+      # buffer — unread, because the wake-pipe branch in #reader_session breaks
+      # the loop without +getc+'ing a co-ready @input. We:
+      #
+      #   1. reset buffer/cursor to the request-time SNAPSHOT baseline, so a
+      #      programmatic edit made after the snapshot (the "can't tear it" race)
+      #      is discarded, exactly as before;
+      #   2. DRAIN the pending bytes through the normal #handle_key path so they
+      #      land in the draft like any other keystroke (a non-blocking
+      #      IO.select(0) gate + #getc loop — we only consume what is ALREADY
+      #      queued, never block waiting for more, and stop the instant the queue
+      #      is empty or a key submits/quits);
+      #   3. RE-SNAPSHOT the now-complete buffer/cursor under @render, so the
+      #      restore after the dropdown closes returns the FULL draft and the
+      #      dropdown starts with an empty input queue — no draft byte can leak
+      #      into TTY::Prompt's filter.
+      #
+      # The whole thing is a no-op when nothing was snapshotted or @input can't
+      # be drained (no fileno / closed) — the dropdown then just runs as before.
+      def drain_inflight_into_draft
+        baseline = @render.synchronize { @takeover_snapshot }
+        return unless baseline
+
+        @render.synchronize do
+          buf, cur = baseline
+          @input_line.replace(buf.to_s).move_to(cur.to_i)
+        end
+        drain_pending_input
+        @render.synchronize { @takeover_snapshot = [buffer.dup, cursor] }
+      end
+
+      # RESIDUAL B: a FINAL non-blocking drain run AFTER #enter_takeover_mode and
+      # immediately BEFORE the dropdown block reads $stdin. #drain_inflight_into_draft
+      # (above) catches the bytes queued at REQUEST time, but the human may keep
+      # typing during the suspend transition (cooked!/clear-region/dropdown setup) —
+      # those bytes land in the kernel TTY queue AFTER that first snapshot. This
+      # second pass drains whatever has ACCRUED since, onto the CURRENT draft (no
+      # baseline reset — the first drain's bytes stay), and re-snapshots so the
+      # restore still returns the full draft and the picker filter starts empty.
+      # Bounded/non-blocking exactly like the first pass (it shares
+      # #drain_pending_input). It NARROWS — does not eliminate — the window: the
+      # sub-instant between this drain and TTY::Prompt's own first getc is
+      # irreducible without blocking or pre-empting the picker's stdin grab.
+      def final_drain_into_draft
+        return unless @render.synchronize { @takeover_snapshot }
+
+        drain_pending_input
+        @render.synchronize { @takeover_snapshot = [buffer.dup, cursor] }
+      end
+
+      # Feed every byte ALREADY queued on @input through #handle_key, then stop —
+      # a bounded, non-blocking drain. For a real TTY we gate each #getc on a
+      # zero-timeout #wait_readable: it reports readable ONLY while bytes are
+      # buffered, so the loop drains the in-flight keystrokes and exits the moment
+      # the queue empties — it never blocks for more input. A StringIO (tests /
+      # standalone) can't #wait_readable, but its #getc returns nil at the end
+      # without blocking, so we drain it with a plain #getc loop. A key that
+      # submits/quits ends the drain (the draft is gone anyway); any IO hiccup
+      # (non-tty / closed / EOF) just ends it quietly.
+      def drain_pending_input
+        selectable = real_io_input?
+        loop do
+          break if selectable && !@input.wait_readable(0)
+
+          ch = @input.getc
+          break if ch.nil?
+          break if handle_key(ch)
+        end
+      rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
+        nil
+      end
+
+      # True when @input is a real IO whose #wait_readable(0) can poll the queue
+      # without blocking — i.e. it exposes an integer fileno. A StringIO answers
+      # #fileno but raises NotImplementedError, so it falls to the plain #getc
+      # drain instead (its #getc is non-blocking and nil-terminated).
+      def real_io_input?
+        @input.fileno.is_a?(Integer)
+      rescue StandardError
+        false
+      end
+
+      # Restores the buffer + cursor captured at #request_takeover time (and
+      # COMPLETED by #drain_inflight_into_draft), byte for byte, under @render —
+      # so the dropdown's keystrokes never touched the draft and the human's
+      # caret returns exactly where it was. A no-op when nothing was snapshotted.
+      def restore_draft_snapshot
+        @render.synchronize do
+          snap = @takeover_snapshot
+          @takeover_snapshot = nil
+          next unless snap
+
+          buf, cur = snap
+          @input_line.replace(buf.to_s).move_to(cur.to_i)
+        end
       end
 
       # Commits one block of output ABOVE the input line — it scrolls up into
@@ -423,8 +808,27 @@ module Rubino
       # Any live streamed partial is cleared first so it doesn't duplicate.
       # A nil +str+ just repaints the prompt; an EMPTY string commits one
       # deliberate blank row (the P3 rhythm gaps — see LiveRegion#commit).
-      def print_above(str)
+      def print_above(str, origin: :main)
         @render.synchronize do
+          # R1 write-park: while SUSPENDED (an approval / ask / auto-open dropdown
+          # owns the real terminal) the agent thread may STILL be streaming. A raw
+          # render_frame here would paint the committed line + prompt rows straight
+          # OVER the interactive dropdown and interleave the two frames. So PARK the
+          # committed line in @parked_writes (the live #set_partial / #set_cards
+          # already drop their frames while suspended); #resume flushes the parked
+          # lines in order under @render, so the stream and the dropdown never mix.
+          if @suspended
+            (@parked_writes ||= []) << str
+            return
+          end
+          # Focus-gate: only the FOCUSED agent's frames paint. A non-focused agent
+          # (the main loop while attached to a sub, or a sub while at main) keeps
+          # running and recording its session but must not paint the screen the
+          # focused agent owns. DROP the frame (do NOT park — a focus switch
+          # replays the newly-focused agent's full session, so a parked line would
+          # duplicate it). The attach/detach REPLAY is exempt (@replaying).
+          return if origin != @focused_agent_id && !@replaying
+
           @partial = +""
           render_frame(committed: str)
         end
@@ -462,7 +866,7 @@ module Rubino
       # StdoutProxy for partial stream tokens that have no newline yet, so the
       # in-progress line appears live and grows in place — like prompt_toolkit
       # batching a partial line. {#print_above} (a committed line) clears it.
-      def set_partial(str)
+      def set_partial(str, origin: :main)
         # While SUSPENDED (run_in_terminal: an approval/ask owns the real
         # terminal) a live repaint here would draw the partial + prompt rows
         # straight over the interactive prompt. Drop the frame — the next
@@ -470,9 +874,36 @@ module Rubino
         return if @suspended
 
         @render.synchronize do
+          # Focus-gate: a non-focused agent's live tail AND status spinner
+          # (paint_live → set_partial) must NOT animate over the focused agent's
+          # view. Drop the frame; the replay path is exempt (@replaying). Checked
+          # under @render so the focus read and the paint can't straddle a switch.
+          return if origin != @focused_agent_id && !@replaying
+
           @partial = (str || "").to_s
           render_frame(committed: nil)
         end
+      end
+
+      # Sets the live TURN activity shown in the FOOTER (#status_row) — the
+      # animated facet "◆ writing · 47s · …" produced by the CLI status ticker.
+      # Mirrors #set_partial's discipline EXACTLY (same suspend / focus-gate
+      # guards and @render-synchronized redraw) so the footer can't animate over
+      # an attached sub's view. An empty string clears it; the footer then
+      # reverts to the plain model/ctx bar on the next frame.
+      def set_turn_status(str, origin: :main)
+        return if @suspended
+
+        @render.synchronize do
+          return if origin != @focused_agent_id && !@replaying
+
+          @turn_status = (str || "").to_s
+          render_frame(committed: nil)
+        end
+      end
+
+      def clear_turn_status
+        set_turn_status("")
       end
 
       # Sets the SUBAGENT CARD block — a small list of collapsed live rows shown
@@ -484,16 +915,37 @@ module Rubino
       # half-frame with a streamed token or a keystroke. The list is clamped to a
       # sane bound by the caller (UI::SubagentCards), but we also cap it here so a
       # buggy caller can never grow the live region past the screen.
-      def set_cards(lines)
+      def set_cards(lines, origin: :main)
         # While SUSPENDED (run_in_terminal: an approval/ask owns the real
         # terminal) a card repaint here would draw straight over the
         # interactive prompt and can abort its blocked TTY read (#144). Drop
         # the frame, like #set_partial — the cards converge from the registry
         # snapshot on the next repaint after #resume.
         return if @suspended
+        # Focus-gate: the subagent-card stack belongs to the MAIN view; don't
+        # repaint it over a focused sub. Drop the frame when not focused. (The
+        # gate read is duplicated below under @render for the actual paint; this
+        # early return spares the Array#first when we know we'll drop it.)
+        return if origin != @focused_agent_id && !@replaying
 
         capped = Array(lines).first(MAX_CARD_ROWS)
         @render.synchronize do
+          # Re-check the focus gate under @render: the early return above can race
+          # a focus switch between its read and this block, so the authoritative
+          # drop happens here, where the focus read and the paint are atomic.
+          return if origin != @focused_agent_id && !@replaying
+          # COALESCE: a card repaint that would draw the EXACT same rows is a
+          # no-op. The idle ticker (1 Hz) and every child tool-start/finish poke
+          # a repaint, but most carry no visible change (same cards, same
+          # elapsed bucket); re-running #render_frame for them only re-issues the
+          # clear→redraw cursor walk over the live region, which on a real
+          # terminal races the raw input reader and could drop/garble an
+          # in-flight keystroke or wedge submit (#485). Repaint ONLY when the
+          # rows actually changed, so an unchanged registry tick never disturbs
+          # the composer buffer/cursor/input reader. (A real CHANGE still
+          # repaints, under this same mutex, so cards stay live.)
+          return if capped == @cards
+
           @cards = capped
           render_frame(committed: nil)
         end
@@ -619,6 +1071,41 @@ module Rubino
         end
       end
 
+      # Focus-gating seam (tmux-style unified render): the REPL calls this on every
+      # view switch — `focus_agent!(sub_id)` on attach, `focus_agent!(:main)` on
+      # detach back to main. Only frames whose `origin:` equals the focused id
+      # paint; #print_above / #set_partial / #set_turn_status / #set_cards DROP a
+      # non-focused agent's frames so a background agent (the main loop while
+      # attached, or a sub while at main) keeps running and recording its session
+      # but does not paint over the focused view. The raw reader is untouched — the
+      # user keeps typing into the focused agent's prompt. The write takes @render
+      # so a concurrent gated paint can't read a half-updated focus; calling it off
+      # a composer is a no-op (the CLI guards with `&.`). The focused id also marks
+      # the FOCUSED sub in the compact switcher line (#87). nil ⇒ :main.
+      def focus_agent!(id)
+        @render.synchronize { @focused_agent_id = id || :main }
+      end
+
+      # The agent currently allowed to paint (the focused view). :main when not
+      # attached to any sub. Exposed for the while-attached switcher line and tests.
+      attr_reader :focused_agent_id
+
+      def main_render_suppressed? = @focused_agent_id != :main
+
+      # Run +block+ with the main-render gate EXEMPTED, so the attach/detach
+      # REPLAY (the focused view the user is meant to see) renders even while
+      # main-render is suppressed. The reader thread drives both the replay and
+      # the attach itself, so this is never re-entered from two threads; the brief
+      # window in which a background parent-turn frame could also slip through is
+      # harmless — detach repaints main from the full session replay regardless.
+      def with_replay_exempt
+        prev = @replaying
+        @replaying = true
+        yield
+      ensure
+        @replaying = prev
+      end
+
       # Handle a Ctrl+C pressed at the IDLE prompt (BH-2). Mirrors the industry
       # norm (Claude Code / Codex / readline) and the during-turn double-tap so a
       # single Ctrl+C never silently discards a typed draft:
@@ -638,12 +1125,11 @@ module Rubino
       def idle_interrupt(window: 2.0)
         now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        unless @buffer.empty?
+        unless buffer.empty?
           @last_idle_int_at = nil
           @render.synchronize do
             @menu.close!
-            @buffer.clear
-            @cursor = 0
+            @input_line.clear
             @announce = +""
             redraw
           end
@@ -657,6 +1143,18 @@ module Rubino
         :hint
       end
 
+      # True once the reader has seen an EOF/quit (empty-buffer Ctrl+D or a
+      # closed stdin). The idle poll loop checks this alongside its Ctrl+C flag
+      # so a single Ctrl+D at the empty idle prompt returns nil (EOF) and the
+      # REPL's quit-guard runs — instead of spinning forever (the reader thread
+      # has already stopped). Observed once, then cleared by #clear_quit_pending.
+      def quit_pending? = @quit_pending
+
+      # Clears the EOF/quit flag (the idle loop consumes it once it has acted on
+      # the EOF). Lets a fresh composer session start clean if the same instance
+      # is reused.
+      def clear_quit_pending = (@quit_pending = false)
+
       # Replaces the editable buffer with +text+ — MULTILINE-SAFE: real
       # newlines stay in the buffer and render as real row breaks, exactly
       # like a bracketed paste — parking the caret at the end, ready to edit.
@@ -668,8 +1166,7 @@ module Rubino
       def prefill(text)
         @render.synchronize do
           @menu.close!
-          @buffer.replace(text.to_s)
-          @cursor = @buffer.length
+          @input_line.replace(text.to_s)
           @history.reset!
           redraw
         end
@@ -689,8 +1186,16 @@ module Rubino
         @menu.open?
       end
 
+      def build_menus(completion_source)
+        [CompletionMenu.new(completion_source), AgentMenu.new]
+      end
+
+      def agent_menu_open?
+        @agent_menu.open?
+      end
+
       # Redraws the INPUT BLOCK — the wrapped buffer rows plus the status bar —
-      # and parks the terminal cursor at the insertion point (@cursor). The
+      # and parks the terminal cursor at the insertion point (cursor). The
       # buffer WRAPS at the terminal width (a real newline forces a row break),
       # growing the block downward up to @max_input_rows visual rows; past the
       # cap a vertical window keeps the caret row in view. The block manages
@@ -702,20 +1207,117 @@ module Rubino
       # the screen can never desync the relative moves. Must be called under
       # @render (callers below already hold it).
       def draw_input
+        # Refresh the width from the live terminal on the CHEAP keystroke path
+        # too, exactly as #render_frame does. @cols was only recomputed at init
+        # and on SIGWINCH, but the trap can read winsize BEFORE the terminal has
+        # committed the new size (a drag coalesces several SIGWINCHes; the kernel
+        # updates the pty winsize asynchronously), so #resize could record a
+        # STALE width. With @cols stale a wrapping line lays out as ONE logical
+        # row while the physical terminal wraps it onto a SECOND line the
+        # single-row \r\e[2K clear never erases — so each keystroke re-emitted
+        # the first row and the duplicate physical wrap-row stair-stepped into
+        # scrollback (#481). Adopting only a freshly-read POSITIVE width keeps a
+        # transient zero/blank winsize from collapsing the budget (#95).
+        fresh = live_winsize_cols
+        @cols = fresh if fresh
+        # If the live width differs from the width the on-screen input block was
+        # laid out at, the terminal has REFLOWED that block: a line that fit on
+        # one logical row at the previous width now spans more physical rows (or
+        # fewer). #input_drawn recorded the OLD width's caret-row count, so the
+        # in-place #clear_input_block would walk up too few rows and leave the
+        # reflowed top fragment committed as a stale "❯" row — the #481 repro
+        # (a stale-width SIGWINCH redraw followed by keystrokes that wrap). #496
+        # refreshed @cols here so the NEW layout is correct, but did NOT clear
+        # the rows the line occupied at the previous width. Widen the clear to
+        # the MAX of the old-width and live-width caret-row counts so no stale
+        # row from the prior width survives, then lay out at the live width.
+        if @input_cols && @input_cols != @cols
+          # Single resize: clear the MAX of the old-width and live-width footprints
+          # so the reflowed top fragment can't survive. Chained resize (#481, the
+          # residual): a row the PREVIOUS reflow under-cleared (e.g. the 120-col
+          # footprint stranded by the 50-col frame on a 120→50→40 walk) is covered
+          # by neither the 50- nor the 40-col count, so also fold in the WORST-CASE
+          # footprint carried across the whole resize chain (@input_above_high_water).
+          @input_above_high_water = [
+            @input_above_high_water,
+            rows_above_caret_at(row_budget_for(@input_cols)),
+            rows_above_caret_at(row_budget_for(@cols))
+          ].max
+          @region.widen_input_above(@input_above_high_water)
+        end
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
+        # Rows drawn BELOW the input, top→bottom: the subagent panel (one calm
+        # representation of the running children) then the status footer. A fresh
+        # array so appending the status never mutates the panel's own rows.
+        below_rows = below_input_rows
+        below_rows += [status] if status
 
         @region.clear_input_block
         rows.each_with_index do |row, i|
           @output.print("\r\e[2K#{row}")
-          @output.print("\r\n") if i < rows.length - 1 || status
+          @output.print("\r\n") if i < rows.length - 1 || !below_rows.empty?
         end
-        @output.print("\r\e[2K#{status}") if status
+        # Clamp each below-row to one column SHORT of the width (#fit_row): a glyph
+        # in the final column arms the terminal's deferred auto-wrap, and the
+        # trailing CRLF then double-scrolls — which slides the block out from under
+        # the next frame's relative clear and strands a ghost ❯ row. Same rule
+        # LiveRegion#emit_row uses for the rows above the input.
+        below_rows.each_with_index do |row, i|
+          @output.print("\r\e[2K#{fit_row(row)}")
+          @output.print("\r\n") if i < below_rows.length - 1
+        end
 
-        below = (rows.length - 1 - caret_row) + (status ? 1 : 0)
+        below = (rows.length - 1 - caret_row) + below_rows.length
         park_caret(rows, caret_col, below)
         @region.input_drawn(above: caret_row, below: below)
+        # Remember the width this block was laid out at so the NEXT frame can
+        # detect a reflow and widen the clear (#481, see above).
+        @input_cols = @cols
+        # Carry the worst-case above-caret footprint forward so a SUBSEQUENT
+        # reflow clears over every width this block has occupied since the last
+        # clean full draw (#481, chained resize). The just-drawn caret_row counts
+        # too: a wider previous frame strands rows a narrower one's own clear
+        # misses, so the high-water must never shrink between clean draws.
+        @input_above_high_water = [@input_above_high_water, caret_row].max
         @output.flush
+      end
+
+      # The per-row display-column budget for an ARBITRARY width, mirroring
+      # #row_budget (which reads @cols) without disturbing @cols — used to count
+      # the on-screen block's reflowed rows at a width other than the live one.
+      def row_budget_for(cols)
+        [cols - 1, @prefix_width + 1].max
+      end
+
+      # The number of visual rows ABOVE the caret row when buffer is wrapped at
+      # the given per-row +budget+, mirroring #layout_input / #caret_position's
+      # wrap math without rebuilding the rows (so it can cost-cheaply answer
+      # "how many physical rows does this block occupy at width X" for the
+      # reflow clear, #481). Continuation rows hang at @prefix_width like the
+      # real layout. Capped at @max_input_rows - 1, since the printed block is
+      # windowed to @max_input_rows and the clear walks only the printed rows.
+      def rows_above_caret_at(budget)
+        row = 0
+        caret_row = 0
+        width = @prefix_width
+        buffer.each_char.with_index do |ch, i|
+          caret_row = row if i == cursor # the row the caret's char sits on
+          if ch == "\n"
+            row += 1
+            width = @prefix_width
+            next
+          end
+          w = display_width(ch)
+          if width + w > budget
+            row += 1
+            width = @prefix_width
+          end
+          caret_row = row if i == cursor # re-resolve after a wrap on this char
+          width += w
+        end
+        caret_row = row if cursor >= buffer.length # caret at end of buffer
+        [caret_row, @max_input_rows - 1].min
       end
 
       # Park the terminal cursor at the caret after the block is fully printed
@@ -732,10 +1334,17 @@ module Rubino
         @output.print("\e[#{caret_col}C") if caret_col.positive?
       end
 
-      # The current editable buffer (test/inspection helper).
-      attr_reader :buffer
+      # The current editable text (test/inspection helper + the draft accessor
+      # chat_command reads). Delegates to the input-line model.
+      def buffer = @input_line.text
 
-      # Lays out @buffer into wrapped VISUAL rows at the current width.
+      # True while the composer has yielded the screen (a takeover dropdown or a
+      # run_in_terminal block owns $stdin/$stdout). The auto-open trigger reads
+      # this to bail when the idle resolver is already mid-surface (#513), so only
+      # one path claims the shared composer.
+      def suspended? = @suspended
+
+      # Lays out buffer into wrapped VISUAL rows at the current width.
       # Returns [rows, caret_row, caret_col] where each row is
       # { chars:, start:, prompt: } — its codepoints, the buffer index of its
       # first char, and whether it carries the prompt prefix (only the first) —
@@ -756,7 +1365,7 @@ module Rubino
         rows   = [{ chars: [], start: 0, prompt: true }]
         width  = @prefix_width
 
-        @buffer.each_char.with_index do |ch, i|
+        buffer.each_char.with_index do |ch, i|
           if ch == "\n"
             rows << { chars: [], start: i + 1, prompt: false }
             width = @prefix_width
@@ -774,18 +1383,18 @@ module Rubino
       end
 
       # The caret's [visual_row, display_col] within a layout. The owning row
-      # is the LAST one starting at-or-before @cursor: a caret exactly on a
+      # is the LAST one starting at-or-before cursor: a caret exactly on a
       # WRAP boundary therefore lands on the wrapped row (where the next char
       # will print), while a caret on a "\n" stays at the END of the broken
       # row (the next row starts one past the newline) — the readline feel.
       def caret_position(rows)
-        idx = rows.rindex { |r| @cursor >= r[:start] } || 0
+        idx = rows.rindex { |r| cursor >= r[:start] } || 0
         row = rows[idx]
         # Every row's text hangs at the prefix width (P12), so the caret
         # column starts there on continuation rows too.
         col = @prefix_width
         row[:chars].each_with_index do |ch, j|
-          break if row[:start] + j >= @cursor
+          break if row[:start] + j >= cursor
 
           col += display_width(ch)
         end
@@ -864,18 +1473,33 @@ module Rubino
       def status_row
         return nil if @cols < MIN_STATUS_COLS
 
-        if (@turn_active || @content_streaming) && @on_interrupt
-          return interrupt_hint if @status.empty?
+        # The live turn activity ("◆ writing · …") prepended to the model/ctx bar
+        # so a turn shows ONE footer, not a separate activity row above the prompt.
+        active = !@turn_status.empty?
+        base   = active ? "#{@turn_status}  #{@status}".strip : @status
+        hint   = (@turn_active || @content_streaming) && @on_interrupt ? interrupt_hint : nil
 
-          combined = "#{@status}  #{interrupt_hint}"
-          return combined if display_width(combined.gsub(ANSI_RE, "")) <= @cols - 1
-          # The combined line overflows — keep the bar, drop the (cosmetic) hint.
-        end
+        # Candidates richest-first; render the first that fits the row. On
+        # overflow we shed the least-important pieces in order — drop the cosmetic
+        # hint, then the model/ctx tail (keep the live turn info, which changes
+        # every frame) — rather than truncating mid-ANSI or showing nothing.
+        candidates = [hint && join(base, hint), base]
+        candidates += [hint && join(@turn_status, hint), @turn_status] if active
+        candidates.compact.reject(&:empty?).find { |row| fits?(row) }
+      end
 
-        return nil if @status.empty?
-        return nil if display_width(@status.gsub(ANSI_RE, "")) > @cols - 1
+      # Joins two status pieces with the two-space separator the bar uses,
+      # collapsing to the non-empty side when one is blank (no leading gap).
+      def join(left, right)
+        return right if left.empty?
+        return left if right.empty?
 
-        @status
+        "#{left}  #{right}"
+      end
+
+      # True when +str+'s visible width fits the status row (one column of slack).
+      def fits?(str)
+        display_width(str.gsub(ANSI_RE, "")) <= @cols - 1
       end
 
       # The dim "(esc to interrupt)" type-ahead affordance shown in the status
@@ -892,7 +1516,7 @@ module Rubino
       # tests can drive editing without a live raw read. Returns :submit when the
       # key committed a line, :quit on EOF/empty-Ctrl+D, otherwise nil.
       #
-      # The buffer is edited at @cursor (a codepoint index), so insert/delete and
+      # The buffer is edited at cursor (a codepoint index), so insert/delete and
       # the arrow/Home/End/word-jump moves all act mid-line, not just at the end.
       def handle_key(ch)
         # The transient mode announcement is a one-shot toast: any keystroke
@@ -903,15 +1527,21 @@ module Rubino
         when nil
           return :quit
         when "\r", "\n"
+          if agent_menu_open?
+            accept_agent_menu
+            return nil
+          end
           # Enter while a completion menu is open ACCEPTS the highlighted
           # candidate rather than submitting (matches the old Reline dropdown) —
           # UNLESS the buffer is ALREADY an exact, complete command, in which
           # case Enter SUBMITS it directly instead of splicing a trailing space
           # and requiring a second Enter (D5).
-          if menu_open? && !@menu.exact_command?(@buffer)
+          if menu_open? && !@menu.exact_command?(buffer)
             accept_completion
             return nil
           end
+          return nil if enter_view_subagent
+
           submit_line
           return :submit
         when "\t" # Tab: accept the menu selection, or open the menu if a token is typed.
@@ -919,11 +1549,11 @@ module Rubino
         when "", "\b" # DEL / Backspace: delete the char BEFORE the cursor.
           delete_back
         when "\x04" # Ctrl+D: delete forward; on an empty buffer it's EOF/quit.
-          return :quit if @buffer.empty?
+          return :quit if buffer.empty?
 
           delete_forward
-        when "\x01" then move_to(0)              # Ctrl+A → line start
-        when "\x05" then move_to(@buffer.length) # Ctrl+E → line end
+        when "\x01" then move_to(0) # Ctrl+A → line start
+        when "\x05" then move_to(buffer.length) # Ctrl+E → line end
         when "\x02" then move_by(-1)             # Ctrl+B → left
         when "\x06" then move_by(1)              # Ctrl+F → right
         when "\x0b" then kill_to_end             # Ctrl+K → delete to end of line
@@ -932,14 +1562,14 @@ module Rubino
           request_reveal
         when "\x0c" # Ctrl+L: clear the screen and redraw the prompt in place.
           clear_screen
+        when "\x03" then handle_ctrl_c # Ctrl+C: interrupt the turn / idle two-tap (#551)
         when "\e"
           # ESC: start of a CSI/SS3 escape (arrows, Home/End, word-jump,
           # Shift+Tab, bracketed paste) OR a lone ESC that dismisses the menu.
           consume_escape_sequence
         else
           insert(ch) if printable?(ch)
-          # Other control bytes (incl. \x03 Ctrl+C, which the kernel turns into
-          # SIGINT before it reaches here under raw(intr: true)) are ignored.
+          # Other control bytes are ignored.
         end
         nil
       end
@@ -955,6 +1585,7 @@ module Rubino
       # untouched (the terminal reflows it natively).
       def resize
         @render.synchronize do
+          old_cols = @cols
           @cols = compute_cols
           # Forget the on-screen row geometry BEFORE redrawing (#401). The
           # @rows_above / @input_above / @input_below counts were recorded at the
@@ -968,6 +1599,38 @@ module Rubino
           # seam Ctrl+L uses, {LiveRegion#reset_geometry!}) lets the redraw draw
           # ONE fresh frame over the reflowed copy instead of walking stale rows.
           @region.reset_geometry!
+          # The terminal reflows the bottom rows itself on a resize, so the
+          # geometry is deliberately forgotten (#401). Sync @input_cols to the
+          # new width too so the redraw below does NOT re-arm the keystroke-path
+          # reflow clear (#481) against geometry we just zeroed — that would
+          # over-clear and re-introduce the #401 stacking.
+          @input_cols = @cols
+          # CHEAP-PATH resize repaint (no live region above the prompt — the raw
+          # #503 repro: typing a wrapping line and dragging the window narrower).
+          # reset_geometry! zeroed @input_above, so the cheap draw_input below
+          # would clear ZERO rows above the caret — but the terminal has already
+          # REFLOWED the prior-width input block onto a DIFFERENT (usually taller)
+          # physical footprint, whose rows ABOVE the new caret survive as stale
+          # "❯" rows. A SECOND consecutive SIGWINCH (120→50→40) compounds it: the
+          # 50-col frame's own under-clear strands a 120-col row that neither the
+          # 50- nor the 40-col count reaches (#503). Re-arm the clear to the
+          # WORST-CASE above-caret footprint the block has occupied across the
+          # whole resize chain — the old-width reflow plus the carried high-water
+          # (#497) — so clear_input_block walks UP over every reflowed row before
+          # the fresh redraw. This is BOUNDED by the block's own row span
+          # (rows_above_caret_at caps at @max_input_rows - 1), so it never marches
+          # into committed scrollback the way the OLD geometry walk did (#401):
+          # the walk clears only the reflowed copy of THIS block, then one clean
+          # frame is drawn. The full-frame path (live_region?) is untouched —
+          # render_frame's #clear already erases the whole region (#401).
+          unless live_region?
+            @input_above_high_water = [
+              @input_above_high_water,
+              rows_above_caret_at(row_budget_for(old_cols)),
+              rows_above_caret_at(row_budget_for(@cols))
+            ].max
+            @region.widen_input_above(@input_above_high_water)
+          end
           # Repaint the FULL live region (cards + menu + partial + prompt) when
           # anything above the prompt is live, reusing the same atomic frame the
           # streaming writer uses; a bare draw_input would repaint only the
@@ -996,7 +1659,7 @@ module Rubino
       #                         row/column
       #   [status bar]        ← the dim model + context line (when set/fits)
       #
-      # The +@buffer+ is redrawn on every frame, so it can never be lost across
+      # The +buffer+ is redrawn on every frame, so it can never be lost across
       # a scroll. Must be called while holding @render.
       def render_frame(committed:)
         # Refresh the width from the live terminal every frame. @cols was only
@@ -1011,6 +1674,13 @@ module Rubino
         # last good @cols instead of collapsing the budget.
         fresh = live_winsize_cols
         @cols = fresh if fresh
+        # A full frame ERASES the whole live region (LiveRegion#frame → #clear
+        # walks up over every row above the prompt) before redrawing, so no
+        # reflow residue can survive it: the chained-resize worst-case footprint
+        # is recovered here regardless of width, and the high-water mark resets
+        # to whatever this clean draw lays down (#481). draw_input (the yield)
+        # re-seeds it to the just-drawn caret_row.
+        @input_above_high_water = 0
         @region.frame(committed: committed, rows: live_rows, cols: @cols) { draw_input }
       end
 
@@ -1035,18 +1705,66 @@ module Rubino
       # its turn runs); and the streamed partial (one row per line, capped, so
       # a rolling markdown tail can't push the prompt off-screen, #127).
       def live_rows
-        rows = @cards.dup
-        rows.concat(menu_rows)
+        rows = menu_rows
         rows << @announce unless @announce.empty?
         rows.concat(@queued.rows)
         rows.concat(partial_rows)
         rows
       end
 
+      # The single subagent panel, drawn BELOW the input (see Composer::SubagentPanel).
+      #
+      # While ATTACHED to a sub (#main_render_suppressed?) the parent's idle
+      # subagent CARDS belong to the main view, not this focused sub-view — every
+      # render (the sub's own live tail, draw_input) would otherwise redraw the last @cards
+      # set under the live block and clutter it (#37). The full card BLOCK stays
+      # suppressed here, at the single render source, so it holds regardless of
+      # what @cards carries; the focused sub's transcript + live tail own the
+      # main area. But the user relies on the sub-list as a TAB SWITCHER to jump
+      # between running subs WHILE attached (#87), so we still surface a switcher:
+      #   - PICKER open (↓): the navigable AgentMenu — Enter re-attaches.
+      #   - otherwise: a single COMPACT line listing the running subs with the
+      #     focused one marked, plus the "↓ to switch" hint, so the other subs
+      #     are visible at a glance and ↓ opens the picker to jump.
+      def below_input_rows
+        attached = @focused_agent_id != :main
+        return @agent_menu.rows(@cols) if attached && @agent_menu.open?
+        return attached_switcher_rows if attached
+
+        @subagent_panel.rows(@cols)
+      end
+
+      # The COMPACT one-line switcher shown while attached (picker closed): the
+      # running subs as `▸focused sa_b sa_c` with the focused id marked, prefixed
+      # `subs:` and tailed with the dim `↓ to switch` affordance so the switcher
+      # is DISCOVERABLE from inside a sub. Empty (so the region clears) when no
+      # sub is live — there is nothing to switch between.
+      def attached_switcher_rows
+        running = agent_switch_entries
+        return [] if running.empty?
+
+        names = running.map do |entry|
+          entry.id == @focused_agent_id ? pastel.cyan("▸#{entry.id}") : pastel.dim(entry.id)
+        end
+        ["#{pastel.dim("subs:")} #{names.join("  ")}#{pastel.dim("  · ↓ to switch · ← back")}"]
+      end
+
+      # The live subagent entries the switcher lists. Best-effort: a registry
+      # hiccup degrades to an empty list (no switcher) rather than a raised frame.
+      def agent_switch_entries
+        Array(Tools::BackgroundTasks.instance.running)
+      rescue StandardError
+        []
+      end
+
       # The rendered completion-menu rows at the current width (also a spec
       # inspection seam).
       def menu_rows
         @menu.rows(@cols)
+      end
+
+      def agent_menu_rows
+        @agent_menu.rows(@cols)
       end
 
       # The partial as drawn: its last MAX_PARTIAL_ROWS lines, one row each.
@@ -1134,6 +1852,33 @@ module Rubino
         end
       end
 
+      # Enter on the subagent picker ATTACHES to that agent: the REPL switches the
+      # whole timeline to the agent's (clear + replay) and scopes the input to it.
+      # Unlike a typed command this is an internal action — no input-history entry
+      # and no echo (the REPL clears the screen on attach, so an echo would only
+      # flash then vanish). Just queue "/agents <id> --attach"; if a turn is
+      # mid-flight, route it through the busy classifier so it runs now.
+      def submit_agent_attach(entry)
+        dispatch_view_command("/agents #{entry.id} --attach")
+      end
+
+      # Route a view-switch control command (attach a sub, or `/detach` back to
+      # main) so it takes effect NOW. Focus-gating (Slice 3): DURING a turn the
+      # parent keeps running in the background, so dispatch through the SAME busy
+      # classifier the other mid-turn controls use (@on_busy_command) — it runs on
+      # the reader thread (clear + replay + scope) instead of queuing behind the
+      # turn. With no turn active (or no hook — tests/standalone) it queues for the
+      # idle loop exactly as before. Shared by the picker's Enter-attach AND its
+      # `◂ main` row, so returning to main is immediate whether or not a turn is
+      # streaming (the ← back-out already routes the same way).
+      def dispatch_view_command(cmd)
+        if (@turn_active || @content_streaming) && @on_busy_command
+          @on_busy_command.call(cmd)
+        else
+          @input_queue&.push(cmd)
+        end
+      end
+
       # Fire the on_interrupt hook (Esc — the type-ahead interrupt, #421). Esc is
       # a DELIBERATE, visible cancel, so it is never quiet: the chat loop should
       # commit the standardized `⎿ interrupted` marker. The +line+ parameter is
@@ -1174,9 +1919,7 @@ module Rubino
         line = nil
         @render.synchronize do
           @menu.close!
-          line = @buffer.dup
-          @buffer.clear
-          @cursor = 0
+          line = @input_line.take
           redraw # clears any open-menu rows above the prompt on submit
         end
         line
@@ -1214,6 +1957,7 @@ module Rubino
         @render.synchronize do
           @output.print("\e[2J\e[3J\e[H")
           @region.reset_geometry!
+          @input_above_high_water = 0
           redraw
         end
       end
@@ -1224,12 +1968,12 @@ module Rubino
       # the two drifted apart (one omitted the open menu) into a latent render
       # bug (#62).
       def live_region?
-        @region.live? || @menu.open? || @cards.any? || !@partial.empty? ||
+        @region.live? || @menu.open? || @agent_menu.open? || @cards.any? || !@partial.empty? ||
           !@announce.empty? || @queued.any?
       end
 
       # --- Cursor-aware editing primitives -------------------------------------
-      # All mutate @buffer at @cursor (a codepoint index, 0..length) under the
+      # All mutate buffer at cursor (a codepoint index, 0..length) under the
       # render mutex and redraw. The completion menu is auto-opened/updated/closed
       # after any buffer change (see #auto_update_menu) so it tracks the typed
       # token the way the old Reline autocompletion did — typing a leading `/` or
@@ -1237,12 +1981,14 @@ module Rubino
       # edit so a fresh ↑ starts from the newest entry.
 
       # Insert printable text at the cursor (typed char or single-line paste).
+      # The cursor position (codepoint index), delegated to the input-line model.
+      # The composer never mutates buffer/cursor directly — every edit goes
+      # through @input_line under @render (the methods below), then a #redraw.
+      def cursor = @input_line.cursor
+
       def insert(str)
         @render.synchronize do
-          chars = @buffer.chars
-          chars.insert(@cursor, *str.chars)
-          @buffer.replace(chars.join)
-          @cursor += str.chars.length
+          @input_line.insert(str)
           @history.reset!
           auto_update_menu
           redraw
@@ -1256,16 +2002,10 @@ module Rubino
       # the user typed deletes char-by-char as usual.
       def delete_back
         @render.synchronize do
-          if @cursor.positive?
-            chars = @buffer.chars
-            if (span = @paste_store&.placeholder_span(@buffer, @cursor))
-              chars.slice!(span[0], span[1])
-              @cursor = span[0]
-            else
-              chars.delete_at(@cursor - 1)
-              @cursor -= 1
-            end
-            @buffer.replace(chars.join)
+          if cursor.positive? && (span = @paste_store&.placeholder_span(buffer, cursor))
+            @input_line.delete_span(span[0], span[1])
+          else
+            @input_line.delete_back
           end
           @history.reset!
           auto_update_menu
@@ -1276,11 +2016,7 @@ module Rubino
       # Delete-forward (Ctrl+D / the Delete key): remove the char AT the cursor.
       def delete_forward
         @render.synchronize do
-          chars = @buffer.chars
-          if @cursor < chars.length
-            chars.delete_at(@cursor)
-            @buffer.replace(chars.join)
-          end
+          @input_line.delete_forward
           @history.reset!
           auto_update_menu
           redraw
@@ -1290,7 +2026,7 @@ module Rubino
       # Delete from the cursor to the end of the line (Ctrl+K).
       def kill_to_end
         @render.synchronize do
-          @buffer.replace(@buffer.chars.first(@cursor).join)
+          @input_line.kill_to_end
           @history.reset!
           auto_update_menu
           redraw
@@ -1304,8 +2040,7 @@ module Rubino
       # so a fresh command (or a slash completion) starts from an empty line.
       def kill_to_start
         @render.synchronize do
-          @buffer.replace("")
-          @cursor = 0
+          @input_line.clear
           @history.reset!
           auto_update_menu
           redraw
@@ -1314,8 +2049,29 @@ module Rubino
 
       # Move the cursor by +delta+ codepoints, clamped to the buffer.
       def move_by(delta)
+        # ← while the agent picker is OPEN backs OUT of it (the picker's own
+        # "← back" hint): close it and return focus to the prompt. Checked before
+        # the cursor move / on_back so the "back" gesture is consistent whether
+        # you're browsing the picker or already attached.
+        if delta.negative? && agent_menu_open?
+          @render.synchronize do
+            @agent_menu.close!
+            redraw
+          end
+          return
+        end
+
+        # ← (or Ctrl+B) on an EMPTY prompt is the "back out" gesture when one is
+        # wired (the agent-attach view detaches to the main timeline — no typed
+        # /detach needed). Only when there's nothing to move over, so it never
+        # steals a real cursor move within typed text.
+        if delta.negative? && @on_back && buffer.empty?
+          @on_back.call
+          return
+        end
+
         @render.synchronize do
-          @cursor = (@cursor + delta).clamp(0, @buffer.length)
+          @input_line.move_by(delta)
           auto_update_menu # moving off the token closes the menu
           redraw
         end
@@ -1324,7 +2080,7 @@ module Rubino
       # Move the cursor to an absolute codepoint index, clamped.
       def move_to(index)
         @render.synchronize do
-          @cursor = index.clamp(0, @buffer.length)
+          @input_line.move_to(index)
           auto_update_menu # moving off the token closes the menu
           redraw
         end
@@ -1334,11 +2090,7 @@ module Rubino
       # the word characters, landing at the start of the previous word.
       def word_left
         @render.synchronize do
-          chars = @buffer.chars
-          i = @cursor
-          i -= 1 while i.positive? && chars[i - 1] =~ /\s/
-          i -= 1 while i.positive? && chars[i - 1] !~ /\s/
-          @cursor = i
+          @input_line.word_left
           redraw
         end
       end
@@ -1347,11 +2099,7 @@ module Rubino
       # whitespace, landing at the start of the next word.
       def word_right
         @render.synchronize do
-          chars = @buffer.chars
-          i = @cursor
-          i += 1 while i < chars.length && chars[i] !~ /\s/
-          i += 1 while i < chars.length && chars[i] =~ /\s/
-          @cursor = i
+          @input_line.word_right
           redraw
         end
       end
@@ -1361,15 +2109,15 @@ module Rubino
       # FIRST row does ↑ fall back to walking history to an older entry, the
       # readline/Claude Code convention. No-op when there's nothing older.
       def history_up
+        return agent_menu_up if agent_menu_open?
         return menu_up if menu_open?
         return if move_caret_row(-1)
 
         @render.synchronize do
-          entry = @history.up(@buffer)
+          entry = @history.up(buffer)
           next if entry.nil?
 
-          @buffer.replace(entry)
-          @cursor = @buffer.length
+          @input_line.replace(entry)
           redraw
         end
       end
@@ -1379,15 +2127,28 @@ module Rubino
       # walking history forward (newer entry, or back to the stashed draft).
       # No-op when not navigating history.
       def history_down
+        return agent_menu_down if agent_menu_open?
         return menu_down if menu_open?
         return if move_caret_row(1)
 
+        # When subagents are live, ↓ on an EMPTY prompt opens the agent picker —
+        # the "↓ to navigate" affordance the card hints at. This MUST take
+        # precedence over history-forward: @history.down only returns nil at the
+        # live draft position, so once the user has touched ↑ even once, history
+        # would otherwise SHADOW the picker and make it unreachable (the bug that
+        # left you stuck in prompt history with no way into a subagent or back to
+        # main). #open! is a no-op (returns nil) when nothing is live, so with no
+        # subagents this falls straight through to normal history-forward.
+        if buffer.strip.empty? && @agent_menu.open!
+          @render.synchronize { redraw }
+          return
+        end
+
         @render.synchronize do
-          entry = @history.down(@buffer)
+          entry = @history.down(buffer)
           next if entry.nil?
 
-          @buffer.replace(entry)
-          @cursor = @buffer.length
+          @input_line.replace(entry)
           redraw
         end
       end
@@ -1404,7 +2165,7 @@ module Rubino
           target = caret_row + delta
           next unless rows.length > 1 && target.between?(0, rows.length - 1)
 
-          @cursor = char_index_at(rows[target], caret_col)
+          @input_line.move_to(char_index_at(rows[target], caret_col))
           auto_update_menu # moving off the token closes the menu
           redraw
           moved = true
@@ -1458,7 +2219,7 @@ module Rubino
       # The dropdown itself — open/refine/accept/dismiss state, candidate
       # resolution and row rendering — lives in the {CompletionMenu}; here is
       # only the keystroke plumbing and the buffer splice (the menu never
-      # touches @buffer or the render mutex).
+      # touches buffer or the render mutex).
 
       # Tab: with the menu open, accept the highlighted candidate; otherwise try
       # to open the menu for the token under the cursor (an explicit Tab always
@@ -1467,9 +2228,9 @@ module Rubino
       def handle_tab
         if menu_open?
           accept_completion
-        elsif @menu.open(@buffer, @cursor)
+        elsif @menu.open(buffer, cursor)
           @render.synchronize { redraw }
-        elsif @buffer.strip.empty?
+        elsif buffer.strip.empty?
           # Nothing to complete (empty input, no menu): Tab cycles the active
           # PRIMARY agent instead of being a dead key. A buffer with text still
           # falls through to a no-op (we never insert a literal tab), so command
@@ -1497,7 +2258,7 @@ module Rubino
       # Track the menu to the token under the cursor after any buffer edit or
       # cursor move (Reline parity — see CompletionMenu#auto_update).
       def auto_update_menu
-        @menu.auto_update(@buffer, @cursor)
+        @menu.auto_update(buffer, cursor)
       end
 
       # ↑/↓ within the menu (routed from history_up/down when the menu is open).
@@ -1526,7 +2287,7 @@ module Rubino
 
         @render.synchronize do
           start, len, replacement = @menu.accept_splice
-          chars = @buffer.chars
+          chars = buffer.chars
           # The menu measures the token only up to the cursor. If the cursor sits
           # mid-token (or there's residual text right after it — e.g. `/mem|ory`
           # or a leftover `memory`), the un-measured tail would survive the
@@ -1535,8 +2296,7 @@ module Rubino
           # contiguous non-space run so accepting replaces the WHOLE token.
           len += 1 while chars[start + len] && !chars[start + len].match?(/\s/)
           chars[start, len] = replacement.chars
-          @buffer.replace(chars.join)
-          @cursor = start + replacement.chars.length
+          @input_line.replace(chars.join).move_to(start + replacement.chars.length)
           # Re-run the menu refresh for the spliced buffer (#63): accepting a
           # command name lands the cursor in its ARGUMENT position (`/skills `),
           # so the next-context dropdown (skill names, /agents ids…) opens
@@ -1544,6 +2304,61 @@ module Rubino
           # there it stays closed — the redraw then just clears the old rows.
           auto_update_menu
           redraw
+        end
+      end
+
+      def agent_menu_up
+        # ↑ navigates the picker; off the top it closes itself and focus returns
+        # to the input (AgentMenu owns that hand-off — see AgentMenu#up!).
+        @render.synchronize do
+          @agent_menu.up!
+          redraw
+        end
+      end
+
+      def agent_menu_down
+        @render.synchronize do
+          @agent_menu.down
+          redraw
+        end
+      end
+
+      # Honor the card's "Enter to view" hint on an EMPTY prompt (#42 — the hint
+      # was dead because Enter only attached when the picker was ALREADY open).
+      # With a single live subagent there is nothing to choose, so attach to it in
+      # this one press; with several, open the picker exactly like ↓ does. Returns
+      # truthy when it handled Enter. #open! is a no-op (falsy) with nothing live,
+      # so this is inert with no subagents and Enter falls through to submit_line.
+      def enter_view_subagent # rubocop:disable Naming/PredicateMethod -- a command that also reports whether it handled Enter (like AgentMenu#up!), not a pure query
+        return false unless buffer.strip.empty? && !agent_menu_open?
+
+        if (only = @agent_menu.single_live)
+          submit_agent_attach(only)
+          true
+        elsif @agent_menu.open!
+          @render.synchronize { redraw }
+          true
+        else
+          false
+        end
+      end
+
+      def accept_agent_menu
+        entry = nil
+        @render.synchronize do
+          entry = @agent_menu.accept
+          redraw
+        end
+        return unless entry
+
+        if AgentMenu.main_row?(entry)
+          # The "◂ main" row: leave an attached agent (the REPL detaches, or it's
+          # a harmless no-op at the main prompt). Same immediate routing as attach
+          # and the ← back-out, so returning to main works mid-turn too (not
+          # queued behind the running turn).
+          dispatch_view_command("/detach")
+        else
+          submit_agent_attach(entry)
         end
       end
 
@@ -1583,10 +2398,29 @@ module Rubino
         return if body.empty?
 
         if @paste_store&.collapse?(body)
-          insert(@paste_store.register(body))
+          merge_collapsed_paste(body) || insert(@paste_store.register(body))
         else
           insert(body) # at the cursor, like fast typing
         end
+      end
+
+      def merge_collapsed_paste(body)
+        return false unless @paste_store
+
+        merged = false
+        @render.synchronize do
+          if (span = @paste_store.append_to_placeholder_before(buffer, cursor, body))
+            start, length, token = span
+            chars = buffer.chars
+            chars[start, length] = token.chars
+            @input_line.replace(chars.join).move_to(start + token.chars.length)
+            @history.reset!
+            auto_update_menu
+            redraw
+            merged = true
+          end
+        end
+        merged
       end
 
       # Normalize a pasted body's line endings to "\n" (terminals deliver CR
@@ -1621,7 +2455,7 @@ module Rubino
         when :word_left      then word_left
         when :word_right     then word_right
         when :move_home      then move_to(0)
-        when :move_end       then move_to(@buffer.length)
+        when :move_end       then move_to(buffer.length)
         when :delete_forward then delete_forward
         end
       end
@@ -1644,6 +2478,11 @@ module Rubino
           @render.synchronize do
             @menu.dismiss!
             redraw # repaint to CLEAR the now-closed menu rows above the prompt
+          end
+        elsif agent_menu_open?
+          @render.synchronize do
+            @agent_menu.close!
+            redraw
           end
         # Esc = INTERRUPT (Claude-Code type-ahead model, #421): with a turn
         # active (thinking OR streaming) and no menu to dismiss, a lone Esc
@@ -1674,6 +2513,31 @@ module Rubino
         end
 
         @last_esc_at = now
+      end
+
+      # Ctrl+C (\x03) read as a BYTE (#551). The reader runs under
+      # +raw(intr: true)+, but ISIG is NOT honoured reliably across platforms
+      # (Darwin/macOS swallows Ctrl+C without raising SIGINT), so we no longer
+      # rely on the SIGINT trap installed by the chat command for the in-band
+      # interrupt — we act on the byte here, the SAME way Esc does.
+      #
+      # MID-TURN (a turn is thinking OR streaming) with @on_interrupt wired:
+      # cancel the in-flight turn through the EXACT cancel-token machinery Esc
+      # uses (#421) — the chat loop then runs the head of the queue or unwinds to
+      # a clean idle prompt. No double-run (the byte never re-enters the input
+      # buffer), no exit-confirm, and the per-turn cancel token resets on the
+      # NEXT turn (Runner#run! builds a fresh one), so there is no poisoned-token
+      # carry-over (B1).
+      #
+      # IDLE (no turn) with @on_idle_interrupt wired: drive the existing idle
+      # two-tap clear/exit (clear a non-empty draft, else arm "press Ctrl+C again
+      # to exit"). With neither hook wired (standalone/tests) it is a quiet no-op.
+      def handle_ctrl_c
+        if (@turn_active || @content_streaming) && @on_interrupt
+          fire_interrupt(nil)
+        elsif @on_idle_interrupt
+          @on_idle_interrupt.call
+        end
       end
 
       # True when a prior lone Esc armed the chord within the window and the
@@ -1729,10 +2593,12 @@ module Rubino
         end
       end
 
-      # Spawns the raw keystroke loop. raw(intr: true) keeps ISIG on so Ctrl+C
-      # still generates SIGINT and reaches the double-tap trap installed by the
-      # chat command — we never read or swallow \x03. The block form restores
-      # the prior termios on exit; #stop additionally forces cooked mode.
+      # Spawns the raw keystroke loop. raw(intr: true) is requested, but ISIG is
+      # NOT honoured reliably across platforms (on Darwin/macOS Ctrl+C is
+      # swallowed by the raw discipline WITHOUT raising SIGINT), so we do NOT rely
+      # on a SIGINT trap for the in-band interrupt: \x03 arrives here as a byte
+      # and #handle_ctrl_c routes it to the SAME cancel path Esc uses (#551). The
+      # block form restores the prior termios on exit; #stop forces cooked mode.
       #
       # The loop blocks in IO.select on BOTH $stdin AND a self-pipe "stop"
       # channel, never in a bare blocking +getc+. {#stop_reader} signals the
@@ -1745,27 +2611,125 @@ module Rubino
       def start_reader
         stop_r, stop_w = IO.pipe
         @stop_pipe = stop_w
+        # The WAKE self-pipe (separate from the stop pipe): a child thread that
+        # needs the parent to auto-open a mid-turn dropdown sets @pending_takeover
+        # and signals THIS pipe (see #request_takeover), waking the select WITHOUT
+        # tearing the reader down — so the takeover runs ON the input thread (it
+        # owns the keyboard) at a clean select boundary, never mid-+getc+.
+        wake_r, wake_w = IO.pipe
+        @wake_pipe = wake_w
         Thread.new do
-          @input.raw(intr: true) do
-            loop do
-              ready, = IO.select([@input, stop_r])
-              break if ready.include?(stop_r) # stop signalled — don't read stdin
-              next unless ready.include?(@input)
+          # OUTER session loop: a raw-mode keystroke session, interrupted only to
+          # run a queued mid-turn takeover on THIS thread, then re-entered. The
+          # session returns :takeover when woken with a pending dropdown, :done on
+          # stop/EOF/quit. We run the takeover BETWEEN raw sessions (the prior
+          # `@input.raw` block has restored cooked mode) so the dropdown reads the
+          # real $stdin uncontended and we never join ourselves.
+          loop do
+            outcome = reader_session(stop_r, wake_r)
+            break unless outcome == :takeover
 
-              ch = @input.getc
-              break if ch.nil? # EOF / stdin closed
-
-              result = handle_key(ch)
-              break if result == :quit
-            end
+            run_pending_takeover
           end
         rescue IOError, Errno::EIO, Errno::ENODEV, Errno::ENOTTY
           # stdin went away (closed/redirected mid-turn) or isn't a raw-capable
           # device — stop reading; the turn keeps running. Nothing to surface.
         ensure
           stop_r.close unless stop_r.closed?
+          wake_r.close unless wake_r.closed?
           @input.cooked! if tty?
         end
+      end
+
+      # One raw-mode keystroke session. Blocks in IO.select on $stdin, the stop
+      # pipe AND the wake pipe. Returns :takeover when the wake pipe fired with a
+      # pending mid-turn dropdown (the caller runs it then re-enters a session),
+      # else :done (stop signalled / EOF / :quit). We only +getc+ when $stdin is
+      # ready and neither control pipe is, so the handoff never races a byte.
+      def reader_session(stop_r, wake_r)
+        @input.raw(intr: true) do
+          loop do
+            ready, = IO.select([@input, stop_r, wake_r])
+            return :done if ready.include?(stop_r) # stop signalled — don't read stdin
+
+            if ready.include?(wake_r)
+              drain_pipe(wake_r)
+              # break the raw block to run the takeover on this thread, else loop
+              return :takeover if @pending_takeover
+
+              next
+            end
+            next unless ready.include?(@input)
+
+            ch = @input.getc
+            if ch.nil? # EOF / stdin closed
+              @quit_pending = true
+              return :done
+            end
+
+            # COALESCE a fast RAW burst of printable bytes (a long un-bracketed
+            # paste, an SSH/terminal without DEC-2004 framing, or a piped feed):
+            # absorb every printable char ALREADY queued on @input into ONE
+            # #insert (one redraw) instead of redrawing per byte, which is
+            # quadratic on the growing input block. Returns the first NON-printable
+            # char it read (a control byte / escape / Enter), which we then
+            # dispatch normally — so caret math, bracketed paste and submit are
+            # untouched; only consecutive printable bytes are batched.
+            ch = coalesce_printable_run(ch)
+            next if ch.nil? # the whole available run was printable — already inserted
+
+            result = handle_key(ch)
+            if result == :quit # empty-buffer Ctrl+D — observable EOF for the idle loop
+              @quit_pending = true
+              return :done
+            end
+          end
+        end
+      end
+
+      # Given the first char already read, absorb every printable char that is
+      # ALREADY buffered on @input (a fast burst — long un-bracketed paste or a
+      # piped feed) and #insert the WHOLE run in one redraw, instead of one
+      # redraw per byte (which re-renders the growing input block per char ⇒
+      # O(n²) output and a TUI freeze). We only pull more bytes while
+      # #wait_readable(0) reports the fd readable, so a normal interactive
+      # keystroke (nothing else queued) inserts exactly its one char and returns
+      # nil — identical to the old per-key path. A non-printable char (control
+      # byte / ESC starting a CSI/bracketed-paste sequence / Enter) ENDS the run
+      # and is RETURNED for normal #handle_key dispatch, so bracketed paste,
+      # caret moves and submit are unchanged. The run is bounded by what is
+      # already queued, so it never blocks for more input.
+      #
+      # Returns the first non-printable char read (to be dispatched by the
+      # caller), or nil when the entire available run was printable and inserted.
+      def coalesce_printable_run(first)
+        return first unless printable?(first)
+
+        run = +first
+        pending = nil
+        if real_io_input?
+          while @input.wait_readable(0)
+            ch = @input.getc
+            break if ch.nil? # EOF mid-burst — insert what we have, loop sees it next
+
+            unless printable?(ch)
+              pending = ch # control byte ends the run; caller handles it
+              break
+            end
+            run << ch
+          end
+        end
+        clear_announce
+        insert(run)
+        pending
+      end
+
+      # Drains the bytes a self-pipe accumulated so the next select doesn't fire
+      # again on the same signal. Best-effort and non-blocking.
+      def drain_pipe(io)
+        io.read_nonblock(64)
+      rescue IO::WaitReadable, IOError # IOError already covers EOFError
+        nil
       end
 
       # Stop the raw reader thread deterministically (no kill race). Shared by
@@ -1799,6 +2763,10 @@ module Rubino
         @reader&.join
         @reader = nil
         @stop_pipe = nil
+        # The reader's `ensure` closes its READ end of the wake pipe; drop our
+        # write end so a stale signal can't reach the next reader's select.
+        @wake_pipe&.close unless @wake_pipe&.closed?
+        @wake_pipe = nil
       end
 
       # Clear the prompt row (and a live partial row above it, if any) and leave
@@ -1817,7 +2785,11 @@ module Rubino
       def printable?(ch)
         return false unless ch.respond_to?(:valid_encoding?) && ch.valid_encoding?
 
-        ch.bytesize > 1 || ch.ord >= 0x20
+        # Multi-byte (UTF-8) is always printable. For single bytes, printable is
+        # 0x20..0x7e — DEL (0x7f) is a control byte (the Backspace key sends it on
+        # most terminals), so it MUST stay non-printable or #coalesce_printable_run
+        # would swallow it instead of routing it to #handle_key's delete_back.
+        ch.bytesize > 1 || (ch.ord >= 0x20 && ch.ord != 0x7f)
       end
 
       # Terminal width in columns. winsize can report 0 (or a non-positive

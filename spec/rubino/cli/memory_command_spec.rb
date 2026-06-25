@@ -10,7 +10,7 @@ RSpec.describe Rubino::CLI::MemoryCommand do
 
   # Regression for #94: the CLI memory subcommands must read/write the SAME
   # active backend the agent loop and the HTTP /v1/memory ops use (the
-  # configured sqlite tiny-Zep backend), not the legacy `:memories` table that
+  # configured sqlite backend), not the legacy `:memories` table that
   # `Memory::Store` is hardwired to. A fact stored through the active backend
   # must therefore be visible to `memory list`/`show` and removable by
   # `memory delete`.
@@ -125,6 +125,23 @@ RSpec.describe Rubino::CLI::MemoryCommand do
       expect(backend.find(row[:id])).to be_nil
     end
 
+    # #Y3B — verb parity: the CLI must accept `forget` as an alias for `delete`
+    # (the REPL says "forget"), and both must do the same thing.
+    it "forgets (deletes) a fact via the `forget` alias" do
+      row = backend.store(kind: "fact", content: "User's deploy port is 7788.")
+      expect(backend.count).to eq(1)
+
+      expect(Rubino.ui).to receive(:success).with(/Memory deleted/)
+      described_class.new.forget(row[:id][0..7])
+
+      expect(backend.count).to eq(0)
+    end
+
+    it "forget raises Thor::Error for an unknown id (parity with delete)" do
+      expect { described_class.new.forget("does-not-exist") }
+        .to raise_error(Thor::Error, /memory not found: does-not-exist/)
+    end
+
     # P2-H1/H2: a not-found show/delete is a FAILURE on the automation surface —
     # it must raise Thor::Error (exit non-zero, message on stderr), matching
     # SessionCommand, not print to stdout and return 0.
@@ -150,8 +167,8 @@ RSpec.describe Rubino::CLI::MemoryCommand do
     end
 
     it "persists memory.backend for a registered backend" do
-      command.backend("default")
-      expect(writer.get("memory.backend")).to eq("default")
+      command.backend("sqlite")
+      expect(writer.get("memory.backend")).to eq("sqlite")
     end
 
     it "refuses an unregistered backend and writes nothing (Thor::Error, non-zero)" do
@@ -163,7 +180,7 @@ RSpec.describe Rubino::CLI::MemoryCommand do
     it "shows the active backend and available list when given no name" do
       allow(Rubino).to receive(:configuration).and_return(test_configuration)
       expect(Rubino.ui).to receive(:info).with(/Active backend:/)
-      expect(Rubino.ui).to receive(:info).with(/Available:.*default/)
+      expect(Rubino.ui).to receive(:info).with(/Available:.*sqlite/)
       command.backend
     end
   end

@@ -66,6 +66,11 @@ module Rubino
         # paths whose last edit failed: the next read bypasses dedup so a
         # recovery re-read always returns fresh content.
         @recover = {}
+        # COMPRESSION drill-in tracking (tool_output_compression). For each path
+        # we sent as a skeleton: the elided [first_line, line_count] ranges, so a
+        # later TARGETED read landing inside one is a "drill-in" — the signal
+        # that the skeleton hid a body the model then needed.
+        @skeletons = {}
         @mutex = Mutex.new
       end
 
@@ -106,6 +111,37 @@ module Rubino
         return unless key
 
         @mutex.synchronize { @recover[key] = true }
+      end
+
+      # Records that +path+ was sent as a skeleton with these elided ranges
+      # (each [first_line, line_count]). Replaces any prior record for the path
+      # (a re-read re-skeletons from scratch).
+      def note_skeleton(path, ranges)
+        key = canonical(path)
+        return unless key
+
+        @mutex.synchronize do
+          @skeletons[key] = ranges
+        end
+      end
+
+      # True when a TARGETED read window [offset, offset+limit-1] of +path+
+      # overlaps any range we previously elided in a skeleton of that path — i.e.
+      # the model is drilling into a body the skeleton hid. Read-only.
+      def drill_in?(path, offset, limit)
+        key = canonical(path)
+        return false unless key
+
+        win_start = offset.to_i
+        win_end   = win_start + limit.to_i - 1
+        @mutex.synchronize do
+          ranges = @skeletons[key]
+          next false unless ranges
+
+          ranges.any? do |first, count|
+            first <= win_end && (first + count - 1) >= win_start
+          end
+        end
       end
 
       def seen?(path)

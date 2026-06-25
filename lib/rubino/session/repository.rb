@@ -11,7 +11,6 @@ module Rubino
     # Notes:
     # - #find supports prefix matching on the UUID so short ids from the CLI
     #   resolve to a full session row.
-    # - #latest_active is used to resume the most recently touched session.
     # - #destroy! cascades manually to events, tool_calls, messages,
     #   session_summaries and runs inside a single transaction (no FK cascade
     #   in schema; the runs FK would otherwise block the session delete).
@@ -20,13 +19,6 @@ module Rubino
       # (the Runner) needs the SAME stomp guard auto-resume already applies, so a
       # second process resuming a session a first live process is still writing
       # can fork instead of interleaving writes into one malformed transcript.
-      # True when this row has an alive owner_pid that isn't us, for a session of
-      # ANY status (#376): an ended session a live process is re-writing is guarded
-      # too, so concurrent explicit resumes of it fork instead of interleaving.
-      def owned_by_other_live_process?(row)
-        live_owned_by_other?(row)
-      end
-
       # Atomically claims a resumable session for THIS process (#390/residual
       # #376). The explicit-resume guard used to be a check-then-stamp:
       # `owned_by_other_live_process?` read owner_pid, and a LATER `update(id,
@@ -83,7 +75,7 @@ module Rubino
           source: source,
           model: model,
           provider: provider,
-          title: title,
+          title: scrub_text(title),
           status: "active",
           owner_pid: Process.pid,
           cwd: cwd,
@@ -109,7 +101,7 @@ module Rubino
           source: source,
           model: model,
           provider: provider,
-          title: title,
+          title: scrub_text(title),
           status: "active",
           cwd: cwd,
           message_count: 0,
@@ -213,7 +205,7 @@ module Rubino
         dataset = @db[:sessions].order(Sequel.desc(:created_at), Sequel.desc(Sequel.lit("rowid")))
         dataset = dataset.where(status: status) if status
         dataset = dataset.exclude(source: "subagent") unless include_subagents
-        dataset = dataset.where(Sequel.like(:title, "%#{search}%")) if search && !search.empty?
+        dataset = dataset.where(title_substring_match(search)) if search && !search.empty?
 
         return dataset.limit(limit).all if cwd.nil?
 
@@ -225,6 +217,7 @@ module Rubino
 
       # Updates a session's attributes
       def update(id, **attrs)
+        attrs[:title] = scrub_text(attrs[:title]) if attrs.key?(:title)
         attrs[:updated_at] = Time.now.utc.iso8601
         @db[:sessions].where(id: id).update(attrs)
       end
@@ -280,27 +273,6 @@ module Rubino
         reaped
       end
 
-      # Returns the most recent active session, if any
-      def latest_active
-        @db[:sessions]
-          .where(status: "active")
-          .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
-          .first
-      end
-
-      # Returns the most recent session worth resuming on a bare `chat`: the
-      # last session that actually has messages, regardless of status, so a
-      # closed terminal (status still "active") OR a cleanly ended session can
-      # both be continued. Empty 0-message sessions are skipped so a stray
-      # earlier launch never shadows the real conversation (#99). Returns nil on
-      # a true first run, which the CLI uses to fall back to the welcome panel.
-      def latest_resumable
-        @db[:sessions]
-          .where(resumable_predicate)
-          .order(Sequel.desc(:updated_at), Sequel.desc(Sequel.lit("rowid")))
-          .first
-      end
-
       # Bare `chat` / `--continue` auto-resume target, SCOPED to the launch dir
       # (r5 MF-4 / C-1): the latest resumable session whose stored cwd matches the
       # current directory, never the globally-latest. This is what kills
@@ -339,6 +311,12 @@ module Rubino
       # become the session title and a useless one-char `--resume "y"` matcher.
       TITLE_MIN_CHARS = 3
 
+      # The display/storage ceiling for a session title (#581). The auto-derive
+      # path has always truncated to this; the manual `/sessions rename` write
+      # seam and the `/status`/picker render seams reuse the SAME bound so a
+      # 2000-char renamed title can't blow out the panel/picker layout.
+      TITLE_MAX_CHARS = 60
+
       # Derives a short, human-readable session title from the first user
       # message. Deterministic and model-free (#103): collapse whitespace, strip
       # a leading slash-command word, take the first line, and truncate on a word
@@ -346,7 +324,7 @@ module Rubino
       # (#128) — so the caller leaves the session untitled; the next MEANINGFUL
       # prompt titles it instead (Lifecycle#maybe_set_title retries every turn
       # until a title sticks), and the resume hint falls back to the session id.
-      def self.derive_title(text, max: 60)
+      def self.derive_title(text, max: TITLE_MAX_CHARS)
         cleaned = text.to_s.split("\n").first.to_s.strip.gsub(/\s+/, " ")
         cleaned = cleaned.sub(%r{\A/\S+\s*}, "") # drop a leading slash command
         return nil if cleaned.length < TITLE_MIN_CHARS
@@ -392,8 +370,19 @@ module Rubino
       # arc would be silently skipped and the just-compacted conversation lost.
       # Compaction children always have real messages, so resume them regardless
       # of the cached counter; the count > 0 floor still guards every other source.
+      #
+      # Sessions tagged source="subagent" are the `task` tool's internal
+      # machinery, never a user-facing conversation (#540). `list`/the picker
+      # already exclude them; a bare `chat`/`--continue` must too, or its
+      # most-recent lookup can land the user INSIDE a background subagent's
+      # transcript — a session `sessions list` won't even show. Exclude them
+      # here so resume and list agree: a subagent session is never auto-resumed
+      # (it stays reachable only by explicit `--resume <id>`).
       def resumable_predicate
-        Sequel.|({ source: "compaction" }, Sequel[:message_count] > 0)
+        Sequel.&(
+          Sequel.~(source: "subagent"),
+          Sequel.|({ source: "compaction" }, Sequel[:message_count] > 0)
+        )
       end
 
       # Builds a SAFE id-prefix LIKE condition (#333a). User-supplied short ids
@@ -405,15 +394,43 @@ module Rubino
       # only the trailing `%` we append stays a wildcard. `\` escapes itself
       # first so a literal backslash in the input can't smuggle past the escape.
       def id_prefix_match(query)
-        escaped = query.to_s
-                       .gsub(LIKE_ESCAPE, "#{LIKE_ESCAPE}#{LIKE_ESCAPE}")
-                       .gsub("%", "#{LIKE_ESCAPE}%")
-                       .gsub("_", "#{LIKE_ESCAPE}_")
         # `Sequel.like` in Sequel 5 emits no ESCAPE clause, so the escaped
-        # metacharacters above would still be treated as wildcards. Declare the
+        # metacharacters below would still be treated as wildcards. Declare the
         # escape character explicitly via a parameterized literal (placeholders,
         # not interpolation, so the value stays bound and injection-safe).
-        Sequel.lit("id LIKE ? ESCAPE ?", "#{escaped}%", LIKE_ESCAPE)
+        Sequel.lit("id LIKE ? ESCAPE ?", "#{escape_like(query)}%", LIKE_ESCAPE)
+      end
+
+      # SAFE title-substring LIKE condition for `list(search:)` (#498). The old
+      # form `Sequel.like(:title, "%#{search}%")` INLINED the raw user string
+      # into the SQL text instead of binding it (and left `%`/`_` as wildcards),
+      # so a title filter containing an em-dash/apostrophe/quote/control byte
+      # could surface a raw `SQLite3::SQLException: unrecognized token`. Mirror
+      # id_prefix_match: escape the wildcards and bind the value via placeholders
+      # with an explicit ESCAPE char.
+      def title_substring_match(search)
+        Sequel.lit("title LIKE ? ESCAPE ?", "%#{escape_like(search)}%", LIKE_ESCAPE)
+      end
+
+      # Escape the LIKE metacharacters (`%`, `_`, and the escape char itself) in
+      # user input so they are matched literally, not as wildcards. `\` escapes
+      # itself first so a literal backslash in the input can't smuggle past the
+      # escape. Pair with an explicit `ESCAPE ?` clause at the call site.
+      def escape_like(query)
+        query.to_s
+             .gsub(LIKE_ESCAPE, "#{LIKE_ESCAPE}#{LIKE_ESCAPE}")
+             .gsub("%", "#{LIKE_ESCAPE}%")
+             .gsub("_", "#{LIKE_ESCAPE}_")
+      end
+
+      # Strip persist-fatal bytes (NUL et al.) from a session title at the write
+      # seam (#498). A title is derived from the conversation, so it can carry a
+      # NUL the upstream model/paste emitted; NUL is valid UTF-8 (survives
+      # String#scrub) but terminates SQLite's C string mid-literal, raising a
+      # raw `unrecognized token`. nil is preserved (an untitled session stays
+      # untitled, not "").
+      def scrub_text(value)
+        value.nil? ? nil : Rubino::Util::Output.scrub_utf8(value)
       end
 
       # The full first user message of a session — what derive_title truncated

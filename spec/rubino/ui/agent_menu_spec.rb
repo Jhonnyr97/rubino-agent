@@ -1,0 +1,86 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe Rubino::UI::AgentMenu do
+  subject(:menu) { described_class.new(entries: -> { entries }) }
+
+  let(:entry_struct) do
+    Struct.new(:id, :subagent, :status, :last_activity, keyword_init: true)
+  end
+  let(:entries) { [entry(id: "sa_1"), entry(id: "sa_2"), entry(id: "sa_3")] }
+
+  def entry(id:, status: :running, last_activity: "")
+    entry_struct.new(id: id, subagent: "explore", status: status, last_activity: last_activity)
+  end
+
+  it "starts closed" do
+    expect(menu).not_to be_open
+    expect(menu.selected).to be_nil
+  end
+
+  it "#down opens the menu from closed, highlighting the first entry" do
+    menu.down
+    expect(menu).to be_open
+    expect(menu.selected.id).to eq("sa_1")
+  end
+
+  it "does not open when there are no live entries" do
+    empty = described_class.new(entries: -> { [] })
+    empty.down
+    expect(empty).not_to be_open
+  end
+
+  describe "#up! focus hand-off" do
+    it "moves the highlight up and returns true while above the top" do
+      menu.down # selected sa_1
+      menu.down # selected sa_2
+      expect(menu.up!).to be(true)
+      expect(menu.selected.id).to eq("sa_1")
+    end
+
+    it "EXITS the picker at the top — closes itself, returns false, focus to input" do
+      menu.down # selected sa_1 (top)
+      expect(menu.up!).to be(false)
+      expect(menu).not_to be_open # owns its own focus hand-off — no stranded marker
+    end
+
+    it "returns false when closed" do
+      expect(menu.up!).to be(false)
+    end
+  end
+
+  it "#down walks past the subagents to the '◂ main' row at the bottom, then clamps" do
+    menu.down # sa_1
+    menu.down # sa_2
+    menu.down # sa_3
+    menu.down # ◂ main (the synthetic bottom row)
+    expect(described_class.main_row?(menu.selected)).to be(true)
+    menu.down # clamps on main
+    expect(described_class.main_row?(menu.selected)).to be(true)
+  end
+
+  it "shows a '◂ main session' row at the bottom and accepts it" do
+    menu.down
+    rows = menu.rows(80).map { |r| r.gsub(/\e\[[0-9;]*m/, "") }
+    expect(rows.any? { |r| r.include?("main session") }).to be(true)
+    3.times { menu.down } # to the main row
+    expect(described_class.main_row?(menu.accept)).to be(true)
+  end
+
+  it "#accept returns the selected entry and closes" do
+    menu.down
+    menu.down
+    accepted = menu.accept
+    expect(accepted.id).to eq("sa_2")
+    expect(menu).not_to be_open
+  end
+
+  it "#rows renders the header + a row per shown entry only when open" do
+    expect(menu.rows(80)).to eq([])
+    menu.down
+    rows = menu.rows(80).map { |r| r.gsub(/\e\[[0-9;]*m/, "") }
+    expect(rows.first).to include("subagents")
+    expect(rows.any? { |r| r.include?("sa_1") }).to be(true)
+  end
+end

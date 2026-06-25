@@ -5,11 +5,61 @@ A coding & automation **agent** — small, self-contained, and built to run *whe
 ## Why rubino
 
 - **Runs where the work is** — a single gem on the machine (or VM) that holds the code, not a remote service you pipe files to.
-- **Persistent memory** — a tiny SQLite "Zep"-style fact store that learns about you and the project across sessions.
+- **Persistent memory** — a tiny SQLite fact store that learns about you and the project across sessions.
 - **Context compaction** — automatic compression with session lineage when the conversation outgrows the window.
 - **CLI *and* HTTP API** — an interactive terminal session for humans, a bearer-protected JSON + SSE API for programs.
-- **Real tools, gated** — read/write/edit, shell, ruby, git/github, grep/glob, a structured test runner, vision, and more, behind an approval model with a non-bypassable hardline floor.
+- **Real tools, gated** — read/write/edit, shell, ruby, grep/glob, apply_patch, vision, and more (git, GitHub, and tests run through the hardened shell), behind an approval model with a non-bypassable hardline floor.
 - **Built on ruby_llm** — provider-agnostic: MiniMax, OpenAI, Anthropic, Gemini, or an OpenAI-compatible gateway.
+
+## Cache-friendly compaction (measured)
+
+A long agent session only stays cheap if the cached prompt prefix survives
+compaction. rubino is built so that when the conversation is compressed into a
+summary, the summary lands *after* the cached head (system + tools + stable
+history) — so the provider's prompt cache keeps **hitting** the head instead of
+re-encoding it cold every time the session is compacted.
+
+Measured with the model held fixed (local oMLX `Qwen3.6-35B-A3B`,
+Anthropic-style `cache_control`) on a 25-turn coding session that triggers
+compaction **9 times**:
+
+| metric | rubino |
+|---|---|
+| cached prefix retained right after each compaction | **44–94%** (survives — never resets to 0) |
+| cumulative cache-read over the whole session | **88%** |
+| prefix byte-stability across turns | **0.95** |
+| task solved through all 9 compactions | **10/10** hidden tests, 0 wasted work |
+
+Holding the model fixed isolates the **engine** — any difference is the
+scaffolding (prompt assembly, where the compaction summary is placed, cache
+breakpoints), not the model. This is a single model and a single scenario:
+indicative of the design, not a leaderboard. The harness lives in a separate
+benchmark project.
+
+## Tool-output compression (measured)
+
+Test logs, diffs and large command dumps are mostly noise. rubino can route
+each tool output through a **deterministic (no-ML)** compressor that keeps the
+signal and drops the rest — opt-in (`tool_output_compression`), with a
+byte-identical passthrough for anything already small and a `retrieve_output`
+pointer back to the full text. Token-honest: counts are the **exact**
+`prompt_tokens` reported by the server (local oMLX `Qwen3.6-35B-A3B`), not
+chars/4 estimates.
+
+| tool output | reduction | fidelity (verified) |
+|---|---:|---|
+| rspec full suite (21 failures, ~8k lines) | **97%** | all 21 failures + the tally kept |
+| `git log --stat` / `ls -R` | **94%** | boundary/keyword lines kept |
+| large source diff (9 files) | **42%** | all 575 ± lines, 13 hunks, 9 headers |
+| `package-lock.json` diff (60 bumps) | **99%** | file header + summary (body elided) |
+| whole-file Ruby read → skeleton | **27%** | signatures + structure kept |
+| JSON (kubectl / docker / gh, uniform rows) | **40–88%** | error rows + outliers always kept |
+| rubocop (already signal-dense) | 11% | floor — every offense kept |
+
+End-to-end A/B on real edit tasks: **12/12 tasks passed with compression ON and
+OFF** — it never broke a task, and every forced-failure run still recovered the
+single failing line out of a long log. Routing is verified (each output goes to
+the right strategy) and small inputs pass through **byte-identical**.
 
 ## Install
 
@@ -111,7 +161,7 @@ agent:
 
 memory:
   enabled: true
-  backend: "sqlite"           # tiny-Zep FTS5 + graph-lite recall (default)
+  backend: "sqlite"           # SQLite FTS5 + graph-lite recall (default)
   auto_extract: true
 
 compression:
@@ -126,7 +176,7 @@ tools:
   git: true
   shell: true                 # ON by default; every command is still approval-gated
   ruby: true
-  web: false                  # gates BOTH webfetch and websearch
+  web: true                   # ON by default (keyless DuckDuckGo backend); gates BOTH webfetch and websearch
   memory: true
 ```
 
@@ -142,7 +192,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 - **[Configuration](docs/configuration.md)** — full config + env vars + precedence
 - **[Tools](docs/tools.md)** — the built-in tool set and approval behavior
 - **[Skills](docs/skills.md)** — reusable instruction packs, the 3-level disclosure, and `SKILL_LOADED` observability
-- **[Memory](docs/memory.md)** — the SQLite tiny-Zep backend
+- **[Memory](docs/memory.md)** — the SQLite memory backend
 - **[Security](docs/security.md)** — approval model, hardline floor, TLS
 - **[Troubleshooting](docs/troubleshooting.md)** — keyed on the exact error strings
 - **[HTTP API](docs/api/v1.md)** · **[Jobs & cron](docs/jobs.md)** · **[OAuth providers](docs/oauth-providers.md)** · **[Architecture](docs/architecture.md)**
@@ -150,7 +200,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 
 ## Built-in tools
 
-The agent ships **27 built-in tools** (the set `rubino tools` lists): `read`, `read_attachment`, `summarize_file`, `write`, `edit`, `multi_edit`, `apply_patch`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `web`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`. A single `web` tool gates both fetching a URL and searching (config key `tools.web`, off by default). Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
+The agent ships **27 built-in tools** (the set `rubino tools` lists): `read`, `read_attachment`, `summarize_file`, `write`, `edit`, `multi_edit`, `apply_patch`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `web`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`. A single `web` tool gates both fetching a URL and searching (config key `tools.web`, on by default via the keyless DuckDuckGo backend; it degrades gracefully when no search backend is reachable). Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
 
 ## Skills
 
@@ -191,7 +241,6 @@ These are designed-in but not fully wired yet — don't depend on them in produc
 
 - **MCP Support** — connect to Model Context Protocol servers via [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) ([docs/mcp.md](docs/mcp.md)).
 - **Multi-Agent** — Build / Plan / Explore agents with `@mention` routing ([docs/agents.md](docs/agents.md)).
-- **Plugin Hooks** — event hooks for extending behavior ([docs/plugins.md](docs/plugins.md)).
 
 ## Development
 

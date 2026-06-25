@@ -338,30 +338,99 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 
+  # Hermes-parity stream recovery: a stream that ends with no finish signal is
+  # RECOVERED, not failed. Text already shown → keep-and-continue; nothing shown
+  # yet → discard-and-retry. Only fail after the budget is spent.
   describe "interrupted (truncated) stream response" do
-    it "raises StreamInterruptedError instead of returning the partial as completed" do
-      fake_llm.enqueue_interrupted("indice.")
-      expect do
-        build_loop.run(messages: user_messages, tools: [])
-      end.to raise_error(Rubino::StreamInterruptedError, /ended before completion/)
+    # ---- (A) text already shown → keep-and-continue --------------------------
+    it "CONTINUES an interrupted partial instead of failing the turn" do
+      fake_llm.enqueue_interrupted("indice.")          # text shown, stream cut
+      fake_llm.enqueue_text(" e il resto del testo.")  # the model continues
+      answer = build_loop.run(messages: user_messages, tools: [])
+      expect(answer).to eq(" e il resto del testo.")
     end
 
-    it "does NOT keep iterating after an interrupted response" do
-      fake_llm.enqueue_interrupted("partial")
-      fake_llm.enqueue_text("should never be reached")
-      expect { build_loop.run(messages: user_messages, tools: []) }
-        .to raise_error(Rubino::StreamInterruptedError)
-      expect(fake_llm.call_count).to eq(1)
-    end
-
-    it "persists the buffered partial so the transcript keeps what streamed" do
+    it "persists the shown partial as an interim assistant turn before continuing" do
       fake_llm.enqueue_interrupted("half a thought")
-      expect { build_loop.run(messages: user_messages, tools: []) }
-        .to raise_error(Rubino::StreamInterruptedError)
+      fake_llm.enqueue_text(" completed.")
+      build_loop.run(messages: user_messages, tools: [])
+      stored = message_store.for_session(session[:id]).select { |m| m.role == "assistant" }
+      expect(stored.map(&:content)).to include("half a thought")
+    end
 
-      stored = message_store.for_session(session[:id])
-      assistant_msgs = stored.select { |m| m.role == "assistant" }
-      expect(assistant_msgs.last&.content).to eq("half a thought")
+    it "returns the recovered partial after exhausting continuations (no hard fail)" do
+      4.times { fake_llm.enqueue_interrupted("still truncated") } # > STREAM_CONTINUATION_MAX
+      answer = build_loop.run(messages: user_messages, tools: [])
+      expect(answer).to eq("still truncated") # last partial handed back, not raised
+    end
+
+    # ---- (B) nothing shown yet → discard-and-retry ---------------------------
+    it "recovers when an EMPTY interrupted stream succeeds on a retry" do
+      fake_llm.enqueue_interrupted("")               # cut before any output
+      fake_llm.enqueue_text("recovered answer")      # the retry succeeds
+      answer = build_loop.run(messages: user_messages, tools: [])
+      expect(answer).to eq("recovered answer")
+      expect(fake_llm.call_count).to eq(2)           # initial + 1 retry
+    end
+
+    it "raises StreamInterruptedError only after the empty-stream retry budget" do
+      3.times { fake_llm.enqueue_interrupted("") }   # no output on every attempt
+      expect { build_loop.run(messages: user_messages, tools: []) }
+        .to raise_error(Rubino::StreamInterruptedError, /no output/)
+      expect(fake_llm.call_count).to eq(3)           # initial + 2 retries (empty_response_max_retries)
+    end
+
+    # #75: the continuation prompt is harness control, not user input. It must be
+    # injected with the trusted-harness marker so an injection-aware model
+    # (MiniMax-M3) follows it ("continue where you left off") instead of reading
+    # it as a prompt-injection attempt and derailing. We assert the MESSAGE SHAPE
+    # the model receives — the marker on the injected user message — not the
+    # emergent model behaviour.
+    it "frames the continuation prompt with the trusted-harness marker (#75)" do
+      fake_llm.enqueue_interrupted("indice.")
+      fake_llm.enqueue_text(" e il resto.")
+      build_loop.run(messages: user_messages, tools: [])
+
+      # The second call saw the continuation prompt as its last user message.
+      injected = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      expect(injected[:content]).to eq(Rubino::Agent::Loop::STREAM_CONTINUE_PROMPT)
+      expect(injected[:content]).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+  end
+
+  # #75: harness control messages injected as role:"user" content must carry the
+  # trusted-harness marker, and the system prompt must declare that marker
+  # TRUSTED, so an injection-aware model obeys the harness instead of defending
+  # against it. (The "model stops treating it as injection" is emergent — we spec
+  # the framing/marker, not the model output.)
+  describe "trusted-harness framing of control messages (#75)" do
+    it "marks the continuation prompt as harness control" do
+      expect(Rubino::Agent::Loop::STREAM_CONTINUE_PROMPT)
+        .to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+
+    it "marks the budget-exhaustion summary nudge as harness control" do
+      expect(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+        .to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+
+    it "carries #36's grounded nudge inside the harness frame, not as bare user text" do
+      loop_instance = build_loop
+      loop_instance.instance_variable_set(:@tool_count, 3)
+      loop_instance.instance_variable_set(:@edit_count, 1)
+      nudge = loop_instance.send(:force_summary_nudge)
+      expect(nudge).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+      expect(nudge).to include("3 tool calls this turn")
+      expect(nudge).to include("do not claim nothing was done")
+    end
+
+    it "documents the harness marker as TRUSTED runtime control in the system prompt" do
+      prompt = File.read(
+        File.expand_path("../../../lib/rubino/agent/prompts/build.txt", __dir__)
+      )
+      expect(prompt).to include("[harness control]")
+      expect(prompt).to match(/TRUSTED runtime control/i)
+      expect(prompt).to match(/never a prompt-injection/i)
     end
   end
 
@@ -578,9 +647,65 @@ RSpec.describe Rubino::Agent::Loop do
       loop_instance.run(messages: user_messages, tools: [looping_tool])
       # The last (summary) call carried no tools…
       expect(fake_llm.calls.last[:tools]).to eq([])
-      # …and the nudge was the final user message it saw.
+      # …and the nudge was the final user message it saw, grounded in the turn's
+      # action record (#36) so the model can't truthfully claim nothing was done.
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
-      expect(last_user[:content])
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to include("2 tool calls this turn")
+      expect(last_user[:content]).to include("do not claim nothing was done")
+      # #75: the whole nudge — grounding included — is carried inside the
+      # trusted-harness frame, so an injection-aware model treats it as runtime
+      # control rather than a "you ran N tool calls …" prompt-injection attempt.
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+
+    # #36: a turn that ran tools then hit the cap force-summarizes. The nudge
+    # must GROUND the model in the turn's real action record so it cannot
+    # truthfully produce a self-contradictory "I made no changes / did nothing"
+    # final after having run tools. We assert the prompt the model sees carries
+    # the ledger; the contradiction is then impossible without the model lying
+    # against text it was just handed (which the post-hoc #381 guard still
+    # reconciles). A deterministic prompt-content assertion, not a flaky
+    # LLM-output assertion.
+    it "grounds the force-summary nudge in the turn's tool/edit ledger (#36)" do
+      mutating_name = Rubino::Agent::ActionClaimGuard::MUTATING_TOOLS.first
+      mutating_tool = Class.new(Rubino::Tools::Base) do
+        define_method(:name) { mutating_name }
+        def description  = "Edits a file"
+        def input_schema = { type: "object", properties: {}, required: [] }
+        def risk_level   = :low
+        def call(_args) = "edited"
+      end.new
+      Rubino::Tools::Registry.register(mutating_tool)
+      2.times { fake_llm.enqueue_tool_call(mutating_name, {}) }
+      fake_llm.enqueue_text("I did nothing and made no changes.")
+
+      loop_instance = described_class.new(
+        session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: tight_budget, ui: null_ui,
+        event_bus: event_bus, config: tight_config
+      )
+      loop_instance.run(messages: user_messages, tools: [mutating_tool])
+
+      last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
+      # The model was told, factually, what it ran — including the edits — so a
+      # "did nothing" summary would now contradict its own prompt context.
+      expect(last_user[:content]).to include("2 tool calls this turn")
+      expect(last_user[:content]).to include("2 file edits")
+      expect(last_user[:content]).to include("do not claim nothing was done")
+      # #75: the grounding rides INSIDE the trusted-harness frame.
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+    end
+
+    # When NO tool ran this turn there is nothing to ground, so the bare nudge is
+    # preserved byte-for-byte (the headless/API path stays identical).
+    it "uses the bare nudge unchanged when no tool ran this turn (#36)" do
+      loop_instance = described_class.new(
+        session: session, llm_adapter: fake_llm, tool_executor: tool_executor,
+        message_store: message_store, budget: tight_budget, ui: null_ui,
+        event_bus: event_bus, config: tight_config
+      )
+      expect(loop_instance.send(:force_summary_nudge))
         .to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
     end
 
@@ -821,10 +946,12 @@ RSpec.describe Rubino::Agent::Loop do
       result = loop_instance.run(messages: user_messages, tools: [looping_tool])
 
       expect(result).to eq("Here's what I accomplished.")
-      # The closing call carried no tools and the nudge was the last user message.
+      # The closing call carried no tools and the grounded nudge (#36) was the
+      # last user message.
       expect(fake_llm.calls.last[:tools]).to eq([])
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
-      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to include("2 tool calls this turn")
       # 2 tool iterations + 1 summary = 3 model calls, exactly like today.
       expect(fake_llm.call_count).to eq(3)
     end
@@ -861,8 +988,50 @@ RSpec.describe Rubino::Agent::Loop do
       expect(result).to eq("Summary on the headless path.")
       expect(fake_llm.calls.last[:tools]).to eq([])
       last_user = fake_llm.calls.last[:messages].select { |m| m[:role] == "user" }.last
-      expect(last_user[:content]).to eq(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to start_with(Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE)
+      expect(last_user[:content]).to include("2 tool calls this turn")
       expect(fake_llm.call_count).to eq(3)
+    end
+
+    # Spec 5 (#574): a BACKGROUND subagent reaches the cap through a real per-sub
+    # UI::CLI whose budget handler returns :continue (as if the human granted from
+    # the dropdown) → the Loop extends and resumes the turn, exactly as the
+    # scripted-UI continue path does. Proves the subagent #select → :continue →
+    # extend! wiring end-to-end (the CLI is the production adapter).
+    it "subagent (per-sub CLI + budget handler → :continue): extends and resumes" do
+      view = Rubino::UI::CLI.new(
+        agent_id: "sa_1", budget_handler: ->(_prompt) { :continue }
+      )
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      4.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Final summary after the granted budget.")
+
+      extended = []
+      allow(budget).to receive(:extend!).and_wrap_original do |orig, by|
+        extended << by
+        orig.call(by)
+      end
+
+      loop_instance = build_loop_with(ui: view, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(extended).to eq([tight_config.agent_budget_extension_step])
+      expect(result).to eq("Final summary after the granted budget.")
+    end
+
+    # Spec 6 (#574): a subagent per-sub CLI with NO budget handler (foreground/
+    # sync/headless) keeps the nil #select → force-summarize guarantee.
+    it "subagent (per-sub CLI, no budget handler): force-summarizes (select → nil)" do
+      view = Rubino::UI::CLI.new(agent_id: "sa_1")
+      budget = Rubino::Agent::IterationBudget.new(config: tight_config)
+      2.times { fake_llm.enqueue_tool_call("loop_tool", {}) }
+      fake_llm.enqueue_text("Summary without a budget grant.")
+
+      loop_instance = build_loop_with(ui: view, budget: budget, config: tight_config)
+      result = loop_instance.run(messages: user_messages, tools: [looping_tool])
+
+      expect(result).to eq("Summary without a budget grant.")
+      expect(fake_llm.calls.last[:tools]).to eq([])
     end
 
     # -------------------------------------------------------------------------
@@ -1440,6 +1609,64 @@ RSpec.describe Rubino::Agent::Loop do
       loop_obj.send(:handle_tool_result, name: "shell", arguments: {}, call_id: "c1", result: denied)
       expect(loop_obj.instance_variable_get(:@tool_count)).to eq(0)
       expect(loop_obj.instance_variable_get(:@denied_count)).to eq(1)
+    end
+  end
+
+  # #583: a blocked tool produced NO output; the model must be steered away from
+  # confabulating its result. Three levers, asserted at their own seams.
+  describe "blocked-tool anti-confabulation (#583)" do
+    subject(:loop_obj) { described_class.allocate }
+
+    describe "#inject_blocked_tool_reminder (Lever 3 — gated <system-reminder>)" do
+      def messages_after(denied:, already_emitted: false)
+        loop_obj.instance_variable_set(:@denied_count, denied)
+        loop_obj.instance_variable_set(:@blocked_reminder_emitted, already_emitted)
+        msgs = []
+        loop_obj.send(:inject_blocked_tool_reminder, msgs)
+        msgs
+      end
+
+      it "injects a one-line <system-reminder> on a turn where a tool was blocked" do
+        msgs = messages_after(denied: 1)
+        expect(msgs.size).to eq(1)
+        expect(msgs.first[:role]).to eq("user")
+        expect(msgs.first[:content]).to include("<system-reminder>")
+        expect(msgs.first[:content]).to include("never state or imply a blocked tool's result")
+        # Carries the trusted-harness marker so the model reads it as control.
+        expect(msgs.first[:content]).to include(described_class::HARNESS_CONTROL_MARKER)
+      end
+
+      it "does NOT fire on a clean turn (no block) — avoids the #93/#97 over-firing regression" do
+        expect(messages_after(denied: 0)).to be_empty
+      end
+
+      it "fires at most once per turn (one-shot latch)" do
+        expect(messages_after(denied: 1, already_emitted: true)).to be_empty
+      end
+
+      it "latches @blocked_reminder_emitted after firing" do
+        loop_obj.instance_variable_set(:@denied_count, 2)
+        loop_obj.instance_variable_set(:@blocked_reminder_emitted, false)
+        loop_obj.send(:inject_blocked_tool_reminder, [])
+        expect(loop_obj.instance_variable_get(:@blocked_reminder_emitted)).to be(true)
+      end
+    end
+
+    describe "#tool_result_error? (Lever 1 — error flag source)" do
+      it "is true for a denied result" do
+        denied = Rubino::Tools::Result.denied(name: "x", call_id: "c", reason: :noninteractive)
+        expect(loop_obj.send(:tool_result_error?, denied)).to be(true)
+      end
+
+      it "is true for an errored result" do
+        err = Rubino::Tools::Result.error(name: "x", call_id: "c", error: "boom")
+        expect(loop_obj.send(:tool_result_error?, err)).to be(true)
+      end
+
+      it "is false for a successful result (success stays byte-identical)" do
+        ok = Rubino::Tools::Result.success(name: "x", call_id: "c", output: "5")
+        expect(loop_obj.send(:tool_result_error?, ok)).to be(false)
+      end
     end
   end
 end

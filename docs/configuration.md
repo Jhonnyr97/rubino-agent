@@ -65,9 +65,26 @@ providers:
     assume_model_exists: true
     base_url: null
     request_timeout_seconds: 600
+    extra_body: {}                 # free-form body merged into /v1/chat/completions
 ```
 
 Per-provider you may also set `api_key`, and for custom gateways `anthropic_compatible: true` (MiniMax) or `openai_compatible: true`. See [models-and-keys.md](models-and-keys.md).
+
+#### `extra_body` — OpenAI-compatible request passthrough
+
+`providers.<name>.extra_body` is a free-form hash deep-merged verbatim into the OpenAI-style `/v1/chat/completions` request body. It is honored **only on the OpenAI-compatible request path** (`openai_compatible: true`, or the native `openai` provider) and is never applied on the anthropic-family path, nor does it touch the thinking-budget logic. Adapter-routed keys (`max_tokens`, `thinking`) win on conflict. Left unset (the default `{}`) the request is byte-identical to before.
+
+Use it to pass provider-specific knobs the adapter does not model natively. The canonical case is suppressing chain-of-thought leakage on oMLX / Qwen-style backends that emit `<think>` text instead of native `tool_calls` unless the request carries `chat_template_kwargs: { enable_thinking: false }`:
+
+```yaml
+providers:
+  gateway:
+    openai_compatible: true
+    base_url: "http://localhost:8000/v1"
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+```
 
 Per-provider `supports_thinking: true | false` declares whether the backend handles an Anthropic-style thinking budget correctly; `false` means no budget is ever sent to it, regardless of `thinking.effort`. Unset, MiniMax-family model ids default to `false`, everything else to `true` — see [reasoning & thinking](#reasoning--thinking).
 
@@ -96,6 +113,14 @@ auxiliary:
     base_url: null
     timeout: 300
 ```
+
+Each block routes through `LLM::AuxiliaryClient`, so `provider`/`model`/`base_url`
+are all honored: `provider: "main"` (or empty) reuses the primary provider, an empty
+`model` falls back to `model.default`, and a `base_url` points that task at a
+different endpoint. `auxiliary.compression` is the **context-compaction summary**
+model — at the defaults it is the primary model (e.g. MiniMax-M3), unchanged; set
+`provider`/`model`/`base_url` to run compaction summaries on a different
+(OpenAI-compatible) endpoint.
 
 ### agent
 
@@ -154,7 +179,7 @@ ui:
 
 ### notifications
 
-Attention signals for the moments the agent needs human eyes: a long turn finishing, an approval prompt parking the run on a decision, or a background subagent escalating an `ask_parent` to you (the ⛔ banner).
+Attention signals for the moments the agent needs human eyes: a long turn finishing, or an approval prompt parking the run on a decision (the main agent's card or a background subagent flipping to `needs_approval`).
 
 ```yaml
 notifications:
@@ -164,7 +189,7 @@ notifications:
   min_turn_seconds: 10   # a turn must run at least this long before its completion notifies; quick turns stay silent
 ```
 
-- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`), `blocked` (a background child escalated `ask_parent` to the human).
+- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`). A third event, `blocked`, exists in the enum for a child parked on the human; with subagents now non-blocking it is not raised in normal operation.
 - **Bell hygiene**: the BEL byte is only ever written to a real terminal — never into a pipe — and is routed to the real terminal IO even while the bottom composer owns the screen (BEL doesn't move the cursor).
 - **`command` hook**: runs detached and best-effort (stdio nulled, errors swallowed to the log) with `RUBINO_EVENT` (`turn_finished` | `needs_approval` | `blocked`) and `RUBINO_MESSAGE` in its environment — the seam for `osascript` (macOS), `notify-send` (Linux), or any custom notifier.
 - **Spam control**: events within ~1s of the last emitted one coalesce into a single signal.
@@ -212,7 +237,6 @@ streaming:
   transport: "off"
   edit_interval: 0.3
   buffer_threshold: 40
-  cursor: " ▉"
 
 context:
   engine: "compressor"
@@ -244,7 +268,7 @@ compression:
 ```yaml
 memory:
   enabled: true
-  backend: "sqlite"          # tiny-Zep FTS5/BM25 + graph-lite recall (default). "default" = legacy non-ranked store
+  backend: "sqlite"          # SQLite FTS5/BM25 + graph-lite recall (default). "default" = legacy non-ranked store
   auto_extract: true
   auto_save: true
   user_profile_enabled: true
@@ -279,7 +303,7 @@ tasks:
   max_children_per_node: 3       # max LIVE direct children per node
   max_concurrent_total: 8        # hard ceiling on total LIVE subagents across the tree
   max_live_probes_per_child: 5   # per-child budget for billed live probes (probe(live: true))
-  ask_parent_timeout: 900        # seconds a blocking ask_parent waits before the child self-heals
+  ask_parent_timeout: 900        # vestigial: governed the removed child→parent ask channel; no effect now
 ```
 
 ### tools
@@ -291,7 +315,7 @@ tools:
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
                           # dangerous commands are still gated by security.confirm_policy
   ruby: true
-  web: false              # Gates BOTH the webfetch and websearch tools
+  web: true               # ON by default (keyless DuckDuckGo backend); gates BOTH the webfetch and websearch tools
   memory: true
 ```
 
@@ -314,6 +338,107 @@ tool_output:
 file_read:
   max_chars: 100000
 ```
+
+### tool_output_compression
+
+Deterministic (no-LLM) compression of a tool's output **before it reaches the
+model**, to spend fewer context tokens on high-volume, low-signal output. This is
+distinct from [`compression`](#compression) (which summarises the *conversation
+history* when the window fills) and from `display.tool_output_preview_lines`
+(scrollback-only). It runs at a single seam — every tool's output passes through
+`Agent::ToolExecutor` — so a content **router** picks the strategy by what the
+output *is*, not by which tool produced it:
+
+| Output detected as | Strategy | Effect |
+| --- | --- | --- |
+| test / build / lint / shell logs (rspec, pytest, jest, cargo, npm, make, generic) | `LogCompressor` | keep every error/failure + the summary tally + context, drop passing/info noise (≈97% fewer tokens on a failing suite) |
+| a **whole-file** source read (Ruby) | code `skeleton` | keep signatures, elide large method bodies behind a `read offset:/limit:` pointer |
+| a unified diff (`git diff`, `diff`) | `DiffCompressor` | keep every `+`/`-` line and every file/hunk header; trim far unchanged context to ±N lines; collapse a generated/lock file to a one-line summary. A small/tight diff (the "show me the diff" case) passes through **byte-identical** via the saving guard. The human view is the tool's separate scrollback diff (`body`), which is **never** compressed |
+| a **whole-output** JSON dump (`curl \| jq`, `kubectl get -o json`, `gh api`, `docker inspect`, `aws --output json`, MCP/custom-tool JSON) | `JsonCompressor` | an array of **uniform** objects folds **losslessly** to a schema header + one compact row per item (repeated key names emitted once); a large array whose fold is too thin falls back to lossy row selection where **error-bearing rows and statistical outliers always survive** and dropped rows collapse to an `{"_elided": N}` sentinel; a single large object elides only **big string values** (never drops a key). Detected **before** the log channel, so a JSON shell dump folds as a table and is never log-compressed. Small JSON passes through **byte-identical** via the saving guard |
+| grep / search results (`path:line:`) | passthrough | **byte-identical** |
+| short output | passthrough | unchanged |
+
+```yaml
+tool_output_compression:
+  enabled: false              # MASTER switch — off ships by default; the whole
+                              # router is bypassed when false. `rubino setup`
+                              # offers to turn this (and logs.enabled) on.
+  code:                       # whole-file source reads → skeleton
+    strategy: skeleton        # only "skeleton" is implemented; any other value = passthrough
+    min_lines: 150            # files shorter than this are never skeletonised
+    keep_method_body_max_lines: 8  # bodies up to N lines are kept inline; larger ones are elided
+    languages: [ruby]         # source languages to skeletonise (see note below); `rubino setup` lets you pick
+  logs:
+    enabled: false            # sub-gate: log compression only runs when BOTH this and the master are on
+    min_lines: 40             # outputs shorter than this pass through unchanged
+    max_total_lines: 100      # cap on kept lines
+    max_errors: 10            # keep up to N errors/failures (first and last always kept)
+    max_warnings: 5
+    max_stack_traces: 3
+    context_lines: 4          # lines of surrounding context kept around each failure
+  diff:                       # unified diffs (git diff / diff) — model copy only
+    context_lines: 3          # unchanged context kept on each side of a change; far context → `… N unchanged lines`
+    min_lines: 40             # diffs shorter than this pass through unchanged ("show me the diff")
+    min_saving: 0.25          # only apply when ≥25% smaller; else byte-identical passthrough
+    generated_patterns:       # changed files matching these collapse to a one-line summary
+      - "*.lock"
+      - Gemfile.lock
+      - package-lock.json
+      - yarn.lock
+      - pnpm-lock.yaml
+      - composer.lock
+      - "*.min.js"
+      - "*.min.css"
+      - dist/
+      - build/
+      - "*.snap"
+      - vendor/
+  json:                       # whole-output JSON dumps (kubectl/gh/docker/aws/jq)
+    min_items: 8              # arrays with fewer items (and < min_lines) pass through unchanged
+    min_lines: 40             # objects / text shorter than this pass through unchanged
+    min_saving: 0.25          # only apply when ≥25% smaller; else byte-identical passthrough
+    outlier_sigma: 3.0        # a numeric field > N σ from its column mean = a kept outlier row (lossy)
+    max_string_chars: 400     # in a single object, string values longer than this collapse to `<elided N chars>` (key kept)
+```
+
+> **`code.languages`** (default `["ruby"]`) selects which source languages get
+> whole-file skeletonisation; a read whose language isn't listed passes through
+> verbatim, so removing a language disables compression for it. Values: `ruby`
+> (built-in Prism parser, always available), `python` (stdlib `ast` via your
+> `python3` — a no-op if `python3` isn't on PATH), and `javascript` /
+> `typescript` / `tsx` (need the optional `tree_sitter_language_pack` gem — a
+> no-op until it's installed). `rubino setup` offers a language picker and, if you
+> choose JS/TS, asks before installing the parser gem.
+
+> `diff` and `json` have **no** own `enabled` sub-gate (like `code`): they are
+> active whenever the master flag is on, and the saving guard (`min_lines`/
+> `min_items` + `min_saving`) is the real gate — small/tight diffs and small JSON
+> the user wants to see stay verbatim automatically.
+
+**Reversibility.** When the router compresses, the executor spills the *full
+original* to `<home>/tool-results/<call_id>.txt` and the compressed output ends
+with a passive pointer carrying the call's **id** (`… N line(s) hidden …
+retrieve_output id=<id> only if a hidden line is specifically needed`). The model
+recovers the original by calling the **`retrieve_output`** tool with that id —
+registered **only** while compression is enabled (so the default registry/tool
+count is unchanged). The pointer deliberately prints **no cat-able filesystem
+path**: recovery is an id behind a dedicated tool (headroom-style), so a small
+model can't `sed`/`grep`/`cat` a printed spill path and re-inflate the output the
+compressor just shrank. If the spill failed the pointer says *full output
+unavailable (spill failed)* with no id. **Fidelity:** a failure or summary line
+is never dropped; only passing/info noise is.
+
+**Per-call opt-out.** When the feature is on, `read` and `shell` advertise a
+`compress` boolean parameter (default `true`); the model can pass `compress:false`
+to receive the verbatim output for that one call (returned byte-identical).
+
+**Telemetry.** Compression events are logged as `compression.applied` /
+`compression.drill_in` / `compression.failed`. `compression.drill_in` is emitted
+on every `retrieve_output` call (a deliberate recovery, carrying the `id`) and on
+a `read`'s targeted offset-read into an elided `:code` skeleton body — so the
+counter measures real recoveries and is **not** bypassable by a shell `sed`/
+`grep`/`cat` (there is no path to cat). A strategy error always falls back to the
+uncompressed text, so compression can never break a tool call.
 
 ### terminal
 
@@ -366,9 +491,17 @@ attachments:
     inline_text_budget_bytes: 100000
     allow_kinds: [image, text, document, archive, binary]
     auto_extract_documents: false
-    aux_vision_egress: true
+    aux_vision_egress: true          # allow the `vision` tool to send an image to an EXTERNAL aux model (data egress; see below)
     archive: { max_entries: 2000, max_uncompressed_bytes: 268435456, max_entry_ratio: 100, max_total_ratio: 50, max_nesting_depth: 1 }
 ```
+
+`aux_vision_egress` (default `true`) gates the **`vision` tool**: routing an
+image to an external auxiliary vision model is data egress, so set it to `false`
+to refuse — the tool then returns a clean error instead of sending the bytes
+(#578). Independently, before any egress the tool **content-sniffs** the file
+(magic bytes win over the extension, fail-closed): a path that isn't actually an
+image is rejected, so a mislabelled or non-image file can't be smuggled to the
+external host (#579).
 
 ### security
 
@@ -537,7 +670,21 @@ api:
   rate_limit_enabled: true
   rate_limit_unauth_per_minute: 60
   rate_limit_auth_per_minute: 600
+  allow_public_bind: false       # gate for a non-loopback bind (see below)
 ```
+
+`allow_public_bind` is **false by default (safe)**. The API can execute shell
+tools, so binding it to a non-loopback address (`--host 0.0.0.0`,
+`RUBINO_API_HOST` set to anything other than `127.0.0.1` / `::1` / `localhost`)
+publishes a remote-code-execution surface to the network — and with TLS off the
+bearer token and all traffic travel in cleartext. While this is `false`, the
+server **refuses to boot** on a non-loopback host with an actionable error.
+Loopback binds (the default) are unaffected and need no opt-in.
+
+To deliberately expose the listener, set `allow_public_bind: true`. The server
+then boots on the routable host but prints a one-time exposure **WARNING** at
+startup. When you opt in, enable TLS (`RUBINO_TLS=1`) and a strong
+`RUBINO_API_KEY`, and prefer a reverse proxy over a direct bind.
 
 ---
 

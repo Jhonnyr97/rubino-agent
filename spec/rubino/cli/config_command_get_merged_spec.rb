@@ -82,4 +82,37 @@ RSpec.describe "Rubino::CLI::ConfigCommand#get effective (merged) value" do
     expect { Rubino::CLI::ConfigCommand.new.get("definitely.absent.key") }
       .to raise_error(Thor::Error, /config key not found: definitely\.absent\.key/)
   end
+
+  # #66: `/config reasoning` resolves the modern display.reasoning key /status
+  # advertises and /reasoning writes — and falls through to the documented
+  # legacy display.show_reasoning boolean when only that is set (older configs /
+  # hand-edited files), instead of reporting "not found".
+  describe "the `reasoning` discoverability alias" do
+    it "returns the value set under the modern display.reasoning key" do
+      loader = Rubino::Config::Loader.new
+      Rubino::Config::Writer.new(config_path: loader.config_path).set("display.reasoning", "full")
+      Rubino.reload_configuration!
+
+      Rubino.ui = (ui2 = Rubino::UI::Null.new)
+      Rubino::CLI::ConfigCommand.new.get("reasoning")
+      got = ui2.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
+      warnings = ui2.messages.select { |m| m[:level] == :warning }.map { |m| m[:message].to_s }
+      expect(got.join("\n")).to include("display.reasoning = full")
+      expect(warnings.join("\n")).not_to include("not found")
+    end
+
+    it "falls through to the legacy display.show_reasoning boolean when only it is set" do
+      loader = Rubino::Config::Loader.new
+      Rubino::Config::Writer.new(config_path: loader.config_path).set("display.show_reasoning", "true")
+      Rubino.reload_configuration!
+      # The modern key is deliberately unset (#132): pre-fix the alias resolved
+      # only display.reasoning, so this reported "Key 'reasoning' not found".
+      expect(Rubino.configuration.dig("display", "reasoning")).to be_nil
+
+      Rubino.ui = (ui2 = Rubino::UI::Null.new)
+      Rubino::CLI::ConfigCommand.new.get("reasoning")
+      got = ui2.messages.select { |m| m[:level] == :info }.map { |m| m[:message].to_s }
+      expect(got.join("\n")).to include("display.show_reasoning = true")
+    end
+  end
 end

@@ -6,17 +6,20 @@ module Rubino
     # cards and the /sessions + /agents listings (was copy-pasted into
     # UI::SubagentCards, CLI::ChatCommand, and Commands::Executor).
     #
-    # Coarse on purpose: seconds under a minute, then whole minutes, then
-    # whole hours — enough to read "how long" at a glance without a clock.
+    # Coarse on purpose for AGES ("5m ago" scans better than a clock): seconds
+    # under a minute, then whole minutes, then whole hours. A LIVE counter
+    # (a still-running subagent's elapsed) passes precise: true so it carries
+    # the next-smaller unit and visibly advances every second instead of
+    # sitting on a whole-minute value for ~59s and reading as frozen (#44).
     module Duration
       module_function
 
-      def human_duration(seconds)
+      def human_duration(seconds, precise: false)
         secs = seconds.to_i
         return "#{secs}s" if secs < 60
-        return "#{secs / 60}m" if secs < 3600
+        return format(precise ? "%dm%02ds" : "%dm", secs / 60, secs % 60) if secs < 3600
 
-        "#{secs / 3600}h"
+        format(precise ? "%dh%02dm" : "%dh", secs / 3600, (secs % 3600) / 60)
       end
     end
   end

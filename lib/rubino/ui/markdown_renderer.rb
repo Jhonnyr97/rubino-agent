@@ -28,7 +28,7 @@ module Rubino
     # ```fenced``` code blocks, ordered/unordered lists (one level), block
     # quotes, [links](url), horizontal rules. Anything unrecognized falls
     # back to its raw text content, never blowing up.
-    class MarkdownRenderer
+    class MarkdownRenderer # rubocop:disable Metrics/ClassLength -- one cohesive markdown->token renderer (blocks/inline/tables/wrapping); splitting would scatter tightly-coupled rendering logic
       # Map of common GFM language hints we don't need to special-case. Listed
       # only to acknowledge: rendering treats all languages identically (no
       # syntax highlighting — too much code for marginal gain).
@@ -56,6 +56,37 @@ module Rubino
       rescue StandardError
         # Parser failure -> degrade to plain text rather than break the UI.
         text.to_s.split("\n", -1).map { |l| [[l, nil]] }
+      end
+
+      # Render a GROWING (partial) GFM table for the streaming live region — the
+      # header/separator plus the already-completed data rows (the in-flight last
+      # row is dropped upstream by StreamingMarkdown#table_rows_so_far). The same
+      # fitted, width-clamped, border-correct path the committed table uses
+      # (block_lines -> table_lines -> balanced_column_widths), so the partial
+      # never mid-cell soft-wraps and matches the final snap.
+      #
+      # The live region is bounded (it must never push the prompt off-screen):
+      # +max_rows+ caps the visible DATA rows. When the table-so-far is taller,
+      # only the header + the LAST +max_rows+ data rows render (the user watches
+      # the bottom of the table fill in), with the full table snapping in on
+      # completion via the committed path. Returns [] until a separator row has
+      # arrived (nothing meaningful to draw yet — "hide until it means something").
+      def render_partial_table(lines, max_rows: nil)
+        rows = Array(lines)
+        sep_idx = rows.index { |l| l.to_s.match?(TABLE_SEP_RE) }
+        return [] if sep_idx.nil?
+
+        head = rows[0..sep_idx] # header row(s) + separator
+        data = rows[(sep_idx + 1)..] || []
+        # No completed data row yet: kramdown won't parse a header+separator with
+        # an empty body AS a table (it degrades to raw `| h | h |` text + an
+        # em-dash separator), which is the very raw-pipe leak we're killing. Draw
+        # nothing until the first data row arrives — "hide until it means
+        # something"; the row in flight shows the moment it completes.
+        return [] if data.empty?
+
+        data = data.last(max_rows) if max_rows && data.size > max_rows
+        render([*head, *data].join("\n"))
       end
 
       private
@@ -112,24 +143,43 @@ module Rubino
       # A GFM pipe-table separator row, e.g. "|---|:--:|---|" or "---|---".
       TABLE_SEP_RE = /\A\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*\z/
 
-      # Kramdown's GFM parser only recognizes a pipe table when its header row is
-      # preceded by a blank line. LLMs frequently emit a table glued directly to
-      # the previous line ("Results:\n| a | b |\n|---|---|"), which then degrades
-      # to raw pipe text with the separator turned into an em-dash (L4). We insert
-      # the missing blank line before any header row that is followed by a
-      # separator row, so tables always parse.
+      # Kramdown's GFM parser recognizes a pipe table only when its header row is
+      # preceded by a blank line AND it is terminated by a blank line (or EOF).
+      # LLMs glue tables to the previous line ("Results:\n| a | b |\n|---|---|")
+      # AND to trailing prose ("…\n| 1 | 2 |\nDone."), degrading the whole run to
+      # raw pipe text with the separator mangled to an em-dash (L4, #R1). We
+      # insert the missing blank line (a) BEFORE a header row a separator follows,
+      # and (b) AFTER the last table row when glued non-table prose follows, so
+      # the table parses and the prose renders as its own paragraph — matching the
+      # streaming splitter on the live path.
       def normalize(text)
         lines = text.split("\n", -1)
         out   = []
+        in_table = false
         lines.each_with_index do |line, i|
           nxt = lines[i + 1]
-          if nxt && line.include?("|") && nxt.match?(TABLE_SEP_RE) &&
-             !out.empty? && !out.last.strip.empty? && !out.last.match?(TABLE_SEP_RE)
-            out << ""
-          end
+          out << "" if table_opens_here?(line, nxt, out) # (a) blank before header
+          in_table = true if line.match?(TABLE_SEP_RE)
           out << line
+          if in_table && table_closes_here?(line, nxt) # (b) close glued prose
+            out << ""
+            in_table = false
+          end
+          in_table = false if nxt && nxt.strip.empty?
         end
         out.join("\n")
+      end
+
+      # A header row glued to the previous line that a separator row follows.
+      def table_opens_here?(line, nxt, out)
+        nxt && line.include?("|") && nxt.match?(TABLE_SEP_RE) &&
+          !out.empty? && !out.last.strip.empty? && !out.last.match?(TABLE_SEP_RE)
+      end
+
+      # A table row followed by glued, non-blank prose (no pipe, not a separator).
+      def table_closes_here?(line, nxt)
+        line.include?("|") && nxt && !nxt.strip.empty? && !nxt.match?(TABLE_SEP_RE) &&
+          !nxt.include?("|")
       end
 
       # Terminal column count, headless-safe. Never raises: if there's no
@@ -346,29 +396,17 @@ module Rubino
       def render_tty_table(header, rows)
         fit = [@width.to_i, MIN_TABLE_WIDTH].max
         table = TTY::Table.new(header: header, rows: rows.empty? ? [Array.new(header&.size || 1, "")] : rows)
-        # Size columns to their CONTENT, only resizing (wrap/shrink) when the
-        # natural table is WIDER than the budget (#263). Passing resize: true
-        # unconditionally made TTY::Table stretch every column to fill @width, so
-        # short cells left a huge gap before the next border. width: is ALWAYS
-        # passed (so tty-table never probes the screen — a headless/under-
-        # reporting winsize would otherwise make :unicode collapse the table);
-        # resize: is added ONLY when the natural table is wider than the budget.
-        # Without resize, columns size to content and the spare width is left
-        # unused — no stretch, no gap. No horizontal padding either: the resize
-        # budget ignores it (~2 cols/row overflow); cells still get the gutters.
+        # Size columns to their CONTENT, only resizing when the natural table is
+        # WIDER than the budget (#263). width: is ALWAYS passed so tty-table never
+        # probes the screen (a headless/under-reporting winsize would otherwise
+        # make :unicode collapse the table). On overflow we ALWAYS allocate
+        # explicit balanced column widths rather than TTY::Table's own resize —
+        # its resize is char-count (not display-width) aware and can tear the
+        # right border / bleed past the pane on multibyte or many-column input
+        # (#Y1, R1-V2). balanced_column_widths clamps the TOTAL width to +fit+ and
+        # wraps cells; below the budget, columns keep content width with no gap.
         opts = { multiline: true, width: fit }
-        if table.width > fit
-          # Overflow: do NOT hand TTY::Table its own greedy resize (it gives a
-          # single long cell almost the whole width and collapses the siblings to
-          # 1 char — R1-V2). Instead allocate balanced column widths with a floor,
-          # wrapping the long cell across lines so every column stays readable.
-          widths = balanced_column_widths(header, rows, fit)
-          if widths
-            opts[:column_widths] = widths
-          else
-            opts[:resize] = true
-          end
-        end
+        opts[:column_widths] = balanced_column_widths(header, rows, fit) if table.width > fit
         str = table.render(:unicode, **opts)
         return nil if str.nil?
 
@@ -377,14 +415,15 @@ module Rubino
         nil
       end
 
-      # Allocate per-column widths summing to the content budget (the budget
-      # minus the unicode frame's ncols+1 border chars), guaranteeing each column
-      # at least MIN_COL_WIDTH (or its natural width if smaller) so no column is
-      # starved. Spare width above the floors is shared among the columns that
-      # want more, feeding the narrowest first so short columns fill before a
-      # greedy long cell hoards the rest; no column exceeds its natural width.
-      # Returns nil when even the floors don't fit the budget (let TTY::Table's
-      # own resize handle that degenerate, very-narrow case).
+      # Allocate per-column widths whose total rendered table width is ALWAYS
+      # ≤ +fit+ (content budget = fit minus the unicode frame's ncols+1 border
+      # chars), so the table never overflows the pane or tears its right border
+      # (#Y1). Each column gets at least MIN_COL_WIDTH (or its natural width if
+      # smaller) when the budget allows; spare width above the floors is shared
+      # narrowest-first so short columns fill before a greedy long cell hoards the
+      # rest (R1-V2). When even the floors overflow the budget the columns shrink
+      # below MIN_COL_WIDTH (#shrink_below_floor) rather than overflow. Always
+      # returns budget-fitting widths (never nil).
       def balanced_column_widths(header, rows, fit)
         all = (header ? [header] : []) + rows
         ncols = all.map(&:size).max.to_i
@@ -397,8 +436,14 @@ module Rubino
         end
 
         budget = fit - (ncols + 1) # ncols+1 vertical border chars in :unicode
+        # Guard the degenerate case where there isn't room for even 1 col/column
+        # plus borders (e.g. width 3, many columns): clamp the budget up so each
+        # column gets ≥1 and TTY::Table can still render the frame.
+        budget = ncols if budget < ncols
+
         floors = natural.map { |w| [w, MIN_COL_WIDTH].min }
-        return nil if floors.sum > budget # too narrow even at floors — bail out
+        # Too narrow even at the MIN_COL_WIDTH floor: shrink below it to fit (#Y1).
+        return shrink_below_floor(floors, budget) if floors.sum > budget
 
         widths = floors.dup
         spare  = budget - floors.sum
@@ -415,6 +460,23 @@ module Rubino
           i = wants.min_by { |j| widths[j] }
           widths[i] += 1
           spare -= 1
+        end
+        widths
+      end
+
+      # Shrink per-column widths below the MIN_COL_WIDTH floor so their total fits
+      # +budget+ when even the floors overflow (a many-column table in a tiny
+      # pane). Takes from the WIDEST column first so the loss spreads evenly; no
+      # column drops under 1 so TTY::Table can still draw the frame (#Y1).
+      def shrink_below_floor(floors, budget)
+        widths = floors.dup
+        over   = widths.sum - budget
+        while over.positive?
+          i = (0...widths.size).select { |j| widths[j] > 1 }.max_by { |j| widths[j] }
+          break unless i
+
+          widths[i] -= 1
+          over -= 1
         end
         widths
       end

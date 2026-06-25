@@ -22,7 +22,9 @@ module Rubino
           @ui.panel_line("mode", "#{Rubino::Modes.current} — #{Rubino::Modes.description}")
           @ui.panel_line("display", status_display_line, pointer: "(use /reasoning · /think)")
           @ui.panel_line("approvals", status_approvals_line)
+          @ui.panel_line("sandbox", status_sandbox_line)
           @ui.panel_line("session", status_session_line)
+          @ui.panel_line("workspace", status_workspace_line)
           @ui.panel_line("tools", status_tools_line)
           # MCP only when servers are configured (#182/#186) — a non-MCP user's
           # /status stays exactly as before, and MCP tools stop being invisibly
@@ -87,30 +89,76 @@ module Rubino
           nil
         end
 
+        # The workspace/cwd path the session runs in (#56b) — only the launch
+        # banner and the /sessions picker showed it, so a user juggling repos
+        # couldn't tell which window was which from /status. Matches the banner's
+        # `workspace  ~/path` form (primary root, home collapsed to ~).
+        def status_workspace_line
+          path = Rubino::Workspace.primary_root.to_s
+          home = Dir.home
+          path.start_with?(home) ? path.sub(home, "~") : path
+        rescue StandardError
+          "(unavailable)"
+        end
+
         def status_model
           @runner&.session&.dig(:model) ||
             (@runner.respond_to?(:model_id) ? @runner.model_id : nil) ||
-            Rubino.configuration.model_default
+            Rubino.configuration.dig("model", "default")
         end
 
         # The configured provider — the "what am I talking to" line a status
         # check wants. We report the configured target, not a live probe (a
         # health round-trip would make /status slow and flaky).
         def status_provider_line
-          Rubino.configuration.model_provider || "(default)"
+          Rubino.configuration.dig("model", "provider") || "(default)"
         rescue StandardError
           "(unavailable)"
         end
 
         # One-line approval-policy summary so a newcomer knows what will prompt.
         # Mode is authoritative: yolo skips every approval, plan filters mutating
-        # tools out entirely; otherwise approvals come from config.
+        # tools out entirely; otherwise the confirm_policy decides which shell
+        # commands prompt (dangerous_only is the default — risky commands and
+        # secret/out-of-workspace writes prompt, safe commands and in-workspace
+        # edits run automatically; confirm_all prompts on every shell command).
         def status_approvals_line
           case Rubino::Modes.current
           when :yolo then "skipped (yolo mode — nothing prompts)"
           when :plan then "read-only mode — no edits/shell to approve"
-          else            "from config (mutating commands prompt)"
+          else            status_confirm_policy_line
           end
+        end
+
+        # The confirm_policy copy for the normal (non-yolo, non-plan) modes.
+        def status_confirm_policy_line
+          if Rubino.configuration.confirm_policy == :confirm_all
+            "confirm_all — every shell command prompts"
+          else
+            "dangerous_only — risky commands prompt; safe commands + in-workspace edits run automatically"
+          end
+        end
+
+        # The OS write-jail state (#290/#544): the configured mode plus whether
+        # it is ACTIVE (a Seatbelt/Landlock mechanism is enforcing it) or
+        # DEGRADED (requested but unavailable ⇒ fail-open, writes unconfined).
+        # When active, the summary already carries required/best-effort posture
+        # and we note that write flag-forms auto-run (the jail contains them);
+        # only exec/network forms still prompt (slice 2 Part C).
+        def status_sandbox_line
+          summary = Rubino::Security::Sandbox.status_summary
+          return "#{summary} — writes NOT confined" if Rubino::Security::Sandbox.degraded?
+          # Mechanism present but the runtime self-test proved it does NOT
+          # enforce (helper fails open) — be honest: writes are unconfined and
+          # the broad prompt stays.
+          if Rubino::Security::Sandbox.present_but_not_enforcing?
+            return "#{summary} — helper present but NOT enforcing, writes NOT confined"
+          end
+          return "#{summary} — write flag-forms auto-run" if Rubino::Security::Sandbox.active?
+
+          summary
+        rescue StandardError
+          "(unavailable)"
         end
 
         # A compact roster of the tools the agent can actually use right now
@@ -141,7 +189,9 @@ module Rubino
 
           id    = session[:id].to_s[0..7]
           title = session[:title].to_s.strip
-          title = title.empty? ? "(untitled)" : %("#{title}")
+          # Length-cap on render (#581): a long renamed title would otherwise
+          # soft-wrap and push the workspace/tools/memory rows off-screen.
+          title = title.empty? ? "(untitled)" : %("#{Rubino::Util::Output.elide(title, Session::Repository::TITLE_MAX_CHARS)}")
           msgs  = status_message_count(session)
           "#{id}  #{title}#{" · #{msgs} msgs" if msgs}"
         end
@@ -190,7 +240,7 @@ module Rubino
           "(unavailable)"
         end
 
-        # Resolve the *configured* memory backend (default: sqlite tiny-Zep) for
+        # Resolve the *configured* memory backend (default: sqlite) for
         # the fact count — the same store the agent loop and /memory read.
         def memory_backend
           @memory_backend ||= Rubino::Memory::Backends.build

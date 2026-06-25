@@ -68,20 +68,6 @@ RSpec.describe Rubino::Session::Store do
     end
   end
 
-  describe "#recent" do
-    it "returns the N most recent messages in order" do
-      5.times { |i| store.create(session_id: session[:id], role: "user", content: "msg#{i}") }
-      recent = store.recent(session[:id], count: 2)
-      expect(recent.size).to eq(2)
-      expect(recent.last.content).to eq("msg4")
-    end
-
-    it "returns all messages when count exceeds total" do
-      store.create(session_id: session[:id], role: "user", content: "only")
-      expect(store.recent(session[:id], count: 10).size).to eq(1)
-    end
-  end
-
   describe "#since (memory-extraction cursor, #249)" do
     it "returns all messages in order when the cursor is nil" do
       %w[a b c].each { |c| store.create(session_id: session[:id], role: "user", content: c) }

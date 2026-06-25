@@ -22,22 +22,43 @@ module Rubino
       end
 
       def description
-        "Read a text file from the filesystem with line numbers (cat -n style). " \
-          "Supports offset (1-based start line) and limit (max lines returned). " \
-          "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
-          "Default window: first #{DEFAULT_LIMIT} lines."
+        base = "Read a text file from the filesystem with line numbers (cat -n style). " \
+               "Supports offset (1-based start line) and limit (max lines returned). " \
+               "Long lines are truncated at #{MAX_LINE_WIDTH} chars. " \
+               "Default window: first #{DEFAULT_LIMIT} lines."
+        base + compression_note
       end
 
       def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: { type: "string", description: "Absolute or relative file path" },
-            offset: { type: "integer", description: "1-based line to start at (default 1)" },
-            limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
-          },
-          required: %w[file_path]
+        props = {
+          file_path: { type: "string", description: "Absolute or relative file path" },
+          offset: { type: "integer", description: "1-based line to start at (default 1)" },
+          limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
         }
+        props[:compress] = compress_param if compression_enabled?
+        { type: "object", properties: props, required: %w[file_path] }
+      end
+
+      # Advertised only when the feature is on: a one-line note explaining that a
+      # whole-file Ruby read may be skeletonised, how to opt out, and that the
+      # full file is always retrievable.
+      def compression_note
+        return "" unless compression_enabled?
+
+        " A whole-file Ruby read may be returned as a SKELETON (signatures kept, " \
+          "large bodies elided behind a pointer) to save tokens; the original is always " \
+          "retrievable via the read pointer. Pass compress:false to force the verbatim file."
+      end
+
+      def compress_param
+        { type: "boolean",
+          description: "Set false to skip compression and read the verbatim file (default true)." }
+      end
+
+      def compression_enabled?
+        Rubino.configuration.tool_output_compression_enabled?
+      rescue StandardError
+        false
       end
 
       def risk_level
@@ -45,18 +66,28 @@ module Rubino
       end
 
       def call(arguments)
-        file_path = arguments["file_path"] || arguments[:file_path]
-        offset    = (arguments["offset"]   || arguments[:offset]   || 1).to_i
-        limit     = (arguments["limit"]    || arguments[:limit]    || DEFAULT_LIMIT).to_i
+        file_path  = arguments["file_path"] || arguments[:file_path]
+        raw_offset = arguments["offset"] || arguments[:offset]
+        raw_limit  = arguments["limit"]  || arguments[:limit]
+        offset     = (raw_offset || 1).to_i
+        limit      = (raw_limit  || DEFAULT_LIMIT).to_i
+        # A WHOLE-file read (no offset AND no limit supplied) is exploration and
+        # the ONLY thing compression touches. A read carrying EITHER is a
+        # targeted window — the drill-in path — which always returns verbatim.
+        full_file = raw_offset.nil? && raw_limit.nil?
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = expand_workspace_path(file_path)
-        # Reads are BROAD (#406): like Hermes/Claude/Codex, read resolves any
-        # NON-secret path with no prompt (clone-and-inspect). A SECRET/credential
-        # path (#446) is NOT refused here anymore — it is gated UPSTREAM by
-        # Security::ApprovalPolicy#decide (→ :ask), so an APPROVED read returns
-        # the real bytes while a denied/headless read never reaches #call.
+        # Secret-file READ block, ported 1:1 from Hermes' get_read_block_error:
+        # the project-local .env family anywhere on disk, plus the agent-home
+        # credential stores, are blocked-with-message (no content). Checked
+        # BEFORE existence so we don't leak whether the secret file is present.
+        # Defense-in-depth, not a boundary — the shell can still `cat .env`,
+        # where the value is REDACTED (Security::Redactor).
+        if (block = Security::SecretPath.read_block_error(expanded))
+          return { output: block, error_code: :secret_read_blocked }
+        end
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
@@ -90,12 +121,74 @@ module Rubino
                    metrics: "duplicate" }
         end
 
-        render(expanded, file_path, offset, limit)
+        # A TARGETED read of a file we previously skeletonised that lands inside
+        # an elided range is a DRILL-IN: the model needed a body the skeleton
+        # hid. Log it (the "did the skeleton hide what was needed" signal) — the
+        # verbatim windowed bytes are then served unchanged below.
+        if !full_file && @read_tracker&.drill_in?(expanded, offset, limit)
+          Rubino.logger&.info(event: "compression.drill_in", path: file_path,
+                              offset: offset, limit: limit)
+        end
+
+        render(expanded, file_path, offset, limit, full_file: full_file)
       rescue StandardError => e
         "Error reading #{file_path}: #{e.message}"
       end
 
       private
+
+      # Light routing context for the compression seam. The tool stays thin: it
+      # only DECLARES that this is a whole-file Ruby read (the one compressible
+      # shape) and hands the RAW source + display/tracker paths; the
+      # ContentRouter decides whether to skeletonise. Nil (no hint) for any read
+      # that isn't a compressible whole-file Ruby read, so the router passes
+      # through. Best-effort: a read of binary/huge content just yields no hint.
+      def compress_hint(expanded, display_path, full_file)
+        lang = code_language_for(expanded)
+        return nil unless full_file && compression_enabled? && lang && enabled_language?(lang)
+
+        content = File.read(expanded, encoding: "UTF-8")
+        return nil unless content.valid_encoding?
+
+        { full_file: true, content_type: :code, lang: lang, source_path: display_path,
+          tracker_path: expanded, raw_source: content }
+      rescue StandardError
+        nil
+      end
+
+      RUBY_EXTENSIONS       = %w[.rb .rake .gemspec].freeze
+      RUBY_FILENAMES        = %w[Rakefile Gemfile Guardfile Capfile config.ru].freeze
+      PYTHON_EXTENSIONS     = %w[.py .pyi].freeze
+      JAVASCRIPT_EXTENSIONS = %w[.js .jsx .mjs .cjs].freeze
+      TYPESCRIPT_EXTENSIONS = %w[.ts].freeze
+      TSX_EXTENSIONS        = %w[.tsx].freeze
+
+      # The skeletoner's language for `path`, or nil for a file no strategy
+      # handles. Ruby/Python/JavaScript/TypeScript/TSX by extension/filename.
+      # (Whether a detected language is actually compressed is gated separately
+      # by `enabled_language?` against the config list, so JS/TS stay INERT until
+      # an operator adds them.)
+      def code_language_for(path)
+        ext = File.extname(path)
+        return :ruby if RUBY_EXTENSIONS.include?(ext)
+        return :ruby if RUBY_FILENAMES.include?(File.basename(path))
+        return :python if PYTHON_EXTENSIONS.include?(ext)
+        return :javascript if JAVASCRIPT_EXTENSIONS.include?(ext)
+        return :typescript if TYPESCRIPT_EXTENSIONS.include?(ext)
+        return :tsx if TSX_EXTENSIONS.include?(ext)
+
+        nil
+      end
+
+      # Is `lang` turned on in the config's languages list? Lets an operator
+      # drop a language (e.g. remove "ruby") to disable compression for it
+      # without touching the master flag.
+      def enabled_language?(lang)
+        Rubino.configuration.tool_output_compression_code_languages
+              .map(&:to_sym).include?(lang)
+      rescue StandardError
+        false
+      end
 
       BINARY_SAMPLE_BYTES = 1024
       BINARY_NONPRINTABLE_THRESHOLD = 0.30
@@ -161,7 +254,7 @@ module Rubino
 
       # Streams the file line-by-line so we never load a 2 GB log into memory
       # just to print 50 lines from the middle.
-      def render(expanded, display_path, offset, limit)
+      def render(expanded, display_path, offset, limit, full_file: false)
         out         = +""
         total_lines = 0
         printed     = 0
@@ -218,11 +311,24 @@ module Rubino
                    else
                      ""
                    end
-          full = out + footer
+          # Redact credential values from the read content before it enters
+          # context — matches Hermes file_tools.read_file_tool
+          # (code_file:true skips ENV/JSON assignment patterns that false-
+          # positive on source like MAX_TOKENS=*** constants).
+          full = Security::Redactor.redact_sensitive_text(out + footer, code_file: true)
           { output: full,
             metrics: "#{printed} line#{"s" if printed != 1}",
-            body: Util::Output.preview(display_gutter(out, last_shown) + footer),
-            body_kind: :plain }
+            body: Util::Output.preview(
+              Security::Redactor.redact_sensitive_text(
+                display_gutter(out, last_shown) + footer, code_file: true
+              )
+            ),
+            body_kind: :plain,
+            # Routing context for the compression seam — present only for a
+            # whole-file Ruby read (the one compressible shape), nil otherwise so
+            # the router passes through. The ContentRouter skeletonises the RAW
+            # source carried here, not this line-numbered render.
+            compress_hint: compress_hint(expanded, display_path, full_file) }
         end
       end
     end

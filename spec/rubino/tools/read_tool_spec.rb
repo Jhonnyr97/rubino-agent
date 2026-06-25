@@ -26,17 +26,39 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(tool.risk_level).to eq(:low)
   end
 
-  # #446: reading a secret is now gated UPSTREAM by Security::ApprovalPolicy
-  # (→ :ask / approval dropdown), NOT self-refused inside ReadTool. So at the
-  # tool level an APPROVED read returns the real bytes — the per-tool refusal
-  # is gone. The gate/approve/deny/headless matrix is covered end-to-end in
+  # Matches Hermes get_read_block_error: the structured `read` tool BLOCKS the
+  # secret-bearing .env family with a clear message (no content), defense-in-
+  # depth. The shell tool can still `cat .env` (value redacted there). The
+  # write-side approval gate is covered in
   # spec/rubino/security/secret_file_gate_spec.rb.
-  it "reads an APPROVED .env credential file (gate is upstream, #446)" do
+  it "blocks reading a .env credential file with a message (Hermes-matched)" do
     outside = Dir.mktmpdir("read_secret")
     path = File.join(outside, ".env")
     File.write(path, "API_KEY=supersecret\n")
     out = payload(tool.call("file_path" => path))
-    expect(out).to include("API_KEY=supersecret")
+    expect(out).to include("Access denied")
+    expect(out).not_to include("supersecret")
+  ensure
+    FileUtils.rm_rf(outside)
+  end
+
+  it "allows reading .env.example (documented-shape substitute, not blocked)" do
+    outside = Dir.mktmpdir("read_envexample")
+    path = File.join(outside, ".env.example")
+    File.write(path, "API_KEY=your-key-here\n")
+    out = payload(tool.call("file_path" => path))
+    expect(out).to include("API_KEY=your-key-here")
+  ensure
+    FileUtils.rm_rf(outside)
+  end
+
+  it "redacts credential VALUES in non-blocked file content (code_file mode)" do
+    outside = Dir.mktmpdir("read_redact")
+    path = File.join(outside, "config.txt")
+    File.write(path, "key = ghp_abcdefghijklmnop1234\n")
+    out = payload(tool.call("file_path" => path))
+    expect(out).not_to include("ghp_abcdefghijklmnop1234")
+    expect(out).to include("ghp_ab...1234")
   ensure
     FileUtils.rm_rf(outside)
   end
@@ -157,6 +179,130 @@ RSpec.describe Rubino::Tools::ReadTool do
       other = payload(tool.call("file_path" => path, "offset" => 10, "limit" => 5))
       expect(other).not_to include("[DUPLICATE READ]")
       expect(other).to include("line10")
+    end
+  end
+
+  # Compression now lives at the ToolExecutor seam (Compression::ContentRouter),
+  # not in the tool. The read tool's only compression responsibility is to emit
+  # a `compress_hint` for the ONE compressible shape — a whole-file Ruby read —
+  # carrying the raw source + paths the router needs. A targeted (offset/limit)
+  # read, a non-Ruby read, and the disabled path emit NO hint, so the router
+  # passes through. (The actual skeletonising + reversibility is covered in the
+  # router and tool_executor specs.)
+  describe "compress_hint (routing context for the compression seam)" do
+    let(:ruby_path) { File.join(tmp_dir, "calc.rb") }
+    let(:ruby_src) do
+      <<~RUBY
+        # frozen_string_literal: true
+        require "json"
+
+        class Calc
+          def big(a)
+            a + 1
+          end
+        end
+      RUBY
+    end
+
+    before { File.write(ruby_path, ruby_src) }
+
+    def enable_compression!
+      Rubino.configuration.set("tool_output_compression", "enabled", true)
+      Rubino.configuration.set("tool_output_compression", "code",
+                               "strategy" => "skeleton", "min_lines" => 5,
+                               "keep_method_body_max_lines" => 8, "languages" => %w[ruby])
+    end
+
+    context "with the flag OFF (default)" do
+      it "emits NO compress_hint — the read tool is byte-for-byte unchanged" do
+        result = tool.call("file_path" => ruby_path)
+        expect(result[:compress_hint]).to be_nil
+        expect(payload(result)).to include("a + 1")
+      end
+
+      it "advertises no `compress` param when the feature is off" do
+        expect(tool.input_schema[:properties]).not_to have_key(:compress)
+      end
+    end
+
+    context "with the flag ON" do
+      before { enable_compression! }
+
+      it "emits a code compress_hint on a whole-file Ruby read (raw source + paths)" do
+        hint = tool.call("file_path" => ruby_path)[:compress_hint]
+        expect(hint).to include(full_file: true, content_type: :code, lang: :ruby)
+        expect(hint[:source_path]).to eq(ruby_path)
+        expect(hint[:tracker_path]).to eq(File.expand_path(ruby_path))
+        expect(hint[:raw_source]).to eq(ruby_src)
+      end
+
+      it "emits NO hint when ruby is dropped from the languages list" do
+        Rubino.configuration.set("tool_output_compression", "code",
+                                 "strategy" => "skeleton", "min_lines" => 5,
+                                 "keep_method_body_max_lines" => 8, "languages" => [])
+        expect(tool.call("file_path" => ruby_path)[:compress_hint]).to be_nil
+      end
+
+      it "emits NO hint on a TARGETED (offset/limit) read — the drill-in path" do
+        hint = tool.call("file_path" => ruby_path, "offset" => 1, "limit" => 3)[:compress_hint]
+        expect(hint).to be_nil
+      end
+
+      it "emits NO hint on a non-Ruby whole-file read" do
+        txt = File.join(tmp_dir, "notes.txt")
+        File.write(txt, (1..50).map { |i| "line #{i}" }.join("\n"))
+        expect(tool.call("file_path" => txt)[:compress_hint]).to be_nil
+      end
+
+      # Python is DETECTED but stays inert until added to the languages list.
+      context "with a .py file (python detected, gated by the languages list)" do
+        let(:py_path) { File.join(tmp_dir, "mod.py") }
+
+        before { File.write(py_path, "def f(a):\n    return a + 1\n") }
+
+        it "emits NO hint while python is not in the languages list (default)" do
+          expect(tool.call("file_path" => py_path)[:compress_hint]).to be_nil
+        end
+
+        it "emits a python compress_hint once python is added to the languages list" do
+          Rubino.configuration.set("tool_output_compression", "code",
+                                   "strategy" => "skeleton", "min_lines" => 5,
+                                   "keep_method_body_max_lines" => 8, "languages" => %w[ruby python])
+          hint = tool.call("file_path" => py_path)[:compress_hint]
+          expect(hint).to include(full_file: true, content_type: :code, lang: :python)
+        end
+      end
+
+      # JS/TS/TSX are DETECTED by extension but stay inert until added to the
+      # languages list (default is %w[ruby]).
+      {
+        ".js" => :javascript, ".jsx" => :javascript, ".mjs" => :javascript,
+        ".cjs" => :javascript, ".ts" => :typescript, ".tsx" => :tsx
+      }.each do |ext, lang|
+        context "with a #{ext} file (#{lang} detected, gated by the languages list)" do
+          let(:js_path) { File.join(tmp_dir, "mod#{ext}") }
+
+          before { File.write(js_path, "function f(a) {\n  return a + 1;\n}\n") }
+
+          it "emits NO hint while #{lang} is not in the languages list (default)" do
+            expect(tool.call("file_path" => js_path)[:compress_hint]).to be_nil
+          end
+
+          it "emits a #{lang} compress_hint once #{lang} is added to the languages list" do
+            Rubino.configuration.set("tool_output_compression", "code",
+                                     "strategy" => "skeleton", "min_lines" => 5,
+                                     "keep_method_body_max_lines" => 8,
+                                     "languages" => ["ruby", lang.to_s])
+            hint = tool.call("file_path" => js_path)[:compress_hint]
+            expect(hint).to include(full_file: true, content_type: :code, lang: lang)
+          end
+        end
+      end
+
+      it "advertises the `compress` opt-out param when the feature is on" do
+        expect(tool.input_schema[:properties]).to have_key(:compress)
+        expect(tool.description).to include("compress:false")
+      end
     end
   end
 end

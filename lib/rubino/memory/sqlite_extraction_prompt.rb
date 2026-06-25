@@ -3,7 +3,7 @@
 module Rubino
   module Memory
     # The single aux-LLM extraction prompt for the Sqlite backend. Collapses
-    # Zep's six-step ingestion (entity/fact/temporal extraction + invalidation)
+    # a multi-step ingestion (entity/fact/temporal extraction + invalidation)
     # into ONE structured call: given the latest turn and the currently-live
     # facts, the model returns durable atomic facts to `add` and contradicted
     # facts to `supersede`. The doctrine ("durable declarative facts, not
@@ -36,6 +36,10 @@ module Rubino
             "User asked for a test file named test_stats.py.",
             "Project has a stats.py with a main()." (in-the-moment task state, not a convention)
         When unsure whether something is durable enough to matter next week, DO NOT save it.
+        NEVER save a tool/environment LIMITATION claim derived from an error — e.g.
+          "The edit tool can't edit non-ASCII files.", "The shell tool fails on large output."
+        A one-off tool error is transient and meta, not a durable user/project fact; saving it
+        wrongly primes future refusals. Only the user's OWN durable assertions count.
 
         SUPERSEDE: if a new fact CONTRADICTS an existing one (same subject, changed value),
         emit it under "supersede" with the id of the fact it replaces. Prefer the newer information.

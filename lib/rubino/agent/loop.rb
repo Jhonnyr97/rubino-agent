@@ -5,20 +5,59 @@ module Rubino
     # The core agent loop that handles LLM calls and tool execution cycles.
     # Runs until the LLM produces a final text response or budget is exhausted.
     class Loop # rubocop:disable Metrics/ClassLength
+      # Trusted-harness control marker (#75). Runtime control messages the harness
+      # injects mid-turn (continuation prompt, budget-exhaustion summary nudge) are
+      # appended as role:"user" content for provider compatibility, but they are
+      # NOT user input — they are the harness speaking. Without a marker, an
+      # injection-aware model (MiniMax-M3) reads a count-/instruction-bearing
+      # "user" message ("you ran N tool calls … do not claim nothing was done") as
+      # a prompt-injection attempt, announces it's ignoring it, and derails. The
+      # system prompt (build.txt [Runtime control]) declares this prefix TRUSTED
+      # so the model obeys it instead of defending against it. Mirrors the existing
+      # [harness note] / [background notices] convention.
+      HARNESS_CONTROL_MARKER = "[harness control]"
+
       # Nudge issued on the final, toolless model call when the iteration/budget
       # ceiling is hit. Mirrors the reference handle_max_iterations summary request
       # — ask the model to wrap up in prose
-      # instead of ending the turn with nothing.
+      # instead of ending the turn with nothing. Carries the trusted-harness marker
+      # (#75) so it reads as runtime control, not as suspect user input.
       MAX_ITERATIONS_SUMMARY_NUDGE =
-        "You've reached the maximum number of tool-calling iterations allowed. " \
+        "#{HARNESS_CONTROL_MARKER} You've reached the maximum number of " \
+        "tool-calling iterations allowed. " \
         "Please provide a final response summarizing what you've found and " \
-        "accomplished so far, without calling any more tools."
+        "accomplished so far, without calling any more tools.".freeze
 
       # Framing for turn-start background notices (#148): tells the model the
       # notices are secondary to the user message that follows them.
       NOTICES_PREAMBLE =
         "[background notices — acknowledge briefly; the user's message AFTER " \
         "these notices is the instruction to act on]"
+
+      # Stream-recovery (Hermes parity): a stream that ends with no finish signal
+      # is RECOVERED, not failed. If text was already shown, persist the partial
+      # and ask the model to CONTINUE from exactly where it stopped (no restart,
+      # no repeat) — up to STREAM_CONTINUATION_MAX rounds. If nothing was shown
+      # yet, the call is simply retried (discard-and-restart), bounded by
+      # agent.empty_response_max_retries.
+      STREAM_CONTINUATION_MAX = 3
+      STREAM_CONTINUE_PROMPT =
+        "#{HARNESS_CONTROL_MARKER} Continue exactly where you left off. " \
+        "Do not restart or repeat any prior text.".freeze
+
+      # Anti-confabulation reinforcement (#583), injected on the model input ONCE
+      # per turn in which a tool was actually blocked/denied (gated on
+      # @denied_count > 0 — never fires on a clean turn, avoiding the #93/#97
+      # over-firing harness-note regression). Carries the trusted-harness marker
+      # so an injection-aware model reads it as runtime control, not user input,
+      # and wraps the field-standard `<system-reminder>` phrasing that the
+      # is_error tool_result (Lever 1) reinforces.
+      BLOCKED_TOOL_REMINDER =
+        "#{HARNESS_CONTROL_MARKER} <system-reminder>One or more tool calls were " \
+        "blocked and produced NO output. Treat any blocked tool as having " \
+        "returned nothing — never state or imply a blocked tool's result. If you " \
+        "needed it, report that the task is blocked pending approval." \
+        "</system-reminder>".freeze
 
       def initialize(session:, llm_adapter:, tool_executor:, message_store:,
                      budget:, ui:, event_bus:, config:, cancel_token: nil,
@@ -115,6 +154,11 @@ module Rubino
         # locals) so the sink closure can update them.
         @tool_count     = 0
         @denied_count   = 0
+        # Tools that ERRORED / were blocked (e.g. a write refused by the
+        # workspace jail). They neither "ran" nor mutated, so they stay out of
+        # @tool_count/@edit_count and never trip the #381 "review uncommitted
+        # changes" note (S7 F1) — tracked separately for the footer/diagnostics.
+        @errored_count  = 0
         # Of the tools that RAN, how many were MUTATING (edit/write/patch). Lets
         # the pessimistic-summary reconciliation (#381) say "N tool calls (M edits
         # — review uncommitted changes)" so a developer is pointed at real,
@@ -134,10 +178,19 @@ module Rubino
         # interrupted (#338b). Reset per turn — a one-shot CancelToken plus a
         # fresh buffer means a stale partial can never attach to a later turn.
         @interrupt_partial = +""
+        # Stream-recovery budgets (Hermes parity) — reset per turn. A no-finish
+        # stream end is retried (empty partial → discard-and-restart) or continued
+        # (partial shown → keep-and-continue) instead of failing the turn.
+        @stream_retry_count = 0
+        @continuation_count = 0
         # True once any denial this turn was a headless fail-closed block ("needs
         # approval but no interactive session", #260) — lets the binding guard
         # point at `--yolo` (F2) instead of "approve it" in the honest message.
         @noninteractive_block = false
+        # One-shot latch (#583): the blocked-tool <system-reminder> is injected at
+        # most once per turn, only after a real block, and reset here so a fresh
+        # turn never inherits a prior turn's reminder.
+        @blocked_reminder_emitted = false
         token_total = 0
 
         loop do
@@ -152,6 +205,7 @@ module Rubino
           # the user turn, so only parked background NOTICES fold in (#13);
           # typed lines stay queued for their own turns.
           inject_steered_input(messages, iteration)
+          inject_blocked_tool_reminder(messages)
 
           unless @budget.can_continue?(iteration)
             @ui.warning("Iteration budget exhausted (#{iteration} turns)")
@@ -223,21 +277,44 @@ module Rubino
 
           if response.interrupted?
             # The upstream stream was cut before a clean completion (no
-            # finish_reason / [DONE]); `response` carries only a buffered partial
-            # with no tool call. Returning it would end the run as "completed"
-            # with truncated/empty output — the silent-completion bug. Persist
-            # whatever streamed so the transcript keeps it, close the stream box,
-            # then raise: Lifecycle maps this to INTERACTION_FAILED → run.failed,
-            # the same path every other turn error already takes.
-            persist_assistant_message(response) unless response.content.to_s.empty?
-            finalize_stream(response)
+            # finish_reason / [DONE]). Rather than failing the turn, RECOVER it the
+            # way Hermes does (chat_completion_helpers.py:2394-2452 + the
+            # conversation-loop continuation) — split on whether any text was shown:
+            finalize_stream(response) # close the partial stream box (shown live)
+
+            if response.content.to_s.empty?
+              # (B) Nothing streamed yet — DISCARD and re-call the model. A slow or
+              # flaky provider (large-context TTFT past its stream idle timeout)
+              # usually succeeds on a fresh attempt, and since nothing was shown a
+              # retry can't duplicate output. Only fail once the budget is spent.
+              if @stream_retry_count < stream_recovery_retries
+                @stream_retry_count += 1
+                @ui.warning("the model stream ended before any output — " \
+                            "retrying (#{@stream_retry_count}/#{stream_recovery_retries})")
+                next
+              end
+              emit_turn_summary(turn_started_at, token_total)
+              raise Rubino::StreamInterruptedError,
+                    "stream ended before completion with no output after " \
+                    "#{@stream_retry_count} retr#{@stream_retry_count == 1 ? "y" : "ies"} — " \
+                    "the provider kept closing the stream before the first token."
+            end
+
+            # (A) Text was already streamed/shown — KEEP it and ask the model to
+            # CONTINUE exactly where it left off (no restart, no duplication). The
+            # partial is persisted as an interim assistant turn so the next call
+            # sees what it already said; capped at STREAM_CONTINUATION_MAX rounds.
+            persist_assistant_message(response)
+            if @continuation_count < STREAM_CONTINUATION_MAX
+              @continuation_count += 1
+              messages << { role: "assistant", content: response.content.to_s }
+              messages << { role: "user", content: STREAM_CONTINUE_PROMPT }
+              next
+            end
+            # Continuations exhausted — hand back the recovered partial as the
+            # (truncated) final answer: truthful and resumable, not a hard failure.
             emit_turn_summary(turn_started_at, token_total)
-            raise Rubino::StreamInterruptedError,
-                  "stream ended before completion after " \
-                  "#{response.content.to_s.bytesize} buffered byte(s) with no finish signal — " \
-                  "the model did not finish (run marked failed, not completed). " \
-                  "Often caused by a very large context pushing time-to-first-token past the " \
-                  "provider's stream idle timeout."
+            return response.content
           end
 
           if response.text_only?
@@ -254,6 +331,25 @@ module Rubino
             # final answer with an honest message (how to actually change the
             # workspace). Surface that, not the model's no-op claim.
             final = guard.is_a?(String) ? guard : response.content
+
+            # PESSIMISTIC reconciliation (#381/#84) on the NORMAL closing summary.
+            # #evaluate above returns nil the moment tools ran this turn, so a
+            # CONTINUE-path closing answer (the user accepted "Continue (+N)", the
+            # turn ran more tools/edits, then ended with an ordinary text answer —
+            # NOT the force-summary call) never reached the ledger guard. If that
+            # closing summary pessimistically calls real, on-disk work "not done /
+            # not started / queued but unstarted" while @tool_count shows tools ran
+            # (and @edit_count shows the files were edited), reconcile it with the
+            # same harness ledger note the force-summary path uses. Routed to
+            # stderr/event, never spliced into the answer (#418). nil when the guard
+            # already replaced the answer (no model summary to reconcile) or no
+            # tools ran.
+            if guard.nil?
+              note = @action_guard.pessimistic_summary_note(
+                content: final, tool_count: @tool_count, edit_count: @edit_count
+              )
+              emit_harness_note(note) if note
+            end
 
             persist_final_text(response, final)
             finalize_stream_text(response, final)
@@ -342,6 +438,22 @@ module Rubino
         @ui.input_injected(text)
       end
 
+      # Reinforces the no-confabulation rule when a tool was blocked this turn
+      # (#583). Fires at most ONCE per turn and ONLY after a real block
+      # (@denied_count > 0), so a normal turn never sees it — avoiding the
+      # historical over-firing harness-note regression (#93/#97). Appended at the
+      # same safe ordering boundary the steering injection uses (top of the
+      # iteration, after the cancel check, no open tool_use pair), so it can never
+      # split a tool_use from its results. Not persisted: it is ephemeral runtime
+      # control for THIS model call, not part of the durable transcript.
+      def inject_blocked_tool_reminder(messages)
+        return if @blocked_reminder_emitted
+        return unless @denied_count.to_i.positive?
+
+        @blocked_reminder_emitted = true
+        messages << { role: "user", content: BLOCKED_TOOL_REMINDER }
+      end
+
       # Inserts the framed notice message just before the trailing user message
       # (the turn's instruction, #148); appends defensively when the last
       # message isn't a user one (should not happen at iteration 1).
@@ -389,12 +501,12 @@ module Rubino
         names = @turn_tools.map { |t| tool_name_of(t) }
         return true if names.include?("question")
 
-        manual = @config.approvals_mode == "manual"
+        manual = @config.dig("approvals", "mode") == "manual"
         # shell can park on the gate under EITHER confirm_policy: confirm_all
         # always prompts; dangerous_only still prompts on a DangerousPattern.
         # We don't have the concrete command here, so treat a present shell tool
         # as potentially-blocking unless approvals are skipped entirely.
-        confirm_shell = @config.approvals_mode != "skip"
+        confirm_shell = @config.dig("approvals", "mode") != "skip"
         return true if confirm_shell && names.include?("shell")
         return true if manual && @turn_tools.any? { |t| t.respond_to?(:risky?) && t.risky? }
 
@@ -493,9 +605,30 @@ module Rubino
       # becomes the turn's final assistant content. Because tools are empty AND
       # this is the loop's terminal action, the summary can never re-enter the
       # tool loop. Ports conversation_loop.py:4296 / handle_max_iterations.
+      # The force-summary nudge, GROUNDED in this turn's actual action record
+      # (#36). MAX_ITERATIONS_SUMMARY_NUDGE alone gives the model no record of
+      # what it just did, so a model under cap-pressure can confabulate "I made
+      # no changes / did nothing" right after running tools and editing files.
+      # Feeding it the truthful ledger (tools run + mutating edits this turn —
+      # the SAME @tool_count / @edit_count the post-hoc #381 guard reconciles
+      # against) closes the contradiction at the source: the model can no longer
+      # truthfully say nothing happened. Falls back to the bare nudge when no
+      # tool ran this turn (nothing to ground), keeping that path unchanged.
+      def force_summary_nudge
+        return MAX_ITERATIONS_SUMMARY_NUDGE unless @tool_count.to_i.positive?
+
+        edits = @edit_count.to_i
+        edit_clause = edits.positive? ? ", including #{edits} file edit#{"s" unless edits == 1}" : ""
+        "#{MAX_ITERATIONS_SUMMARY_NUDGE} For the record, you ran " \
+          "#{@tool_count} tool call#{"s" unless @tool_count == 1} this turn" \
+          "#{edit_clause}; summarize what those actions accomplished and what " \
+          "remains — do not claim nothing was done."
+      end
+
       def force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
-        persist_user_message(MAX_ITERATIONS_SUMMARY_NUDGE)
-        messages << { role: "user", content: MAX_ITERATIONS_SUMMARY_NUDGE }
+        nudge = force_summary_nudge
+        persist_user_message(nudge)
+        messages << { role: "user", content: nudge }
 
         @event_bus.emit(Interaction::Events::MODEL_CALL_STARTED, iteration: iteration)
         @ui.thinking_started if streaming?
@@ -781,6 +914,15 @@ module Rubino
           # denial output; remember it so the binding guard's honest message can
           # name `--yolo` rather than "approve interactively" (F2).
           @noninteractive_block = true if result.output.to_s.include?("no interactive session")
+        elsif result.respond_to?(:errorish?) && result.errorish?
+          # A tool that ERRORED/was BLOCKED (e.g. a write refused by the
+          # workspace jail — file NEVER created) did not mutate anything, so it
+          # must NOT inflate the "N tools actually ran / M edits" ledger the
+          # #381 pessimistic-summary note reads. Otherwise a turn whose ONLY
+          # tool call was a refused write would falsely tell the user to "review
+          # uncommitted changes" for work that never happened (S7 F1). The
+          # error is still surfaced in its own card; it just isn't a mutation.
+          @errored_count += 1
         else
           @tool_count += 1
           # Track mutating tool calls separately so the pessimistic-summary
@@ -795,6 +937,19 @@ module Rubino
           arguments: arguments,
           result: result
         )
+      end
+
+      # A denied or errored tool result must reach the MODEL marked as an ERROR
+      # (#583), not as an ordinary tool message it can paper over with a
+      # fabricated answer. Mirrors the MCP-spec isError:true norm / Anthropic's
+      # is_error on a tool_result block. True for a deny (never ran) or a soft
+      # error/blocked-write (#errorish?). A built-in SUCCESS is never flagged, so
+      # what the model sees for a passing tool is byte-for-byte unchanged.
+      def tool_result_error?(result)
+        return false unless result
+
+        (result.respond_to?(:denied?) && result.denied?) ||
+          (result.respond_to?(:errorish?) && result.errorish?)
       end
 
       def execute_tool_calls(tool_calls)
@@ -815,7 +970,11 @@ module Rubino
             content: result.output,
             tool_call_id: tc[:id],
             name: tc[:name],
-            arguments: tc[:arguments]
+            arguments: tc[:arguments],
+            # #583: hand this turn's tool_result to the provider flagged as an
+            # error when the tool was denied/blocked, so the model cannot read
+            # the denial text as an ordinary result and fabricate an answer.
+            is_error: tool_result_error?(result)
           }
         end
       end
@@ -933,6 +1092,13 @@ module Rubino
         return false if @stream_round_trips.zero?
 
         !@budget.can_continue?(@stream_round_trips)
+      end
+
+      # Hermes parity: a no-finish-signal stream end with NO output yet is retried
+      # (discard-and-restart) up to this budget before failing — the same knob the
+      # ModelCallRunner uses for empty responses (default 2 → 3 attempts total).
+      def stream_recovery_retries
+        @config.dig("agent", "empty_response_max_retries") || 2
       end
 
       def persist_assistant_message(response)

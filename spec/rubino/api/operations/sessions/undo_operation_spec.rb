@@ -16,7 +16,7 @@ RSpec.describe Rubino::API::Operations::Sessions::UndoOperation do
     message_store.create(session_id: session[:id], role: "user", content: "q2")
     message_store.create(session_id: session[:id], role: "assistant", content: "a2")
 
-    status, body = described_class.call(make_request(params: { id: session[:id] }))
+    status, body = described_class.new.call(make_request(params: { id: session[:id] }))
     expect(status).to eq(200)
     expect(body[:removed_messages]).to eq(2)
 
@@ -26,12 +26,12 @@ RSpec.describe Rubino::API::Operations::Sessions::UndoOperation do
 
   it "raises ConflictError when there is nothing to undo" do
     session = session_repo.create(source: "api")
-    expect { described_class.call(make_request(params: { id: session[:id] })) }
+    expect { described_class.new.call(make_request(params: { id: session[:id] })) }
       .to raise_error(Rubino::ConflictError)
   end
 
   it "raises NotFoundError on unknown session" do
-    expect { described_class.call(make_request(params: { id: "missing" })) }
+    expect { described_class.new.call(make_request(params: { id: "missing" })) }
       .to raise_error(Rubino::NotFoundError)
   end
 end

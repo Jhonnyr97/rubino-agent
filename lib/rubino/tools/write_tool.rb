@@ -45,7 +45,7 @@ module Rubino
         # are gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask): an
         # APPROVED write to your .env actually writes, a denied/headless one
         # never reaches #call. The workspace sandbox below is unchanged.
-        return workspace_violation_message(file_path) unless within_workspace?(expanded)
+        return workspace_violation_message(file_path) unless writable_workspace?(expanded)
 
         existed = File.exist?(expanded)
         # Read-before-overwrite guard (r5 MF-2, Claude Code's rule): writing

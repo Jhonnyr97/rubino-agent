@@ -4,8 +4,14 @@ require "securerandom"
 
 module Rubino
   module Agent
+    # The "what survived" phrase in a compression recovery pointer, per content
+    # type (anything else — logs — keeps the failures + summary).
+    COMPRESSION_KEPT_NOTES = { code: "signatures + small bodies kept",
+                               diff: "all +/- changes + headers kept",
+                               json: "schema + error/outlier rows kept" }.freeze
+
     # Executes tool calls with approval checks and result formatting.
-    class ToolExecutor
+    class ToolExecutor # rubocop:disable Metrics/ClassLength
       # The Loop registers its count+persist sink here after construction (the
       # executor is built first so the adapter/ToolBridge can share it). See
       # Loop#handle_tool_result.
@@ -128,7 +134,7 @@ module Rubino
         end
 
         notify_yolo_if_applicable(tool, arguments)
-        emit_started(name, arguments)
+        emit_started(name, arguments, call_id)
         started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         result = nil
         begin
@@ -150,7 +156,14 @@ module Rubino
       # so the turn-summary count and the `tool` message rows stay accurate
       # regardless of streaming mode. Best-effort: a sink failure must not take
       # down the tool call the model is waiting on.
+      # Drill-in telemetry for the recovery channel rides here: recovery is now
+      # ONLY via retrieve_output (no cat-able path), so a retrieve_output call IS
+      # the deliberate recovery — emit compression.drill_in with its id. Makes the
+      # counter meaningful (real recoveries) and unbypassable by a shell
+      # sed/grep/cat, which the old read-only detector missed. (:code's real-file
+      # offset-read drill-in detection in ReadTool stays as-is.)
       def finish(name, arguments, call_id, result)
+        log_retrieve_drill_in(arguments) if name == "retrieve_output"
         @on_result&.call(name: name, arguments: arguments, call_id: call_id, result: result)
         result
       rescue StandardError => e
@@ -183,6 +196,24 @@ module Rubino
           end
         end
         raw = tool.call(arguments)
+        if raw.is_a?(Tools::Result)
+          raw = Tools::Result.new(
+            name: name,
+            call_id: call_id,
+            output: Util::Output.truncate(raw.output, max_bytes: @config.dig("tool_output", "max_bytes"),
+                                                      max_lines: @config.dig("tool_output", "max_lines"),
+                                                      spill: ->(full) { spill_full_output(full, call_id) }),
+            status: raw.status,
+            error: raw.error,
+            metrics: raw.metrics,
+            error_code: raw.error_code,
+            artifact: raw.artifact,
+            transcript_card: raw.transcript_card?
+          )
+          record_audit(name: name, call_id: call_id, arguments: arguments,
+                       result: raw, status: "completed")
+          return raw
+        end
         # Tools can return either a String (plain output) or a Hash carrying
         # {output:, metrics:, body:, body_kind:}. The Hash form lets a tool emit
         #   - a `metrics` one-liner for the done header ("42 lines · 0.1s")
@@ -190,12 +221,13 @@ module Rubino
         #   - a `body_kind` (:diff | :plain) selecting the CLI coloring for body
         # without having to reverse-engineer them from the formatted output.
         if raw.is_a?(Hash)
-          text       = raw[:output]     || raw["output"]
-          metrics    = raw[:metrics]    || raw["metrics"]
-          body       = raw[:body]       || raw["body"]
-          body_kind  = raw[:body_kind]  || raw["body_kind"] || :plain
-          error_code = raw[:error_code] || raw["error_code"]
-          artifact   = raw[:artifact]   || raw["artifact"]
+          text         = raw[:output]     || raw["output"]
+          metrics      = raw[:metrics]    || raw["metrics"]
+          body         = raw[:body]       || raw["body"]
+          body_kind    = raw[:body_kind]  || raw["body_kind"] || :plain
+          error_code   = raw[:error_code] || raw["error_code"]
+          artifact     = raw[:artifact]   || raw["artifact"]
+          compress_hint = raw[:compress_hint] || raw["compress_hint"]
         else
           text = raw
           metrics = nil
@@ -203,18 +235,26 @@ module Rubino
           body_kind = :plain
           error_code = nil
           artifact = nil
+          compress_hint = nil
         end
         # Skip the body block when the tool already streamed its output line by
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
         # Util::Output.preview of the captured stdout), so rendering it again
         # would duplicate every line in the timeline. Tools that don't stream
-        # (read, grep, edit, glob, github) still render their body here.
+        # (read, grep, edit, glob) still render their body here.
         @ui.tool_body(body, kind: body_kind.to_sym) if body && !body.to_s.empty? && !streamed
+        # Content-routed compression of the MODEL-FACING text only (never the
+        # human `body` preview). The router detects the type and dispatches; a
+        # diff/grep/short output passes through byte-identical. On a hit the FULL
+        # original is spilled and a pointer appended so the model can read it back.
+        text, metrics = maybe_compress(text, metrics: metrics, name: name,
+                                             arguments: arguments, compress_hint: compress_hint,
+                                             call_id: call_id)
         result = Tools::Result.success(
           name: name,
           call_id: call_id,
-          output: Util::Output.truncate(text, max_bytes: @config.tool_output_max_bytes,
-                                              max_lines: @config.tool_output_max_lines,
+          output: Util::Output.truncate(text, max_bytes: @config.dig("tool_output", "max_bytes"),
+                                              max_lines: @config.dig("tool_output", "max_lines"),
                                               spill: ->(full) { spill_full_output(full, call_id) }),
           metrics: metrics,
           error_code: error_code&.to_sym,
@@ -223,6 +263,13 @@ module Rubino
         record_audit(name: name, call_id: call_id, arguments: arguments,
                      result: result, status: "completed")
         result
+      rescue Rubino::Interrupted
+        # Defense in depth (#41): a user interrupt raised from ANY tool must
+        # unwind the turn, never be recorded as a failed tool result. Folding it
+        # into a generic Result.error lets the loop continue and send a malformed
+        # continuation to the provider (rejected as "invalid params"). Re-raise so
+        # the cancel path produces a clean `⎿ interrupted` instead.
+        raise
       rescue StandardError => e
         result = Tools::Result.error(name: name, call_id: call_id, error: e.message)
         record_audit(name: name, call_id: call_id, arguments: arguments,
@@ -258,9 +305,9 @@ module Rubino
         now
       end
 
-      def emit_started(name, arguments)
+      def emit_started(name, arguments, call_id = nil)
         sanitized = sanitize_arguments_for_event(arguments)
-        @ui.tool_started(name, arguments: arguments) if @ui.respond_to?(:tool_started)
+        @ui.tool_started(name, arguments: arguments, call_id: call_id) if @ui.respond_to?(:tool_started)
         payload = { name: name, arguments: sanitized }
         # Boundary event for delegation: tag the `task` call with the target
         # subagent name (+ the task prompt) so an SSE consumer (the web UI)
@@ -436,10 +483,37 @@ module Rubino
       # model actually sent. Lay each key out on its own line; clip long
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
+        with_mcp_note(tool, build_approval_question(tool, arguments))
+      end
+
+      # Appends the external-code disclosure line ONLY for MCP tools, so the human
+      # authorising the call knows it runs third-party code on an MCP server
+      # (#582). Built-ins return the question unchanged. The line sits under the
+      # ⚠ header the CLI prints, on its own indented row.
+      def with_mcp_note(tool, question)
+        return question unless tool.respond_to?(:mcp?) && tool.mcp?
+
+        "#{question}\n   runs external code on MCP server '#{tool.mcp_server}'"
+      end
+
+      # The DISPLAY label for the approval header — an MCP tool reads
+      # `echo (mcp:chaos)`, a built-in its bare name. The model-facing tool.name
+      # is unaffected (#582).
+      def approval_label(tool)
+        tool.respond_to?(:display_name) ? tool.display_name : tool.name
+      end
+
+      def build_approval_question(tool, arguments)
+        label = approval_label(tool)
         pairs = Array(arguments)
-        # No arguments (e.g. a bare run_tests run) ⇒ no dangling "wants:" — a
-        # header followed by nothing reads as a truncated/broken card (#109).
-        return "#{tool.name} wants to run" if pairs.empty?
+        # ONE header verb across every approval card (#558): always
+        # "<tool> wants to run" — with the call laid out after a colon when there
+        # are args, and as a bare sentence when there are none. The old code mixed
+        # "<tool> wants to run" (no-arg) with "<tool> wants:" (with-arg), so the
+        # header read inconsistently and the dangling colon looked broken (#109).
+        # No arguments (e.g. a bare no-arg tool call) ⇒ no colon: a header followed
+        # by nothing reads as a truncated/broken card.
+        return "#{label} wants to run" if pairs.empty?
 
         # multi_edit carries an `edits` ARRAY whose generic .to_s render is an
         # unreadable escaped Ruby hash (literal \n, truncated). Lay it out as
@@ -450,15 +524,15 @@ module Rubino
         end
 
         # The common case — ONE short single-line argument (a shell command, a
-        # file path) — inlines onto the header: `shell wants: touch hello.txt`
+        # file path) — inlines onto the header: `shell wants to run: touch hello.txt`
         # (P7). Multi-arg / multi-line calls keep the per-key layout below.
         if pairs.size == 1
           key, value = pairs.first
           text = Util::SecretsMask.mask_value(value, key: key).to_s
-          return "#{tool.name} wants: #{text}" if !text.include?("\n") && text.length <= 120
+          return "#{label} wants to run: #{text}" if !text.include?("\n") && text.length <= 120
         end
 
-        lines = ["#{tool.name} wants:"]
+        lines = ["#{label} wants to run:"]
         pairs.each { |key, value| lines.concat(format_arg_pair(key, value)) }
         lines.join("\n")
       end
@@ -492,7 +566,7 @@ module Rubino
         return nil unless edits.is_a?(Array) && !edits.empty?
 
         path  = arguments["file_path"] || arguments[:file_path]
-        lines = ["multi_edit wants: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
+        lines = ["multi_edit wants to run: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
         body  = []
         edits.each_with_index do |edit, idx|
           old_s = edit["old_string"] || edit[:old_string]
@@ -516,13 +590,124 @@ module Rubino
         nil
       end
 
+      # Routes the model-facing tool output through the single ContentRouter
+      # seam and, when a strategy COMPRESSED it, spills the full original to
+      # tool-results/<call_id>.txt and appends a pointer so the model can read it
+      # back with the normal `read` tool (the same recovery path truncation
+      # already uses). Returns [text, metrics] — unchanged when nothing applied,
+      # so a passthrough output is byte-identical. Never raises: the router
+      # itself swallows strategy errors into a passthrough result.
+      def maybe_compress(text, metrics:, name:, arguments:, compress_hint:, call_id:)
+        return [text, metrics] if text.nil? || text.empty?
+
+        compress = compress_requested?(arguments)
+        router = compression_router
+        result = router.route(text, tool_name: name, compress_hint: compress_hint, compress: compress)
+        return [text, metrics] unless result.applied?
+
+        spill_path = spill_full_output(text, call_id)
+        # Read drill-in telemetry: record the elided ranges so a later targeted
+        # read inside one is logged as a drill-in (the read tool's skeleton
+        # behavior, now driven from this seam rather than inside the tool).
+        note_code_skeleton(compress_hint, router) if result.content_type == :code
+
+        emit_compression_event(name, result, text)
+        # Pointer references the call_id-based id, NOT a path: recovery is only
+        # via retrieve_output. The id is the spill file's basename (already the
+        # sanitized call_id), so it round-trips; nil when the spill failed.
+        spill_id = spill_path ? File.basename(spill_path, ".txt") : nil
+        compressed = append_recovery_pointer(result.text, text, spill_id, result.content_type)
+        [compressed, compression_metrics(result, metrics)]
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "compression.seam_failed", tool: name,
+                            error: e.message, error_class: e.class.name)
+        [text, metrics]
+      end
+
+      def compression_router
+        @compression_router ||= Compression::ContentRouter.new(@config)
+      end
+
+      # The per-call opt-out: `compress: false` on read/shell forces passthrough.
+      # Defaults to true (advertised only when the feature is enabled).
+      def compress_requested?(arguments)
+        return true unless arguments.is_a?(Hash)
+
+        value = arguments.key?("compress") ? arguments["compress"] : arguments[:compress]
+        value != false
+      end
+
+      # For a :code skeleton, register the elided ranges on the read tracker so a
+      # later targeted read into an elided body is flagged as a drill-in (the
+      # "did the skeleton hide what was needed" signal). Keyed on the EXPANDED
+      # path the read tool stamped into the compress_hint.
+      def note_code_skeleton(compress_hint, router)
+        return unless @read_tracker && compress_hint.is_a?(Hash)
+
+        expanded = compress_hint[:tracker_path] || compress_hint["tracker_path"]
+        return unless expanded
+
+        @read_tracker.note_skeleton(expanded, router.last_elided_ranges)
+      rescue StandardError
+        nil # telemetry only — never break the tool call
+      end
+
+      # The reversibility pointer: a single line stating how much was hidden, that
+      # failures/summary (logs) or large bodies (code) are kept and normally
+      # sufficient, and — passively, only "if a hidden line is specifically
+      # needed" — the ID to recover the original verbatim via the retrieve_output
+      # tool. Deliberately NO filesystem path: the headroom-style recovery is an
+      # id behind a dedicated tool, so a small model can't `sed`/`grep`/`cat` a
+      # printed spill path and re-inflate the very output compression shrank. The
+      # conditional framing avoids baiting a reflexive drill-in. Falls back to a
+      # path-less, id-less note if the spill failed.
+      def append_recovery_pointer(compressed, original, spill_id, content_type)
+        orig_lines = original.count("\n") + (original.end_with?("\n") ? 0 : 1)
+        kept_lines = compressed.count("\n") + (compressed.end_with?("\n") ? 0 : 1)
+        hidden = [orig_lines - kept_lines, 0].max
+        kept_note = COMPRESSION_KEPT_NOTES[content_type] || "failures + summary kept"
+        recover = spill_id ? "retrieve_output id=#{spill_id} only if a hidden line is specifically needed" : "full output unavailable (spill failed)" # rubocop:disable Layout/LineLength
+        "#{compressed}\n[… #{hidden} lower-signal line(s) hidden by output compression — #{kept_note}, normally sufficient; #{recover}.]" # rubocop:disable Layout/LineLength
+      end
+
+      def compression_metrics(result, existing)
+        tag = result.content_type == :code ? "skeleton" : "compressed"
+        note = "⚡ #{tag} −#{result.saved_tokens_est} tok"
+        existing && !existing.to_s.empty? ? "#{existing} · #{note}" : note
+      end
+
+      # Unified compression telemetry: one event for every applied compression,
+      # tagged with the content_type so the log distinguishes log vs code.
+      def emit_compression_event(name, result, original)
+        orig_bytes = original.bytesize
+        comp_bytes = result.text.bytesize
+        ratio = orig_bytes.zero? ? 0.0 : (orig_bytes - comp_bytes).fdiv(orig_bytes)
+        Rubino.logger&.info(event: "compression.applied", tool: name,
+                            content_type: result.content_type, strategy: result.strategy,
+                            ratio: ratio.round(3), original_bytes: orig_bytes,
+                            compressed_bytes: comp_bytes, saved_tokens_est: result.saved_tokens_est)
+      rescue StandardError
+        nil
+      end
+
       # Persists the complete (pre-truncation) output to a per-call file under
       # the rubino home so the model can read back whatever the inline
       # head+tail elided (the spill seam Util::Output.truncate calls back into
       # on overflow — Util keeps the pure shaping, the executor keeps the IO).
       # Best-effort: a write failure just yields no path and the marker falls
       # back to its grep/head hint. Returns the path or nil.
+      # Emits compression.drill_in for a retrieve_output call (the deliberate
+      # recovery), carrying the id. Best-effort: telemetry never breaks the call.
+      def log_retrieve_drill_in(arguments)
+        id = arguments.is_a?(Hash) ? (arguments["id"] || arguments[:id]) : nil
+        Rubino.logger&.info(event: "compression.drill_in", tool: "retrieve_output", id: id.to_s)
+      rescue StandardError
+        nil
+      end
+
       def spill_full_output(text, call_id)
+        # Sanitized identically to RetrieveOutputTool so the pointer's id (this
+        # file's basename) round-trips back to it.
         id = call_id.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")
         return nil if id.empty?
 

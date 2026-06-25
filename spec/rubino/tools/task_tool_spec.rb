@@ -77,23 +77,6 @@ RSpec.describe Rubino::Tools::TaskTool do
         expect(tools).to include("task")
       end
     end
-
-    it "keeps ask_parent subagent-only (off the primary, on the subagent)" do
-      Rubino::Tools::Registry.register(Rubino::Tools::AskParentTool.new)
-
-      # ask_parent is doubly-gated (#313): subagent-only at the Definition layer
-      # AND situational at the Registry layer (only when running AS a subagent —
-      # the current_subagent_id thread-local is set). A real child run resolves
-      # its tools INSIDE with_current_subagent_id (TaskTool wraps the child
-      # Runner#run!), so reproduce that context here.
-      explore_tools = Rubino.with_current_subagent_id("sa_test") do
-        Rubino.agent_registry.find("explore").resolved_tools.map(&:name)
-      end
-      expect(explore_tools).to include("ask_parent")
-
-      primary = Rubino::Agent::Definition.new(name: "build", type: :primary, tools: :all)
-      expect(primary.resolved_tools.map(&:name)).not_to include("ask_parent")
-    end
   end
 
   # ---------------------------------------------------------------------------
@@ -275,30 +258,30 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
-  # nested UI selection (Phase 1 "see what a subagent is doing"):
-  # the default runner factory picks the child UI from Rubino.ui — a live
-  # SubagentView in the interactive CLI, silent Null everywhere else. The
-  # nested view is DISPLAY-ONLY (writes to $stdout), so it never enters the
-  # parent's messages or recorder; the result-only contract is unchanged.
+  # nested UI selection: BOTH paths (sync and background) build the child UI via
+  # #nested_ui_for — the subagent gets its OWN UI::CLI (tagged agent_id = entry.id,
+  # tmux-style unified render) which ALSO keeps the registry counters fresh inline
+  # (its tool events record to BackgroundTasks, gated on agent_id != :main); the
+  # focus-gate paints it only while attached. Silent Null off the interactive CLI.
   # ---------------------------------------------------------------------------
 
   describe "nested UI selection" do
-    let(:explore) { Rubino.agent_registry.find("explore") }
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+    let(:entry)    { registry.reserve(subagent: "explore", prompt: "x") }
 
-    # Reach the private build_runner so we can inspect the child UI the default
-    # factory wires (no @runner_factory ⇒ the real Agent::Runner path).
     def built_child_ui
-      tool   = described_class.new
-      runner = tool.send(:build_runner, explore)
-      runner.instance_variable_get(:@ui)
+      described_class.new.send(:nested_ui_for, entry, Rubino.ui)
     end
 
     after { Rubino.ui = nil }
 
-    it "wires a SubagentView when the parent UI is the interactive CLI" do
+    it "wires a per-sub UI::CLI tagged with the entry id when the parent UI is the CLI" do
       Rubino.ui = Rubino::UI::CLI.new
       ui = built_child_ui
-      expect(ui).to be_a(Rubino::UI::SubagentView)
+      expect(ui).to be_a(Rubino::UI::CLI)
+      # The CLI is tagged with this run's entry id as its render origin (and the
+      # gate that makes it record subagent activity into the registry inline).
+      expect(ui.instance_variable_get(:@agent_id)).to eq(entry.id)
     end
 
     it "keeps the child silent (Null) when the parent UI is Null" do
@@ -310,15 +293,67 @@ RSpec.describe Rubino::Tools::TaskTool do
       Rubino.ui = Rubino::UI::API.new
       expect(built_child_ui).to be_a(Rubino::UI::Null)
     end
+
+    it "forwards an approval handler so the BACKGROUND child is interactive (escalates, parks on the gate)" do
+      Rubino.ui = Rubino::UI::CLI.new
+      handler = ->(*) { true }
+      ui = described_class.new.send(:nested_ui_for, entry, Rubino.ui, approve: handler)
+      expect(ui.interactive?).to be(true)
+    end
+
+    it "wires NO approval handler by default, so a SYNC child stays fail-closed (never parks the main turn thread)" do
+      Rubino.ui = Rubino::UI::CLI.new
+      # The sync path calls nested_ui_for WITHOUT an approve handler: a sync child
+      # runs on the parent turn's own thread, so the 15-min human-approval gate
+      # would block the whole REPL. Render yes, mid-turn human park no — and off a
+      # TTY (the suite) the per-sub CLI's interactive? is false without a handler.
+      expect(described_class.new.send(:nested_ui_for, entry, Rubino.ui).interactive?).to be(false)
+    end
+
+    # #86 — NESTED escalation. A subagent that spawns a (grand)child runs under
+    # with_ui(its own per-sub UI), so the thread-local Rubino.ui at the spawn is a
+    # per-sub UI::CLI tagged with the PARENT sub's entry id, NOT the top-level CLI.
+    # The card host (#root_cli) must still resolve to the TOP-LEVEL CLI (the
+    # process-global @ui), otherwise the grandchild's per-sub CLI gets a NO approve
+    # handler — and its approval-gated tools fail closed with the headless
+    # :noninteractive block instead of escalating.
+    describe "nested spawn (subagent spawns subagent) — card host is the root CLI (#86)" do
+      let(:root_cli)   { Rubino::UI::CLI.new }
+      let(:parent_sub) { Rubino::UI::CLI.new(agent_id: "sa_parent") }
+
+      before { Rubino.ui = root_cli } # the process-global @ui = the one live region
+
+      it "#root_cli ignores the thread-local per-sub UI and returns the top-level CLI" do
+        Rubino.with_ui(parent_sub) do
+          # The thread-local IS the parent's per-sub UI (the nested-spawn gap)…
+          expect(Rubino.ui).to be(parent_sub)
+          # …yet the card host still resolves to the one top-level CLI.
+          expect(described_class.new.send(:root_cli)).to be(root_cli)
+        end
+      end
+
+      it "builds an INTERACTIVE per-sub view (escalates) for a nested background child, not a Null" do
+        handler = ->(*) { true }
+        # Mirror run_background: parent_ui = root_cli (the fix), captured even
+        # though the spawner thread-local Rubino.ui is the parent's per-sub UI.
+        ui = Rubino.with_ui(parent_sub) do
+          host = described_class.new.send(:root_cli)
+          described_class.new.send(:nested_ui_for, entry, host, approve: handler)
+        end
+        expect(ui).to be_a(Rubino::UI::CLI)
+        expect(ui.interactive?).to be(true) # the approve handler is wired ⇒ escalation, not noninteractive
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
-  # CLI path: the subagent's tool activity surfaces on $stdout as nested rows,
-  # but the parent still receives ONLY the final result, and the child's tool
-  # events never reach the parent recorder.
+  # CLI sync path: the child's per-tool activity feeds the REGISTRY (card mode),
+  # NOT $stdout — no inline `⟂` rows flood the main timeline. The parent still
+  # receives ONLY the final result, and the child's tool events never reach the
+  # parent recorder.
   # ---------------------------------------------------------------------------
 
-  describe "CLI nested activity surfaces (display-only, isolation preserved)" do
+  describe "CLI sync delegation (card mode, no inline flood, isolation preserved)" do
     let(:child_final) { "explore says: found it in foo.rb" }
     let(:parent_llm)  { FakeLLMAdapter.new }
     let(:recorded_tool_events) { [] }
@@ -326,15 +361,18 @@ RSpec.describe Rubino::Tools::TaskTool do
     before { Rubino.ui = Rubino::UI::CLI.new }
     after  { Rubino.ui = nil }
 
-    # A runner factory that drives a SubagentView (the CLI-selected child UI)
-    # by firing a child tool_started/finished pair, then returns child_final —
-    # mirrors what a real nested loop would render while keeping the test
-    # deterministic (no real model).
-    def cli_task_tool(out)
-      factory = lambda do |definition|
-        view = Rubino::UI::SubagentView.new(agent_name: definition.name, out: out)
+    # A runner factory that drives the per-sub child UI the way a real nested loop
+    # would: it fires a tool_started/finished pair on the per-sub UI::CLI wired to
+    # THIS run's reserved entry (the same view #nested_ui_for builds), so the
+    # activity feeds the REGISTRY counters — the CLI records them inline (gated on
+    # agent_id != :main) before rendering. The entry id is the bound
+    # current-subagent id (run_subagent binds it before running the child).
+    def cli_task_tool(_out)
+      factory = lambda do |_definition|
         Class.new do
           define_method(:run!) do |_input, **_opts|
+            entry_id = Rubino.current_subagent_id
+            view = Rubino::UI::CLI.new(agent_id: entry_id)
             view.tool_started("grep", arguments: { "pattern" => "needle" })
             result = Rubino::Tools::Result.success(
               name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches"
@@ -347,16 +385,28 @@ RSpec.describe Rubino::Tools::TaskTool do
       Rubino::Tools::TaskTool.new(runner_factory: factory)
     end
 
-    it "renders the subagent's tool activity as nested rows while returning only the final result" do
+    # Runs a sync delegation with $stdout captured, returning [stdout, result].
+    def run_sync_delegation_capturing
       out = StringIO.new
+      original = $stdout
+      $stdout = out
       result = cli_task_tool(out).call("subagent" => "explore", "prompt" => "find needle", "background" => false)
+      [out.string, result]
+    ensure
+      $stdout = original
+    end
 
-      # The captured nested activity carries the subagent's steps...
-      stripped = out.string.gsub(/\e\[[0-9;]*m/, "")
-      expect(stripped).to include("⟂ explore · grep needle")
-      expect(stripped).to include("⟂ explore · ✓ grep · 3 matches")
+    it "records the child's activity to the registry (card mode) and emits NO inline ⟂ row" do
+      stdout, result = run_sync_delegation_capturing
 
-      # ...but the parent gets ONLY the subagent's final message as the result.
+      # No inline flood: the legacy nested rows never reach $stdout for a CLI spawn.
+      expect(stdout.gsub(/\e\[[0-9;]*m/, "")).not_to include("⟂")
+
+      # The per-tool detail lives in the BackgroundTasks registry (the card / drill-in).
+      entry = Rubino::Tools::BackgroundTasks.instance.list.find { |e| e.subagent == "explore" }
+      expect(entry.tool_count).to be >= 1
+
+      # ...and the parent gets ONLY the subagent's final message as the result.
       expect(result).to eq(child_final)
     end
 
@@ -392,7 +442,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       ).run(messages: [{ role: "user", content: "hi" }], tools: [])
 
       # Only the boundary `task` events reach the parent — the child's `grep`
-      # never does (it went to the SubagentView's $stdout, not the recorder).
+      # never does (it rendered through the per-sub CLI, not the parent recorder).
       tool_names = recorded_tool_events.map { |(_, p)| p[:name] }
       expect(tool_names).to all(eq("task"))
       expect(tool_names).not_to include("grep")
@@ -639,6 +689,53 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(notice).not_to include("use postgres")
     end
 
+    # #Y1B — "deny & tell" hands the child an ADVISORY note; the approval is
+    # already denied regardless. When the child finishes before folding it in,
+    # the still-queued copy (BackgroundTasks::DENY_NOTE_PREFIX) must NOT surface
+    # the alarming "steer note not delivered (task completed first)" warning: the
+    # denial applied and the explanation is moot.
+    it "does NOT report a finished sub's deny note as a scary undelivered warning (#Y1B)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = gated_runner("done", latch)
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      task_id = out[/sa_[0-9a-f]+/]
+      prefix  = Rubino::Tools::BackgroundTasks::DENY_NOTE_PREFIX
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}that file is out of scope")
+
+      latch << :go
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).not_to include("steer note was NOT delivered")
+      expect(notice).not_to include("not delivered")
+    end
+
+    # #Y1B invariant: filtering the deny note must not also swallow a GENUINE
+    # undelivered steer note that happens to be queued alongside it.
+    it "still reports a genuine undelivered steer note alongside a deny note (#Y1B)" do
+      sink   = Rubino::Interaction::InputQueue.new
+      latch  = Queue.new
+      runner = gated_runner("done", latch)
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      task_id = out[/sa_[0-9a-f]+/]
+      prefix  = Rubino::Tools::BackgroundTasks::DENY_NOTE_PREFIX
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}out of scope")
+      Rubino::Tools::BackgroundTasks.instance.steer(task_id, "also say PINEAPPLE")
+
+      latch << :go
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).to include("steer note was NOT delivered (the task completed first)")
+      expect(notice).to include("PINEAPPLE")
+      expect(notice).not_to include("out of scope")
+    end
+
     # #150: the stopped notice must carry ground truth about partial progress
     # (tools already run + recent activity) so the parent model can't honestly
     # claim "nothing was produced" over completed side effects.
@@ -745,45 +842,30 @@ RSpec.describe Rubino::Tools::TaskTool do
       )
     end
 
-    # P6: the completion line reuses the LIVE-CARD row shape
-    # (`▸ sa_… · explore · completed · 1 tool · 12s`); the report travels
-    # separately and is never amputated into the row.
-    describe "background completion line (#completion_summary)" do
-      it "renders the ▸ lifecycle row for a genuine completion" do
-        line = tool.send(:completion_summary, entry, "FOUND: lib/x.rb:42")
-        expect(line).to start_with("▸ sa_abc123")
-        expect(line).to include("· completed ·")
-        expect(line).not_to include("FOUND") # the report is not amputated into the row
+    # Agent-multiplexer Slice 1/1b: the background-completion marker is MINIMAL
+    # and ID-LED — `✓ <id> · <name> · done` / `⊘ <id> · <name> · no-op` — with NO
+    # result summary, tool count, or report text (all per-tool detail stays in
+    # the registry / card). The id leads so the marker self-identifies far below
+    # its `● delegated → <name>` row in the append-only scroll.
+    describe "background completion marker (#completion_marker)" do
+      it "renders ✓ <id> · <name> · done for a genuine completion (no result text)" do
+        marker = tool.send(:completion_marker, entry, "done")
+        expect(marker).to eq("✓ #{entry.id} · explore · done")
       end
 
-      it "says no-op (not completed) when the subagent did nothing / was denied" do
-        noop = "(subagent 'explore' returned no output)"
-        line = tool.send(:completion_summary, entry, noop)
-        expect(line).to include("· no-op ·")
-        expect(line).not_to include("· completed ·")
-      end
-
-      it "pluralizes the tool count (1 tool, 3 tools) (#141)" do
-        one = tool.send(:completion_summary, entry(tool_count: 1), "ok")
-        expect(one).to include("· 1 tool")
-        many = tool.send(:completion_summary, entry(tool_count: 3), "ok")
-        expect(many).to include("· 3 tools")
-      end
-
-      it "appends the elapsed time when the entry carries timing" do
-        timed = entry
-        timed.started_at  = Time.now - 12
-        timed.finished_at = Time.now
-        line = tool.send(:completion_summary, timed, "ok")
-        expect(line).to match(/· 12s\z/)
+      it "renders ⊘ <id> · <name> · no-op when the subagent did nothing / was denied" do
+        marker = tool.send(:completion_marker, entry, "no-op")
+        expect(marker).to eq("⊘ #{entry.id} · explore · no-op")
       end
     end
 
-    describe "foreground delegation row (UI::CLI#delegation_finished, #123 path)" do
+    describe "foreground delegation marker (UI::CLI#delegation_finished)" do
       let(:cli) { Rubino::UI::CLI.new }
 
       def render(output_text)
-        cli.instance_variable_set(:@delegation_subagent, "explore")
+        # The close-row name is resolved PER-CALL from result.call_id (#35): seed
+        # the per-call_id stash the way #delegation_started would, not a shared ivar.
+        cli.instance_variable_set(:@delegation_names, { "c1" => "explore" })
         original = $stdout
         $stdout = StringIO.new
         cli.send(
@@ -795,16 +877,22 @@ RSpec.describe Rubino::Tools::TaskTool do
         $stdout = original
       end
 
-      it "renders ✓ for a genuine completion with output" do
+      it "renders the minimal ✓ <name> · done marker with NO result summary" do
         rendered = render("FOUND: lib/x.rb:42")
-        expect(rendered).to include("✓ explore:")
+        expect(rendered).to include("✓ explore · done")
+        expect(rendered).not_to include("FOUND") # the result never lands in main
         expect(rendered).not_to include("⊘")
       end
 
-      it "renders a neutral ⊘ (not ✓) for a no-op / denied delegation" do
+      it "renders the neutral ⊘ <name> · no-op marker for a no-op / denied delegation" do
         rendered = render("(subagent 'explore' returned no output)")
-        expect(rendered).to include("⊘ explore:")
-        expect(rendered).not_to include("✓ explore:")
+        expect(rendered).to include("⊘ explore · no-op")
+        expect(rendered).not_to include("✓ explore")
+      end
+
+      it "renders the red ✗ <name> · failed marker for a failed delegation" do
+        rendered = render("Error: unknown subagent 'nope'.")
+        expect(rendered).to include("✗ explore · failed")
       end
     end
   end
@@ -812,7 +900,7 @@ RSpec.describe Rubino::Tools::TaskTool do
   # ---------------------------------------------------------------------------
   # Variant A: a background child's tool activity feeds the registry (the card /
   # drill-in source) instead of flooding the parent — and the parent's card is
-  # repainted. End-to-end through a card-mode SubagentView.
+  # repainted. End-to-end through the per-sub CLI's inline registry recording.
   # ---------------------------------------------------------------------------
 
   describe "live-activity card feed (Variant A, #124/#71)" do
@@ -820,13 +908,13 @@ RSpec.describe Rubino::Tools::TaskTool do
 
     after { Rubino.ui = nil }
 
-    # A runner whose #run! drives a child tool through the card-mode child UI
+    # A runner whose #run! drives a child tool through the per-sub child UI
     # (the SAME view TaskTool wires) so we exercise the registry feed path. The
     # view is resolved off Rubino.with_ui, which TaskTool binds to the child UI.
     def activity_runner(final, latch)
       Class.new do
         define_method(:run!) do |_input, **_opts|
-          view = Rubino.ui # the card-mode SubagentView bound by with_ui
+          view = Rubino.ui # the per-sub CLI bound by with_ui (records to the registry inline)
           view.tool_started("grep", arguments: { "pattern" => "needle" })
           result = Rubino::Tools::Result.success(name: "grep", call_id: "1", output: "3 matches", metrics: "3 matches")
           view.tool_finished("grep", result: result)
@@ -861,7 +949,7 @@ RSpec.describe Rubino::Tools::TaskTool do
   # Option 2: approval-surfacing. A background child's tool that needs approval
   # flips the entry to :needs_approval and BLOCKS the child on a per-entry gate;
   # the user's decision (via /agents <id>) resolves it. We drive the handler the
-  # card-mode SubagentView calls (approval_handler_for) directly.
+  # per-sub CLI's #confirm calls (approval_handler_for) directly.
   # ---------------------------------------------------------------------------
 
   describe "approval-surfacing handler (Option 2)" do
@@ -951,6 +1039,77 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
+  # Budget-request handler (#574): a BACKGROUND child that hit its tool-iteration
+  # ceiling parks on the SAME approval gate to ask the human for more budget. The
+  # handler maps the human's grant/deny to the Loop's #select contract:
+  # grant → :continue (extend +step, re-enter the turn); else → :summarize.
+  # ---------------------------------------------------------------------------
+
+  describe "budget-request handler (#574)" do
+    let(:registry) { Rubino::Tools::BackgroundTasks.instance }
+    let(:entry)    { registry.reserve(subagent: "explore", prompt: "x") }
+    let(:tool)     { described_class.new }
+
+    def handler
+      tool.send(:budget_handler_for, entry)
+    end
+
+    it "parks the entry as a BUDGET request, blocks, then returns :continue on a grant" do
+      h = handler
+      decided = nil
+      th = Thread.new { decided = h.call("Reached 50 tool iterations") }
+
+      wait_until { registry.find(entry.id).status == :needs_approval }
+      parked = registry.find(entry.id)
+      expect(parked.budget_request).to be(true) # flavored as budget, not a tool approval
+      expect(parked.approval_question).to eq("Reached 50 tool iterations")
+      expect(parked.approval_command).to eq("") # no command to allowlist
+      expect(th).to be_alive # still blocked on the gate
+
+      parked.approval_gate.decide(parked.approval_id, true)
+      th.join(2)
+      expect(decided).to eq(:continue)
+      # State cleared back to running, the budget flag reset.
+      expect(registry.find(entry.id).status).to eq(:running)
+      expect(registry.find(entry.id).budget_request).to be(false)
+    end
+
+    it "returns :summarize when the human denies (decide false)" do
+      h = handler
+      decided = nil
+      th = Thread.new { decided = h.call("Reached 50 tool iterations") }
+      wait_until { registry.find(entry.id).status == :needs_approval }
+
+      e = registry.find(entry.id)
+      e.approval_gate.decide(e.approval_id, false)
+      th.join(2)
+      expect(decided).to eq(:summarize)
+    end
+
+    it "returns :summarize on a cancel (stop) while parked (Interrupted)" do
+      h = handler
+      decided = nil
+      th = Thread.new { decided = h.call("Reached 50 tool iterations") }
+      wait_until { registry.find(entry.id).status == :needs_approval }
+
+      registry.find(entry.id).approval_gate.cancel!
+      th.join(2)
+      expect(decided).to eq(:summarize)
+    end
+
+    it "returns :summarize when the bounded wait expires with no decision" do
+      gate = Rubino::Run::ApprovalGate.new
+      allow(Rubino::Run::ApprovalGate).to receive(:new).and_return(gate)
+      allow(gate).to receive(:await).and_wrap_original do |orig, id, **_|
+        orig.call(id, timeout: 0.05)
+      end
+
+      expect(handler.call("Reached 50 tool iterations")).to eq(:summarize)
+      expect(registry.find(entry.id).status).to eq(:running)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # task_result + task_stop companion tools (BashOutput / KillShell analogues).
   # ---------------------------------------------------------------------------
 
@@ -969,7 +1128,12 @@ RSpec.describe Rubino::Tools::TaskTool do
       task_id = out[/sa_[0-9a-f]+/]
 
       result_tool = Rubino::Tools::TaskResultTool.new
-      expect(result_tool.call("task_id" => task_id)).to include("running")
+      running = result_tool.call("task_id" => task_id)
+      expect(running).to be_a(Rubino::Tools::Result)
+      expect(running.output).to include("status=running")
+      expect(running.output).to include("Do NOT poll again now")
+      expect(running.output).to include("auto-notified when it completes")
+      expect(running.transcript_card?).to be false
 
       latch << :go
       wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).status == :completed }
@@ -1123,27 +1287,40 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch << :go # release so the worker thread exits cleanly
     end
 
-    # #197 — a child parked on a blocking ask_parent is LIVE (it holds a thread
+    # #197 — a child parked on a blocking ask gate is LIVE (it holds a thread
     # + a concurrency slot); task_stop must cancel its ask gate and unwind it,
     # not refuse with "already blocked_on_human — nothing to stop" and leave a
     # zombie holding its slot until the 15m gate timeout.
-    it "stops a child parked on a blocking ask_parent: gate cancelled, ⊘ stopped, slot freed (#197)" do
+    it "stops a child parked on a blocking ask gate: gate cancelled, ⊘ stopped, slot freed (#197)" do
       registry       = Rubino::Tools::BackgroundTasks.instance
       before_threads = Thread.list.size
       runner = Class.new do
         def initialize = @cancelled = false
 
         def run!(_input, **_opts)
-          out = Rubino::Tools::AskParentTool.new.call("question" => "which db?", "blocking" => true)
+          # Park the child's own thread on a real ask gate, exactly as a blocking
+          # cross-thread hand-off does: register the gate on the entry, flip it to
+          # :blocked_on_human, then await indefinitely until task_stop cancels it.
+          entry_id = Rubino.current_subagent_id
+          gate     = Rubino::Run::ApprovalGate.new
+          ask_id   = "ask_#{entry_id}"
+          gate.register(ask_id)
+          registry.begin_ask(entry_id, gate: gate, ask_id: ask_id,
+                                       question: "which db?", blocking: true)
+          gate.await(ask_id, timeout: nil)
           # Mimic the real Loop's cancel checkpoint: task_stop flips the runner
           # token BEFORE cancelling the gate, so the woken child unwinds with
           # Interrupted right after the cancelled ask returns.
           raise Rubino::Interrupted, "stopped" if @cancelled
-
-          out
+        ensure
+          registry.end_ask(entry_id) if entry_id
         end
 
         def cancel! = @cancelled = true
+
+        private
+
+        def registry = Rubino::Tools::BackgroundTasks.instance
       end.new
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
       out     = tool.call("subagent" => "explore", "prompt" => "x")

@@ -86,10 +86,6 @@ module Rubino
             end
           end
 
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate workspace for tests.
           #
           # Roots at the tool workspace (terminal.cwd || Dir.pwd), the same

@@ -13,7 +13,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # but stubbing keeps the example output clean).
     instance_double(Rubino::Agent::Runner, run: "RESPONSE_TEXT", run!: "RESPONSE_TEXT",
                                            session: { id: "sess-oneshot", model: "fake-model" },
-                                           polishing: nil, end_session!: nil)
+                                           polishing: nil, end_session!: nil, auth_error?: false)
   end
 
   before do
@@ -364,7 +364,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "uses default model when no override" do
       described_class.new("query" => "hi").execute
       expect(Rubino::Agent::Runner).to have_received(:new).with(
-        hash_including(model_override: Rubino.configuration.model_default)
+        hash_including(model_override: Rubino.configuration.dig("model", "default"))
       )
     end
 
@@ -532,7 +532,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(Rubino::Agent::Runner).to have_received(:new).with(
         hash_including(session_id: nil)
       )
-      welcome = null_ui.messages.find { |m| m[:message].to_s.include?("ask in plain language") }
+      # #559: the welcome opens with the ONE shared tagline (Rubino::TAGLINE),
+      # not a second hand-written variant.
+      welcome = null_ui.messages.find { |m| m[:message].to_s.include?(Rubino::TAGLINE) }
       expect(welcome).not_to be_nil
     end
 
@@ -554,6 +556,42 @@ RSpec.describe Rubino::CLI::ChatCommand do
       described_class.new({}).execute
 
       expect(fake_runner).to have_received(:end_session!)
+    end
+
+    # #154 — `/exit` must honour the SAME quit-guard as Ctrl+D: when a background
+    # subagent is running, the exit path lists it and confirms instead of a
+    # silent kill. The `cooked_input` above submits `/exit`, so this proves the
+    # `/exit` slash form flows through #confirm_quit? (which, off a terminal,
+    # prints the kill notice and proceeds — never a silent break).
+    it "/exit honours the quit-guard when a background subagent is running" do
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+      Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "general", prompt: "long job")
+
+      described_class.new({}).execute
+
+      notice = null_ui.messages.find { |m| m[:message].to_s.include?("still running — quitting stops") }
+      expect(notice).not_to be_nil
+      expect(notice[:message]).to include("background subagent")
+    end
+
+    # Field standard: a session that surfaced an AUTH/credential error exits
+    # NON-ZERO on teardown, even though the REPL stayed alive after the failed
+    # turn. The runner latches #auth_error?; the REPL defers exit(1) to teardown.
+    it "exits non-zero on teardown when the runner latched an auth error" do
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+      allow(fake_runner).to receive(:auth_error?).and_return(true)
+
+      expect { described_class.new({}).execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "keeps the normal exit 0 on a clean session with no auth error" do
+      allow(repo).to receive(:latest_resumable_for_cwd).and_return(nil)
+      allow(fake_runner).to receive(:session).and_return(new_session)
+      allow(fake_runner).to receive(:auth_error?).and_return(false)
+
+      expect { described_class.new({}).execute }.not_to raise_error
     end
   end
 
@@ -916,6 +954,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
       # transient row on the next finalize frame.
       composer = instance_double(Rubino::UI::BottomComposer)
       allow(composer).to receive(:announce_pending)
+      # run_turn now paints the live subagent panel onto the current composer for
+      # the whole turn (the panel-during-turn fix), which pokes #set_cards.
+      allow(composer).to receive(:set_cards)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
       raw = nil
       allow($stderr).to receive(:write) { |s| raw = s }
@@ -1127,9 +1168,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:idle_cards).paint
 
         # The card block is live ABOVE the idle prompt — proof the region is not
-        # gated to an active turn.
+        # gated to an active turn. The card labels itself with the task dimension
+        # drawn from the prompt (S7 F5), so the descriptive name surfaces.
         expect(composer.cards).not_to be_empty
-        expect(composer.cards.join).to include("explore", "running")
+        expect(composer.cards.join).to include("find the bug", "running")
       end
 
       it "clears the card region when no child is running" do
@@ -1185,7 +1227,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       end
 
       it "paints the live subagent cards above the idle prompt while a child runs (F1)" do
-        registry.reserve(subagent: "explore", prompt: "scan")
+        registry.reserve(subagent: "explore", prompt: "scan the repo")
 
         typist = Thread.new do
           sleep 0.05
@@ -1196,8 +1238,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
         cmd.send(:read_idle_line, input_queue, nil)
         typist.join
 
-        # The running child's collapsed row hit the composer's output.
-        expect(output.string).to include("explore")
+        # The running child's collapsed row hit the composer's output — labelled
+        # with the task dimension from the prompt (S7 F5).
+        expect(output.string).to include("scan the repo")
         expect(output.string).to include("running")
       end
 
@@ -2153,6 +2196,47 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       Rubino.logger.info(event: "after.restore")
       expect(sink.string).to include("after.restore") # back on the original sink
+    end
+  end
+
+  # #501: an explicit `--resume <id>` of a session that was later COMPACTED
+  # resumes the literal un-compacted parent (status "compacted"). That's
+  # intended (explicit id = literal), but a compacted continuation exists and
+  # the user got no hint — so we print a note pointing at --continue, WITHOUT
+  # changing which session loads.
+  describe "#note_if_resuming_compacted_parent (#501)" do
+    let(:compacted_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "0123456789abcdef", status: "compacted" })
+    end
+    let(:plain_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "0123456789abcdef", status: "ended" })
+    end
+
+    it "prints the compaction note on an explicit --resume of a compacted parent" do
+      cmd = described_class.new("resume" => "0123")
+      expect { cmd.send(:note_if_resuming_compacted_parent, compacted_runner) }
+        .to output(/was compacted.*use --continue for the compacted continuation/m).to_stderr
+    end
+
+    it "routes the note through ui.info when one is given (interactive REPL)" do
+      cmd = described_class.new("resume" => "0123")
+      ui = instance_double(Rubino::UI::Null)
+      expect(ui).to receive(:info).with(/was compacted.*--continue/m)
+      cmd.send(:note_if_resuming_compacted_parent, compacted_runner, ui: ui)
+    end
+
+    it "stays silent when the resumed session is not a compacted parent" do
+      cmd = described_class.new("resume" => "0123")
+      expect { cmd.send(:note_if_resuming_compacted_parent, plain_runner) }
+        .not_to output.to_stderr
+    end
+
+    it "stays silent without an explicit --resume (e.g. --continue / auto-resume)" do
+      cmd = described_class.new("continue" => true)
+      expect { cmd.send(:note_if_resuming_compacted_parent, compacted_runner) }
+        .not_to output.to_stderr
     end
   end
 

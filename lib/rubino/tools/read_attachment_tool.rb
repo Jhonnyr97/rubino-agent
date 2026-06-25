@@ -101,6 +101,15 @@ module Rubino
         # NEVER raise -- a missing gem must not break the turn.
         return Attachments::Preamble.document_shell_hint(cls) if markdown.nil?
 
+        # Redact credential values from the converted content before it enters
+        # context -- parity with the read/grep/shell seams (Security::Redactor).
+        # A document is untrusted DATA, not source, so use the FULL pattern set
+        # (code_file:false, like the shell seam): `API_KEY=sk-...` assignments in
+        # a csv/spreadsheet are real secrets and must be masked. Honors the
+        # `security.redact_secrets` opt-out internally (default ON). This single
+        # seam covers both return paths (frame + summarize) that emit content.
+        markdown = Security::Redactor.redact_sensitive_text(markdown, code_file: false)
+
         force = truthy?(arguments["summarize"] || arguments[:summarize])
         focus = (arguments["focus"] || arguments[:focus]).to_s
 
@@ -112,17 +121,18 @@ module Rubino
       rescue Rubino::Interrupted
         raise
       rescue StandardError => e
-        # Total failure still degrades gracefully -- the model gets the
-        # shell-hint and the turn survives.
-        Rubino.logger&.warn(event: "read_attachment.failed", path: file_path, error: e.class.to_s)
-        begin
-          Attachments::Preamble.document_shell_hint(
-            Attachments::Classification.new(path: file_path, kind: :document,
-                                            mime: nil, size_bytes: nil, safe: true, reason: nil)
-          )
-        rescue StandardError
-          "Error: could not read #{file_path}: #{e.class}."
-        end
+        # A real failure AFTER the fail-closed classification already passed
+        # (conversion/redaction/summarize blew up). The turn still survives, but
+        # we surface a genuine error with the cause instead of FABRICATING a
+        # `Classification(safe: true)` just to reach the shell-hint — that fake
+        # masked to_markdown/redaction bugs and could misreport an unsafe path
+        # as safe. Log the actual message so the bug is observable.
+        Rubino.logger&.warn(event: "read_attachment.failed", path: file_path,
+                            error: "#{e.class}: #{e.message}")
+        "Error: could not read #{file_path}: #{e.message}. " \
+          "Extract its text with a shell tool instead, e.g. `markitdown #{file_path}` " \
+          "(fallback `pdftotext #{file_path} -`, or `textutil -convert txt #{file_path}` on macOS), " \
+          "then read the output."
       end
 
       private

@@ -23,7 +23,9 @@ module Rubino
       # (F-help). Wrap Thor's #help to print a tagline above the listing and a
       # "Getting started: run `rubino setup`" hint below it, so a brand-new user
       # lands on the first action instead of a bare verb table.
-      TAGLINE = "rubino — an AI coding agent that reads, edits, and runs code."
+      # Single source of truth lives on the Rubino module (#559) so the help
+      # banner and the chat welcome can't drift into two different taglines.
+      TAGLINE = Rubino::TAGLINE
       GETTING_STARTED = "Getting started: run `rubino setup` to configure a model, " \
                         "then `rubino chat` (or `rubino \"your prompt\"`)."
 
@@ -79,6 +81,38 @@ module Rubino
           return super(["help", cmd], config)
         end
 
+        # Intercept a BARE `help` positional on chat/prompt (#490). `rubino chat
+        # help` / `rubino prompt help` otherwise reach ChatCommand with "help" as
+        # the prompt, spend a turn, and persist a spurious session row titled
+        # "help" that clutters `sessions`/`/sessions`. The user clearly wants the
+        # command's help, not a one-shot — reroute to Thor's own `help <command>`
+        # before any session is created. (The `--help`/`-h` spellings are already
+        # handled just above; this covers the unflagged word.) Only fires when
+        # "help" is the SOLE positional, so a genuine prompt that merely starts
+        # with the word help — `rubino chat "help me debug this"` — is untouched.
+        if %w[chat prompt].include?(cmd) && given_args.drop(1).map(&:to_s) == ["help"]
+          return super(["help", cmd], config)
+        end
+
+        # Route a BARE prompt-shaped argument to a one-shot chat (#483). The
+        # `--help` footer and docs promise `rubino "your prompt"` as the one-shot
+        # entry, but Thor's `default_command :chat` does NOT forward a bare
+        # positional to chat's prompt arg — `rubino "what is 2+2"` died with
+        # "unknown command". Reroute a leading token that is plainly a PROMPT, not
+        # a command, to `chat <args>` so it runs one-shot as documented.
+        #
+        # Disambiguation (keeps did-you-mean / unknown-command intact): only a
+        # prompt-SHAPED leading arg is rerouted — one that contains whitespace
+        # (`"two words"`), is followed by more positional words (`rubino what is
+        # 2+2`), or ends in sentence punctuation. A lone identifier-like token
+        # (`rubino frobnicate`, `rubino setpu`) is left on command dispatch so its
+        # unknown-command error / closest-match suggestion (#67, F2) still fires.
+        # The leading positional words are joined into chat's SINGLE prompt arg
+        # (chat takes one positional `[PROMPT]`); trailing flags pass through.
+        if (chat_args = bare_prompt_args(given_args))
+          return super(["chat", *chat_args], config.merge(debug: true))
+        end
+
         # Reject an unknown LEADING flag before it is swallowed into the prompt
         # (F7). `chat` is the default command, so `rubino --frobnicate …` (or
         # `rubino prompt --frobnicate`) routes to chat/prompt and a TYPO'D flag
@@ -100,6 +134,18 @@ module Rubino
         # well-formed JSON error envelope on STDOUT under --output-format
         # json|stream-json — never an empty stdout, and never a raw backtrace.
         super(given_args, config.merge(debug: true))
+      rescue Interrupt, SignalException # rubocop:disable Lint/ShadowedException -- Interrupt listed for doc value; SignalException is its superclass
+        # Final backstop for Ctrl-C / signals that ESCAPED the per-command
+        # handlers — e.g. a SECOND Ctrl-C arriving during the interactive REPL's
+        # teardown (after its own `rescue Interrupt` already fired), or a bare
+        # Interrupt raised deep inside a blocking net/http read on a path the
+        # command didn't wrap. Those used to propagate to exe/rubino and dump a
+        # raw `net/protocol.rb … wait_readable: Interrupt` backtrace. Exit cleanly
+        # at this single chokepoint instead: 130 = the shell convention for a
+        # SIGINT-terminated process (128 + signal 2). The per-command paths still
+        # do their own graceful cancel first; this only catches the strays so the
+        # user never sees a backtrace from pressing Ctrl-C.
+        exit(130)
       rescue Rubino::Database::BusyError => e
         # Final backstop (#333/#359): a SUSTAINED concurrent-migration lock that
         # outlived the connection retry budget must surface as a clean single
@@ -170,6 +216,52 @@ module Rubino
         # keeping the first clean sentence (e.g. the "was called with arguments"
         # line) — never the raw two-line `ERROR:/Usage:` block.
         error.message.to_s.sub(/\AERROR: /, "").split("\nUsage:", 2).first.strip
+      end
+
+      # The chat args to run when a BARE invocation is plainly a one-shot PROMPT
+      # rather than a command (#483), or nil when it isn't (leave on command
+      # dispatch). `default_command :chat` does not forward a bare positional to
+      # chat's prompt arg, so `rubino "your prompt"` — the documented one-shot —
+      # used to die as "unknown command". We reroute here, narrowly:
+      #   * the leading token must NOT be a known command/subcommand and must NOT
+      #     be a flag (those keep their existing dispatch), and
+      #   * the input must be prompt-SHAPED — the leading token contains
+      #     whitespace, OR there are 2+ positional words, OR it ends in `?`/`!`/`.`
+      # so a lone identifier-like word (`rubino frobnicate`, `rubino setpu`) stays
+      # an unknown-command error with its closest-match suggestion (#67, F2).
+      # Chat takes a SINGLE positional `[PROMPT]`, so the leading positional words
+      # are joined into one prompt token and any trailing flags are appended,
+      # giving `["<joined prompt>", *flags]`. Returns nil for anything else.
+      def self.bare_prompt_args(given_args)
+        args  = Array(given_args).map(&:to_s)
+        first = args.first.to_s
+        return nil if first.empty?
+        return nil if first.start_with?("-")                  # a flag → existing handling
+        return nil if first == "help"                         # Thor's help task (handled elsewhere)
+        return nil if commands.key?(first.tr("-", "_"))       # a real command/subcommand
+
+        # Split the leading positional run (before the first flag) from any
+        # trailing flags: a lone unknown word followed only by flags (`bogus
+        # --output-format json`) is a typo'd command, not a prompt — its #327
+        # unknown-command envelope must still fire. Two or more positional words
+        # IS a prompt (`what is 2+2`).
+        positional_words = args.take_while { |a| !a.start_with?("-") }
+        trailing_flags   = args.drop(positional_words.size)
+
+        # A LEADING word that is a near-miss of a known command (`confg show` for
+        # `config show`, #483) is a TYPO'd command, not a prompt — routing it to
+        # chat hid the did-you-mean suggestion. Bail so the unknown-command path
+        # fires its closest-match hint (#67/F2). Reuses the SAME SpellChecker as
+        # closest_command, so a genuine prompt word (`what`, no near command)
+        # still routes to chat.
+        return nil if closest_command(first.tr("-", "_"))
+
+        multi_word    = positional_words.size > 1
+        has_space     = first.match?(/\s/)
+        sentence_like = first.match?(/[?!.]\z/)
+        return [positional_words.join(" "), *trailing_flags] if multi_word || has_space || sentence_like
+
+        nil
       end
 
       # The closest known top-level command/subcommand to a mistyped +name+, for

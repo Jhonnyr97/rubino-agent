@@ -84,14 +84,15 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       it "a policy deny without an exposed reason still reads as policy, not user" do
         allow(policy).to receive(:decide).and_return(:deny) # no last_deny_reason on the double
         result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c11")
-        expect(result.output).to eq("Tool execution denied by policy (not by the user).")
+        expect(result.output).to include("Tool execution denied by policy (not by the user).")
+        expect(result.output).not_to include("denied by user")
       end
 
       it "a user rejection still reads 'denied by user'" do
         allow(policy).to receive(:decide).and_return(:ask)
         allow(ui).to receive(:confirm).and_return(false)
         result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c12")
-        expect(result.output).to eq("Tool execution denied by user.")
+        expect(result.output).to include("Tool execution denied by user.")
       end
     end
 
@@ -147,6 +148,80 @@ RSpec.describe Rubino::Agent::ToolExecutor do
         expect(executor.blocked_for_approval?).to be false
       end
     end
+
+    # #86: a SUBAGENT is non-interactive LOCALLY (no terminal of its own) but CAN
+    # escalate an approval to the PARENT. Its UI is a per-sub UI::CLI WITH a wired
+    # approval handler, so #interactive? is TRUE — the :ask must route to that
+    # handler (park → parent card → run on grant), NOT to the headless
+    # :noninteractive fail-closed block a real no-parent one-shot gets.
+    describe "subagent :ask escalates to the parent instead of the noninteractive block (#86)" do
+      let(:registry_bg) { Rubino::Tools::BackgroundTasks.instance }
+      let(:entry)       { registry_bg.reserve(subagent: "explore", prompt: "x") }
+      # The exact handler TaskTool wires onto a background child's per-sub CLI:
+      # parks the entry on a per-entry ApprovalGate, returns the human's decision.
+      let(:approve)     { Rubino::Tools::TaskTool.new.send(:approval_handler_for, entry) }
+      let(:ui) do
+        Rubino::UI::CLI.new(agent_id: entry.id, approval_handler: approve)
+      end
+
+      before do
+        allow(policy).to receive(:decide).and_return(:ask)
+        allow(repo).to receive(:record)
+        # No real CLI live region under test: a Null root makes the handler's
+        # parent-card surface / repaint / notifier calls all natural no-ops
+        # (they guard on is_a?(UI::CLI) / respond_to?), so the escalation path
+        # runs without a terminal. The escalation gate itself is unaffected.
+        Rubino.ui = Rubino::UI::Null.new
+      end
+
+      after { Rubino.ui = nil }
+
+      it "PARKS the entry on :needs_approval and runs the tool when the parent grants" do
+        # interactive? is TRUE for a subagent WITH an escalation gate (NOT a
+        # headless one-shot) — the precise signal the noninteractive block keys on.
+        expect(ui.interactive?).to be(true)
+
+        result = nil
+        th = Thread.new do
+          result = executor.execute(name: "fake_tool",
+                                    arguments: { "command" => "touch x" }, call_id: "esc1")
+        end
+
+        # The :ask routed to the escalation gate: the entry is now awaiting the
+        # parent's decision — NOT denied with the noninteractive block.
+        deadline = Time.now + 2.0
+        sleep 0.01 until registry_bg.find(entry.id)&.status == :needs_approval || Time.now > deadline
+        expect(registry_bg.find(entry.id).status).to eq(:needs_approval)
+        expect(th).to be_alive # the child tool is parked, not failed
+
+        parked = registry_bg.find(entry.id)
+        parked.approval_gate.decide(parked.approval_id, true)
+        th.join(2)
+
+        expect(result.success?).to be(true)
+        expect(result.output).to eq("ok") # the tool actually ran on grant
+        expect(executor.blocked_for_approval?).to be(false) # never took the noninteractive path
+      end
+
+      it "fails the tool CLEANLY (denied by user, not noninteractive) when the parent denies" do
+        result = nil
+        th = Thread.new do
+          result = executor.execute(name: "fake_tool",
+                                    arguments: { "command" => "touch x" }, call_id: "esc2")
+        end
+        deadline = Time.now + 2.0
+        sleep 0.01 until registry_bg.find(entry.id)&.status == :needs_approval || Time.now > deadline
+
+        parked = registry_bg.find(entry.id)
+        parked.approval_gate.decide(parked.approval_id, false)
+        th.join(2)
+
+        expect(result.denied?).to be(true)
+        expect(result.output).to include("denied by user")
+        expect(result.output).not_to include("no interactive session")
+        expect(executor.blocked_for_approval?).to be(false)
+      end
+    end
   end
 
   # #335b: a cancel that flips while a previous tool was running (or during the
@@ -176,6 +251,20 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       allow(repo).to receive(:record)
       result = cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
       expect(result.output).to eq("ok")
+    end
+
+    # #41 — a Rubino::Interrupted raised from WITHIN a tool (the cancel landed
+    # mid-call, after the pre-tool checkpoint) is a StandardError, so the
+    # run_tool rescue used to fold it into a `status: "failed"` Result. The loop
+    # then continued and sent a malformed continuation (rejected as "invalid
+    # params"). It must re-raise so the cancel path ends the turn cleanly.
+    it "re-raises an Interrupted raised mid-call instead of recording a failed result" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(tool).to receive(:call).and_raise(Rubino::Interrupted)
+      expect(repo).not_to receive(:record).with(hash_including(status: "failed"))
+      expect do
+        cancellable.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c1")
+      end.to raise_error(Rubino::Interrupted)
     end
   end
 
@@ -322,17 +411,32 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   end
 
   describe "approval question formatting" do
-    # #109: a no-args tool call (e.g. a bare run_tests) must not render a
+    # #109: a no-args tool call (e.g. a bare no-arg tool) must not render a
     # dangling "wants:" header followed by nothing — reading as truncated.
     it "omits the dangling 'wants:' header entirely when there are no arguments (#109)" do
       expect(executor.send(:approval_question, tool, {})).to eq("#{tool.name} wants to run")
       expect(executor.send(:approval_question, tool, nil)).to eq("#{tool.name} wants to run")
     end
 
-    # P7: the common one-short-arg case inlines onto the header.
-    it "inlines a single short argument onto the 'wants:' header (P7)" do
+    # P7 + #558: the common one-short-arg case inlines onto the ONE consistent
+    # "wants to run:" header (not the old dangling "wants:").
+    it "inlines a single short argument onto the 'wants to run:' header (P7/#558)" do
       question = executor.send(:approval_question, tool, { "command" => "touch hello.txt" })
-      expect(question).to eq("#{tool.name} wants: touch hello.txt")
+      expect(question).to eq("#{tool.name} wants to run: touch hello.txt")
+    end
+
+    # #558: every header variant uses the SAME verb phrasing ("wants to run"),
+    # never the inconsistent dangling "wants:" colon.
+    it "uses the single consistent 'wants to run' header across every shape (#558)" do
+      no_args   = executor.send(:approval_question, tool, {})
+      one_arg   = executor.send(:approval_question, tool, { "command" => "ls" })
+      multi_arg = executor.send(:approval_question, tool, { "a" => "1", "b" => "2" })
+
+      [no_args, one_arg, multi_arg].each do |q|
+        expect(q).to start_with("#{tool.name} wants to run")
+        # No dangling "wants:" (the colon must only follow the full verb phrase).
+        expect(q).not_to match(/\bwants:/)
+      end
     end
 
     it "lays each argument on its own line" do
@@ -359,6 +463,38 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(question.length).to be < 400
     end
 
+    # #582 — an MCP tool's approval card must mark it as external code: the
+    # header reads `<bare> (mcp:<server>)` and an extra line names the server.
+    # A built-in (the underscore-named `fake_tool` above) is unchanged.
+    describe "MCP external-code marker (#582)" do
+      let(:mcp_tool) do
+        Rubino::MCP::MCPToolWrapper.new(
+          double("mcp_tool", name: "echo", description: "echoes"), server_name: "chaos"
+        )
+      end
+
+      it "uses the `<bare> (mcp:<server>)` label in the header" do
+        question = executor.send(:approval_question, mcp_tool, { "text" => "BANANA" })
+        expect(question).to start_with("echo (mcp:chaos) wants to run: BANANA")
+      end
+
+      it "appends the external-code disclosure line naming the server" do
+        question = executor.send(:approval_question, mcp_tool, { "text" => "BANANA" })
+        expect(question).to include("runs external code on MCP server 'chaos'")
+      end
+
+      it "adds the disclosure even for a no-arg MCP call" do
+        question = executor.send(:approval_question, mcp_tool, {})
+        expect(question).to eq("echo (mcp:chaos) wants to run\n   runs external code on MCP server 'chaos'")
+      end
+
+      it "does NOT add the external-code line for a built-in (underscore name)" do
+        question = executor.send(:approval_question, tool, { "command" => "ls" })
+        expect(question).to eq("fake_tool wants to run: ls")
+        expect(question).not_to include("runs external code")
+      end
+    end
+
     # multi_edit carries an `edits` array; the generic renderer would dump an
     # unreadable escaped Ruby hash. It must preview as clean per-edit blocks.
     describe "multi_edit preview" do
@@ -379,7 +515,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
                                      { "old_string" => "def median(nums):\n  s = sorted(nums)",
                                        "new_string" => "def median(nums):\n  s = sorted(nums)\n  n = len(s)" }
                                    ] })
-        expect(question).to include("multi_edit wants: stats.py (1 edit)")
+        expect(question).to include("multi_edit wants to run: stats.py (1 edit)")
         expect(question).to include("  - def median(nums):")
         expect(question).to include("  + def median(nums):")
         expect(question).to include("+   n = len(s)")
@@ -395,13 +531,123 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
     it "does not produce invalid bytes when truncating mid-character" do
       # 4-byte emoji repeated past the byte cap → would split mid-char with naked byteslice
-      allow(config).to receive(:tool_output_max_bytes).and_return(10)
-      allow(config).to receive(:tool_output_max_lines).and_return(1_000)
+      allow(config).to receive(:dig).and_call_original
+      allow(config).to receive(:dig).with("tool_output", "max_bytes").and_return(10)
+      allow(config).to receive(:dig).with("tool_output", "max_lines").and_return(1_000)
       tool.output = "🚀" * 20 # 4 bytes × 20 = 80 bytes
 
       result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c5")
       expect(result.output.valid_encoding?).to be true
       expect(result.output).to include("truncated at 10 bytes")
+    end
+  end
+
+  # The unified content-routed compression seam. The executor runs every tool
+  # output through Compression::ContentRouter around the truncate call: a hit
+  # spills the FULL original to tool-results/<call_id>.txt and appends a read
+  # pointer; a passthrough (diff/grep/short/opt-out) stays byte-identical.
+  describe "compression seam (ContentRouter)" do
+    before do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(ui).to receive(:tool_body)
+    end
+
+    def enable_compression!
+      config.set("tool_output_compression", "enabled", true)
+      config.set("tool_output_compression", "logs",
+                 "enabled" => true, "min_lines" => 10, "max_total_lines" => 100,
+                 "max_errors" => 10, "max_warnings" => 5, "max_stack_traces" => 3,
+                 "context_lines" => 4)
+    end
+
+    # A tool that returns a Hash with a log payload + a plain stream_kind hint,
+    # like ShellTool does.
+    let(:log_tool) do
+      noisy = "#{(1..60).map { |i| "INFO line #{i}" }.join("\n")}\nERROR boom happened\nDone."
+      Class.new(Rubino::Tools::Base) do
+        define_method(:name) { "shell" }
+        def description = "fake shell"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+        define_method(:call) do |_args|
+          { output: noisy, body: "preview", body_kind: :plain,
+            compress_hint: { stream_kind: :plain } }
+        end
+      end.new
+    end
+
+    it "compresses a log output, spills the original, and appends a PASSIVE recovery pointer" do
+      enable_compression!
+      allow(registry).to receive(:find).and_return(log_tool)
+      result = executor.execute(name: "shell", arguments: {}, call_id: "log1")
+
+      expect(result.output).to include("ERROR boom happened")
+      expect(result.output.scan("INFO line").length).to be < 60
+      expect(result.output).to include("hidden by output compression")
+      expect(result.output).to include("failures + summary kept")
+      expect(result.output).to include("normally sufficient")
+      # Recovery is via an ID behind the retrieve_output tool — the passive
+      # phrasing, keyed on the call_id, not an imperative.
+      expect(result.output).to include("retrieve_output id=log1")
+      expect(result.output).to include("only if a hidden line is specifically needed")
+      # NO cat-able filesystem path leaks into the model-facing pointer (the
+      # whole point: a small model can't sed/grep/cat a spill path to re-inflate).
+      spill = File.join(spill_home, "tool-results", "log1.txt")
+      expect(result.output).not_to include(spill)
+      expect(result.output).not_to include(spill_home)
+      expect(result.output).not_to include("tool-results")
+      expect(result.output).not_to include("read /")
+      expect(result.output).not_to include("full output at /")
+      # the FULL original is still spilled on disk, recoverable by id
+      expect(File.read(spill)).to include("INFO line 30")
+    end
+
+    it "honors compress:false (per-call opt-out) — byte-identical passthrough" do
+      enable_compression!
+      allow(registry).to receive(:find).and_return(log_tool)
+      result = executor.execute(name: "shell", arguments: { "compress" => false }, call_id: "log2")
+      expect(result.output).to include("INFO line 30")
+      expect(result.output).not_to include("hidden by output compression")
+    end
+
+    def diff_tool_for(diff)
+      Class.new(Rubino::Tools::Base) do
+        define_method(:name) { "shell" }
+        def description = "fake"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+        define_method(:call) { |_a| { output: diff, compress_hint: { stream_kind: :diff } } }
+      end.new
+    end
+
+    it "passes a SMALL/tight diff through byte-identical (saving guard)" do
+      enable_compression!
+      diff = "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n context\n"
+      allow(registry).to receive(:find).and_return(diff_tool_for(diff))
+      result = executor.execute(name: "shell", arguments: {}, call_id: "d1")
+      expect(result.output).to eq(diff)
+      expect(result.output).not_to include("hidden by output compression")
+    end
+
+    it "COMPRESSES a large wide-context diff, keeping +/- lines + headers" do
+      enable_compression!
+      ctx = (1..40).map { |i| " ctx#{i}" }.join("\n")
+      diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,42 +1,42 @@\n-removed\n+added\n#{ctx}\n"
+      allow(registry).to receive(:find).and_return(diff_tool_for(diff))
+      result = executor.execute(name: "shell", arguments: {}, call_id: "d2")
+      expect(result.output).to include("-removed")
+      expect(result.output).to include("+added")
+      expect(result.output).to include("diff --git a/x b/x")
+      expect(result.output).to match(/… \d+ unchanged lines/)
+      # the diff-aware recovery pointer wording
+      expect(result.output).to include("all +/- changes + headers kept")
+    end
+
+    it "leaves output untouched when compression is disabled (default)" do
+      allow(registry).to receive(:find).and_return(log_tool)
+      result = executor.execute(name: "shell", arguments: {}, call_id: "log3")
+      expect(result.output).to include("INFO line 30")
+      expect(result.output).not_to include("hidden by output compression")
     end
   end
 end

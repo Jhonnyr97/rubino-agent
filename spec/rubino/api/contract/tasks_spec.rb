@@ -17,9 +17,9 @@ RSpec.describe "API contract: tasks" do
     stop  = Rubino::API::Operations::Tasks::StopOperation.new(registry: registry)
 
     router = Rubino::API::Router.new
-    router.get  "/v1/tasks",          to: ->(req) { index.call(req) }
-    router.get  "/v1/tasks/:id",      to: ->(req) { show.call(req) }
-    router.post "/v1/tasks/:id/stop", to: ->(req) { stop.call(req) }
+    router.get  "/v1/tasks",          to: route_to(index)
+    router.get  "/v1/tasks/:id",      to: route_to(show)
+    router.post "/v1/tasks/:id/stop", to: route_to(stop)
     router
   end
 

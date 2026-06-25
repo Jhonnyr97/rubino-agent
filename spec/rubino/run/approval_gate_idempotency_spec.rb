@@ -112,7 +112,7 @@ RSpec.describe Rubino::Run::ApprovalGate, "idempotency + id validation" do
       run = create_run_with_gate
       # live_gate has nothing registered — replayed/forged id must be rejected.
       expect do
-        Rubino::API::Operations::Approvals::DecideOperation.call(
+        Rubino::API::Operations::Approvals::DecideOperation.new.call(
           make_request(body: { "decision" => "once" }, params: { run_id: run[:id], approval_id: "forged" })
         )
       end.to raise_error(Rubino::NotFoundError)
@@ -122,10 +122,10 @@ RSpec.describe Rubino::Run::ApprovalGate, "idempotency + id validation" do
       run = create_run_with_gate
       live_gate.register("ap-dup")
 
-      status1, body1 = Rubino::API::Operations::Approvals::DecideOperation.call(
+      status1, body1 = Rubino::API::Operations::Approvals::DecideOperation.new.call(
         make_request(body: { "decision" => "once" }, params: { run_id: run[:id], approval_id: "ap-dup" })
       )
-      status2, body2 = Rubino::API::Operations::Approvals::DecideOperation.call(
+      status2, body2 = Rubino::API::Operations::Approvals::DecideOperation.new.call(
         # Second client posts a different decision; the gate ignores it
         # because the id is already decided — first write wins.
         make_request(body: { "decision" => "deny" }, params: { run_id: run[:id], approval_id: "ap-dup" })

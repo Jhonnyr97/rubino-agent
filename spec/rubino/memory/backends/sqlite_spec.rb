@@ -61,9 +61,35 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(JSON.parse(stored[:entities_json])).to eq(%w[user style])
     end
 
-    it "maps legacy default-backend kinds onto the tiny-Zep vocabulary" do
+    it "maps legacy default-backend kinds onto the fact-store vocabulary" do
       expect(backend.store(kind: "project_context", content: "x")[:kind]).to eq("project")
       expect(backend.store(kind: "technical_decision", content: "y")[:kind]).to eq("fact")
+    end
+
+    # #Y4 — the agent's MemoryTool#add writes straight through #store, bypassing
+    # the extraction near-dup gate, so the same fact saved twice used to mint two
+    # identical live rows. #store now dedups exact/normalized-verbatim repeats.
+    it "dedups an identical fact saved twice (one live row, idempotent id)" do
+      first  = backend.store(kind: "fact", content: "User lives in Lima.")
+      second = backend.store(kind: "fact", content: "User lives in Lima.")
+
+      expect(second[:id]).to eq(first[:id])
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(1)
+    end
+
+    it "dedups a whitespace/case variant of the same fact" do
+      first  = backend.store(kind: "fact", content: "User lives in Lima.")
+      second = backend.store(kind: "fact", content: "  user   LIVES in  lima. ")
+
+      expect(second[:id]).to eq(first[:id])
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(1)
+    end
+
+    it "still stores a genuinely different fact as its own row" do
+      backend.store(kind: "fact", content: "User lives in Lima.")
+      backend.store(kind: "fact", content: "User lives in Cusco.")
+
+      expect(db[:memory_facts].where(valid_to: nil).count).to eq(2)
     end
   end
 
@@ -713,6 +739,22 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       # Cross-session recall still works.
       out = backend.retrieve(session_id: "s2", query: "How does the user deploy?")
       expect(out.map { |r| r[:content] }).to include("User deploys with Kamal.")
+    end
+
+    # #69: after a transient tool error the aux extractor returned a tool-limitation
+    # "fact". The insert choke point must NOOP the error-derived claim while still
+    # storing the real preference emitted in the same batch.
+    it "gates out an error-derived tool-limitation claim but keeps a real preference" do
+      store.create(session_id: "s1", role: "user", content: "Use tabs. (after an edit hit a transient error)")
+      stub_llm('{"add":[' \
+               '{"text":"The file-editing tooling can\'t edit non-ASCII files.","kind":"fact"},' \
+               '{"text":"User prefers tabs over spaces.","kind":"preference"}' \
+               '],"supersede":[]}')
+      stored = backend.extract("s1")
+      contents = stored.map { |s| s[:content] }
+      expect(contents).to include("User prefers tabs over spaces.")
+      expect(contents).not_to include(a_string_matching(/can't edit non-ASCII/))
+      expect(db[:memory_facts].where(Sequel.like(:text, "%non-ASCII%")).count).to eq(0)
     end
   end
 

@@ -20,7 +20,7 @@ module Rubino
       #   /agents <id> steer "…"  → fire-and-forget note into the child's context
       #   /agents <id> probe "…"  → ephemeral read-only peek
       #   /reply <id> <answer>    → answer a child blocked on a human/parent ask
-      class Agents
+      class Agents # rubocop:disable Metrics/ClassLength -- one cohesive /agents command surface (list/attach/steer/probe/reply/approval/budget); splitting would scatter the routing
         include Rubino::UI::ProbeWaitIndicator
 
         # How many times the parked-child approval prompt re-renders after an
@@ -73,34 +73,76 @@ module Rubino
             return true
           end
           if (entry = registry.awaiting_human.first)
-            answer = prompt_reply_answer(entry)
-            if answer.to_s.strip.empty?
-              @ui.info("No answer given — #{entry.id} is still waiting.")
-            else
-              deliver_reply(entry, answer)
-            end
+            answer_one_human(entry)
             return true
           end
           false
         end
 
+        # The ONE shared "surface the answer affordance for a child blocked on the
+        # human, read the human's answer, deliver it down the SAME wire" step —
+        # used by BOTH the idle poll (#auto_resolve_pending) and the mid-turn
+        # auto-open (BottomComposer#request_takeover, triggered by the child's
+        # ask_parent the instant it blocks). Keeping it in one method means the
+        # delivery semantics (free-text or pick-an-option → #deliver_reply →
+        # BackgroundTasks#deliver_answer) are identical on both paths and the
+        # parent turn's state is NEVER touched (deliver_answer only decides the
+        # child's gate + pushes its steer note under the registry mutex).
+        #
+        # An empty answer (the human cancelled — Esc in the dropdown / blank
+        # free-text) leaves the child PARKED and reports it: the affordance/hint
+        # stays so it can re-open. Returns true once it surfaced the request
+        # (the caller re-polls / re-reads awaiting_human for the next head).
+        def answer_one_human(entry) # rubocop:disable Naming/PredicateMethod -- a prompt-presenting mutator that reports it surfaced a request
+          answer = prompt_reply_answer(entry)
+          if answer.to_s.strip.empty?
+            @ui.info("No answer given — #{entry.id} is still waiting.")
+          else
+            deliver_reply(entry, answer)
+          end
+          true
+        end
+
+        # FIFO drain of the children blocked on the human, used by the MID-TURN
+        # auto-open: deliver the head, then RE-READ awaiting_human (a 2nd child
+        # may have asked while the dropdown was open, or the head may have been
+        # delivered/timed-out) and surface the next head, until the queue is
+        # empty. Each #answer_one_human runs its own dropdown takeover; a child
+        # that arrives mid-open simply appends and is picked up on the re-read.
+        # Bounded by the live awaiting_human snapshot shrinking each pass, so it
+        # always terminates. Runs on the INPUT thread (it owns the keyboard).
+        def answer_all_human
+          loop do
+            entry = Tools::BackgroundTasks.instance.awaiting_human.first
+            break unless entry
+
+            answer_one_human(entry)
+            # A cancelled (still-blocked) head would otherwise re-surface forever:
+            # stop once the head is no longer awaiting an answer it just got, OR
+            # the human declined it. We break when the FIRST awaiting_human entry
+            # is unchanged after the attempt (cancelled), so an Esc doesn't loop.
+            still = Tools::BackgroundTasks.instance.awaiting_human.first
+            break if still && still.id == entry.id
+          end
+        end
+
         def handle_agents(arguments)
           args = arguments.to_s.strip
-
-          if args.empty?
-            show_agents_list
-            return
-          end
+          return show_agents_list if args.empty?
 
           tokens = args.split(/\s+/)
-          stop   = tokens.delete("--stop") ? true : false
-          id     = tokens.shift
+          stop, snapshot, attach = %w[--stop --snapshot --attach].map { |flag| tokens.delete(flag) }
+          id = tokens.shift
 
-          if id.nil? || id.empty?
-            show_agents_list
-          elsif stop
-            stop_agent(id)
-          elsif tokens.first == "steer"
+          return show_agents_list if id.nil? || id.empty?
+          return stop_agent(id) if stop
+          # `--attach` is the menu's Enter action: hand the id back to the REPL,
+          # which switches the whole timeline to that agent's (clear + replay) and
+          # scopes the input to it. Internal — not a typed grammar candidate.
+          return { attach_agent: id } if attach
+          return show_agent_detail(id, snapshot: true) if snapshot
+
+          if tokens.first == "steer"
             steer_agent(id, dequote(tokens[1..].join(" ")))
           elsif tokens.first == "probe"
             probe_agent(id, dequote(tokens[1..].join(" ")))
@@ -227,11 +269,75 @@ module Rubino
         # The interactive ◆ takeover for /reply with no inline answer — mirrors the
         # approval menu (composer-suspend, ◆ glyph) so answering an ask_parent feels
         # exactly like answering an approval, a pattern the user already knows.
+        #
+        # Content of the affordance (LOCKED "options if present, else free text"):
+        #   * the asking child supplied `options:` → an arrow-SELECT of those
+        #     concrete options PLUS a trailing "✎ Answer (type)…" entry that opens
+        #     the free-text field. Reuses @ui.select (the same TTY::Prompt picker
+        #     /sessions resume uses) under run_in_terminal.
+        #   * no options → the original free-text @ui.ask, but offered as a
+        #     [Answer / Dismiss] choice first so Esc/Dismiss cleanly CANCELS this
+        #     answer (the child stays blocked) instead of forcing a blank line.
+        # Returns the chosen/typed answer, or "" when the human cancels (Esc /
+        # Dismiss / blank) — answer_one_human then leaves the child parked.
         def prompt_reply_answer(entry)
           @ui.info("")
           @ui.info("◆ #{entry.id} (#{entry.subagent}) asks — everything is waiting on this")
           @ui.info("   ❓ #{entry.ask_question}")
+          options = Array(entry.ask_options)
+          options.empty? ? prompt_free_or_dismiss : prompt_pick_option(options)
+        end
+
+        # No options: [Answer / Dismiss]. "Answer" opens the free-text field;
+        # "Dismiss" (or Esc, which #select returns as nil) cancels — child stays
+        # blocked. A UI without #select (scripted/legacy) falls straight through
+        # to the free-text @ui.ask so the existing behaviour is preserved.
+        def prompt_free_or_dismiss
+          return @ui.ask("✎ your answer › ").to_s unless @ui.respond_to?(:select)
+
+          choice = @ui.select("Answer this subagent?",
+                              [["✎ Answer (type)…", :answer], ["Dismiss (leave blocked)", :dismiss]])
+          return "" unless choice == :answer
+
           @ui.ask("✎ your answer › ").to_s
+        end
+
+        # Options present: arrow-select one of them, or the trailing free-text
+        # entry. Esc (nil from #select) cancels. Reuses @ui.select; a UI without
+        # it answers free-text so scripted callers keep working.
+        def prompt_pick_option(options)
+          return @ui.ask("✎ your answer › ").to_s unless @ui.respond_to?(:select)
+
+          # An option is either a plain string (label==value) or a
+          # {label, description} map. Show the clean LABEL (with the description
+          # as a dim hint when present) and deliver the label STRING as the
+          # answer — never a raw hash literal (#475-3).
+          choices = options.map { |o| [option_label(o), option_value(o)] }
+          choices << ["✎ Answer (type)…", :__free__]
+          choice = @ui.select("Pick an answer for the subagent:", choices)
+          return "" if choice.nil? # Esc / cancelled
+          return @ui.ask("✎ your answer › ").to_s if choice == :__free__
+
+          choice
+        end
+
+        # The display label for a picker option: the bare label for a string,
+        # or "label — description" (description dimmed) for a {label, description}
+        # map. The description rides the label since @ui.select takes only
+        # [label, value] pairs (no separate hint slot).
+        def option_label(opt)
+          return opt.to_s unless opt.is_a?(Hash)
+
+          label = opt["label"].to_s
+          desc  = opt["description"].to_s
+          desc.empty? ? label : "#{label} #{pastel.dim("— #{desc}")}"
+        end
+
+        # The value DELIVERED to the child for a picker option: always the label
+        # STRING (the description is presentational only), so the child's answer
+        # is clean text, never a hash literal.
+        def option_value(opt)
+          opt.is_a?(Hash) ? opt["label"].to_s : opt.to_s
         end
 
         # Routes the answer back DOWN to the child: decide the gate (unblocks a
@@ -298,12 +404,11 @@ module Rubino
           @ui.info("/agents <id> for output   ·   /agents <id> --stop to cancel")
         end
 
-        def show_agent_detail(id)
+        def show_agent_detail(id, snapshot: false)
           entry = Tools::BackgroundTasks.instance.find(id)
-          unless entry
-            @ui.error("no background subagent with id #{id}. #{RESET_HINT}")
-            return
-          end
+          return @ui.error("no background subagent with id #{id}. #{RESET_HINT}") unless entry
+
+          return show_agent_snapshot(entry) if snapshot
 
           case entry.status
           when :needs_approval
@@ -317,6 +422,14 @@ module Rubino
           else
             show_agent_result(entry)
           end
+        end
+
+        def show_agent_snapshot(entry)
+          return render_agent_watch(entry) if %i[
+            running stopping blocked_on_human blocked_on_parent needs_approval
+          ].include?(entry.status)
+
+          show_agent_result(entry)
         end
 
         # Static detail for a finished (done/failed) task — the full result/error,
@@ -366,7 +479,7 @@ module Rubino
 
         # #71 — LIVE drill-in for a running subagent. Renders the task summary and
         # the recent-activity ring (read live from the registry, which the child's
-        # UI::SubagentView keeps fresh), refreshing in place until the user presses a
+        # subagent's UI::CLI keeps fresh), refreshing in place until the user presses a
         # key (Esc/Enter/q) or the task ends. Off an interactive terminal (#ask
         # returns nil — Null/API/pipe) it degrades to a SINGLE snapshot so the
         # non-interactive paths and unit tests never block on a redraw loop.
@@ -394,7 +507,7 @@ module Rubino
 
         # #5 — the live output: block under the ring: the tail of the CURRENTLY
         # RUNNING tool's streamed output (the registry's bounded output_tail,
-        # fed by the child's UI::SubagentView#tool_chunk and wiped at
+        # fed by the child's UI::CLI#tool_chunk and wiped at
         # tool_finished), so a long shell call shows its lines as they print
         # instead of a frozen frame. Renders nothing when no tool is mid-run or
         # it hasn't produced output yet; the buffer's empty last slot just means
@@ -441,7 +554,9 @@ module Rubino
             return
           end
 
-          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}")
+          return resolve_agent_budget(entry, gate) if entry.budget_request
+
+          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}#{queued_approval_suffix}")
           @ui.info("needs approval to run:")
           @ui.info("  #{entry.approval_command.to_s.empty? ? entry.approval_question : entry.approval_command}")
           choice = ask_approval_answer(entry)
@@ -457,6 +572,49 @@ module Rubino
             end
           gate.decide(entry.approval_id, decision)
           @ui.info(decision ? "Approved #{entry.id}." : "Denied #{entry.id}.")
+        end
+
+        # The "(N more queued)" tail the active approval/budget modal shows when
+        # other children are ALSO parked on an approval behind this one (R2):
+        # only one modal is presented at a time, so this tells the user more are
+        # waiting and that resolving the current one dequeues the next. Empty
+        # when this is the only parked child.
+        def queued_approval_suffix
+          n = Tools::BackgroundTasks.instance.queued_approval_count
+          n.positive? ? "   (#{n} more queued)" : ""
+        end
+
+        # #574 — resolve a parked child's BUDGET request (it hit its
+        # tool-iteration ceiling). Reuses the approval gate but asks Grant/
+        # Summarize: a grant decides the gate true (the child's #select handler
+        # maps it to :continue → the Loop raises the cap +step and re-enters the
+        # turn); anything else decides false → :summarize (force-summarize). No
+        # "always" — budget is a one-shot grant, nothing to allowlist.
+        def resolve_agent_budget(entry, gate)
+          @ui.info("#{entry.id}  #{agent_status_icon(entry.status)}  ·  #{entry.subagent}#{queued_approval_suffix}")
+          @ui.info("hit its tool-iteration limit and wants more budget:")
+          @ui.info("  #{entry.approval_question}")
+          choice = ask_budget_answer(entry)
+          return if choice.nil?
+
+          grant = choice == :grant
+          gate.decide(entry.approval_id, grant)
+          @ui.info(grant ? "Granted more budget to #{entry.id}." : "#{entry.id} will summarize now.")
+        end
+
+        # Mirror of #ask_approval_answer for the budget picker: re-render on a
+        # transient TTY abort (a background fold-in aborting the read returns nil,
+        # NOT a decision), and leave the child parked on a persistent abort so
+        # `/agents <id>` re-opens it — never silently summarize.
+        def ask_budget_answer(entry)
+          return nil unless @ui.respond_to?(:subagent_budget_choice)
+
+          APPROVAL_ASK_ATTEMPTS.times do
+            choice = @ui.subagent_budget_choice
+            return choice if choice
+          end
+          @ui.info("no answer read — #{entry.id} is still waiting; /agents #{entry.id} to decide.")
+          nil
         end
 
         # Renders the UNIFIED arrow-key approval menu (TUI-6) for a parked
@@ -490,7 +648,10 @@ module Rubino
         # returns false — the gate is denied either way; the reason is advisory.
         def deny_with_explanation(entry)
           reason = @ui.respond_to?(:ask) ? @ui.ask("why deny? (sent to the agent): ").to_s.strip : ""
-          Tools::BackgroundTasks.instance.steer(entry.id, "[approval denied by human] #{reason}") unless reason.empty?
+          unless reason.empty?
+            Tools::BackgroundTasks.instance.steer(entry.id,
+                                                  "#{Tools::BackgroundTasks::DENY_NOTE_PREFIX}#{reason}")
+          end
           false
         rescue StandardError
           false
@@ -608,7 +769,9 @@ module Rubino
           finish = entry.finished_at || Time.now
           return "" unless entry.started_at
 
-          Rubino::Util::Duration.human_duration(finish - entry.started_at)
+          # Live (still running) → precise so the counter advances every second
+          # (#44); a finished entry keeps the coarse final duration.
+          Rubino::Util::Duration.human_duration(finish - entry.started_at, precise: entry.finished_at.nil?)
         end
 
         def pastel
@@ -619,6 +782,12 @@ module Rubino
           s = text.to_s.gsub(/\s+/, " ").strip
           s.length > max ? "#{s[0, max - 1]}…" : s
         end
+
+        # Direct entry points for the REPL's agent-attach view: it calls these with
+        # the user's RAW text, so a steer/probe/reply note keeps embedded quotes
+        # intact instead of being serialized into a "steer \"…\"" command string
+        # and mangled by the executor's whitespace-split + single-pair dequote.
+        public :steer_agent, :probe_agent, :deliver_reply
       end
     end
   end

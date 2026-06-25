@@ -1,0 +1,36 @@
+# #R1 repro: a markdown table immediately FOLLOWED by prose with NO blank line
+# between the last table row and the paragraph. On the COMMITTED render path the
+# whole run used to collapse to raw `| Component | State |` pipes (separator
+# mangled to an em-dash). After the fix MarkdownRenderer#normalize closes the
+# table at the first non-row line, so the committed answer shows a BORDERED table
+# THEN the prose as a separate paragraph — matching the streaming splitter.
+events:
+  - type: content
+    text: "Status:\n\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| Component | State |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| --- | --- |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| API | Done |\n"
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "| CLI | Done |\n"
+  - type: delay_seconds
+    value: 0.20
+  # NO blank line here — the prose is glued directly to the last table row.
+  - type: content
+    text: "That concludes the status. "
+  - type: delay_seconds
+    value: 0.20
+  - type: content
+    text: "Everything is shipped."
+  - type: delay_seconds
+    value: 0.20

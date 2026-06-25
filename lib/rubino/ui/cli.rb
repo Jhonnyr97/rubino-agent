@@ -30,14 +30,47 @@ module Rubino
       # a cancelled picker's frame (#219).
       PICKER_PAGE_SIZE = 6
 
+      # Help line for the filterable approval menu. tty-prompt's default help
+      # ("(Press ↑/↓ arrow to move, Enter to select and letters to filter)")
+      # advertises typing-to-filter but NOT how to undo it, so a stray keystroke
+      # filters the rows and the user is stranded — Esc must NOT be bound here (it
+      # would read as a deny — hard constraint), and clearing the filter is
+      # otherwise undiscoverable. tty-prompt already binds the keys (list.rb:
+      # keydelete → @filter.clear, keybackspace → @filter.pop); we just surface
+      # them. Shown on the first render (the discoverable moment), the same place
+      # the default help renders (#513-filter).
+      FILTER_MENU_HELP =
+        "(Press ↑/↓ to move, Enter to select, letters to filter; " \
+        "Del clears the filter, Backspace one char)"
+
       # @param session_id [String] key for the session approval cache. One
       #   CLI process serves exactly one chat session, so a per-process id is
       #   the right granularity for "remember for this session" — the cache is
       #   in-memory/process-lifetime anyway. Injectable for tests.
       # @param approval_cache [Run::SessionApprovalCache] shared cache so a
       #   prior "always" decision short-circuits the prompt, matching UI::API.
-      def initialize(session_id: nil, approval_cache: nil)
+      # @param agent_id [Symbol, String] which agent this CLI renders for. :main
+      #   is the top-level loop; a background subagent gets its registry entry id.
+      #   Every frame this CLI commits to the bottom composer carries it as
+      #   `origin:`, so the composer's focus-gate paints ONLY the focused agent and
+      #   drops the rest (tmux-style unified render). One UI::CLI instance per
+      #   agent, so the per-turn stream buffers (@stream_md, @reasoning_buffer, …)
+      #   never cross between concurrently-running agents.
+      # @param approval_handler [#call, nil] for a BACKGROUND subagent CLI: the
+      #   gate handler TaskTool wires (TaskTool#approval_handler_for). #confirm
+      #   delegates to it so an approval-gated child tool surfaces on the entry's
+      #   card and PARKS the child thread on a per-entry gate (the parent answers
+      #   via /agents <id>), instead of the TTY::Prompt path a real terminal uses
+      #   (a background thread has no terminal). nil ⇒ the normal CLI behaviour.
+      # @param budget_handler [#call, nil] the budget-extension handler TaskTool
+      #   wires (TaskTool#budget_handler_for); #select delegates to it when a
+      #   parked child hits its tool-iteration ceiling (#574). nil ⇒ normal CLI.
+      def initialize(session_id: nil, approval_cache: nil, agent_id: :main,
+                     approval_handler: nil, budget_handler: nil)
         super()
+        @agent_id           = agent_id
+        @approval_handler   = approval_handler
+        @budget_handler     = budget_handler
         @prompt             = TTY::Prompt.new
         @stream_type        = nil
         @stream_md          = nil # StreamingMarkdown buffer, lazily built per content stream
@@ -64,9 +97,25 @@ module Rubino
         @turn_tok_chars     = 0
         @thinking_started_at = nil
         @reasoning_buffer   = +""
+        # :full-mode LIVE reasoning stream state. @reasoning_md splits the streamed
+        # thinking deltas into prose blocks (committed as dim `┊` lines as they
+        # finish), and @reasoning_streaming latches true once the opening
+        # `┄ thinking ┄` rail has been painted so the close rail / live-tail
+        # teardown run exactly once. Both are nil/false outside :full streaming.
+        @reasoning_md       = nil
+        @reasoning_streaming = false
+        # Mid-stream "transport silence" watchdog (#21): while a content/reasoning
+        # block streams, the in-flight tail owns the live row and the status row
+        # is hidden — so a multi-second silence from a burst-delivering model
+        # leaves the screen looking frozen even though the model is just slow.
+        # @last_stream_at is bumped on every tail paint / block commit; when it
+        # goes silent past STREAM_STALL_AFTER the ticker resurfaces the facet in
+        # the footer (the frozen tail stays above the prompt). Touched only under
+        # @status_mutex.
+        @last_stream_at = nil
         # The last retained reasoning block (committed/collapsed), revealable via
         # ctrl-o even after the answer has streamed. Reset per turn.
-        @last_reasoning     = nil
+        @last_reasoning = nil
         @last_reasoning_seconds = nil
         @activity_open      = false
         @activity_name      = nil
@@ -74,10 +123,6 @@ module Rubino
         # (frames butt together), :gap (a trailing blank is already open, so
         # the next separator is skipped), :answer, :other.
         @last_block         = :other
-        # Task ids whose FULL report the lifecycle block already rendered
-        # (#subagent_lifecycle): the injected completion notice for one of
-        # these drops its duplicated Result body (#elide_shown_reports).
-        @reported_subagent_ids = []
         @session_id         = session_id || SecureRandom.uuid
         @approval_cache     = approval_cache || Rubino::Run::SessionApprovalCache.instance
       end
@@ -125,7 +170,9 @@ module Rubino
           tbl = TTY::Table.new(header: headers, rows: rows)
           # Pin the width explicitly: TTY::Table otherwise probes the terminal
           # via ioctl, which blows up when $stdout is a StringIO (tests/pipes).
-          $stdout.puts tbl.render(:unicode, padding: [0, 1], width: terminal_cols, resize: false)
+          # Cells are already SGR-sanitized above; PATH 2 (#emit_styled) keeps the
+          # trusted cell colour while stripping any residual danger byte.
+          emit_styled(tbl.render(:unicode, padding: [0, 1], width: terminal_cols, resize: false))
         end
       end
 
@@ -140,11 +187,13 @@ module Rubino
         ([headers] + rows).each do |row|
           row.each_with_index { |cell, i| widths[i] = [widths[i], display_width(cell.to_s)].max }
         end
-        $stdout.puts grid_border(widths, "┌", "┬", "┐")
-        $stdout.puts grid_row(headers, widths)
-        $stdout.puts grid_border(widths, "├", "┼", "┤")
-        rows.each { |row| $stdout.puts grid_row(row, widths) }
-        $stdout.puts grid_border(widths, "└", "┴", "┘")
+        # Borders are rubino's own glyphs; rows interpolate already-SGR-sanitized
+        # cells. PATH 2 (#emit_styled) keeps the trusted cell colour, strips danger.
+        emit_styled(grid_border(widths, "┌", "┬", "┐"))
+        emit_styled(grid_row(headers, widths))
+        emit_styled(grid_border(widths, "├", "┼", "┤"))
+        rows.each { |row| emit_styled(grid_row(row, widths)) }
+        emit_styled(grid_border(widths, "└", "┴", "┘"))
       end
 
       def grid_border(widths, left, mid, right)
@@ -179,10 +228,11 @@ module Rubino
         label_w = headers.map { |h| display_width(h.to_s) }.max.to_i
         rule    = @pastel.dim("─" * [[terminal_cols, 1].max, 40].min)
         rows.each_with_index do |row, i|
-          $stdout.puts rule if i.positive?
+          emit_styled(rule) if i.positive?
           headers.each_with_index do |h, col|
             label = h.to_s.ljust(label_w + (h.to_s.length - display_width(h.to_s)))
-            $stdout.puts "#{label}  #{row[col]}"
+            # row[col] is an already-SGR-sanitized cell; PATH 2 keeps its colour.
+            emit_styled("#{label}  #{row[col]}")
           end
         end
       end
@@ -244,6 +294,12 @@ module Rubino
       # `rubino chat` run has no one to answer, so the executor fails closed
       # instead of hanging or auto-running.
       def interactive?
+        # A BACKGROUND subagent CLI has no terminal of its own, but WITH a wired
+        # gate handler it can still put an approval in front of a human (park the
+        # child on a per-entry gate a /agents <id> decision resolves), so it is
+        # interactive — the executor must escalate, not fail closed (#86/#260).
+        return true if @approval_handler
+
         interactive_terminal?
       end
 
@@ -257,10 +313,20 @@ module Rubino
       # own InputInterrupt; both land in the rescue below.
       def select(prompt, choices)
         return nil if choices.nil? || choices.empty?
+
+        # BACKGROUND subagent: the only #select a nested child reaches is the
+        # Loop's budget-extension prompt at the tool-iteration ceiling (#574). With
+        # a wired budget handler, surface it as a budget REQUEST on the card and
+        # park the child on the same per-entry gate the approval path uses; the
+        # handler maps the human's grant/deny to the Loop's :continue / :summarize
+        # contract. Without one (nil), the child can't park → nil, which the Loop
+        # reads as force-summarize (the headless guarantee), like UI::Null.
+        return @budget_handler.call(prompt) if @budget_handler
         return nil unless interactive_terminal?
 
         BottomComposer.run_in_terminal do
           cancellable_prompt.select(prompt, cycle: false, filter: true) do |menu|
+            menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }
           end
         end
@@ -284,9 +350,9 @@ module Rubino
       # exactly as it was before the picker opened.
       def erase_picker_frame(choice_count)
         rows = 1 + [choice_count, PICKER_PAGE_SIZE].min
-        $stdout.print(TTY::Cursor.column(1))
-        $stdout.print(TTY::Cursor.up(rows))
-        $stdout.print(TTY::Cursor.clear_screen_down)
+        # rubino's OWN cursor moves to wipe the cancelled picker frame — no
+        # untrusted text → one Cat 4 frame through the single seam.
+        emit_frame("#{TTY::Cursor.column(1)}#{TTY::Cursor.up(rows)}#{TTY::Cursor.clear_screen_down}")
       end
 
       # A DEDICATED TTY::Prompt for cancellable pickers, with Esc bound to the
@@ -326,6 +392,16 @@ module Rubino
       def confirm(question, scope: nil, tool: nil, command: nil, pattern_key: nil, description: nil)
         return true if approval_cached?(scope)
 
+        # BACKGROUND subagent (Option 2 — approval-surfacing, #86): a child tool
+        # needing approval is NOT silently denied and does NOT reach TTY::Prompt
+        # (the child runs on a thread with no terminal). Hand off to the wired gate
+        # handler: it flips the entry to :needs_approval (card + parent note) and
+        # BLOCKS the child thread on a per-entry gate until the human answers via
+        # /agents <id>; the returned boolean is the child's decision. "Approve
+        # always" is persisted by the parent decision path's allowlist, so the
+        # handler only needs the boolean.
+        return @approval_handler.call(question, scope: scope, command: command) if @approval_handler
+
         # Finalize any live streaming state before the approval card so the card
         # header doesn't glue onto it ("thinking…⚠ shell wants:" or a
         # reasoning tail like "Let me run this.⚠ shell wants…"). The model
@@ -346,11 +422,12 @@ module Rubino
         # A raw `\e[…` in the command can move the cursor / clear the line and
         # SPOOF what the approval card shows ("rm -rf" hidden, a benign command
         # painted over it), so the human approves something other than what runs.
-        # Neutralize to visible caret notation before the trusted @pastel wrap.
-        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
+        # PATH 1 of the output funnel (#emit) strips every escape, THEN applies the
+        # trusted style around the now-inert text — the manual safe() wrap is gone.
+        emit("⚠ #{question}", style: :yellow)
         # The danger annotation is the single most safety-relevant line on the
         # card, so it must be the MOST prominent — red + bold, not dim (#83).
-        $stdout.puts @pastel.red.bold("  ⚠ #{safe(description)}") unless description.to_s.empty?
+        emit("  ⚠ #{description}", style: %i[red bold]) unless description.to_s.empty?
 
         choice   = approval_choice(rule, tool: tool)
         approved = apply_choice(choice, scope: scope, command: command, rule: rule)
@@ -392,6 +469,18 @@ module Rubino
                       ])
       end
 
+      # The arrow-key picker for a subagent's BUDGET request (#574): it hit its
+      # tool-iteration ceiling and is asking for more. Reuses the same unified
+      # #approval_menu component, but the vocabulary is GRANT/DENY budget — there
+      # is no "always" (no command to allowlist; budget is a one-shot grant). The
+      # caller maps :grant→continue and :deny/:summarize→summarize.
+      def subagent_budget_choice
+        approval_menu("grant more budget?", [
+                        ["Grant more iterations", :grant],
+                        ["Summarize now", :summarize]
+                      ])
+      end
+
       # A destructive yes/No confirm — NOT the tool-approval menu (#218).
       # Deleting a session or forgetting a fact is not a tool/command the model
       # proposed, so the "Approve once / this command / this tool" vocabulary is
@@ -401,8 +490,9 @@ module Rubino
       # "y"/"yes" proceeds. Returns true only when the user affirmatively agreed.
       def confirm_destructive(question)
         # The question may interpolate an untrusted name (a session title, a fact
-        # body) — sanitize before the trusted yellow wrap (R3C-1, CWE-150).
-        $stdout.puts @pastel.yellow("⚠ #{safe(question)}")
+        # body) — the funnel's PATH 1 (#emit) strips escapes before the trusted
+        # yellow wrap (R3C-1, CWE-150).
+        emit("⚠ #{question}", style: :yellow)
         # Off a real terminal there is no one to answer; fail closed (decline)
         # so a piped `n` — or any pipe at all — can never destroy (#218).
         return false unless interactive_terminal?
@@ -413,7 +503,7 @@ module Rubino
         !!answer
       rescue TTY::Reader::InputInterrupt
         # Esc / Ctrl-C mid-prompt: treat as decline, never destroy.
-        $stdout.puts
+        emit_blank
         false
       end
 
@@ -432,8 +522,9 @@ module Rubino
         @session_batch_tip_shown = true if batch
         noun = session_scope_noun(tool)
         lead = batch ? "bulk edit detected" : "tip"
-        $stdout.puts @pastel.dim(
-          %(┄ #{lead}: choose "Approve — #{noun} (this session)" to approve #{noun} for the rest of this session ┄)
+        emit(
+          %(┄ #{lead}: choose "Approve — #{noun} (this session)" to approve #{noun} for the rest of this session ┄),
+          style: :dim
         )
       end
 
@@ -458,7 +549,7 @@ module Rubino
       end
 
       def separator
-        $stdout.puts @pastel.dim("─" * 80)
+        emit("─" * 80, style: :dim)
       end
 
       # Panel color diet (P8): dim label, PLAIN value, cyan reserved for the
@@ -467,13 +558,13 @@ module Rubino
       def panel_line(label, value, pointer: nil)
         row = "  #{@pastel.dim(label.to_s.ljust(10))} #{value}"
         row += "   #{@pastel.cyan(pointer)}" if pointer
-        $stdout.puts row
+        emit_styled(row)
       end
 
       # Welcome-panel hint row (P8): the actionable command is the ONE cyan
       # accent; its description stays plain.
       def hint_row(command, description)
-        $stdout.puts "    #{@pastel.cyan(command.to_s.ljust(9))} #{description}"
+        emit_styled("    #{@pastel.cyan(command.to_s.ljust(9))} #{description}")
       end
 
       # --- Compact timeline rendering (M2) ---
@@ -491,8 +582,19 @@ module Rubino
         hint_str = hint ? " #{hint}" : ""
         # ONE blank before the first frame of a tool run; frames inside a run
         # butt together, and a gap left by the previous block isn't doubled (P3).
-        $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("#{name}#{hint_str}")}"
+        emit_blank unless %i[tool gap].include?(@last_block)
+        # `● <name> <hint>`: a trusted cyan glyph + a dim body. The body's only
+        # UNTRUSTED span (the path inside +hint+) was already defanged in
+        # #args_hint and wrapped in rubino's own (trusted) OSC 8 link, so the
+        # whole row is rubino-built → PATH 2 (#emit_styled) keeps the cyan/dim
+        # SGR AND the now-OSC8-preserving sanitizer keeps the legit hyperlink,
+        # while still neutralizing any residual danger byte (Cat 2 + Cat 3).
+        # DISPLAY-ONLY label resolution: an MCP tool shows `echo (mcp:chaos)`
+        # so the user sees external code is running; a built-in is unchanged.
+        # The model-facing `name` (and @activity_name, used as a status key) is
+        # untouched — this only changes the printed row (#582).
+        label = Tools::Registry.display_label(name)
+        emit_styled("#{@pastel.cyan("●")} #{@pastel.dim("#{label}#{hint_str}")}")
         @activity_open = true
         @activity_name = name
         @last_block = :tool
@@ -547,19 +649,22 @@ module Rubino
         budget = [terminal_cols - 1 - display_width(hang), 4].max
         rows   = wrap_tail_row(body, budget)
         indent = " " * hang.length
-        $stdout.puts(yield("#{hang}#{rows.first}"))
-        rows[1..].each { |row| $stdout.puts(yield("#{indent}#{row}")) }
+        # The block returns a rubino-styled line (its own @pastel SGR) built from
+        # already-sanitized +text+ → PATH 2 (#emit_styled) keeps the SGR, strips
+        # any residual danger byte.
+        emit_styled(yield("#{hang}#{rows.first}"))
+        rows[1..].each { |row| emit_styled(yield("#{indent}#{row}")) }
       end
 
       # Approval requested: renders as `◆ summary`
       def approval_requested(summary:, choices:)
-        $stdout.puts
-        # The summary is derived from the proposed tool/command (untrusted) —
-        # sanitize before the trusted wrap (R3C-1, CWE-150). Choice labels are
-        # rubino's own fixed menu text (trusted).
-        $stdout.puts @pastel.yellow("◆ #{safe(summary)}")
+        emit_blank
+        # The summary is derived from the proposed tool/command (untrusted) — the
+        # funnel's PATH 1 (#emit) strips escapes before the trusted wrap (R3C-1,
+        # CWE-150). Choice labels are rubino's own fixed menu text (trusted).
+        emit("◆ #{summary}", style: :yellow)
         choices.each do |choice|
-          $stdout.puts @pastel.dim("  [#{choice[:key]}] #{choice[:label]}")
+          emit("  [#{choice[:key]}] #{choice[:label]}", style: :dim)
         end
       end
 
@@ -568,7 +673,7 @@ module Rubino
         return if text.nil? || text.to_s.empty?
 
         text.each_line do |line|
-          $stdout.puts "  #{line.chomp}"
+          emit("  #{line.chomp}")
         end
       end
 
@@ -645,7 +750,7 @@ module Rubino
         # twice. The reset makes the marker land as ONE clean frame.
         reset_finalize_geometry
         clear_line
-        $stdout.puts @pastel.dim("  ⎿ interrupted")
+        emit("  ⎿ interrupted", style: :dim)
         $stdout.flush
         @turn_interrupting = false
       end
@@ -658,6 +763,11 @@ module Rubino
       def clear_stream_region
         @stream_md = nil
         @stream_type = nil
+        # An interrupt mid-:full-reasoning leaves the live tail painted and the
+        # latch set; drop both so the torn-down region can't leak a stale aside
+        # latch into the next turn's reasoning phase.
+        @reasoning_md = nil
+        @reasoning_streaming = false
         show_live_tail("")
       end
 
@@ -665,8 +775,15 @@ module Rubino
       def note(text)
         return if text.nil? || text.to_s.empty?
 
-        $stdout.puts unless @last_block == :gap
-        $stdout.puts @pastel.dim("┄ #{text} ┄")
+        # ASYNC parent-surface write (R2/Y4): a `note` can fire from a CHILD
+        # thread (a 2nd subagent's `● … needs approval` notice) WHILE an approval
+        # modal owns the terminal — the composer is suspended and $stdout has been
+        # swapped to the raw terminal, so a plain #emit would land mid-line over
+        # the modal at an offset column. Route through the committed live-region
+        # paint so it PARKS while suspended and flushes at column 0 on resume,
+        # stacking cleanly instead of tearing the frame.
+        lead = @pastel.dim("┄ #{Util::Output.sanitize_terminal(text.to_s)} ┄")
+        commit_async_above([lead], gap: @last_block != :gap)
         @last_block = :other
       end
 
@@ -681,7 +798,7 @@ module Rubino
         pending = Array(@pending_subagent_footers)
         @pending_subagent_footers = nil
         line = ([text] + pending.map { |p| p[:fold] }).join(" · ")
-        $stdout.puts @pastel.dim("┄ #{line} ┄")
+        emit("┄ #{line} ┄", style: :dim)
         @last_block = :other
       end
 
@@ -699,27 +816,47 @@ module Rubino
         end
       end
 
-      # ONE lifecycle grammar (P6): the live-card-shaped row
-      # (`▸ sa_e488 · explore · completed · 1 tool · 12s`) — dim; red only on
-      # failure — and the child's FULL report markdown-rendered under its own
-      # `↳ report:` lead (the #139 fold-in treatment), never amputated to a
-      # one-line head. The id is remembered so the completion notice the model
-      # receives next turn doesn't ECHO the same report a second time
-      # (#input_injected elides the already-shown Result body).
+      # MINIMAL main-timeline lifecycle marker (agent-multiplexer Slice 1): just
+      # the close line (`✓ <name> · done` / `✗ <name> · failed`) — dim, red only
+      # on failure. NO result summary or report is dumped into the main
+      # scrollback; the child's per-tool detail lives in the BackgroundTasks
+      # registry (the card / /agents drill-in) and its full result reaches the
+      # MODEL via the InputQueue completion notice. The `report` param is kept in
+      # the signature for back-compat but no longer rendered here.
       def subagent_lifecycle(line, status: "done", report: nil, id: nil)
-        $stdout.puts unless @last_block == :gap
-        # The lifecycle line embeds the subagent name/summary (untrusted) —
-        # sanitize before the trusted color wrap (R3C-1, CWE-150). The report
-        # body goes through #commit_markdown_block, which renders structured
-        # tokens (no raw passthrough), so it is not a raw-escape sink.
-        safe_line = safe(line)
-        $stdout.puts(status == "failed" ? @pastel.red(safe_line) : @pastel.dim(safe_line))
-        if report && !report.to_s.strip.empty?
-          $stdout.puts @pastel.dim("  ↳ report:")
-          commit_markdown_block(report)
-          remember_reported_subagent(id)
-        end
+        # The line embeds the subagent name (UNTRUSTED, R3C-1 / CWE-150): defang
+        # every escape BEFORE the trusted style wrap. This is an ASYNC write from
+        # the worker thread — the `✓ … done` completion notice can fire while an
+        # approval modal owns the terminal (Y4), so it MUST go through the
+        # committed parked-paint (see #note / #commit_async_above) and land at
+        # column 0 on resume rather than at the cursor's offset over the modal.
+        safe   = Util::Output.sanitize_terminal(line.to_s)
+        styled = @pastel.decorate(safe, status == "failed" ? :red : :dim)
+        commit_async_above([styled], gap: @last_block != :gap)
         @last_block = :other
+      end
+
+      # Commits one or more PRE-STYLED async parent-surface lines above the
+      # prompt through the SAME live-region paint ordinary committed cards use
+      # (R2/Y4). When a bottom composer owns the screen we hand the block to its
+      # #print_above: during a turn it commits in one clean frame; while the
+      # composer is SUSPENDED (an approval/ask modal owns the raw terminal) it
+      # PARKS the line in @parked_writes and #resume flushes it in arrival order
+      # at column 0 — so a 2nd subagent's notice can never tear the active modal
+      # or land at an offset column. Off the composer seam (between turns / plain
+      # TTY / pipe / tests) it falls back to per-line emit so idle notices and
+      # headless runs are unchanged. The lines are rubino-built + already defanged
+      # by the caller (PATH 2), so the SGR survives the keep-sgr write.
+      def commit_async_above(lines, gap: false)
+        rows = (gap ? [""] : []) + Array(lines)
+        composer = BottomComposer.current
+        if composer
+          composer.print_above(rows.join("\n"), origin: @agent_id)
+        else
+          rows.each { |row| row.empty? ? emit_blank : emit_styled(row) }
+        end
+      rescue StandardError
+        # An async-notice paint is cosmetic — never let it break a turn or child.
       end
 
       # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
@@ -731,16 +868,27 @@ module Rubino
       # through $stdout so (during a turn) it lands above the bottom composer like
       # every other committed line; between turns it prints inline.
       def subagent_ask_banner(id, subagent, question)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ a subagent needs you ┄")
-        $stdout.puts @pastel.red.bold("⛔ #{safe(id)} (#{safe(subagent)}) is BLOCKED, waiting on your answer")
-        # The child's escalated question is untrusted — sanitize (R3C-1, CWE-150).
-        $stdout.puts @pastel.yellow("   ❓ #{safe(question)}")
-        $stdout.puts @pastel.dim("   everything it needs is paused until you answer — #{ask_timeout_hint}")
-        $stdout.puts @pastel.dim("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel")
+        emit_blank
+        emit("┄ a subagent needs you ┄", style: :dim)
+        # id/subagent/question are untrusted — the funnel's PATH 1 (#emit) strips
+        # every escape before the trusted style wrap (R3C-1, CWE-150).
+        emit("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer", style: %i[red bold])
+        emit("   ❓ #{question}", style: :yellow)
+        emit("   everything it needs is paused until you answer — #{ask_timeout_hint}", style: :dim)
+        emit("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel", style: :dim)
         $stdout.flush
         # The ⛔ state is the loudest one — the whole subtree is parked on the
         # human — so it also rings the attention bell/hook.
+        ring_subagent_blocked(id, subagent)
+      end
+
+      # Rings ONLY the ⛔ attention bell/hook for a blocked child, WITHOUT the
+      # scrollback banner. Used by the mid-turn auto-open path: when the answer
+      # dropdown surfaces by itself, its own `◆ … asks` header + picker IS the
+      # on-screen banner, so re-printing #subagent_ask_banner above it just
+      # doubles the same question (#510). The attention bell still belongs on
+      # both paths — the subtree is parked on the human either way.
+      def ring_subagent_blocked(id, subagent)
         notifier.blocked("#{id} (#{subagent}) is waiting on your answer")
       end
 
@@ -763,13 +911,15 @@ module Rubino
       # never enters scrollback as a "real" answer — it is the visual contract
       # that nothing here was saved. Same render family as #note / #mode_changed.
       def probe_aside(answer)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ probe (ephemeral · not saved) ┄#{"─" * 28}")
+        emit_blank
+        emit("┄ probe (ephemeral · not saved) ┄#{"─" * 28}", style: :dim)
         answer.to_s.each_line do |line|
-          $stdout.puts @pastel.dim("┊  #{line.chomp}")
+          # CWE-150 (#565): the probe answer is model output — the funnel's PATH 1
+          # (#emit) defangs escapes before our own (trusted) dim styling.
+          emit("┊  #{line.chomp}", style: :dim)
         end
-        $stdout.puts @pastel.dim("┄ vanished · main thread untouched ┄#{"─" * 25}")
-        $stdout.puts
+        emit("┄ vanished · main thread untouched ┄#{"─" * 25}", style: :dim)
+        emit_blank
       end
 
       # Confirms a `/branch` fork in the dim block from the locked UX: the new
@@ -781,14 +931,16 @@ module Rubino
         short_parent = parent_id.to_s[0..3]
         seed = "inherits  #{short_parent}  ▸ up to here"
         seed += "  + the probe above" if included_probe
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ branched ┄#{"─" * 50}")
+        emit_blank
+        emit("┄ branched ┄#{"─" * 50}", style: :dim)
+        # CWE-150 (#568): the session title is user/model-set — the funnel's
+        # PATH 1 (#emit) defangs escapes before the dim branch row's styling.
         label = title.to_s.strip.empty? ? "" : %(  "#{title}")
-        $stdout.puts @pastel.dim("┊  new session  #{short_new}#{label}")
-        $stdout.puts @pastel.dim("┊  #{seed}")
-        $stdout.puts @pastel.dim("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return")
-        $stdout.puts @pastel.dim("┄ now in  #{short_new} ┄#{"─" * 42}")
-        $stdout.puts
+        emit("┊  new session  #{short_new}#{label}", style: :dim)
+        emit("┊  #{seed}", style: :dim)
+        emit("┊  original  #{short_parent}  left intact — /sessions #{short_parent} to return", style: :dim)
+        emit("┄ now in  #{short_new} ┄#{"─" * 42}", style: :dim)
+        emit_blank
       end
 
       # Repaints the SUBAGENT CARD block in the live region from the
@@ -807,13 +959,78 @@ module Rubino
         return unless composer
 
         entries = Tools::BackgroundTasks.instance.running
-        composer.set_cards(subagent_cards.card_lines(entries))
+        composer.set_cards(subagent_cards.card_lines(entries), origin: @agent_id)
       rescue StandardError
         # A card repaint is cosmetic — never let it break the turn or the child.
       end
 
+      # Tick-driven card refresh (called ~1 Hz from the turn status thread) so a
+      # live child's elapsed keeps advancing mid-turn even when it fires no tool
+      # events. Skipped when no child is live, so a plain turn pays nothing;
+      # #set_subagent_cards coalesces, so an unchanged snapshot never repaints.
+      def refresh_live_cards
+        set_subagent_cards if Tools::BackgroundTasks.instance.running.any?
+      rescue StandardError
+        nil
+      end
+
       def subagent_cards
         @subagent_cards ||= SubagentCards.new(pastel: @pastel)
+      end
+
+      # MID-TURN AUTO-OPEN bridge (Option A): a background child just escalated an
+      # ask_parent to the HUMAN while the parent turn is busy. If a bottom composer
+      # owns the screen we ask IT to surface the answer dropdown by itself — the
+      # composer wakes its input thread (self-pipe), snapshots the live draft, runs
+      # the dropdown there, delivers via the child's gate (NEVER the parent turn),
+      # then restores the draft. The FIFO drain (answer_all_human) re-reads
+      # awaiting_human after each delivery, so several pending asks resolve one at
+      # a time and a 2nd child that asks mid-open is picked up on the re-read.
+      #
+      # No-op when no turn is live (BottomComposer.current nil) — the idle poll
+      # (Handlers::Agents#auto_resolve_pending) covers that path. Called from the
+      # CHILD thread (AskParentTool#surface_and_notify); the actual takeover runs
+      # on the input thread. Best-effort — a hiccup here must never break the
+      # child or the parent turn.
+      #
+      # Returns true when a live composer OWNS the screen — i.e. the ask WILL be
+      # surfaced in an on-screen dropdown, either now via this takeover OR via the
+      # FIFO re-read of an already-running dropdown loop (#486, one-at-a-time).
+      # The caller (#surface_and_notify) uses that to SUPPRESS the redundant
+      # scrollback ask-banner whose question the dropdown header already shows
+      # (#510). Returns false only when there is no composer (the idle path, where
+      # /reply is the affordance) or on error.
+      def auto_open_human_ask(_entry = nil)
+        composer = BottomComposer.current
+        return false unless composer
+        # Belt-and-suspenders (#513): when the composer is ALREADY suspended the
+        # idle resolver (chat_command.rb) is mid-resolution and will surface the
+        # child itself — request_takeover would reject this anyway (returns false
+        # on @suspended), but bailing here makes it explicit that only ONE path
+        # claims the shared composer, so the two threads can't both report
+        # success and race the surface.
+        return false if composer.suspended?
+
+        handler = Commands::Handlers::Agents.new(ui: self)
+        # on_resume repaints the subagent cards from the live registry once the
+        # dropdown closes and the composer has resumed — so the aggregated
+        # `⛔N subagents waiting on you` hint (the live region's last row, wiped
+        # when the takeover suspended it) RELIABLY comes back whenever children
+        # are still awaiting_human (several pending, or the human cancelled),
+        # instead of staying invisible for the rest of the turn (#475-A).
+        #
+        # RETURN THE REAL RESULT (#513): request_takeover returns false when NO
+        # takeover (and no snapshot/restore) happened — composer not running,
+        # suspended, no wake pipe, or the one-at-a-time guard. On the one-at-a-time
+        # case the ask is NOT lost (answer_all_human's FIFO re-read surfaces it),
+        # but on the OTHER rejections nothing surfaces it on-screen, so the caller
+        # must KEEP the scrollback banner + /reply affordance. Hardcoding true here
+        # suppressed that banner and stranded the user with only a bell. A
+        # redundant banner is strictly safer than a stranded user, so we report
+        # the actual takeover result.
+        composer.request_takeover(on_resume: -> { set_subagent_cards }) { handler.answer_all_human }
+      rescue StandardError
+        false
       end
 
       # Echoes a line the user typed mid-turn, parked for the next turn.
@@ -825,11 +1042,12 @@ module Rubino
         return if text.nil? || text.to_s.empty?
 
         clear_line
-        # USER-SUPPLIED steered text: neutralize terminal escapes before the
-        # echo (CWE-150 — H1), the same render-boundary defense the approval
-        # card and the submit echo use. Render-only — the literal text is what
-        # runs next turn; only this echo is sanitized.
-        $stdout.puts @pastel.dim("queued ▸ #{Util::Output.sanitize_terminal(text.to_s)}")
+        # USER-SUPPLIED steered text is UNTRUSTED (CWE-150 — H1). PATH 1 of the
+        # output funnel: #emit strips every escape and applies the :dim style
+        # around the now-inert text, so the manual sanitize + @pastel.dim wrap is
+        # gone. Render-only — the literal text is what runs next turn; only this
+        # echo is defanged.
+        emit("queued ▸ #{text}", style: :dim)
         $stdout.flush
       end
 
@@ -859,51 +1077,14 @@ module Rubino
           text.to_s.split("\n").each { |line| composer.commit_queued(line) }
         end
         clear_line
-        first, rest = elide_shown_reports(text.to_s).split("\n", 2)
-        # The injected first line is a subagent completion notice (untrusted) —
-        # sanitize before the trusted dim wrap (R3C-1, CWE-150). The rest goes
+        first, rest = text.to_s.split("\n", 2)
+        # The injected first line is a subagent completion notice (UNTRUSTED,
+        # R3C-1 / CWE-150). PATH 1: #emit strips every escape and dims the inert
+        # text — the manual safe + @pastel.dim wrap is gone. The rest goes
         # through #commit_markdown_block, which renders structured tokens.
-        $stdout.puts @pastel.dim("↳ received while working: #{safe(first)}")
+        emit("↳ received while working: #{first}", style: :dim)
         commit_markdown_block(rest) if rest && !rest.strip.empty?
         $stdout.flush
-      end
-
-      # Drops the Result body from a completion notice whose report the
-      # lifecycle block ALREADY rendered in full (#subagent_lifecycle), so the
-      # user doesn't read the same report twice — once at completion and again
-      # when the queued notice is injected next turn. DISPLAY-ONLY: the
-      # model-facing injected text is untouched. Anchored to the notice shape
-      # TaskTool#completion_notice emits; an unmatched notice renders whole
-      # (duplicated beats lost). Each id is consumed on first elision.
-      def elide_shown_reports(text)
-        ids = @reported_subagent_ids
-        return text if ids.nil? || ids.empty?
-
-        ids.dup.each do |id|
-          quoted  = Regexp.escape(id)
-          pattern = Regexp.new(
-            "^(\\[background-task\\] Task #{quoted} \\([^)]*\\) completed\\.)\n" \
-            "Result:\n.*?\n\\(full result via task_result\\(\"#{quoted}\"\\)\\)",
-            Regexp::MULTILINE
-          )
-          replaced = text.sub(pattern) do
-            "#{::Regexp.last_match(1)} (report shown above — full result via task_result(\"#{id}\"))"
-          end
-          next if replaced == text
-
-          text = replaced
-          ids.delete(id)
-        end
-        text
-      end
-
-      # Bounded memory of lifecycle-rendered report ids (see #elide_shown_reports).
-      def remember_reported_subagent(id)
-        return unless id
-
-        @reported_subagent_ids ||= []
-        @reported_subagent_ids << id.to_s
-        @reported_subagent_ids.shift while @reported_subagent_ids.size > 32
       end
 
       # Markdown rendering: assistant output rendered as readable text with
@@ -957,7 +1138,11 @@ module Rubino
       def commit_markdown_block(text)
         return if text.nil? || text.to_s.empty?
 
-        render_markdown_block(text).each { |line| $stdout.puts "#{MD_MARGIN}#{line}" }
+        # Each rendered line is rubino-built with its own per-token SGR, off a
+        # source already sanitize_terminal'd in #render_markdown_block before
+        # parse. PATH 2 (#emit_styled) keeps that SGR and strips any residual
+        # danger byte.
+        render_markdown_block(text).each { |line| emit_styled("#{MD_MARGIN}#{line}") }
       end
 
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
@@ -1008,7 +1193,13 @@ module Rubino
           nil
         end
         cols = 80 unless cols&.positive?
-        [cols - MD_MARGIN.length, MIN_MARKDOWN_WIDTH].max
+        # Apply the #95 under-report floor to the REAL pane width FIRST, THEN
+        # subtract the MD_MARGIN every committed/live line is indented by, so the
+        # rendered table plus its margin never exceeds the actual pane (#Y1).
+        # Flooring after the subtraction (the old `[cols - margin, FLOOR].max`)
+        # let a 40-col pane render a 40-col table that, once margined, spilled to
+        # 42 cols and tore/garbled. Clamp the post-margin budget to ≥1 too.
+        [[cols, MIN_MARKDOWN_WIDTH].max - MD_MARGIN.length, 1].max
       end
 
       # --- Streaming (unchanged except visual, now uses assistant_text) ---
@@ -1020,18 +1211,11 @@ module Rubino
 
         @turn_tok_chars += text.length if @turn_active
 
-        # Reasoning deltas are NEVER raw-printed (that dumped unstyled reasoning
-        # indistinguishable from the answer). Buffer them so the collapse cue /
-        # full aside / ctrl-o reveal can render them in house style instead. The
-        # status row keeps animating (label "thinking") while reasoning
-        # accumulates — and RESUMES if a tool/content block hid it (P4).
+        # Reasoning deltas are handled by #handle_thinking_delta: ALWAYS buffered
+        # (for the collapse cue / ctrl-o reveal), and in :full ALSO streamed live
+        # as a dim aside; :collapsed/:hidden just keep the spinner animating.
         if type == :thinking
-          @reasoning_buffer << text
-          @thinking_started_at ||= monotonic_now
-          if @turn_active && thinking_painter
-            @thinking_indicator = true
-            status_ensure("thinking", phase: :thinking)
-          end
+          handle_thinking_delta(text)
           return
         end
 
@@ -1055,6 +1239,9 @@ module Rubino
           # The streamed answer gets the SAME single committed gap the
           # non-streamed path gets (P3) — once, when the content stream opens.
           answer_gap if type == :content
+          # Label the (hidden) status row for the stall watchdog (#21): if this
+          # block goes silent mid-stream, the resurfaced facet row reads "writing".
+          relabel_streaming(type)
         end
 
         # Signal the bottom composer that ANSWER content is now actively
@@ -1066,12 +1253,32 @@ module Rubino
         stream_content(text)
       end
 
+      # A reasoning delta. The text is ALWAYS buffered (the collapse cue / ctrl-o
+      # reveal render it in house style off @reasoning_buffer). In :full mode it
+      # is ADDITIONALLY streamed live as a dim `┊` aside so the pre-tool-call
+      # window fills with flowing thought instead of a bare spinner (Hermes'
+      # _fire_reasoning_delta); the live tail owns the transient row, so the
+      # status spinner is NOT animated here. :collapsed/:hidden keep the original
+      # spinner-only behaviour — the status row animates ("thinking"), RESUMING if
+      # a tool/content block hid it (P4); no reasoning text is shown.
+      def handle_thinking_delta(text)
+        @reasoning_buffer << text
+        @thinking_started_at ||= monotonic_now
+
+        if reasoning_mode == :full
+          stream_reasoning_live(text)
+        elsif @turn_active && thinking_painter
+          @thinking_indicator = true
+          status_ensure("thinking", phase: :thinking)
+        end
+      end
+
       def stream_end
         clear_thinking_indicator
         if @stream_type == :content && @stream_md
           flush_content_stream
         elsif @stream_type
-          $stdout.puts
+          emit_blank
         end
         @stream_md = nil
         @stream_type = nil
@@ -1101,14 +1308,17 @@ module Rubino
 
       # Repaint cadence for the status-row animation (seconds).
       STATUS_TICK = 0.1
+      # How long the model stream may go silent mid-block before the facet status
+      # row resurfaces BELOW the in-flight tail (#21). Set just above a normal
+      # stream's p95 inter-delta gap (~0.25s on MiniMax) so steady streaming never
+      # flickers the row, but a real multi-second transport silence (bursty
+      # delivery / proxy stall) stops the screen looking frozen.
+      STREAM_STALL_AFTER = 0.6
       # "Ruby facet" skin: a red ◆ sweeping back and forth on a 5-cell dim ┄
       # track (the house separator glyph). 12-frame loop @100ms — the facet
       # dwells one extra beat at each end of the sweep.
       FACET_TRACK_CELLS = 5
       FACET_FRAMES = [0, 0, 0, 1, 2, 3, 4, 4, 4, 3, 2, 1].freeze
-      # Don't nag fast turns: the "esc to interrupt" hint appears only after
-      # the wait has visibly dragged.
-      INTERRUPT_HINT_AFTER = 1.5
 
       # Marks the start of a TURN: resets the per-turn stats and starts the
       # status-row engine in its initial "thinking" phase (the P1 wait). Called
@@ -1119,6 +1329,8 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
+        # Fresh turn: silence clock unarmed (#21).
+        @status_mutex.synchronize { @last_stream_at = nil }
         # Per-turn tally of plain "Approve once" choices by tool — drives the
         # bulk-refactor batch nudge (F4); reset each turn so a new refactor
         # re-detects its batch.
@@ -1173,8 +1385,9 @@ module Rubino
           return if @thinking_indicator
 
           @thinking_indicator = true
-          $stdout.print @pastel.dim("thinking…")
-          $stdout.flush
+          # rubino's OWN dim label, no untrusted text → Cat 4 cursor-control
+          # frame (transient print+flush, no committing newline).
+          emit_frame(@pastel.dim("thinking…"))
           return
         end
 
@@ -1233,16 +1446,41 @@ module Rubino
       #   * a pipe hosts nothing — raw escapes must not leak into the cooked
       #     output (#56).
       def paint_live(frame)
-        if $stdout.respond_to?(:live)
+        # The $stdout proxy belongs to the MAIN turn (the main thread swaps it in);
+        # only the main CLI may write through it. A background subagent's CLI runs
+        # on its own thread where the GLOBAL $stdout is the main's proxy (or real
+        # IO) — writing the sub's tail there would route with the wrong origin. So
+        # a non-:main CLI bypasses the proxy and paints the composer directly with
+        # its own origin, letting the focus-gate decide if it lands.
+        if $stdout.respond_to?(:live) && @agent_id == :main
           $stdout.live(frame)
         elsif (composer = BottomComposer.current)
-          composer.set_partial(frame)
+          composer.set_partial(frame, origin: @agent_id)
         elsif tty_stdout?
           # The bare-TTY repaint owns ONE row (CR + clear-line): show only the
           # last line of a multi-line frame so the in-place repaint can't wrap
-          # and leave residue it can never erase.
-          $stdout.print("\r\e[2K#{frame.to_s.split("\n").last}")
-          $stdout.flush
+          # and leave residue it can never erase. The frame is rubino's OWN
+          # cursor-control output (CR + \e[2K) wrapping content the caller has
+          # already defanged (#margined_tail / #show_reasoning_tail sanitize the
+          # model tail; the status frame interpolates only @pastel + a pre-#safe'd
+          # hint) → Cat 4's #emit_frame writes it through the single seam without
+          # stripping the cursor control, print+flush, timing unchanged.
+          emit_frame("\r\e[2K#{frame.to_s.split("\n").last}")
+        end
+      end
+
+      # Routes a TURN STATUS / STALL frame to whichever seam owns the bottom of
+      # the screen, resolved per call like #paint_live — but to the FOOTER, not
+      # the partial: during a turn a composer owns the screen, so the facet rides
+      # its SINGLE footer bar (#set_turn_status) instead of a separate row above
+      # the prompt. On a bare TTY with no composer (the cooked /probe wait, #58)
+      # there is no footer, so it degrades to the same one-row CR repaint
+      # #paint_live uses there. Into a pipe / between turns it is a no-op.
+      def paint_turn_status(frame)
+        if (composer = BottomComposer.current)
+          composer.set_turn_status(frame, origin: @agent_id)
+        elsif tty_stdout?
+          emit_frame("\r\e[2K#{frame.to_s.split("\n").last}")
         end
       end
 
@@ -1281,7 +1519,9 @@ module Rubino
       def clear_line
         return unless tty_stdout?
 
-        $stdout.print("\r\e[2K")
+        # rubino's own CR + erase-line — Cat 4 cursor-control frame (no untrusted
+        # text), through the single seam.
+        emit_frame("\r\e[2K")
       end
 
       # The active reasoning render mode (:hidden | :collapsed | :full), resolved
@@ -1289,7 +1529,7 @@ module Rubino
       # render path share one source of truth). Handles the legacy show_reasoning
       # back-compat mapping.
       def reasoning_mode
-        Config::ReasoningPrefs.mode(Rubino.configuration)
+        Config::ReasoningPrefs.effective_mode(Rubino.configuration)
       end
 
       # Whole seconds the current/last thinking phase ran, for the collapse cue.
@@ -1307,9 +1547,11 @@ module Rubino
       # the transcript echoes it. Render-only — the literal text reached the
       # model already; only this echo is neutralized.
       def replay_user_input(text, at: nil)
-        $stdout.puts
-        $stdout.puts @pastel.green(Util::Output.sanitize_terminal(text.to_s))
-        $stdout.puts
+        emit_blank
+        # USER-SUPPLIED text — the funnel's PATH 1 (#emit) strips every escape
+        # before the trusted green wrap (CWE-150 — H1).
+        emit(text.to_s, style: :green)
+        emit_blank
         @last_block = :gap
       end
 
@@ -1327,9 +1569,10 @@ module Rubino
       # Idempotent: the non-streaming path already closed the stream
       # (Loop#close_intermediate_stream), so this is a no-op there — the same
       # contract #confirm uses before the approval card.
-      def tool_started(name, arguments: nil, at: nil)
+      def tool_started(name, arguments: nil, at: nil, call_id: nil)
+        record_subagent_tool_started(name, arguments)
         finalize_stream
-        return delegation_started(arguments) if name == "task"
+        return delegation_started(arguments, call_id) if name == "task"
 
         hint = args_hint(arguments)
         activity_started(name, hint: hint)
@@ -1360,7 +1603,7 @@ module Rubino
         shown  = limit.positive? ? lines.first(limit) : lines
         hidden = lines.size - shown.size
         write_body_lines(shown.join) { |chomped| @pastel.dim(chomped) }
-        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}") if hidden.positive?
+        emit("  #{hidden_lines_marker(hidden)}", style: :dim) if hidden.positive?
         @last_block = :tool
       end
 
@@ -1369,6 +1612,7 @@ module Rubino
       # silently; #activity_finished flushes the `… +N lines` marker right
       # before the close row.
       def tool_chunk(_name, chunk, kind: :plain)
+        record_subagent_tool_output(chunk)
         return if chunk.nil? || chunk.to_s.empty?
 
         # A diff the user asked to SEE (`git diff`, `git show`): colorize the
@@ -1414,7 +1658,9 @@ module Rubino
       # `└ ✗ failed · name · error` in red (P10).
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
       def tool_finished(name, result: nil)
+        record_subagent_tool_finished(name, result)
         return delegation_finished(result) if name == "task"
+        return status_back_to_thinking if result.respond_to?(:transcript_card?) && !result.transcript_card?
 
         failed = result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
         metric = if failed
@@ -1442,8 +1688,8 @@ module Rubino
       end
 
       def compression_started(at: nil)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ compacting context… ┄")
+        emit_blank
+        emit("┄ compacting context… ┄", style: :dim)
       end
 
       def compression_finished(metadata, at: nil)
@@ -1457,7 +1703,7 @@ module Rubino
         # inline in the SAME transcript. Falls back to the bare token line when
         # the counts aren't supplied (e.g. the API-shaped metadata).
         msg = before && after ? " (#{before}→#{after} msg)" : ""
-        $stdout.puts @pastel.dim("┄ compacted · saved #{saved} tok#{msg} ┄")
+        emit("┄ compacted · saved #{saved} tok#{msg} ┄", style: :dim)
       end
 
       # Ctrl+O reveal: re-render the LAST retained reasoning buffer as the
@@ -1523,8 +1769,8 @@ module Rubino
       # `/reasoning` with no arg: confirm the current render mode in house style.
       #   ┄ reasoning: collapsed ┄
       def reasoning_status(mode)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ reasoning: #{mode} ┄")
+        emit_blank
+        emit("┄ reasoning: #{mode} ┄", style: :dim)
       end
 
       # `/reasoning <mode>`: confirm the session render-mode switch. The actual
@@ -1535,35 +1781,35 @@ module Rubino
       # — "hidden" is otherwise opaque (no cue, no aside), so we spell out what it
       # does and how to bring reasoning back.
       def reasoning_changed(mode, previous: nil)
-        $stdout.puts
+        emit_blank
         if mode.to_sym == :hidden
-          $stdout.puts @pastel.dim("┄ reasoning hidden — won't be shown (ctrl-o or /reasoning to bring it back) ┄")
+          emit("┄ reasoning hidden — won't be shown (ctrl-o or /reasoning to bring it back) ┄", style: :dim)
         else
           arrow = previous && previous != mode ? "#{previous} → #{mode}" : mode.to_s
-          $stdout.puts @pastel.dim("┄ reasoning #{arrow} ┄")
+          emit("┄ reasoning #{arrow} ┄", style: :dim)
         end
       end
 
       # `/think` with no arg: confirm the current effort in house style.
       #   ┄ effort: medium ┄
       def think_status(effort)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ effort: #{effort} ┄")
+        emit_blank
+        emit("┄ effort: #{effort} ┄", style: :dim)
       end
 
       # `/think <level>`: confirm the effort switch.
       #   ┄ effort medium → high ┄
       def think_changed(effort, previous: nil)
         arrow = previous && previous != effort ? "#{previous} → #{effort}" : effort.to_s
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ effort #{arrow} ┄")
+        emit_blank
+        emit("┄ effort #{arrow} ┄", style: :dim)
       end
 
       def mode_changed(name, previous: nil)
         arrow = previous && previous != name ? "#{previous} → #{name}" : name.to_s
         text = "┄ mode #{arrow} ┄"
-        $stdout.puts
-        $stdout.puts(name.to_sym == :yolo ? @pastel.yellow(text) : @pastel.dim(text))
+        emit_blank
+        emit(text, style: name.to_sym == :yolo ? :yellow : :dim)
       end
 
       # Short human labels for the post-turn inline jobs the status row tracks.
@@ -1623,6 +1869,44 @@ module Rubino
       end
 
       private
+
+      # True when the GLOBAL $stdout is the StdoutProxy a turn swapped in. That
+      # proxy belongs to the MAIN turn (the main thread installs it), so only the
+      # :main CLI may write committed/live frames through it; a background sub on
+      # its own thread sees the SAME global $stdout and must NOT (it would commit
+      # with the main's origin). Combined with `@agent_id == :main` at the call
+      # sites so a sub always routes straight to the composer with its own origin.
+      def proxy_owned? = $stdout.respond_to?(:live)
+
+      # Funnel override (committed lines). For the MAIN CLI, write through $stdout
+      # exactly as PrinterBase does — during a turn that's the StdoutProxy (line
+      # buffering + origin :main), off-turn the real IO. A NON-:main subagent CLI
+      # runs on its own thread where $stdout is the main turn's proxy (or real IO),
+      # so it bypasses $stdout and commits straight to the bottom composer with its
+      # own origin; the focus-gate drops the frame unless that sub is focused. With
+      # no composer (off-turn / plain / tests) it falls back to the real $stdout so
+      # headless/foreground subagent output is unchanged.
+      def write_line(line = nil)
+        return super if @agent_id == :main
+
+        composer = BottomComposer.current
+        return super unless composer
+
+        composer.print_above(line.to_s, origin: @agent_id)
+      end
+
+      # Funnel override (transient raw frames). Same split as #write_line: a sub's
+      # cursor-control frames route to the composer's transient row (set_partial)
+      # with its origin; the gate drops them when the sub isn't focused. The :main
+      # CLI keeps the raw $stdout print+flush so its stream cadence is unchanged.
+      def write_raw(raw)
+        return super if @agent_id == :main
+
+        composer = BottomComposer.current
+        return super unless composer
+
+        composer.set_partial(raw.to_s, origin: @agent_id)
+      end
 
       # True when a prior "always" decision covers this call — either the
       # exact (tool, args) scope or the tool-wide parent ("always this tool").
@@ -1771,6 +2055,7 @@ module Rubino
       def approval_menu(prompt, choices)
         BottomComposer.run_in_terminal do
           approval_prompt.select(prompt, cycle: false, filter: true) do |menu|
+            menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }
           end
         end
@@ -1806,7 +2091,7 @@ module Rubino
         reset_tool_preview
         return unless hidden.positive?
 
-        $stdout.puts @pastel.dim("  #{hidden_lines_marker(hidden)}")
+        emit("  #{hidden_lines_marker(hidden)}", style: :dim)
       end
 
       # Renders body text with the current activity open.
@@ -1832,21 +2117,27 @@ module Rubino
           # continuation lines hang-indent under the first.
           wrap_tail_row(chomped, budget).each do |row|
             rendered = style ? style.call(row) : row
-            $stdout.puts "#{BODY_MARGIN}#{rendered}"
+            # +text+ was sanitize_terminal'd above; the style block adds rubino's
+            # own SGR → PATH 2 (#emit_styled) keeps that colour, strips danger.
+            emit_styled("#{BODY_MARGIN}#{rendered}")
           end
         end
       end
 
-      # The single chokepoint for UNTRUSTED inline text (R3C-1, CWE-150): tool
-      # command/args on the approval card, tool/shell output reflected in a
-      # metric or close row, a subagent's name/summary/question. Neutralizes
-      # every terminal-control byte to visible caret/<XX> notation BEFORE the
-      # caller wraps it in rubino's own (trusted) @pastel styling — so a raw
-      # `\e[2J` / `\e]0;…\a` / cursor-move embedded in that text can never clear
-      # the screen, set the window title, or SPOOF the line the human is about
-      # to authorize. #write_body_lines is the parallel chokepoint for the
-      # multi-line tool BODY; this one covers the single-line interpolated sinks.
-      # rubino's own ANSI is applied around the result and is never passed here.
+      # COMPOSE-TIME span defang: neutralizes an UNTRUSTED span (a tool metric, a
+      # subagent summary, a reasoning/fence line) to visible caret/<XX> notation
+      # BEFORE it is interpolated into a line that rubino then wraps in its OWN
+      # @pastel styling and commits via the funnel's PATH 2 (#emit_styled).
+      #
+      # Why it SURVIVES phase 2: #emit_styled keeps SGR (so rubino's wrapping
+      # colour shows), which means it would ALSO keep an untrusted span's OWN
+      # `\e[31m` — the SGR-injection leak. The simple PATH-1 #emit can't be used
+      # here because the line carries rubino's per-token/per-row SGR that MUST
+      # survive. So the untrusted span is stripped of EVERY escape here first;
+      # only then does rubino's trusted style wrap it. (#emit_glyph is the
+      # ready-made version for the single-span `glyph + body` rows; #safe covers
+      # the cases where the defanged span is interpolated mid-line before a
+      # multi-token render.) Thin alias for Util::Output.sanitize_terminal.
       def safe(text)
         Util::Output.sanitize_terminal(text)
       end
@@ -1892,13 +2183,55 @@ module Rubino
         # tail row can't survive above the rendered block at the scroll boundary
         # (#265) — the same single-frame discipline the final flush uses.
         completed.each { |block| commit_block_atomic(margined_render(block)) }
-        # Live region: a small ROLLING window over the in-flight block — its last
-        # few raw lines, so a long list/table block keeps its recent context
-        # visible while it streams instead of vanishing to a single flickering
-        # line until the whole block commits (#127). Bounded, so a long open
-        # fence can never push the prompt off-screen; the block still snaps to
-        # rendered markdown the moment it completes.
-        show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
+        # Live region. While a GFM table is in flight, paint a FITTED, growing
+        # partial table (header + completed rows) instead of the raw `| … |`
+        # rows — the rows mid-cell soft-wrap with no borders otherwise (the
+        # streaming-table garble). Otherwise a small ROLLING window over the
+        # in-flight block — its last few raw lines, so a long list/prose block
+        # keeps its recent context visible while it streams instead of vanishing
+        # to a single flickering line (#127). Both are bounded, so neither can
+        # push the prompt off-screen; the block snaps to rendered markdown the
+        # moment it completes.
+        if @stream_md.in_table?
+          show_live_table(@stream_md.table_rows_so_far)
+        else
+          show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
+        end
+      end
+
+      # Paint the growing partial table in the live region: re-render the
+      # completed-rows-so-far through MarkdownRenderer's solid table path
+      # (fitted to markdown_width, balanced columns, #95 floor — never a
+      # mid-cell raw-pipe wrap), capped to LIVE_TAIL_ROWS data rows so a tall
+      # table can't push the prompt off-screen (header + last K rows show; the
+      # full table snaps in on completion via #flush_content_stream). Uses the
+      # SAME single-frame live-region seam (#paint_live) and #265 ghost guard as
+      # the raw tail, so the partial table is cleanly replaced each row and torn
+      # down when the block commits.
+      def show_live_table(rows)
+        lines = render_partial_table_lines(rows)
+        if lines.empty?
+          note_live_tail("")
+          paint_live("")
+          return
+        end
+
+        frame = lines.join("\n")
+        note_live_tail(frame)
+        paint_live(frame)
+      end
+
+      # Completed-rows-so-far -> MD_MARGIN-indented, ANSI-styled live-table lines.
+      # The source pipe rows are untrusted model text (CWE-150): defang escapes
+      # before parsing, exactly as #render_markdown_block does for committed
+      # blocks. Capped to LIVE_TAIL_ROWS data rows to keep the live region small.
+      def render_partial_table_lines(rows)
+        safe_rows = Array(rows).map { |line| Util::Output.sanitize_terminal(line.to_s) }
+        MarkdownRenderer.new(width: markdown_width)
+                        .render_partial_table(safe_rows, max_rows: LIVE_TAIL_ROWS)
+                        .map do |line_tokens|
+          "#{MD_MARGIN}#{line_tokens.map { |token, style| style.nil? ? token : apply_style(token, style) }.join}"
+        end
       end
 
       # Erases an in-place raw tail on the plain (no-#live) path before a commit.
@@ -1906,6 +2239,68 @@ module Rubino
         return if $stdout.respond_to?(:live)
 
         clear_line
+      end
+
+      # :full mode — stream a reasoning delta LIVE as a dim `┊` aside, reusing the
+      # SAME live-tail discipline as #stream_content so the in-flight thought
+      # rolls in a bounded region and committed lines snap above the prompt in ONE
+      # frame (no stranded raw tail, #265). The committed scrollback is byte-for-
+      # byte the body #commit_reasoning_aside would have printed — just streamed
+      # incrementally instead of dumped at collapse — so #collapse_reasoning only
+      # has to paint the closing rail (no double-render).
+      #
+      # The status spinner is hidden the first time we take over the row: the live
+      # tail and the ticker both paint the one transient row, so they must not run
+      # at once. The reasoning here is DIM (clearly NOT the answer) — solving the
+      # original "raw reasoning indistinguishable from the answer" defect with
+      # style, not by buffering.
+      def stream_reasoning_live(text)
+        unless @reasoning_streaming
+          # First reasoning delta of this phase: drop the spinner, open the rail.
+          clear_thinking_indicator
+          @reasoning_md = StreamingMarkdown.new
+          @reasoning_streaming = true
+          commit_block_atomic(["", @pastel.dim("┄ thinking ┄#{"─" * 50}")])
+          # Label the hidden status row so a stall mid-reasoning resurfaces as
+          # "thinking" beneath the dim aside (#21).
+          relabel_streaming(:thinking)
+        end
+
+        completed = @reasoning_md.feed(text)
+        clear_plain_tail if completed.any?
+        completed.each { |block| commit_block_atomic(reasoning_aside_lines(block)) }
+        # Bounded dim rolling window over the in-flight (un-committed) thought.
+        show_reasoning_tail(@reasoning_md.live_tail(LIVE_TAIL_ROWS))
+      end
+
+      # The streamed-aside body for a completed reasoning block: each line dim and
+      # flush-left under the `┄ thinking ┄` rail — the SAME shape
+      # #commit_reasoning_aside commits, so the live-streamed scrollback matches
+      # the all-at-once aside exactly.
+      def reasoning_aside_lines(block)
+        # CWE-150 (#566): committed reasoning is model output — defang escapes
+        # before wrapping each line in our own (trusted) @pastel dim styling.
+        block.to_s.split("\n", -1).map { |line| @pastel.dim(safe(line).to_s) }
+      end
+
+      # The DIM live tail for the in-flight reasoning line — same wrap/clamp
+      # geometry as #show_live_tail (so it can't push the prompt off-screen),
+      # styled dim and flush-left under the `┄ thinking ┄` rail (the dim styling
+      # + rail mark it as reasoning, not the answer) — matching the committed
+      # aside so the tail doesn't shift when it commits.
+      def show_reasoning_tail(tail)
+        text = Util::Output.sanitize_terminal(tail.to_s)
+        if text.empty?
+          note_live_tail("")
+          paint_live("")
+          return
+        end
+
+        budget = terminal_cols - MD_MARGIN.length - 1
+        rows = text.split("\n", -1).flat_map { |line| wrap_tail_row(line, budget) }
+        framed = rows.last(LIVE_TAIL_ROWS).map { |row| @pastel.dim(row) }.join("\n")
+        note_live_tail(framed)
+        paint_live(framed)
       end
 
       # Flush on stream end: render+commit the final block. If a fence is still
@@ -1933,7 +2328,9 @@ module Rubino
           if open_fence?(remaining)
             # A half-open fence renders as garbage; emit the buffered text PLAIN
             # so nothing is lost, still margined to sit under the rest.
-            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{line}" }
+            # CWE-150 (#567): a half-open fence dumps RAW model text — defang
+            # escapes before the margined plain-line fallback prints it.
+            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{safe(line)}" }
           else
             margined_render(remaining)
           end
@@ -1956,20 +2353,33 @@ module Rubino
       def commit_block_atomic(lines)
         return if lines.nil? || lines.empty?
 
+        # A committed block is visible progress AND tears the raw tail down: bump
+        # the silence clock and drop the stored tail so the stall watchdog (#21)
+        # measures from here and never redraws a tail that has already scrolled.
+        note_live_tail("")
+
         composer = BottomComposer.current
-        if composer && $stdout.respond_to?(:live)
+        if composer && (proxy_owned? || @agent_id != :main)
           # Route around the StdoutProxy's per-line buffering: hand the whole
           # block to the composer so it commits in ONE frame that also clears the
           # live partial (no stranded raw tail). nil/empty lines stay as blank
-          # rows (the P3 rhythm) — LiveRegion#commit keeps them.
-          composer.print_above(lines.join("\n"))
+          # rows (the P3 rhythm) — LiveRegion#commit keeps them. A non-:main agent
+          # has no proxy of its own ($stdout is the main turn's), so it always
+          # commits straight to the composer with its origin; the focus-gate drops
+          # it when that agent isn't focused.
+          composer.print_above(lines.join("\n"), origin: @agent_id)
         else
           # No composer owns the screen (plain TTY / pipe / a #live-shaped test
           # double): clear the in-place raw tail through the SAME seam a live
           # region would (#show_live_tail), then commit per line.
           show_live_tail("")
           clear_plain_tail
-          lines.each { |line| $stdout.puts line }
+          # Each line is rubino-built: rendered-markdown lines carry per-token
+          # SGR off a source already sanitize_terminal'd in #render_markdown_block,
+          # and the half-open-fence fallback pre-defangs each line; a "" blank
+          # stays blank. PATH 2 (#emit_styled) keeps that SGR, strips any residual
+          # danger byte, and keeps $stdout private to the funnel.
+          lines.each { |line| emit_styled(line) }
         end
       end
 
@@ -1990,7 +2400,9 @@ module Rubino
       # under indented output read as a jarring seam. Off-TTY this is moot:
       # #paint_live skips pipes entirely (#56).
       def show_live_tail(tail)
-        paint_live(margined_tail(tail))
+        frame = margined_tail(tail)
+        note_live_tail(frame)
+        paint_live(frame)
       end
 
       # WRAPS the in-flight tail to the terminal width and keeps the last
@@ -2118,6 +2530,9 @@ module Rubino
           @status[:visible] = false if @status
           paint_live("")
         end
+        # The facet leaves the footer too (a tail now owns the live region); the
+        # footer reverts to the plain model/ctx bar until the ticker resurfaces.
+        paint_turn_status("")
         $stdout.flush
       end
 
@@ -2133,6 +2548,10 @@ module Rubino
         @status_mutex.synchronize { @status = nil }
         @turn_started_at = nil unless @turn_active
         paint_live("")
+        # Drop the facet from the footer so it reverts to the plain model/ctx
+        # line the instant the turn ends (interrupt / error / normal end all
+        # land here). No stale "◆ writing" left below the prompt.
+        paint_turn_status("")
         $stdout.flush
       rescue StandardError
         nil
@@ -2148,8 +2567,24 @@ module Rubino
           i = 0
           loop do
             @status_mutex.synchronize do
-              paint_live(status_frame(i)) if @status && @status[:visible]
+              if @status && @status[:visible]
+                paint_turn_status(status_frame(i))
+              elsif stream_stalled?
+                # The model went silent mid-block: resurface the facet in the
+                # footer so the wait reads as latency, not a hang. The frozen
+                # tail already sits above the prompt (the last #paint_live left
+                # it in the partial), so only the facet row moves down here.
+                paint_turn_status(status_frame(i))
+              end
             end
+            # Advance the live subagent cards too (~1 Hz, the idle ticker's
+            # cadence). The IdleCardHost ticker only runs BETWEEN turns, so during
+            # a turn a background child's card elapsed would freeze whenever the
+            # child went a while without firing a tool event (a long LLM call) —
+            # a still-running child then looked hung at a stale "N tools · Ms".
+            # Outside @status_mutex (set_subagent_cards takes the composer's own
+            # render mutex; keeping the locks un-nested avoids any ordering risk).
+            refresh_live_cards if (i % 10).zero?
             i += 1
             sleep STATUS_TICK
           end
@@ -2168,6 +2603,31 @@ module Rubino
         "#{track} #{@pastel.dim(status_text)}"
       end
 
+      # True when a block is mid-stream (the in-flight tail owns the hidden
+      # status row) but the model has gone silent past STREAM_STALL_AFTER — the
+      # transport-silence window the facet row should resurface into (#21). The
+      # caller already holds @status_mutex.
+      def stream_stalled?
+        @turn_active && @stream_type && @status && !@status[:visible] &&
+          @last_stream_at && (monotonic_now - @last_stream_at) > STREAM_STALL_AFTER
+      end
+
+      # Labels the (hidden) status row so the stall watchdog's resurfaced facet
+      # reads "writing" for the answer / "thinking" for a reasoning aside. No-op
+      # when no status row exists (a stream outside a turn bracket).
+      def relabel_streaming(type)
+        label = type == :content ? "writing" : "thinking"
+        @status_mutex.synchronize { @status[:label] = label if @status }
+      end
+
+      # Bumps the silence clock for the stall watchdog on every tail paint /
+      # block commit. When it goes silent past STREAM_STALL_AFTER the ticker
+      # resurfaces the facet in the footer (#21). The +_frame+ argument is kept
+      # for call-site symmetry with the tail painters but no longer stored.
+      def note_live_tail(_frame = nil)
+        @status_mutex.synchronize { @last_stream_at = monotonic_now }
+      end
+
       # The text to the right of the track. Thinking phase: turn-elapsed +
       # accumulated stats (tools run, ~tok streamed); tool/job phases: the
       # label · hint · per-phase elapsed. Always fits 80 cols.
@@ -2179,7 +2639,6 @@ module Rubino
           parts << "#{(now - (@turn_started_at || s[:phase_started_at])).to_i}s"
           parts << "#{@turn_tool_count} tool#{"s" if @turn_tool_count != 1}" if @turn_tool_count.positive?
           parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
-          parts << "esc to interrupt" if interrupt_hint?(s, now)
         else
           parts << "#{(now - s[:phase_started_at]).to_i}s"
         end
@@ -2192,15 +2651,6 @@ module Rubino
       # — always marked with the leading ~; the exact total stays in the footer.
       def format_status_tokens(count)
         count >= 1000 ? "#{(count / 1000.0).round(1)}k" : count.to_s
-      end
-
-      # The hint only appears where Esc actually interrupts (a composer owns
-      # the keyboard, #421) and only once the wait has dragged past the
-      # threshold.
-      def interrupt_hint?(state, now)
-        @turn_active &&
-          (now - state[:phase_started_at]) >= INTERRUPT_HINT_AFTER &&
-          !BottomComposer.current.nil?
       end
 
       # Commits the buffered reasoning into scrollback per the active render mode,
@@ -2218,12 +2668,22 @@ module Rubino
 
         clear_thinking_indicator
 
-        unless buffered.strip.empty?
+        # :full mode already streamed the body live (#stream_reasoning_live): the
+        # `┄ thinking ┄` rail and `┊` lines are committed scrollback. Finalize the
+        # live tail ONCE (commit any in-flight remainder, clear the transient row,
+        # paint the closing rail) — re-rendering the whole aside here would double
+        # it. Falls through to the retention bookkeeping below.
+        if @reasoning_streaming
+          finalize_reasoning_stream(seconds)
+        elsif !buffered.strip.empty?
           if mode == :full
             commit_reasoning_aside(buffered, seconds)
           elsif mode == :collapsed
             commit_reasoning_cue(seconds)
           end
+        end
+
+        unless buffered.strip.empty?
           @last_reasoning = buffered
           @last_reasoning_seconds = seconds
           # A new thought is retained — reset the reveal guard so the first
@@ -2237,10 +2697,29 @@ module Rubino
         @thinking_started_at = nil
       end
 
+      # Finalize a :full LIVE reasoning stream (#stream_reasoning_live) at the
+      # answer/tool boundary: flush the StreamingMarkdown remainder as the last
+      # dim `┊` block (committed in ONE live-region frame that ALSO tears down the
+      # transient tail, #265), then paint the closing `┄ thought for <N>s ┄` rail
+      # and a trailing blank — the same close #commit_reasoning_aside ends on. The
+      # body was already shown live, so NOTHING here re-renders it. Idempotent via
+      # the @reasoning_streaming latch the caller already checked.
+      def finalize_reasoning_stream(seconds)
+        remaining = @reasoning_md&.flush
+        if remaining && !remaining.empty?
+          commit_block_atomic(reasoning_aside_lines(remaining))
+        else
+          show_live_tail("") # clear the transient tail row even with no remainder
+        end
+        commit_block_atomic([@pastel.dim("┄ thought for #{seconds}s ┄"), ""])
+        @reasoning_md = nil
+        @reasoning_streaming = false
+      end
+
       # The dim one-liner committed in :collapsed mode:
       #   ┄ ✻ thought for <N>s · ctrl-o to show ┄
       def commit_reasoning_cue(seconds)
-        $stdout.puts @pastel.dim("┄ ✻ thought for #{seconds}s · ctrl-o to show ┄")
+        emit("┄ ✻ thought for #{seconds}s · ctrl-o to show ┄", style: :dim)
       end
 
       # The expanded reasoning aside (full mode / ctrl-o reveal), reusing the
@@ -2252,68 +2731,116 @@ module Rubino
       # would be redundant. The collapsed one-liner cue (#commit_reasoning_cue)
       # is the only place that carries the "ctrl-o to show" affordance.
       def commit_reasoning_aside(text, seconds)
-        $stdout.puts
-        $stdout.puts @pastel.dim("┄ thinking ┄#{"─" * 50}")
+        emit_blank
+        emit("┄ thinking ┄#{"─" * 50}", style: :dim)
         text.to_s.each_line do |line|
-          $stdout.puts @pastel.dim("┊  #{line.chomp}")
+          # CWE-150 (#566): committed reasoning is model output — the funnel's
+          # PATH 1 (#emit) defangs escapes before our own (trusted) dim styling.
+          emit("#{line.chomp}", style: :dim)
         end
-        $stdout.puts @pastel.dim("┄ thought for #{seconds}s ┄")
-        $stdout.puts
+        emit("┄ thought for #{seconds}s ┄", style: :dim)
+        emit_blank
       end
 
       # --- Subagent delegation rows (the `task` tool) ---
 
-      # `● delegated → <subagent>  <prompt-preview>`. Stashes the subagent name so
-      # the matching #delegation_finished can label the close row even though
-      # tool_finished only receives the result, not the arguments.
-      def delegation_started(arguments)
+      # `● delegated → <subagent>  <prompt-preview>`. Stashes the subagent name
+      # KEYED BY call_id so the matching #delegation_finished labels its OWN close
+      # row even though tool_finished only receives the result, not the arguments.
+      # A single shared ivar would mislabel the row when two delegations overlap
+      # (started A, started B, finished A → A's row shows B's name) or when a
+      # replay/post-detach render mutates the live ivar (#35).
+      def delegation_started(arguments, call_id = nil)
         collapse_reasoning
         sub    = delegation_field(arguments, :subagent) || "subagent"
         prompt = delegation_field(arguments, :prompt)
-        @delegation_subagent = sub
-        # subagent name + prompt preview are UNTRUSTED (model-chosen args):
-        # sanitize before the trusted dim wrap (R3C-1, CWE-150).
-        preview = prompt ? "  #{truncate_inline(safe(prompt), 60)}" : ""
-        $stdout.puts unless %i[tool gap].include?(@last_block)
-        $stdout.puts "#{@pastel.cyan("●")} #{@pastel.dim("delegated → #{safe(sub)}#{preview}")}"
+        (@delegation_names ||= {})[call_id] = sub if call_id
+        # subagent name + prompt preview are UNTRUSTED (model-chosen args).
+        # #truncate_inline flattens newlines but does NOT touch escape bytes, so
+        # defang the preview source before clamping; the body's UNTRUSTED `sub`
+        # span is defanged by #emit_glyph below (its sanitize is idempotent on
+        # the already-clean preview, so the visual is unchanged).
+        preview = prompt ? "  #{truncate_inline(Util::Output.sanitize_terminal(prompt), 60)}" : ""
+        emit_blank unless %i[tool gap].include?(@last_block)
+        # `● delegated → <sub> <preview>`: a trusted cyan glyph composed with a
+        # dim, fully-defanged body — Cat 2's compose affordance. No hyperlink on
+        # this row, so the whole body can take PATH 1's strip-then-style.
+        emit_glyph("#{@pastel.cyan("●")} ", "delegated → #{sub}#{preview}", style: :dim)
         @activity_open = true
         @activity_name = "task"
         @last_block = :tool
         status_show("task", phase: :tool, hint: sub) if @turn_active
       end
 
-      # `✓ <subagent>: <summary>` (or `✗ <subagent>: <error>` on failure).
+      # MINIMAL main-timeline marker (agent-multiplexer Slice 1): the main
+      # scrollback shows ONLY the close marker, NEVER the child's result summary
+      # — `✓ <name> · done` on success, `✗ <name> · failed` on failure,
+      # `⊘ <name> · no-op` on a denied/empty run, and `▸ <name> · started` for a
+      # background spawn (the matching `done` arrives later via
+      # #subagent_lifecycle). The model still receives the FULL result through the
+      # tool return; only this rendered line drops the summary. Per-tool detail
+      # lives in the BackgroundTasks registry (the card / drill-in), not here.
       #
       # The `task` tool reports its failures by RETURNING an error STRING
       # ("Error: unknown subagent …", "At capacity: …") — the executor then
-      # wraps that in a SUCCESS-status Result, so #success? is true and the row
-      # used to render a misleading green ✓ (#123, the B7 family on the
-      # delegation card). Use the same #errorish? predicate #tool_finished
-      # uses, plus the "At capacity:" prefix the task tool emits, so a failed
-      # delegation renders the red ✗ variant — consistent with regular tools.
+      # wraps that in a SUCCESS-status Result, so #success? is true. Use the same
+      # #errorish? predicate #tool_finished uses, plus the "At capacity:" prefix
+      # the task tool emits, so a failed delegation renders the red ✗ variant.
       def delegation_finished(result)
         @activity_open = false
-        sub    = @delegation_subagent || "subagent"
         output = (result.respond_to?(:output) ? result.output : result).to_s
-        if !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
-          # Background spawn: ONE lifecycle grammar (P6) — the live-card row
-          # shape, dim, no green ✓ (nothing finished yet; it only started).
-          # The spawn handle's name fields come from model args — sanitize.
-          $stdout.puts @pastel.dim("  └ ▸ #{safe(m[2])} · #{safe(m[1])} · started")
+        # Resolve the close-row label PER-CALL from an authoritative source, never
+        # a shared mutable ivar (#35): a background spawn carries the name in its
+        # handle output (parsed below); a synchronous/replayed call recovers it
+        # from the per-call_id stash made at #delegation_started. Falls back to the
+        # generic word only when neither source has the name.
+        sub = delegation_name_for(result, output)
+        if delegation_capacity?(result)
+          # A cap REJECTION never launched anything: there is no `sa_…` id and no
+          # run to fail. Rendering it as `✗ <name> · failed` painted a phantom
+          # id-less failed card under the `● delegated →` header (the model's 4th
+          # parallel ask while the in-flight cap is 3). Surface it instead as a
+          # neutral, NAMED ⊝ close row that states the cap honestly, so the model
+          # (and the human) read "queued — retry when one finishes", not a failure.
+          emit("  └ ⊝ #{safe(sub)} · #{capacity_close_reason(output)}", style: :dim)
+        elsif !delegation_failed?(result) && (m = SPAWN_HANDLE_RE.match(output))
+          # Background spawn: minimal "started" marker carrying the task id, so it
+          # correlates with the standalone `✓ <id> · <name> · done` that lands far
+          # below it once the child finishes (the parent keeps streaming between
+          # them — they can't rely on adjacency). m[2]=id, m[1]=name; both model
+          # args, so #emit strips escapes (CWE-150).
+          emit("  └ ▸ #{safe(m[2])} · #{safe(m[1])} · started", style: :dim)
         else
-          # The subagent's output is UNTRUSTED — sanitize before the close-row
-          # wrap (R3C-1, CWE-150).
-          summary = truncate_inline(safe(output.strip), 80)
-          icon, color =
-            if delegation_failed?(result)        then ["✗", :red]
-            elsif delegation_noop?(result)       then ["⊘", :dim]
-            else                                      ["✓", :dim] # quiet close — color only on failure (P1)
+          # sub is UNTRUSTED (model args); #emit (PATH 1) strips escapes before
+          # the marker's style wrap (R3C-1, CWE-150).
+          marker, color =
+            if delegation_failed?(result)  then ["✗ #{safe(sub)} · failed", :red]
+            elsif delegation_noop?(result) then ["⊘ #{safe(sub)} · no-op", :dim]
+            else                                ["✓ #{safe(sub)} · done", :dim] # quiet close (P1)
             end
-          $stdout.puts @pastel.public_send(color, "  └ #{icon} #{safe(sub)}: #{summary}")
+          emit("  └ #{marker}", style: color)
         end
-        @delegation_subagent = nil
         @last_block = :tool
         status_back_to_thinking
+      end
+
+      # The close-row label for a finished delegation, derived PER-CALL so
+      # overlapping delegations and replays each render their OWN name (#35):
+      #   1. A background spawn's handle output names the subagent (m[1]) — the
+      #      authoritative source that needs no prior stash, so it also fixes
+      #      replays of a background spawn row.
+      #   2. Otherwise the name stashed by #delegation_started under this call's
+      #      call_id (a synchronous run, or a replayed sync row whose persisted
+      #      `arguments` carried the subagent). Consumed once so the stash doesn't
+      #      leak across a later same-id render.
+      #   3. The generic word only when neither source has it.
+      def delegation_name_for(result, output)
+        if (m = SPAWN_HANDLE_RE.match(output))
+          return m[1]
+        end
+
+        call_id = result.respond_to?(:call_id) ? result.call_id : nil
+        (@delegation_names ||= {}).delete(call_id) || "subagent"
       end
 
       # True when a delegation did nothing / was denied: the subagent produced no
@@ -2327,17 +2854,38 @@ module Rubino
 
       # True when a delegation result represents a failure. Mirrors how
       # #tool_finished decides (Result#errorish? — non-success status, an
-      # error_code, or an "Error:" output), and additionally treats the task
-      # tool's "At capacity:" string (a success-status Result that #errorish?
-      # does not catch) as a failure so the row shows ✗.
+      # error_code, or an "Error:" output). A cap REJECTION is NOT a failure (it
+      # never launched anything) and is handled separately by #delegation_capacity?
+      # so it never renders a phantom `✗ <name> · failed` card.
       def delegation_failed?(result)
         return false if result.nil?
+        return false if delegation_capacity?(result)
 
-        base = result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
-        return true if base
+        result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
+      end
 
-        output = result.respond_to?(:output) ? result.output : result
-        output.to_s.lstrip.start_with?("At capacity:")
+      # True when a delegation was REFUSED by a concurrency/depth cap — the task
+      # tool returns a success-status Result whose output is one of the
+      # TaskTool#capacity_message strings ("At capacity: …", "Max nesting depth
+      # reached: …"). No subagent was launched, so this is not a failure; the
+      # close row reads as a neutral, named "at capacity" line, not a ✗ failed.
+      def delegation_capacity?(result)
+        return false if result.nil?
+
+        output = (result.respond_to?(:output) ? result.output : result).to_s.lstrip
+        output.start_with?("At capacity:", "Max nesting depth reached:")
+      end
+
+      # A terse, honest close-row reason for a cap rejection, derived from WHICH
+      # cap the task tool reported. Names the concurrency ceiling the model hit so
+      # the row teaches "retry when one finishes" rather than reading as a failure.
+      def capacity_close_reason(output)
+        text = output.to_s.lstrip
+        if text.start_with?("Max nesting depth reached:")
+          "at capacity · nesting depth reached"
+        else
+          "at capacity · concurrency cap reached — retry when one finishes"
+        end
       end
 
       def delegation_field(arguments, key)
@@ -2364,12 +2912,17 @@ module Rubino
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        # The masked value is the UNTRUSTED command/path/pattern — neutralize
-        # escape bytes BEFORE building the open-row hint, so a `\e]0;…` in a
-        # filename/command can't drive the terminal from the `● name hint` row
-        # (R3C-1, CWE-150). Sanitize the raw text here, then rubino's own OSC-8
-        # hyperlink wrap (trusted) is applied around the clean label.
-        hint  = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
+        # Cat 3 (OSC 8), decision (a)+(b): the masked value is the UNTRUSTED
+        # command/path/pattern. DEFANG it FIRST — so both the link URI (the path)
+        # and the visible label are control-free — and ONLY THEN wrap the clean
+        # path in rubino's own (trusted) OSC 8 hyperlink. Building the link OUTSIDE
+        # the sanitized region means a malicious path can inject via NEITHER the
+        # URI nor the visible text. The `● name hint` row then rides PATH 2
+        # (#emit_styled in #activity_started): #sanitize_terminal_keep_sgr now
+        # PRESERVES a well-formed OSC 8 sequence (its URI is already control-free,
+        # so it can't smuggle a second OSC) while still defanging the label and
+        # every other byte — so the legit hyperlink survives and injection can't.
+        hint  = Util::Output.sanitize_terminal(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
         first = hint.lines.first.to_s.strip
         label = first.length > 60 ? "#{first[0, 57]}..." : first
 
@@ -2392,6 +2945,89 @@ module Rubino
         # escape here would drive the terminal on every frame (R3C-1, CWE-150).
         first = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s).lines.first.to_s.strip
         first.length > 30 ? "#{first[0, 29]}…" : first
+      end
+
+      # --- Subagent activity recording (off-screen surfaces) -----------------
+      # A per-subagent CLI also keeps the BackgroundTasks registry counters
+      # (tool_count / last_activity / activity_log / output_tail) current, so the
+      # OFF-screen surfaces — probe_tool, the /agents drill-in, the ambient cards
+      # — update even when this sub isn't focused (its frames are dropped, but its
+      # registry entry must stay live). The MAIN agent's CLI records nothing (its
+      # @agent_id is the :main sentinel, not a registry entry id). These run on the
+      # CHILD thread, so the record_* writers take the registry mutex; they are
+      # best-effort — a registry hiccup must never break the child's run, and the
+      # on-screen render still happens regardless.
+
+      # @agent_id is :main for the top-level loop (cli.rb #initialize default) and
+      # the BackgroundTasks entry id for a background subagent (set by
+      # TaskTool#nested_ui_for). Record only when this CLI belongs to a subagent.
+      def record_subagent_activity? = @agent_id != :main
+
+      # Bump the tool counter + last-activity string the cards/list/drill-in show.
+      def record_subagent_tool_started(name, arguments)
+        return unless record_subagent_activity?
+
+        hint     = subagent_args_hint(arguments)
+        activity = hint ? "#{name} #{hint}" : name.to_s
+        record_subagent { Tools::BackgroundTasks.instance.record_tool_started(@agent_id, activity) }
+      end
+
+      # Append the terse finish line to the entry's activity ring (the drill-in
+      # tails it).
+      def record_subagent_tool_finished(name, result)
+        return unless record_subagent_activity?
+
+        record_subagent { Tools::BackgroundTasks.instance.record_tool_finished(@agent_id, subagent_finish_line(name, result)) }
+      end
+
+      # Append the streamed chunk to the entry's bounded output tail (the
+      # /agents <id> watch tails it).
+      def record_subagent_tool_output(chunk)
+        return unless record_subagent_activity?
+
+        record_subagent { Tools::BackgroundTasks.instance.record_tool_output(@agent_id, chunk) }
+      end
+
+      # A registry update is bookkeeping for off-screen surfaces — never let it
+      # break the child's run (the on-screen render still happens regardless).
+      def record_subagent
+        yield
+      rescue StandardError
+        nil
+      end
+
+      # The terse `✓ name · metric` / `✗ name · metric` line the activity ring
+      # keeps. Distinct from the on-screen #args_hint (which masks + OSC-8 wraps for
+      # display): the recorded activity is plain, first-line, elided text.
+      def subagent_finish_line(name, result)
+        failed = result.respond_to?(:success?) && !result.success?
+        icon   = failed ? "✗" : "✓"
+        suffix = subagent_result_metric(result)
+        suffix ? "#{icon} #{name} · #{suffix}" : "#{icon} #{name}"
+      end
+
+      # A compact metric for the finish line: prefer the tool's own metrics, else
+      # a truncated preview of the output.
+      def subagent_result_metric(result)
+        return nil unless result
+
+        metric = result.metrics if result.respond_to?(:metrics)
+        return Util::Output.first_line(metric, 60) if metric && !metric.to_s.strip.empty?
+
+        preview = result.truncated_preview if result.respond_to?(:truncated_preview)
+        preview && !preview.to_s.strip.empty? ? Util::Output.first_line(preview, 60) : nil
+      end
+
+      # Short identifier piece (path/pattern/command) from the tool arguments,
+      # as PLAIN elided text for the recorded last-activity string.
+      def subagent_args_hint(arguments)
+        return nil unless arguments.is_a?(Hash)
+
+        %i[file_path path pattern command].each do |k|
+          v = arguments[k] || arguments[k.to_s]
+          return Util::Output.first_line(v, 60) if v && !v.to_s.strip.empty?
+        end
+        nil
       end
 
       def path_key?(key)

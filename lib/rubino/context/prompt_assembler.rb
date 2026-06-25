@@ -279,7 +279,7 @@ module Rubino
       # provider declaring anthropic_compatible: true (e.g. MiniMax /anthropic).
       def anthropic_family_provider?
         provider = LLM::ProviderResolver.resolve(
-          @session[:model], explicit_provider: @config.model_provider
+          @session[:model], explicit_provider: @config.dig("model", "provider")
         )
         return true if %w[anthropic bedrock].include?(provider.to_s)
 
@@ -312,7 +312,12 @@ module Rubino
             include_project_local: project_local_trusted?
           )
         ).render
-      rescue StandardError
+      rescue StandardError => e
+        # Never take down prompt assembly — but LOG (like #active_skill_block at
+        # the sibling below) so a logic error here is visible instead of the
+        # WHOLE skills catalogue silently vanishing from the prompt (#62).
+        Rubino.logger&.debug(event: "prompt.skills_index_block_failed",
+                             error: "#{e.class}: #{e.message}")
         nil
       end
 

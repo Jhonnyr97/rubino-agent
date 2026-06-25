@@ -68,4 +68,27 @@ RSpec.describe Rubino::Memory::SalienceGate do
       expect(salient?(turn)).to be(false)
     end
   end
+
+  # #69: after a transient tool error the aux extractor can mint a durable-looking
+  # tool/environment LIMITATION claim ("the edit tool can't edit non-ASCII files")
+  # — a meta claim that is often wrong and primes future refusals. The insert
+  # choke point consults #tool_limitation_claim? to NOOP such candidates.
+  describe "#tool_limitation_claim? (error-derived capability claims)" do
+    def limitation?(text)
+      gate.send(:tool_limitation_claim?, text)
+    end
+
+    it "flags an error-derived tool-limitation claim" do
+      expect(limitation?("The file-editing tooling can't edit non-ASCII files.")).to be(true)
+      expect(limitation?("The edit tool cannot handle large files.")).to be(true)
+      expect(limitation?("The shell tool fails on binary output.")).to be(true)
+      expect(limitation?("The read tool does not support PDFs.")).to be(true)
+    end
+
+    it "does NOT flag a genuine durable user/project fact" do
+      expect(limitation?("User prefers tabs over spaces.")).to be(false)
+      expect(limitation?("Project uses pytest with the xdist plugin.")).to be(false)
+      expect(limitation?("User deploys with Kamal.")).to be(false)
+    end
+  end
 end

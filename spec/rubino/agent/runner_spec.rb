@@ -25,6 +25,36 @@ RSpec.describe Rubino::Agent::Runner do
   end
 
   # -----------------------------------------------------------------------
+  # soft iteration ceiling vs the max_turns rail (#571 — subagents can ask budget)
+  # -----------------------------------------------------------------------
+
+  describe "soft iteration ceiling wiring (#571)" do
+    def captured_kwargs_for(**runner_args)
+      captured = {}
+      allow(Rubino::Interaction::Lifecycle).to receive(:new) do |**kwargs|
+        captured = kwargs
+        lifecycle_active_session[:built_on] = kwargs[:session]
+        fake_lifecycle
+      end
+      described_class.new(model_override: "gpt-4o", ui: null_ui, **runner_args).run("hi")
+      captured
+    end
+
+    it "a SUBAGENT passes a nil soft ceiling so it falls back to config max_tool_iterations (< max_turns)" do
+      kwargs = captured_kwargs_for(max_turns: 90, session_source: "subagent")
+      # nil → IterationBudget uses config agent.max_tool_iterations (25) as the
+      # soft ceiling, below the 90 hard rail — so #extendable? is true and the
+      # subagent can surface a budget request (#574) instead of soft==hard==90.
+      expect(kwargs[:max_tool_iterations]).to be_nil
+    end
+
+    it "the MAIN agent still passes its max_turns as the soft ceiling (--max-turns N honored)" do
+      kwargs = captured_kwargs_for(max_turns: 7, session_source: "cli")
+      expect(kwargs[:max_tool_iterations]).to eq(7)
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # session creation
   # -----------------------------------------------------------------------
 
@@ -211,6 +241,108 @@ RSpec.describe Rubino::Agent::Runner do
       expect(second.session[:parent_session_id]).to eq(parent[:id])
       expect(first.session[:id]).not_to eq(second.session[:id])
     end
+
+    # -----------------------------------------------------------------------
+    # #543: per-session advisory lock closes the pid-CAS TOCTOU window.
+    #
+    # The pid-CAS only serialises ONCE owner_pid has been stamped; two
+    # concurrent `--continue` both resolve the same latest session while
+    # owner_pid is STILL nil and the loser forks a COPY of a transcript the
+    # winner is already writing — duplicating/interleaving rows across the two
+    # sessions (the #543 repro). A real OS flock is atomic with no
+    # check-then-act window, so it serialises the "open this session" decision
+    # itself: the second open can't take the lock and forks BEFORE any of its
+    # rows can land in the first session's history. These specs drive that lock
+    # path WITHOUT stubbing the CAS, simulating the second live process by
+    # holding the per-session lock from this process.
+    # -----------------------------------------------------------------------
+    it "forks (does not interleave) when the per-session lock is held — #543" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      # Another live process already holds the per-session lock (the realistic
+      # 'second terminal tab in the same folder' case). Acquire it here so the
+      # Runner's try_acquire returns nil and it must fork.
+      held = Rubino::Session::Lock.try_acquire(parent[:id])
+      expect(held).not_to be_nil # we hold it; the Runner will fail to acquire
+
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      # A SEPARATE row with lineage back to the parent — the second opener forked
+      # rather than writing into the locked session's history.
+      expect(runner.session[:id]).not_to eq(parent[:id])
+      expect(runner.session[:parent_session_id]).to eq(parent[:id])
+
+      # The locked parent's own transcript is untouched: its two messages stay in
+      # their original order, no interleaved/duplicated rows from the fork.
+      parent_msgs = store.for_session(parent[:id])
+      expect(parent_msgs.map(&:role)).to eq(%w[user assistant])
+      expect(parent_msgs.map(&:content)).to eq(["hello", "hi there"])
+    ensure
+      held&.release
+    end
+
+    it "first opener holds the lock so a second open of the same id forks — #543" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      # The REAL path, no stubs: the first Runner claims the row AND holds the
+      # per-session lock for its lifetime.
+      first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(first.session[:id]).to eq(parent[:id])
+
+      # A SECOND concurrent open of the SAME id cannot take the lock the first
+      # still holds, so it forks instead of stomping/interleaving — even though
+      # the pid-CAS alone could have raced. Distinct rows ⇒ no interleave.
+      second = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(second.session[:id]).not_to eq(parent[:id])
+      expect(second.session[:parent_session_id]).to eq(parent[:id])
+      expect(first.session[:id]).not_to eq(second.session[:id])
+    end
+
+    it "releases the per-session lock on end_session! so a later resume can claim it — #543" do
+      parent = seed_session_with_history(owner_pid: nil)
+
+      first = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+      expect(first.session[:id]).to eq(parent[:id])
+      first.end_session! # drops the lock (and the kernel would on exit anyway)
+
+      # The lock is free again: a later resume can take it (and would claim the
+      # row). We just assert the lock is re-acquirable here.
+      reacquired = Rubino::Session::Lock.try_acquire(parent[:id])
+      expect(reacquired).not_to be_nil
+      reacquired&.release
+    end
+
+    it "flushes un-extracted memory on end_session! so short sessions are mined — #554" do
+      parent = seed_session_with_history(owner_pid: nil)
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      flusher = instance_double(Rubino::Memory::Flusher)
+      allow(Rubino::Memory::Flusher).to receive(:new).and_return(flusher)
+      expect(flusher).to receive(:flush_on_session_end!).with(parent[:id])
+
+      runner.end_session!
+    end
+
+    it "on a handoff end_session! enqueues a DETACHED extract instead of the blocking flush (/new stays instant)" do
+      parent = seed_session_with_history(owner_pid: nil)
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
+
+      cfg = runner.instance_variable_get(:@config)
+      allow(cfg).to receive_messages(memory_enabled?: true, memory_auto_extract?: true)
+
+      # The synchronous aux-LLM flush (what froze the prompt 2-3s) must NOT run...
+      expect(Rubino::Memory::Flusher).not_to receive(:new)
+      # ...instead the SAME ExtractMemoryJob is enqueued detached (drain_inline: false),
+      # at the user-visible save priority (#79) so it jumps the summary backlog,
+      # to be drained by the next runner's worker off the process-global queue.
+      queue = instance_double(Rubino::Jobs::Queue)
+      allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
+      expect(queue).to receive(:enqueue)
+        .with("ExtractMemoryJob", { session_id: parent[:id] },
+              priority: Rubino::Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY, drain_inline: false)
+
+      runner.end_session!(handoff: true)
+    end
   end
 
   # -----------------------------------------------------------------------
@@ -225,7 +357,7 @@ RSpec.describe Rubino::Agent::Runner do
 
     it "falls back to config default when no override" do
       runner = described_class.new(ui: null_ui)
-      expect(runner.instance_variable_get(:@model_id)).to eq(Rubino.configuration.model_default)
+      expect(runner.instance_variable_get(:@model_id)).to eq(Rubino.configuration.dig("model", "default"))
     end
   end
 
@@ -285,6 +417,30 @@ RSpec.describe Rubino::Agent::Runner do
       result = runner.run("hello")
       expect(result).to be_nil
       expect(null_ui.messages.any? { |m| m[:level] == :error }).to be true
+    end
+
+    # Field standard: a turn that hit an AUTH/credential error must be observable
+    # so the interactive REPL can exit NON-ZERO on teardown (instead of swallowing
+    # the error and reporting success). The runner stays in the REPL (returns nil,
+    # does not exit) but LATCHES the failure for the caller's exit code.
+    it "latches #auth_error? when a turn fails with an authentication error" do
+      allow(fake_lifecycle).to receive(:execute)
+        .and_raise(Rubino::Error, "Authentication failed (401 invalid api key). Token may have expired.")
+
+      expect(runner.auth_error?).to be(false)
+      expect(runner.run("hello")).to be_nil
+      expect(runner.auth_error?).to be(true)
+    end
+
+    it "does NOT latch #auth_error? for a non-auth turn failure" do
+      allow(fake_lifecycle).to receive(:execute).and_raise(StandardError, "network timeout")
+      runner.run("hello")
+      expect(runner.auth_error?).to be(false)
+    end
+
+    it "keeps #auth_error? false for a clean turn" do
+      runner.run("hello")
+      expect(runner.auth_error?).to be(false)
     end
 
     # Regression: Runner.run used to re-emit INTERACTION_FAILED here even
@@ -485,6 +641,55 @@ RSpec.describe Rubino::Agent::Runner do
       expect(definition).to eq(explore)
       # the sticky pin is back after the one-shot turn
       expect(runner.agent_definition).to eq(plan)
+    end
+  end
+
+  # Bug B (#WHATIF): a provider 429 quota error reaches the streaming path
+  # mis-shaped as a 400 BadRequestError "Invalid request - please check your
+  # input" (the original 429 survives only in the response body). The surfaced
+  # card must read as a rate-limit / quota error, NOT a 400 prompt-validation
+  # error, so a dev doesn't waste time editing a fine prompt. We exercise the
+  # private #friendly_error_message in isolation (no full Runner construction).
+  describe "#friendly_error_message — provider error categorisation" do
+    subject(:runner) do
+      r = described_class.allocate
+      r.instance_variable_set(:@model_id, "minimax/m3")
+      r
+    end
+
+    def bad_request_with_body(message, body)
+      response = double("FaradayResponse", status: 400, body: body, headers: {})
+      RubyLLM::BadRequestError.new(response, message)
+    end
+
+    it "maps a clobbered-400 quota error to a rate-limit / quota card" do
+      e = bad_request_with_body(
+        "Invalid request - please check your input",
+        '{"type":"rate_limit_error","message":"Token Plan usage limit reached"}'
+      )
+      card = runner.send(:friendly_error_message, e)
+      expect(card).to match(%r{rate limit / quota reached}i)
+      expect(card).to match(/NOT a problem with your prompt/i)
+      expect(card).not_to match(/Invalid request - please check your input\z/)
+    end
+
+    it "still maps a genuine 400 to an invalid-request card" do
+      e = bad_request_with_body(
+        "Invalid request - please check your input",
+        '{"error":{"message":"malformed json"}}'
+      )
+      card = runner.send(:friendly_error_message, e)
+      expect(card).to include("Invalid request - please check your input")
+      expect(card).not_to match(%r{rate limit / quota}i)
+    end
+
+    it "logs every surfaced error (the 429 was previously never logged)" do
+      logger = instance_double(Rubino::Logger)
+      allow(Rubino).to receive(:logger).and_return(logger)
+      expect(logger).to receive(:warn).with(hash_including(event: "llm.error.surfaced"))
+      e = bad_request_with_body("Invalid request - please check your input",
+                                '{"type":"rate_limit_error","message":"Token Plan usage limit reached"}')
+      runner.send(:friendly_error_message, e)
     end
   end
 end

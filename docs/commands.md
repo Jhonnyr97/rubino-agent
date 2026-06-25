@@ -85,6 +85,7 @@ Pasting **text** into the chat input goes through the file-backed paste pipeline
 - `--new` forces a fresh session; `--continue`/`-c` resumes the latest; `--resume`/`-r <id|title>` resumes a specific one.
 - `--resume` matches an ID prefix first, then a case-insensitive substring of the session title **or its full first prompt** — so a memorable phrase from the tail of a long first message works even though the stored title is truncated. More than one match is an error listing the candidates; no match exits non-zero with a pointer to `rubino sessions list`.
 - One-shot mode (`-q` / `prompt`) does **not** auto-resume — automation isn't silently hijacked onto a past session; pass `--resume`/`--continue` explicitly if you want it.
+- A bare **`rubino sessions`** on a real terminal opens an arrow-key resume picker over this directory's sessions (`--all` for every dir); ↑↓ select, Enter loads the chosen session into the chat REPL (the same as `rubino chat --session <id>`), Esc cancels. Off a TTY (piped/redirected) it prints the static `list` table so scripts stay deterministic; `rubino sessions list` is always the table.
 - One-shot output: when stdout is a **terminal** the answer renders through the same markdown pipeline as interactive chat (styled text, fitted tables, wrapping); when stdout is **piped/redirected** the answer stays plain raw text and diagnostics go to stderr, so `$(rubino prompt …)` stays clean.
 - Sessions are marked ended on clean exit, terminal close (SIGHUP), or kill (SIGTERM), so a closed window doesn't leave a session looking active.
 
@@ -134,6 +135,7 @@ rubino memory show ID
 rubino memory delete ID
 rubino memory backend [NAME] # show the active memory backend, or switch to NAME
 
+rubino sessions             # on a TTY: arrow-key resume picker (Enter loads, Esc cancels); piped: lists
 rubino sessions list
 rubino sessions show ID
 rubino sessions compact ID
@@ -175,9 +177,9 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/export` | Write the session transcript as markdown (/export [path]) |
 | `/memory` | Inspect/search/forget what the agent remembers (show ID, backend, --all) |
 | `/agent` | Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles) |
-| `/agents` | List background subagents; steer/probe a running one, or view output |
+| `/agents` | List background subagents; ↓+Enter to attach & steer one live, or steer/probe/view by id |
 | `/tasks` | Alias for /agents |
-| `/reply` | Answer a subagent that is blocked waiting on you (ask_parent) |
+| `/reply` | Answer a subagent that is blocked waiting on you (e.g. an approval) |
 | `/stop` | Stop a running subagent (/stop <id>; alias for /agents <id> --stop) |
 | `/jobs` | List the background job queue (status counts); /jobs <id> for detail |
 | `/skills` | List skills; activate one ('none' clears), or enable/disable NAME |
@@ -202,9 +204,10 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 
 You can keep typing while a turn is running — the pinned input stays live:
 
-- **Enter** interrupts the current turn and runs your line as the **next** turn (the partial answer is kept and marked `⎿ interrupted`).
-- **Alt+Enter** queues the line **without** interrupting: it runs after the current turn finishes, with a live `⏳ queued:` indicator above the input until it does. At idle (no turn running) there is nothing to queue behind, so Alt+Enter submits the line immediately, same as Enter.
-- **`/queued <message>`** is the terminal-independent fallback for Alt+Enter (some terminals don't deliver the chord) — it queues the message the same way.
+- **Enter** queues the line **without** interrupting (the queue-by-default / type-ahead model, #421): the current turn keeps running, the line waits behind any earlier-queued items (FIFO) with a live `⏳ queued:` indicator above the input, and it is committed as a normal message when its turn runs. At idle (no turn running) Enter submits immediately.
+- **Esc** interrupts the current turn (the partial answer is kept and marked `⎿ interrupted`); any queued lines then run as the next turns.
+- **`/queued <message>`** queues a message explicitly — the terminal-independent way to enqueue without typing it into the live input.
+- **Read-only meta-commands run immediately, mid-turn.** A small set of non-mutating slash commands — `/agents` (and `/tasks`), `/stop`, `/status`, `/jobs`, `/help`, `/commands`, `/dirs` — execute **right away** while a turn is running, so you can drill into a sub-agent, stop the run, or check status without interrupting. State-mutating commands (`/model`, `/clear`, `/new`, `/config`, `/mode`, `/reasoning`, `/think`, …) are not available mid-turn: they show a transient `⚠ <cmd> is not available during an active turn — press Esc to interrupt first` notice instead of running.
 
 ### Keys: `Esc Esc` — rewind to an earlier message
 
@@ -324,11 +327,20 @@ The agent spawns background subagents with its `task` tool; these commands are t
 /agents <id> --stop           # cancel a running subagent (blocked descendants unwind too)
 /agents <id> steer "note"     # park a note folded into the child's context at its next turn
 /agents <id> probe "question" # ephemeral read-only peek — nothing is saved to the child
-/reply <id> <answer>          # answer a subagent blocked on an ask_parent question
+/reply <id> <answer>          # answer a subagent blocked on you (e.g. an approval)
 /reply                        # bare: list the subagents currently blocked on you
 ```
 
 `/tasks` is an alias for `/agents`.
+
+**Attach to a subagent (agent-view).** Instead of typing ids, press `↓` at the
+idle prompt to open the subagent picker, arrow to one, and `Enter` to **attach**:
+the screen switches to that agent's own full timeline (its tool calls and what it
+said, replayed) and the prompt becomes scoped — `sa_xxxx ❯`. While attached, just
+type to steer the running child (or answer it if it's blocked on you); `←` on the
+empty prompt (or `/detach`) returns to the main timeline. The scoped prompt makes
+the global `/agents <id> steer/probe` and `/reply <id>` forms redundant — they're
+the same operations, by id, from anywhere.
 
 ### Workspace roots: `/add-dir` and `/dirs`
 

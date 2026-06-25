@@ -43,6 +43,29 @@ module Rubino
         DEFAULT_MODE
       end
 
+      # True when display.reasoning is EXPLICITLY set to a valid render mode
+      # (i.e. the user ran /reasoning), as opposed to falling through to the
+      # legacy show_reasoning mapping or the built-in default. Lets the render
+      # gate tell "user picked a mode" from "no mode chosen yet" (#Y1A).
+      def explicit_mode?(config)
+        raw = config&.dig("display", "reasoning")
+        return false if raw.nil?
+
+        RENDER_MODES.include?(raw.to_s.strip.downcase.to_sym)
+      end
+
+      # The mode the RENDER/stream gates should honour. Identical to #mode,
+      # except that when thinking effort is "off" and the user has NOT explicitly
+      # chosen a render mode, an always-thinking model's <think> output is treated
+      # as hidden: /think off lowers the budget AND suppresses the reasoning aside
+      # (#Y1A). An explicit /reasoning choice always wins, keeping the two knobs
+      # orthogonal. Status/command displays keep using #mode (the configured mode).
+      def effective_mode(config)
+        return :hidden if effort(config) == :off && !explicit_mode?(config)
+
+        mode(config)
+      end
+
       # The effort symbol for a config object, or nil when thinking.effort is
       # unset (so callers can fall back to the existing thinking_budget chain).
       def effort(config)

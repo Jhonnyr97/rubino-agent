@@ -2,15 +2,14 @@
 
 require "spec_helper"
 
-# Memory surface on the HTTP boundary. Exercises the real Default backend over
-# the in-memory test DB (with_test_db), seeded via Memory::Store, so the
+# Memory surface on the HTTP boundary. Exercises the real (sqlite) backend over
+# the in-memory test DB (with_test_db), seeded through the backend, so the
 # list/search/stats/delete contracts are proven end-to-end through the same code
 # path the CLI uses.
 RSpec.describe "API contract: memory" do
   before { with_test_db }
 
-  let(:store)   { Rubino::Memory::Store.new }
-  let(:backend) { Rubino::Memory::Backends::Default.new(store: store) }
+  let(:backend) { Rubino::Memory::Backends::Sqlite.new }
 
   def contract_router
     index  = Rubino::API::Operations::Memory::IndexOperation.new(backend: backend)
@@ -18,14 +17,14 @@ RSpec.describe "API contract: memory" do
     delete = Rubino::API::Operations::Memory::DeleteOperation.new(backend: backend)
 
     router = Rubino::API::Router.new
-    router.get    "/v1/memory",       to: ->(req) { index.call(req) }
-    router.get    "/v1/memory/stats", to: ->(req) { stats.call(req) }
-    router.delete "/v1/memory/:id",   to: ->(req) { delete.call(req) }
+    router.get    "/v1/memory",       to: route_to(index)
+    router.get    "/v1/memory/stats", to: route_to(stats)
+    router.delete "/v1/memory/:id",   to: route_to(delete)
     router
   end
 
   def seed(content, kind: "fact")
-    store.create(kind: kind, content: content)
+    backend.store(kind: kind, content: content)
   end
 
   describe "GET /v1/memory" do
@@ -60,7 +59,7 @@ RSpec.describe "API contract: memory" do
       seed("b")
       get_json "/v1/memory/stats"
       expect(last_response.status).to eq(200)
-      expect(json_body).to eq("backend" => "default", "count" => 2)
+      expect(json_body).to eq("backend" => "sqlite", "count" => 2)
     end
   end
 
@@ -70,7 +69,7 @@ RSpec.describe "API contract: memory" do
       delete "/v1/memory/#{row[:id]}", {}, auth_headers
       expect(last_response.status).to eq(204)
       expect(last_response.body).to be_empty
-      expect(store.find(row[:id])).to be_nil
+      expect(backend.find(row[:id])).to be_nil
     end
 
     it "404 when no fact matches the id" do

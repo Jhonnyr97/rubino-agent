@@ -22,6 +22,7 @@ module Rubino
       #   /sessions --all          → list without the row cap
       #   /sessions show <id>      → details, without switching into it
       #   /sessions delete <id>    → delete (asks to confirm)
+      #   /sessions rename <id> T  → set a human-readable title (#45)
       #   /sessions <id|title>     → resume
       class Sessions
         def initialize(ui:, runner:)
@@ -37,6 +38,7 @@ module Rubino
           case tokens.first
           when "show"   then session_verb(tokens[1..].join(" "), "show") { |s| CLI::SessionCommand.render(s, ui: @ui) }
           when "delete" then session_verb(tokens[1..].join(" "), "delete") { |s| delete_session(s) }
+          when "rename" then rename_session(tokens[1..])
           else resume_session(tokens.join(" "))
           end
         end
@@ -86,6 +88,9 @@ module Rubino
         rescue Rubino::AmbiguousSessionError => e
           @ui.error(e.message)
           :handled
+        rescue Sequel::DatabaseError => e
+          @ui.error("couldn't look up that session: #{db_error_summary(e)}")
+          :handled
         end
 
         # Deletes a session in-chat via the SAME confirm-and-destroy flow the
@@ -99,6 +104,41 @@ module Rubino
           end
 
           CLI::SessionCommand.destroy_with_confirm(session, repo: Session::Repository.new, ui: @ui)
+        end
+
+        # `/sessions rename <id|title> <new title>` — give a session a
+        # human-readable title (#45). A session is auto-titled from its first
+        # user message, so a throwaway opener ("say hi") leaves a useless
+        # `/sessions` row; both Hermes (`/title`) and Claude Code (session
+        # rename) let the user fix it explicitly. The id/title matcher and
+        # not-found/ambiguous handling are shared with show/delete; the new
+        # title is written through Session::Repository#update, which scrubs it.
+        # The first token is the session selector, the rest is the new title.
+        def rename_session(tokens)
+          query = tokens.first.to_s
+          new_title = tokens[1..].to_a.join(" ").strip
+          if query.empty? || new_title.empty?
+            @ui.info("Usage: /sessions rename <id> <new title>")
+            return :handled
+          end
+
+          # Bound the STORED title to the same ceiling the auto-derive path uses
+          # (#581) so a 2000-char manual rename can't blow out the /status panel
+          # or the picker. Truncate (with an ellipsis) rather than reject — the
+          # user still gets their title, just length-capped.
+          new_title = Rubino::Util::Output.elide(new_title, Session::Repository::TITLE_MAX_CHARS)
+
+          session_verb(query, "rename") do |session|
+            Session::Repository.new.update(session[:id], title: new_title)
+            # If this is the session the live runner sits on, refresh its
+            # in-memory title too. /status reads @runner.session[:title] (a
+            # boot-time snapshot the rename never touched), so without this it
+            # kept showing the STALE auto-title until a compaction forked a new
+            # session id (S7 F3).
+            live = @runner&.session
+            live[:title] = new_title if live && live[:id] == session[:id]
+            @ui.success(%(Renamed #{session[:id][0..7]} → "#{session_title(session.merge(title: new_title))}"))
+          end
         end
 
         def list_sessions(all: false)
@@ -115,15 +155,17 @@ module Rubino
           # typed-shortcut fallback renders instead.
           return sessions_table_fallback(sessions) unless interactive_terminal?
 
-          choices = sessions.map { |s| [session_choice_label(s), s[:id]] }
-          chosen  = @ui.select("Resume which session? (Esc to cancel)", choices)
+          # ONE picker for both resume surfaces (#40): the in-REPL chooser here
+          # and the CLI `rubino sessions` bare-on-a-TTY entry share
+          # Session::Picker so the selection UI + row label live in one place.
+          chosen = Session::Picker.new(ui: @ui).pick(sessions)
           if chosen
             session = sessions.find { |s| s[:id] == chosen }
             @ui.success(%(Resuming #{chosen[0..7]}  "#{session_title(session)}")) if session
             return { resume_session_id: chosen }
           end
 
-          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
+          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete|rename <id>")
           :handled
         end
 
@@ -137,35 +179,8 @@ module Rubino
              s[:created_at].to_s, s[:status].to_s, s[:message_count].to_s]
           end
           @ui.table(headers: %w[ID Title Dir Created Status Msgs], rows: rows)
-          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete <id>")
+          @ui.info("Resume: /sessions <id|title>   ·   /sessions show|delete|rename <id>")
           :handled
-        end
-
-        # One picker row: short id + title + message count + recency (and status
-        # when not yet ended), so the highlighted entry is identifiable at a
-        # glance and the picker is a clean superset of the old static table (#40).
-        def session_choice_label(session)
-          id    = session[:id].to_s[0..7]
-          title = session_title(session)
-          msgs  = session[:message_count]
-          dir   = session_dir(session)
-          meta  = [
-            ("#{msgs} msg#{"s" if msgs != 1}" if msgs),
-            (dir unless dir == "—"),
-            session_age(session),
-            (session[:status].to_s unless ["", "ended"].include?(session[:status].to_s))
-          ].compact.join(" · ")
-          meta.empty? ? "#{id}  #{title}" : "#{id}  #{title}  (#{meta})"
-        end
-
-        # "Created" humanized for the picker row — "5m ago" scans better than a
-        # raw ISO timestamp in a recency-ordered list (#40). nil when unparseable.
-        def session_age(session)
-          created = session[:created_at]
-          created = Time.parse(created.to_s) unless created.is_a?(Time)
-          "#{Rubino::Util::Duration.human_duration(Time.now - created)} ago"
-        rescue StandardError
-          nil
         end
 
         def resume_session(query)
@@ -181,31 +196,30 @@ module Rubino
         rescue Rubino::AmbiguousSessionError => e
           @ui.error(e.message)
           :handled
+        rescue Sequel::DatabaseError => e
+          @ui.error("couldn't look up that session: #{db_error_summary(e)}")
+          :handled
         end
 
-        # A session title is auto-generated from the conversation, so it is
-        # attacker-influenceable: a raw `\e]0;…\a` / `\e[2J` in it would hijack
-        # the window title or clear the screen the moment it reached the
-        # `info`/`success`/picker funnels (none of which sanitize) — CWE-150,
-        # R4-N2. Neutralize to caret notation at this single title funnel, which
-        # every title-printing path (resume, picker label, Resuming success)
-        # flows through.
+        # A one-line summary of a Sequel::DatabaseError for the chat surface
+        # (#498). The chat session-resolution path now fully parameterizes its
+        # queries, but any residual driver-level fault (a corrupt FTS index, a
+        # tokenizer rejecting an exotic byte) must still reach the user as a
+        # single clean line — never a raw `SQLite3::SQLException: ...` plus a
+        # multi-line backtrace. Strip to the innermost driver message.
+        def db_error_summary(error)
+          (error.cause || error).message.to_s.lines.first.to_s.strip
+        end
+
+        # Title/dir, delegated to the shared Session::Picker (CWE-150 / R4-N2
+        # sanitization lives there now) so the resume/rename success lines and
+        # the table fallback render the same neutralized fields the picker does.
         def session_title(session)
-          title = Rubino::Util::Output.sanitize_terminal(session[:title].to_s).strip
-          title.empty? ? "(untitled)" : title
+          Session::Picker.session_title(session)
         end
 
-        # The session's launch dir (r5 MF-4), home-collapsed and terminal-escape
-        # sanitized for display in the picker/table. "—" for pre-cwd-column rows.
         def session_dir(session)
-          raw = session[:cwd].to_s
-          return "—" if raw.empty?
-
-          home = Dir.home
-          collapsed = raw.start_with?(home) ? raw.sub(home, "~") : raw
-          Rubino::Util::Output.sanitize_terminal(collapsed)
-        rescue StandardError
-          Rubino::Util::Output.sanitize_terminal(session[:cwd].to_s)
+          Session::Picker.session_dir(session)
         end
 
         # The bare-list row cap (#183): configurable (`sessions.list_limit`) and

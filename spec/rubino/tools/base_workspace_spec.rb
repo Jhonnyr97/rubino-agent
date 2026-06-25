@@ -71,6 +71,31 @@ RSpec.describe Rubino::Tools::Base do
       expect(tool.send(:within_workspace?, new_path)).to be(false)
     end
 
+    # A DANGLING in-workspace symlink (the link exists, its target does not yet)
+    # whose target is OUTSIDE every root must be rejected: writing through it
+    # creates the file at the target, outside the sandbox. File.exist? is false
+    # on a dangling link, so the create-new-file path used to canonicalize the
+    # link's own location and wrongly accept it.
+    it "rejects an in-workspace dangling symlink pointing to a not-yet-existing outside file" do
+      bait = File.join(workspace, "innocent.txt")
+      File.symlink(File.join(outside, "will_be_created.txt"), bait)
+      expect(tool.send(:within_workspace?, bait)).to be(false)
+    end
+
+    it "still allows an in-workspace dangling symlink pointing inside the workspace" do
+      bait = File.join(workspace, "link.txt")
+      File.symlink(File.join(workspace, "inside_target.txt"), bait)
+      expect(tool.send(:within_workspace?, bait)).to be(true)
+    end
+
+    it "does not loop forever on a symlink cycle" do
+      a = File.join(workspace, "a")
+      b = File.join(workspace, "b")
+      File.symlink(b, a)
+      File.symlink(a, b)
+      expect(tool.send(:within_workspace?, a)).to be(false)
+    end
+
     it "is bypassed when tools.workspace_strict=false" do
       Rubino.configuration.set("tools", "workspace_strict", false)
       expect(tool.send(:within_workspace?, "/etc/passwd")).to be(true)
@@ -101,6 +126,31 @@ RSpec.describe Rubino::Tools::Base do
       it "still rejects a path outside every root" do
         expect(tool.send(:within_workspace?, File.join(outside, "evil.txt"))).to be(false)
       end
+    end
+  end
+
+  # #77a: the WRITE/EDIT guard (writable_workspace?) accepts $TMPDIR/tmp scratch
+  # — aligning structured writes with the sandbox writable set + `shell` — while
+  # the AUX-LLM read guard (within_workspace?/outside_workspace?) stays strict so
+  # scratch reads are never exfiltrated to a third-party model.
+  describe "#writable_workspace? temp scratch (#77a)" do
+    it "accepts a path inside the workspace" do
+      inside = File.join(workspace, "ok.txt")
+      expect(tool.send(:writable_workspace?, inside)).to be(true)
+    end
+
+    it "accepts a path under the temp scratch roots ($TMPDIR/tmp)" do
+      scratch = File.join(Dir.tmpdir, "rubino_scratch_#{Process.pid}.txt")
+      expect(tool.send(:writable_workspace?, scratch)).to be(true)
+    end
+
+    it "still rejects a non-scratch path outside the workspace" do
+      expect(tool.send(:writable_workspace?, "/usr/local/rubino_escape.txt")).to be(false)
+    end
+
+    it "does NOT relax the strict read/exfiltration guard for scratch" do
+      scratch = File.join(Dir.tmpdir, "rubino_scratch_#{Process.pid}.txt")
+      expect(tool.send(:within_workspace?, scratch)).to be(false)
     end
   end
 end

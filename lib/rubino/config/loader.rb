@@ -8,7 +8,15 @@ module Rubino
     class ConfigError < StandardError; end
 
     # Responsible for loading configuration from YAML files and environment.
-    # Searches in order: project-local, user home, defaults.
+    #
+    # Config is GLOBAL by design (#50): there is ONE config.yml, under
+    # RUBINO_HOME (default ~/.rubino), shared by every rubino instance on the
+    # machine — the same single-home model Hermes uses (~/.hermes/config.yaml).
+    # So `/think` / `/config set` in one instance changes the setting for all of
+    # them; there is no per-project/per-cwd override layer. Per-project config
+    # (cf. Claude Code's .claude/settings.json hierarchy) is a separate,
+    # unbuilt feature, not the current contract. The merge is: user config.yml
+    # over built-in defaults (with ${ENV} expansion).
     class Loader
       CONFIG_FILENAME = "config.yml"
       ENV_FILENAME = ".env"

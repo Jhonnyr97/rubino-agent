@@ -34,13 +34,20 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(ui.messages.last).to include(level: :success)
     end
 
-    it "reports :warn when migrations are pending" do
+    # WHATIF-headless YELLOW-2: a pending migration used to render as a soft ⚠
+    # (level :warning) with NO fix hint, inconsistent with the ✗ + "run `rubino
+    # setup`" the missing-key/corrupt-config failures give. It already flipped
+    # the exit non-zero (:warn isn't counted as :ok), so make it a hard ✗ (:fail,
+    # level :error) WITH the actionable setup hint.
+    it "reports :fail with a ✗ and a setup hint when migrations are pending (YELLOW-2)" do
       migrator_double(pending: true)
 
       result = doctor.send(:check_migrations)
 
-      expect(result).to eq(name: "migrations", status: :warn)
-      expect(ui.messages.last).to include(level: :warning)
+      expect(result).to eq(name: "migrations", status: :fail)
+      last = ui.messages.last
+      expect(last).to include(level: :error)
+      expect(last[:message]).to include("rubino setup")
     end
 
     # Regression: the old rescue mapped ANY error (including a real DB failure)
@@ -87,6 +94,24 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       result = doctor.send(:check_provider_keys)
 
       expect(result).to eq(name: "provider_keys", status: :ok)
+    end
+
+    # #541 (honesty): a PRESENT key is reported as present-and-unverified, never
+    # as "configured" — doctor makes no live auth probe, so a bogus key must not
+    # earn a green that implies it was validated. The check still passes (a key
+    # IS present), but the copy says "present", "not verified", and names the
+    # verify step so the green can't be misread as "works".
+    it "reports a present key as 'present — not verified', not 'configured'" do
+      with_config("model" => { "default" => "anthropic/claude-3-5-sonnet", "provider" => "auto" })
+      ENV["ANTHROPIC_API_KEY"] = "sk-fake-invalid-xyz"
+
+      doctor.send(:check_provider_keys)
+
+      msg = ui.messages.last
+      expect(msg).to include(level: :success)
+      expect(msg[:message]).to include("present")
+      expect(msg[:message]).to match(/not verified/i)
+      expect(msg[:message]).not_to match(/\bconfigured\b/)
     end
 
     # The core finding: a tenant on an openai_compatible provider configures its
@@ -181,6 +206,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "is :ok for a real registry model id" do
       with_config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
+      allow(doctor).to receive(:model_usable?).and_return(true)
       allow(doctor).to receive(:assume_exists_provider?).and_return(false)
       allow(doctor).to receive(:model_in_catalog?).with("gpt-4.1").and_return(true)
       expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
@@ -188,6 +214,7 @@ RSpec.describe Rubino::CLI::DoctorCommand do
 
     it "is :warn for a typo'd model id on a registry provider" do
       with_config("model" => { "default" => "gpt-4o-typooo", "provider" => "openai" })
+      allow(doctor).to receive(:model_usable?).and_return(true)
       allow(doctor).to receive(:assume_exists_provider?).and_return(false)
       allow(doctor).to receive(:model_in_catalog?).with("gpt-4o-typooo").and_return(false)
 
@@ -202,7 +229,60 @@ RSpec.describe Rubino::CLI::DoctorCommand do
         "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
         "providers" => { "minimax" => { "anthropic_compatible" => true } }
       )
+      allow(doctor).to receive(:model_usable?).and_return(true)
       expect(doctor.send(:check_model_configured)).to eq(name: "model", status: :ok)
+    end
+  end
+
+  # #546 (pre-setup honesty): before `setup` has run, a never-setup install
+  # carries a seeded placeholder `model.default` under an assume-exists provider
+  # but NO usable credential. Doctor used to print a green "Model configured: …"
+  # there — an all-green line that contradicts the unconfigured state. With no
+  # usable credential the model line must be an actionable warning pointing at
+  # setup, never a green success. A genuinely configured+usable setup still
+  # reports the green success. Consistent with the #541 present-vs-verified fix.
+  describe "#check_model_configured (pre-setup honesty, #546)" do
+    def with_config(raw)
+      config = Rubino::Config::Configuration.new(raw: raw, home_path: nil)
+      allow(Rubino).to receive(:configuration).and_return(config)
+    end
+
+    it "does NOT print a green 'Model configured' when no usable credential exists" do
+      with_config(
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "providers" => { "minimax" => { "anthropic_compatible" => true } }
+      )
+      allow(doctor).to receive(:model_usable?).and_return(false)
+
+      result = doctor.send(:check_model_configured)
+
+      expect(result).to eq(name: "model", status: :warn)
+      last = ui.messages.last
+      expect(last[:level]).to eq(:warning)
+      expect(last[:message]).not_to include("Model configured")
+    end
+
+    it "surfaces the actionable 'run setup' guidance when no usable credential exists" do
+      with_config("model" => { "default" => "gpt-4.1", "provider" => "openai" })
+      allow(doctor).to receive(:model_usable?).and_return(false)
+
+      doctor.send(:check_model_configured)
+
+      expect(ui.messages.last[:message]).to include("rubino setup")
+      expect(ui.messages.none? { |m| m[:level] == :success }).to be(true)
+    end
+
+    it "still reports the green success for a configured+usable setup" do
+      with_config(
+        "model" => { "default" => "MiniMax-M2.7", "provider" => "minimax" },
+        "providers" => { "minimax" => { "anthropic_compatible" => true, "api_key" => "mm-key" } }
+      )
+
+      result = doctor.send(:check_model_configured)
+
+      expect(result).to eq(name: "model", status: :ok)
+      expect(ui.messages.last[:level]).to eq(:success)
+      expect(ui.messages.last[:message]).to include("Model configured")
     end
   end
 
@@ -239,13 +319,19 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(ui.messages.none? { |m| m[:level] == :warning && m[:message].to_s.match?(%r{\d/\d}) }).to be(true)
     end
 
-    it "warns and exits non-zero when a REQUIRED check fails (#67)" do
+    # #557: a failed required check is a genuine FAILURE — the headline verdict
+    # must render the red ✗ (level :error), not the soft yellow ⚠ (level
+    # :warning) that understated an all-broken install as a mild caution.
+    it "renders the failure verdict as ✗ (error) and exits non-zero when a REQUIRED check fails (#67/#557)" do
       allow(doctor).to receive(:check_model_configured).and_return(name: "model", status: :fail)
 
       expect { doctor.execute }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
 
-      warning = ui.messages.find { |m| m[:level] == :warning && m[:message].to_s.include?("required checks passed") }
-      expect(warning[:message]).to include("5/6 required checks passed")
+      verdict = ui.messages.find { |m| m[:message].to_s.include?("required checks passed") }
+      expect(verdict[:level]).to eq(:error)
+      expect(verdict[:message]).to include("5/6 required checks passed")
+      # The verdict must NOT be a soft warning anymore.
+      expect(ui.messages.none? { |m| m[:level] == :warning && m[:message].to_s.match?(%r{\d/\d}) }).to be(true)
     end
 
     # #67: scripts/CI gate on doctor, so the all-green path must stay exit 0

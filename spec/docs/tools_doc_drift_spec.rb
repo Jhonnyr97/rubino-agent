@@ -39,4 +39,34 @@ RSpec.describe Rubino::Tools::Registry do
       expect(described_class.all.map(&:name) - headings).to be_empty
     end
   end
+
+  # retrieve_output is the ONLY recovery path for compressed tool output, and is
+  # registered SOLELY when tool_output_compression is enabled — so the default
+  # (off) registry/count documented above is unchanged, and the documented count
+  # holds for the shipped default while compression-on adds exactly this one.
+  describe "compression-gated retrieve_output tool" do
+    after { described_class.reset! }
+
+    it "does NOT register retrieve_output in the default (compression OFF) registry" do
+      allow(Rubino.configuration).to receive(:tool_output_compression_enabled?).and_return(false)
+      described_class.reset!
+      described_class.register_defaults!
+
+      expect(described_class.all.map(&:name)).not_to include("retrieve_output")
+    end
+
+    it "registers retrieve_output (count+1) when compression is enabled" do
+      allow(Rubino.configuration).to receive(:tool_output_compression_enabled?).and_return(false)
+      described_class.reset!
+      described_class.register_defaults!
+      default_count = described_class.all.size
+
+      allow(Rubino.configuration).to receive(:tool_output_compression_enabled?).and_return(true)
+      described_class.reset!
+      described_class.register_defaults!
+
+      expect(described_class.all.size).to eq(default_count + 1)
+      expect(described_class.all.map(&:name)).to include("retrieve_output")
+    end
+  end
 end

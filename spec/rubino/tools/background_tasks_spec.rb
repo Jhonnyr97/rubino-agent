@@ -57,7 +57,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
   end
 
   # #5 — the live output tail of the CURRENTLY RUNNING tool, fed by
-  # UI::SubagentView#tool_chunk and tailed by the /agents drill-in's output:
+  # a subagent's UI::CLI#tool_chunk and tailed by the /agents drill-in's output:
   # block. Bounded (lines + bytes per line), carries the in-flight partial line
   # in its last slot, and is wiped when the tool finishes.
   describe "live output tail (#5)" do
@@ -161,9 +161,11 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       humans.each do |h|
         break if registry.running.size >= described_class::MAX_CONCURRENT_TOTAL
 
-        until registry.children_of(h.id).size >= described_class::MAX_CHILDREN_PER_NODE ||
+        spawned = 0
+        until spawned >= described_class::MAX_CHILDREN_PER_NODE ||
               registry.running.size >= described_class::MAX_CONCURRENT_TOTAL
           registry.reserve(subagent: "general", prompt: "x", owner_subagent_id: h.id)
+          spawned += 1
         end
       end
       expect(registry.running.size).to eq(described_class::MAX_CONCURRENT_TOTAL)
@@ -213,26 +215,10 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     let!(:a1)   { registry.reserve(subagent: "general", prompt: "a1", owner_subagent_id: a.id) }
     let!(:b)    { registry.reserve(subagent: "general", prompt: "b", owner_subagent_id: root.id) }
 
-    it "children_of returns only direct children" do
-      expect(registry.children_of(root.id).map(&:id)).to contain_exactly(a.id, b.id)
-      expect(registry.children_of(a.id).map(&:id)).to contain_exactly(a1.id)
-      expect(registry.children_of(a1.id)).to be_empty
-    end
-
-    it "children_of(nil) returns the human/top-level node's children" do
-      expect(registry.children_of(nil).map(&:id)).to contain_exactly(root.id)
-    end
-
     it "descendants_of returns the full transitive subtree (BFS)" do
       expect(registry.descendants_of(root.id).map(&:id)).to contain_exactly(a.id, b.id, a1.id)
       expect(registry.descendants_of(a.id).map(&:id)).to contain_exactly(a1.id)
       expect(registry.descendants_of(b.id)).to be_empty
-    end
-
-    it "ancestors_of walks owner_subagent_id up to the root, nearest first" do
-      expect(registry.ancestors_of(a1.id).map(&:id)).to eq([a.id, root.id])
-      expect(registry.ancestors_of(a.id).map(&:id)).to eq([root.id])
-      expect(registry.ancestors_of(root.id)).to be_empty
     end
 
     it "owned_by? is the direct-parent predicate" do
@@ -337,6 +323,117 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       registry.begin_approval(entry.id, gate: Rubino::Run::ApprovalGate.new,
                                         approval_id: entry.id, question: "q", command: "c")
       expect(reserve).to be_nil
+    end
+  end
+
+  # R2 — the approval MODAL queue. When two children raise an approval at once
+  # only ONE modal is presented at a time (awaiting_approval.first); the rest are
+  # the "(N more queued)" backlog and dequeue FIFO in the order they parked, so
+  # the modals never overlap.
+  describe "approval modal queue (R2)" do
+    def park_approval(entry)
+      registry.begin_approval(entry.id, gate: Rubino::Run::ApprovalGate.new,
+                                        approval_id: entry.id, question: "q", command: "c #{entry.id}")
+    end
+
+    it "orders awaiting_approval FIFO by the moment each child parked" do
+      a = reserve
+      b = reserve
+      park_approval(a) # a parks FIRST
+      park_approval(b) # b parks SECOND
+      # The head is the first to park — that one drives the single active modal;
+      # b waits behind it regardless of map/hash order.
+      expect(registry.awaiting_approval.map(&:id)).to eq([a.id, b.id])
+    end
+
+    it "reports the queued backlog behind the head as (N more queued)" do
+      a = reserve
+      b = reserve
+      c = reserve
+      expect(registry.queued_approval_count).to eq(0) # nothing parked yet
+      park_approval(a)
+      expect(registry.queued_approval_count).to eq(0) # only one parked → no backlog
+      park_approval(b)
+      park_approval(c)
+      expect(registry.queued_approval_count).to eq(2) # b + c wait behind a
+    end
+
+    it "dequeues the next parked child as the head once the first resolves" do
+      a = reserve
+      b = reserve
+      park_approval(a)
+      park_approval(b)
+      expect(registry.awaiting_approval.first.id).to eq(a.id)
+
+      registry.end_approval(a.id) # the first modal is resolved
+      # b is now the sole parked child → it becomes the active modal, no backlog.
+      expect(registry.awaiting_approval.map(&:id)).to eq([b.id])
+      expect(registry.queued_approval_count).to eq(0)
+    end
+
+    it "clears approval_seq on end_approval so a re-park re-enters the queue tail" do
+      a = reserve
+      b = reserve
+      park_approval(a)
+      park_approval(b)
+      registry.end_approval(a.id)
+      expect(registry.find(a.id).approval_seq).to be_nil
+      park_approval(a) # a parks again — now BEHIND b (later seq)
+      expect(registry.awaiting_approval.map(&:id)).to eq([b.id, a.id])
+    end
+  end
+
+  # R1 — #running is the SINGLE source feeding both the footer cards and the
+  # attached switcher. It must list every child the lifecycle still considers
+  # alive (LIVE_STATUSES), so a sibling that goes quiet / parks (mid-spawn,
+  # needs_approval, blocked_on_parent) never silently vanishes while alive.
+  describe "#running liveness oracle (R1 — switcher/footer source)" do
+    it "exposes LIVE_STATUSES and the shared class predicate" do
+      expect(described_class::LIVE_STATUSES).to include(:running, :needs_approval, :blocked_on_parent)
+      expect(described_class.live_status?(:blocked_on_parent)).to be(true)
+      expect(described_class.live_status?(:completed)).to be(false)
+    end
+
+    it "lists a RUNNING and a needs_approval child together (both alive)" do
+      run = reserve
+      apr = reserve
+      registry.begin_approval(apr.id, gate: Rubino::Run::ApprovalGate.new,
+                                      approval_id: apr.id, question: "q", command: "c")
+      expect(registry.running.map(&:id)).to include(run.id, apr.id)
+    end
+
+    it "keeps a :blocked_on_parent child in #running (it still holds a slot)" do
+      owner = reserve
+      child = registry.reserve(subagent: "explore", prompt: "p", owner_subagent_id: owner.id)
+      registry.begin_ask(child.id, gate: Rubino::Run::ApprovalGate.new, ask_id: child.id,
+                                   question: "may I?", blocking: true, owner_id: owner.id)
+
+      expect(registry.find(child.id).status).to eq(:blocked_on_parent)
+      expect(registry.running.map(&:id)).to include(child.id)
+    end
+
+    it "drops only TERMINAL children, never a live-but-quiet one" do
+      live = reserve
+      dead = reserve
+      registry.complete(dead, status: :completed, result: "ok")
+      ids = registry.running.map(&:id)
+      expect(ids).to include(live.id)
+      expect(ids).not_to include(dead.id)
+    end
+  end
+
+  describe "#messages (child transcript)" do
+    it "is empty when no runner/session is wired (sync/foreground/headless)" do
+      expect(reserve.messages).to eq([])
+    end
+
+    it "returns the child runner session's full transcript from the store" do
+      entry = reserve
+      entry.runner = instance_double(Rubino::Agent::Runner, session: { id: "child-sess" })
+      store = instance_double(Rubino::Session::Store)
+      allow(Rubino::Session::Store).to receive(:new).and_return(store)
+      allow(store).to receive(:for_session).with("child-sess").and_return(%i[m1 m2])
+      expect(entry.messages).to eq(%i[m1 m2])
     end
   end
 end

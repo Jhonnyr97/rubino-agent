@@ -72,6 +72,10 @@ module Rubino
         # none keeps the seeded default untouched.
         maybe_autodetect_provider(ui)
 
+        # Offer command/file output compression + multi-language code skeleton
+        # (interactive only, idempotent, recommended). See maybe_offer_compression.
+        maybe_offer_compression(ui)
+
         ui.blank_line
         # Tell the truth about the end state (#31). A green "Setup complete!" is
         # only honest when a usable credential is actually configured — printing
@@ -81,7 +85,7 @@ module Rubino
         # non-interactive (files-only) paths.
         if LLM::CredentialCheck.usable?
           ui.success("Setup complete! Run 'rubino doctor' to verify.")
-        elsif (model = Rubino.configuration.model_default.to_s).empty?
+        elsif (model = Rubino.configuration.dig("model", "default").to_s).empty?
           ui.warning("Setup files created, but no model is configured yet.")
           ui.status("Run 'rubino setup' again or add an API key, then 'rubino doctor' to verify.")
         else
@@ -93,6 +97,9 @@ module Rubino
           ui.status("Run 'rubino setup' to add it, then 'rubino doctor' to verify.")
         end
       end
+
+      # The wizard choice "JS/TS" enables all three tree-sitter source tokens.
+      JS_TS_LANGUAGES = %w[javascript typescript tsx].freeze
 
       private
 
@@ -111,11 +118,165 @@ module Rubino
         Rubino.database
       end
 
+      # Interactive "activate from setup" compression offers, in sequence: the
+      # command/file log-compression toggle, then (gated on it) the multi-language
+      # code-skeleton picker that installs the optional JS/TS parser when chosen.
+      def maybe_offer_compression(ui)
+        maybe_offer_log_compression(ui)
+        maybe_offer_code_languages(ui)
+      end
+
       def maybe_run_onboarding(ui)
         return unless interactive?
         return if LLM::CredentialCheck.usable?
 
         OnboardingWizard.new(ui: ui).run
+      end
+
+      # Interactive "activate from setup" step for command + file output
+      # compression. Skipped on headless setup (no prompt) and when the master
+      # flag is already on, so a re-run never nags. A bare Enter accepts
+      # (recommended on). Writing the unified `enabled` flag is the ONLY
+      # persistence; a decline leaves the seeded default (off). The per-type
+      # `logs.enabled` sub-flag is turned on too so the log channel is active.
+      def maybe_offer_log_compression(ui)
+        return unless interactive?
+        return if Rubino.configuration.tool_output_compression_enabled?
+
+        ui.blank_line
+        ui.info("Command + file output compression")
+        ui.status("  Compresses test/build/shell output AND whole-file Ruby reads before they reach")
+        ui.status("  the model — keeps every failure + summary (and code signatures), drops passing")
+        ui.status("  noise. ~97% fewer tokens on a test suite. The full output stays one `read` away.")
+        return unless prompt_enable?("Enable it?")
+
+        loader = Config::Loader.new
+        loader.create_default_config! unless loader.config_exists?
+        writer = Config::Writer.new(config_path: loader.config_path)
+        writer.set("tool_output_compression.enabled", true)
+        writer.set("tool_output_compression.logs.enabled", true)
+        Rubino.reload_configuration!
+        ui.success("Command + file output compression enabled.")
+      rescue StandardError => e
+        # A convenience toggle must never fail setup.
+        Rubino.logger.warn(event: "setup.log_compression_offer_failed",
+                           error: e.class.name, message: e.message)
+        nil
+      end
+
+      # Interactive picker for which languages get whole-file read skeletonisation.
+      # GATING: require the master compression flag to be ON (the user accepted it
+      # in the prior step) — so this step is naturally skipped for anyone who
+      # declined compression, and we never write `languages` for a seam that's off.
+      # NAG-GUARD: skip when the persisted `languages` is already customized away
+      # from the default %w[ruby], so a second `setup` never re-prompts. EOF/non-TTY
+      # safe: a bare Enter / piped EOF keeps the recommended default (Ruby only).
+      def maybe_offer_code_languages(ui)
+        return unless interactive?
+        return unless Rubino.configuration.tool_output_compression_enabled?
+        return if Rubino.configuration.tool_output_compression_code_languages != %w[ruby]
+
+        ui.blank_line
+        ui.info("Code compression — languages")
+        ui.status("  Skeletonize whole-file reads (signatures kept, large bodies elided behind a")
+        ui.status("  `read offset/limit` pointer) before they reach the model. Pick languages:")
+        ui.status("    1) Ruby     built-in · no extra dependency        [on]")
+        ui.status("    2) Python   uses your python3 · no extra dependency")
+        ui.status("    3) JS / TS  installs tree_sitter_language_pack (precompiled · no compiler)")
+
+        picks = prompt_language_numbers
+        languages = languages_from_picks(picks)
+
+        loader = Config::Loader.new
+        loader.create_default_config! unless loader.config_exists?
+        writer = Config::Writer.new(config_path: loader.config_path)
+        writer.set("tool_output_compression.code.languages", languages)
+        Rubino.reload_configuration!
+        ui.success("Code compression languages: #{languages.join(", ")}.")
+
+        ensure_js_ts_parser(ui) if picks.include?(3)
+        warn_python_absent(ui) if picks.include?(2)
+        nil
+      rescue StandardError => e
+        # A convenience toggle must never fail setup.
+        Rubino.logger.warn(event: "setup.code_languages_offer_failed",
+                           error: e.class.name, message: e.message)
+        nil
+      end
+
+      # Reads a comma-separated list of numbers; a bare Enter / EOF (piped, non-TTY)
+      # keeps the recommended default = [1] (Ruby only). Out-of-range tokens are
+      # ignored. Never blocks.
+      def prompt_language_numbers
+        $stdout.print "  Enter numbers to enable (comma-separated) [1]: "
+        $stdout.flush
+        ans = $stdin.gets
+        return [1] if ans.nil? # EOF / piped → recommended default
+
+        nums = ans.strip.split(",").filter_map { |t| Integer(t.strip, exception: false) }
+        nums &= [1, 2, 3]
+        nums.empty? ? [1] : nums.uniq
+      rescue StandardError
+        [1]
+      end
+
+      # Maps picked numbers to the persisted `languages` token list. Ruby (1) is
+      # included unless the user explicitly entered a selection that omits it
+      # (ruby-off is honored). JS/TS (3) expands to its three source tokens.
+      def languages_from_picks(picks)
+        langs = []
+        langs << "ruby" if picks.include?(1)
+        langs << "python" if picks.include?(2)
+        langs.concat(JS_TS_LANGUAGES) if picks.include?(3)
+        langs
+      end
+
+      # JS/TS needs the optional `tree_sitter_language_pack` gem. If it isn't
+      # already loadable, ASK before installing (an outward action: network + gem
+      # env mutation). On decline or failure, degrade calmly — JS/TS compression
+      # stays inert (no-op) until the gem is present. Never fails setup.
+      def ensure_js_ts_parser(ui)
+        return if tree_sitter_loadable?
+
+        ui.status("JS/TS compression needs the `tree_sitter_language_pack` gem (precompiled).")
+        unless prompt_enable?("Install it now?")
+          ui.status("Skipped — JS/TS compression stays inert until `gem install tree_sitter_language_pack`.")
+          return
+        end
+
+        if system("gem", "install", "tree_sitter_language_pack")
+          ui.success("tree_sitter_language_pack installed.")
+        else
+          ui.status("Install failed — JS/TS compression stays inert until `gem install tree_sitter_language_pack`.")
+        end
+      end
+
+      def tree_sitter_loadable?
+        require "tree_sitter_language_pack"
+        true
+      rescue LoadError
+        false
+      end
+
+      # Python skeletonisation shells out to python3 (stdlib `ast`). If it isn't on
+      # PATH the language is inert (no-op) — tell the user calmly, never install.
+      def warn_python_absent(ui)
+        return if system("python3", "--version", out: File::NULL, err: File::NULL)
+
+        ui.status("python3 not found — Python compression stays inert until it's on your PATH.")
+      end
+
+      # Y/n prompt with a recommended-yes default (bare Enter ⇒ true). Only an
+      # explicit n/no declines; EOF (piped) declines too so non-TTY never blocks.
+      def prompt_enable?(question)
+        $stdout.print "#{question} [Y/n]: "
+        $stdout.flush
+        ans = $stdin.gets
+        return false if ans.nil?
+
+        !%w[n no].include?(ans.strip.downcase)
+      rescue StandardError
+        false
       end
 
       # Non-interactive provider auto-detect (#392a). Only the headless path
@@ -132,7 +293,7 @@ module Rubino
         return unless choice
         # Already pointed at this provider (e.g. config carried over): nothing
         # to rewrite, and don't churn the file or its line on every re-run.
-        return if Rubino.configuration.model_provider == choice[:provider]
+        return if Rubino.configuration.dig("model", "provider") == choice[:provider]
 
         # Non-destructive re-run (F9): a re-run of `setup` over an EXISTING
         # config must never silently clobber a model the user deliberately
@@ -142,8 +303,9 @@ module Rubino
         # and just tells the user how to switch. (Industry: idempotent setup
         # fills missing fields, never overwrites a set one.)
         if model_customized?
+          cfg = Rubino.configuration
           ui.status("Detected #{choice[:env_var]}, but keeping your configured model " \
-                    "#{Rubino.configuration.model_default} (#{Rubino.configuration.model_provider}). " \
+                    "#{cfg.dig("model", "default")} (#{cfg.dig("model", "provider")}). " \
                     "Run `rubino config set model.provider #{choice[:provider]}` to switch.")
           return
         end
@@ -163,7 +325,7 @@ module Rubino
       def model_customized?
         cfg = Rubino.configuration
         seed = Config::Defaults::MODULE_DEFAULTS["model"] || {}
-        cfg.model_default != seed["default"] || cfg.model_provider != seed["provider"]
+        cfg.dig("model", "default") != seed["default"] || cfg.dig("model", "provider") != seed["provider"]
       rescue StandardError
         # If we can't tell, err on the side of PRESERVING the user's config.
         true

@@ -66,6 +66,126 @@ RSpec.describe Rubino::Tools::WebFetchTool do
     end
   end
 
+  describe "readability main-content extraction (format:text)" do
+    # A page with clear chrome (nav/header/footer/aside) around a <main> body.
+    let(:rich_page) do
+      <<~HTML
+        <html><head><title>T</title><style>.x{}</style></head>
+        <body>
+          <header>Cookie banner accept all tracking</header>
+          <nav><a href="/about">About Us</a><a href="/pricing">Pricing</a></nav>
+          <aside role="complementary">Related sidebar links you do not want</aside>
+          <main>
+            <h1>The Real Headline</h1>
+            <p>This is the first body paragraph and it is long enough to clearly
+               count as substantial real article content for the ratio check.</p>
+            <ul><li>first bullet point</li><li>second bullet point</li></ul>
+            <p>A second substantial paragraph of body text with an &amp; entity,
+               again long enough that the extracted text dominates the page.</p>
+          </main>
+          <footer>Copyright 2026 Example Inc. Privacy Terms Sitemap</footer>
+          <script>tracker();</script>
+        </body></html>
+      HTML
+    end
+
+    def fetch_text(body)
+      stub_http(fake_success(body: body, content_type: "text/html; charset=utf-8"))
+      tool.call("url" => "https://example.com")
+    end
+
+    it "keeps the main content" do
+      result = fetch_text(rich_page)
+      expect(result).to include("The Real Headline")
+      expect(result).to include("first body paragraph")
+      expect(result).to include("second substantial paragraph")
+      expect(result).to include("first bullet point")
+    end
+
+    it "drops nav, header, footer, aside and script chrome" do
+      result = fetch_text(rich_page)
+      expect(result).not_to include("About Us")
+      expect(result).not_to include("Cookie banner")
+      expect(result).not_to include("Copyright 2026")
+      expect(result).not_to include("Related sidebar links")
+      expect(result).not_to include("tracker")
+    end
+
+    it "decodes entities and formats headings/lists" do
+      result = fetch_text(rich_page)
+      expect(result).to include("with an & entity")
+      expect(result).to include("## The Real Headline")
+      expect(result).to include("- first bullet point")
+    end
+
+    it "notes the raw escape hatch when it trims a lot" do
+      result = fetch_text(rich_page)
+      expect(result).to include('format:"html"')
+    end
+
+    describe "safety fallback (do not lose capability)" do
+      # Content lives outside <main>/<article>; the bulk of the document is
+      # chrome that the extractor drops, leaving too little -> must fall back to
+      # the full-page strip rather than return a near-empty page.
+      let(:hard_page) do
+        big_nav = (+"<nav>") << ("MenuItem link " * 300) << "</nav>"
+        "<html><body>#{big_nav}<div class='post'><p>tiny body</p></div></body></html>"
+      end
+
+      it "falls back to the full strip, losing no content" do
+        result = fetch_text(hard_page)
+        # Full strip keeps everything, including the nav text that extraction drops.
+        expect(result).to include("MenuItem")
+        expect(result).to include("tiny body")
+        # And it did NOT append the trimmed-annotation (nothing was trimmed).
+        expect(result).not_to include('format:"html"')
+      end
+    end
+
+    it "never crashes on malformed input (rescues to full strip)" do
+      mal = "<html><body><main>\x00\x01<p>Hello body content here</p></main>"
+      result = fetch_text(mal)
+      expect(result).to be_a(String)
+      expect(result).to include("Hello body content here")
+    end
+
+    it "logs and falls back when readability fails UNEXPECTEDLY (not a parse error)" do
+      html = "<html><body><main><p>Body content for fallback</p></main></body></html>"
+      # Use a throwaway instance (not the subject) so we can simulate an
+      # UNEXPECTED extraction failure without stubbing the object under test.
+      faulty = described_class.new
+      def faulty.readability_extract(_html) = raise("unexpected boom")
+      # The unexpected case must be observable, not silently permanent dead weight.
+      expect(Rubino.logger).to receive(:warn).with(
+        hash_including(event: "webfetch.readability.unexpected_error")
+      )
+      out = faulty.send(:strip_html, html)
+      expect(out).to include("Body content for fallback") # still degrades cleanly
+    end
+  end
+
+  describe "format:html keeps the raw body verbatim (escape hatch)" do
+    it "returns the full raw HTML completely unchanged" do
+      raw = <<~HTML
+        <html><body>
+          <nav><a href="/about">About Us</a></nav>
+          <main><h1>Title</h1><p>Body &amp; text</p></main>
+          <footer>Footer junk</footer>
+          <script>tracker();</script>
+        </body></html>
+      HTML
+      stub_http(fake_success(body: raw, content_type: "text/html; charset=utf-8"))
+      result = tool.call("url" => "https://example.com", "format" => "html")
+      # Byte-for-byte identical to the (UTF-8 scrubbed) raw body: nothing parsed,
+      # nothing stripped, chrome and scripts all preserved.
+      expect(result).to eq(raw.dup.force_encoding("UTF-8").scrub("?"))
+      expect(result).to include("<nav>")
+      expect(result).to include("<script>tracker();</script>")
+      expect(result).to include("About Us")
+      expect(result).to include("Footer junk")
+    end
+  end
+
   describe "SSRF guard (W-1 / W-3)" do
     it "refuses an IMDS / cloud-metadata URL without making a request" do
       expect(Net::HTTP).not_to receive(:new)

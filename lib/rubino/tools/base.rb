@@ -77,6 +77,22 @@ module Rubino
         :low
       end
 
+      # True only for tools whose code runs on an external MCP server
+      # (MCPToolWrapper overrides this). Built-ins are NEVER MCP — the display
+      # layer keys the `(mcp:server)` marker off this predicate, NOT off the
+      # tool name's shape, so a built-in with an underscore in its name
+      # (read_attachment, shell_output) is never mistaken for `server_tool`.
+      def mcp?
+        false
+      end
+
+      # The label shown in the live tool card / approval card. Built-ins render
+      # under their bare name; MCPToolWrapper overrides this to append the
+      # `(mcp:server)` source marker. The MODEL-FACING #name is unaffected.
+      def display_name
+        name
+      end
+
       # Executes the tool with given arguments, returns output string
       def call(arguments)
         raise NotImplementedError, "#{self.class}#call not implemented"
@@ -99,23 +115,23 @@ module Rubino
       protected
 
       # Resolves a model-supplied path to an absolute one, anchoring a RELATIVE
-      # path at the workspace primary root (terminal.cwd || launch cwd) instead
-      # of the process cwd.
+      # path at the SESSION cwd (Workspace.current_cwd) instead of the process
+      # cwd.
       #
       # `File.expand_path(rel)` anchors at Dir.pwd, but the agent's "current
-      # directory" — the dir the @-picker, shell/test and sandbox all agree on
-      # — is Workspace.primary_root, which is terminal.cwd when configured (e.g.
-      # bin/dev / the QA harness point it at a workspace subdir while the process
-      # launches from the parent). When the two diverge, a relative `shopkit/
-      # cart.py` resolved one directory too shallow and 404'd, forcing an
-      # ls→glob→re-read detour (r6 F3). Anchoring at primary_root fixes that
-      # while an ABSOLUTE path (or a ~ path) passes straight through unchanged,
-      # so the workspace guard downstream still sees the real target.
+      # directory" — the dir the @-picker, shell, sandbox and now every file
+      # tool agree on — is Workspace.current_cwd. It DEFAULTS to primary_root
+      # (terminal.cwd || launch cwd), which is what bin/dev / the QA harness
+      # point at while the process launches from the parent; and it CARRIES a
+      # `cd subdir` done in the shell, so a relative `foo.txt` written right
+      # after `cd subdir` lands in subdir, not the workspace root (#544/#545).
+      # An ABSOLUTE path (or a ~ path) passes straight through unchanged, so the
+      # workspace guard downstream still sees the real target.
       def expand_workspace_path(path)
         str = path.to_s
         return File.expand_path(str) if str.start_with?(File::SEPARATOR, "~")
 
-        File.expand_path(str, workspace_root)
+        File.expand_path(str, Workspace.current_cwd)
       end
 
       # Filesystem sandbox for write/edit/delete operations.
@@ -185,16 +201,75 @@ module Rubino
         end
       end
 
+      # The WRITE/EDIT sandbox check: within the workspace OR under the temp
+      # scratch set ($TMPDIR + /tmp). The OS write-jail already grants scratch as
+      # writable and `shell` can freely write there, but the structured write/edit
+      # guard refused it — so `write /tmp/x` failed while `shell printf > /tmp/x`
+      # worked, an inconsistency the model tripped on (#77a). This is deliberately
+      # SEPARATE from #within_workspace? so the relaxation applies ONLY to writes:
+      # the AUX-LLM read guard (#outside_workspace?, which exfiltrates bytes to a
+      # third-party model) stays strict and never reaches scratch.
+      def writable_workspace?(expanded)
+        return true unless workspace_strict?
+        return true if within_workspace?(expanded)
+
+        target_real = canonical_path(expanded)
+        return false unless target_real
+
+        temp_scratch?(target_real)
+      end
+
+      # The shared temp scratch roots ($TMPDIR + /tmp), resolved through symlinks
+      # so the comparison matches canonical_path's output.
+      def temp_scratch_roots
+        [ENV.fetch("TMPDIR", nil), "/tmp"].filter_map do |p|
+          next if p.nil? || p.empty? || !File.directory?(p)
+
+          File.realpath(File.expand_path(p))
+        rescue StandardError
+          nil
+        end.uniq
+      end
+
+      def temp_scratch?(target_real)
+        # The agent home (~/.rubino) holds the sandbox's own trust anchors and is
+        # DELIBERATELY non-writable from the jail (see Security::Sandbox); a temp
+        # home in tests sits under $TMPDIR, so carve it out here too — scratch
+        # must never become a self-tamper write path.
+        return false if under_agent_home?(target_real)
+
+        temp_scratch_roots.any? do |root|
+          target_real == root || target_real.start_with?("#{root}#{File::SEPARATOR}")
+        end
+      end
+
       # Resolves `path` through every symlink to its canonical destination.
       # When the path doesn't exist yet (create-new-file flow) walks up to
       # the deepest existing ancestor, realpaths that, then re-joins the
       # missing tail. The tail itself can't traverse — expand_path already
       # collapsed `..` segments before we got here.
-      def canonical_path(path)
+      def canonical_path(path, symlink_hops = 0)
         return nil if path.nil? || path.to_s.empty?
 
         expanded = File.expand_path(path.to_s)
         return File.realpath(expanded) if File.exist?(expanded)
+
+        # A DANGLING symlink (the link exists; its target does not yet) reports
+        # File.exist? == false because exist? follows the link to the missing
+        # target — so the create-new-file fallback below would canonicalize the
+        # LINK'S OWN location and wrongly accept it as in-workspace, even though
+        # a write through the link lands at the target OUTSIDE the workspace.
+        # Resolve where the link actually points (recursively, in case the
+        # target is itself a dangling link) so the sandbox confines the real
+        # write destination, not the harmless-looking link path. The hop counter
+        # bails a symlink cycle (a→b→a) — exist? never trips on a cycle, so an
+        # unbounded recurse would loop; matching realpath's ELOOP, return nil.
+        if File.symlink?(expanded)
+          return nil if symlink_hops >= 40
+
+          target = File.expand_path(File.readlink(expanded), File.dirname(expanded))
+          return canonical_path(target, symlink_hops + 1)
+        end
 
         ancestor = expanded
         tail     = []
@@ -245,67 +320,6 @@ module Rubino
                   "Run `/add-dir #{File.dirname(File.expand_path(path.to_s))}` to include its folder, " \
                   "or relaunch in that directory. Do not try to create or overwrite it.",
           error_code: :outside_workspace }
-      end
-
-      # UNIFIED SECRET-PATH PREDICATE (#446). One "is this a secret/credential
-      # path?" question used by BOTH the read side (read/grep/glob) and the
-      # write side (write/edit/multi_edit/apply_patch). Previously the read
-      # denylist (#406) was a NARROW subset (.env*/.envrc + agent-home) and the
-      # write denylist (#413) the SUPERSET; the maintainer decision is that
-      # reading OR writing a secret both require EXPLICIT user approval, applied
-      # to the SAME set. So there is now ONE set — the (wider) write set — and
-      # ONE predicate: #secret_path_category. The approval gate lives in
-      # Security::ApprovalPolicy#decide (returns :ask for a secret target), which
-      # gives us the existing flow for free: interactive → approval dropdown
-      # auto-opens; approved → the tool proceeds; denied → refused; headless (no
-      # human) → fails CLOSED via ToolExecutor's :noninteractive floor. The tools
-      # therefore NO LONGER self-refuse a secret in #call — an approved read of
-      # your .env must actually return its bytes, and an approved write must
-      # actually write. The predicate is still consulted directly in ONE place:
-      # GrepTool post-filters its RESULTS through it so an include-glob
-      # (`include: "*.env"`) over a directory can't leak a secret the per-target
-      # gate never saw (F2).
-      #
-      # DELIBERATE DIVERGENCE FROM HERMES: Hermes' file_safety.get_read_block_error
-      # FLAT-DENIES reading project .env* (model-facing deny, no human in the
-      # loop, defense-in-depth only). rubino instead routes the read through an
-      # explicit user APPROVAL gate (ask, not deny) so the agent CAN read/update
-      # your .env when you say yes — stricter than Claude Code's default
-      # (ungated reads) and aider, more content-aware than Codex's OS-sandbox.
-      #
-      # Matches (by BASENAME, in any directory):
-      #   - project credential files: .env, .env.* (.env.local/.production), .envrc
-      #   - shell/credential dotfiles: .netrc, .pgpass, .npmrc, .pypirc,
-      #     .git-credentials, .bashrc, .zshrc, .profile, .bash_profile, .zprofile
-      # Matches (by absolute PATH / PREFIX):
-      #   - ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.docker, ~/.azure,
-      #     ~/.config/gh, ~/.config/gcloud  (the whole tree)
-      #   - /etc/sudoers, /etc/sudoers.d/*, /etc/passwd, /etc/shadow, /etc/systemd/*
-      #   - anything UNDER the agent home (~/.rubino) that holds auth/secrets:
-      #     the home .env, the sqlite DB, any *oauth* file, an mcp-tokens/ dir,
-      #     and *.key / *.pem material.
-      # Returns the matched category string (truthy) or nil when the path is not
-      # a secret. (Non-predicate: the truthy return carries the category string
-      # the approval question / block message interpolates.)
-      #
-      # The UNIFIED predicate (delegates to the single source of truth,
-      # Security::SecretPath.category). Returns the matched-secret category
-      # string (truthy) for a secret/credential path, or nil for a normal file.
-      def secret_path_category(expanded)
-        Security::SecretPath.category(expanded)
-      end
-
-      # Denial body for a secret hit that the GrepTool post-filter strips out of
-      # an include-glob result set (F2): the directory grep wasn't itself a
-      # secret target, so the per-call approval gate never saw it — we refuse the
-      # leaking RESULTS here instead. error_code stays :secret_denied for parity
-      # with the read side.
-      def secret_filtered_block_message(path, category)
-        { output: "Error: refusing to return secret content from '#{path}' — it is a #{category}. " \
-                  "The search matched a credential file via an include-glob; secrets are not " \
-                  "returned without explicit user approval. Ask the user, or read the file " \
-                  "directly (which prompts for approval).",
-          error_code: :secret_denied }
       end
 
       # True when +expanded+ resolves under the Rubino home directory. Symlinks

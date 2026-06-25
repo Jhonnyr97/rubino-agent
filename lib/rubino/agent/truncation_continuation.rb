@@ -10,7 +10,7 @@ module Rubino
     # max_tokens. Rather than surface the fragment as the final turn, we:
     #
     #   1. keep the interim partial as an assistant message in the history,
-    #   2. append a "[System: …continue exactly where you left off…]" user nudge,
+    #   2. append a "[harness control] …continue exactly where you left off…" nudge,
     #   3. re-issue the SAME request with a progressively BOOSTED output budget
     #      (base × (retry+1), capped at 32 768), and
     #   4. concatenate the partial pieces into the final answer.
@@ -36,10 +36,13 @@ module Rubino
       # (the `else` branch of the continuation-prompt builder). The
       # partial-stream-stub variants don't apply here — a dropped stream surfaces
       # as AdapterResponse#interrupted?, handled separately by the Loop.
+      # Carries the trusted-harness marker (#75) — the system prompt declares it
+      # runtime control — so an injection-aware model continues the answer instead
+      # of reading the directive as a prompt-injection attempt.
       CONTINUATION_NUDGE =
-        "[System: Your previous response was truncated by the output " \
-        "length limit. Continue exactly where you left off. Do not " \
-        "restart or repeat prior text. Finish the answer directly.]"
+        "#{Loop::HARNESS_CONTROL_MARKER} Your previous response was truncated by " \
+        "the output length limit. Continue exactly where you left off. Do not " \
+        "restart or repeat prior text. Finish the answer directly.".freeze
 
       # +boundary+    : responds to #call(request, &block) → AdapterResponse.
       # +base_tokens+ : the configured agent.max_tokens (nil ⇒ DEFAULT_BASE).

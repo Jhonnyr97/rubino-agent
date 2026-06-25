@@ -145,7 +145,7 @@ The fake LLM provider can short-circuit tool decisions, so `chat` and `server` r
 
 ## TLS for the HTTP API
 
-The API binds `127.0.0.1` by default; only expose it (`--host 0.0.0.0` / `RUBINO_API_HOST`) behind TLS or a trusted segment. For a remote HTTP client, set `RUBINO_TLS=1` (or leave a cert in place) and the API serves over a self-signed cert that the client **pins** (no DNS / Let's Encrypt needed). On first boot it generates `cert.pem` + `key.pem` under `$RUBINO_HOME/tls` (CN/SAN = host/IP, ~10y) and reuses them. Hand the public cert to a pinning client with:
+The API binds `127.0.0.1` by default; only expose it (`--host 0.0.0.0` / `RUBINO_API_HOST`) behind TLS or a trusted segment. Because the API can execute shell tools, a non-loopback bind is **config-gated and refused by default** (#577): the server will not boot on a routable host unless `api.allow_public_bind: true` is set in `config.yml`, and when it is, it prints a one-time exposure warning at startup. Loopback binds (`127.0.0.1` / `::1` / `localhost`) are unaffected. For a remote HTTP client, set `RUBINO_TLS=1` (or leave a cert in place) and the API serves over a self-signed cert that the client **pins** (no DNS / Let's Encrypt needed). On first boot it generates `cert.pem` + `key.pem` under `$RUBINO_HOME/tls` (CN/SAN = host/IP, ~10y) and reuses them. Hand the public cert to a pinning client with:
 
 ```bash
 rubino tls-cert   # prints $RUBINO_HOME/tls/cert.pem (generating it if absent)

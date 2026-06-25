@@ -136,4 +136,90 @@ RSpec.describe Rubino::Tools::EditTool do
       expect(File.read(path)).to eq("keep me")
     end
   end
+
+  # FUZZY fallback (ported from pi's edit-diff): when the byte-exact match
+  # fails because the model's old_string drifted in cosmetic ways (smart
+  # quotes, dashes, exotic spaces, trailing whitespace, Unicode form), a
+  # normalized match locates the span in the ORIGINAL bytes and the
+  # replacement splices into those original bytes (normalized text is never
+  # persisted). Uniqueness is still enforced.
+  describe "fuzzy fallback (#edit-fuzzy)" do
+    it "matches a smart-quote needle against ASCII quotes in the file" do
+      path = write_file("sq.rb", %(puts "hello"\n))
+      # Model re-typed curly quotes; exact match fails, fuzzy succeeds.
+      result = tool.call("file_path" => path, "old_string" => %(“hello”), "new_string" => %("world"))
+      expect(result).to be_a(Hash)
+      # The replacement is the literal new_string, spliced into the ORIGINAL
+      # bytes (the ASCII quotes around hello are gone).
+      expect(File.read(path)).to eq(%(puts "world"\n))
+    end
+
+    it "matches an em-dash needle against an ASCII hyphen in the file" do
+      path = write_file("dash.txt", "range 1 - 5\n")
+      result = tool.call("file_path" => path, "old_string" => "1 — 5", "new_string" => "1 to 5")
+      expect(result).to be_a(Hash)
+      expect(File.read(path)).to eq("range 1 to 5\n")
+    end
+
+    it "matches when the file has trailing whitespace the model dropped" do
+      # File line ends with trailing spaces; model's needle has none.
+      path = write_file("tw.txt", "foo   \nbar\n")
+      result = tool.call("file_path" => path, "old_string" => "foo\nbar", "new_string" => "X\nY")
+      expect(result).to be_a(Hash)
+      # The whole drifted span (incl. the trailing spaces) is replaced.
+      expect(File.read(path)).to eq("X\nY\n")
+    end
+
+    it "returns the duplicate-match error for an ambiguous fuzzy match" do
+      # Two ASCII-quoted "a"; the curly-quote needle matches both → ambiguous.
+      path = write_file("amb.txt", %("a" then "a"))
+      result = tool.call("file_path" => path, "old_string" => %(“a”), "new_string" => %("b"))
+      expect(result).to be_a(String)
+      expect(result).to include("2 matches")
+      expect(File.read(path)).to eq(%("a" then "a")) # untouched
+    end
+
+    it "replaces all fuzzy matches with replace_all" do
+      path = write_file("ra.txt", %("a" "a" "a"))
+      result = tool.call("file_path" => path, "old_string" => %(“a”), "new_string" => %("b"),
+                         "replace_all" => true)
+      expect(result).to be_a(Hash)
+      expect(File.read(path)).to eq(%("b" "b" "b"))
+      expect(result[:output]).to include("3 replacement")
+    end
+
+    it "maps a length-changing NFKC normalization back to the correct original span" do
+      # The file holds the ﬁ ligature (U+FB01, 3 bytes) which NFKC expands to
+      # "fi" (2 chars). The model sends plain "find". The match must map back
+      # to the ORIGINAL bytes — replacing exactly the ligature word, leaving
+      # the surrounding non-ASCII bytes intact.
+      original = +"deﬁne and ﬁnd it"
+      path = File.join(tmp_dir, "lig.txt")
+      File.binwrite(path, original.dup.force_encoding("UTF-8"))
+      result = tool.call("file_path" => path, "old_string" => "find", "new_string" => "locate")
+      expect(result).to be_a(Hash)
+      # Only the "ﬁnd" word changed; "deﬁne" (with its own ligature) is intact.
+      expect(File.read(path).force_encoding("UTF-8")).to eq("deﬁne and locate it")
+    end
+
+    it "applies a fuzzy edit on a file with non-UTF-8 bytes without crashing" do
+      # The file carries raw Latin-1 é (0xE9), which is invalid UTF-8 and used
+      # to crash fuzzy normalization. The smart-quote needle forces the fuzzy
+      # fallback; the edit must apply and the invalid bytes survive verbatim.
+      path = File.join(tmp_dir, "enc.txt")
+      File.binwrite(path, "name: Andr\xE9\nputs \"hello\"\n")
+      result = tool.call("file_path" => path, "old_string" => %(“hello”), "new_string" => %("world"))
+      expect(result).to be_a(Hash) # not "Error editing … invalid byte sequence"
+      after = File.binread(path)
+      expect(after).to include(%(puts "world").b)
+      expect(after).to include("Andr\xE9".b) # untouched non-UTF-8 bytes verbatim
+    end
+
+    it "still returns the not-found error when even fuzzy cannot match" do
+      path = write_file("nf.txt", "alpha")
+      result = tool.call("file_path" => path, "old_string" => "zzz", "new_string" => "y")
+      expect(result).to be_a(String)
+      expect(result).to include("not found")
+    end
+  end
 end

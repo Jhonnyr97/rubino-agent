@@ -28,6 +28,7 @@ end
 
 require "tmpdir"
 require "rubino"
+require "ruby_llm"
 require "fileutils"
 require "securerandom"
 # Rubino's CLI commands subclass Thor and are loaded lazily by Zeitwerk, so the
@@ -145,6 +146,14 @@ RSpec.configure do |config|
     Rubino::Tools::BackgroundTasks.reset! if defined?(Rubino::Tools::BackgroundTasks)
     Rubino::Tools::ShellRegistry.reset! if defined?(Rubino::Tools::ShellRegistry)
     Rubino::Run::GateRegistry.reset! if defined?(Rubino::Run::GateRegistry)
+    # The session cwd (Workspace.current_cwd) is thread-local process state
+    # (#544/#545): a spec that does a shell `cd` on the main thread, or sets
+    # Workspace.current_cwd directly, would otherwise leave it set for every
+    # later main-thread example under config.order = :random (e.g. breaking the
+    # path_resolution specs that expect a relative path to anchor at the
+    # workspace root with no prior cd). reset_cwd! clears ONLY the cwd on the
+    # current thread, leaving any added roots an around/before set up intact.
+    Rubino::Workspace.reset_cwd! if defined?(Rubino::Workspace)
     # Use null UI and in-memory SQLite for tests
     Rubino.ui = Rubino::UI::Null.new
   end

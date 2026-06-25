@@ -28,7 +28,7 @@ module Rubino
         @session_repo = Session::Repository.new
         @message_store = Session::Store.new
         @explicit_model_override = model_override
-        @model_id = model_override || @config.model_default
+        @model_id = model_override || @config.dig("model", "default")
         @provider_override = provider_override
         @max_turns = max_turns
         @ignore_rules = ignore_rules
@@ -79,8 +79,24 @@ module Rubino
       rescue SystemExit, Interrupt, SignalException
         raise
       rescue Exception => e # rubocop:disable Lint/RescueException
+        # Record an AUTH/credential failure so the interactive REPL can exit
+        # NON-ZERO on teardown (field standard: a CLI that surfaced an auth error
+        # must not report success — git/gh/Claude Code/Codex all exit non-zero).
+        # We do NOT exit here: the swallow-and-stay-in-the-REPL contract above is
+        # deliberate (the user can fix their key and retry without relaunching),
+        # so the failure is LATCHED and the process exits 1 at clean teardown
+        # instead of mid-turn. A subsequent successful turn does NOT clear it —
+        # the run as a whole still hit a credential error the caller should see.
+        @auth_error = true if auth_credential_error?(e)
         @ui.error(friendly_error_message(e))
         nil
+      end
+
+      # True when an AUTH/credential error was surfaced during this runner's
+      # lifetime (read by the interactive REPL to exit non-zero on teardown).
+      # Latched by #run; never reset.
+      def auth_error?
+        @auth_error == true
       end
 
       # Like +run+ but propagates exceptions to the caller. The HTTP
@@ -107,7 +123,18 @@ module Rubino
           cancel_token: @cancel_token,
           model_override: @explicit_model_override,
           provider_override: @provider_override,
-          max_tool_iterations: @max_turns,
+          # The SOFT iteration ceiling (where the budget-extension prompt fires)
+          # vs the HARD max_turns outer rail. For the main agent @max_turns is the
+          # `--max-turns N` override, which intentionally sets the soft ceiling.
+          # A SUBAGENT, though, gets @max_turns = definition.max_turns (= config
+          # agent.max_turns, 90) — passing THAT as the soft ceiling made soft ==
+          # hard, so #extendable? was always false and a subagent could NEVER
+          # surface a budget request (#571) — it just force-summarized. Subagents
+          # therefore pass nil so the soft ceiling falls back to config
+          # agent.max_tool_iterations (25) < the 90 hard rail, exactly like the
+          # main agent — so a subagent at 25 iterations parks and asks for budget
+          # via the dropdown (#574), extendable up to the 90 outer rail.
+          max_tool_iterations: @session_source == "subagent" ? nil : @max_turns,
           polishing: @polishing
         )
 
@@ -184,7 +211,8 @@ module Rubino
         @model_id = model_id
         @session[:model] = model_id
         @session[:provider] = @provider_override ||
-                              LLM::ProviderResolver.resolve(model_id, explicit_provider: @config.model_provider)
+                              LLM::ProviderResolver.resolve(model_id,
+                                                            explicit_provider: @config.dig("model", "provider"))
         if @session_repo.persisted?(@session[:id])
           @session_repo.update(@session[:id], model: model_id, provider: @session[:provider])
         end
@@ -196,10 +224,30 @@ module Rubino
       # showing as "active" forever and cleanup/list/--continue can tell a
       # finished session from a live one. Best-effort: a failure here must never
       # crash the exit path.
-      def end_session!
+      # +handoff+ marks an IN-SESSION switch (the in-chat `/new`) where the REPL
+      # immediately builds a fresh runner and stays interactive — as opposed to a
+      # teardown/headless close where the process is about to exit. On a handoff
+      # the end-of-session memory flush is ENQUEUED detached (so the prompt is
+      # never blocked 2-3s on the catch-all extract's aux LLM call) and the
+      # in-flight-polishing wait is skipped — the still-running process's worker
+      # drains the same process-global queue. Teardown/headless keep the
+      # synchronous flush + bounded wait so the row's facts are mined before the
+      # process dies (a detached job would never drain after exit).
+      def end_session!(handoff: false)
         # Nothing to end for a session that was never persisted (the user opened
         # chat and left without sending a message, #144) — there's no row.
         return if @session.nil? || (@session[:persisted] == false && !@session_repo.persisted?(@session[:id]))
+
+        # End-of-session memory flush (#554): the turn-based auto-extract gate
+        # only fires when the turn counter lands on memory.auto_extract_interval
+        # (default 10), so a session that ends with FEWER turns than the interval
+        # — and never compacted — never extracted its facts. This is the
+        # catch-all that mines any un-extracted turns once on a clean close,
+        # bounded by the same per-session extraction watermark (so it never
+        # double-extracts what the interval/compaction flush already mined) and
+        # gated on memory.enabled + memory.auto_extract. Mirrors Hermes'
+        # MemoryProvider#on_session_end. Best-effort: never breaks the exit.
+        flush_memory_on_session_end!(handoff: handoff)
 
         @session_repo.end_session!(@session[:id])
       rescue StandardError
@@ -207,16 +255,92 @@ module Rubino
       ensure
         # Let any in-flight detached polishing settle (bounded) so a clean
         # teardown doesn't abandon a half-written extraction (#319). Best-effort:
-        # the cursor re-feeds anything unfinished next session anyway.
-        @polishing&.wait(3)
+        # the cursor re-feeds anything unfinished next session anyway. On a
+        # handoff we DON'T wait — the prompt must stay instant and the new
+        # runner's worker drains the same queue.
+        @polishing&.wait(3) unless handoff
+        # Release the per-session advisory lock (#543) so a subsequent
+        # `--continue`/`--resume` of this id in another live process can claim it
+        # cleanly. The kernel also drops the flock on process exit/crash, so this
+        # is just the prompt clean-teardown release.
+        @session_lock&.release
+        @session_lock = nil
       end
 
       private
 
+      # Mine any un-extracted turns before the session row is marked ended
+      # (#554). Routes through Memory::Flusher#flush_on_session_end!, which
+      # honours the memory config gates and the per-session extraction watermark
+      # (so it's a no-op when memory/auto_extract is off and never re-mines what
+      # the interval/compaction flush already extracted). Fully rescued so a
+      # memory hiccup never crashes the exit path.
+      #
+      # On a +handoff+ (the in-chat `/new`) the synchronous extract — an aux LLM
+      # call that froze the prompt 2-3s — is replaced by ENQUEUEING the SAME
+      # ExtractMemoryJob the post-turn path uses, detached (drain_inline: false),
+      # gated identically. The new runner's polishing worker drains it off the
+      # process-global queue, so `/new` returns instantly and no facts are lost.
+      def flush_memory_on_session_end!(handoff: false)
+        if handoff
+          return unless @config.memory_enabled? && @config.memory_auto_extract?
+
+          Jobs::Queue.new.enqueue("ExtractMemoryJob", { session_id: @session[:id] },
+                                  priority: Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY, drain_inline: false)
+        else
+          Memory::Flusher.new(config: @config).flush_on_session_end!(@session[:id])
+        end
+      rescue StandardError
+        nil
+      end
+
+      # True when +error+ is an AUTH/credential failure — a 401/unauthorized/
+      # invalid-key signal, OR the "Authentication failed (…)" wrapper
+      # ModelCallRunner#raise_with_auth_hint raises for a classified auth error.
+      # Matches the SAME signal #friendly_error_message keys its auth branch on,
+      # so the latched exit code and the displayed message never disagree.
+      def auth_credential_error?(error)
+        error.message.to_s.match?(/\b401\b|unauthorized|invalid[_ ]?api[_ ]?key|authentication failed/i)
+      end
+
       # Translates upstream errors into actionable messages instead of
       # bare stack-trace fragments. (issue #16)
+      #
+      # The CLASSIFIER decides the category FIRST (#WHATIF): a provider 429 can
+      # reach the streaming path mis-shaped as a 400 BadRequestError whose message
+      # is ruby_llm's generic "Invalid request - please check your input" — the
+      # original "rate_limit_error / Token Plan usage limit reached" survives only
+      # in the response body, which the classifier (not the bare message) reads.
+      # Keying the rate-limit / auth / model branches on the classified REASON
+      # stops a quota error from reading like a prompt-validation 400 and sending
+      # the dev to edit a fine prompt. We also LOG every surfaced error (the 429
+      # was previously never written to rubino.log — a diagnosis gap).
       def friendly_error_message(error)
-        msg = error.message.to_s
+        msg    = error.message.to_s
+        reason = safe_classify_reason(error)
+        log_surfaced_error(error, reason)
+
+        case reason
+        when LLM::FailoverReason::RATE_LIMIT
+          "rate limit / quota reached for the provider (#{msg}). Wait and retry, " \
+          "or check your plan / billing. This is NOT a problem with your prompt."
+        when LLM::FailoverReason::AUTH
+          "authentication failed (#{msg}). Check your API key in ~/.rubino/.env " \
+          "or run `rubino setup`."
+        when LLM::FailoverReason::MODEL_NOT_FOUND
+          "model '#{@model_id}' not available with the current provider/plan. " \
+          "Check `model.default` in config.yml; details: #{msg}"
+        when LLM::FailoverReason::TIMEOUT
+          "network error reaching the LLM (#{msg}). Check connectivity and retry."
+        else
+          friendly_error_by_message(msg)
+        end
+      end
+
+      # Message-shaped fallback for the residual cases the classifier leaves as
+      # UNKNOWN/SERVER/FORMAT/etc. — preserves the original issue-#16 phrasings
+      # for an error the classifier can't categorise from class/status/body.
+      def friendly_error_by_message(msg)
         case msg
         when /\b401\b|unauthorized|invalid[_ ]?api[_ ]?key/i
           "authentication failed (#{msg}). Check your API key in ~/.rubino/.env " \
@@ -225,12 +349,30 @@ module Rubino
           "model '#{@model_id}' not available with the current provider/plan. " \
           "Check `model.default` in config.yml; details: #{msg}"
         when /\b(429|rate[_ ]?limit)\b/i
-          "rate-limited by the provider. Wait a moment and retry. Details: #{msg}"
+          "rate limit / quota reached for the provider (#{msg}). Wait and retry, " \
+          "or check your plan / billing. This is NOT a problem with your prompt."
         when /\b(timeout|timed out|connection reset)\b/i
           "network error reaching the LLM (#{msg}). Check connectivity and retry."
         else
           "error: #{msg}"
         end
+      end
+
+      # Classify without ever letting a classifier hiccup mask the real error.
+      def safe_classify_reason(error)
+        LLM::ErrorClassifier.classify(error).reason
+      rescue StandardError
+        nil
+      end
+
+      # Record the surfaced model error to rubino.log — the streaming-path 429 was
+      # previously never logged (only the distill job's error was), leaving no
+      # trail to diagnose a quota outage. Best-effort; never raises into the UI.
+      def log_surfaced_error(error, reason)
+        Rubino.logger&.warn(event: "llm.error.surfaced", reason: reason,
+                            error_class: error.class.name, error: error.message.to_s[0, 500])
+      rescue StandardError
+        nil
       end
 
       def load_or_create_session(session_id)
@@ -252,6 +394,22 @@ module Rubino
           # fresh child that inherits the full history instead of stomping the
           # live session; the user keeps their context and the two writers never
           # interleave.
+          # PER-SESSION ADVISORY LOCK (#543) acquired BEFORE the pid-CAS. The
+          # CAS makes exactly one process *own* owner_pid, but it cannot close
+          # the window BEFORE owner_pid is stamped: two concurrent `--continue`
+          # both resolve the same latest session (owner_pid still nil for both
+          # reads) and only serialise at the CAS — by which point the loser
+          # forks a COPY of a transcript the winner is already writing,
+          # duplicating/interleaving rows across the two sessions (#543 repro).
+          # A real OS flock is atomic with no check-then-act window, so it
+          # serialises the "open this session" decision itself. When we DON'T win
+          # the lock, a different live process holds this session right now —
+          # fork off a fresh child instead of stomping/forking its moving
+          # transcript. The kernel drops the flock on exit/crash, so a SIGKILLed
+          # owner never wedges the session.
+          session_lock = Session::Lock.try_acquire(session[:id])
+          return fork_busy_session(session) if session_lock.nil?
+
           # ATOMICALLY claim the row for THIS process (#390/residual #376).
           # The old code checked `owned_by_other_live_process?` then later
           # stamped owner_pid — a TOCTOU window where two concurrent
@@ -259,8 +417,19 @@ module Rubino
           # check, and both stamped+wrote the live row (user,user … interleave).
           # claim_for_resume! folds the check and stamp into one compare-and-swap
           # (same idiom as Jobs::Queue#claim!): exactly one racer wins, the
-          # loser gets false and forks a fresh child off the busy parent.
-          return fork_busy_session(session) unless @session_repo.claim_for_resume!(session)
+          # loser gets false and forks a fresh child off the busy parent. Belt
+          # and braces with the lock above: if we somehow hold the lock but lose
+          # the CAS (a dead-owner row another process re-claimed), still fork.
+          unless @session_repo.claim_for_resume!(session)
+            session_lock.release
+            return fork_busy_session(session)
+          end
+
+          # Hold the per-session lock for the rest of this process's life so a
+          # later concurrent `--continue`/`--resume` of the SAME id forks rather
+          # than interleaving. Retained on the runner so the fd isn't GC-closed
+          # (which would silently drop the flock).
+          @session_lock = session_lock
 
           # An existing row is already in the DB; mark it so the lazy-persist
           # path (#144) treats it as persisted and never re-inserts. We now own

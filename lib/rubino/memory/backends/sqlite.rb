@@ -7,10 +7,10 @@ require "time"
 module Rubino
   module Memory
     module Backends
-      # "Tiny-Zep" memory backend on embedded SQLite (Zep/Graphiti-inspired,
-      # minus the graph DB, the server, and the six-LLM-call pipeline).
+      # LLM-extracted, bi-temporal fact store on embedded SQLite with hybrid
+      # recall — minus a graph DB, a server, or a multi-LLM-call pipeline.
       #
-      # Three ideas are kept from Zep:
+      # Three ideas drive the design:
       #   * ATOMIC LLM-extracted facts (one declarative fact per row), via a
       #     single aux-LLM call per turn that both ADDs new facts and SUPERSEDES
       #     contradicted ones (Graphiti edge-invalidation, collapsed to 1 call).
@@ -94,9 +94,17 @@ module Rubino
         # -- WRITE path --
 
         def store(kind:, content:, source_session_id: nil, confidence: 1.0, metadata: {})
+          k = normalize_kind(kind)
+          # Exact/normalized-verbatim dedup at the direct write seam (#Y4):
+          # MemoryTool#add bypasses the extraction near-dup gate, so the same fact
+          # saved twice used to mint two identical rows. Idempotent — a verbatim
+          # repeat (or whitespace/case variant) returns the existing row.
+          existing = verbatim_duplicate(k, content)
+          return present(existing) if existing
+
           insert_fact(
             text: content,
-            kind: normalize_kind(kind),
+            kind: k,
             entities: Array(metadata[:entities]),
             source_session_id: source_session_id,
             confidence: confidence,
@@ -177,7 +185,7 @@ module Rubino
           return nil if rows.empty?
 
           text = rows.map { |r| r[:text] }.join("\n")
-          limit = @config.memory_user_char_limit
+          limit = @config.dig("memory", "user_char_limit")
           text.length > limit ? text[0...limit] : text
         end
 
@@ -197,7 +205,7 @@ module Rubino
         # ({id:, kind:, content:, ...}) so the prompt assembler is unchanged.
         def retrieve(session_id:, query: nil, k: DEFAULT_K)
           ranked = rank(query: query, k: k)
-          budget = @config.memory_char_limit
+          budget = @config.dig("memory", "memory_char_limit")
           selected = []
           total = 0
           ranked.each do |row|
@@ -233,19 +241,10 @@ module Rubino
           row ? @db[TABLE].where(id: row[:id]).delete.positive? : false
         end
 
-        # Resolve a caller-supplied id to AT MOST ONE row. A blank id resolves to
-        # nothing — a bare-prefix LIKE on "" matched the `%` wildcard → EVERY row,
-        # so `memory delete ""` wiped the whole store and reported success (#416).
-        # EXACT id wins; else accept a prefix ONLY when unambiguous (one match),
-        # so a short id from `memory list` works but a 1-char prefix can't
-        # mass-select. limit(2) distinguishes "one" from "many".
+        # Resolve a caller-supplied id to AT MOST ONE row (shared with Store,
+        # parameterized by this backend's dataset).
         def resolve_row(id)
-          key = id.to_s
-          return nil if key.strip.empty?
-          return @db[TABLE].where(id: key).first if @db[TABLE].where(id: key).get(:id)
-
-          matches = @db[TABLE].where(Sequel.like(:id, "#{key}%")).limit(2).all
-          matches.size == 1 ? matches.first : nil
+          Memory.resolve_row(@db[TABLE], id)
         end
 
         # Count only LIVE facts (valid_to IS NULL) — retired/superseded rows are
@@ -424,6 +423,12 @@ module Rubino
         # default extractor, which silently skips dups).
         def guarded_insert(text:, kind:, entities:, session_id:, valid_from:, id: nil)
           return nil if text.to_s.strip.empty?
+          # NOOP error-derived tool-limitation claims (#69): after a transient
+          # tool failure the aux model can mint a durable-looking "the tool can't
+          # edit non-ASCII files" — a meta claim that is often wrong and primes
+          # future refusals. Drop it here, the single insert choke point shared by
+          # add[] and supersede[], so neither path can persist one.
+          return nil if tool_limitation_claim?(text)
 
           insert_fact(
             text: text, kind: normalize_kind(kind), entities: Array(entities),
@@ -512,6 +517,16 @@ module Rubino
           str.to_s.downcase.split(/\W+/).reject(&:empty?).to_set
         end
 
+        # First LIVE fact of `kind` whose normalized-verbatim form equals the
+        # candidate's (trim/collapse-whitespace + case-fold, #Y4), or nil.
+        def verbatim_duplicate(kind, content)
+          target = Deduplicator.normalize_verbatim(content)
+          return nil if target.empty?
+
+          live_dataset.where(kind: kind).all
+                      .find { |row| Deduplicator.normalize_verbatim(row[:text]) == target }
+        end
+
         # ---- guards (ThreatScanner + char-budget, same floor as Store) ----
 
         def enforce_guards!(kind, text)
@@ -523,21 +538,18 @@ module Rubino
 
         def enforce_char_budget!(kind, text)
           group = kind == USER_KIND ? "user" : "memory"
-          # INGEST cap, decoupled from the injection budget. `memory_char_limit`
+          # INGEST cap, decoupled from the injection budget. memory.memory_char_limit
           # bounds only what `retrieve` packs into the prompt; storing facts is
-          # gated by `memory_ingest_char_limit` (nil => unbounded) so long
+          # gated by memory.ingest_char_limit (nil => unbounded) so long
           # multi-session conversations don't stall once the injection budget
           # fills. User facts keep their own (small) profile budget.
-          limit = group == "user" ? @config.memory_user_char_limit : @config.memory_ingest_char_limit
+          key = group == "user" ? "user_char_limit" : "ingest_char_limit"
+          limit = @config.dig("memory", key)
           return unless limit&.positive?
 
-          current = current_chars(group)
-          requested = text.to_s.length
-          return if current + requested <= limit
-
-          raise Store::BudgetExceededError.new(
-            group: group, limit: limit, current: current, requested: requested
-          )
+          Memory.enforce_budget!(group: group, limit: limit,
+                                 current: current_chars(group),
+                                 requested: text.to_s.length)
         end
 
         # Budget is metered over LIVE facts only — superseded rows don't count
@@ -614,13 +626,9 @@ module Rubino
           nil
         end
 
-        def encode_embedding(vec)
-          vec.pack("e*")
-        end
+        def encode_embedding(vec) = vec.pack("e*")
 
-        def decode_embedding(blob)
-          blob && blob.to_s.unpack("e*")
-        end
+        def decode_embedding(blob) = blob && blob.to_s.unpack("e*")
 
         def cosine(a, b)
           return 0.0 if a.empty? || b.empty? || a.size != b.size
@@ -637,7 +645,7 @@ module Rubino
           k = kind.to_s
           return USER_KIND if k.empty?
 
-          # Map legacy/default-backend kinds onto the tiny-Zep vocabulary so the
+          # Map legacy/default-backend kinds onto the fact-store vocabulary so the
           # backend tolerates store() calls from the existing MemoryTool/job.
           case k
           when "user_profile", "preference", "fact", "env" then k

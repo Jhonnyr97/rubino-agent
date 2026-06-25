@@ -54,10 +54,6 @@ module Rubino
         find(id)
       end
 
-      def set_enabled(id, enabled:)
-        update(id, enabled: enabled)
-      end
-
       # Stamps +last_run_at+/+last_run_id+ after Scheduler#fire creates the run.
       def record_run(id, run_id:)
         now = Time.now.utc.iso8601

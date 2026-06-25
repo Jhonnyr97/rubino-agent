@@ -2,13 +2,12 @@
 
 module Rubino
   module Security
-    # ONE "is this a secret/credential path?" predicate, shared by the tool
-    # layer (read/grep/glob refuse to leak; write/edit refuse to clobber) and
-    # the approval layer (Security::ApprovalPolicy#decide → :ask). Previously
-    # the read side and the write side carried two parallel denylists; the
-    # maintainer decision (#446) is that reading OR writing a secret both
-    # require the SAME explicit user approval over the SAME set — so the set
-    # and the predicate live here, once.
+    # ONE "is this a secret/credential path?" predicate for the WRITE-side
+    # approval gate (Security::ApprovalPolicy#decide → :ask when a write/edit/
+    # multi_edit/apply_patch targets a secret). Writing/clobbering a secret
+    # requires explicit user approval; READING one is allowed unprompted (the
+    # field norm, #480) and has no gate, so this predicate is no longer
+    # consulted on the read path.
     #
     # The gate itself is in ApprovalPolicy/ToolExecutor (interactive →
     # approval dropdown; approved → tool proceeds; denied → refused; headless →
@@ -24,6 +23,136 @@ module Rubino
         \A\.git-credentials\z |
         \A\.bashrc\z | \A\.zshrc\z | \A\.profile\z | \A\.bash_profile\z | \A\.zprofile\z
       /x
+
+      # Common secret-bearing project-local environment file basenames blocked
+      # on the structured READ path (read/grep), ported 1:1 from Hermes'
+      # `agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES`. Deliberately an
+      # EXACT set (not BASENAME_RE) so `.env.example` — the documented-shape
+      # substitute — is NOT blocked, matching Hermes.
+      BLOCKED_PROJECT_ENV_BASENAMES = [
+        ".env", ".env.local", ".env.development",
+        ".env.production", ".env.test", ".env.staging", ".envrc"
+      ].to_set.freeze
+
+      # Agent-home credential-store basenames blocked on the structured READ
+      # path, mirroring Hermes' `get_read_block_error` credential_file_names
+      # (auth.json / .anthropic_oauth.json / .env / mcp-tokens/ live under the
+      # agent home). rubino's token store is rubino.sqlite3.
+      BLOCKED_HOME_CREDENTIAL_BASENAMES = [
+        ".env", "auth.json", "auth.lock",
+        ".anthropic_oauth.json", "rubino.sqlite3"
+      ].to_set.freeze
+
+      # $HOME-relative credential FILES blocked on the structured READ path.
+      # Ported from Hermes' `build_write_denied_paths` (file_safety.py:35-58):
+      # the SSH key/identity files (`~/.ssh/{id_rsa,id_ed25519,authorized_keys,
+      # config}`), `~/.netrc`, and `~/.git-credentials`. QA finding: these
+      # leaked because they were only on the WRITE denylist, so a `read` of
+      # `~/.ssh/id_rsa` etc. returned the key material — and the redactor's
+      # uppercase-only ENV_ASSIGN_RE misses lowercase `aws_secret_access_key`.
+      # rubino has no Anthropic PKCE store; its OAuth/credential equivalents
+      # live under the agent home (~/.rubino) and are already covered above.
+      BLOCKED_HOME_CREDENTIAL_FILES = [
+        File.join(".ssh", "id_rsa"),
+        File.join(".ssh", "id_ed25519"),
+        File.join(".ssh", "authorized_keys"),
+        File.join(".ssh", "config"),
+        ".netrc",
+        ".git-credentials"
+      ].freeze
+
+      # $HOME-relative credential DIRECTORIES blocked on the structured READ
+      # path (anything inside is treated as secret). Started from Hermes'
+      # `build_write_denied_prefixes` (file_safety.py:66-82): `~/.ssh` and
+      # `~/.aws`. This is what blocks `~/.aws/credentials` (the lowercase
+      # `aws_secret_access_key` the redactor doesn't mask).
+      #
+      # Extended (#537) so the READ deny-set covers the same home-credential
+      # stores the WRITE-side detector (HOME_PREFIXES) already treats as secret:
+      # `~/.kube` (bearer tokens in config), `~/.docker` (registry auth in
+      # config.json), `~/.config/gh` (GitHub tokens in hosts.yml), `~/.gnupg`
+      # (private keyrings) and `~/.azure` (cloud creds). Previously read-allowed
+      # and unredacted, so those secrets reached the model. Defense-in-depth
+      # layered on the trust model — NOT a complete boundary (the shell tool
+      # runs as the same OS user and can still read them).
+      BLOCKED_HOME_CREDENTIAL_DIRS = [
+        ".ssh", ".aws", ".kube", ".docker", ".gnupg", ".azure",
+        File.join(".config", "gh")
+      ].freeze
+
+      # Credential BASENAMES blocked on the structured READ path wherever they
+      # sit — HOME or project-local (#537). `.netrc`/`.git-credentials` were
+      # only blocked at their exact $HOME path, so a project-local copy was
+      # read-allowed and unredacted. Defense-in-depth, not a boundary.
+      BLOCKED_CREDENTIAL_BASENAMES = [".netrc", ".git-credentials"].to_set.freeze
+
+      # Returns a model-facing error string when a structured READ (read/grep)
+      # targets a denied secret/credential path, or nil when the read is
+      # allowed. Ported 1:1 from Hermes' `get_read_block_error` plus the
+      # home credential files/dirs Hermes write-denies (file_safety.py:35-82):
+      # the project-local .env family ANYWHERE on disk, the agent-home
+      # credential stores and the mcp-tokens/ tree, and the user's SSH/AWS/
+      # kube/docker/gnupg/azure/gh credential stores under $HOME (#537), plus
+      # `.netrc`/`.git-credentials` wherever they sit (HOME or project-local).
+      #
+      # **NOT a security boundary** — the shell runs as the same OS user and
+      # can still `cat .env`, where the value is REDACTED (see Redactor).
+      # The read block is defense-in-depth: it returns a clear error that
+      # most models respect, and surfaces an audit trail. Mirrors the framing
+      # in Hermes' module docstring.
+      def read_block_error(path)
+        base   = File.basename(path.to_s)
+        target = canonical_path(path) || File.expand_path(path.to_s)
+
+        if under_agent_home?(path) && (BLOCKED_HOME_CREDENTIAL_BASENAMES.include?(base) ||
+             base.end_with?(".sqlite3") || target.downcase.include?("oauth") ||
+             target.downcase.include?("#{File::SEPARATOR}mcp-tokens#{File::SEPARATOR}") ||
+             under_path?(target, File.join(canonical_home, "mcp-tokens")))
+          return "Access denied: #{path} is a Rubino credential store and " \
+                 "cannot be read directly. Provider tools consume these " \
+                 "credentials through internal channels. (Defense-in-depth — " \
+                 "not a security boundary; the shell tool can still bypass.)"
+        end
+
+        if BLOCKED_PROJECT_ENV_BASENAMES.include?(base)
+          return "Access denied: #{path} is a secret-bearing environment file " \
+                 "and cannot be read to prevent credential leakage. If you need " \
+                 "to check the file structure, read .env.example instead. " \
+                 "(Defense-in-depth — not a security boundary; the shell tool " \
+                 "can still bypass.)"
+        end
+
+        if BLOCKED_CREDENTIAL_BASENAMES.include?(base) || home_credential_path?(target)
+          return "Access denied: #{path} is a private credential store " \
+                 "(SSH key, cloud/kube/docker/gh credentials, gnupg keyring, " \
+                 "netrc, or git-credentials) and cannot be read to prevent " \
+                 "credential leakage. (Defense-in-depth — not a security " \
+                 "boundary; the shell tool can still bypass.)"
+        end
+
+        nil
+      end
+
+      # True when the symlink-resolved +target+ is one of the $HOME-relative
+      # credential files, or sits inside one of the blocked credential
+      # directories (~/.ssh, ~/.aws). Mirrors Hermes' write-deny exact-path +
+      # prefix split, applied here to the READ gate.
+      def home_credential_path?(target)
+        home = File.expand_path("~")
+        return true if BLOCKED_HOME_CREDENTIAL_FILES.any? { |rel| target == File.join(home, rel) }
+
+        BLOCKED_HOME_CREDENTIAL_DIRS.any? { |rel| under_path?(target, File.join(home, rel)) }
+      end
+
+      # Resolved Rubino home dir, for the mcp-tokens/ subtree match above.
+      def canonical_home
+        home = Rubino.home_path
+        return "" if home.nil? || home.to_s.empty?
+
+        (File.realpath(home) if File.exist?(home)) || File.expand_path(home)
+      rescue StandardError
+        ""
+      end
 
       # Home-relative credential subtrees (resolved against $HOME).
       HOME_PREFIXES = [

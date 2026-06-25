@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "shellwords"
+
 module Rubino
   module Security
     # Determines whether a tool execution requires user approval.
@@ -24,11 +26,30 @@ module Rubino
       # auto-edit / aider).
       STRUCTURED_EDIT_TOOLS = %w[edit write multi_edit apply_patch].freeze
 
-      # File tools whose TARGET path is run through the unified secret-file gate
-      # (#446). READ side resolves the path from `file_path`/`path`; WRITE side
-      # from `file_path` (apply_patch from its patch text, see #secret_file_access?).
-      SECRET_GATED_READ_TOOLS  = %w[read grep glob].freeze
+      # File tools whose WRITE TARGET path is run through the secret-file gate.
+      # WRITE side resolves the path from `file_path` (apply_patch from its patch
+      # text, see #secret_file_access?). The READ side (read/grep/glob) is NOT
+      # gated: reading a secret is allowed unprompted, matching the field norm
+      # (Claude Code / Codex / aider / Windsurf / LangChain all allow secret
+      # reads; protection is on write/exec/network, #480). Only writing/editing
+      # a secret still requires explicit approval.
       SECRET_GATED_WRITE_TOOLS = STRUCTURED_EDIT_TOOLS
+
+      # Dedicated code-execution tools that, under dangerous_only, must run
+      # unprompted — SYMMETRIC with (and never HARDER than) safe shell.
+      #
+      # `ruby` evaluates arbitrary code in a sandboxed child process and exposes
+      # NO reliable read-only signal, so it cannot be auto-allowed on a proven
+      # read-only basis the way step 6b auto-allows parse-validated read-only
+      # shell; instead it is aligned AT MOST to the same tier as raw safe shell
+      # (auto-run under dangerous_only, never gated harder than the `shell` path
+      # it would otherwise be driven through). It was the inversion: a dedicated
+      # eval tool prompting while arbitrary safe `shell` ran unprompted, pushing
+      # automation toward raw shell. It is :medium and would otherwise fall
+      # through to step 9 -> :ask. The hardline floor (step 1), permissions:deny
+      # (step 2) and doom guard (step 4) all run first and are unchanged;
+      # confirm_all (non-default) still routes it to step 9 -> :ask.
+      CODE_EXEC_TOOLS = %w[ruby].freeze
 
       # Why the most recent #decide returned :deny — :hardline (the
       # non-bypassable floor), :permission_rule (an explicit permissions deny
@@ -40,7 +61,7 @@ module Rubino
 
       def initialize(config: nil, agent_overrides: nil)
         @config = config || Rubino.configuration
-        @mode = @config.approvals_mode
+        @mode = @config.dig("approvals", "mode")
         # Effective shell prompt policy (:confirm_all | :dangerous_only), the
         # SOLE source of truth (item 7): security.confirm_policy only — the legacy
         # security.require_confirmation_for_shell alias was removed (see
@@ -142,18 +163,21 @@ module Rubino
         #    `read /path/.env: allow` is honored.
         return pattern_result if pattern_result
 
-        # 5b. UNIFIED SECRET-FILE GATE (#446). Reading (read/grep/glob) OR
-        #     writing/editing (write/edit/multi_edit/apply_patch) a SECRET path
-        #     requires EXPLICIT user approval — the maintainer decision: not a
-        #     silent allow, not a silent hard-block. Returns :ask, which the
-        #     ToolExecutor turns into the approval dropdown when interactive
-        #     (approved → the tool runs and reads/writes the secret; denied →
-        #     refused) and into a FAIL-CLOSED block when headless (:noninteractive).
-        #     Runs ABOVE the broad read/allow fast-paths (steps 6/6b/9) so a
-        #     secret read isn't silently auto-allowed, and BELOW yolo (step 3) so
-        #     a --yolo operator who opted into full file trust isn't re-prompted.
-        #     NON-secret reads stay broad (clone-and-inspect, #406) — only the
-        #     secret set is gated.
+        # 5b. SECRET-FILE WRITE GATE. WRITING/editing (write/edit/multi_edit/
+        #     apply_patch) a SECRET path requires EXPLICIT user approval — the
+        #     maintainer decision: not a silent allow, not a silent hard-block.
+        #     Returns :ask, which the ToolExecutor turns into the approval
+        #     dropdown when interactive (approved → the tool writes the secret;
+        #     denied → refused) and into a FAIL-CLOSED block when headless
+        #     (:noninteractive). Runs ABOVE the allow fast-paths (steps 6/6b/9)
+        #     and BELOW yolo (step 3) so a --yolo operator who opted into full
+        #     file trust isn't re-prompted.
+        #
+        #     READING a secret (read/grep/glob) is NOT gated: it is allowed
+        #     unprompted like any broad read (#406), matching the field norm
+        #     (Claude Code / Codex / aider / Windsurf / LangChain all allow
+        #     secret reads; #480). The threat model is exfil/clobber, not the
+        #     agent reading — so only the write side stays gated here.
         return :ask if secret_file_access?(tool, arguments)
 
         # 6. Config allowlist of pre-approved commands. Checked AFTER deny
@@ -232,7 +256,19 @@ module Rubino
         #    the hardline floor (step 1), permissions:deny (step 2) and
         #    skill-create gate (step 6c) all already ran above. confirm_all
         #    (non-default) still routes them through step 9 -> :ask unchanged.
-        return :allow if @confirm_policy == :dangerous_only && STRUCTURED_EDIT_TOOLS.include?(tool.name)
+        #
+        # 8c. Code-execution tool symmetry. Under dangerous_only, arbitrary safe
+        #    `shell` runs unprompted (step 7-8), yet the dedicated `ruby` tool
+        #    is :medium and would fall through to step 9 -> :ask — an INVERSION:
+        #    a dedicated eval tool gated HARDER than the raw shell it would
+        #    otherwise be driven through. The field norm (Claude Code auto-mode,
+        #    Codex full-auto, aider) auto-runs code without prompting. So under
+        #    dangerous_only it is non-prompting too, aligned AT MOST to the
+        #    safe-shell tier (see CODE_EXEC_TOOLS).
+        #    Deny-class checks (hardline step 1, permissions:deny step 2, doom
+        #    step 4) all ran first; confirm_all (non-default) still routes them
+        #    through step 9 -> :ask unchanged.
+        return :allow if @confirm_policy == :dangerous_only && dangerous_only_auto_allowed?(tool)
 
         # 9. Fall back to mode-based decision
         mode_based_decision(tool)
@@ -264,28 +300,70 @@ module Rubino
 
       # The confirm_policy shell gate (steps 7-8), extracted so #decide stays
       # under the complexity limit. confirm_all → always :ask; dangerous_only →
-      # :ask only for a DangerousPattern, else :allow.
+      # :ask for a DangerousPattern OR a dangerous WRITE/EXEC flag-form, else
+      # :allow.
+      #
+      # The flag-form screen (#dangerous_flag_form_present?) is the NARROW
+      # companion to DangerousPatterns: under the shipped dangerous_only default,
+      # patterns alone let genuinely dangerous flag-forms (`git -c alias.x=!cmd`,
+      # `python3 -c '…'`, `sed -i`, `find -delete`, `tee FILE`) auto-run
+      # unprompted (arbitrary write/RCE), while ordinary script/filter
+      # invocations (`python test.py`, `sed 's/a/b/'`) must keep running without
+      # a prompt for an acceptable coding-agent UX.
       def shell_confirm_decision(command_str)
         return :ask unless @confirm_policy == :dangerous_only
 
-        dangerous?(command_str) ? :ask : :allow
+        dangerous?(command_str) || dangerous_flag_form_present?(command_str) ? :ask : :allow
       end
 
-      # True when this call READS or WRITES a secret/credential path and so must
-      # be approval-gated (#446). For the path-arg tools (read/grep/glob/write/
-      # edit/multi_edit) the single target is resolved from file_path/path; for
-      # apply_patch every target file in the patch is checked, because one call
-      # can touch many files. Resolution is relative to the workspace primary
-      # root so a relative `.env` resolves to the same file the tool will open.
+      # True when ANY chain segment of the command is a flag-form that still
+      # warrants a prompt. Reuses the same quote-aware chain split as the
+      # read-only auto-allow so `echo hi && sort -o /tmp/x f` is screened
+      # per-segment. Fails SAFE: a segment that does not parse (split returns
+      # nil, or Shellwords raises) is treated as dangerous.
+      #
+      # CONDITIONAL on the OS write-jail PROVING enforcement (slice 2 Part C):
+      # the jail confines arbitrary WRITES, so when it is ENFORCING the pure-write
+      # flag-forms (`sort -o`, `sed -i`, `git --output`, `find -delete`, `tar`
+      # write/extract, …) no longer need a prompt — only the EXEC/network/system
+      # forms that run arbitrary code (`python -c`, `bash -c`, `git -c`/push,
+      # `perl -e`, …) do. When the jail is DEGRADED/off OR present-but-not-
+      # enforcing (helper fails open) the allowlist is the ONLY guard, so the
+      # broader WRITE+EXEC screen (#dangerous_flag_form?) stays in force exactly
+      # as before. `DangerousPatterns.dangerous?` + the hardline floor are
+      # checked separately and ALWAYS prompt/deny regardless of this gate.
+      def dangerous_flag_form_present?(command_str)
+        segments = ReadonlyCommands.split_segments(command_str.to_s)
+        return true if segments.nil?
+
+        # Gate on PROVEN enforcement, not mere presence: a helper that fails
+        # open (kernel without Landlock) reports active? but does NOT confine,
+        # so relaxing on active? would auto-run unconfined writes. enforcing?
+        # runs the launcher once and only returns true when a write outside the
+        # jail is actually denied. Present-but-not-enforcing ⇒ broad screen.
+        enforcing = Sandbox.enforcing?
+        segments.any? do |segment|
+          tokens = Shellwords.split(segment)
+          enforcing ? ReadonlyCommands.exec_flag_form?(tokens) : ReadonlyCommands.dangerous_flag_form?(tokens)
+        rescue ArgumentError
+          true
+        end
+      end
+
+      # True when this call WRITES a secret/credential path and so must be
+      # approval-gated. For write/edit/multi_edit the single target is resolved
+      # from file_path; for apply_patch every target file in the patch is
+      # checked, because one call can touch many files. Resolution is relative
+      # to the workspace primary root so a relative `.env` resolves to the same
+      # file the tool will open. (Reads are NOT gated — see #decide step 5b.)
       def secret_file_access?(tool, arguments)
-        return false unless SECRET_GATED_READ_TOOLS.include?(tool.name) ||
-                            SECRET_GATED_WRITE_TOOLS.include?(tool.name)
+        return false unless SECRET_GATED_WRITE_TOOLS.include?(tool.name)
 
         secret_targets(tool, arguments).any? { |p| SecretPath.secret?(p) }
       end
 
-      # The absolute path(s) a file tool will touch. apply_patch yields one per
-      # hunk target; every other gated tool yields its single file_path/path.
+      # The absolute path(s) a write tool will touch. apply_patch yields one per
+      # hunk target; every other gated tool yields its single file_path.
       def secret_targets(tool, arguments)
         args = arguments || {}
         if tool.name == "apply_patch"
@@ -368,6 +446,14 @@ module Rubino
       end
 
       private
+
+      # Tools auto-allowed under dangerous_only by the symmetry steps 8b/8c:
+      # in-workspace structured edits (write-denylist + sandbox enforce inside
+      # #call) and the dedicated code-exec tools, both aligned with — never
+      # harder than — safe `shell`. confirm_all still routes these to :ask.
+      def dangerous_only_auto_allowed?(tool)
+        STRUCTURED_EDIT_TOOLS.include?(tool.name) || CODE_EXEC_TOOLS.include?(tool.name)
+      end
 
       # Records the tool call in the doom detector and returns true ONLY when it
       # tripped AND the guard is in hard_stop mode (=> block). In the default

@@ -26,6 +26,27 @@ RSpec.describe Rubino::UI::BottomComposer do
   # Convenience: the prompt prefix the composer draws.
   PROMPT = Rubino::UI::BottomComposer::PROMPT
 
+  describe "#move_by back-out gesture (on_back)" do
+    it "fires on_back on ← / Ctrl+B when the prompt is EMPTY (Claude-style detach)" do
+      fired = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_back: -> { fired = true })
+      c.handle_key("\x02") # Ctrl+B = move left, same path as the ← arrow
+      expect(fired).to be(true)
+    end
+
+    it "moves the cursor (does NOT fire on_back) when there is typed text" do
+      fired = false
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              on_back: -> { fired = true })
+      c.handle_key("h")
+      c.handle_key("i")
+      c.handle_key("\x02") # ← over text just moves the cursor
+      expect(fired).to be(false)
+      expect(c.send(:cursor)).to eq(1)
+    end
+  end
+
   describe ".active?" do
     it "is false when stdin is not a tty" do
       i = instance_double(IO, tty?: false)
@@ -550,6 +571,64 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
+    # Ctrl+C = INTERRUPT (#551): raw(intr: true) does NOT reliably raise SIGINT
+    # (Darwin swallows Ctrl+C without a signal AND without a byte the trap could
+    # see), so the dependable path is the in-band \x03 BYTE read here, routed to
+    # the SAME on_interrupt hook Esc uses — NOT to the exit-confirm, and the byte
+    # NEVER re-enters the buffer (no double-run). At idle it drives on_idle_
+    # interrupt (the two-tap clear/exit) instead.
+    context "Ctrl+C (\\x03) interrupts the active turn (#551)" do
+      it "fires on_interrupt while STREAMING and does not re-enter the buffer" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn
+        c.begin_content_stream
+        c.handle_key("\x03")
+        expect(fired).to eq(1)
+        expect(c.buffer).to eq("") # \x03 is consumed, never inserted (no double-run)
+      end
+
+      it "fires on_interrupt during the THINKING phase" do
+        fired = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { fired += 1 })
+        c.begin_turn # thinking, not yet streaming
+        c.handle_key("\x03")
+        expect(fired).to eq(1)
+      end
+
+      it "interrupts (not exit) and the queue HEAD runs next — no double-run" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        "msg B".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r") # type-ahead queues
+        c.handle_key("\x03") # interrupt the turn
+        expect(queue.shift).to eq("msg B") # runs next, exactly once
+        expect(queue.shift).to be_nil      # not double-submitted
+      end
+
+      it "routes to on_idle_interrupt (NOT on_interrupt) when idle" do
+        turn_int = 0
+        idle_int = 0
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> { turn_int += 1 },
+                                on_idle_interrupt: -> { idle_int += 1 })
+        # NO begin_turn: idle. Ctrl+C must drive the idle two-tap, not the turn cancel.
+        c.handle_key("\x03")
+        expect(turn_int).to eq(0)
+        expect(idle_int).to eq(1)
+      end
+
+      it "is a quiet no-op with neither hook wired (standalone/tests)" do
+        c = described_class.new(input_queue: queue, input: input, output: output)
+        expect { c.handle_key("\x03") }.not_to raise_error
+        expect(c.buffer).to eq("")
+      end
+    end
+
     # H1 (CWE-150): a typed/pasted line carrying terminal control/escape
     # sequences must be NEUTRALIZED at the echo/commit render boundary — the
     # same defense the approval card already applies — so an OSC title-set
@@ -821,7 +900,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       str.each_char { |ch| c.handle_key(ch) }
     end
 
-    def cursor(c) = c.instance_variable_get(:@cursor)
+    def cursor(c) = c.send(:cursor)
 
     def esc_seq(c, bytes)
       c.instance_variable_set(:@input, StringIO.new(bytes))
@@ -1175,8 +1254,9 @@ RSpec.describe Rubino::UI::BottomComposer do
     # #147: the approval hint says "/agents sa_xxx to approve". Typing exactly
     # that pops the argument dropdown (the id, then the verb grammar), and
     # Enter used to be swallowed by it — the exact command the hint dictated
-    # did nothing. Enter with the buffer already a complete valid command must
-    # SUBMIT; accepting stays for partial tokens and arrow-navigated picks.
+    # did nothing. A FULLY-TYPED `/agents <id>` (non-empty token equal to the
+    # sole/selected candidate) must SUBMIT; accepting stays for partial tokens.
+    # (An EMPTY argument now accepts the highlight on Enter — see #3 below.)
     describe "Enter on a complete command with the argument dropdown open (#147)" do
       let(:source) do
         Rubino::UI::CompletionSource.new(
@@ -1199,12 +1279,17 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(queue.drain).to eq(["/agents sa_1855c6ef"])
       end
 
-      it "submits when the verb dropdown is open on an EMPTY argument (`/agents <id> `)" do
+      # #3: an EMPTY argument with the dropdown open now ACCEPTS the highlight
+      # on Enter (standard picker convention), superseding the old #147 rule
+      # that submitted unless the user had arrowed first. See the dropdown-Enter
+      # describe block below for the full rationale + the Esc-to-submit escape.
+      it "accepts the highlighted verb on Enter on an EMPTY argument (`/agents <id> `, #3)" do
         "/agents sa_1855c6ef ".each_char { |ch| composer.handle_key(ch) }
         expect(composer.menu_open?).to be(true) # steer/probe/--stop showing
         result = composer.handle_key("\r")
-        expect(result).to eq(:submit) # NOT a spliced "steer " the user never typed
-        expect(queue.drain).to eq(["/agents sa_1855c6ef "])
+        expect(result).to be_nil # accepted, not submitted
+        expect(composer.buffer).to eq("/agents sa_1855c6ef steer ")
+        expect(queue.drain).to eq([])
       end
 
       it "still accepts on Enter when the user arrow-navigated onto a verb" do
@@ -1221,6 +1306,61 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\r")
         expect(composer.buffer).to eq("/agents sa_1855c6ef steer ")
         expect(queue.drain).to eq([])
+      end
+    end
+
+    # #3: with the completion dropdown open on an EMPTY token, Enter ACCEPTS the
+    # highlighted candidate WITHOUT first arrowing — the standard picker
+    # convention (fzf / VS Code / Claude Code). The user hit: `/agents ` opens
+    # the subagent-id dropdown; a bare Enter used to submit `/agents ` ("lo
+    # prende come se fosse agents") instead of filling the highlighted id. To
+    # run the bare command, dismiss the dropdown with Esc first, then Enter.
+    describe "Enter accepts the highlighted candidate on an open dropdown (#3)" do
+      let(:source) do
+        Rubino::UI::CompletionSource.new(
+          commands: %w[/agents /help],
+          arg_sources: { "agents" => lambda { |args|
+            case args.length
+            when 0 then %w[sa_1855c6ef sa_99beef]
+            when 1 then ["steer", "probe", "--stop"]
+            else []
+            end
+          } }
+        )
+      end
+
+      it "(a) `/agents ` dropdown open, NO arrow, Enter → accepts the highlighted id" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true) # subagent ids showing
+        result = composer.handle_key("\r")
+        expect(result).to be_nil # accepted, not submitted
+        expect(composer.buffer).to eq("/agents sa_1855c6ef ") # highlighted id filled
+        expect(queue.drain).to eq([]) # nothing submitted as a bare command
+      end
+
+      it "(b) Esc dismisses the dropdown, then Enter submits the bare command" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        esc(composer) # dismiss the dropdown (sticks for this token)
+        expect(composer.menu_open?).to be(false)
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit)
+        expect(queue.drain).to eq(["/agents "]) # the bare command is submitted as typed
+      end
+
+      it "(c) a fully-typed exact token still SUBMITS (no #147/#127 regression)" do
+        "/agents sa_1855c6ef".each_char { |ch| composer.handle_key(ch) }
+        expect(composer.menu_open?).to be(true)
+        result = composer.handle_key("\r")
+        expect(result).to eq(:submit)
+        expect(queue.drain).to eq(["/agents sa_1855c6ef"])
+      end
+
+      it "(d) Tab-accept is unchanged: it splices the highlighted id + a trailing space" do
+        "/agents ".each_char { |ch| composer.handle_key(ch) }
+        tab(composer)
+        # Tab accepts exactly as before — splice + trailing space. (The verb
+        # dropdown then auto-opens on the new empty argument, same as typing it.)
+        expect(composer.buffer).to eq("/agents sa_1855c6ef ")
       end
     end
 
@@ -1424,6 +1564,170 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "is a quiet no-op when no callback is wired" do
       expect { composer.handle_key("\t") }.not_to raise_error
+    end
+  end
+
+  describe "subagent picker from the bottom composer" do
+    subject(:composer) do
+      described_class.new(input_queue: queue, input: input, output: output, echo: :prompt)
+    end
+
+    let(:reg) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+
+    after { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "opens from Down on an empty prompt and ATTACHES to the selected agent with Enter" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      reg.record_tool_started(entry.id, "read parser.rb")
+
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      expect(output.string).to include("subagents")
+      expect(output.string).to include(entry.id)
+      # The picker shows only `id · subagent · status` — NOT a live activity
+      # preview (e.g. `read parser.rb`) under the selected row; that tool-level
+      # detail belongs in the focused view's tail once attached, not the nav list.
+      expect(output.string).not_to include("read parser.rb")
+
+      composer.handle_key("\r")
+      expect(composer.agent_menu_open?).to be(false)
+      # Enter queues the internal attach command; it is NOT echoed (the REPL
+      # clears+replays on attach, so an echo would only flash then vanish).
+      expect(queue.shift).to eq("/agents #{entry.id} --attach")
+      expect(output.string).not_to include("--attach")
+    end
+
+    # #42 — the card hints "Enter to view", but Enter on an empty prompt used to
+    # fall through to submit_line (empty buffer → no-op): the picker only opened
+    # via ↓. Enter must honor the hint.
+    it "Enter on an empty prompt attaches directly to the SOLE live subagent (one-press 'Enter to view')" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+
+      result = composer.handle_key("\r")
+
+      expect(result).to be_nil # did NOT submit an empty line
+      expect(queue.shift).to eq("/agents #{entry.id} --attach")
+      expect(composer.agent_menu_open?).to be(false)
+    end
+
+    it "Enter on an empty prompt OPENS the picker when several subagents are live (nothing to pick yet)" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      reg.reserve(subagent: "build", prompt: "second")
+
+      result = composer.handle_key("\r")
+
+      expect(result).to be_nil # did NOT submit an empty line
+      expect(composer.agent_menu_open?).to be(true)
+      expect(queue.shift).to be_nil # nothing attached/submitted yet
+      expect(output.string).to include("subagents")
+    end
+
+    it "Enter on an empty prompt with NO live subagents submits as usual (open! inert)" do
+      result = composer.handle_key("\r")
+
+      expect(result).to eq(:submit)
+      expect(composer.agent_menu_open?).to be(false)
+    end
+
+    it "navigates live subagents with arrows while preserving normal history Up" do
+      first = reg.reserve(subagent: "explore", prompt: "first")
+      second = reg.reserve(subagent: "build", prompt: "second")
+
+      composer.send(:history_down)
+      composer.send(:history_down)
+      composer.handle_key("\r")
+
+      expect(queue.shift).to eq("/agents #{second.id} --attach")
+      expect(output.string).to include(first.id)
+      expect(output.string).to include(second.id)
+
+      "hello".each_char { |ch| composer.handle_key(ch) }
+      composer.handle_key("\r")
+      composer.send(:history_up)
+      expect(composer.buffer).to eq("hello")
+    end
+
+    # REGRESSION (the "disaster" report): with a STALE history index — set the
+    # moment the user has touched ↑ even once, or left over from a prior turn —
+    # Down on an EMPTY prompt used to walk history FORWARD and SHADOW the picker,
+    # so it never opened: no `◂ main` row, no way to navigate subagents, and ←
+    # (which only detaches once attached) was dead. Down on an empty prompt with
+    # live subagents must open the picker REGARDLESS of the history index.
+    it "Down opens the picker on an empty prompt even with a stale history index (history must not shadow it)" do
+      history = Rubino::UI::InputHistory.new
+      history.remember("old command")
+      history.up("") # prior ↑ / un-reset turn: index now set, prompt still empty
+
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              echo: :prompt, history: history)
+      reg.reserve(subagent: "explore", prompt: "inspect")
+
+      expect(c.buffer).to eq("") # empty prompt
+      c.send(:history_down)      # ↓
+      expect(c.agent_menu_open?).to be(true)               # picker opens (was: recalled "old command")
+      expect(c.buffer).to eq("")                           # did NOT recall history into the buffer
+      expect(output.string).to include("◂ main session") # the main row IS reachable
+    end
+
+    it "← (Ctrl+B) backs out of the OPEN picker (the picker's '← back' hint)" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      composer.handle_key("\x02") # Ctrl+B = ← (same path as the Left arrow)
+      expect(composer.agent_menu_open?).to be(false)
+    end
+
+    it "during a turn, Enter on the picker routes attach through the busy classifier (focus-gating, no toast)" do
+      entry = reg.reserve(subagent: "explore", prompt: "inspect the parser")
+      seen = nil
+      c = described_class.new(input_queue: queue, input: input, output: output, echo: :prompt,
+                              on_busy_command: lambda { |line|
+                                seen = line
+                                :immediate
+                              })
+      c.begin_turn # a parent turn now owns the screen
+
+      c.send(:history_down)
+      c.handle_key("\r")
+
+      # Attach is dispatched NOW (via the busy classifier), not queued or toasted.
+      expect(seen).to eq("/agents #{entry.id} --attach")
+      expect(queue.shift).to be_nil
+      expect(output.string).not_to include("attach when the turn ends")
+    end
+
+    it "during a turn, picking ◂ main routes /detach through the busy classifier (immediate, not queued)" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      seen = nil
+      c = described_class.new(input_queue: queue, input: input, output: output, echo: :prompt,
+                              on_busy_command: lambda { |line|
+                                seen = line
+                                :immediate
+                              })
+      c.begin_turn # a parent turn owns the screen
+
+      c.send(:history_down) # open the picker (selects the first subagent)
+      c.send(:history_down) # move down to the ◂ main row (last item)
+      c.handle_key("\r")    # Enter on ◂ main → return to main
+
+      # Returning to main is dispatched NOW (like attach / ←), not queued behind
+      # the still-running turn.
+      expect(seen).to eq("/detach")
+      expect(queue.shift).to be_nil
+    end
+
+    it "dismisses the subagent picker with Esc without interrupting idle input" do
+      reg.reserve(subagent: "explore", prompt: "inspect")
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+
+      composer.instance_variable_set(:@input, StringIO.new(""))
+      composer.handle_key("\e")
+
+      expect(composer.agent_menu_open?).to be(false)
+      expect(queue.shift).to be_nil
     end
   end
 
@@ -1638,6 +1942,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       )
     end
     let(:big) { Array.new(50) { |i| "line #{i + 1}" }.join("\n") }
+    let(:second_big) { Array.new(6) { |i| "extra #{i + 1}" }.join("\n") }
 
     def build(echo: :queued)
       described_class.new(input_queue: queue, input: input, output: output,
@@ -1664,8 +1969,49 @@ RSpec.describe Rubino::UI::BottomComposer do
     it "numbers a second paste #2 in the same draft" do
       c = paste_into(build, big)
       c.handle_key(" ")
-      paste_into(c, Array.new(6) { "x" }.join("\n"))
+      paste_into(c, second_big)
       expect(c.buffer).to eq("[Pasted text #1 +50 lines] [Pasted text #2 +6 lines]")
+    end
+
+    it "coalesces two consecutive collapsed pastes into the first placeholder" do
+      c = paste_into(build, big)
+      paste_into(c, second_big)
+
+      expect(c.buffer).to eq("[Pasted text #1 +56 lines]")
+      expect(c.buffer.scan("[Pasted text").size).to eq(1)
+    end
+
+    it "expands a coalesced paste to both bodies in order for the model" do
+      c = paste_into(build, big)
+      paste_into(c, second_big)
+
+      token = c.buffer
+      pairs = store.expansions_in(token)
+      msg = Rubino::Session::Message.new(
+        session_id: "s1",
+        role: "user",
+        content: token,
+        metadata: { paste_expansions: pairs }
+      )
+
+      expect(msg.to_context[:content]).to eq("#{big}\n#{second_big}")
+    end
+
+    it "creates a second placeholder when typed text separates two pastes" do
+      c = paste_into(build, big)
+      c.handle_key("x")
+      paste_into(c, second_big)
+
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines]x[Pasted text #2 +6 lines]")
+    end
+
+    it "coalesces two identical consecutive collapsed pastes without losing either body" do
+      body = Array.new(6) { "same" }.join("\n")
+      c = paste_into(build, body)
+      paste_into(c, body)
+
+      expect(c.buffer).to eq("[Pasted text #1 +12 lines]")
+      expect(store.expand(c.buffer)).to eq("#{body}\n#{body}")
     end
 
     it "backspace deletes the placeholder WHOLE (never a half-eaten token)" do
@@ -1798,12 +2144,14 @@ RSpec.describe Rubino::UI::BottomComposer do
   end
 
   describe "#set_cards (subagent card block, Variant A)" do
-    it "renders each card on its own row above the prompt, prompt redrawn last" do
+    it "renders each subagent on its own row BELOW the input (the panel)" do
       composer.handle_key("x")
       composer.set_cards(["▸ sa_1 · explore · running", "▸ sa_2 · test · running"])
-      expect(output.string).to include("▸ sa_1 · explore · running\r\n")
-      expect(output.string).to include("▸ sa_2 · test · running\r\n")
-      expect(output.string).to end_with("#{PROMPT}x")
+      s = output.string
+      expect(s).to include("▸ sa_1 · explore · running")
+      expect(s).to include("▸ sa_2 · test · running")
+      # The panel renders BELOW the input: the prompt+text comes before the cards.
+      expect(s.index("#{PROMPT}x")).to be < s.index("▸ sa_1")
       expect(composer.cards.size).to eq(2)
     end
 
@@ -1812,9 +2160,10 @@ RSpec.describe Rubino::UI::BottomComposer do
       output.truncate(0)
       output.rewind
       composer.set_cards(["▸ sa_1 · running · 2 tools"])
-      # The prior card row is cleared via cursor-up (\e[1A\e[2K) rather than a
-      # fresh line scrolling the old one up — the in-place card contract.
-      expect(output.string).to include("\e[1A\e[2K")
+      # In place: the panel row below the input is cleared (\e[2K) and repainted,
+      # never a fresh line scrolling the old one up — the no-flood contract. (The
+      # walk is now DOWNWARD, \e[1B, since the panel sits below the input.)
+      expect(output.string).to include("\e[2K")
       expect(output.string).to include("2 tools")
       # No duplication: the old "1 tool" text isn't re-emitted in this frame.
       expect(output.string).not_to include("1 tool")
@@ -1833,21 +2182,169 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(composer.cards.size).to eq(described_class::MAX_CARD_ROWS)
     end
 
-    it "coexists with a live streamed partial (cards above, partial above prompt)" do
+    it "coexists with a live streamed partial (partial above the input, panel below)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.set_partial("streaming token")
-      expect(output.string).to include("▸ sa_1 · running\r\n")
-      expect(output.string).to include("streaming token\r\n")
+      s = output.string
+      expect(s).to include("▸ sa_1 · running")
+      expect(s).to include("streaming token")
+      # The streamed partial renders above the input; the subagent panel below it.
+      expect(s.index("streaming token")).to be < s.rindex("▸ sa_1 · running")
       expect(composer.cards.size).to eq(1)
       expect(composer.partial?).to be(true)
     end
 
-    it "a committed print_above repaints cards above the committed line + prompt" do
+    it "a committed print_above keeps the subagent panel (persistent live-region state)" do
       composer.set_cards(["▸ sa_1 · running"])
       composer.print_above("a finished timeline row")
       expect(output.string).to include("a finished timeline row\r\n")
-      # The card survives a commit (it's persistent live-region state).
-      expect(output.string).to include("▸ sa_1 · running\r\n")
+      # The panel survives a commit (it's persistent live-region state).
+      expect(output.string).to include("▸ sa_1 · running")
+    end
+  end
+
+  # Focus-gating (tmux-style unified render): EVERY agent paints through its own
+  # CLI, and each frame carries an `origin:`. Only the FOCUSED agent's frames
+  # paint; a non-focused agent (the main loop while attached to a sub, OR a sub
+  # while at main) keeps running but DROPS its frames. The attach/detach REPLAY
+  # is exempt so the focused view the user wants still paints. The raw input
+  # reader is untouched (not asserted here — see the PTY spec — but the gate
+  # never stops it, unlike #suspend).
+  describe "per-origin focus gate (#focus_agent!)" do
+    it "PAINTS the focused agent's frames and DROPS a non-focused agent's" do
+      # Focus the sub: now a MAIN-origin frame (the still-running parent turn)
+      # drops, while the FOCUSED sub's frame paints.
+      composer.focus_agent!("sa_1")
+      output.truncate(0)
+      output.rewind
+
+      # Non-focused (origin :main) — dropped, no live state mutated.
+      composer.print_above("parent turn line", origin: :main)
+      composer.set_partial("parent streaming tok", origin: :main)
+      composer.set_cards(["▸ sa_x · running"], origin: :main)
+      expect(output.string).to eq("")
+      expect(composer.partial?).to be(false)
+      expect(composer.cards).to eq([])
+
+      # Focused (origin "sa_1") — painted.
+      composer.print_above("focused sub line", origin: "sa_1")
+      expect(output.string).to include("focused sub line\r\n")
+    end
+
+    it "defaults origin to :main so the main agent paints when focused on :main" do
+      composer.print_above("main line, default origin")
+      expect(output.string).to include("main line, default origin\r\n")
+    end
+
+    it "refocuses :main on detach so the main view paints again" do
+      composer.focus_agent!("sa_1")
+      composer.focus_agent!(:main)
+      composer.print_above("parent line back on screen", origin: :main)
+      expect(output.string).to include("parent line back on screen\r\n")
+    end
+
+    it "EXEMPTS the attach/detach replay (#with_replay_exempt) from the gate" do
+      composer.focus_agent!("sa_1")
+      output.truncate(0)
+      output.rewind
+
+      # A :main-origin frame inside the replay still paints (replay is exempt).
+      composer.with_replay_exempt do
+        composer.print_above("replayed sub transcript row", origin: :main)
+      end
+      expect(output.string).to include("replayed sub transcript row\r\n")
+
+      # ...and the exemption is scoped: a non-focused frame after it still drops.
+      output.truncate(0)
+      output.rewind
+      composer.print_above("parent line after replay", origin: :main)
+      expect(output.string).to eq("")
+    end
+
+    it "tracks the focused id (and #main_render_suppressed? derives from it)" do
+      expect(composer.focused_agent_id).to eq(:main)
+      expect(composer.main_render_suppressed?).to be(false)
+      composer.focus_agent!("sa_1")
+      expect(composer.focused_agent_id).to eq("sa_1")
+      expect(composer.main_render_suppressed?).to be(true)
+      composer.focus_agent!(nil) # nil normalizes to :main
+      expect(composer.focused_agent_id).to eq(:main)
+    end
+  end
+
+  # #87 — while ATTACHED to a sub, #37 hid the parent's subagent cards so the
+  # user lost the tab-switcher. The switcher must stay reachable: the compact
+  # `subs:` line lists the running subs and marks the focused one (picker
+  # closed), and ↓ still opens the navigable picker which Enter re-attaches.
+  describe "attached tab-switcher (#87)" do
+    let(:reg) { Rubino::Tools::BackgroundTasks.instance }
+
+    before { Rubino::Tools::BackgroundTasks.reset! }
+
+    after { Rubino::Tools::BackgroundTasks.reset! }
+
+    it "shows a compact switcher line listing the running subs with the focused one marked" do
+      a = reg.reserve(subagent: "explore", prompt: "first")
+      b = reg.reserve(subagent: "build", prompt: "second")
+      composer.focus_agent!(b.id)
+
+      rows = composer.send(:below_input_rows)
+      line = rows.join
+
+      expect(line).to include("subs:")
+      expect(line).to include(a.id)        # the OTHER sub is visible at a glance
+      expect(line).to include("▸#{b.id}")  # the focused sub is marked
+      expect(line).to include("↓ to switch")
+    end
+
+    it "shows no switcher line while attached when no sub is live" do
+      composer.focus_agent!("sa_gone")
+      expect(composer.send(:below_input_rows)).to eq([])
+    end
+
+    it "lets ↓ open the picker while attached and Enter re-attaches to the chosen sub" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      target = reg.reserve(subagent: "build", prompt: "second")
+      composer.focus_agent!("sa_other")
+
+      # ↓ opens the navigable picker even while attached...
+      composer.send(:history_down)
+      expect(composer.agent_menu_open?).to be(true)
+      # ...and the open picker is the exempt face drawn below the input.
+      expect(composer.send(:below_input_rows)).to eq(composer.send(:agent_menu_rows))
+
+      # Selecting another sub queues its attach command (re-attach via the
+      # existing attach_agent_view path).
+      composer.send(:submit_agent_attach, target)
+      expect(queue.shift).to eq("/agents #{target.id} --attach")
+    end
+
+    it "clears the focused mark on detach (refocus :main)" do
+      composer.focus_agent!("sa_x")
+      composer.focus_agent!(:main)
+      expect(composer.focused_agent_id).to eq(:main)
+    end
+
+    # The REPL rebuilds a fresh composer per idle iteration / per turn, so the
+    # focused-sub id (like the suppression gate) must be SEEDED from the host's
+    # `attached:` arg at construction — an imperatively-set id on the previous
+    # composer is gone the moment the loop recreates one (#82/#87).
+    it "seeds the focused sub from the attached: id at construction" do
+      a = reg.reserve(subagent: "explore", prompt: "first")
+      b = reg.reserve(subagent: "build", prompt: "second")
+      c = described_class.new(input_queue: queue, input: input, output: output, attached: b.id)
+
+      expect(c.main_render_suppressed?).to be(true)
+      line = c.send(:below_input_rows).join
+      expect(line).to include(a.id)        # other sub visible
+      expect(line).to include("▸#{b.id}")  # focused sub seeded + marked
+    end
+
+    it "is NOT suppressed when built with attached: nil (at main)" do
+      reg.reserve(subagent: "explore", prompt: "first")
+      c = described_class.new(input_queue: queue, input: input, output: output, attached: nil)
+
+      expect(c.main_render_suppressed?).to be(false)
     end
   end
 
@@ -1926,6 +2423,226 @@ RSpec.describe Rubino::UI::BottomComposer do
       region = composer.instance_variable_get(:@region)
       expect(region).not_to receive(:reset_geometry!)
       composer.send(:redraw)
+    end
+
+    # #481: after a SIGWINCH resize, typing a line long enough to WRAP re-committed
+    # the first visual row on every keystroke (12+ stair-stepped duplicates into
+    # scrollback). Root cause: the cheap keystroke path (#draw_input) reused a
+    # @cols that #resize could record STALE — a drag coalesces SIGWINCHes and the
+    # trap can read winsize BEFORE the pty commits the new size — so a wrapping
+    # line laid out as ONE logical row at the stale width while the physical
+    # terminal wrapped it onto a 2nd line the single-row clear never erased. The
+    # fix re-reads the live winsize in #draw_input (like #render_frame), so the
+    # wrap math matches the true width and the clear count is exact.
+    describe "wrapping after a resize whose recorded width went stale (#481)" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: racy_out)
+      end
+
+      # An output whose #winsize answer can drift from the @cols #resize last
+      # recorded — the SIGWINCH-race the duplication needs.
+      let(:racy_out) do
+        Class.new(StringIO) do
+          attr_writer :cols
+
+          def initialize
+            super
+            @cols = 80
+          end
+
+          def winsize = [24, @cols]
+        end.new
+      end
+
+      it "self-heals @cols on the keystroke path so a wrapping line is not duplicated" do
+        composer.send(:redraw) # initial draw at width 80
+        # Resize fires but winsize still reports the OLD 80 (the trap raced the
+        # pty commit), so #resize records a stale @cols = 80.
+        composer.resize
+        expect(composer.instance_variable_get(:@cols)).to eq(80)
+
+        # The terminal is ACTUALLY 40 wide now.
+        racy_out.cols = 40
+        region = composer.instance_variable_get(:@region)
+
+        # Type a 50-char line: at the stale 80 it would be one logical row (and
+        # physically wrap, stair-stepping); the fix re-reads 40 in #draw_input,
+        # so it wraps to TWO logical rows the clear tracks.
+        racy_out.truncate(0)
+        racy_out.rewind
+        50.times { |i| composer.handle_key((97 + (i % 26)).chr) }
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        expect(region.input_above).to be_positive                # laid out multi-row
+
+        # The line scrolls a row into scrollback EXACTLY ONCE (the single 1→2
+        # row transition), never once-per-keystroke. Net commits = CRLFs that are
+        # not matched by a preceding clear-up.
+        s = racy_out.string
+        net = s.scan("\r\n").length - s.scan("\e[1A").length
+        expect(net).to eq(1)
+      end
+
+      # ROOT CAUSE (#481, supersedes the insufficient part of #496): self-healing
+      # @cols in #draw_input fixes the NEW layout but NOT the rows the line
+      # occupied at the PREVIOUS width. When #resize records a STALE-WIDE @cols it
+      # repaints the line as ONE logical row AND zeroes the on-screen geometry
+      # (@input_above = 0, #401). The terminal, already narrow, REFLOWS that one
+      # row onto TWO physical rows. The next keystroke's in-place clear walks up
+      # only the recorded count (0 rows above) — so the reflowed TOP fragment is
+      # never erased and stays committed above the freshly repainted composer (the
+      # stale "❯" row). The fix widens the clear to cover the rows the block
+      # physically occupies at the live width, so the keystroke-path
+      # #clear_input_block walks UP at least one row before repainting.
+      it "clears the OLD width's reflowed rows on the keystroke path (no stale ❯ row)" do
+        # Type the whole line FIRST at width 80 — one logical row, no wrap.
+        line = (0...50).map { |i| (97 + (i % 26)).chr }.join
+        line.each_char { |ch| composer.handle_key(ch) }
+        region = composer.instance_variable_get(:@region)
+        expect(region.input_above).to eq(0) # single logical row at width 80
+
+        # Resize races: winsize still reports 80, so #resize records a stale @cols
+        # and (per #401) resets geometry — it repaints the line as ONE row with
+        # @input_above back to 0. The terminal is ALREADY 40 wide, so that one row
+        # is physically reflowed onto two rows on screen.
+        composer.resize
+        expect(composer.instance_variable_get(:@cols)).to eq(80) # stale
+        expect(region.input_above).to eq(0)                      # geometry forgotten
+
+        racy_out.cols = 40 # the true width finally readable
+        racy_out.truncate(0)
+        racy_out.rewind
+
+        # One more keystroke takes the cheap #draw_input path. It self-heals @cols
+        # to 40 AND must clear the previously-occupied (reflowed) region: a row
+        # that wrapped to two physical rows means at least one \e[1A\e[2K walk-up
+        # must precede the repaint, or the old top fragment survives as a stale
+        # committed "❯" row.
+        composer.handle_key("z")
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        # The clear walked UP over the reflowed row(s): the fix widened the clear
+        # count to the live-width row span. On the post-#496 code @input_above was
+        # 0, so NO walk-up was emitted and the stale row persisted.
+        expect(racy_out.string).to include("\e[1A\e[2K")
+      end
+
+      # RESIDUAL ROOT CAUSE (#481, chained resize — supersedes the single-resize
+      # widen #497 added above): a SECOND consecutive SIGWINCH while a wrapping
+      # line is on screen still stranded ONE row. #497 widens the keystroke-path
+      # clear to max(old_width, live_width) using ONLY the immediately-previous
+      # @input_cols. On a 120→50→40 walk the 50-col frame's own under-clear left a
+      # row from the 120-col footprint above the block; the 50→40 clear walks only
+      # the 50/40 footprint and never reaches it. The case bites hardest with the
+      # caret HIGH in a tall block: the live and old-width above-caret counts are
+      # both ~0, so #497 emits ZERO walk-up while the block physically occupies
+      # several reflowed rows. The fix carries the WORST-CASE above-caret footprint
+      # the block has occupied across every width since the last clean full draw
+      # (@input_above_high_water) and clears up to it, so no stranded row survives
+      # the whole resize chain. PROVEN to fail on 63b78ed (walk-up = 0 here).
+      it "clears the WORST-CASE footprint across a chained resize (no stale ❯ row, #481)" do
+        region = composer.instance_variable_get(:@region)
+
+        # 1) Type a long line at width 120 (one logical row — no wrap).
+        (0...100).each { |i| composer.handle_key((97 + (i % 26)).chr) }
+        racy_out.cols = 120
+        composer.send(:redraw)
+
+        # 2) First SIGWINCH races (winsize still 120), real width is now 50. The
+        #    keystroke self-heals to 50 and lays the line out multi-row.
+        composer.resize
+        racy_out.cols = 50
+        composer.handle_key("x")
+        expect(composer.instance_variable_get(:@cols)).to eq(50)
+        expect(region.input_above).to be_positive # tall at 50
+
+        # 3) Keep typing so the block grows tall at 50 — the caret sits at the
+        #    BOTTOM, so the block now PHYSICALLY occupies several rows ABOVE it.
+        #    Record that peak above-caret footprint from the LiveRegion (the
+        #    observable count #draw_input recorded), then move the caret to the
+        #    TOP row. Now the above-caret count is ~0 — the count #497's
+        #    max(old, live) measures — while the reflowed rows physically remain.
+        (0...60).each { |i| composer.handle_key((97 + (i % 26)).chr) }
+        peak_above = region.input_above
+        expect(peak_above).to be > 1 # the block has occupied several rows above
+        composer.instance_variable_get(:@input_line).move_to(0)
+        composer.send(:redraw)
+        expect(region.input_above).to eq(0) # caret on the top row now
+
+        # 4) Second SIGWINCH races (winsize still 50), real width is now 40. The
+        #    next keystroke reflows 50→40 with the caret still at the top.
+        composer.resize
+        racy_out.cols = 40
+        racy_out.truncate(0)
+        racy_out.rewind
+        composer.instance_variable_get(:@input_line).move_to(0)
+        composer.handle_key("A")
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40) # healed
+        # #497 (max of the old/live ABOVE-caret counts — BOTH ~0 with a top caret)
+        # emits NO walk-up here, so the tall block's reflowed rows above the caret
+        # stay stranded as ghost "❯" rows (the residual 1-row #481 repro). The
+        # worst-case clear walks UP over at least the PEAK footprint the block has
+        # occupied since the last clean full draw — so no stranded row survives the
+        # whole resize chain. PROVEN to fail on 63b78ed (walk-up = 0 < peak_above).
+        walkups = racy_out.string.scan("\e[1A\e[2K").length
+        expect(walkups).to be >= peak_above
+      end
+
+      # #503 (the resize-REPAINT residue, distinct from the keystroke path above):
+      # when the SIGWINCH does NOT race the pty (winsize reports the true new
+      # width immediately), #resize itself repaints via the cheap draw_input —
+      # but reset_geometry! zeroed @input_above (#401) and @input_cols is synced
+      # to the new width, so draw_input's own reflow-clear is disarmed and the
+      # resize repaint walks ZERO rows above the caret. The terminal has already
+      # reflowed the prior-width block onto a TALLER physical footprint, so its
+      # rows above the new caret survive as a stale "❯" row — and a SECOND
+      # consecutive non-racy SIGWINCH (120→50→40) compounds it. #resize must
+      # re-arm the clear to the worst-case above-caret footprint carried across
+      # the chain (@input_above_high_water) so the repaint walks UP over every
+      # reflowed row. PROVEN to fail on 6a26bf0 (resize emitted 0 walk-ups).
+      it "clears the worst-case footprint on the resize REPAINT path (no stale ❯ row, #503)" do
+        region = composer.instance_variable_get(:@region)
+
+        # Type a tall wrapping block at width 50 (winsize reports 50 — NOT racy),
+        # so the block physically occupies several rows above the caret.
+        racy_out.cols = 50
+        composer.send(:redraw)
+        (0...100).each { |i| composer.handle_key((97 + (i % 26)).chr) }
+        peak_above = region.input_above
+        expect(peak_above).to be > 1 # multi-row block on screen at 50
+
+        # Move the caret to the TOP row, so the live/old-width above-caret counts
+        # are ~0 — only the carried high-water covers the reflowed rows.
+        composer.instance_variable_get(:@input_line).move_to(0)
+        composer.send(:redraw)
+        expect(region.input_above).to eq(0)
+
+        # First non-racy SIGWINCH: the terminal is truly 50→… nothing changes
+        # yet; now drop to 40 and fire resize with winsize reporting 40 directly.
+        racy_out.cols = 40
+        racy_out.truncate(0)
+        racy_out.rewind
+        composer.resize
+
+        expect(composer.instance_variable_get(:@cols)).to eq(40)
+        # The resize repaint walked UP over the worst-case footprint the block
+        # occupied at the prior width. On 6a26bf0 the repaint emitted 0 walk-ups
+        # (reset_geometry! + @input_cols synced), stranding the reflowed rows.
+        walkups = racy_out.string.scan("\e[1A\e[2K").length
+        expect(walkups).to be >= peak_above
+      end
+    end
+
+    # Non-trigger (#481): narrow typing WITHOUT a prior resize stays correct —
+    # the width is right from the start, so a wrapping line clears in place.
+    it "does NOT duplicate when typing a wrapping line without any resize" do
+      region = composer.instance_variable_get(:@region)
+      50.times { |i| composer.handle_key((97 + (i % 26)).chr) } # width 40 (FakeTermIO)
+      expect(region.input_above).to be_positive
+      s = output.string
+      net = s.scan("\r\n").length - s.scan("\e[1A").length
+      expect(net).to eq(1) # one clean 1→2 row growth, not N duplicates
     end
   end
 
@@ -2030,11 +2747,15 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       # First select call: report BOTH $stdin and the stop pipe ready at once
       # (the race window). The reader must check the stop pipe FIRST and break.
+      # The reader selects on [@input, stop_r, wake_r] (the wake pipe was added
+      # for the mid-turn auto-open). Report $stdin AND the stop pipe ready at
+      # once (the race window) — wake NOT ready — so the reader must check the
+      # stop pipe FIRST and break without reading $stdin.
       first = true
       allow(IO).to receive(:select).and_wrap_original do |orig, ios, *rest|
-        if first && ios.length == 2
+        if first && ios.length >= 2
           first = false
-          [ios, [], []] # both readable simultaneously
+          [[ios[0], ios[1]], [], []] # @input + stop pipe readable simultaneously
         else
           orig.call(ios, *rest)
         end
@@ -2259,14 +2980,14 @@ RSpec.describe Rubino::UI::BottomComposer do
         escape("[A")
         # Row 0 col 25 → 2 prompt cols → buffer index 23. Buffer untouched.
         expect(composer.buffer).to eq("a" * 60)
-        expect(composer.instance_variable_get(:@cursor)).to eq(23)
+        expect(composer.send(:cursor)).to eq(23)
       end
 
       it "↓ moves back down a visual row, preserving the column" do
         type("a" * 60)
         escape("[A")
         escape("[B")
-        expect(composer.instance_variable_get(:@cursor)).to eq(60) # row 1 col 23
+        expect(composer.send(:cursor)).to eq(60) # row 1 col 23
         expect(composer.buffer).to eq("a" * 60)
       end
 
@@ -2296,7 +3017,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         composer.handle_key("\e") # caret at end of "second" (row 1, screen col 8)
         escape("[A")
         # Row 0, screen column preserved: col 8 clamps to the end of "first" → index 5.
-        expect(composer.instance_variable_get(:@cursor)).to eq(5)
+        expect(composer.send(:cursor)).to eq(5)
         expect(composer.buffer).to eq("first\nsecond")
       end
     end
@@ -2507,6 +3228,45 @@ RSpec.describe Rubino::UI::BottomComposer do
       end
     end
 
+    # ONE status bar: during a turn the footer ABSORBS the live activity facet
+    # (set by the CLI ticker via #set_turn_status) so the model/ctx bar and the
+    # "◆ writing · …" activity share a single row below the prompt, with the
+    # "(esc to interrupt)" hint present exactly once.
+    context "merged turn-status footer" do
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: output,
+                            status_line: "m3", on_interrupt: -> {})
+      end
+
+      it "prepends the live turn activity to the model/ctx bar while a turn runs" do
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing")
+        row = composer.send(:status_row)
+        expect(row).to include("◆ writing")
+        expect(row).to include("m3")
+        expect(row.scan("(esc to interrupt)").size).to eq(1) # the hint, exactly once
+      end
+
+      it "reverts to the bare model/ctx bar when the turn status is cleared" do
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing")
+        composer.clear_turn_status
+        expect(composer.send(:status_row)).to eq("m3  #{composer.send(:interrupt_hint)}")
+      end
+
+      it "sheds the model/ctx tail before the live activity on overflow" do
+        composer.set_status("a really long model and context summary line")
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing · 9s")
+        row = composer.send(:status_row)
+        expect(row).to include("◆ writing · 9s") # the live info is kept
+        expect(row).not_to include("really long model") # the tail is dropped
+      end
+    end
+
     it "teardown clears the bar row along with the input block" do
       composer.handle_key("x")
       # Drive the shared #stop/#suspend teardown directly (no live reader).
@@ -2682,6 +3442,207 @@ RSpec.describe Rubino::UI::BottomComposer do
       2.times { c.send(:handle_lone_esc) }
 
       expect(rewound).to be(true)
+    end
+  end
+
+  # Fix 1 — empty-buffer Ctrl+D is an EOF/quit the idle loop can OBSERVE.
+  # #handle_key returns :quit so the reader stops; #quit_pending? lets the idle
+  # poll loop see the EOF and return nil (so the REPL quit-guard runs) instead
+  # of spinning forever. A Ctrl+D on a NON-empty buffer is delete-forward, NOT
+  # a quit — that affordance is preserved.
+  describe "empty-buffer Ctrl+D EOF/quit (Fix 1)" do
+    it "returns :quit from #handle_key on an empty buffer" do
+      expect(composer.handle_key("\x04")).to eq(:quit)
+    end
+
+    it "does NOT quit on a NON-empty buffer — it deletes forward" do
+      "abc".each_char { |c| composer.handle_key(c) }
+      composer.handle_key("\x01") # Ctrl+A → caret to start
+      result = composer.handle_key("\x04") # Ctrl+D mid-line = delete-forward
+      expect(result).to be_nil
+      expect(composer.buffer).to eq("bc")
+    end
+
+    it "#quit_pending? starts false and is reset by #clear_quit_pending" do
+      expect(composer.quit_pending?).to be(false)
+      composer.instance_variable_set(:@quit_pending, true)
+      expect(composer.quit_pending?).to be(true)
+      composer.clear_quit_pending
+      expect(composer.quit_pending?).to be(false)
+    end
+
+    it "the reader sets #quit_pending? when handle_key reports :quit (empty Ctrl+D)" do
+      # Drive the reader's per-key branch directly: an empty-buffer Ctrl+D makes
+      # handle_key return :quit, and the reader flips the observable flag so the
+      # idle loop sees the EOF. (We exercise the same conditional the reader runs.)
+      ch = "\x04"
+      result = composer.handle_key(ch)
+      composer.instance_variable_set(:@quit_pending, true) if result == :quit
+      expect(composer.quit_pending?).to be(true)
+    end
+  end
+
+  # Fix 2 — a fast RAW burst of printable bytes coalesces into ONE redraw
+  # instead of one-per-byte (which re-renders the growing input block per char ⇒
+  # O(n²) terminal output). #coalesce_printable_run absorbs every printable byte
+  # already queued on the fd, inserts the whole run in a single #insert (one
+  # redraw), and returns the first non-printable char for normal dispatch.
+  describe "#coalesce_printable_run (Fix 2 burst coalescing)" do
+    # A fake real-IO that hands out a fixed byte run, reports readable while
+    # bytes remain, and exposes an integer #fileno so #real_io_input? is true.
+    def burst_io(chars)
+      io = Object.new
+      queue = chars.dup
+      io.define_singleton_method(:fileno) { 3 }
+      io.define_singleton_method(:wait_readable) { |_t| !queue.empty? }
+      io.define_singleton_method(:getc) { queue.shift }
+      io
+    end
+
+    it "inserts the WHOLE printable run into the buffer" do
+      c = described_class.new(input_queue: queue, input: burst_io(%w[e l l o]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "h")
+      expect(c.buffer).to eq("hello")
+      expect(pending).to be_nil # the whole run was printable
+    end
+
+    it "stops the run at the first NON-printable char and RETURNS it" do
+      # "hi" then Enter (\r): the run is "hi", Enter is returned for dispatch.
+      c = described_class.new(input_queue: queue, input: burst_io(["i", "\r", "x"]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "h")
+      expect(c.buffer).to eq("hi")
+      expect(pending).to eq("\r")
+    end
+
+    it "emits ONE redraw frame for an N-char burst (sub-quadratic, not N frames)" do
+      n = 200
+      chars = Array.new(n - 1) { "a" }
+      c = described_class.new(input_queue: queue, input: burst_io(chars),
+                              output: output)
+      before = output.string.length
+      c.send(:coalesce_printable_run, "a")
+      out = output.string[before..]
+      expect(c.buffer.length).to eq(n)
+      # One coalesced #insert ⇒ exactly one prompt frame for the whole burst.
+      frames = out.scan(/\r\e\[2K#{Regexp.escape(PROMPT)}/).length
+      expect(frames).to eq(1)
+      # Output is ~linear in n (one final frame), not ~n frames of growing size.
+      expect(out.length).to be < (n * 30)
+    end
+
+    it "passes a single interactive keystroke through unchanged (one char, no extra reads)" do
+      # Nothing else queued: wait_readable is false immediately, so it inserts
+      # just the one char and returns nil — identical to the old per-key path.
+      c = described_class.new(input_queue: queue, input: burst_io([]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "x")
+      expect(c.buffer).to eq("x")
+      expect(pending).to be_nil
+    end
+
+    it "returns a non-printable FIRST char untouched (no insert)" do
+      c = described_class.new(input_queue: queue, input: burst_io(["a"]),
+                              output: output)
+      pending = c.send(:coalesce_printable_run, "\e") # ESC starts a CSI sequence
+      expect(pending).to eq("\e")
+      expect(c.buffer).to eq("") # nothing inserted; caller dispatches the ESC
+    end
+  end
+
+  # Regression: the Backspace key sends DEL (0x7f) on most terminals. #printable?
+  # must classify DEL as NON-printable, otherwise #coalesce_printable_run swallows
+  # it and #insert puts a blank/space into the buffer instead of routing it to
+  # #handle_key's delete_back ("Backspace creates a space instead of deleting").
+  describe "#printable? (DEL 0x7f must stay non-printable)" do
+    let(:composer) { described_class.new(input_queue: queue, output: output) }
+
+    it "classifies DEL (0x7f) as NON-printable" do
+      expect(composer.send(:printable?, "\x7f")).to be(false)
+    end
+
+    it "still classifies normal, multibyte and 0x7e chars as printable" do
+      expect(composer.send(:printable?, "a")).to be(true)
+      expect(composer.send(:printable?, "à")).to be(true) # UTF-8 multibyte
+      expect(composer.send(:printable?, "~")).to be(true) # 0x7e
+      expect(composer.send(:printable?, " ")).to be(true) # 0x20
+    end
+
+    it "feeds DEL through the coalesce+handle_key path and DELETES (not inserts)" do
+      # Non-empty buffer; DEL (0x7f) must NOT be coalesced/inserted. It is a
+      # non-printable first char, so #coalesce_printable_run returns it untouched
+      # and #handle_key routes it to delete_back, removing the char before caret.
+      composer.send(:insert, "ab")
+      pending = composer.send(:coalesce_printable_run, "\x7f")
+      expect(pending).to eq("\x7f") # not swallowed by the coalesce run
+      composer.send(:handle_key, pending)
+      expect(composer.buffer).to eq("a") # delete_back ran; no space inserted
+    end
+
+    it "still coalesces a fast burst of normal printable chars (no #520 regression)" do
+      # A fake real-IO that hands out a fixed byte run (mirrors the coalesce
+      # describe's burst_io) so #real_io_input? is true and the run coalesces.
+      io = Object.new
+      queue_chars = %w[e l l o]
+      io.define_singleton_method(:fileno) { 3 }
+      io.define_singleton_method(:wait_readable) { |_t| !queue_chars.empty? }
+      io.define_singleton_method(:getc) { queue_chars.shift }
+      c = described_class.new(input_queue: queue, input: io, output: output)
+      pending = c.send(:coalesce_printable_run, "h")
+      expect(c.buffer).to eq("hello")
+      expect(pending).to be_nil
+    end
+  end
+
+  # #82: attach must focus the view on the sub. The composer is REBUILT every
+  # idle pass, so the focus-gate can't be set imperatively on a previous
+  # instance — it is SEEDED from the host's persistent attach-state at
+  # construction (`attached:`). While focused on a sub, the parent's subagent
+  # cards (set_cards, origin :main) drop, but the attach/detach REPLAY (painted
+  # through the @replaying-exempt seam) still renders; detach (refocus :main)
+  # restores both.
+  describe "focus-gate seeded from attach-state (#82)" do
+    it "starts SUPPRESSED when built with attached: true" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      expect(c.main_render_suppressed?).to be(true)
+    end
+
+    it "starts UNSUPPRESSED by default (non-attached, no regression)" do
+      expect(composer.main_render_suppressed?).to be(false)
+    end
+
+    it "DROPS the parent's subagent cards while attached (set_cards gated)" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      c.set_cards(["▸ sa_1 · general · running · 2 tools · 47s"])
+      expect(c.instance_variable_get(:@cards)).to eq([])
+    end
+
+    it "still RENDERS a replay frame while attached (replay-exempt set_partial)" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      # The attach replay paints inside with_replay_exempt; that seam exempts the
+      # focus-gate, so the frame lands even while focused on a sub.
+      c.with_replay_exempt { c.set_partial("⟂ sa_1 · running · 2 tools") }
+      expect(c.instance_variable_get(:@partial)).to eq("⟂ sa_1 · running · 2 tools")
+    end
+
+    it "drops a :main-origin frame when NOT routed through the replay seam" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      c.set_partial("⟂ sa_1 · running") # no with_replay_exempt, origin :main → gated
+      expect(c.instance_variable_get(:@partial).to_s).to eq("")
+    end
+
+    it "RESTORES card painting once detached (refocus :main)" do
+      c = described_class.new(input_queue: queue, input: input, output: output,
+                              attached: true)
+      c.focus_agent!(:main)
+      c.set_cards(["▸ sa_1 · general · running · 2 tools · 47s"])
+      expect(c.instance_variable_get(:@cards))
+        .to eq(["▸ sa_1 · general · running · 2 tools · 47s"])
     end
   end
 end

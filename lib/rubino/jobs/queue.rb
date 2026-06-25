@@ -32,7 +32,7 @@ module Rubino
           priority: priority,
           payload_json: JSON.generate(payload),
           attempts: 0,
-          max_attempts: @config.jobs_max_attempts,
+          max_attempts: @config.dig("jobs", "max_attempts"),
           run_at: run_at || now,
           created_at: now,
           updated_at: now
@@ -49,7 +49,7 @@ module Rubino
         # row never reaches complete!/fail! — sits "queued" forever and is the
         # behaviour #84 closed. Every inline enqueue means a live process is
         # here and willing to drain, so reap those orphans on this boot.
-        if @config.jobs_mode == "inline"
+        if @config.dig("jobs", "mode") == "inline"
           reap_inline_orphans(before: id)
           Runner.new.run_job(id)
         end
@@ -117,7 +117,7 @@ module Rubino
         new_status =
           if new_attempts >= job[:max_attempts]
             "dead"
-          elsif @config.jobs_mode == "inline"
+          elsif @config.dig("jobs", "mode") == "inline"
             "failed"
           else
             "queued"
@@ -138,8 +138,15 @@ module Rubino
         )
       end
 
-      # Lists jobs with optional filters
+      # Lists jobs with optional filters. Reclaims lease-expired `running` rows
+      # FIRST (WHATIF-headless YELLOW-1) so the list is honest: reclaim_stale!
+      # otherwise ran only on the dequeue/process/drain write paths, so a row a
+      # dead worker abandoned sat "running" long past the 900s lease (e.g. 43
+      # min) on every `jobs list` / `/jobs` read. Reclaiming on the read path
+      # re-queues (or kills) it so the status shown matches reality. Idempotent
+      # and cheap — a second call in #counts (the /jobs header) finds nothing.
       def list(status: nil, limit: 20)
+        reclaim_stale!
         dataset = @db[:jobs].order(Sequel.desc(:created_at)).limit(limit)
         dataset = dataset.where(status: status) if status
         dataset.all
@@ -156,7 +163,10 @@ module Rubino
 
       # Status counts for the whole queue (status => count), one grouped
       # query — the in-chat /jobs header line (#187). {} when the queue is empty.
+      # Reclaims lease-expired `running` rows first (WHATIF-headless YELLOW-1) so
+      # the header count matches the reclaimed list rendered right after it.
       def counts
+        reclaim_stale!
         @db[:jobs].group_and_count(:status).to_h { |row| [row[:status], row[:count]] }
       end
 
@@ -178,7 +188,24 @@ module Rubino
       # so a turn whose extraction was interrupted is recovered on the next
       # inline boot instead of sitting "queued" forever. Each is taken through
       # run_job, which marks it completed / failed (inline) / dead terminally.
-      def reap_inline_orphans(before: nil)
+      #
+      # +session_id+ SCOPES the sweep to the current run's OWN post-turn jobs
+      # (WHATIF-headless RED-1). A headless one-shot drains before it exits, and
+      # the unscoped sweep ran EVERY due/queued/unlocked row in the table — a
+      # whole foreign backlog (each row a full LLM call), so a trivial `rubino -q`
+      # on a home with a backlog blocked 9-15+ min past its answer and, under
+      # --output-format json, withheld stdout behind the backlog. The post-turn
+      # jobs (ExtractMemory/DistillSkill/Summarize) all carry the enqueuing
+      # session's id in their payload, so passing +session_id+ restricts the
+      # drain to rows this session owns; foreign rows stay `queued` for the next
+      # run / the worker. Reaping with no +session_id+ keeps the original
+      # whole-queue sweep (the in-process inline-enqueue boot recovery).
+      def reap_inline_orphans(before: nil, session_id: nil)
+        # First re-queue any row a prior run abandoned mid-flight in `running`
+        # (#76) so the scan below sweeps it too — same recovery the detached
+        # drain gets via #next_due_queued.
+        reclaim_stale!
+
         now = Time.now.utc.iso8601
         runner = Runner.new(db: @db)
         worker_id = "reap-#{Process.pid}"
@@ -188,6 +215,9 @@ module Rubino
                   .where { run_at <= now }
                   .order(:priority, :run_at)
         dataset = dataset.exclude(id: before) if before
+        # Match the session's own rows by the serialized payload tag
+        # (JSON.generate emits "session_id":"<id>" with no spaces, #enqueue).
+        dataset = dataset.where(Sequel.like(:payload_json, "%\"session_id\":\"#{session_id}\"%")) if session_id
 
         # Isolate each orphan: run_job already failure-isolates a bad row
         # terminally, but a defence-in-depth guard here means even an
@@ -218,12 +248,47 @@ module Rubino
       # nothing due. Scanned fresh each call so rows a follow-up turn enqueues
       # mid-drain are picked up by the same worker (coalescing).
       def next_due_queued
+        reclaim_stale!
         now = Time.now.utc.iso8601
         @db[:jobs]
           .where(status: "queued", locked_by: nil)
           .where { run_at <= now }
           .order(:priority, :run_at)
           .first
+      end
+
+      # Reclaims rows stranded in `running` by a worker that claimed them and
+      # then died / was quit / hung (#76). The drain scan only re-picks `queued`
+      # rows and nothing else recovers a `running` row, so a claimed-but-never-
+      # finished job sat forever (status="running", locked_by set, attempts=0)
+      # and the queue grew across sessions. A row whose lock is older than the
+      # lease is presumed abandoned: bump attempts and either re-queue it (so the
+      # next scan runs it) or mark it terminal ("dead") once attempts are
+      # exhausted — so a genuinely stuck/poison job can't be reclaimed and re-run
+      # forever. Returns the number of rows reclaimed.
+      def reclaim_stale!
+        lease = @config.dig("jobs", "lock_lease_seconds") || 900
+        cutoff = (Time.now - lease).utc.iso8601
+
+        stale = @db[:jobs]
+                .where(status: "running")
+                .exclude(locked_at: nil)
+                .where { locked_at < cutoff }
+                .select_map(%i[id attempts max_attempts])
+
+        stale.each do |id, attempts, max_attempts|
+          new_attempts = attempts + 1
+          dead = new_attempts >= max_attempts
+          @db[:jobs].where(id: id, status: "running").update(
+            status: dead ? "dead" : "queued",
+            attempts: new_attempts,
+            locked_at: nil,
+            locked_by: nil,
+            last_error: "reclaimed: worker abandoned the job (lock lease expired)",
+            updated_at: Time.now.utc.iso8601
+          )
+        end
+        stale.size
       end
 
       # Cleans up old completed jobs

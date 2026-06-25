@@ -12,6 +12,10 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       c.bedrock_secret_key = nil
       c.bedrock_region     = nil
       c.bedrock_session_token = nil
+      c.deepseek_api_key   = nil
+      c.deepseek_api_base  = nil
+      c.mistral_api_key    = nil
+      c.mistral_api_base   = nil
     end
     ENV.delete("BEDROCK_API_KEY")
     ENV.delete("BEDROCK_SECRET_KEY")
@@ -547,6 +551,65 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     end
   end
 
+  # -----------------------------------------------------------------------
+  # #482 — a PROVIDER_PATTERNS provider that ruby_llm supports natively
+  # (deepseek, mistral, …) but we didn't special-case used to PASS the
+  # CredentialCheck preflight on <PROVIDER>_API_KEY while the call died with
+  # "Missing configuration for X: x_api_key": nothing wired the key into
+  # RubyLLM.config. The adapter now wires <provider>_api_key generically, so
+  # the preflight verdict matches what the call hits.
+  # -----------------------------------------------------------------------
+  describe "native ruby_llm provider wiring (#482)" do
+    def deepseek_cfg(extra = {})
+      test_configuration(
+        "model" => { "provider" => "deepseek", "default" => "deepseek-chat",
+                     "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "deepseek" => extra }
+      )
+    end
+
+    it "wires deepseek_api_key from the provider config" do
+      described_class.new(model_id: "deepseek-chat", provider: "deepseek",
+                          config: deepseek_cfg("api_key" => "sk-ds-config"))
+      expect(RubyLLM.config.deepseek_api_key).to eq("sk-ds-config")
+    end
+
+    it "wires deepseek_api_key from the native DEEPSEEK_API_KEY env var" do
+      ENV["DEEPSEEK_API_KEY"] = "sk-ds-env"
+      described_class.new(model_id: "deepseek-chat", provider: "deepseek", config: deepseek_cfg)
+      expect(RubyLLM.config.deepseek_api_key).to eq("sk-ds-env")
+    ensure
+      ENV.delete("DEEPSEEK_API_KEY")
+    end
+
+    it "wires an optional base_url override into deepseek_api_base" do
+      described_class.new(
+        model_id: "deepseek-chat", provider: "deepseek",
+        config: deepseek_cfg("api_key" => "sk", "base_url" => "https://ds.example/v1")
+      )
+      expect(RubyLLM.config.deepseek_api_base).to eq("https://ds.example/v1")
+    end
+
+    it "does not raise at construction when no key is set (the preflight gates it)" do
+      ENV.delete("DEEPSEEK_API_KEY")
+      expect { described_class.new(model_id: "deepseek-chat", provider: "deepseek", config: deepseek_cfg) }
+        .not_to raise_error
+      expect(RubyLLM.config.deepseek_api_key).to be_nil
+    end
+
+    # The crux of #482: preflight PASS ⇒ the key the call needs is actually
+    # wired (no pass-then-"Missing configuration" mismatch).
+    it "preflight usable? PASS implies the call-time key is wired" do
+      ENV["DEEPSEEK_API_KEY"] = "sk-ds-env"
+      cfg = deepseek_cfg
+      expect(Rubino::LLM::CredentialCheck.usable?(cfg)).to be true
+      described_class.new(model_id: "deepseek-chat", provider: "deepseek", config: cfg)
+      expect(RubyLLM.config.deepseek_api_key).to eq("sk-ds-env")
+    ensure
+      ENV.delete("DEEPSEEK_API_KEY")
+    end
+  end
+
   # #dx — an EMPTY base_url on an openai_compatible provider used to be passed
   # through as an empty api_base, so the call hit a garbage endpoint and surfaced
   # as a misleading AUTH/connection error. It is now detected and surfaced as a
@@ -809,21 +872,20 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(chat).to have_received(:with_params).once.with(hash_including(max_tokens: 16_384))
       end
 
-      it "drives the wire params through LLM::ReasoningManager#render (single source of truth)" do
+      it "drives the wire params through LLM::ReasoningManager.render (single source of truth)" do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         # The manager is the only place that decides the wire shape; the adapter
-        # just applies what it renders. Spy on the manager to prove no duplicate
+        # just applies what it renders. Spy on the module to prove no duplicate
         # inline rendering remains in the adapter.
         rendered = Rubino::LLM::ReasoningManager::Rendered.new(
           thinking: { type: :enabled, budget_tokens: 8000 }, temperature: 1, max_tokens: 16_384
         )
-        manager = instance_double(Rubino::LLM::ReasoningManager, render: rendered)
-        allow(adapter).to receive(:reasoning_manager).and_return(manager)
+        allow(Rubino::LLM::ReasoningManager).to receive(:render).and_return(rendered)
 
         adapter.send(:build_chat)
 
-        expect(manager).to have_received(:render).with(
+        expect(Rubino::LLM::ReasoningManager).to have_received(:render).with(
           budget: 8000, temperature: 0.3, max_tokens: 16_384,
           text_headroom: 4096, apply_max_tokens: true
         )
@@ -886,6 +948,87 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(chat).to have_received(:with_temperature).with(0.5)
         expect(chat).not_to have_received(:with_thinking)
         expect(chat).not_to have_received(:with_params)
+      end
+    end
+
+    # providers.<name>.extra_body — a free-form hash merged into the
+    # OpenAI-compatible /v1/chat/completions body via with_params, so a gateway
+    # like oMLX/Qwen receives chat_template_kwargs:{enable_thinking:false} and
+    # suppresses chain-of-thought leakage. Inert when unset; never touches the
+    # anthropic-family path or the thinking-budget logic.
+    context "extra_body passthrough (OpenAI-compatible path)" do
+      def gateway_cfg(extra_body)
+        test_configuration(
+          "model" => { "provider" => "gateway", "default" => "Qwen3.6-35B-A3B-MLX-8bit",
+                       "temperature" => 0.5, "context_length" => nil },
+          "providers" => { "gateway" => {
+            "openai_compatible" => true, "assume_model_exists" => true,
+            "base_url" => "http://localhost:8000/v1", "api_key" => "fake",
+            "extra_body" => extra_body
+          } }
+        )
+      end
+
+      it "merges extra_body into the OpenAI-compatible with_params payload" do
+        cfg = gateway_cfg("chat_template_kwargs" => { "enable_thinking" => false })
+        adapter = described_class.new(model_id: "Qwen3.6-35B-A3B-MLX-8bit", config: cfg)
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        expect(chat).to have_received(:with_params)
+          .with(hash_including(chat_template_kwargs: { enable_thinking: false }))
+      end
+
+      it "symbolizes nested extra_body keys for with_params kwargs" do
+        cfg = gateway_cfg("chat_template_kwargs" => { "enable_thinking" => false })
+        adapter = described_class.new(model_id: "Qwen3.6-35B-A3B-MLX-8bit", config: cfg)
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        expect(chat).to have_received(:with_params) do |**params|
+          expect(params[:chat_template_kwargs]).to eq(enable_thinking: false)
+        end
+      end
+
+      it "is inert (no with_params) when extra_body is empty (byte-identical to today)" do
+        cfg = gateway_cfg({})
+        adapter = described_class.new(model_id: "Qwen3.6-35B-A3B-MLX-8bit", config: cfg)
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        # No thinking budget on the openai-compatible path and no extra_body ⇒
+        # no params to send at all, exactly as before this feature.
+        expect(chat).not_to have_received(:with_params)
+      end
+    end
+
+    # extra_body must NOT leak onto the anthropic-family request path: even when
+    # a provider config carries it, the anthropic branch keeps its existing
+    # max_tokens/thinking-only params and never folds in the free-form body.
+    context "extra_body is ignored on the anthropic-family path" do
+      let(:cfg) do
+        test_configuration(
+          "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7",
+                       "temperature" => 0.3, "context_length" => nil },
+          "providers" => { "minimax" => {
+            "anthropic_compatible" => true, "assume_model_exists" => true,
+            "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
+            "thinking_budget" => 0,
+            "extra_body" => { "chat_template_kwargs" => { "enable_thinking" => false } }
+          } }
+        )
+      end
+      let(:adapter) { described_class.new(model_id: "MiniMax-M2.7", config: cfg) }
+
+      it "does not merge extra_body into the anthropic with_params payload" do
+        chat = recording_chat
+        allow(RubyLLM).to receive(:chat).and_return(chat)
+        adapter.send(:build_chat)
+        # thinking disabled (budget 0) ⇒ only max_tokens travels; the extra_body
+        # key must be absent on this path.
+        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        expect(chat).not_to have_received(:with_params)
+          .with(hash_including(:chat_template_kwargs))
       end
     end
   end
@@ -999,6 +1142,60 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       result = adapter.stream(messages: [{ role: "user", content: "make a file" }]) { |_| }
       expect(result.content).to eq("I'll create the file now.PROBEDONE")
       expect(result.final_text_block).to eq("PROBEDONE")
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # Streaming response must NOT re-surface tool_calls (#53 — the duplicate
+  # subagent "started" line).
+  #
+  # ruby_llm runs the WHOLE model↔tool loop inside one ask(): every tool is
+  # executed mid-stream via ToolBridge (→ Agent::ToolExecutor, the single
+  # source of truth for tool_started/tool_finished + audit). The Loop is told
+  # NOT to re-execute on the streaming path (Loop#run: "ruby_llm runs the tool
+  # mid-stream … and never returns through #execute_tool_calls"). It decides
+  # that off AdapterResponse#has_tool_calls?.
+  #
+  # On the anthropic-compatible streaming path (MiniMax /anthropic) the message
+  # ruby_llm's ask() RETURNS still carries the executed tool_calls, so a naive
+  # build_response handed them back, has_tool_calls? was true, and the Loop
+  # re-ran the SAME tool — firing tool_finished("task") a SECOND time and
+  # rendering the `└ ▸ sa_… · <name> · started` confirmation TWICE for one
+  # spawn. The streaming response must report NO tool_calls: they already ran.
+  # -----------------------------------------------------------------------
+  describe "#stream does not re-surface already-executed tool_calls (#53)" do
+    let(:tool_use_final_chat) do
+      c = double("Chat")
+      allow(c).to receive(:with_tool).and_return(c)
+      allow(c).to receive(:with_instructions).and_return(c)
+      allow(c).to receive(:messages).and_return([])
+      # The final message ruby_llm returns from ask() — on MiniMax /anthropic it
+      # STILL carries the tool_calls it already ran mid-stream via ToolBridge.
+      tool_call = double("ToolCall", id: "call_function_x_1", name: "task",
+                                     arguments: { "subagent" => "general", "prompt" => "read x" })
+      resp = double("Response", content: "spawning a subagent", input_tokens: 1,
+                                output_tokens: 1, tool_calls: [tool_call])
+      allow(c).to receive(:ask) do |_, &blk|
+        blk.call(double("Chunk", content: "spawning a subagent", thinking: nil))
+        resp
+      end
+      c
+    end
+
+    let(:adapter) do
+      cfg = test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o",
+                     "temperature" => 0.3, "context_length" => nil }
+      )
+      a = described_class.new(model_id: "gpt-4o", config: cfg)
+      allow(a).to receive(:build_chat).and_return(tool_use_final_chat)
+      a
+    end
+
+    it "returns has_tool_calls? false so the Loop never re-executes the mid-stream tool" do
+      result = adapter.stream(messages: [{ role: "user", content: "spawn a subagent" }]) { |_| }
+      expect(result.has_tool_calls?).to be false
+      expect(result.tool_calls).to eq([])
     end
   end
 

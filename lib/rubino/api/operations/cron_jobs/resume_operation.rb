@@ -9,10 +9,6 @@ module Rubino
         #
         # @raise [Rubino::NotFoundError] when the cron job does not exist.
         class ResumeOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate repository and scheduler for tests.
           def initialize(repository: nil, scheduler: nil)
             @repository = repository || ::Rubino::Jobs::CronJobRepository.new
@@ -23,7 +19,7 @@ module Rubino
             id = request.params.fetch("id")
             raise NotFoundError.new("cron_job", id) unless @repository.find(id)
 
-            updated = @repository.set_enabled(id, enabled: true)
+            updated = @repository.update(id, enabled: true)
             @scheduler.schedule(updated)
             [200, Serializer.call(updated)]
           end

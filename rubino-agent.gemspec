@@ -38,15 +38,31 @@ Gem::Specification.new do |spec|
   spec.executables = ["rubino"]
   spec.require_paths = ["lib"]
 
+  # The Linux Landlock write-jail helper (Security::Sandbox). extconf.rb builds
+  # a tiny standalone `rubino-landlock` executable at install time. It DEGRADES
+  # GRACEFULLY: on macOS/Windows, without a compiler, or without Landlock
+  # headers it writes a no-op Makefile and exits 0, so `gem install` never
+  # breaks — the sandbox just reports the Linux mechanism unavailable and fails
+  # open (with a loud banner). The Ruby side also compiles it on first run as a
+  # fallback, so a source checkout / pristine bundle still gets confinement.
+  spec.extensions = ["ext/landlock/extconf.rb"]
+
   # Core dependencies
   spec.add_dependency "dry-configurable", "~> 1.0"
   spec.add_dependency "dry-schema", "~> 1.13"
   spec.add_dependency "faraday", "~> 2.9"
   spec.add_dependency "faraday-retry", "~> 2.2"
+  # Readability-style main-content extraction in the webfetch tool.
+  spec.add_dependency "nokogiri", "~> 1.18"
   spec.add_dependency "oauth2", "~> 2.0"
   spec.add_dependency "puma", "~> 6.4"
   spec.add_dependency "rack", "~> 3.1"
-  spec.add_dependency "ruby_llm", "~> 1.0"
+  # Floor is 1.16: the adapter wires native providers through ruby_llm's
+  # generic `<provider>_api_base=` setters (deepseek/mistral/etc., #482), which
+  # only exist from ruby_llm 1.16.0 ("api_base support for all providers"). On
+  # 1.15 those setters are absent and the call dies with NoMethodError at
+  # runtime, so a published-gem install must not resolve below 1.16.
+  spec.add_dependency "ruby_llm", ">= 1.16", "< 2.0"
   spec.add_dependency "ruby_llm-mcp", "~> 1.0"
   spec.add_dependency "rufus-scheduler", "~> 3.9"
   spec.add_dependency "sequel", "~> 5.0"
@@ -94,6 +110,16 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "docx", "~> 0.8"
   spec.add_development_dependency "pdf-reader", "~> 2.12"
   spec.add_development_dependency "roo", "~> 2.10"
+
+  # Optional JS/TS/TSX skeletonizer parser (Rubino::Compression's
+  # TreeSitterCodeSkeleton). Like the document converters above this is NOT a
+  # hard runtime dependency: the skeletoner `require`s it lazily inside
+  # begin/rescue and returns a NO-OP (the original output is sent unchanged)
+  # when the gem — or a grammar it would download on first use — is absent. It
+  # is a DEVELOPMENT dependency only so CI/specs exercise the real parser; an
+  # end user who wants JS/TS compression installs it themselves. MIT-licensed,
+  # ships precompiled grammars (no compile toolchain needed at install).
+  spec.add_development_dependency "tree_sitter_language_pack", "~> 1.10"
 
   # Development dependencies
   spec.add_development_dependency "parallel_tests", "~> 4.7"

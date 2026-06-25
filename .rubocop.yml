@@ -27,6 +27,12 @@ AllCops:
     # Test fixtures are sample input documents (e.g. a .rb code sample for the
     # plain-text converter), not project source -- they must not be linted.
     - "spec/fixtures/**/*"
+    # Eval-harness fixtures are deliberately tiny/imperfect sample projects the
+    # agent edits at eval time (INPUT, not source); results/ is generated output.
+    # The eval/.rubocop.yml excludes these for an in-eval run; mirror it here so
+    # the whole-repo lint from the root is clean too.
+    - "eval/fixtures/**/*"
+    - "eval/results/**/*"
 
 # --- House style: strings ----------------------------------------------------
 

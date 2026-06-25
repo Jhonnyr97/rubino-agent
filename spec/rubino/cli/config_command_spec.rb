@@ -16,6 +16,22 @@ RSpec.describe Rubino::CLI::ConfigCommand do
 
   after { FileUtils.rm_f(config_path) }
 
+  # A failed `config set` writes its ✗ line to STDERR (it's a failure on the
+  # automation surface, not stdout output) — capture it for assertions.
+  def capture_set_stderr(key, value)
+    original = $stderr
+    buffer   = StringIO.new
+    $stderr  = buffer
+    begin
+      described_class.new.set(key, value)
+    rescue SystemExit
+      nil
+    ensure
+      $stderr = original
+    end
+    buffer.string
+  end
+
   # Bug #19 follow-up: a failed `config set` (descending into a scalar
   # intermediate) must print a clean error AND exit non-zero so scripts/CI
   # can detect the failure. The command rescues ConfigurationError and
@@ -26,11 +42,9 @@ RSpec.describe Rubino::CLI::ConfigCommand do
         .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     end
 
-    it "prints a clean error via the UI before exiting" do
-      described_class.new.set("model.default.foo", "bar")
-    rescue SystemExit
-      err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to include("'model.default' is a scalar value, not a section")
+    it "prints a clean error to stderr before exiting" do
+      expect(capture_set_stderr("model.default.foo", "bar"))
+        .to include("'model.default' is a scalar value, not a section")
     end
   end
 
@@ -73,11 +87,9 @@ RSpec.describe Rubino::CLI::ConfigCommand do
         .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     end
 
-    it "prints a clean 'unknown config key' error before exiting" do
-      described_class.new.set("foo.bar.baz", "1")
-    rescue SystemExit
-      err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to include("unknown config key 'foo.bar.baz'")
+    it "prints a clean 'unknown config key' error to stderr before exiting" do
+      expect(capture_set_stderr("foo.bar.baz", "1"))
+        .to include("unknown config key 'foo.bar.baz'")
     end
 
     it "exits with status 1 on a type mismatch" do
@@ -85,11 +97,9 @@ RSpec.describe Rubino::CLI::ConfigCommand do
         .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     end
 
-    it "names the offending key in the type-mismatch error" do
-      described_class.new.set("model.temperature", "banana")
-    rescue SystemExit
-      err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to include("invalid value for 'model.temperature'")
+    it "names the offending key in the type-mismatch error (on stderr)" do
+      expect(capture_set_stderr("model.temperature", "banana"))
+        .to include("invalid value for 'model.temperature'")
     end
 
     it "exits 1 on a garbage enum value (security.confirm_policy)" do
@@ -97,12 +107,25 @@ RSpec.describe Rubino::CLI::ConfigCommand do
         .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     end
 
-    it "names the valid choices in the enum error" do
-      described_class.new.set("security.confirm_policy", "yolo")
-    rescue SystemExit
-      err = ui.messages.find { |m| m[:level] == :error }
-      expect(err[:message]).to include("invalid value for 'security.confirm_policy'")
-      expect(err[:message]).to match(/dangerous_only.*confirm_all/)
+    it "names the valid choices in the enum error (on stderr)" do
+      err = capture_set_stderr("security.confirm_policy", "yolo")
+      expect(err).to include("invalid value for 'security.confirm_policy'")
+      expect(err).to match(/dangerous_only.*confirm_all/)
+    end
+
+    # QA: `config set <array-key> "git log"` printed the ✗ on stdout with no
+    # hint on how to pass an array. The error now goes to stderr (exit 1) AND
+    # appends the accepted JSON-array syntax.
+    it "routes the array-type error to stderr with a JSON-array syntax hint" do
+      err = capture_set_stderr("security.command_allowlist", "git log")
+      expect(err).to include("expected array")
+      expect(err).to include("JSON array literal")
+      expect(err).to include("config set security.command_allowlist '[")
+    end
+
+    it "exits 1 on the array-type mismatch" do
+      expect { described_class.new.set("security.command_allowlist", "git log") }
+        .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     end
   end
 
@@ -146,6 +169,45 @@ RSpec.describe Rubino::CLI::ConfigCommand do
       described_class.new.get("nonexistent.key")
     rescue Thor::Error
       expect(ui.messages.any? { |m| m[:level] == :warning }).to be(false)
+    end
+  end
+
+  # #36 follow-up: /status advertises a setting by the short label a user then
+  # types into `/config <key>`, but the real key is nested. `/config reasoning`
+  # used to report "not found" though /status shows "reasoning:" and /reasoning
+  # writes display.reasoning. ConfigCommand::ALIASES bridges the short names to
+  # their dotted paths on both get and set.
+  describe "discoverability aliases (#36)" do
+    before do
+      File.write(config_path, { "display" => { "reasoning" => "full" },
+                                "thinking" => { "effort" => "high" } }.to_yaml)
+      Rubino.reload_configuration!
+    end
+
+    after { Rubino.reload_configuration! }
+
+    it "resolves `get reasoning` to display.reasoning instead of not-found" do
+      expect { described_class.new.get("reasoning") }.not_to raise_error
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message].to_s).to include("display.reasoning = full")
+    end
+
+    it "resolves `get effort` to thinking.effort" do
+      expect { described_class.new.get("effort") }.not_to raise_error
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message].to_s).to include("thinking.effort = high")
+    end
+
+    it "resolves `set reasoning <mode>` to display.reasoning" do
+      described_class.new.set("reasoning", "collapsed")
+      expect(Rubino::Config::Writer.new(config_path: config_path).get("display.reasoning"))
+        .to eq("collapsed")
+    end
+
+    it "leaves a fully-qualified dotted key untouched" do
+      expect { described_class.new.get("display.reasoning") }.not_to raise_error
+      line = ui.messages.find { |m| m[:level] == :info }
+      expect(line[:message].to_s).to include("display.reasoning = full")
     end
   end
 

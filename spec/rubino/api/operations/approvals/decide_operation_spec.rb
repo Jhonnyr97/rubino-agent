@@ -19,7 +19,7 @@ RSpec.describe Rubino::API::Operations::Approvals::DecideOperation do
   it "records the decision and returns 200" do
     run = create_run
     gate.register("ap-1")
-    status, body = described_class.call(
+    status, body = described_class.new.call(
       make_request(body: { "decision" => "once" }, params: { run_id: run[:id], approval_id: "ap-1" })
     )
     expect(status).to eq(200)
@@ -32,7 +32,7 @@ RSpec.describe Rubino::API::Operations::Approvals::DecideOperation do
       run = create_run
       id = "ap-rt-#{i}"
       gate.register(id)
-      status, body = described_class.call(
+      status, body = described_class.new.call(
         make_request(body: { "decision" => decision }, params: { run_id: run[:id], approval_id: id })
       )
       expect(status).to eq(200)
@@ -45,15 +45,17 @@ RSpec.describe Rubino::API::Operations::Approvals::DecideOperation do
     run = create_run
     gate.register("ap-2")
     expect do
-      described_class.call(make_request(body: { "decision" => "maybe" },
-                                        params: { run_id: run[:id],
-                                                  approval_id: "ap-2" }))
+      described_class.new.call(make_request(body: { "decision" => "maybe" },
+                                            params: { run_id: run[:id],
+                                                      approval_id: "ap-2" }))
     end.to raise_error(Rubino::ValidationError)
   end
 
   it "returns 404 if the run does not exist" do
     expect do
-      described_class.call(make_request(body: { "decision" => "once" }, params: { run_id: "no", approval_id: "ap-3" }))
+      described_class.new.call(make_request(body: { "decision" => "once" },
+                                            params: { run_id: "no",
+                                                      approval_id: "ap-3" }))
     end.to raise_error(Rubino::NotFoundError)
   end
 
@@ -61,9 +63,9 @@ RSpec.describe Rubino::API::Operations::Approvals::DecideOperation do
     session = session_repo.create(source: "api")
     run = run_repo.create(session_id: session[:id], input_text: "x") # no gate registered
     expect do
-      described_class.call(make_request(body: { "decision" => "once" },
-                                        params: { run_id: run[:id],
-                                                  approval_id: "ap-4" }))
+      described_class.new.call(make_request(body: { "decision" => "once" },
+                                            params: { run_id: run[:id],
+                                                      approval_id: "ap-4" }))
     end.to raise_error(Rubino::ConflictError)
   end
 end

@@ -22,19 +22,23 @@ module Rubino
         @unsupported.key?(provider.to_s)
       end
 
-      # Per-provider thinking CAPABILITY gate (#2). #unsupported?/#rejection?
-      # (#75) handle a provider that REJECTS a budget (hard 400 → retry +
-      # session memo); this handles one that ACCEPTS it and then, lacking a
-      # separate reasoning channel, dumps its chain-of-thought as plain content
-      # deltas — observed live on MiniMax. providers.<name>.supports_thinking
-      # (true/false) is the explicit override; unset, MiniMax-family model ids
-      # default to false (they return no thinking blocks and leak reasoning
-      # when sent a budget), everything else to true.
-      def supports?(provider_cfg, model_id)
+      # Per-provider thinking CAPABILITY gate (#2). providers.<name>.supports_thinking
+      # (true/false) is the explicit override; unset, thinking defaults ON for
+      # every provider. Thinking only travels on the anthropic-family path (the
+      # budget is zeroed elsewhere by the adapter), so this is effectively "request
+      # reasoning on anthropic-compatible backends" — which MiniMax-M3 streams as
+      # proper `thinking` deltas (verified), exactly like the reference agent's
+      # default `reasoning_effort: medium`. WITHOUT it M3 produces ~10s of dead air
+      # while it reasons toward a tool-call (the pre-tool-call freeze). A backend
+      # that genuinely rejects the budget is caught by #rejection? (#75) and the
+      # adapter retries once without it, then memoizes — so default-on is safe.
+      # (The earlier MiniMax-default-false workaround predated the with_params
+      # injection path, which routes the block cleanly instead of leaking it.)
+      def supports?(provider_cfg, _model_id = nil)
         configured = provider_cfg["supports_thinking"]
         return configured unless configured.nil?
 
-        !model_id.to_s.match?(ProviderResolver::PROVIDER_PATTERNS["minimax"])
+        true
       end
 
       # providers.<name>.supports_thinking: true is the user's explicit promise
@@ -48,9 +52,10 @@ module Rubino
       # with_params instead, which ruby_llm deep-merges into the request body
       # unconditionally.
       def budget_via_params?(provider_cfg, chat)
-        return false unless provider_cfg["supports_thinking"] == true
+        model    = chat.respond_to?(:model) ? chat.model : nil
+        model_id = model.respond_to?(:id) ? model.id : model
+        return false unless supports?(provider_cfg, model_id)
 
-        model = chat.respond_to?(:model) ? chat.model : nil
         !(model.respond_to?(:reasoning_option) && model.reasoning_option("budget_tokens"))
       rescue StandardError
         true

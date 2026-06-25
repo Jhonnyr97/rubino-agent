@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **34 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **29 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`.
+The full list (registration order): `read`, `summarize_file`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **27 rows** (config groups), not 34: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `ask_parent`, `steer`, `probe`, `answer_child`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **24 rows** (config groups), not 29: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -12,6 +12,27 @@ Several tools share one config gate, so `rubino tools` shows **27 rows** (config
 - **Mode** — `plan` mode pares the registry down to read-only tools (no `edit`/`shell`/`git`/…); `default` and `yolo` expose everything (their difference is on the approval path).
 - **Approval** — see [security.md](security.md). Shell commands are confirmation-gated by default; a non-bypassable hardline floor blocks catastrophic commands regardless of mode.
 - **Workspace sandbox** — with `tools.workspace_strict: true` (default), write/edit/delete tools are confined to the workspace root (`terminal.cwd` or `Dir.pwd`).
+
+## Output compression
+
+When `tool_output_compression.enabled` is on (off by default; `rubino setup`
+offers it), every tool's output passes through a deterministic content router
+before it reaches the model: test/build/lint **logs** are reduced to their
+failures + summary, a **whole-file source read** can come back as a skeleton, and
+**diffs / grep results / JSON / short output pass through byte-identical**. The
+full original is always recoverable: the compressed view ends with a passive
+pointer carrying an `id` (`retrieve_output id=…`), and the model recovers the
+verbatim original by calling the `retrieve_output` tool with that id — there is
+**no cat-able filesystem path** in the pointer, so a small model can't `sed`/
+`grep`/`cat` a spill path and re-inflate the very output compression just shrank.
+While enabled, `read` and `shell` advertise an extra `compress` boolean parameter
+(default `true`) so the model can pass `compress:false` to get one call's output
+verbatim, and the registry adds the `retrieve_output` recovery tool (present
+**only** while compression is enabled — it is absent from the default registry,
+so the count below is unchanged). See
+[configuration.md](configuration.md#tool_output_compression) for the full key
+reference. Compression is OFF in the default registry, so the parameter lists
+below describe the shipped (uncompressed) behaviour.
 
 ## Built-in Tools
 
@@ -78,25 +99,6 @@ Risk: low
 Parameters: pattern, path, max_results
 ```
 
-### git
-
-Git operations: status, diff, log, branch, show.
-
-```
-Risk: low (read-only operations)
-Parameters: command, args
-```
-
-### github
-
-GitHub integration: PRs, issues, reviews. Uses gh CLI or REST API.
-
-```
-Risk: medium
-Parameters: action, title, body, number, repo, base, labels
-Actions: pr_create, pr_list, pr_view, pr_checks, pr_diff, issue_create, issue_list, issue_view, repo_view, release_list
-```
-
 ### shell
 
 Execute a shell command. Foreground blocks until exit or `timeout`; pass `run_in_background: true` to fire-and-forget and get a `run_id`.
@@ -155,15 +157,6 @@ Risk: medium
 Parameters: code
 ```
 
-### run_tests
-
-Run the workspace project's test suite and return a **structured** result instead of the raw toolchain firehose. Auto-detects RSpec / Minitest / a Rakefile default task, prefers `bundle exec` when a Gemfile is present (falls back to the bare runner if the bundle is broken), and returns pass/fail counts plus the failing examples (name + file:line + short message) and a short raw tail. Distinguishes "the suite couldn't start" (toolchain error) from "the suite ran and N failed". Use this instead of driving `shell` by hand to run tests. (issue #101)
-
-```
-Risk: low
-Parameters: path (optional file/pattern), framework (optional: rspec|minitest|rake)
-```
-
 ### apply_patch
 
 Apply unified diff patches to files.
@@ -181,6 +174,27 @@ Fetch web page content and return as text.
 Risk: low
 Parameters: url, format (text|html)
 ```
+
+`format: "text"` (default) runs a readability-style **main-content extraction**
+(nokogiri): page chrome — `script`, `style`, `noscript`, `nav`, `header`,
+`footer`, `aside`, `form`, `svg`, `iframe`, `button`, plus ARIA landmark roles
+(`navigation`, `banner`, `contentinfo`, `search`, `complementary`) — is dropped,
+the main container is preferred (`<main>` → `[role=main]` → `<article>` →
+`<body>`), and the kept subtree is serialized to markdown-ish text (`## `
+headings, `- ` list items, blank-line-separated paragraphs, entities decoded).
+This strips nav menus/footers/cookie banners and typically cuts tokens
+substantially on article and docs pages.
+
+Two guarantees so capability is never lost:
+
+- **Safety fallback** — if the extracted text is under ~30% of the full page
+  text (or below a small char floor), the tool returns the full-page strip
+  instead, so a page whose content isn't in a clean `<main>`/`<article>` is never
+  over-trimmed. Malformed HTML that nokogiri can't parse also falls back (a fetch
+  never crashes). When extraction trims a lot, a one-line note points back at the
+  raw escape hatch.
+- **Raw escape hatch** — `format: "html"` returns the full raw HTML **verbatim**,
+  completely unprocessed, for when the model wants the original page.
 
 ### websearch
 
@@ -302,15 +316,6 @@ Risk: medium
 Parameters: task_id
 ```
 
-### ask_parent
-
-Child→parent escalation: a subagent asks its parent a question it cannot resolve from its sealed prompt. `blocking: true` pauses the child until the answer arrives; `blocking: false` (default) lets it keep working and folds the answer in later as a note. The parent (agent or human) answers via `answer_child` / `/reply`. Only available to subagents — a top-level agent has no parent to ask. Gated by `tools.task`.
-
-```
-Risk: low
-Parameters: question, blocking
-```
-
 ### steer
 
 Parent→child steering note: park a short note on one of YOUR OWN running subagents; it is folded into the child's context at its next turn boundary and persists (it changes the child's trajectory). Ownership-scoped at call time — only your direct children. The model counterpart of the human `/agents <id> steer "…"`. Gated by `tools.task`.
@@ -327,15 +332,6 @@ Parent→child ephemeral peek: check on one of YOUR OWN running subagents withou
 ```
 Risk: low
 Parameters: task_id, question, live
-```
-
-### answer_child
-
-Parent→child answer to an `ask_parent` question: delivers the answer into the asking child's context (unblocks a blocking ask; folds in for a non-blocking one). Ownership-scoped — only a direct child that is actually waiting. The model counterpart of the human `/reply <id> <answer>`. Gated by `tools.task`.
-
-```
-Risk: low
-Parameters: task_id, answer
 ```
 
 ---

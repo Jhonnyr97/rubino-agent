@@ -14,6 +14,29 @@ module Rubino
         true
       end
 
+      # Discoverability aliases (#36-follow-up): /status advertises settings by
+      # the short label a user then types into `/config <key>`, but the real
+      # config key is nested — so `/config reasoning` reported "not found" even
+      # though /status shows "reasoning:" and `/reasoning` is a command. Map the
+      # advertised short names (and the names of the commands that WRITE them) to
+      # their dotted config paths so get/set resolve the same key /status shows.
+      # Dotted keys are unaffected (a user can still pass `display.reasoning`).
+      ALIASES = {
+        "reasoning" => "display.reasoning",
+        "effort" => "thinking.effort",
+        "think" => "thinking.effort"
+      }.freeze
+
+      # GET-only fallbacks (#66): a resolved key whose value, when unset, still
+      # lives under a legacy sibling. `/reasoning` and `/status` use
+      # display.reasoning (the SET target stays canonical), but a config carrying
+      # only the documented legacy display.show_reasoning boolean would otherwise
+      # report "not found" on `/config reasoning`. Read through to the legacy key
+      # so a value set either way resolves; set never touches the legacy key.
+      GET_FALLBACKS = {
+        "display.reasoning" => "display.show_reasoning"
+      }.freeze
+
       # Drop the `tree` command Thor injects into every subclass (#327): under a
       # registered subcommand its usage banner renders the doubled "rubino rubino
       # config tree" (the parent's `rubino` prefix + this class's own "rubino
@@ -49,13 +72,14 @@ module Rubino
       # returns found?; it isn't a pure predicate, and the name is the documented
       # shared-renderer seam (#187) referenced by the in-chat handler.
       def self.render_get(key, ui:)
+        key  = ALIASES.fetch(key, key)
         path = key.split(".")
-        value =
-          begin
-            Rubino.configuration.dig(*path)
-          rescue TypeError
-            nil
-          end
+        value = dig_config(path)
+        if value.nil? && (legacy = GET_FALLBACKS[key])
+          path  = legacy.split(".")
+          value = dig_config(path)
+          key   = legacy unless value.nil?
+        end
         return false if value.nil?
 
         # F4: annotate a value that comes from the built-in DEFAULTS rather than
@@ -66,6 +90,15 @@ module Rubino
         suffix = from_defaults?(path) ? " (default)" : ""
         ui.info("#{key} = #{redact(value, key: path.last)}#{suffix}")
         true
+      end
+
+      # Effective-config read for a dotted +path+. A scalar intermediate node
+      # (descending into a String) has no #dig; treat such a path as unset
+      # rather than crashing.
+      def self.dig_config(path)
+        Rubino.configuration.dig(*path)
+      rescue TypeError
+        nil
       end
 
       # True when +path+ has no value in the user's config.yml as written on disk
@@ -85,13 +118,20 @@ module Rubino
 
       desc "set KEY VALUE", "Set a configuration value (dot-notation)"
       def set(key, value)
+        key    = ALIASES.fetch(key, key)
         writer = Config::Writer.new(config_path: config_path)
         writer.set(key, value)
         # Mask a secret-named value the SAME way `config get`/`show` do (#187):
         # a successful SET must not echo a raw api_key/token into the scrollback.
         Rubino.ui.success("#{key} = #{self.class.redact(value, key: key.split(".").last)}")
       rescue ConfigurationError => e
-        Rubino.ui.error(e.message)
+        # A validation failure is a FAILURE on the automation surface: route the
+        # ✗ line to STDERR (it used to print on stdout), keeping exit 1. For an
+        # array-typed key, append the accepted syntax — Writer.coerce_array only
+        # accepts an explicit JSON array literal — so the user isn't left
+        # guessing how to pass multiple values (e.g. `"git log"` was rejected).
+        warn "✗ #{e.message}"
+        warn array_syntax_hint(key) if e.message.include?("expected array")
         exit(1)
       end
 
@@ -144,6 +184,13 @@ module Rubino
       end
 
       private
+
+      # The accepted array syntax for `config set <array-key>`: a JSON array
+      # literal (Writer.coerce_array is JSON-only, so comma-separated values are
+      # NOT accepted). Shows the exact key the user was setting.
+      def array_syntax_hint(key)
+        %(Pass a JSON array literal, e.g.  rubino config set #{key} '["git log","ls"]')
+      end
 
       # Resolve through the Loader so config get/set/path operate on exactly
       # the file the server loads (RUBINO_HOME-aware), not a recomputed

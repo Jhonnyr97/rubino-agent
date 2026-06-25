@@ -9,14 +9,14 @@ RSpec.describe Rubino::API::Operations::Sessions::DeleteOperation do
 
   it "deletes a session and returns 204" do
     session = repo.create(source: "api")
-    status, _, body = described_class.call(make_request(params: { id: session[:id] }))
+    status, _, body = described_class.new.call(make_request(params: { id: session[:id] }))
     expect(status).to eq(204)
     expect(body).to eq([])
     expect(repo.find(session[:id])).to be_nil
   end
 
   it "raises NotFoundError on unknown id" do
-    expect { described_class.call(make_request(params: { id: "missing" })) }
+    expect { described_class.new.call(make_request(params: { id: "missing" })) }
       .to raise_error(Rubino::NotFoundError)
   end
 end

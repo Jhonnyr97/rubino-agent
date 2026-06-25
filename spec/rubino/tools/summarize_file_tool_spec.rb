@@ -51,6 +51,19 @@ RSpec.describe Rubino::Tools::SummarizeFileTool do
     expect(fake_aux.prompts.first[:task]).to eq("summarize")
   end
 
+  it "redacts credential values from chunks before they leave to the aux model" do
+    path = File.join(tmp_dir, "leaky.txt")
+    File.write(path, "config\nAPI_KEY=ghp_abcdefghijklmnop1234\nmore text\n")
+
+    tool.call("file_path" => path)
+    sent = fake_aux.prompts.first[:content]
+    expect(sent).not_to include("ghp_abcdefghijklmnop1234")
+    # No code_file here (the file may be any text), so the ENV-assignment
+    # pattern runs after the prefix pattern and fully masks the value —
+    # byte-identical to Hermes' redact_sensitive_text on this input.
+    expect(sent).to include("API_KEY=‹redacted by rubino›")
+  end
+
   it "map-reduces a multi-chunk file: a map per chunk, then one combine" do
     # Force several chunks by exceeding CHUNK_BYTES.
     big = (("x" * 1000) + "\n") * 80 # ~80KB → 4 chunks of 24KB

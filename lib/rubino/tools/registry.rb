@@ -23,6 +23,22 @@ module Rubino
           @tools[name.to_s]
         end
 
+        # The DISPLAY label for a registered tool name — the single resolution
+        # point both the live tool card and the approval card route through, so
+        # an MCP tool shows its `<bare> (mcp:<server>)` source while a built-in
+        # renders unchanged. Detection is driven off the registered object being
+        # an MCP wrapper (#mcp?), NEVER off the name's shape, so a built-in whose
+        # name legitimately contains an underscore (read_attachment, shell_output)
+        # is never mistaken for a `<server>_<tool>` MCP name. Falls back to the
+        # bare name when the tool isn't registered (defensive — the model-facing
+        # name is always a safe label).
+        def display_label(name)
+          tool = find(name)
+          return name.to_s unless tool.respond_to?(:mcp?) && tool.mcp?
+
+          tool.display_name
+        end
+
         # Removes a tool by name (#182): stopping an MCP server must also drop
         # its MCPToolWrapper instances, or the model keeps seeing tools whose
         # client is gone and every call fails.
@@ -37,8 +53,8 @@ module Rubino
 
         # Returns only enabled tools based on configuration AND the active
         # mode (Modes.current). Plan mode pares the registry down to its
-        # read-only whitelist so the model literally has no `edit`/`shell`/
-        # `git` definition in the request — it can't even propose a mutating
+        # read-only whitelist so the model literally has no `edit`/`shell`
+        # definition in the request — it can't even propose a mutating
         # tool call. Yolo and default leave everything through; their
         # difference is on the approval path, not the registry.
         def enabled_tools
@@ -76,19 +92,12 @@ module Rubino
           register(Rubino::Tools::MultiEditTool.new)
           register(Rubino::Tools::GrepTool.new)
           register(Rubino::Tools::GlobTool.new)
-          register(Rubino::Tools::GitTool.new)
-          register(Rubino::Tools::GitHubTool.new)
           register(Rubino::Tools::ShellTool.new)
           register(Rubino::Tools::ShellOutputTool.new)
           register(Rubino::Tools::ShellTailTool.new)
           register(Rubino::Tools::ShellInputTool.new)
           register(Rubino::Tools::ShellKillTool.new)
           register(Rubino::Tools::RubyTool.new)
-          # Structured test-runner (issue #101): auto-detects rspec/minitest/
-          # rake, prefers `bundle exec` (falls back when the bundle is broken),
-          # and returns pass/fail counts + parsed failing examples instead of
-          # the raw toolchain firehose the `shell` tool would dump.
-          register(Rubino::Tools::TestTool.new)
           register(Rubino::Tools::PatchTool.new)
           register(Rubino::Tools::WebFetchTool.new)
           register(Rubino::Tools::WebSearchTool.new)
@@ -115,30 +124,52 @@ module Rubino
           # the same tools.task key — disabling delegation disables these too.
           register(Rubino::Tools::TaskResultTool.new)
           register(Rubino::Tools::TaskStopTool.new)
-          # ask_parent: the child->parent escalation tool. Registered globally
-          # (gated by the same tools.task key), but Definition#resolved_tools
-          # exposes it ONLY to subagents — a top-level agent has no parent to ask.
-          register(Rubino::Tools::AskParentTool.new)
           # steer / probe (S2/S3): the MODEL-callable parent->child channels,
           # registered for ALL agents and AUTHORIZED by ownership at call time
           # (a node with no children just gets a "not your child" error). NOT on
           # any strip list — scoping happens inside the tool, not in the registry.
           register(Rubino::Tools::SteerTool.new)
           register(Rubino::Tools::ProbeTool.new)
-          # answer_child (S4): the MODEL-callable answer to a child's ask_parent,
-          # the agent-parent twin of the human /reply. Registered for ALL agents
-          # and AUTHORIZED by ownership at call time (like steer/probe). NOT on
-          # any strip list — a node with no waiting child just gets a not-waiting
-          # / not-yours error.
-          register(Rubino::Tools::AnswerChildTool.new)
+          # retrieve_output: the ONLY recovery path for compressed tool output.
+          # Registered solely when tool_output_compression is enabled (the
+          # default is OFF), so the shipped registry count is unchanged. When on,
+          # the compression pointer carries an `id=…` and this tool reads the
+          # spilled original back — deliberately NO cat-able path is printed, so
+          # a small model can't shell-re-inflate the output compression shrank.
+          register(Rubino::Tools::RetrieveOutputTool.new) if tool_output_compression_enabled_default?
         end
 
-        # Tools that ONLY make sense once a child SUBAGENT (a background `task`)
-        # exists this session — the parent->child comm channels. Before any task
-        # is spawned they are dead weight (a `steer`/`probe`/`answer_child` with
-        # no child just errors "not your child"; `task_result`/`task_stop` have
-        # nothing to poll). `task` itself (spawn) stays always-on. (#313)
-        TASK_DEPENDENT_TOOLS = %w[task_result task_stop steer probe answer_child].freeze
+        # True when compression is enabled in the resolved config, used to gate
+        # the retrieve_output tool's registration. Best-effort: any config error
+        # falls back to OFF (matching the shipped default), so a broken config
+        # never silently adds a tool that wouldn't otherwise be present.
+        def tool_output_compression_enabled_default?
+          Rubino.configuration.tool_output_compression_enabled?
+        rescue StandardError
+          false
+        end
+
+        # The delegate+poll toolset that MUST travel with `task` (spawn). The
+        # `task` tool's own description tells the model it can "fetch the result
+        # anytime with `task_result(<id>)` or stop it with `task_stop(<id>)`",
+        # and `probe` is the read-only check-on-a-child companion. If we hid
+        # these behind `any_subagent?` (the #313 token-saving gate) the model
+        # would be PROMISED a tool that is absent from its function list — it
+        # then concludes "I have no way to poll/verify my subagents" and the
+        # delegate->poll->collect flow breaks. So we deliberately trade the
+        # ~2k-token saving on these poll tools for correctness: they are exposed
+        # whenever `task` itself is (i.e. only gated by `tools.task`, NOT by a
+        # live child). The model needs the full delegate+poll toolset present to
+        # plan delegation in the first place. (#313)
+        TASK_POLL_TOOLS = %w[task_result task_stop probe].freeze
+
+        # Tools that act ON a LIVE child and are NOT named in the `task`
+        # description — they only make sense once a child SUBAGENT exists, so
+        # they stay gated on `any_subagent?`. Before any task is spawned a
+        # `steer` with no child just errors ("not your child"), so hiding it
+        # costs no promised capability and keeps the common-turn schema lean.
+        # `task` itself (spawn) stays always-on. (#313)
+        TASK_DEPENDENT_TOOLS = %w[steer].freeze
 
         # Tools that ONLY make sense once a background SHELL exists this session —
         # the shell-management channels. Before any `shell run_in_background:true`
@@ -154,19 +185,17 @@ module Rubino
         # common turn. Saves ~2k tokens on a normal file-edit turn that has
         # neither a child nor a background shell.
         #
-        #   - ask_parent: exposed ONLY when running AS a subagent (the
-        #     thread-local current_subagent_id is set ⇒ this run has a parent).
-        #     Mirrors Definition#resolved_tools' SUBAGENT_ONLY gate so the base
-        #     registry view is honest even outside an agent definition.
-        #   - task_* / steer / probe / answer_child: exposed only once ≥1 child
-        #     task exists in the BackgroundTasks registry (any state — live or
-        #     finished; a finished child can still be polled via task_result).
+        #   - task_result / task_stop / probe (TASK_POLL_TOOLS): NOT situationally
+        #     hidden — they ride with `task` (gated only by `tools.task`) because
+        #     the `task` description references task_result/task_stop and the
+        #     model must see the whole delegate+poll toolset to plan delegation.
+        #   - steer (TASK_DEPENDENT_TOOLS): acts on a LIVE child and isn't named
+        #     in the task description, so it's exposed only once ≥1 child task
+        #     exists in the BackgroundTasks registry.
         #   - shell_* management: exposed only once ≥1 background shell exists in
         #     the ShellRegistry.
         def situational_tool_hidden?(tool)
           case tool.name
-          when "ask_parent"
-            !running_as_subagent?
           when *TASK_DEPENDENT_TOOLS
             !any_subagent?
           when *SHELL_DEPENDENT_TOOLS
@@ -174,16 +203,6 @@ module Rubino
           else
             false
           end
-        end
-
-        # True when THIS run is executing as a subagent (has a parent). The
-        # thread-local is set by TaskTool around a child Runner#run!; nil on the
-        # top-level / parent thread, which is exactly the "no parent to ask"
-        # signal ask_parent itself uses to refuse.
-        def running_as_subagent?
-          !Rubino.current_subagent_id.nil?
-        rescue StandardError
-          false
         end
 
         # True once at least one child task (in any state) exists this session.

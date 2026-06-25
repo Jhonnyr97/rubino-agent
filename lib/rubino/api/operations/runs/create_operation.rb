@@ -13,10 +13,6 @@ module Rubino
         # @raise [Rubino::NotFoundError] when the parent session does not exist.
         # @raise [Rubino::ValidationError] when the body fails Schemas::CreateRun.
         class CreateOperation
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts alternate collaborators (session repo, run repo, executor) for tests.
           def initialize(session_repository: nil, run_repository: nil, executor: nil)
             @session_repo = session_repository || ::Rubino::Session::Repository.new

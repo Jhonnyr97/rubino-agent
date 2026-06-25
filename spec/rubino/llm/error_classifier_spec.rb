@@ -34,17 +34,14 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       end
     end
 
-    it "ContextLengthExceededError -> context_overflow, not retryable, should_compress" do
+    it "ContextLengthExceededError -> context_overflow, not retryable" do
       c = described_class.classify(ruby_llm_error(RubyLLM::ContextLengthExceededError, 429, "context length exceeded"))
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
       expect(c.retryable).to be false
-      expect(c.should_compress).to be true
     end
 
-    it "auth errors carry the rotate-credential + fallback hints" do
+    it "auth errors are classified as auth" do
       c = described_class.classify(ruby_llm_error(RubyLLM::UnauthorizedError, 401, "no"))
-      expect(c.should_rotate_credential).to be true
-      expect(c.should_fallback).to be true
       expect(c.auth?).to be true
     end
   end
@@ -83,10 +80,9 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       expect(c.retryable).to be false
     end
 
-    it "400 with a context-overflow phrase -> context_overflow, should_compress" do
+    it "400 with a context-overflow phrase -> context_overflow" do
       c = described_class.classify(ruby_llm_error(RubyLLM::Error, 400, "prompt is too long for context window"))
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
-      expect(c.should_compress).to be true
     end
 
     it "404 with model-not-found -> model_not_found" do
@@ -148,7 +144,6 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
         c = described_class.classify(RubyLLM::Error.new(nil, message))
         expect(c.reason).to eq(FR::FORMAT_ERROR)
         expect(c.retryable).to be false
-        expect(c.should_fallback).to be true
       end
     end
 
@@ -170,7 +165,6 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       c = described_class.classify(err)
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
       expect(c.retryable).to be false
-      expect(c.should_compress).to be true
     end
 
     it "OverloadedError wrapping a context-overflow phrase is also non-retryable" do
@@ -178,7 +172,6 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       c = described_class.classify(err)
       expect(c.reason).to eq(FR::CONTEXT_OVERFLOW)
       expect(c.retryable).to be false
-      expect(c.should_compress).to be true
     end
 
     it "a plain ServerError with NO overflow phrase still stays retryable (no regression)" do
@@ -196,10 +189,11 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
   # "any ConnectionFailed is retryable" classified it as transient. Now a DNS
   # failure phrasing fails fast.
   describe ".classify — unresolvable host fails fast (#361a)" do
+    # PERMANENT resolver errors (EAI_NONAME — the host genuinely doesn't exist,
+    # e.g. a typo'd base_url) fail fast: every retry re-runs the same lookup.
     [
       "Failed to open TCP connection: getaddrinfo: Name or service not known",
-      "getaddrinfo: nodename nor servname provided, or not known",
-      "Temporary failure in name resolution"
+      "getaddrinfo: nodename nor servname provided, or not known"
     ].each do |message|
       it "#{message[0, 30].inspect}… -> not retryable" do
         err = Faraday::ConnectionFailed.new(message)
@@ -211,6 +205,16 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
 
     it "a bare SocketError-style getaddrinfo message also fails fast" do
       expect(described_class.retryable?(SocketError.new("getaddrinfo: Name or service not known"))).to be false
+    end
+
+    # TRANSIENT resolver error (EAI_AGAIN) — the resolver was momentarily
+    # unavailable (a getaddrinfo storm when several subagents dial the same host
+    # at once). The next lookup usually works, so it MUST retry, not fail fast.
+    it "a TEMPORARY name-resolution failure is retryable (EAI_AGAIN, not a typo'd host)" do
+      err = Faraday::ConnectionFailed.new("getaddrinfo: Temporary failure in name resolution")
+      c = described_class.classify(err)
+      expect(c.retryable).to be true
+      expect(described_class.retryable?(SocketError.new("Temporary failure in name resolution"))).to be true
     end
 
     it "a genuine transient transport blip still retries (no over-broadening)" do
@@ -382,6 +386,58 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
 
     it "returns nil for a statusless error" do
       expect(described_class.http_status(StandardError.new("x"))).to be_nil
+    end
+  end
+
+  # Bug B (#WHATIF): a MiniMax HTTP 429 quota error reaches the STREAMING path,
+  # where ruby_llm's anthropic-compat parser re-wraps it as a 400 BadRequestError
+  # carrying the generic default message "Invalid request - please check your
+  # input". The original "rate_limit_error / Token Plan usage limit reached"
+  # signal survives ONLY in the response body, so the classifier must read the
+  # body — not just the clobbered message — to recover the rate-limit category.
+  describe ".classify — rate-limit mis-shaped on the streaming path (Bug B)" do
+    # message != body, the way the clobbered-429 case actually arrives.
+    def err_with_body(klass, status, message, body)
+      response = double("FaradayResponse", status: status, body: body, headers: {})
+      klass.new(response, message)
+    end
+
+    it "classifies a 429 clobbered to a 400 BadRequestError as RATE_LIMIT via the body" do
+      e = err_with_body(
+        RubyLLM::BadRequestError, 400,
+        "Invalid request - please check your input",
+        '{"type":"rate_limit_error","message":"Token Plan usage limit reached, check your plan"}'
+      )
+      c = described_class.classify(e)
+      expect(c.reason).to eq(FR::RATE_LIMIT)
+      expect(c.retryable).to be true
+    end
+
+    it "still classifies a GENUINE 400 (no rate-limit signal) as FORMAT_ERROR" do
+      e = err_with_body(
+        RubyLLM::BadRequestError, 400,
+        "Invalid request - please check your input",
+        '{"error":{"message":"malformed json near token 5"}}'
+      )
+      c = described_class.classify(e)
+      expect(c.reason).to eq(FR::FORMAT_ERROR)
+      expect(c.retryable).to be false
+    end
+
+    it "recognises the bare 'Token Plan usage limit reached' phrasing" do
+      e = err_with_body(RubyLLM::Error, nil, "Token Plan usage limit reached", "Token Plan usage limit reached")
+      expect(described_class.classify(e).reason).to eq(FR::RATE_LIMIT)
+    end
+
+    it "keeps a typed RubyLLM::RateLimitError on the rate-limit path" do
+      c = described_class.classify(ruby_llm_error(RubyLLM::RateLimitError, 429, "Rate limit exceeded"))
+      expect(c.reason).to eq(FR::RATE_LIMIT)
+      expect(c.retryable).to be true
+    end
+
+    it "does NOT mis-tag a real context-overflow as a rate limit" do
+      e = ruby_llm_error(RubyLLM::Error, 400, "prompt is too long: maximum context length exceeded")
+      expect(described_class.classify(e).reason).to eq(FR::CONTEXT_OVERFLOW)
     end
   end
 end

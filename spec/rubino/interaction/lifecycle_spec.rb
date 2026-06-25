@@ -90,6 +90,75 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     end
   end
 
+  # #45: titling stays DETERMINISTIC by default, but uses an auxiliary LLM to
+  # summarize the first message into a title WHEN an aux title backend is
+  # configured distinct from the primary — falling back to the deterministic
+  # title on no-aux / aux error / empty result (titling must never break a turn).
+  describe "#maybe_set_title aux titling (#45)" do
+    subject(:lifecycle) do
+      described_class.new(session: session, event_bus: event_bus, ui: null_ui, config: config)
+    end
+
+    let(:session) { { id: "sess-1", model: "gpt-4o" } }
+    let(:session_repo) { instance_double(Rubino::Session::Repository, update: nil) }
+    let(:aux_client) { instance_double(Rubino::LLM::AuxiliaryClient) }
+
+    # An aux block whose provider is the "main" sentinel (the default) ⇒ NOT
+    # configured; an explicit provider/model ⇒ configured.
+    def config_with(title_cfg)
+      Rubino::Config::Configuration.new(raw: {
+                                          "model" => { "default" => "gpt-4o", "provider" => "openai" },
+                                          "auxiliary" => { "title" => title_cfg }
+                                        })
+    end
+
+    before { lifecycle.instance_variable_set(:@session_repo, session_repo) }
+
+    context "with an aux title backend configured" do
+      let(:config) { config_with("provider" => "anthropic", "model" => "claude-haiku") }
+
+      it "sets the AUX-generated title (sanitized) over the deterministic one" do
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
+        allow(aux_client).to receive(:call)
+          .with(task: "title", messages: anything)
+          .and_return(instance_double(Rubino::LLM::AdapterResponse, content: %("Add modulo op")))
+
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add modulo op")
+        lifecycle.send(:maybe_set_title, "please add a modulo operation to the calculator")
+        expect(session[:title]).to eq("Add modulo op")
+      end
+
+      it "falls back to the deterministic title when the aux call errors" do
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
+        allow(aux_client).to receive(:call).and_raise(StandardError, "boom")
+
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add a modulo operation")
+        lifecycle.send(:maybe_set_title, "Add a modulo operation")
+      end
+
+      it "falls back to the deterministic title when the aux result is empty" do
+        allow(Rubino::LLM::AuxiliaryClient).to receive(:new).and_return(aux_client)
+        allow(aux_client).to receive(:call)
+          .and_return(instance_double(Rubino::LLM::AdapterResponse, content: "   "))
+
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add a modulo operation")
+        lifecycle.send(:maybe_set_title, "Add a modulo operation")
+      end
+    end
+
+    context "with NO aux title backend configured (default sentinel)" do
+      let(:config) { config_with("provider" => "main", "model" => "") }
+
+      it "uses the deterministic title and never calls the aux client" do
+        expect(Rubino::LLM::AuxiliaryClient).not_to receive(:new)
+        expect(session_repo).to receive(:update).with("sess-1", title: "Add a modulo operation")
+
+        lifecycle.send(:maybe_set_title, "Add a modulo operation")
+        expect(session[:title]).to eq("Add a modulo operation")
+      end
+    end
+  end
+
   # F1 (P3 endurance): automatic budget-triggered compaction MUST swap the
   # active session to the compaction child, exactly as the manual /compact path
   # does (chat_command.rb: result[:compact_into] → build_runner on the child).
@@ -187,6 +256,72 @@ RSpec.describe Rubino::Interaction::Lifecycle do
 
       expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
     end
+
+    # #484 (MED-HIGH): a session OVER the token budget but BELOW the message-count
+    # floor makes compact! a structural no-op (saved 0 tok, no child). The token
+    # gate stays true forever, so the pre-fix lifecycle re-attempted compaction —
+    # and emitted compression_started/finished — on EVERY turn: the user saw
+    # "compacting… saved 0 tok" each turn while the ctx gauge stayed pinned at
+    # 100%, never recovering. The no-op writes no lineage row, so thrashing?
+    # never engaged. These specs pin the back-off + the silenced UI noise.
+    context "when over budget but too few messages to compact (#484)" do
+      before do
+        allow(budget).to receive(:needs_compaction?).and_return(true)
+        allow(compressor).to receive(:compact!).and_return(
+          source_session_id: "parent-1", saved_tokens: 0, skipped: true,
+          reason: :too_few_messages, minimum_messages: 28
+        )
+      end
+
+      it "does not busy-loop: re-attempts compaction only once for an unchanged transcript" do
+        # Three turns on the SAME message count: the first attempt no-ops, the
+        # next two must back off (no re-attempt) until the input changes.
+        expect(compressor).to receive(:compact!).once
+
+        3.times { lifecycle.send(:check_and_compact, long_messages) }
+
+        expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("parent-1")
+      end
+
+      it "does not emit 'compacting… saved 0 tok' UI/events on a structural no-op" do
+        events = []
+        event_bus.on(Rubino::Interaction::Events::COMPRESSION_STARTED) { events << :started }
+        event_bus.on(Rubino::Interaction::Events::COMPRESSION_FINISHED) { events << :finished }
+
+        lifecycle.send(:check_and_compact, long_messages)
+
+        ui_levels = null_ui.messages.map { |m| m[:level] }
+        expect(ui_levels).not_to include(:compression_started)
+        expect(ui_levels).not_to include(:compression_finished)
+        expect(events).to be_empty
+      end
+
+      it "re-attempts once the transcript grows (input changed)" do
+        expect(compressor).to receive(:compact!).twice
+
+        lifecycle.send(:check_and_compact, long_messages)
+        lifecycle.send(:check_and_compact, long_messages + [{ role: "user", content: "y" }])
+      end
+    end
+
+    # The legitimate path (enough messages → real compaction) must STILL announce
+    # progress and swap the session — the #484 back-off only silences no-ops.
+    it "still emits compression UI/events and swaps on a real compaction" do
+      allow(budget).to receive(:needs_compaction?).and_return(true)
+      allow(compressor).to receive(:compact!).and_return(
+        source_session_id: "parent-1", target_session_id: "child-9",
+        original_messages: 30, compacted_messages: 5, saved_tokens: 4200, summary_id: "sum-1"
+      )
+      events = []
+      event_bus.on(Rubino::Interaction::Events::COMPRESSION_FINISHED) { events << :finished }
+
+      lifecycle.send(:check_and_compact, long_messages)
+
+      ui_levels = null_ui.messages.map { |m| m[:level] }
+      expect(ui_levels).to include(:compression_started, :compression_finished)
+      expect(events).to eq([:finished])
+      expect(lifecycle.instance_variable_get(:@session)[:id]).to eq("child-9")
+    end
   end
 
   describe "#load_memory" do
@@ -201,7 +336,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
 
     it "routes recall through the configured memory backend, passing the query" do
       backend = instance_double(
-        Rubino::Memory::Backends::Default,
+        Rubino::Memory::Backends::Sqlite,
         user_profile: "UP", project_context: "PC", retrieve: %i[m1]
       )
       allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
@@ -380,6 +515,56 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       allow(lc).to receive(:current_turn_index).and_return(10)
       lc.send(:enqueue_post_turn_jobs)
       expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
+    end
+
+    # #59: the polish must NOT fire on every turn. The interval/length gates mean
+    # the TYPICAL turn enqueues no row at all — yet the worker was kicked
+    # unconditionally, spawning a throwaway thread, binding the aux cancel token
+    # and flashing the dim "polishing memory… (Esc to skip)" indicator under the
+    # prompt before scanning an empty queue. That visual noise on a trivial turn
+    # is exactly the over-eager-trigger bug. The worker (and its indicator) must
+    # only fire when this turn actually produced durable work.
+    describe "polish trigger gate (#59)" do
+      def lifecycle_for(memory_interval:, distill: false, message_count: 1, turn_index: 1)
+        cfg = test_configuration(
+          "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+          "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => memory_interval },
+          "skills" => { "auto_distill" => distill }
+        )
+        lc = described_class.new(session: { id: "sess-gate-#{turn_index}-#{rand(1_000)}", model: "gpt-4o" },
+                                 event_bus: event_bus, ui: null_ui, config: cfg, polishing: polishing)
+        stub_message_count(lc, message_count)
+        allow(lc).to receive(:current_turn_index).and_return(turn_index)
+        lc
+      end
+
+      it "does NOT kick the polishing worker on a turn that enqueues nothing" do
+        # Non-interval turn (1 % 10 != 0), distill off, < 20 messages => no row.
+        lc = lifecycle_for(memory_interval: 10, turn_index: 1, message_count: 1)
+
+        lc.send(:enqueue_post_turn_jobs)
+
+        # Pre-fix: #start fired unconditionally → spurious worker + indicator.
+        expect(polishing).not_to have_received(:start)
+        expect(db_connection.db[:jobs].count).to eq(0)
+      end
+
+      it "kicks the polishing worker when a memory row was actually enqueued" do
+        lc = lifecycle_for(memory_interval: 1, turn_index: 1, message_count: 1)
+
+        lc.send(:enqueue_post_turn_jobs)
+
+        expect(polishing).to have_received(:start)
+      end
+
+      it "kicks the polishing worker when only a summarize row was enqueued" do
+        # No memory/distill row, but the >20-message summarize gate fires.
+        lc = lifecycle_for(memory_interval: 10, turn_index: 1, message_count: 21)
+
+        lc.send(:enqueue_post_turn_jobs)
+
+        expect(polishing).to have_received(:start)
+      end
     end
   end
 end

@@ -116,44 +116,114 @@ module Rubino
         # and tool messages through the existing UI methods so the scrolled-back
         # transcript matches what the user originally saw.
         def print_session_history(ui, session_id)
+          replay_session(ui, session_id)
+        end
+
+        # Replay a session's persisted transcript through the live UI render hooks
+        # so the scrolled-back history matches what the user originally saw. Shared
+        # by --resume (#print_session_history) and the agent-attach view switch,
+        # which clears the screen and replays the SELECTED agent's own session.
+        def replay_session(ui, session_id)
           return unless session_id
 
-          messages = ::Rubino::Session::Store.new.for_session(session_id)
+          replay_messages(ui, ::Rubino::Session::Store.new.for_session(session_id))
+        end
+
+        # Replay an ALREADY-FETCHED message list (the attach view passes the
+        # child's `entry.messages` straight through, no second store hit). A no-op
+        # on an empty list, framed by the same "Loaded N" status + separators the
+        # resume path shows. `banner:` false drops that "Loaded N" header + framing
+        # separators for an INCREMENTAL tail (the attached-agent watcher replays a
+        # few-message delta every ~0.4s; re-printing "Loaded N prior messages" on
+        # each one floods the focused view with banner noise) — the messages still
+        # render through the same per-message seam, just without the resume frame.
+        def replay_messages(ui, messages, banner: true)
+          messages = Array(messages)
           return if messages.empty?
 
-          ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
-          ui.separator
-
-          messages.each do |msg|
-            at = parse_msg_timestamp(msg.created_at)
-            case msg.role.to_s
-            when "user"
-              # A `!` bang command persisted its <bash-input>/<bash-stdout>
-              # context messages as user rows; replay them as the `! <cmd>`
-              # echo + dim output block, never the raw tags.
-              next if BangShell.replay(ui, msg.content, at: at)
-
-              ui.replay_user_input(msg.content, at: at)
-            when "assistant"
-              next if msg.content.nil? || msg.content.to_s.empty?
-
-              # Render the prior assistant turn as markdown, same as a live reply —
-              # not the old box (which the M2 redesign repurposed into a "● running"
-              # tool-style row, so resume showed assistant turns as fake tool runs
-              # with raw markdown).
-              ui.assistant_text(msg.content)
-            when "tool"
-              name      = msg.tool_name || "tool"
-              arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
-              ui.tool_started(name, arguments: arguments, at: at)
-              ui.tool_finished(name, result: replay_tool_result(msg, name))
-            end
+          if banner
+            ui.status("Loaded #{messages.size} prior message#{"s" if messages.size != 1}")
+            ui.separator
           end
-
-          ui.separator
+          # The accumulated assistant text already rendered in the CURRENT turn,
+          # used to de-dupe a final message that RESTATES its earlier segments
+          # (see #replay_assistant_text). Reset at each user-turn boundary.
+          @assistant_turn_text = +""
+          messages.each { |msg| replay_message(ui, msg) }
+          ui.separator if banner
         end
 
         private
+
+        # Replay ONE persisted message through the matching live UI render hook.
+        # Extracted from #replay_session so a single message renders identically
+        # whether it comes from a resumed main session or an attached agent's.
+        def replay_message(ui, msg)
+          at = parse_msg_timestamp(msg.created_at)
+          case msg.role.to_s
+          when "user"
+            # A new user prompt starts a fresh turn: the next assistant turn's
+            # text-restatement de-dup (#replay_assistant_text) must not carry a
+            # prior turn's accumulated text across the boundary.
+            @assistant_turn_text = +""
+
+            # A `!` bang command persisted its <bash-input>/<bash-stdout> context
+            # messages as user rows; replay them as the `! <cmd>` echo + dim output
+            # block, never the raw tags.
+            return if BangShell.replay(ui, msg.content, at: at)
+
+            ui.replay_user_input(msg.content, at: at)
+          when "assistant"
+            replay_assistant_text(ui, msg.content)
+          when "tool"
+            name      = msg.tool_name || "tool"
+            arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
+            # Pass the persisted call_id so a `task` row's close label resolves
+            # from the per-call_id name stash (#35) rather than a shared ivar.
+            ui.tool_started(name, arguments: arguments, at: at, call_id: msg.tool_call_id)
+            ui.tool_finished(name, result: replay_tool_result(msg, name))
+          end
+        end
+
+        # Render ONE assistant turn's text, de-duplicating a model that RESTATES
+        # its earlier segments. Some providers (MiniMax-M3 and other tool-loop
+        # models) return a FINAL message whose content is the whole turn's text
+        # accumulated across tool rounds — every earlier "pre-tool" segment
+        # concatenated with NO separator (`…enumerating the files.100 files. Let
+        # me…`, the #542 `…prints 2.Output is 2…` glue). Those earlier segments
+        # were ALSO persisted as their own intermediate assistant rows, which we
+        # already replayed above. Re-rendering the final message verbatim would
+        # (a) duplicate every segment and (b) glue them together with no break —
+        # while the LIVE turn showed each segment ONCE, on its own line (each
+        # stream block committed separately via #assistant_text → #answer_gap).
+        #
+        # So track the text shown so far this turn and, when a later message
+        # merely PREPENDS it (its content starts with what we've already shown),
+        # render only the genuinely-new tail through the same #assistant_text
+        # seam — which inserts the live blank-line separator before it. This
+        # reuses the live separation rather than inventing replay-only spacing,
+        # so the resumed transcript matches the live render exactly.
+        def replay_assistant_text(ui, content)
+          text = content.to_s
+          return if text.empty?
+
+          @assistant_turn_text ||= +""
+          shown = @assistant_turn_text
+          # A restated final message: only the suffix beyond what we already
+          # rendered is new. The common case (independent segments / first
+          # segment) leaves `shown` empty or non-prefixing, so `text` is rendered
+          # whole — same as before this guard existed.
+          new_text = !shown.empty? && text.start_with?(shown) ? text[shown.length..] : text
+          @assistant_turn_text = text.start_with?(shown) ? text : shown + text
+
+          return if new_text.nil? || new_text.empty?
+
+          # Render the prior assistant turn as markdown, same as a live reply —
+          # not the old box (which the M2 redesign repurposed into a "● running"
+          # tool-style row, so resume showed assistant turns as fake tool runs
+          # with raw markdown).
+          ui.assistant_text(new_text)
+        end
 
         # Rebuilds the stored tool message as a Tools::Result carrying its
         # ORIGINAL outcome, so #tool_finished replays the SAME glyph the live

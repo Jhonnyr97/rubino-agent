@@ -53,12 +53,4 @@ RSpec.describe Rubino::Context::ProjectLanguages do
       expect(described_class.detect(root: File.join(dir, "nope"))).to be_empty
     end
   end
-
-  describe ".uses?" do
-    it "is case-insensitive and reflects detection" do
-      File.write(File.join(dir, "Gemfile"), "x")
-      expect(described_class.uses?("Ruby", root: dir)).to be(true)
-      expect(described_class.uses?("python", root: dir)).to be(false)
-    end
-  end
 end

@@ -201,10 +201,13 @@ module Rubino
           # signal the REPL applies to the live runner + Rubino::ActiveAgent.
           agent_switch_handler.handle_picker(arguments)
         when "agents", "tasks"
-          # handle_agents returns nil (puts-based UI); the explicit :handled
-          # stops try_execute falling through to unknown-command (#34).
-          agents_handler.handle_agents(arguments)
-          :handled
+          # handle_agents returns nil (puts-based UI) for the list/drill-in/steer
+          # forms, so we report :handled to stop try_execute falling through to
+          # unknown-command (#34). The `--attach` form instead returns a
+          # {attach_agent:} signal for the REPL (switch the whole timeline to that
+          # agent) — pass it straight through when present.
+          result = agents_handler.handle_agents(arguments)
+          result.is_a?(Hash) ? result : :handled
         when "stop" # `/stop <id>` → `/agents <id> --stop` alias (FRICTION-4)
           agents_handler.handle_stop_alias(arguments) # returns :handled
         when "reply"
@@ -443,7 +446,7 @@ module Rubino
       # With no pin AND no catalog, the id itself drives routing (auto pattern
       # match), so the switch is real — allow it.
       def model_switch_ok?(name)
-        explicit = Rubino.configuration.model_provider
+        explicit = Rubino.configuration.dig("model", "provider")
         pinned   = !(explicit.nil? || explicit.to_s.empty? || explicit == "auto")
         provider = pinned ? explicit : LLM::ProviderResolver.resolve(name)
         ids      = LLM::ModelCatalog.ids_for(provider)
@@ -474,7 +477,7 @@ module Rubino
 
         ids = LLM::ModelCatalog.ids_for(provider)
         if ids.empty?
-          explicit = Rubino.configuration.model_provider
+          explicit = Rubino.configuration.dig("model", "provider")
           if explicit.nil? || explicit.to_s.empty? || explicit == "auto"
             @ui.info("No model catalog for provider '#{provider}' — `/model <name>` still " \
                      "switches (the id picks the provider).")
@@ -501,14 +504,14 @@ module Rubino
       def status_model
         @runner&.session&.dig(:model) ||
           (@runner.respond_to?(:model_id) ? @runner.model_id : nil) ||
-          Rubino.configuration.model_default
+          Rubino.configuration.dig("model", "default")
       end
 
       # The provider the next turn will actually route through — the single
       # ProviderResolver seam AdapterFactory uses, fed with the configured
       # explicit provider (or "auto" pattern-matching the model id).
       def active_provider(model_id)
-        LLM::ProviderResolver.resolve(model_id, explicit_provider: Rubino.configuration.model_provider)
+        LLM::ProviderResolver.resolve(model_id, explicit_provider: Rubino.configuration.dig("model", "provider"))
       rescue StandardError
         "(unknown)"
       end
@@ -519,7 +522,7 @@ module Rubino
       # different provider than the pinned one — gateway excepted, since a
       # gateway proxies arbitrary model ids by design.
       def warn_cross_provider_model(model_id)
-        explicit = Rubino.configuration.model_provider
+        explicit = Rubino.configuration.dig("model", "provider")
         return if explicit.nil? || explicit == "auto" || explicit == "gateway"
 
         implied = LLM::ProviderResolver.resolve(model_id)
@@ -632,12 +635,14 @@ module Rubino
       # only other accent (they're actionable pointers); descriptions plain.
       def show_welcome
         @ui.separator
-        @ui.info("rubino — ask in plain language; it reads, edits, and runs things for you.")
+        # ONE tagline across the chrome (#559): the same identity line `rubino
+        # --help` opens with, not a second hand-written variant.
+        @ui.info(Rubino::TAGLINE)
         @ui.blank_line
         @ui.status("  Ask anything, or try:")
         @ui.hint_row("/status", "what's going on right now")
         @ui.hint_row("/sessions", "resume past work")
-        @ui.hint_row("/memory", "what I recall about you")
+        @ui.hint_row("/memory", "what rubino remembers about you")
         @ui.hint_row("/help", "all commands and keys")
         @ui.separator
       end

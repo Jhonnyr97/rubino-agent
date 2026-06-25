@@ -30,7 +30,7 @@ RSpec.describe Rubino, ".ensure_directories!" do
 
     described_class.ensure_directories!
 
-    %w[memories sessions logs skills commands tools plugins].each do |sub|
+    %w[memories sessions logs skills commands tools].each do |sub|
       expect(File.directory?(File.join(home, sub))).to be(true)
     end
   end

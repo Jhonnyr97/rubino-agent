@@ -34,7 +34,7 @@ module Rubino
       MAX_CONCURRENT_TOTAL  = 8
 
       # last_activity / tool_count / activity_log — live-progress fields written
-      # by UI::SubagentView#tool_started / #tool_finished (via
+      # by a subagent's UI::CLI#tool_started / #tool_finished (via
       # #record_tool_started / #record_tool_finished) under the registry mutex
       # and read by the parent renderer (UI::SubagentCards) and
       # the /agents drill-in. activity_log is a bounded ring of the last few
@@ -49,11 +49,26 @@ module Rubino
       # approval the child thread parks on `approval_gate` (a Run::ApprovalGate)
       # and the entry flips to status :needs_approval with the question/command
       # shown on the card; the user resolves it via /agents <id>.
+      #
+      # budget_request (#574) REUSES that exact :needs_approval gate for a
+      # different ask: a BACKGROUND child that hit its tool-iteration ceiling
+      # parks on the same gate to ask the human for MORE budget instead of
+      # silently force-summarizing. The flag only re-flavors the surfaces (card /
+      # menu row / the /agents resolve prompt read "wants +budget — grant?", and
+      # the allowlist-persisting "always" option is dropped — there is no command
+      # to remember); the parking/wake/stop-cancel plumbing is identical.
       Entry = Struct.new(
         :id, :subagent, :prompt, :status, :result, :error,
         :thread, :runner, :started_at, :finished_at,
         :last_activity, :tool_count, :activity_log, :output_tail,
         :approval_gate, :approval_id, :approval_question, :approval_command,
+        :budget_request,
+        # Monotonic stamp of the instant this child blocked on its approval gate
+        # (begin_approval), used to order the approval MODAL QUEUE FIFO: only one
+        # approval modal is presented at a time (awaiting_approval.first), and a
+        # later-parked child waits its turn as part of the "(N more queued)"
+        # backlog. Cleared on end_approval. nil ⇒ not currently parked.
+        :approval_seq,
         # Parent->child steer (the `/agents <id> steer "..."` note). Wired into
         # the child Loop as its Interaction::InputQueue (the SAME turn-boundary
         # steering channel the human uses on the parent); the parent pushes a
@@ -68,13 +83,18 @@ module Rubino
         # by an explicit /reply or stop — see ask_parent_tool.rb); a non-blocking
         # ask returns immediately and the answer is delivered later via
         # `steer_queue`. The human answers via /reply <id>, which decides the gate.
-        :ask_gate, :ask_id, :ask_question, :ask_blocking,
+        # :ask_options — the OPTIONAL concrete answer choices the asking child
+        # supplied (ask_parent `options:`). When present the human's answer
+        # surface is an arrow-select of these options (+ a free-text "Answer"
+        # entry); when nil it stays the [Answer / Dismiss] → free-text affordance.
+        # Display/answer-shape only — never changes WHERE the answer is delivered.
+        :ask_gate, :ask_id, :ask_question, :ask_blocking, :ask_options,
         # Ownership link (S1 — foundation for model-driven steer/probe/ask_parent).
         # owner_subagent_id is the `sa_*` id of the subagent that spawned this
         # child, or nil when the spawner is the human / top-level agent. depth is
         # 0 for a human-spawned child and owner.depth + 1 otherwise. The registry
         # stays a FLAT map keyed by id; the parent/child tree is computed over
-        # owner_subagent_id (see #children_of / #descendants_of / #ancestors_of).
+        # owner_subagent_id (see #descendants_of).
         :owner_subagent_id, :depth,
         # Model-driven LIVE-probe budget (S3). probe_count is how many BILLED
         # `probe(live:true)` peeks the owner has run against this child;
@@ -92,7 +112,17 @@ module Rubino
         # (sync/foreground spawn, headless).
         :parent_sink,
         keyword_init: true
-      )
+      ) do
+        # The child subagent's FULL persisted transcript. A background child runs
+        # its own Agent::Runner with its own session, so its complete message
+        # history (its tool calls + what it said) lives in the session store under
+        # `runner.session[:id]` — the agent-attach view replays exactly this.
+        # Empty when no runner/session is wired (sync/foreground/headless spawn).
+        def messages
+          session_id = runner&.session&.dig(:id)
+          session_id ? ::Rubino::Session::Store.new.for_session(session_id) : []
+        end
+      end
 
       # How many recent activity lines the drill-in shows (the live `recent:` ring).
       ACTIVITY_LOG_MAX = 6
@@ -117,6 +147,29 @@ module Rubino
       # deliver-or-report-undelivered invariant for real steer notes is intact.
       ANSWER_NOTE_PREFIX = "[parent answer] "
 
+      # Prefix the human's "deny & tell the agent why" reason carries when handed
+      # to the child as a steer note (#Y1B). The note is ADVISORY — the approval
+      # gate is already denied regardless — so when the child finishes before
+      # folding it in, the still-queued copy drained by #complete must NOT raise
+      # the scary "steer note not delivered (task completed first)" alarm: the
+      # denial applied correctly and the explanation is moot. The completion paths
+      # filter this prefix out of the undelivered WARNING (a calm note instead),
+      # exactly as they filter ANSWER_NOTE_PREFIX. A genuine `/agents <id> steer`
+      # note never carries it, so its deliver-or-report invariant is intact.
+      DENY_NOTE_PREFIX = "[approval denied by human] "
+
+      # The statuses under which a child still holds a concurrency slot: its
+      # worker thread is alive — actively running, parked on a human approval,
+      # parked on an escalated ask_parent (waiting on the human OR its
+      # agent-parent), or unwinding after a stop request. This is the SINGLE
+      # source of truth for "is this child still alive?", shared by the registry
+      # itself (#running / #reserve cap) AND by every UI surface that lists live
+      # children (the footer cards, the attached switcher, the navigable picker)
+      # so they can never drift apart and silently drop a live-but-quiet child
+      # from one surface while another still shows it (R1). Any new parked state
+      # added to the lifecycle is made visible everywhere by editing this one set.
+      LIVE_STATUSES = %i[running needs_approval blocked_on_human blocked_on_parent stopping].freeze
+
       class << self
         def instance
           @instance ||= new
@@ -126,11 +179,24 @@ module Rubino
         def reset!
           @instance = nil
         end
+
+        # The shared liveness oracle (see LIVE_STATUSES). Public so the UI
+        # surfaces that format a registry snapshot (SubagentCards, AgentMenu)
+        # filter by the EXACT same rule the registry uses, with no duplicated
+        # status list to fall out of sync.
+        def live_status?(status)
+          LIVE_STATUSES.include?(status)
+        end
       end
 
       def initialize
         @entries = {}
         @mutex   = Mutex.new
+        # Monotonic source for approval_seq — the FIFO order of the approval
+        # modal queue. Bumped under @mutex on every begin_approval so two
+        # children that park "at once" still get a deterministic, stable order
+        # (the one whose begin_approval won the lock first is the head).
+        @approval_seq = 0
       end
 
       # Reserves a slot and registers a `running` entry, returning it. The
@@ -242,7 +308,7 @@ module Rubino
 
       # Records a child tool STARTING: bumps the tool counter and sets the
       # last-activity string the card/list show so concurrent tasks stay
-      # distinguishable (#124/#127). Called from UI::SubagentView#tool_started,
+      # distinguishable (#124/#127). Called from a subagent's UI::CLI#tool_started,
       # which runs on the CHILD thread, so it MUST take the mutex (the parent
       # renderer reads these fields concurrently). No-op for an unknown id (a late event
       # after #remove).
@@ -276,7 +342,7 @@ module Rubino
       # Records a streamed chunk of the CURRENTLY RUNNING tool's output (#5):
       # splits on newlines into a bounded line buffer whose LAST slot carries
       # the in-flight partial line, so the /agents drill-in can tail it live.
-      # Called from UI::SubagentView#tool_chunk on the CHILD thread, so it MUST
+      # Called from a subagent's UI::CLI#tool_chunk on the CHILD thread, so it MUST
       # take the mutex like the other record_* writers. No-op for an unknown id.
       def record_tool_output(id, chunk)
         @mutex.synchronize do
@@ -296,7 +362,7 @@ module Rubino
       # question/command the card surfaces (Option 2). The child thread then
       # parks on `gate.await(approval_id)`; the user resolves it via
       # /agents <id>. Returns the previous status so the child can restore it.
-      def begin_approval(id, gate:, approval_id:, question:, command:)
+      def begin_approval(id, gate:, approval_id:, question:, command:, budget: false)
         @mutex.synchronize do
           entry = @entries[id]
           return unless entry
@@ -305,6 +371,8 @@ module Rubino
           entry.approval_id       = approval_id
           entry.approval_question = question.to_s
           entry.approval_command  = command.to_s
+          entry.budget_request    = budget ? true : false
+          entry.approval_seq      = (@approval_seq += 1)
           entry.status            = :needs_approval
         end
       end
@@ -320,6 +388,8 @@ module Rubino
           entry.approval_id       = nil
           entry.approval_question = nil
           entry.approval_command  = nil
+          entry.budget_request    = false
+          entry.approval_seq      = nil
           entry.status            = :running if entry.status == :needs_approval
         end
       end
@@ -382,7 +452,7 @@ module Rubino
       # answer_child; the question was pushed onto the owner's steer_queue, NOT
       # the human's job); owner_id nil (the human / top-level) → :blocked_on_human
       # (the human answers via /reply <id>).
-      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil)
+      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil, options: nil) # rubocop:disable Metrics/ParameterLists -- keyword args recording one ask's state; splitting would obscure it
         @mutex.synchronize do
           entry = @entries[id]
           return unless entry
@@ -391,6 +461,15 @@ module Rubino
           entry.ask_id       = ask_id
           entry.ask_question = question.to_s
           entry.ask_blocking = blocking ? true : false
+          # Normalize to a clean array of answer choices, or nil when none — so
+          # the answer surface can branch on "options present?" without
+          # re-validating. Each element is EITHER a plain string (label==value)
+          # OR a {"label"=>, "description"=>} map (preserved as a hash, NOT
+          # stringified into a Ruby literal — #475-3); a blank string / a map
+          # without a usable label is dropped. A child that supplies no options
+          # keeps the old (nil) shape.
+          opts               = Array(options).filter_map { |o| normalize_ask_option(o) }
+          entry.ask_options  = opts.empty? ? nil : opts
           entry.status       = owner_id ? :blocked_on_parent : :blocked_on_human
         end
       end
@@ -407,6 +486,7 @@ module Rubino
           entry.ask_id       = nil
           entry.ask_question = nil
           entry.ask_blocking = nil
+          entry.ask_options  = nil
           entry.status       = :running if %i[blocked_on_human blocked_on_parent].include?(entry.status)
         end
       end
@@ -454,9 +534,27 @@ module Rubino
       end
 
       # Entries currently parked on a human approval — surfaced on their card
-      # and answerable via /agents <id>.
+      # and answerable via /agents <id>. Ordered OLDEST-FIRST (by the moment the
+      # child blocked, approval_seq) so the modal queue is FIFO: when two
+      # children raise an approval at once only ONE modal is presented at a time
+      # (the head of this list — auto_resolve_pending takes #first), the rest are
+      # the "(N more queued)" backlog shown on the active modal, and they dequeue
+      # in the order they parked. Ties fall back to started_at for a stable order.
       def awaiting_approval
-        @mutex.synchronize { @entries.values.select { |e| e.status == :needs_approval } }
+        @mutex.synchronize do
+          @entries.values.select { |e| e.status == :needs_approval }
+                         .sort_by { |e| [e.approval_seq.to_i, e.started_at] }
+        end
+      end
+
+      # How many children are parked on an approval BEHIND the head — i.e. the
+      # backlog the active modal advertises as "(N more queued)". Only ONE
+      # approval modal is presented at a time (awaiting_approval.first); this is
+      # everyone else still :needs_approval. Zero when at most one child is
+      # parked. The active modal reads this so the user knows more are waiting
+      # and that resolving the current one dequeues the next.
+      def queued_approval_count
+        [awaiting_approval.size - 1, 0].max
       end
 
       def find(id)
@@ -482,12 +580,6 @@ module Rubino
 
       # --- Tree over owner_subagent_id (the registry stays a flat map) ---------
 
-      # Direct children of `id`: entries whose owner_subagent_id == id. Pass nil
-      # for the human/top-level node's direct children.
-      def children_of(id)
-        @mutex.synchronize { @entries.values.select { |e| e.owner_subagent_id == id } }
-      end
-
       # All transitive descendants of `id` (BFS over owner_subagent_id), in
       # breadth order. Cycle-safe (an id is visited at most once).
       def descendants_of(id)
@@ -505,22 +597,6 @@ module Rubino
               nxt.concat(@entries.values.select { |c| c.owner_subagent_id == e.id })
             end
             frontier = nxt
-          end
-          out
-        end
-      end
-
-      # The chain of ancestors of `id`, nearest parent first, walking
-      # owner_subagent_id up to the human/top-level root. Cycle-safe.
-      def ancestors_of(id)
-        @mutex.synchronize do
-          out  = []
-          seen = { id => true }
-          cur  = @entries[id]&.owner_subagent_id
-          while cur && (entry = @entries[cur]) && !seen[cur]
-            seen[cur] = true
-            out << entry
-            cur = entry.owner_subagent_id
           end
           out
         end
@@ -573,7 +649,8 @@ module Rubino
       # (outside the per-entry work) so we don't hold the registry mutex across the
       # gate/runner cancels.
       def cancel_all
-        running.each { |entry| stop_entry(entry) }
+        live = running
+        live.each { |entry| stop_entry(entry) }
         # Logical cancel alone (above) only flips cancel tokens and trusts each
         # child THREAD to observe the token and reap its own shell within a wake
         # tick — but on parent-DEATH the process exits before the thread reaches
@@ -583,7 +660,19 @@ module Rubino
         # (clean quit, HUP/TERM trap, REPL break) leave no surviving shell.
         ShellRegistry.instance.kill_all_groups
       end
-      alias shutdown! cancel_all
+
+      # Process-exit teardown: first do the cooperative cancel above, then give
+      # child threads a short chance to finish and finally kill non-cooperative
+      # survivors. Background subagents are Ruby threads, not OS child processes;
+      # if a child is stuck in a provider read that never observes its cancel
+      # token, a plain #cancel_all leaves the process alive waiting on that
+      # non-daemon thread. This method is for chat shutdown only, not normal
+      # per-task stops.
+      def shutdown!(grace: 1.0)
+        live = running
+        cancel_all
+        join_or_kill_threads(live, grace: grace)
+      end
 
       # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
       # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
@@ -595,6 +684,25 @@ module Rubino
       end
 
       private
+
+      # Normalizes ONE supplied ask_parent answer choice (#475-3). Returns a clean
+      # plain STRING for a plain string or a label-only map (label==value), a
+      # {"label"=>, "description"=>} HASH for a {label, description} map (so the
+      # picker can show the label + a dim description hint and still deliver the
+      # label string — never a Ruby hash literal), or nil for a blank string / a
+      # map without a usable label (dropped by the filter_map caller).
+      def normalize_ask_option(opt)
+        if opt.is_a?(Hash)
+          label = (opt["label"] || opt[:label]).to_s.strip
+          desc  = (opt["description"] || opt[:description]).to_s.strip
+          return nil if label.empty?
+
+          desc.empty? ? label : { "label" => label, "description" => desc }
+        else
+          s = opt.to_s.strip
+          s.empty? ? nil : s
+        end
+      end
 
       # The reason (if any) a reserve at this owner/depth must be refused, checked
       # in the documented order. nil ⇒ allowed. Runs UNDER the mutex (callers hold
@@ -633,13 +741,11 @@ module Rubino
         fallback
       end
 
-      # A child holds a concurrency slot while its thread is alive — whether
-      # actively running, parked on a human approval, parked on an escalated
-      # ask_parent question (waiting on the human OR on its agent-parent), or
-      # unwinding after a stop request (:stopping). All of these hold a live
-      # thread, so all count as live.
+      # Instance-side shim onto the canonical class predicate (LIVE_STATUSES) so
+      # the registry's own callers (#running, #reserve cap) and the UI surfaces
+      # share ONE definition of "alive". See LIVE_STATUSES for the rationale.
       def live_status?(status)
-        %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(status)
+        self.class.live_status?(status)
       end
 
       # A child has reached a TERMINAL state once #complete has run: its worker
@@ -658,6 +764,39 @@ module Rubino
 
       def new_id
         "sa_#{SecureRandom.hex(4)}"
+      end
+
+      def join_or_kill_threads(entries, grace:)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + [grace.to_f, 0.0].max
+        entries.each do |entry|
+          thread = entry.thread
+          next unless joinable_thread?(thread)
+
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          thread.join(remaining) if remaining.positive?
+
+          thread = entry.thread
+          next unless joinable_thread?(thread)
+
+          thread.kill
+          thread.join(0.2)
+          force_stop(entry)
+        end
+      end
+
+      def joinable_thread?(thread)
+        thread && thread != Thread.current && thread.alive?
+      end
+
+      def force_stop(entry)
+        @mutex.synchronize do
+          return if terminal_status?(entry.status)
+
+          entry.status = :stopped
+          entry.error = "forced shutdown"
+          entry.finished_at = Time.now
+          entry.steer_queue&.drain
+        end
       end
     end
   end

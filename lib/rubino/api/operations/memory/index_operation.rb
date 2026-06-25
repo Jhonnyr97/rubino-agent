@@ -22,10 +22,6 @@ module Rubino
           # newest-first ordering.
           WINDOW        = 1000
 
-          def self.call(request)
-            new.call(request)
-          end
-
           # Accepts an alternate backend for tests.
           def initialize(backend: nil)
             @backend = backend || ::Rubino::Memory::Backends.build

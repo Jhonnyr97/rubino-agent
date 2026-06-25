@@ -279,7 +279,7 @@ module Rubino
       end
 
       def minimum_messages
-        @config.compression_protect_first_n + @config.compression_protect_last_n + 5
+        @config.dig("compression", "protect_first_n") + @config.dig("compression", "protect_last_n") + 5
       end
 
       # Shared compaction gate (single source of truth for BOTH paths): the

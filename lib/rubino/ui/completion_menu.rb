@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "pastel"
-
 module Rubino
   module UI
     # The {BottomComposer}'s /command + @file completion menu: an inline
@@ -124,16 +122,25 @@ module Rubino
       # candidate exactly AND that match is the menu's current selection (or
       # the only candidate) — so a partial/ambiguous token (e.g. "/re" with
       # /reasoning + /reset) still accepts the highlight on Enter as before.
-      # An EMPTY argument token (`/agents sa_xxx ` with the verb dropdown
-      # open) also submits — the buffer is already a complete command and
-      # accepting would splice a verb the user never typed — UNLESS the user
-      # explicitly arrow-navigated onto a candidate, which is an accept
-      # intent. Tab-accept is untouched.
+      #
+      # An EMPTY token with the dropdown open (e.g. `/agents ` showing a
+      # subagent id, or `/agents sa_xxx ` showing steer/probe/--stop) is NOT
+      # an exact command: Enter ACCEPTS the highlighted candidate, matching
+      # the standard picker convention (fzf / VS Code / Claude Code) where a
+      # default-highlighted candidate is accepted on Enter without first
+      # arrowing onto it (#3). This supersedes the older #147 rule that
+      # submitted on an empty argument unless the user had arrow-navigated —
+      # under it the user could not pick the highlighted id/verb with a bare
+      # Enter ("lo prende come se fosse /agents"). To run the bare command
+      # instead, dismiss the dropdown with Esc first, then Enter (a closed
+      # menu never accept-splices). A FULLY-TYPED token that exactly equals
+      # the sole/selected candidate (`/agents sa_xxx`, `/new`) still submits
+      # — that path is non-empty, so it is unaffected. Tab-accept is untouched.
       def exact_command?(buffer)
         return false unless @state
 
         typed = Array(buffer.chars[@state[:start], @state[:token_len]]).join
-        return !@state[:navigated] if typed.empty?
+        return false if typed.empty?
 
         items = @state[:items]
         return false unless items.include?(typed)
@@ -172,15 +179,13 @@ module Rubino
         return [] unless @state
 
         items = @state[:items]
-        top   = @state[:top]
-        sel   = @state[:selected]
-        slice = items[top, MAX_ROWS] || []
-        pad   = slice.map { |item| LiveRegion.display_width(item.to_s) }.max.to_i
-        rows = slice.each_with_index.map do |item, i|
-          candidate_row(item, pad, cols, selected: top + i == sel)
+        pad   = items.map { |item| LiveRegion.display_width(item.to_s) }.max.to_i
+        descriptors = items.map do |item|
+          { label: item.to_s, desc: description(item, pad, cols) }
         end
-        rows << pastel.dim("┄ #{sel + 1}/#{items.size} ┄") if items.size > MAX_ROWS
-        rows
+        MenuView.render(descriptors, cols,
+                        window: { selected: @state[:selected], top: @state[:top], max_rows: MAX_ROWS },
+                        hints: "Enter accepts · Esc dismisses")
       end
 
       private
@@ -188,22 +193,6 @@ module Rubino
       def navigated_to_selection
         @state[:top] = window_top(@state[:selected], @state[:items].size)
         @state[:navigated] = true
-      end
-
-      def candidate_row(item, pad, cols, selected:)
-        row = if selected
-                "#{pastel.cyan("❯")} #{pastel.inverse(" #{item} ")}"
-              else
-                "#{pastel.dim("┊")} #{item}"
-              end
-        desc = description(item, pad, cols)
-        if desc
-          # Align the description column across rows: the inverse highlight
-          # already widens the selected name by 2 (its padding spaces).
-          row += (" " * (pad - LiveRegion.display_width(item.to_s) + (selected ? 0 : 2)))
-          row += pastel.dim(desc)
-        end
-        row
       end
 
       # The dim description for a menu candidate, fitted to the row budget so a
@@ -307,18 +296,10 @@ module Rubino
         []
       end
 
-      # The visible window's top index so the selected row stays in view.
+      # The visible window's top index so the selected row stays in view —
+      # delegated to the shared {MenuView} scroll math (#562).
       def window_top(selected, size)
-        return 0 if size <= MAX_ROWS
-
-        top = @state ? @state[:top] : 0
-        top = selected if selected < top
-        top = selected - MAX_ROWS + 1 if selected >= top + MAX_ROWS
-        top.clamp(0, size - MAX_ROWS)
-      end
-
-      def pastel
-        @pastel ||= Pastel.new
+        MenuView.window_top(selected, size, @state ? @state[:top] : 0, MAX_ROWS)
       end
     end
   end

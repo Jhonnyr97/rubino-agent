@@ -29,7 +29,18 @@ module Rubino
                                       include_retired: options[:all])
 
         if memories.empty?
-          Rubino.ui.info("No memories found.")
+          # Don't dead-end an empty list (#559): point the user at how memories
+          # come to exist (extracted from chat), matching the actionable empty
+          # state `sessions list` gives. With a `--kind` filter active the set may
+          # just be narrowed, so say so; `--all` surfaces superseded facts.
+          hint =
+            if options[:kind]
+              "No memories found for kind '#{options[:kind]}' (drop --kind to see all)."
+            else
+              "No memories yet — rubino remembers facts from your chats. " \
+                "Start a `rubino chat` and they'll show up here (use --all for superseded ones)."
+            end
+          Rubino.ui.info(hint)
           return
         end
 
@@ -62,12 +73,13 @@ module Rubino
       # Memory content (and, defensively, every other stored field) is
       # attacker-influenceable — facts are EXTRACTED from conversation, so a
       # raw `\e]0;…\a` / `\e[2J` in `content` would hijack the window title or
-      # clear the screen the moment `info` printed it (CWE-150, R4-N2). The
-      # `info`/`success` family does NOT sanitize (PrinterBase#puts_colored is
-      # the shared funnel and legitimately receives rubino's OWN pastel ANSI
-      # from other callers, e.g. the `/agents` watch view, so it can't strip
-      # escapes wholesale). We therefore neutralize the UNTRUSTED CONTENT here,
-      # before it is handed to the printer, into visible caret notation.
+      # clear the screen the moment `info` printed it (CWE-150, R4-N2). As of
+      # #564 PrinterBase#puts_colored (the shared funnel) ALSO defangs every row
+      # via sanitize_terminal_keep_sgr — which preserves rubino's OWN pastel ANSI
+      # (the obstacle that previously kept the funnel from sanitizing) while
+      # neutralizing the dangerous bytes. These local #safe calls are now
+      # belt-and-suspenders (idempotent) but kept so this surface stays safe
+      # independent of the funnel.
       def self.render(memory, ui:)
         ui.info("ID: #{safe(memory[:id])}")
         ui.info("Kind: #{safe(memory[:kind])}")
@@ -90,13 +102,21 @@ module Rubino
         Util::Output.sanitize_terminal(text)
       end
 
-      desc "delete ID", "Delete a specific memory"
+      desc "delete ID", "Delete a specific memory (alias: forget)"
       def delete(id)
         # Same not-found-is-failure contract as #show (P2-H1/H2): exit non-zero
         # with the error on stderr instead of stdout-printing and returning 0.
         raise Thor::Error, "memory not found: #{id}" unless backend_store.delete(id)
 
         Rubino.ui.success("Memory deleted: #{id}")
+      end
+
+      # Verb parity with the in-chat `/memory forget <id>` (#Y3B): the REPL says
+      # "forget", the CLI said only "delete". Both surfaces now accept BOTH verbs
+      # so muscle memory from either side works on the other.
+      desc "forget ID", "Forget (delete) a specific memory"
+      def forget(id)
+        delete(id)
       end
 
       desc "backend [NAME]", "Show the active memory backend, or switch to NAME"
@@ -135,7 +155,7 @@ module Rubino
 
       private
 
-      # Resolve the *configured* memory backend (default: sqlite tiny-Zep), the
+      # Resolve the *configured* memory backend (default: sqlite), the
       # same store the agent loop, the in-chat `/memory` view and the HTTP
       # `/v1/memory` ops use. The old `Memory::Store.new` was hardwired to the
       # legacy `:memories` table and ignored `memory.backend`, so list/show/delete

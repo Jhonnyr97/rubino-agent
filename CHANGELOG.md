@@ -1,5 +1,202 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Tool-output compression (deterministic, off by default).** A no-LLM content
+  router at the single `Agent::ToolExecutor` seam compresses high-volume tool
+  output before it reaches the model: test/build/lint logs are reduced to their
+  failures + summary (≈97% fewer tokens on a failing suite, every failure kept),
+  and a whole-file source read can be returned as a skeleton (signatures kept,
+  large bodies elided behind a `read offset:/limit:` pointer). Diffs, grep/search
+  results, JSON, and short output pass through **byte-identical**. Reversibility
+  reuses the existing spill: the full original is written to
+  `tool-results/<call_id>.txt` and the compressed output points the model there —
+  no separate store/tool. When enabled, `read` and `shell` expose a `compress`
+  parameter (default true) so the model can opt a single call out and get the
+  verbatim output. Master switch `tool_output_compression.enabled` (default
+  `false`); `rubino setup` offers to turn it on. See
+  [configuration.md](docs/configuration.md#tool_output_compression).
+- **Agent-attach view.** At the idle prompt, `↓` opens the subagent picker and
+  `Enter` now **attaches** to the highlighted background subagent: the screen
+  switches to that agent's OWN full timeline (its tool calls and what it said,
+  replayed from its session) and the input prompt becomes scoped — `sa_xxxx ❯`.
+  While attached, typed text steers the running child (or answers it when it's
+  blocked on you); `←` on the empty prompt (or the picker's `◂ main` row) returns
+  to the main timeline, and the picker doubles as a switcher between agents. This
+  replaces the bounded registry snapshot the picker's Enter used to show with the
+  agent's real conversation, and makes the global `/agents <id> steer/probe` and
+  `/reply <id>` forms redundant while attached.
+- **Multi-language code compression.** The whole-file source-skeleton compressor
+  now covers more than Ruby. `tool_output_compression.code.languages` (default
+  `["ruby"]`) selects which languages get skeletonised: Ruby (built-in Prism
+  parser), Python (stdlib `ast` via your `python3` — a no-op if `python3` isn't
+  on PATH), and JavaScript / TypeScript / TSX (via the optional
+  `tree_sitter_language_pack` gem — a no-op until it's installed). A read in an
+  unlisted language passes through verbatim. `rubino setup` adds a language
+  picker and, if you choose JS/TS, offers to install the parser gem.
+- **`api.allow_public_bind` gate.** Because the API server can execute shell
+  tools, binding it to a non-loopback address (`--host 0.0.0.0`,
+  `RUBINO_API_HOST`) now **refuses to boot** unless `api.allow_public_bind: true`
+  is set in `config.yml`; when opted in, the server prints a one-time exposure
+  warning. Loopback binds are unaffected (#577).
+- **MCP tool transparency + parallel startup.** An MCP tool's display label now
+  carries its source — the live tool card and the approval card both show
+  `<bare> (mcp:<server>)`, so you can tell at a glance that an out-of-process
+  server is running (the model-facing tool name is unchanged) (#582). MCP
+  servers also now connect **in parallel** at boot, so one hanging server no
+  longer serializes startup (#576).
+
+### Changed
+
+- **Blocked-tool results are now typed errors.** When a tool call is blocked
+  (denied by approval, sandbox, or policy), its result is returned to the model
+  as a typed error with explicit anti-confabulation wording, so the model is told
+  the action did NOT happen instead of being free to assume success (#583).
+
+### Removed
+
+- **Child→parent `ask_parent` / `answer_child` tools.** Subagents are
+  non-blocking background workers and can no longer pause mid-task to ask their
+  parent (or the human) a question; instead they make sensible default calls and
+  surface open decisions in their result. The two model-facing tools that
+  implemented that channel — `ask_parent` (the child→parent escalation) and
+  `answer_child` (the parent's reply) — are gone. The parent→child `steer` /
+  `probe` tools and the human approval gate (`/reply` for a child parked on an
+  approval) are unchanged. `tasks.ask_parent_timeout` is now vestigial.
+
+### Security
+
+- **Vision egress hardening.** The `vision` tool now honours
+  `attachments.policy.aux_vision_egress` (default `true`): set it to `false` and
+  the tool refuses to send an image to an external auxiliary model, returning a
+  clean error instead of egressing the bytes (#578). Before any egress it also
+  **content-sniffs** the file (magic bytes win over the extension, fail-closed),
+  so a mislabelled or non-image file can't be smuggled to the external host
+  (#579).
+
+### Fixed
+
+- **MCP `degraded` server state.** `/mcp` and `rubino doctor` now distinguish a
+  reachable server (`●`) from a **degraded** one (`⚠` — the process is alive but
+  a protocol call such as `tools/list` failed), instead of reporting it as plain
+  reachable (#575).
+- **Session-title length cap.** A renamed session title is now length-capped at
+  rename and truncated on render, so an over-long title can't disrupt status /
+  session-list layout (#581).
+
+- **MiniMax-M3 pre-tool-call "freeze".** Thinking/reasoning now defaults ON for
+  every provider (it was deliberately off for MiniMax-family ids). On the
+  anthropic-compatible path rubino now sends `thinking: {type: enabled,
+  budget_tokens: …}` and streams the model's reasoning deltas — so the multi-
+  second window where M3 reasons toward a tool-call is filled with visible
+  streamed reasoning instead of dead air (the symptom that read as the agent
+  "freezing" when it spawned subagents). Matches the reference agent's default
+  `reasoning_effort: medium`. A backend that rejects the budget is caught and
+  retried once without it (#75), so default-on is safe; set
+  `providers.<name>.supports_thinking: false` to opt out.
+
+## [0.5.1] - 2026-06-18
+
+### Added
+
+- **Mid-turn auto-open `ask_parent` answer dropdown (#474).** When a sub-agent
+  blocks on `ask_parent`, the parent's chat input auto-opens an answer dropdown
+  **while the parent turn keeps streaming** — no need to interrupt or wait for
+  the turn to finish. Arrow-select one of the options the child supplied, or
+  type a free-text answer. Multiple blocked children are answered in **FIFO
+  order**, and a `⛔N` count shows how many sub-agents are waiting on you. Your
+  in-progress draft is snapshotted and restored byte-for-byte after you answer,
+  and committed stream lines that arrive while the dropdown is open are buffered
+  and flushed in order on resume.
+- **Read-only meta-commands run immediately while a turn is active.** A small
+  set of non-mutating slash commands (`/agents`, `/tasks`, `/stop`, `/status`,
+  `/jobs`, `/help`, `/commands`, `/dirs`) now execute **immediately** mid-turn
+  instead of queuing — so you can drill into a sub-agent, stop the run, or check
+  status without interrupting. State-mutating commands (`/model`, `/clear`,
+  `/new`, `/config`, `/mode`, …) show a transient `⚠ <cmd> is not available
+  during an active turn — press Esc to interrupt first` notice; plain text still
+  queues, and `Esc` interrupts.
+
+### Changed
+
+- **Provider auto-routing.** With `model.provider: "auto"` (the default), the
+  concrete provider is derived from the model id (`openai/*` → OpenAI); the
+  setup wizard / auto-detect write an explicit provider when a non-OpenAI
+  backend is chosen.
+- **Credential check uses provider-specific env vars.** The credential check
+  and key resolution now read the env var for the configured provider
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `BEDROCK_API_KEY`,
+  `MINIMAX_API_KEY`, and `<PROVIDER>_API_KEY` for anything else, e.g.
+  `DEEPSEEK_API_KEY`). A non-OpenAI provider no longer silently falls back to
+  `OPENAI_API_KEY` (only providers explicitly marked `openai_compatible` /
+  `anthropic_compatible` fall back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
+- **`security.confirm_policy` default is `dangerous_only`.** Safe shell commands
+  run unprompted; only commands matching a dangerous pattern prompt. Set
+  `confirm_policy: confirm_all` to restore prompt-on-everything. The
+  non-bypassable hardline floor and `permissions: deny` always run first
+  regardless of policy.
+- **Memory-flush best-effort boundary** made airtight (#471), so a failure
+  flushing memory at shutdown can't take down the run.
+
+### Removed
+
+- **`streaming.cursor` config key.** It was dead config (assigned, never read)
+  and is no longer accepted — remove it from any `config.yml`.
+- **`security.require_confirmation_for_shell` config key.** Replaced by
+  `security.confirm_policy` (`dangerous_only` | `confirm_all`); the old key is no
+  longer honored.
+
+### Security
+
+- **Hermes-style secret handling (#506).** Adopts the Hermes secret model across
+  the agent: the structured `read` tool blocks `.env` and credential files
+  outright, and secret **values** are redacted in the output of `read`, `grep`,
+  `shell` (including the live stream seam, not just the final buffer, #507),
+  `summarize`, and `read_attachment` (#511/#512). A `security.redact_secrets`
+  toggle (default **on**) controls redaction. The earlier per-read secret-file
+  approval gate was removed in favour of this block-list + redaction model
+  (#480).
+- **Tighten the `ruby_llm` floor to `>= 1.16` (#508).** The adapter wires native
+  providers through ruby_llm's generic `<provider>_api_base=` setters
+  (deepseek/mistral/etc., #482), which only exist from ruby_llm 1.16.0. The
+  gemspec previously allowed `~> 1.0`, so a fresh `gem install` could resolve
+  ruby_llm 1.15 and crash at runtime with `NoMethodError`. The dependency is now
+  `>= 1.16, < 2.0`.
+- **Secret masking on `config set`.** `rubino config set` now masks the echoed
+  value when the key looks secret (`api_key`, `token`, `password`, `secret`,
+  `authorization`, …) and when the value itself contains inline credentials
+  (`key=value`, `Bearer …`, URL userinfo, `curl -u`, `mysql -p…`), so keys are
+  not printed in the clear to the terminal/scrollback.
+
+### Fixed
+
+- **Non-native provider wiring (#482).** Fixed the preflight that falsely
+  reported non-native providers (deepseek/mistral/…) as ready; they are now
+  wired through the generic `<provider>_api_base=` setters and the run stops
+  on an unreachable endpoint instead of failing later.
+- **Parent-death reaps child shells (#478).** When the agent process dies, the
+  long-running child shells it spawned are reaped instead of being orphaned,
+  using a trap-safe SIGTERM/SIGHUP handler (no `Mutex` inside the signal trap).
+- **Compaction no-op loop (#484).** Stopped a busy-loop on an over-budget
+  session that has too few messages to compact.
+- **Composer resize/wrap repaint (#481/#485/#486/#499/#500/#501/#503).** Fixed
+  several composer render/input races and resize-while-typing reflows that
+  duplicated the in-progress input into the scrollback, including chained
+  resizes and the resize REPAINT path.
+- **`ask_parent` blocking timeout (#488).** A blocking `ask_parent` now honours
+  the configured 900s timeout instead of timing out at ~300s.
+- **CLI DX papercuts.** Fixed the bare-`rubino "prompt"` one-shot path, the
+  `ask_parent` escalation prompt, help-session clutter, and a bare-prompt
+  did-you-mean edge case.
+- **Input hardening.** Fixed a raw SQLite3 exception on session input with
+  hostile/NUL bytes (#498) and cleaned up `Errno` error messages on the failure
+  paths; tightened mcp args validation and assorted low-severity
+  config/sessions/resume/CLI papercuts.
+- **TUI: ask_parent dropdown double-draw (#510).** Stopped the mid-turn
+  auto-open `ask_parent` dropdown from drawing the ask twice.
+
 ## [0.5.0] - 2026-06-15
 
 ### Added

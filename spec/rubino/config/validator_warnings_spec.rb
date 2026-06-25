@@ -17,8 +17,15 @@ RSpec.describe Rubino::Config::Validator do
     end
 
     it "flags an out-of-range bounded value" do
-      issues = described_class.warnings({ "doom_loop" => { "threshold" => 9.9 } })
+      issues = described_class.warnings({ "compression" => { "threshold" => 9.9 } })
       expect(issues).to include(a_string_matching(/threshold.*out of range/i))
+    end
+
+    it "flags a doom_loop.threshold below its count floor (path-keyed range)" do
+      # doom_loop.threshold is an identical-call COUNT (>= 2), not a 0..1 ratio:
+      # 1 is below the floor and must be flagged.
+      issues = described_class.warnings({ "doom_loop" => { "threshold" => 1 } })
+      expect(issues).to include(a_string_matching(/doom_loop\.threshold.*out of range/i))
     end
 
     it "produces NO warnings for the full seeded default config (no false positives)" do
@@ -85,6 +92,31 @@ RSpec.describe Rubino::Config::Validator do
       expect do
         described_class.validate!("frobnicate.enabled", %w[frobnicate enabled], "true")
       end.to raise_error(Rubino::ConfigurationError, /not a config section/)
+    end
+  end
+
+  # #499: `mcp.servers` is an open map (defaults to {} with no per-server
+  # template), so its `args` leaf resolves to a :__absent__ default and
+  # check_type! skips it — a scalar string was accepted with a green ✓ and only
+  # rejected later at MCP startup. The set-time check now rejects a non-array,
+  # pointing at the #420 JSON-array syntax.
+  describe "#validate! mcp.servers.*.args" do
+    it "rejects a scalar string for mcp.servers.<name>.args at set time" do
+      expect do
+        described_class.validate!("mcp.servers.fs.args", %w[mcp servers fs args], "run server")
+      end.to raise_error(Rubino::ConfigurationError, /expected a list.*JSON array/m)
+    end
+
+    it "accepts a JSON-array args value (#420 syntax)" do
+      expect do
+        described_class.validate!("mcp.servers.fs.args", %w[mcp servers fs args], '["run", "server"]')
+      end.not_to raise_error
+    end
+
+    it "allows clearing args with nil" do
+      expect do
+        described_class.validate!("mcp.servers.fs.args", %w[mcp servers fs args], "nil")
+      end.not_to raise_error
     end
   end
 end

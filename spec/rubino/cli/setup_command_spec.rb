@@ -72,7 +72,8 @@ RSpec.describe Rubino::CLI::SetupCommand do
   # model.default is actually blank.
   it "says 'no model is configured' only when model.default is blank" do
     allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(false)
-    allow_any_instance_of(Rubino::Config::Configuration).to receive(:model_default).and_return("")
+    allow_any_instance_of(Rubino::Config::Configuration).to receive(:dig).and_call_original
+    allow_any_instance_of(Rubino::Config::Configuration).to receive(:dig).with("model", "default").and_return("")
 
     described_class.new.execute
 
@@ -108,7 +109,7 @@ RSpec.describe Rubino::CLI::SetupCommand do
 
     def configured
       Rubino.reload_configuration!
-      [Rubino.configuration.model_provider, Rubino.configuration.model_default]
+      [Rubino.configuration.dig("model", "provider"), Rubino.configuration.dig("model", "default")]
     end
 
     it "defaults to minimax when ONLY MINIMAX_API_KEY is present" do
@@ -207,6 +208,168 @@ RSpec.describe Rubino::CLI::SetupCommand do
       expect(Rubino.database.healthy?).to be true
       expect(Rubino::Database::Migrator.new(Rubino.database).pending?).to be false
       expect(ui.messages).to include([:warning, a_string_matching(/corrupt/i)])
+    end
+  end
+
+  # "Activate from setup": an interactive `setup` offers command-output
+  # compression (recommended on). The shipped config stays off, so this step is
+  # the only way it flips on without hand-editing — and it must be idempotent
+  # (no nag on a re-run) and never block the headless path.
+  describe "command-output compression offer" do
+    before do
+      allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(true)
+    end
+
+    def compression_enabled?
+      Rubino.reload_configuration!
+      Rubino.configuration.tool_output_compression_enabled?
+    end
+
+    it "enables the master flag (and the logs sub-flag) on a bare Enter (recommended yes)" do
+      allow($stdin).to receive(:gets).and_return("\n")
+      described_class.new.execute
+      expect(compression_enabled?).to be true
+      expect(Rubino.configuration.tool_output_compression_logs_enabled?).to be true
+      expect(success_lines).to include(a_string_matching(/compression enabled/i))
+    end
+
+    it "leaves the flag off on an explicit 'n'" do
+      allow($stdin).to receive(:gets).and_return("n\n")
+      described_class.new.execute
+      expect(compression_enabled?).to be false
+    end
+
+    it "does not re-offer when already enabled (idempotent)" do
+      Rubino::Config::Loader.new.create_default_config!
+      writer = Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+      writer.set("tool_output_compression.enabled", true)
+      # Also customize languages so the code-language picker's nag-guard skips too;
+      # this example asserts the log-offer doesn't re-prompt on an already-on config.
+      writer.set("tool_output_compression.code.languages", %w[ruby python])
+      Rubino.reload_configuration!
+      expect($stdin).not_to receive(:gets)
+      described_class.new.execute
+    end
+
+    it "never prompts on the headless path" do
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(false)
+      expect($stdin).not_to receive(:gets)
+      described_class.new.execute
+      expect(compression_enabled?).to be false
+    end
+  end
+
+  # SLICE 4: an interactive `setup` (with compression already on) offers a
+  # language picker for whole-file code skeletonisation. EOF/non-TTY safe (bare
+  # Enter / piped EOF keeps Ruby only), idempotent (skips when already
+  # customized), and the JS/TS choice asks before installing the parser gem.
+  describe "code-compression languages picker" do
+    before do
+      allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(true)
+      # Master compression already on so the picker is reachable; the log-offer
+      # step then sees it on and skips (no extra gets needed for it).
+      Rubino::Config::Loader.new.create_default_config!
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", true)
+      Rubino.reload_configuration!
+    end
+
+    def languages
+      Rubino.reload_configuration!
+      Rubino.configuration.tool_output_compression_code_languages
+    end
+
+    it "keeps %w[ruby] on a bare Enter and never blocks" do
+      allow($stdin).to receive(:gets).and_return("\n")
+      described_class.new.execute
+      expect(languages).to eq(%w[ruby])
+    end
+
+    it "keeps %w[ruby] on piped EOF (gets ⇒ nil) and never blocks" do
+      allow($stdin).to receive(:gets).and_return(nil)
+      described_class.new.execute
+      expect(languages).to eq(%w[ruby])
+    end
+
+    it "writes %w[ruby python] when Python is selected, and warns if python3 is absent" do
+      allow($stdin).to receive(:gets).and_return("1,2\n")
+      # python3 absent → calm inert note, no install.
+      allow_any_instance_of(described_class)
+        .to receive(:system).with("python3", "--version", any_args).and_return(false)
+      described_class.new.execute
+      expect(languages).to eq(%w[ruby python])
+      expect(ui.messages).to include([:status, a_string_matching(/python3 not found/i)])
+    end
+
+    it "writes the 3 JS/TS tokens and ASKS before installing the parser gem" do
+      allow($stdin).to receive(:gets).and_return("1,3\n", "\n") # picker, then install Y/n (bare Enter ⇒ yes)
+      cmd = described_class.new
+      # Parser not loadable so the install offer fires; stub the require-probe and
+      # the gem install (must NOT hit the network).
+      allow(cmd).to receive(:tree_sitter_loadable?).and_return(false)
+      allow(cmd).to receive(:system).with("gem", "install", "tree_sitter_language_pack").and_return(true)
+      cmd.execute
+      # It asked (the Y/n prompt) BEFORE installing — both gets were consumed.
+      expect(cmd).to have_received(:system).with("gem", "install", "tree_sitter_language_pack")
+      expect(languages).to eq(%w[ruby javascript typescript tsx])
+    end
+
+    it "degrades calmly when the gem install fails (no setup failure)" do
+      allow($stdin).to receive(:gets).and_return("3\n", "\n")
+      cmd = described_class.new
+      allow(cmd).to receive(:tree_sitter_loadable?).and_return(false)
+      allow(cmd).to receive(:system).with("gem", "install", "tree_sitter_language_pack").and_return(false)
+      expect { cmd.execute }.not_to raise_error
+      expect(languages).to eq(%w[javascript typescript tsx]) # ruby deselected (1 omitted)
+      expect(ui.messages).to include([:status, a_string_matching(/stays inert/i)])
+    end
+
+    it "honors deselecting ruby (selection without 1)" do
+      allow($stdin).to receive(:gets).and_return("2\n")
+      allow_any_instance_of(described_class)
+        .to receive(:system).with("python3", "--version", any_args).and_return(true)
+      described_class.new.execute
+      expect(languages).to eq(%w[python])
+    end
+
+    it "does NOT install when the parser gem is already loadable" do
+      allow($stdin).to receive(:gets).and_return("3\n")
+      cmd = described_class.new
+      allow(cmd).to receive(:tree_sitter_loadable?).and_return(true)
+      expect(cmd).not_to receive(:system).with("gem", "install", anything)
+      cmd.execute
+      expect(languages).to eq(%w[javascript typescript tsx])
+    end
+
+    it "is skipped (no re-prompt) when languages are already customized" do
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.code.languages", %w[ruby python])
+      Rubino.reload_configuration!
+      # Master already on → log-offer also skips; no gets should be consumed.
+      expect($stdin).not_to receive(:gets)
+      described_class.new.execute
+      expect(languages).to eq(%w[ruby python])
+    end
+
+    it "is skipped on the headless (non-interactive) path" do
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(false)
+      expect($stdin).not_to receive(:gets)
+      described_class.new.execute
+      expect(languages).to eq(%w[ruby])
+    end
+
+    it "is skipped when master compression is off (user declined)" do
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", false)
+      Rubino.reload_configuration!
+      # Master off → the log-offer step prompts; decline it with 'n', then the
+      # languages picker must NOT prompt at all.
+      allow($stdin).to receive(:gets).and_return("n\n")
+      expect($stdin).to receive(:gets).once.and_return("n\n")
+      described_class.new.execute
+      expect(languages).to eq(%w[ruby])
     end
   end
 end

@@ -4,6 +4,7 @@ require "ruby_llm"
 require "faraday"
 require "net/http"
 require_relative "tool_bridge"
+require_relative "cache_breakpoint_middleware"
 require_relative "inline_think_filter"
 require_relative "provider_resolver"
 require_relative "reasoning_manager"
@@ -31,9 +32,9 @@ module Rubino
       def initialize(model_id: nil, provider: nil, config: nil, ui: nil, event_bus: nil,
                      tool_executor: nil, cancel_token: nil, isolate_config: false)
         @config        = config || Rubino.configuration
-        @model_id      = model_id || @config.model_default
+        @model_id      = model_id || @config.dig("model", "default")
         @provider      = provider || resolve_provider
-        @temperature   = @config.model_temperature
+        @temperature   = @config.dig("model", "temperature")
         @ui            = ui || Rubino.ui
         @event_bus     = event_bus || Rubino.event_bus
         @tool_executor = tool_executor # nil = ToolBridge falls back to direct tool.call
@@ -137,7 +138,7 @@ module Rubino
       # Returns the context window size for the current model
       def context_window
         info = model_info
-        return @config.model_context_length if @config.model_context_length
+        return @config.dig("model", "context_length") if @config.dig("model", "context_length")
 
         info&.context_window || 128_000
       end
@@ -199,6 +200,16 @@ module Rubino
         last_chunk_at = monotonic_now
         stale_after   = stale_chunk_timeout
         chunks_seen   = 0
+        # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking ask_parent
+        # parked on a human answer for up to tasks.ask_parent_timeout = 900s)
+        # produces no chunks while it runs, so the stale watchdog below would
+        # otherwise count that legitimate tool runtime as stream-idle and fire at
+        # `stale_after` (300s default), pre-empting the configured ask timeout and
+        # making the "auto-resumes in 15m" banner a lie. While a tool is in flight
+        # the stream is intentionally paused, not stalled: suspend idle accrual for
+        # its duration. Set when a tool-use message closes (tools are about to
+        # run); cleared when the next message begins (tools returned).
+        tool_running = false
 
         # Each assistant message ruby_llm streams within this one ask() is a
         # distinct content block: on a multi-step tool turn the model emits
@@ -246,24 +257,56 @@ module Rubino
         # the consumer falls back to the legacy per-adjacency grouping. Use a
         # proc (not a lambda) for the close handler so it tolerates whatever
         # arity the callback invokes it with.
+        # A new message starting means any mid-stream tool from the previous
+        # message has returned (#488): resume idle accrual and restart the idle
+        # clock so the post-tool window is measured from now, not from the last
+        # pre-tool chunk.
+        bump_block = proc do
+          message_block_id += 1
+          tool_running  = false
+          last_chunk_at = monotonic_now
+        end
         if chat_instance.respond_to?(:before_message)
-          chat_instance.before_message { message_block_id += 1 }
+          chat_instance.before_message(&bump_block)
         elsif chat_instance.respond_to?(:on_new_message)
-          chat_instance.on_new_message { message_block_id += 1 }
+          chat_instance.on_new_message(&bump_block)
         end
 
-        close_block = proc do
+        close_block = proc do |msg|
           # Flush any tail the think-filter is still holding so it is emitted
           # with THIS block's id before we close the block (and before the
-          # tool call that follows a tool-use message executes).
-          flush_filter(think_filter, &emit)
+          # tool call that follows a tool-use message executes). final: false —
+          # the stream continues, so an incomplete tag straddling this boundary
+          # is held back for the next message rather than mis-routed (STRM-3).
+          flush_filter(think_filter, final: false, &emit)
           @event_bus&.emit(Interaction::Events::MESSAGE_COMPLETED, message_id: message_block_id)
+          # #488: a tool-use message just closed ⇒ ruby_llm is about to run those
+          # tools mid-stream. Suspend the stale watchdog's idle accrual for the
+          # tool's runtime so a long, legitimate tool (a blocking ask_parent
+          # waiting on the human) is not killed at `stale_after`.
+          tool_running = true if intermediate_tool_message?(msg)
         end
         if chat_instance.respond_to?(:after_message)
           chat_instance.after_message(&close_block)
         elsif chat_instance.respond_to?(:on_end_message)
           chat_instance.on_end_message(&close_block)
         end
+
+        # #552: the AUTHORITATIVE suspend signal. ruby_llm fires before_tool_call
+        # immediately before it dispatches each tool mid-stream (chat.rb:375,
+        # right before #execute_tool blocks). The after_message heuristic above
+        # only flips `tool_running` when the tool-use assistant message closes
+        # AND intermediate_tool_message?(msg) recognises it — which is unreliable
+        # on the anthropic-compatible streaming path (MiniMax /anthropic), where
+        # a blocking interactive tool (`question`/clarify parked on stdin, or
+        # ask_parent) starts running while the watchdog still sees
+        # tool_running == false and fires at `stale_after` (30s for the
+        # anthropic-compatible provider) before the human can answer. Keying the
+        # suspend off before_tool_call closes that window: the instant ANY tool
+        # is about to execute, idle accrual is suspended for its full runtime,
+        # exactly as a blocking human-input tool needs. before_message clears it
+        # again when the next assistant message opens (tool returned).
+        chat_instance.before_tool_call { tool_running = true } if chat_instance.respond_to?(:before_tool_call)
 
         # #360: the per-chunk check_stream_stale! only fires WHEN a chunk
         # arrives — so if the upstream opens the stream then goes silent (a
@@ -276,8 +319,10 @@ module Rubino
         # streaming thread to break it out of the blocking socket read. The
         # rescue below then surfaces a clear "stream stalled" and lets the retry
         # ladder run. The closure reads `last_chunk_at`/`chunks_seen` live (they
-        # are reassigned in the callback) via a shared binding.
-        watchdog = start_stale_watchdog(stale_after) { last_chunk_at }
+        # are reassigned in the callback) via a shared binding. While a tool runs
+        # mid-stream (`tool_running`, #488) it reports "now" so the legitimate
+        # tool runtime is never counted as a stalled stream.
+        watchdog = start_stale_watchdog(stale_after) { tool_running ? monotonic_now : last_chunk_at }
 
         begin
           response = chat_instance.ask(last_user_content(messages), with: presence(image_paths)) do |chunk|
@@ -348,7 +393,7 @@ module Rubino
         # Guard flush in the same way as the per-chunk emit so a final UI error
         # doesn't lose the response. (issue #21)
         flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        build_response(response, buffered, usage: usage, final_text_block: last_block)
+        build_response(response, buffered, usage: usage, final_text_block: last_block, streaming: true)
       end
 
       # Wires the per-round-trip ruby_llm callbacks (#355 #351) and returns a
@@ -424,8 +469,8 @@ module Rubino
 
       # Flushes the think-filter, swallowing UI/flush errors so a late failure
       # never loses the response (issues #6, #21).
-      def flush_filter(think_filter, event: "llm.stream.flush_error", &emit)
-        think_filter.flush(&emit)
+      def flush_filter(think_filter, event: "llm.stream.flush_error", final: true, &emit)
+        think_filter.flush(final: final, &emit)
       rescue StandardError => e
         log_safely(event: event, error: e.message)
       end
@@ -499,6 +544,24 @@ module Rubino
         elsif @provider == "openai"
           base = present_base_url(prov_cfg)
           c.openai_api_base = base if base
+        elsif native_ruby_llm_provider?(@provider)
+          # A provider that ruby_llm supports natively but we don't special-case
+          # above (deepseek, mistral, perplexity, xai, …). It has a stable
+          # default endpoint and a `<provider>_api_key` config setter, but
+          # nothing wired it before — so CredentialCheck would pass on the
+          # presence of <PROVIDER>_API_KEY while the call died with
+          # "Missing configuration for X: x_api_key" (#482). Wire the resolved
+          # key (config first, then the native ENV var) and an optional
+          # base_url override through ruby_llm's generic provider options, so
+          # the preflight verdict matches what the call actually hits. Like the
+          # native openai/anthropic/gemini wiring above (and unlike the
+          # *_compatible paths), only set what's present and leave the gating to
+          # the CredentialCheck preflight — construction must not raise on a
+          # missing key (callers build the adapter just to read .provider).
+          key = native_provider_api_key(prov_cfg)
+          c.public_send("#{@provider}_api_key=", key) if key
+          base = present_base_url(prov_cfg)
+          c.public_send("#{@provider}_api_base=", base) if base
         end
 
         # We OWN retry/backoff in Agent::ModelCallRunner (token-gated,
@@ -548,6 +611,16 @@ module Rubino
               "(e.g. ${#{@provider.to_s.upcase}_API_KEY} with the value in .env)."
       end
 
+      # The api_key for a natively-supported provider (deepseek, mistral, …):
+      # config `providers.<name>.api_key` first, then the native <PROVIDER>_API_KEY
+      # ENV var (the SAME var CredentialCheck.usable? consults), or nil. Resolving
+      # from the identical source as the preflight keeps the two in lockstep (#482);
+      # the CredentialCheck preflight — not this wiring — gates a missing key.
+      def native_provider_api_key(prov_cfg)
+        key = prov_cfg["api_key"] || CredentialCheck.provider_env_key(@provider)
+        key unless key.to_s.empty?
+      end
+
       # The configured base_url, normalised to nil when blank/whitespace so a
       # config like `base_url: ""` (or a stripped-to-empty env interpolation)
       # is treated as "unset" instead of being passed through as an EMPTY api_base.
@@ -579,7 +652,7 @@ module Rubino
       # default — including "auto" and the Bedrock-bearer override — through the
       # single ProviderResolver seam rather than re-implementing it here.
       def resolve_provider
-        ProviderResolver.resolve(@model_id, explicit_provider: @config.model_provider)
+        ProviderResolver.resolve(@model_id, explicit_provider: @config.dig("model", "provider"))
       end
 
       def build_chat(tools: nil, response_format: nil, budget_exhausted: nil)
@@ -625,8 +698,53 @@ module Rubino
                                         tool_executor: @tool_executor,
                                         cache_tools: tool_cache_breakpoint?,
                                         budget_exhausted: budget_exhausted,
+                                        cancel_token: @cancel_token,
+                                        # #583: only the anthropic-family path can carry a typed
+                                        # is_error on a mid-stream tool_result (Content::Raw block);
+                                        # other providers get the plain string + the stronger wording.
+                                        error_marker: anthropic_generation_path?,
                                         production: true)
+        install_cache_middleware(chat)
         chat
+      end
+
+      # Insert the conversation-tail prompt-cache breakpoint middleware on this
+      # chat's Anthropic Faraday connection (#311 growing-conversation tail).
+      # Same gate as the static breakpoints (anthropic-family path + prompt_cache
+      # on); a no-op on openai/ollama. The middleware sits BEFORE Faraday's JSON
+      # serializer so it mutates the request Hash directly, and is idempotent —
+      # registering it more than once on a reused connection is guarded by the
+      # builder-handler check so we never stack duplicates.
+      def install_cache_middleware(chat)
+        return unless tool_cache_breakpoint?
+
+        faraday = chat_faraday(chat)
+        return unless faraday
+
+        builder = faraday.builder
+        return if builder.handlers.any? { |h| h.klass == CacheBreakpointMiddleware }
+
+        builder.insert_before(::Faraday::Request::Json, CacheBreakpointMiddleware)
+      rescue StandardError
+        # Caching is a latency optimization, never a correctness requirement: if
+        # ruby_llm's connection internals shift, fall back to the static
+        # breakpoints rather than breaking the request path.
+        nil
+      end
+
+      # Reach the live Faraday::Connection behind a RubyLLM::Chat without a
+      # monkey-patch: Chat holds the Provider, Provider exposes its
+      # RubyLLM::Connection (public attr_reader), whose #connection is the
+      # Faraday object. Returns nil if any link is absent (defensive).
+      def chat_faraday(chat)
+        provider = chat.instance_variable_get(:@provider)
+        return nil unless provider.respond_to?(:connection)
+
+        rc = provider.connection
+        return nil unless rc.respond_to?(:connection)
+
+        faraday = rc.connection
+        faraday.respond_to?(:builder) ? faraday : nil
       end
 
       # The model id handed to RubyLLM.chat. On the NATIVE path (no explicit
@@ -674,7 +792,7 @@ module Rubino
       def apply_generation_params(chat)
         anthropic_family = anthropic_generation_path?
 
-        rendered = reasoning_manager.render(
+        rendered = ReasoningManager.render(
           budget: anthropic_family ? thinking_budget : 0,
           temperature: @temperature,
           max_tokens: max_output_tokens,
@@ -692,12 +810,46 @@ module Rubino
           end
         end
         chat.with_temperature(rendered.temperature) if !rendered.temperature.nil? && chat.respond_to?(:with_temperature)
+
+        # OpenAI-compatible passthrough (#extra_body): merge the configured
+        # free-form body hash into the params so ruby_llm deep-merges it into the
+        # /v1/chat/completions payload (Provider#complete: deep_merge(payload,
+        # params)). This reaches gateways like oMLX / Qwen that need
+        # chat_template_kwargs:{enable_thinking:false} to suppress CoT leakage and
+        # emit native tool_calls. Confined to the OpenAI-compatible path so the
+        # anthropic-family request shape and the thinking-budget logic above are
+        # untouched. Adapter-routed keys (max_tokens/thinking) win on conflict.
+        unless anthropic_family
+          eb = extra_body
+          params = eb.merge(params) unless eb.empty?
+        end
+
         # Single with_params call — ruby_llm REPLACES @params on every call,
         # so max_tokens and a params-routed thinking block must travel together.
         chat.with_params(**params) if params.any? && chat.respond_to?(:with_params)
       end
 
-      def reasoning_manager = @reasoning_manager ||= ReasoningManager.new
+      # Free-form hash merged verbatim into the OpenAI-compatible request body
+      # (providers.<name>.extra_body). Symbolizes keys recursively so ruby_llm's
+      # with_params (kwargs) and the JSON payload deep-merge accept them. Returns
+      # an empty hash when unset/non-hash → inert, byte-identical to before.
+      def extra_body
+        raw = provider_cfg["extra_body"]
+        return {} unless raw.is_a?(Hash)
+
+        deep_symbolize(raw)
+      end
+
+      def deep_symbolize(value)
+        case value
+        when Hash
+          value.each_with_object({}) { |(k, v), h| h[k.to_sym] = deep_symbolize(v) }
+        when Array
+          value.map { |v| deep_symbolize(v) }
+        else
+          value
+        end
+      end
 
       # True when generation runs through ruby_llm's anthropic provider — the
       # only path where thinking budgets and the 4096 max_tokens default apply.
@@ -789,13 +941,22 @@ module Rubino
         provider_cfg["anthropic_compatible"] == true
       end
 
+      # True when ruby_llm supports `provider` natively via a `<provider>_api_key`
+      # config setter (deepseek, mistral, perplexity, xai, …) AND we don't already
+      # special-case it (openai/anthropic/gemini/bedrock have dedicated wiring).
+      # Single source of truth shared with CredentialCheck so the preflight only
+      # promises "usable" for a provider whose key the adapter actually wires (#482).
+      def native_ruby_llm_provider?(provider)
+        CredentialCheck.native_ruby_llm_provider?(provider)
+      end
+
       # True when the "hidden" render mode is active. The streaming emit no
       # longer drops :thinking chunks on it — the CLI buffers them unrendered
       # so Ctrl-O can reveal the last thought even in hidden mode (#76), and
       # UI::API drops them at its own boundary. Still gates the bedrock-bearer
       # client, which has no downstream reveal machinery.
       def reasoning_hidden?
-        Config::ReasoningPrefs.mode(@config) == :hidden
+        Config::ReasoningPrefs.effective_mode(@config) == :hidden
       end
 
       # ── Streaming resilience helpers (issues #12, #22) ────────────────────
@@ -810,9 +971,12 @@ module Rubino
       end
 
       def stale_chunk_timeout
-        @config.dig("providers", @provider, "stale_timeout_seconds") ||
-          @config.dig("providers", "openai", "stale_timeout_seconds") ||
-          300
+        explicit = @config.dig("providers", @provider, "stale_timeout_seconds")
+        return explicit if explicit
+
+        return 30 if openai_compatible_provider? || anthropic_compatible_provider?
+
+        @config.dig("providers", "openai", "stale_timeout_seconds") || 300
       end
 
       def check_stream_stale!(last_chunk_at, stale_after)
@@ -840,6 +1004,11 @@ module Rubino
         Thread.new do
           loop do
             sleep(tick)
+            if @cancel_token&.cancelled?
+              target.raise(Rubino::Interrupted.new(reason: @cancel_token.reason))
+              break
+            end
+
             idle = monotonic_now - last_chunk_at_reader.call
             next if idle <= stale_after
 
@@ -928,13 +1097,40 @@ module Rubino
               tool_calls: tool_calls
             )
           when :tool
-            chat_instance.messages << RubyLLM::Message.new(
-              role: role,
+            chat_instance.messages << build_tool_message(
               content: content,
-              tool_call_id: msg[:tool_call_id] || msg["tool_call_id"]
+              tool_call_id: msg[:tool_call_id] || msg["tool_call_id"],
+              is_error: msg[:is_error] || msg["is_error"]
             )
           end
         end
+      end
+
+      # Builds the RubyLLM::Message for a tool result. A denied/errored result
+      # (#583) must reach the model marked as an ERROR so it can't read the
+      # denial text as an ordinary result and fabricate an answer. ruby_llm's
+      # tool-result formatter has no is_error knob, but on the anthropic-family
+      # path it passes a Content::Raw value straight through as the message's
+      # content blocks (Anthropic::Tools.format_tool_result). So we hand it the
+      # native tool_result block carrying Anthropic's is_error:true. A normal
+      # (success) result, and every non-anthropic provider, build the plain
+      # string content exactly as before — byte-identical to the prior path.
+      def build_tool_message(content:, tool_call_id:, is_error:)
+        if is_error && anthropic_generation_path?
+          block = {
+            type: "tool_result",
+            tool_use_id: tool_call_id,
+            content: content.to_s,
+            is_error: true
+          }
+          return RubyLLM::Message.new(
+            role: :tool,
+            content: RubyLLM::Content::Raw.new([block]),
+            tool_call_id: tool_call_id
+          )
+        end
+
+        RubyLLM::Message.new(role: :tool, content: content, tool_call_id: tool_call_id)
       end
 
       # Prefill-to-continue (Slice 5, rung 4): seat the model's own interim text
@@ -993,7 +1189,7 @@ module Rubino
       # the final response's own usage when no accumulator was wired (the
       # accumulator is only zero when ruby_llm surfaced no per-message usage, in
       # which case the final-message usage is the best we have).
-      def build_response(response, buffered = nil, usage: nil, final_text_block: nil)
+      def build_response(response, buffered = nil, usage: nil, final_text_block: nil, streaming: false)
         return nil unless response
 
         # Budget Halt (#355a): when ToolBridge returned RubyLLM::Tool::Halt to
@@ -1020,7 +1216,19 @@ module Rubino
 
         AdapterResponse.new(
           content: buffered && !buffered.empty? ? buffered : response.content,
-          tool_calls: extract_tool_calls(response),
+          # On the streaming path ruby_llm runs the WHOLE model↔tool loop inside
+          # one ask(): every tool was already executed mid-stream via ToolBridge
+          # (→ Agent::ToolExecutor — the single source of truth for the
+          # tool_started/tool_finished render + audit). The message ruby_llm
+          # RETURNS, however, can STILL carry those executed tool_calls (the
+          # anthropic-compatible MiniMax /anthropic path does), and handing them
+          # back made Loop#run's #has_tool_calls? branch re-run #execute_tool_calls
+          # on tools that already ran — firing a SECOND tool_finished and rendering
+          # the `└ ▸ sa_… · <name> · started` spawn confirmation TWICE (#53). They
+          # already ran, so the streaming response carries NONE; the Loop treats it
+          # as the terminal text turn. The non-streaming path keeps them: there
+          # ruby_llm returns the final TEXT message (no tool_calls) anyway.
+          tool_calls: streaming ? [] : extract_tool_calls(response),
           input_tokens: input_tokens,
           output_tokens: output_tokens,
           model_id: @model_id,

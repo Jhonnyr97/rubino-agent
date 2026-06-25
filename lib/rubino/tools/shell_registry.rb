@@ -14,9 +14,29 @@ module Rubino
     class ShellRegistry
       RING_BYTES = 256 * 1024 # cap per run; older bytes are dropped
 
+      # A backgrounded command that FINISHES before the next turn used to be
+      # dropped from the registry the moment a reader (shell_output/tail/kill)
+      # saw it non-running — which also collapsed `any?` to false, so the
+      # shell-management tools vanished from the schema next turn and the
+      # model could never fetch a short bg command's captured output (#78).
+      # Instead a finished entry is RETIRED: it stays in the registry (its
+      # buffer + exit status intact, retrievable by shell_output) and `any?`
+      # keeps the tools exposed, until it is read again OR these bounds reap
+      # it. RETIRED_TTL caps how long a finished-but-unread entry lingers;
+      # MAX_RETIRED caps how many we keep at once (oldest-retired evicted
+      # first) so the registry stays bounded across a long session.
+      RETIRED_TTL = 300 # seconds a finished, unread bg shell stays retrievable
+      MAX_RETIRED = 16  # most retired entries retained at once
+
       Entry = Struct.new(
         :id, :command, :cwd, :pid, :pgid, :wait_thr, :reader_thr,
-        :buffer, :mutex, :started_at, :read_offset, :stdin,
+        :buffer, :mutex, :started_at, :read_offset, :stdin, :retired_at,
+        # sink: the parent's background_sink captured at spawn (thread-locals
+        # don't propagate to the reader thread, so we stash it like a subagent
+        # does). notified: fire-once guard so a finished bg shell pushes its
+        # completion notice exactly once (US-5; avoids the Claude-Code
+        # duplicate-reminder leak).
+        :sink, :notified,
         keyword_init: true
       )
 
@@ -43,22 +63,42 @@ module Rubino
         # reparents to init as an orphan (MED-2). Tracking it here lets
         # #kill_all_groups SIGTERM/SIGKILL it synchronously on teardown.
         @fg_pgids = {}
+        # Lock-free, atomically-swapped snapshot of every live shell pgid
+        # (background entries + tracked foreground pgids). The SIGTERM/SIGHUP
+        # teardown trap (#478) reaps the child groups, but it CANNOT take the
+        # mutex above — Ruby forbids Mutex#synchronize from a trap context
+        # (ThreadError). The writers always rebuild this frozen Array UNDER the
+        # mutex; the trap reads it with a single, lock-free ivar read (an atomic
+        # reference load in MRI) and never iterates a structure another thread
+        # is mutating. See #kill_all_groups_trap_safe.
+        @pgid_snapshot = [].freeze
       end
 
       # Track a live foreground shell process group so teardown can reap it.
       def register_pgid(pgid)
-        @mutex.synchronize { @fg_pgids[pgid] = true }
+        @mutex.synchronize do
+          @fg_pgids[pgid] = true
+          refresh_pgid_snapshot
+        end
         pgid
       end
 
       # Drop a foreground shell process group once its own thread has reaped it.
       def unregister_pgid(pgid)
-        @mutex.synchronize { @fg_pgids.delete(pgid) }
+        @mutex.synchronize do
+          @fg_pgids.delete(pgid)
+          refresh_pgid_snapshot
+        end
       end
 
       # Spawns `command` detached in its own process group so a single kill
       # takes out the whole subtree. Returns the new entry.
       def spawn(command:, cwd:)
+        # Capture the parent's notification sink on the CALLING thread (the turn
+        # thread). The reader thread below can't read Rubino.background_sink —
+        # thread-locals don't propagate — so a finished bg shell would notify
+        # nothing (US-5 lost-completion). Stash it like a subagent does.
+        sink = Rubino.background_sink
         rd, wr = IO.pipe
         # Writable stdin pipe: the agent feeds answers to interactive prompts
         # (Y/N, "select region", apt-style) via the `shell_input` tool, which
@@ -70,7 +110,17 @@ module Rubino
         # pgid == child pid. Lets shell_kill send SIGTERM to the whole tree.
         # bash -o pipefail keeps this path consistent with the foreground
         # shell: a mid-pipeline crash surfaces as the exit status (#156).
-        pid = Process.spawn("bash", "-o", "pipefail", "-c", command,
+        #
+        # OS write-jail (#290/#544, slice 2): a backgrounded command went
+        # UNJAILED before this — a real hole, since `run_in_background: true`
+        # let a write outside the workspace through that the foreground path
+        # blocks. We now build the spawn argv+env through the SAME
+        # ShellTool.sandboxed_bash_argv helper the foreground uses, so the
+        # platform sandbox launcher prefixes bash and the writable-roots env is
+        # merged identically. The launcher `exec`s into bash in-place, so the
+        # pgroup/pipes/cwd/tracking below are all preserved. Empty prefix when
+        # the sandbox is off/unavailable ⇒ byte-identical to before.
+        pid = Process.spawn(*ShellTool.sandboxed_bash_argv(command, cwd: cwd),
                             chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
         wr.close
         in_rd.close
@@ -86,11 +136,16 @@ module Rubino
           mutex: Mutex.new,
           started_at: Time.now,
           read_offset: 0,
-          stdin: in_wr
+          stdin: in_wr,
+          sink: sink,
+          notified: false
         )
         entry.reader_thr = Thread.new { drain_into(entry, rd) }
 
-        @mutex.synchronize { @entries[entry.id] = entry }
+        @mutex.synchronize do
+          @entries[entry.id] = entry
+          refresh_pgid_snapshot
+        end
         entry
       end
 
@@ -98,20 +153,53 @@ module Rubino
         @mutex.synchronize { @entries[id] }
       end
 
-      # True when at least one background shell has been started this session
-      # (and not yet removed). The session-stable signal #313 gates the
-      # shell-management tools on: a normal turn with no background shell never
-      # ships shell_input/shell_output/shell_tail/shell_kill. Flips at most once
-      # per session (when the first background shell is spawned), so the cached
-      # tool prefix stays stable across ordinary turns.
+      # True when at least one background shell is RUNNING or has finished but is
+      # still retained (retired, unread, within TTL — see #retire). The
+      # session-stable signal #313 gates the shell-management tools on this: a
+      # normal turn with no background shell never ships
+      # shell_input/shell_output/shell_tail/shell_kill, but a SHORT bg command
+      # that finished before the next turn keeps shell_output exposed so the
+      # model can still fetch its captured output (#78). Prunes stale retired
+      # entries first so the gate closes once nothing is reachable.
       def any?
-        @mutex.synchronize { !@entries.empty? }
+        @mutex.synchronize do
+          prune_retired
+          !@entries.empty?
+        end
       end
 
       def remove(id)
-        entry = @mutex.synchronize { @entries.delete(id) }
+        entry = @mutex.synchronize do
+          e = @entries.delete(id)
+          refresh_pgid_snapshot
+          e
+        end
         close_stdin(entry) if entry
         entry
+      end
+
+      # Retires a FINISHED background shell instead of dropping it (#78): the
+      # entry stays in the registry — its captured output + exit status intact
+      # and retrievable by a later shell_output — and `any?` keeps the
+      # shell-management tools exposed, so a short bg command's output is still
+      # reachable on the next turn. The process is already dead, so its pgid is
+      # cleared from the teardown snapshot and its stdin closed. Bounded by
+      # RETIRED_TTL / MAX_RETIRED (pruned here and in #any?). Stamps retired_at
+      # on the first retire and is idempotent — a second read of a retired entry
+      # keeps the original timestamp so a re-read can't extend its lifetime
+      # indefinitely. No-op for an unknown or still-running id.
+      def retire(id)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return nil unless entry
+          return entry if entry.retired_at # already retired — keep original TTL clock
+
+          entry.retired_at = Time.now
+          close_stdin(entry)    # process is gone; release its stdin pipe
+          refresh_pgid_snapshot # a retired (dead) shell drops out of the teardown set
+          prune_retired
+          entry
+        end
       end
 
       # Writes `text` to the background process's stdin (with a trailing
@@ -170,8 +258,13 @@ module Rubino
       # edge (clean quit `ensure`, HUP/TERM trap, REPL break) reaps the child
       # shells the cooperative cancel token alone can't reach before the process
       # exits and the shells reparent to init. Returns the pgids it signalled.
+      #
+      # TRAP-SAFE (#478): reads the lock-free @pgid_snapshot — never
+      # Mutex#synchronize, which Ruby forbids from a signal-trap context
+      # (ThreadError). So the SIGTERM/SIGHUP teardown trap can call this
+      # directly. Process.kill and sleep are both async-signal-safe.
       def kill_all_groups(grace: 0.5)
-        pgids = @mutex.synchronize { (@entries.values.map(&:pgid) + @fg_pgids.keys).uniq }
+        pgids = @pgid_snapshot
         return pgids if pgids.empty?
 
         pgids.each { |pgid| signal_group("TERM", pgid) }
@@ -181,6 +274,34 @@ module Rubino
       end
 
       private
+
+      # Rebuild the lock-free pgid snapshot from the authoritative maps and swap
+      # it in with a single atomic ivar assignment. ALWAYS called UNDER @mutex by
+      # a writer, so it observes a consistent map and serializes against other
+      # writers; the trap-side reader in #kill_all_groups never locks. The new
+      # Array is frozen so a reader can't see a half-built collection.
+      def refresh_pgid_snapshot
+        live_pgids = @entries.values.reject(&:retired_at).map(&:pgid)
+        @pgid_snapshot = (live_pgids + @fg_pgids.keys).uniq.freeze
+      end
+
+      # Bounds the retained-finished set (#78): drop retired entries older than
+      # RETIRED_TTL, then evict the oldest-retired ones until at most MAX_RETIRED
+      # remain. Running entries are never touched. Always called UNDER @mutex.
+      def prune_retired
+        retired = @entries.values.select(&:retired_at)
+        return if retired.empty?
+
+        now = Time.now
+        stale = retired.select { |e| now - e.retired_at > RETIRED_TTL }
+        survivors = retired - stale
+        overflow = survivors.sort_by(&:retired_at).first([survivors.size - MAX_RETIRED, 0].max)
+        (stale + overflow).each do |e|
+          @entries.delete(e.id)
+          close_stdin(e)
+        end
+        refresh_pgid_snapshot
+      end
 
       def signal_group(sig, pgid)
         Process.kill(sig, -pgid)
@@ -222,6 +343,39 @@ module Rubino
         # pipe closed — process exited
       ensure
         rd.close unless rd.closed?
+        # The reader thread ends exactly when the pipe closes = the process
+        # exited (normal, crash, or shell_kill). Push a completion notice to the
+        # parent so a finished background SHELL auto-wakes the model the same way
+        # a finished background SUBAGENT does — without this, a finished bg shell
+        # surfaced NOTHING (US-5 lost notification). Fire-once.
+        notify_completion(entry)
+      end
+
+      # Fire-once completion notice for a finished background shell, routed
+      # through the captured parent sink (drained at Agent::Loop's top-of-turn,
+      # like a subagent's `[background-task]` notice).
+      def notify_completion(entry)
+        fire = entry.mutex.synchronize do
+          next false if entry.notified
+
+          entry.notified = true
+        end
+        return unless fire
+        return unless entry.sink
+
+        code = begin
+          entry.wait_thr&.value&.exitstatus
+        rescue StandardError
+          nil
+        end
+        status = code.nil? || code.zero? ? "completed" : "exited (code #{code})"
+        entry.sink.push_notice(
+          "[background-shell] Shell #{entry.id} (`#{entry.command}`) #{status}. " \
+          "Read its output with `shell_output run_id=#{entry.id}`."
+        )
+      rescue StandardError
+        # Notification is best-effort — never let it crash the reader thread.
+        nil
       end
     end
   end

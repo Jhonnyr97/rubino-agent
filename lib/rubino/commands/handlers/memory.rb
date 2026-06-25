@@ -17,6 +17,8 @@ module Rubino
       #   /memory forget <id>      → delete a fact
       #   /memory backend          → active + available backends (#184)
       class Memory
+        include Display
+
         def initialize(ui:)
           @ui = ui
         end
@@ -33,9 +35,13 @@ module Rubino
             id ? show_memory(id) : @ui.info("Usage: /memory show <id>")
           elsif args.match?(/\Abackend\b/)
             show_memory_backend(args[/\Abackend\s+(\S+)\z/, 1])
-          elsif args.match?(/\Aforget\b/)
-            id = args[/\Aforget\s+(\S+)\z/, 1]
-            id ? forget_memory(id) : @ui.info("Usage: /memory forget <id>")
+          elsif args.match?(/\A(?:forget|delete)\b/)
+            # Verb parity with the `rubino memory delete|forget` CLI (#Y3B): the
+            # CLI accepted both verbs but the REPL only knew `forget`. Accept
+            # `delete` here too so muscle memory from either surface works.
+            verb = args[/\A(forget|delete)\b/, 1]
+            id   = args[/\A(?:forget|delete)\s+(\S+)\z/, 1]
+            id ? forget_memory(id) : @ui.info("Usage: /memory #{verb} <id>")
           elsif args.match?(/\Asearch\b/)
             # `search` is a subcommand token, not a query term (#59): bare
             # `/memory search` falls back to the summary instead of searching
@@ -143,7 +149,7 @@ module Rubino
           @ui.success(%(Forgot #{safe(memory[:id][0..7])} "#{safe(truncate(memory[:content], 60))}"))
         end
 
-        # Resolve the *configured* memory backend (default: sqlite tiny-Zep), the
+        # Resolve the *configured* memory backend (default: sqlite), the
         # same store the agent loop, the `rubino memory` CLI and the HTTP
         # `/v1/memory` ops use. The old `Memory::Store.new` was hardwired to the
         # legacy `:memories` table and ignored `memory.backend`, so in-chat
@@ -162,30 +168,6 @@ module Rubino
           @ui.table(headers: %w[ID Kind Content], rows: rows)
         end
 
-        # Wraps "<head><description>" to the terminal width, breaking only on
-        # whitespace, with continuation lines indented to the description column.
-        def wrap_skill_line(head, description)
-          width = terminal_width
-          indent = " " * head.length
-          avail  = [width - head.length, 20].max
-
-          lines = []
-          current = +""
-          description.split(/\s+/).each do |word|
-            candidate = current.empty? ? word : "#{current} #{word}"
-            if candidate.length > avail && !current.empty?
-              lines << current
-              current = word.dup
-            else
-              current = candidate
-            end
-          end
-          lines << current unless current.empty?
-          lines = [""] if lines.empty?
-
-          lines.each_with_index.map { |line, i| (i.zero? ? head : indent) + line }
-        end
-
         def truncate(text, max)
           s = text.to_s.gsub(/\s+/, " ").strip
           s.length > max ? "#{s[0, max - 1]}…" : s
@@ -196,13 +178,6 @@ module Rubino
         # the non-sanitizing `info`/`success` funnel (CWE-150, R4-N2).
         def safe(text)
           Rubino::Util::Output.sanitize_terminal(text)
-        end
-
-        def terminal_width
-          cols = IO.console&.winsize&.last
-          cols&.positive? ? cols : 80
-        rescue StandardError
-          80
         end
       end
     end
