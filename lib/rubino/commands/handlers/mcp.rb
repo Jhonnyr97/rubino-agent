@@ -161,11 +161,15 @@ module Rubino
         end
 
         # `<glyph> <word>` for a server's state (colored like agent_status_icon):
-        # green ● reachable, red ✗ down, yellow ◌ not started (no live client).
+        # green ● reachable, yellow ⚠ degraded (alive but tools/list failed,
+        # #575), red ✗ down, yellow ◌ not started (no live client). Degraded
+        # comes from a RECORDED registration error, not merely zero tools — a
+        # healthy server may legitimately expose no tools and stays ●.
         def mcp_status_icon(name)
           entry = mcp_health.find { |h| h[:name] == name }
           glyph, word, color =
             if entry.nil? then ["◌", "not started", :yellow]
+            elsif entry[:degraded] then ["⚠", "degraded", :yellow]
             elsif entry[:alive] then ["●", "reachable", :green]
             else ["✗", "down", :red]
             end

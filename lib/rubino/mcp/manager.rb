@@ -94,11 +94,24 @@ module Rubino
           wrapped = MCPToolWrapper.new(mcp_tool, server_name: name.to_s)
           Tools::Registry.register(wrapped)
         end
+        # A clean tools/list clears any prior failure so a recovered server
+        # stops showing degraded (mirrors start_server clearing on success).
+        @last_errors.delete(name.to_s)
       rescue StandardError => e
+        # Record the failure so /mcp's drill-in (and the degraded glyph below)
+        # can explain a connected-but-toolless server (#575) — start_server
+        # records start failures the same way; a swallowed warning alone left
+        # the broken state invisible.
+        @last_errors[name.to_s] = e.message
         Rubino.ui.warning("Failed to load tools from '#{name}': #{e.message}")
       end
 
-      # Checks health of all connected servers
+      # Checks health of all connected servers. `alive` is process-liveness
+      # (the child is up); `degraded` is protocol-liveness (#575): the process
+      # is alive but tools/list/registration failed, so a recorded last_error
+      # exists despite a live client. Callers render degraded distinctly from
+      # plain reachable — an alive server that legitimately exposes zero tools
+      # has NO last_error and is NOT degraded.
       def health_check
         @clients.map do |name, client|
           alive = begin
@@ -106,7 +119,7 @@ module Rubino
           rescue StandardError
             false
           end
-          { name: name, alive: alive }
+          { name: name, alive: alive, degraded: alive && @last_errors.key?(name.to_s) }
         end
       end
 
