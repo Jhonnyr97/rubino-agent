@@ -114,11 +114,11 @@ module Rubino
         @idle_cards ||= Chat::IdleCardHost.new
       end
 
-      # Auto-opens the EXISTING approval / reply prompt for ONE pending subagent
-      # request the human must act on, from the idle poll loop (#421). Delegates
-      # to the SAME Handlers::Agents the /agents and /reply slash commands use, so
-      # there is no second prompt or new verb — the affordance simply opens itself
-      # at idle instead of waiting for the user to type a slash command. Returns
+      # Auto-opens the EXISTING approval prompt for ONE pending subagent request
+      # the human must act on, from the idle poll loop (#421). Delegates to the
+      # SAME Handlers::Agents the /agents slash command uses, so there is no
+      # second prompt or new verb — the affordance simply opens itself at idle
+      # instead of waiting for the user to type a slash command. Returns
       # true when it presented a request (the poll loop repaints + re-checks),
       # false when nothing was pending. Best-effort: a hiccup in the auto-open
       # must never break the idle prompt, so it falls back to "nothing pending"
@@ -1045,8 +1045,8 @@ module Rubino
 
             # While ATTACHED to a subagent (the agent-view), the prompt is scoped
             # to it: the line NEVER runs a parent turn. A `/`-line is an
-            # agent-scoped command; anything else steers the child (or answers it
-            # when it is blocked on you). The `--attach` command that ENTERS this
+            # agent-scoped command; anything else steers the child. The `--attach`
+            # command that ENTERS this
             # mode (from the main prompt) arrives while @attached_id is still nil,
             # so it falls through to normal dispatch below.
             if attached_to_agent?
@@ -1209,9 +1209,9 @@ module Rubino
         ensure
           # Structured-concurrency teardown: the parent REPL is leaving (clean quit
           # OR the double-tap Ctrl+C break above), so cancel every live subagent
-          # before we return. Without this a child blocked on ask_parent(blocking)
-          # stays parked on its gate for the full ask_parent_timeout (~900s) — the
-          # parent that owed it an answer is gone, but nothing wakes its gate.
+          # before we return. Without this a child parked on its approval gate
+          # stays parked for the full approval timeout — the parent that owed it a
+          # decision is gone, but nothing wakes its gate.
           # #shutdown! wakes each within one WAKE_TICK so it unwinds via its
           # `rescue Rubino::Interrupted` with the clean "cancelled" message. If a
           # child is stuck in a provider read and never observes the cancel token,
@@ -1620,11 +1620,11 @@ module Rubino
             break
           end
 
-          # Auto-open the EXISTING approval / reply prompt for a pending subagent
-          # request (#421): a parked child needs a human decision, so the
-          # affordance presents ITSELF here at idle instead of leaving a passive
-          # card the user must answer by guessing `/agents <id>` / `/reply <id>`.
-          # This is the SAME prompt those slash commands open — just auto-opened.
+          # Auto-open the EXISTING approval prompt for a pending subagent request
+          # (#421): a parked child needs a human decision, so the affordance
+          # presents ITSELF here at idle instead of leaving a passive card the
+          # user must answer by guessing `/agents <id>`. This is the SAME prompt
+          # that slash command opens — just auto-opened.
           # Because the REPL re-enters this idle loop at EVERY turn boundary
           # (including after an interrupted/aborted turn), a request that arrived
           # mid-turn or survived an abort is re-detected here and never lost. The
@@ -1978,11 +1978,11 @@ module Rubino
         # escaped the cooperative path. Cancel and re-raise so run_interactive's
         # loop breaks and the session ends cleanly.
         runner.cancel!
-        # This Ctrl-C-aborted turn may have orphaned a subagent blocked on
-        # ask_parent(blocking:true): the parent turn that owed it an answer is
-        # gone, so without this the child stays parked on its gate for the full
-        # ask_parent_timeout (~900s). Cancel every live child so each unwinds NOW
-        # via its `rescue Rubino::Interrupted` (clean "cancelled" message). The
+        # This Ctrl-C-aborted turn may have orphaned a subagent parked on its
+        # approval gate: the parent turn that owed it a decision is gone, so
+        # without this the child stays parked for the full approval timeout.
+        # Cancel every live child so each unwinds NOW via its
+        # `rescue Rubino::Interrupted` (clean "cancelled" message). The
         # re-raise also reaches run_interactive's teardown #cancel_all, but doing
         # it here keeps the unwind local to the edge that orphaned the child and
         # is idempotent, so the second call is a no-op.
@@ -2615,30 +2615,9 @@ module Rubino
         ui.success("agent: #{previous} → #{Rubino::ActiveAgent.current}")
         # A /agent switch is NON-destructive: the REPL, the session, and the
         # subagent registry all stay alive, so we must NOT cancel running
-        # children (that would kill useful in-flight work). But a child blocked on
-        # ask_parent is now waiting on a parent the human just re-pinned, which is
-        # easy to forget — so SURFACE any blocked child (the safe behavior here)
-        # rather than leave it stuck invisibly. The human can still /reply it.
-        warn_blocked_children_after_switch(ui)
+        # children (that would kill useful in-flight work).
       rescue ArgumentError => e
         ui.error(e.message)
-      end
-
-      # After a /agent switch, remind the human of any subagent still blocked on
-      # an ask_parent question (waiting on the human OR on its agent-parent) so
-      # the switch never silently strands a parked child at the idle prompt. Pure
-      # surfacing — nothing is cancelled; the children keep running and stay
-      # answerable via /reply <id>. Best-effort and quiet when nothing is blocked.
-      def warn_blocked_children_after_switch(ui)
-        blocked = Tools::BackgroundTasks.instance.running.select do |e|
-          %i[blocked_on_human blocked_on_parent].include?(e.status)
-        end
-        return if blocked.empty?
-
-        ui.warning("#{blocked.size} subagent(s) still waiting on an answer — /reply <id> to answer:")
-        blocked.each { |e| ui.info("  #{e.id} · #{e.subagent}") }
-      rescue StandardError
-        nil
       end
 
       # Resolves a one-shot `/<agent> <message>` route to its Definition, or nil
@@ -3095,7 +3074,7 @@ module Rubino
 
       # Route a line typed while attached. `/back`/`/detach` (or the child being
       # gone) return to the main view; a `/`-line is a COMMAND — the agent-scoped
-      # raw-text forms (bare `/stop`, `/reply`, `/probe`, `--attach`) are handled
+      # raw-text forms (bare `/stop`, `/probe`, `--attach`) are handled
       # in place, and EVERY other `/`-command (`/stop <id>`, `/agents`, `/status`,
       # …) routes through the SAME executor the main prompt uses (R3); only plain
       # text answers a blocked child or steers a running one. Reuses the existing
@@ -3125,7 +3104,7 @@ module Rubino
         # Switching to another live subagent still works; anything else gets a calm
         # notice — ← / /back returns to main. (Live = the same set BackgroundTasks#
         # live_status? / AgentMenu#live? use; inlined since it's the only use here.)
-        unless %i[running needs_approval blocked_on_human blocked_on_parent stopping].include?(entry.status)
+        unless %i[running needs_approval stopping].include?(entry.status)
           return attach_agent_view(Regexp.last_match(1), ui) if input =~ %r{\A/agents\s+(\S+)\s+--attach\z}
 
           # A `/`-command still EXECUTES even when the sub you're parked on has
@@ -3153,8 +3132,6 @@ module Rubino
           # The picker is a switcher while attached: selecting another subagent
           # SWITCHES the view to it (re-clear + replay) rather than steering.
           attach_agent_view(Regexp.last_match(1), ui)
-        when %r{\A/(?:reply|answer)\s+(.+)\z}m
-          agents_request_handler.deliver_reply(entry, Regexp.last_match(1))
         when %r{\A/probe\s+(.+)\z}m
           agents_request_handler.probe_agent(id, Regexp.last_match(1))
         when %r{\A/}
@@ -3170,13 +3147,9 @@ module Rubino
           result = cmd_executor.try_execute(input)
           attach_agent_view(result[:attach_agent], ui) if result.is_a?(Hash) && result[:attach_agent]
         else
-          if %i[needs_approval blocked_on_human].include?(entry.status)
-            # The child is blocked on YOU → the line is the answer.
-            agents_request_handler.deliver_reply(entry, input)
-          else
-            # The child is running → the line is a steer note folded at its next turn.
-            agents_request_handler.steer_agent(id, input)
-          end
+          # Plain text is a steer note folded into the child's context at its next
+          # turn boundary (a child parked on an approval folds it once it resumes).
+          agents_request_handler.steer_agent(id, input)
         end
       end
 

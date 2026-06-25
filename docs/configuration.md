@@ -303,7 +303,6 @@ tasks:
   max_children_per_node: 3       # max LIVE direct children per node
   max_concurrent_total: 8        # hard ceiling on total LIVE subagents across the tree
   max_live_probes_per_child: 5   # per-child budget for billed live probes (probe(live: true))
-  ask_parent_timeout: 900        # vestigial: governed the removed child→parent ask channel; no effect now
 ```
 
 ### tools

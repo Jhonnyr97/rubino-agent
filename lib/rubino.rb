@@ -181,11 +181,11 @@ module Rubino
 
     # The BackgroundTasks entry id of the subagent run executing on THIS thread,
     # if any. Set by TaskTool#run_child_thread around the child Runner#run! so a
-    # tool the child invokes (today: ask_parent) can find its own registry entry
-    # — the card it surfaces on, the steer queue it receives answers through —
-    # without threading the id through the loop/executor/tool signatures. Nil on
-    # the parent thread and on any non-delegated (top-level) run, which is the
-    # signal ask_parent uses to refuse (a top-level agent has no parent to ask).
+    # tool the child invokes (steer/probe a grandchild, spawn a nested task) can
+    # find its own registry entry — the card it surfaces on, the steer queue it
+    # receives notes through — without threading the id through the
+    # loop/executor/tool signatures. Nil on the parent thread and on any
+    # non-delegated (top-level) run.
     def current_subagent_id
       Thread.current[:rubino_current_subagent_id]
     end

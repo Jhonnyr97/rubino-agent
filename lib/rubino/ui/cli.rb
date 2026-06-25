@@ -872,51 +872,6 @@ module Rubino
         # An async-notice paint is cosmetic — never let it break a turn or child.
       end
 
-      # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
-      # instant a background child escalates an ask_parent to the human. This is
-      # the ATTENTION event (the one-time, unmissable banner); the persistent
-      # AMBIENT reminder is the ⛔ card line the live region keeps showing (see
-      # UI::SubagentCards#hint_line) so a blocked tree can never hide behind a
-      # spinner. The answer verb is /reply <id>; --stop cancels the child. Routed
-      # through $stdout so (during a turn) it lands above the bottom composer like
-      # every other committed line; between turns it prints inline.
-      def subagent_ask_banner(id, subagent, question)
-        emit_blank
-        emit("┄ a subagent needs you ┄", style: :dim)
-        # id/subagent/question are untrusted — the funnel's PATH 1 (#emit) strips
-        # every escape before the trusted style wrap (R3C-1, CWE-150).
-        emit("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer", style: %i[red bold])
-        emit("   ❓ #{question}", style: :yellow)
-        emit("   everything it needs is paused until you answer — #{ask_timeout_hint}", style: :dim)
-        emit("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel", style: :dim)
-        $stdout.flush
-        # The ⛔ state is the loudest one — the whole subtree is parked on the
-        # human — so it also rings the attention bell/hook.
-        ring_subagent_blocked(id, subagent)
-      end
-
-      # Rings ONLY the ⛔ attention bell/hook for a blocked child, WITHOUT the
-      # scrollback banner. Used by the mid-turn auto-open path: when the answer
-      # dropdown surfaces by itself, its own `◆ … asks` header + picker IS the
-      # on-screen banner, so re-printing #subagent_ask_banner above it just
-      # doubles the same question (#510). The attention bell still belongs on
-      # both paths — the subtree is parked on the human either way.
-      def ring_subagent_blocked(id, subagent)
-        notifier.blocked("#{id} (#{subagent}) is waiting on your answer")
-      end
-
-      # The honest bound for the ⛔ banner: a blocking ask_parent waits at most
-      # tasks.ask_parent_timeout seconds, then the child proceeds with its best
-      # judgement (ask_parent_tool.rb). The banner must say so — "no timeout" was
-      # a lie unless the bound is explicitly disabled (nil/0) in config (#145).
-      def ask_timeout_hint
-        seconds = Rubino.configuration.tasks_ask_parent_timeout.to_i
-        return "no timeout" unless seconds.positive?
-
-        human = (seconds % 60).zero? ? "#{seconds / 60}m" : "#{seconds}s"
-        "auto-resumes with its best judgement in #{human}"
-      end
-
       # Renders an ephemeral `probe` answer in the dim, fenced aside that the
       # locked UX prescribes: an opening `┄ probe (ephemeral · not saved) ┄`
       # rail, the answer body on a dim `┊` left-rail, then a closing
@@ -989,61 +944,6 @@ module Rubino
 
       def subagent_cards
         @subagent_cards ||= SubagentCards.new(pastel: @pastel)
-      end
-
-      # MID-TURN AUTO-OPEN bridge (Option A): a background child just escalated an
-      # ask_parent to the HUMAN while the parent turn is busy. If a bottom composer
-      # owns the screen we ask IT to surface the answer dropdown by itself — the
-      # composer wakes its input thread (self-pipe), snapshots the live draft, runs
-      # the dropdown there, delivers via the child's gate (NEVER the parent turn),
-      # then restores the draft. The FIFO drain (answer_all_human) re-reads
-      # awaiting_human after each delivery, so several pending asks resolve one at
-      # a time and a 2nd child that asks mid-open is picked up on the re-read.
-      #
-      # No-op when no turn is live (BottomComposer.current nil) — the idle poll
-      # (Handlers::Agents#auto_resolve_pending) covers that path. Called from the
-      # CHILD thread (AskParentTool#surface_and_notify); the actual takeover runs
-      # on the input thread. Best-effort — a hiccup here must never break the
-      # child or the parent turn.
-      #
-      # Returns true when a live composer OWNS the screen — i.e. the ask WILL be
-      # surfaced in an on-screen dropdown, either now via this takeover OR via the
-      # FIFO re-read of an already-running dropdown loop (#486, one-at-a-time).
-      # The caller (#surface_and_notify) uses that to SUPPRESS the redundant
-      # scrollback ask-banner whose question the dropdown header already shows
-      # (#510). Returns false only when there is no composer (the idle path, where
-      # /reply is the affordance) or on error.
-      def auto_open_human_ask(_entry = nil)
-        composer = BottomComposer.current
-        return false unless composer
-        # Belt-and-suspenders (#513): when the composer is ALREADY suspended the
-        # idle resolver (chat_command.rb) is mid-resolution and will surface the
-        # child itself — request_takeover would reject this anyway (returns false
-        # on @suspended), but bailing here makes it explicit that only ONE path
-        # claims the shared composer, so the two threads can't both report
-        # success and race the surface.
-        return false if composer.suspended?
-
-        handler = Commands::Handlers::Agents.new(ui: self)
-        # on_resume repaints the subagent cards from the live registry once the
-        # dropdown closes and the composer has resumed — so the aggregated
-        # `⛔N subagents waiting on you` hint (the live region's last row, wiped
-        # when the takeover suspended it) RELIABLY comes back whenever children
-        # are still awaiting_human (several pending, or the human cancelled),
-        # instead of staying invisible for the rest of the turn (#475-A).
-        #
-        # RETURN THE REAL RESULT (#513): request_takeover returns false when NO
-        # takeover (and no snapshot/restore) happened — composer not running,
-        # suspended, no wake pipe, or the one-at-a-time guard. On the one-at-a-time
-        # case the ask is NOT lost (answer_all_human's FIFO re-read surfaces it),
-        # but on the OTHER rejections nothing surfaces it on-screen, so the caller
-        # must KEEP the scrollback banner + /reply affordance. Hardcoding true here
-        # suppressed that banner and stranded the user with only a bell. A
-        # redundant banner is strictly safer than a stranded user, so we report
-        # the actual takeover result.
-        composer.request_takeover(on_resume: -> { set_subagent_cards }) { handler.answer_all_human }
-      rescue StandardError
-        false
       end
 
       # Echoes a line the user typed mid-turn, parked for the next turn.

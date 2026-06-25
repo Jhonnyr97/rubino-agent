@@ -34,11 +34,10 @@ RSpec.describe Rubino::Commands::Executor, "#busy_disposition" do
   end
 
   # Everything else that IS a known local built-in mutates state or affects the
-  # turn — not available mid-turn. /reply is BLOCKED on purpose: its interactive
-  # form (`/reply <id>` -> @ui.ask) would steal stdin from the live reader.
+  # turn — not available mid-turn.
   describe ":blocked — state-mutating / turn-affecting built-ins" do
     %w[/model /compact /clear /new /resume /config /sessions /branch /export
-       /memory /agent /reply /skills /mcp /add-dir /mode /reasoning /think
+       /memory /agent /skills /mcp /add-dir /mode /reasoning /think
        /probe /paste /clear-images /exit /quit /queued].each do |cmd|
       it "classifies #{cmd} as :blocked (default-to-blocked on uncertainty)" do
         # /resume is not a registered built-in name in this build, so it falls

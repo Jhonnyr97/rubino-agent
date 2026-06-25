@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-# #421 — auto-open the EXISTING approval / reply prompt for a pending subagent
+# #421 — auto-open the EXISTING approval prompt for a pending subagent
 # request. The REPL idle loop calls Handlers::Agents#auto_resolve_pending at
 # every idle tick so a parked child's request presents ITSELF (the existing
-# approve/deny/always prompt for an approval, the existing ◆ ask takeover for a
-# free-form reply) instead of leaving a passive card the user must answer by
-# guessing /agents <id> or /reply <id>. These specs pin the gate→prompt path:
+# approve/deny/always prompt for an approval) instead of leaving a passive
+# card the user must answer by guessing /agents <id>. These specs pin the
+# gate→prompt path:
 # the auto-open resolves the SAME gate the manual slash command resolves, a
 # request survives a turn interrupt (it is re-detected at the next idle), the
 # manual slash fallback still works, and the security gate semantics (what
@@ -64,17 +64,6 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
     [entry, gate]
   end
 
-  def stage_ask
-    entry = registry.reserve(subagent: "explore", prompt: "do work")
-    gate  = Rubino::Run::ApprovalGate.new
-    gate.register("ask_#{entry.id}")
-    registry.begin_ask(
-      entry.id, gate: gate, ask_id: "ask_#{entry.id}",
-                question: "sqlite or postgres?", blocking: true, owner_id: nil
-    )
-    [entry, gate]
-  end
-
   describe "#auto_resolve_pending" do
     it "auto-opens the EXISTING approval prompt and resolves the child's gate" do
       _, gate = stage_approval
@@ -123,29 +112,6 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       expect(decided).to be(true)
     end
 
-    it "auto-opens the EXISTING reply prompt and delivers the answer down the SAME wire" do
-      entry, _gate = stage_ask
-      answers << "use postgres" # the ◆ ask takeover's free-form answer
-      expect(registry).to receive(:deliver_answer).with(entry.id, "use postgres").and_call_original
-
-      expect(handler.auto_resolve_pending).to be(true)
-      # The existing ◆ ask takeover body was shown (the reply affordance).
-      expect(ui.lines.join("\n")).to include("asks").and include("sqlite or postgres?")
-    end
-
-    it "offers a pending APPROVAL before a pending REPLY (the more urgent gate)" do
-      _appr, appr_gate = stage_approval
-      _ask,  _ask_gate = stage_ask
-      allow(appr_gate).to receive(:decide)
-      decisions << :once
-
-      handler.auto_resolve_pending
-      # Approval body shown, reply body not yet (one request per call).
-      joined = ui.lines.join("\n")
-      expect(joined).to include("needs approval to run:")
-      expect(joined).not_to include("sqlite or postgres?")
-    end
-
     it "returns false (nothing presented) when no request is pending" do
       registry.reserve(subagent: "explore", prompt: "idle child")
       expect(handler.auto_resolve_pending).to be(false)
@@ -189,38 +155,10 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       expect(joined2).not_to include("more queued")
       expect(second_gate).to have_received(:decide)
     end
-
-    it "leaves the child waiting (no answer delivered) on an empty reply" do
-      entry, _gate = stage_ask
-      answers << "" # user dismissed the ◆ prompt without typing
-      expect(registry).not_to receive(:deliver_answer)
-
-      expect(handler.auto_resolve_pending).to be(true)
-      expect(registry.find(entry.id).status).to eq(:blocked_on_human) # still pending
-    end
-
-    it "re-detects a request that survived a turn interrupt (still pending at next idle)" do
-      entry, gate = stage_ask
-      # Simulate a turn that interrupted/aborted: the request was NEVER answered,
-      # so it is still :blocked_on_human and the next idle pass must re-surface it.
-      expect(registry.find(entry.id).status).to eq(:blocked_on_human)
-      answers << "postgres"
-      allow(gate).to receive(:decide)
-
-      expect(handler.auto_resolve_pending).to be(true) # surfaced, not lost
-    end
-  end
-
-  describe "manual slash fallback still works (auto-open is additive)" do
-    it "/reply <id> <answer> resolves a pending ask without the auto-open path" do
-      entry, _gate = stage_ask
-      expect(registry).to receive(:deliver_answer).with(entry.id, "postgres").and_call_original
-      handler.handle_reply("#{entry.id} postgres")
-    end
   end
 
   describe "security: the gate decides what requires approval, not the auto-open" do
-    it "only surfaces children the policy already flipped to :needs_approval/:blocked_on_human" do
+    it "only surfaces children the policy already flipped to :needs_approval" do
       # A plain running child (policy did NOT require approval) is NEVER auto-prompted.
       registry.reserve(subagent: "explore", prompt: "auto-runs allowlisted work")
       expect(handler.auto_resolve_pending).to be(false)

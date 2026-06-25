@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 # Attention notifications (UI::Notifier): the bell/command-hook signals for
-# "the agent needs eyes" — a long turn finishing, an approval prompt, a
-# blocked subagent. Channel rules under test:
+# "the agent needs eyes" — a long turn finishing, an approval prompt.
+# Channel rules under test:
 #   * the BEL byte goes to the REAL terminal only (never into a pipe);
 #   * quick turns stay silent (notifications.min_turn_seconds);
 #   * the optional command hook is spawned detached with RUBINO_EVENT /
@@ -33,12 +33,6 @@ RSpec.describe Rubino::UI::Notifier do
     it "rings the terminal bell on needs_approval" do
       sink = tty_sink
       with_stdout(sink) { build.needs_approval("shell wants: rm -rf build") }
-      expect(sink.string).to include("\a")
-    end
-
-    it "rings on blocked (a subagent waiting on the human)" do
-      sink = tty_sink
-      with_stdout(sink) { build.blocked("sa_1 is waiting on you") }
       expect(sink.string).to include("\a")
     end
 
@@ -75,7 +69,7 @@ RSpec.describe Rubino::UI::Notifier do
       allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("TERM_PROGRAM").and_return("iTerm.app")
       sink = tty_sink
-      with_stdout(sink) { build.blocked("line1\nline2") }
+      with_stdout(sink) { build.needs_approval("line1\nline2") }
       expect(sink.string).to include("\e]9;")
       # Control bytes in the message are scrubbed so they can't cut the
       # OSC sequence short.
@@ -114,10 +108,10 @@ RSpec.describe Rubino::UI::Notifier do
       allow(Process).to receive(:spawn).and_return(4242)
       allow(Process).to receive(:detach)
       with_stdout(StringIO.new) do
-        build("command" => "notify-send rubino").blocked("sa_1 needs you")
+        build("command" => "notify-send rubino").needs_approval("sa_1 needs you")
       end
       expect(Process).to have_received(:spawn).with(
-        { "RUBINO_EVENT" => "blocked", "RUBINO_MESSAGE" => "sa_1 needs you" },
+        { "RUBINO_EVENT" => "needs_approval", "RUBINO_MESSAGE" => "sa_1 needs you" },
         "notify-send rubino",
         in: File::NULL, out: File::NULL, err: File::NULL
       )
@@ -155,7 +149,7 @@ RSpec.describe Rubino::UI::Notifier do
       with_stdout(sink) do
         notifier = build
         notifier.needs_approval
-        notifier.blocked
+        notifier.needs_approval
         notifier.turn_finished(99)
       end
       expect(sink.string.count("\a")).to eq(1)
@@ -171,7 +165,7 @@ RSpec.describe Rubino::UI::Notifier do
           :@last_emitted_at,
           Process.clock_gettime(Process::CLOCK_MONOTONIC) - described_class::COALESCE_SECONDS - 0.1
         )
-        notifier.blocked
+        notifier.needs_approval
       end
       expect(sink.string.count("\a")).to eq(2)
     end

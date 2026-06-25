@@ -200,9 +200,9 @@ module Rubino
         # EVERY card — depth-1 or nested — renders and escalates through it.
         parent_ui = root_cli
         # Stash the spawn-captured sink on the entry so a tool running on the
-        # CHILD's thread (ask_parent) can notify the parent MODEL without
-        # reading the child's own thread-local sink — which is the child's own
-        # steer_queue, not the parent's queue (#195).
+        # CHILD's thread can notify the parent MODEL without reading the child's
+        # own thread-local sink — which is the child's own steer_queue, not the
+        # parent's queue (#195).
         entry.parent_sink = sink
         # Build the child UI on the PARENT thread so the collapsed-card view is
         # wired with this run's entry id + the parent CLI (whose live region hosts
@@ -249,7 +249,7 @@ module Rubino
                                                  budget: budget_handler_for(entry))
         # Wire the child Loop with the entry's OWN steering queue (parent->child
         # `steer` channel) and bind the current-subagent id so a tool the child
-        # invokes (ask_parent) can find its own registry entry. The steer queue
+        # invokes can find its own registry entry. The steer queue
         # is the SAME InputQueue the human uses to steer the parent: the parent
         # pushes a note via BackgroundTasks#steer, the child folds it in at its
         # next iteration boundary (Loop#inject_steered_input).
@@ -309,24 +309,12 @@ module Rubino
       # to its caller) — never silently lost.
       def record_completion(entry, text, sink, parent_ui)
         drained = BackgroundTasks.instance.complete(entry, status: :completed, result: text)
-        # Drop the gate-delivered answer COPIES (#457 regression): a /reply
-        # answer is delivered to the child via its ask gate AND mirrored onto the
-        # steer queue; when the child resumes via the gate and finishes without
-        # another turn, that mirror is drained here. It was NOT undelivered — the
-        # gate delivered it — so reporting it would surface a false "steer note
-        # not delivered" alarm on the happy path. GENUINE steer notes (no
-        # ANSWER_NOTE_PREFIX) still report undelivered, preserving #457's invariant.
-        # A drained gate-answer COPY (#457) is not undelivered — the gate
-        # delivered it; drop it. A drained DENY-note (#Y1B) is ADVISORY — the
-        # approval was already denied, so a "couldn't deliver it" alarm is
-        # misleading: the denial applied and the explanation is simply moot. Only
-        # GENUINE `/agents <id> steer` notes (neither prefix) are a real
-        # deliver-or-report case that warrants the scary warning.
-        denied = drained.select { |n| n.to_s.start_with?(BackgroundTasks::DENY_NOTE_PREFIX) }
-        undelivered = drained.reject do |n|
-          s = n.to_s
-          s.start_with?(BackgroundTasks::ANSWER_NOTE_PREFIX, BackgroundTasks::DENY_NOTE_PREFIX)
-        end
+        # A drained DENY-note (#Y1B) is ADVISORY — the approval was already
+        # denied, so a "couldn't deliver it" alarm is misleading: the denial
+        # applied and the explanation is simply moot. Only GENUINE
+        # `/agents <id> steer` notes (no prefix) are a real deliver-or-report
+        # case that warrants the scary warning.
+        denied, undelivered = drained.partition { |n| n.to_s.start_with?(BackgroundTasks::DENY_NOTE_PREFIX) }
         notify(sink, completion_notice(entry, text, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,
