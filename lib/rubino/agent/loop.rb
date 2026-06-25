@@ -45,6 +45,20 @@ module Rubino
         "#{HARNESS_CONTROL_MARKER} Continue exactly where you left off. " \
         "Do not restart or repeat any prior text.".freeze
 
+      # Anti-confabulation reinforcement (#583), injected on the model input ONCE
+      # per turn in which a tool was actually blocked/denied (gated on
+      # @denied_count > 0 — never fires on a clean turn, avoiding the #93/#97
+      # over-firing harness-note regression). Carries the trusted-harness marker
+      # so an injection-aware model reads it as runtime control, not user input,
+      # and wraps the field-standard `<system-reminder>` phrasing that the
+      # is_error tool_result (Lever 1) reinforces.
+      BLOCKED_TOOL_REMINDER =
+        "#{HARNESS_CONTROL_MARKER} <system-reminder>One or more tool calls were " \
+        "blocked and produced NO output. Treat any blocked tool as having " \
+        "returned nothing — never state or imply a blocked tool's result. If you " \
+        "needed it, report that the task is blocked pending approval." \
+        "</system-reminder>".freeze
+
       def initialize(session:, llm_adapter:, tool_executor:, message_store:,
                      budget:, ui:, event_bus:, config:, cancel_token: nil,
                      initial_image_paths: [], input_queue: nil)
@@ -173,6 +187,10 @@ module Rubino
         # approval but no interactive session", #260) — lets the binding guard
         # point at `--yolo` (F2) instead of "approve it" in the honest message.
         @noninteractive_block = false
+        # One-shot latch (#583): the blocked-tool <system-reminder> is injected at
+        # most once per turn, only after a real block, and reset here so a fresh
+        # turn never inherits a prior turn's reminder.
+        @blocked_reminder_emitted = false
         token_total = 0
 
         loop do
@@ -187,6 +205,7 @@ module Rubino
           # the user turn, so only parked background NOTICES fold in (#13);
           # typed lines stay queued for their own turns.
           inject_steered_input(messages, iteration)
+          inject_blocked_tool_reminder(messages)
 
           unless @budget.can_continue?(iteration)
             @ui.warning("Iteration budget exhausted (#{iteration} turns)")
@@ -417,6 +436,22 @@ module Rubino
         @event_bus.emit(Interaction::Events::INPUT_INJECTED,
                         text: text, iteration: iteration)
         @ui.input_injected(text)
+      end
+
+      # Reinforces the no-confabulation rule when a tool was blocked this turn
+      # (#583). Fires at most ONCE per turn and ONLY after a real block
+      # (@denied_count > 0), so a normal turn never sees it — avoiding the
+      # historical over-firing harness-note regression (#93/#97). Appended at the
+      # same safe ordering boundary the steering injection uses (top of the
+      # iteration, after the cancel check, no open tool_use pair), so it can never
+      # split a tool_use from its results. Not persisted: it is ephemeral runtime
+      # control for THIS model call, not part of the durable transcript.
+      def inject_blocked_tool_reminder(messages)
+        return if @blocked_reminder_emitted
+        return unless @denied_count.to_i.positive?
+
+        @blocked_reminder_emitted = true
+        messages << { role: "user", content: BLOCKED_TOOL_REMINDER }
       end
 
       # Inserts the framed notice message just before the trailing user message
@@ -904,6 +939,19 @@ module Rubino
         )
       end
 
+      # A denied or errored tool result must reach the MODEL marked as an ERROR
+      # (#583), not as an ordinary tool message it can paper over with a
+      # fabricated answer. Mirrors the MCP-spec isError:true norm / Anthropic's
+      # is_error on a tool_result block. True for a deny (never ran) or a soft
+      # error/blocked-write (#errorish?). A built-in SUCCESS is never flagged, so
+      # what the model sees for a passing tool is byte-for-byte unchanged.
+      def tool_result_error?(result)
+        return false unless result
+
+        (result.respond_to?(:denied?) && result.denied?) ||
+          (result.respond_to?(:errorish?) && result.errorish?)
+      end
+
       def execute_tool_calls(tool_calls)
         tool_calls.map do |tc|
           # TOOL_STARTED / TOOL_FINISHED + ui.tool_started/tool_finished are
@@ -922,7 +970,11 @@ module Rubino
             content: result.output,
             tool_call_id: tc[:id],
             name: tc[:name],
-            arguments: tc[:arguments]
+            arguments: tc[:arguments],
+            # #583: hand this turn's tool_result to the provider flagged as an
+            # error when the tool was denied/blocked, so the model cannot read
+            # the denial text as an ordinary result and fabricate an answer.
+            is_error: tool_result_error?(result)
           }
         end
       end

@@ -1611,4 +1611,62 @@ RSpec.describe Rubino::Agent::Loop do
       expect(loop_obj.instance_variable_get(:@denied_count)).to eq(1)
     end
   end
+
+  # #583: a blocked tool produced NO output; the model must be steered away from
+  # confabulating its result. Three levers, asserted at their own seams.
+  describe "blocked-tool anti-confabulation (#583)" do
+    subject(:loop_obj) { described_class.allocate }
+
+    describe "#inject_blocked_tool_reminder (Lever 3 — gated <system-reminder>)" do
+      def messages_after(denied:, already_emitted: false)
+        loop_obj.instance_variable_set(:@denied_count, denied)
+        loop_obj.instance_variable_set(:@blocked_reminder_emitted, already_emitted)
+        msgs = []
+        loop_obj.send(:inject_blocked_tool_reminder, msgs)
+        msgs
+      end
+
+      it "injects a one-line <system-reminder> on a turn where a tool was blocked" do
+        msgs = messages_after(denied: 1)
+        expect(msgs.size).to eq(1)
+        expect(msgs.first[:role]).to eq("user")
+        expect(msgs.first[:content]).to include("<system-reminder>")
+        expect(msgs.first[:content]).to include("never state or imply a blocked tool's result")
+        # Carries the trusted-harness marker so the model reads it as control.
+        expect(msgs.first[:content]).to include(described_class::HARNESS_CONTROL_MARKER)
+      end
+
+      it "does NOT fire on a clean turn (no block) — avoids the #93/#97 over-firing regression" do
+        expect(messages_after(denied: 0)).to be_empty
+      end
+
+      it "fires at most once per turn (one-shot latch)" do
+        expect(messages_after(denied: 1, already_emitted: true)).to be_empty
+      end
+
+      it "latches @blocked_reminder_emitted after firing" do
+        loop_obj.instance_variable_set(:@denied_count, 2)
+        loop_obj.instance_variable_set(:@blocked_reminder_emitted, false)
+        loop_obj.send(:inject_blocked_tool_reminder, [])
+        expect(loop_obj.instance_variable_get(:@blocked_reminder_emitted)).to be(true)
+      end
+    end
+
+    describe "#tool_result_error? (Lever 1 — error flag source)" do
+      it "is true for a denied result" do
+        denied = Rubino::Tools::Result.denied(name: "x", call_id: "c", reason: :noninteractive)
+        expect(loop_obj.send(:tool_result_error?, denied)).to be(true)
+      end
+
+      it "is true for an errored result" do
+        err = Rubino::Tools::Result.error(name: "x", call_id: "c", error: "boom")
+        expect(loop_obj.send(:tool_result_error?, err)).to be(true)
+      end
+
+      it "is false for a successful result (success stays byte-identical)" do
+        ok = Rubino::Tools::Result.success(name: "x", call_id: "c", output: "5")
+        expect(loop_obj.send(:tool_result_error?, ok)).to be(false)
+      end
+    end
+  end
 end
