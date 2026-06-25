@@ -210,7 +210,7 @@ RSpec.describe Rubino::Tools::ReadTool do
       Rubino.configuration.set("tool_output_compression", "enabled", true)
       Rubino.configuration.set("tool_output_compression", "code",
                                "strategy" => "skeleton", "min_lines" => 5,
-                               "keep_method_body_max_lines" => 8)
+                               "keep_method_body_max_lines" => 8, "languages" => %w[ruby])
     end
 
     context "with the flag OFF (default)" do
@@ -230,10 +230,17 @@ RSpec.describe Rubino::Tools::ReadTool do
 
       it "emits a code compress_hint on a whole-file Ruby read (raw source + paths)" do
         hint = tool.call("file_path" => ruby_path)[:compress_hint]
-        expect(hint).to include(full_file: true, content_type: :code)
+        expect(hint).to include(full_file: true, content_type: :code, lang: :ruby)
         expect(hint[:source_path]).to eq(ruby_path)
         expect(hint[:tracker_path]).to eq(File.expand_path(ruby_path))
         expect(hint[:raw_source]).to eq(ruby_src)
+      end
+
+      it "emits NO hint when ruby is dropped from the languages list" do
+        Rubino.configuration.set("tool_output_compression", "code",
+                                 "strategy" => "skeleton", "min_lines" => 5,
+                                 "keep_method_body_max_lines" => 8, "languages" => [])
+        expect(tool.call("file_path" => ruby_path)[:compress_hint]).to be_nil
       end
 
       it "emits NO hint on a TARGETED (offset/limit) read — the drill-in path" do
@@ -245,6 +252,51 @@ RSpec.describe Rubino::Tools::ReadTool do
         txt = File.join(tmp_dir, "notes.txt")
         File.write(txt, (1..50).map { |i| "line #{i}" }.join("\n"))
         expect(tool.call("file_path" => txt)[:compress_hint]).to be_nil
+      end
+
+      # Python is DETECTED but stays inert until added to the languages list.
+      context "with a .py file (python detected, gated by the languages list)" do
+        let(:py_path) { File.join(tmp_dir, "mod.py") }
+
+        before { File.write(py_path, "def f(a):\n    return a + 1\n") }
+
+        it "emits NO hint while python is not in the languages list (default)" do
+          expect(tool.call("file_path" => py_path)[:compress_hint]).to be_nil
+        end
+
+        it "emits a python compress_hint once python is added to the languages list" do
+          Rubino.configuration.set("tool_output_compression", "code",
+                                   "strategy" => "skeleton", "min_lines" => 5,
+                                   "keep_method_body_max_lines" => 8, "languages" => %w[ruby python])
+          hint = tool.call("file_path" => py_path)[:compress_hint]
+          expect(hint).to include(full_file: true, content_type: :code, lang: :python)
+        end
+      end
+
+      # JS/TS/TSX are DETECTED by extension but stay inert until added to the
+      # languages list (default is %w[ruby]).
+      {
+        ".js" => :javascript, ".jsx" => :javascript, ".mjs" => :javascript,
+        ".cjs" => :javascript, ".ts" => :typescript, ".tsx" => :tsx
+      }.each do |ext, lang|
+        context "with a #{ext} file (#{lang} detected, gated by the languages list)" do
+          let(:js_path) { File.join(tmp_dir, "mod#{ext}") }
+
+          before { File.write(js_path, "function f(a) {\n  return a + 1;\n}\n") }
+
+          it "emits NO hint while #{lang} is not in the languages list (default)" do
+            expect(tool.call("file_path" => js_path)[:compress_hint]).to be_nil
+          end
+
+          it "emits a #{lang} compress_hint once #{lang} is added to the languages list" do
+            Rubino.configuration.set("tool_output_compression", "code",
+                                     "strategy" => "skeleton", "min_lines" => 5,
+                                     "keep_method_body_max_lines" => 8,
+                                     "languages" => ["ruby", lang.to_s])
+            hint = tool.call("file_path" => js_path)[:compress_hint]
+            expect(hint).to include(full_file: true, content_type: :code, lang: lang)
+          end
+        end
       end
 
       it "advertises the `compress` opt-out param when the feature is on" do

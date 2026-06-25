@@ -111,6 +111,16 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "pdf-reader", "~> 2.12"
   spec.add_development_dependency "roo", "~> 2.10"
 
+  # Optional JS/TS/TSX skeletonizer parser (Rubino::Compression's
+  # TreeSitterCodeSkeleton). Like the document converters above this is NOT a
+  # hard runtime dependency: the skeletoner `require`s it lazily inside
+  # begin/rescue and returns a NO-OP (the original output is sent unchanged)
+  # when the gem — or a grammar it would download on first use — is absent. It
+  # is a DEVELOPMENT dependency only so CI/specs exercise the real parser; an
+  # end user who wants JS/TS compression installs it themselves. MIT-licensed,
+  # ships precompiled grammars (no compile toolchain needed at install).
+  spec.add_development_dependency "tree_sitter_language_pack", "~> 1.10"
+
   # Development dependencies
   spec.add_development_dependency "parallel_tests", "~> 4.7"
   spec.add_development_dependency "rack-test", "~> 2.1"
