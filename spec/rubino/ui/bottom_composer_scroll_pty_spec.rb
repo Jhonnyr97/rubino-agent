@@ -40,9 +40,14 @@ RSpec.describe "BottomComposer scroll-boundary PTY" do
       while i < s.length
         ch = s[i]
         if ch == "\e" && s[i + 1] == "["
-          j = i + 2
+          # A DEC PRIVATE-mode sequence (CSI ? Pm h/l) — e.g. synchronized output
+          # ?2026h/l. A real terminal consumes and IGNORES unknown private modes;
+          # model that so the frame content (what these tests assert) is unchanged
+          # by BSU/ESU instead of leaking "2026h"/"2026l" as literal glyphs.
+          private_mode = s[i + 2] == "?"
+          j = i + 2 + (private_mode ? 1 : 0)
           j += 1 while j < s.length && s[j] =~ /[0-9;]/
-          handle_csi(s[j], s[(i + 2)...j])
+          handle_csi(s[j], s[(i + 2)...j]) unless private_mode
           i = j + 1
           next
         elsif ch == "\r"

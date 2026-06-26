@@ -60,6 +60,15 @@ RSpec.describe Rubino::Config::Configuration do
       expect(test_configuration("display" => { "live_markdown" => true })
                .display_live_markdown?).to be true
     end
+
+    it "synchronized_output defaults to enabled" do
+      expect(config.display_synchronized_output?).to be true
+    end
+
+    it "only an explicit false disables synchronized output" do
+      expect(test_configuration("display" => { "synchronized_output" => false })
+               .display_synchronized_output?).to be false
+    end
   end
 
   describe "notification accessors (attention bell + command hook)" do

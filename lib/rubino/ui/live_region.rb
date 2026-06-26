@@ -21,8 +21,20 @@ module Rubino
     # scrolls the screen at the bottom row, which is exactly what wiped the
     # typed input.
     class LiveRegion
-      def initialize(output)
+      # DEC private mode 2026 — synchronized output (BSU/ESU). A supporting
+      # terminal (kitty, WezTerm, tmux ≥3.4, recent xterm.js) buffers everything
+      # between BSU and ESU and swaps the screen in ONE atomic update, so a
+      # multi-step frame (clear → commit → redraw → prompt) never flickers or
+      # tears mid-paint. Terminals without support silently ignore the unknown
+      # private mode, so it degrades cleanly. Emitted only when the composer
+      # enables it (a real TTY + display.synchronized_output) — off by default so
+      # StringIO test frames stay byte-exact.
+      BSU = "\e[?2026h"
+      ESU = "\e[?2026l"
+
+      def initialize(output, synchronized: false)
         @output = output
+        @synchronized = synchronized
         # How many rows the live region currently occupies ABOVE the input
         # block. The clear walks up exactly this many rows, so a multi-line
         # block clears cleanly without a single-row \e[1A desyncing it.
@@ -98,11 +110,16 @@ module Rubino
       # +rows+ redrawn in place, then the prompt row drawn by the block.
       # Must be called while the composer holds its render mutex.
       def frame(committed:, rows:, cols:)
+        @output.print(BSU) if @synchronized # open the atomic frame (no-op off-TTY)
         clear # 1) erase prompt (+ live) rows, BEFORE any scroll
         commit(committed) # 2) print committed output, scroll naturally
         # 3) redraw fresh from the post-scroll cursor row
         rows.each { |row| emit_row(row, cols) }
         yield # the prompt row — ALWAYS last, so it survives every scroll
+      ensure
+        # Always close the synchronized block, even if the prompt draw raised —
+        # leaving mode 2026 set would freeze the terminal's display.
+        @output.print(ESU) if @synchronized
       end
 
       # Erase the live region IN PLACE and park the cursor on its TOP row:
