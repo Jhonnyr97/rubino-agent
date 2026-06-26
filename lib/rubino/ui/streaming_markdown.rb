@@ -90,6 +90,18 @@ module Rubino
         @in_table
       end
 
+      # The OPEN code-fence state for the in-flight tail, or nil when the tail is
+      # not inside a fence. Lets a forgiving live renderer (MarkdownRepair) close
+      # the fence so the partial body styles as code instead of leaking a raw
+      # ```. `plain: true` is a normal code fence (append a bare close); a
+      # ```markdown/md WRAPPER is `plain: false` (the renderer unwraps and
+      # re-renders its body AS markdown, so it must NOT be code-closed).
+      def open_fence
+        return nil unless @in_fence
+
+        { len: @fence_len, plain: @fence_depth.nil? }
+      end
+
       # The table-so-far as COMPLETED lines (header, separator, and every
       # fully-arrived data row) — the in-flight last partial row (the un-newlined
       # @pending remainder) is intentionally DROPPED so the partial render never

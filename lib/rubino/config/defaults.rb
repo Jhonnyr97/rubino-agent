@@ -292,7 +292,14 @@ module Rubino
           # Cap on the chat input's visual rows: a long/multi-line prompt
           # wraps and grows the input downward up to this many rows, then
           # scrolls vertically (caret kept in view).
-          "input_max_rows" => 8
+          "input_max_rows" => 8,
+          # Render the still-streaming (in-flight) block as FORMATTED markdown in
+          # the live region — bold/headings/lists/code style as they arrive
+          # (incomplete syntax repaired by MarkdownRepair) — instead of the raw
+          # rolling-tail text that only snaps to styled when the block commits.
+          # On by default (the Claude-like live feel, verified in a real
+          # terminal); false ⇒ the legacy raw live tail (exact prior behaviour).
+          "live_markdown" => true
         },
         "paste" => {
           # File-backed paste pipeline (UI::PasteStore). A paste with MORE

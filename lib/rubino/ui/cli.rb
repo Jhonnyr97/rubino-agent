@@ -2104,9 +2104,47 @@ module Rubino
         # moment it completes.
         if @stream_md.in_table?
           show_live_table(@stream_md.table_rows_so_far)
+        elsif live_markdown?
+          # Render the in-flight block as FORMATTED markdown (incomplete syntax
+          # repaired) so bold/headings/lists/code style live, like Claude —
+          # instead of the raw rolling tail that only snaps to styled on commit.
+          show_live_markdown(@stream_md)
         else
           show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
         end
+      end
+
+      # display.live_markdown — opt-in formatted live region (default false).
+      def live_markdown?
+        Rubino.configuration.display_live_markdown?
+      end
+
+      # Paint the in-flight block as formatted markdown in the live region: take
+      # the raw tail, close any syntax left open by the still-arriving stream
+      # (MarkdownRepair, using the splitter's fence state), render it through the
+      # SAME MarkdownRenderer the committed blocks use, and keep the last
+      # LIVE_TAIL_ROWS rendered rows so the region stays bounded. Mirrors
+      # #show_live_table: builds margined, ANSI-styled rows and paints them
+      # through the SAME single-frame seam (#paint_live) and #265 ghost guard, so
+      # the preview is cleanly replaced each delta and torn down on commit.
+      def show_live_markdown(stream_md)
+        lines = live_markdown_lines(stream_md)
+        frame = lines.join("\n")
+        note_live_tail(frame)
+        paint_live(frame)
+      end
+
+      # Raw in-flight tail -> repaired -> MD_MARGIN-indented, ANSI-styled lines,
+      # capped to the last LIVE_TAIL_ROWS rendered rows. #render_markdown_block
+      # already sanitize_terminal's the (untrusted) model text before parsing, so
+      # the styled rows carry only rubino's own SGR — they must NOT pass through
+      # #margined_tail again (that would caret-escape our own escapes).
+      def live_markdown_lines(stream_md)
+        raw = stream_md.tail
+        return [] if raw.nil? || raw.empty?
+
+        repaired = MarkdownRepair.close_open_spans(raw, fence: stream_md.open_fence)
+        margined_render(repaired).last(LIVE_TAIL_ROWS)
       end
 
       # Paint the growing partial table in the live region: re-render the

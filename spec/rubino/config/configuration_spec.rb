@@ -49,6 +49,17 @@ RSpec.describe Rubino::Config::Configuration do
       cfg = test_configuration("display" => { "input_max_rows" => "junk" })
       expect(cfg.display_input_max_rows).to eq(Rubino::UI::BottomComposer::MAX_INPUT_ROWS)
     end
+
+    it "live_markdown defaults to enabled" do
+      expect(config.display_live_markdown?).to be true
+    end
+
+    it "only an explicit false falls back to the raw live tail" do
+      expect(test_configuration("display" => { "live_markdown" => false })
+               .display_live_markdown?).to be false
+      expect(test_configuration("display" => { "live_markdown" => true })
+               .display_live_markdown?).to be true
+    end
   end
 
   describe "notification accessors (attention bell + command hook)" do
