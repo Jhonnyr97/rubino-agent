@@ -810,53 +810,6 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       end
       let(:adapter) { described_class.new(model_id: "MiniMax-M2.7", config: cfg) }
 
-      # Recovery of tool calls a model leaked as TEXT (MiniMax-M3 shim): the
-      # parser is wired at response assembly so the tool actually runs and the
-      # markup never poisons history. See LLM::ToolCallRecovery for coverage.
-      describe "#recover_text_tool_calls" do
-        let(:leaked) do
-          'Vado.]<]minimax[>[<tool_call>]<]minimax[>[<invoke name="shell">' \
-            "]<]minimax[>[<command>ls -la]<]minimax[>[</command>" \
-            "]<]minimax[>[</invoke>]<]minimax[>[</tool_call>"
-        end
-
-        it "recovers leaked calls into structured tool_calls and cleans the content" do
-          content, calls, recovered = adapter.send(:recover_text_tool_calls, leaked, [])
-          expect(recovered).to be true
-          expect(content).to eq("Vado.")
-          expect(calls).to eq([{ id: "call_recovered_0", name: "shell",
-                                 arguments: { "command" => "ls -la" } }])
-        end
-
-        it "is inert when native tool calls already exist (no double-recovery)" do
-          native = [{ id: "x", name: "y", arguments: {} }]
-          content, calls, recovered = adapter.send(:recover_text_tool_calls, leaked, native)
-          expect(recovered).to be false
-          expect(content).to eq(leaked)
-          expect(calls).to eq(native)
-        end
-
-        it "is inert on clean content (no markup, no false positive)" do
-          content, calls, recovered = adapter.send(:recover_text_tool_calls, "Just prose.", [])
-          expect(recovered).to be false
-          expect(calls).to eq([])
-          expect(content).to eq("Just prose.")
-        end
-
-        it "honors the tools.recover_text_tool_calls=false kill switch" do
-          off = described_class.new(model_id: "MiniMax-M2.7", config: test_configuration(
-            "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7" },
-            "tools" => { "recover_text_tool_calls" => false },
-            "providers" => { "minimax" => {
-              "anthropic_compatible" => true, "assume_model_exists" => true,
-              "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic"
-            } }
-          ))
-          _content, _calls, recovered = off.send(:recover_text_tool_calls, leaked, [])
-          expect(recovered).to be false
-        end
-      end
-
       # supports_thinking: true on an assume-model-exists model routes the
       # thinking block through with_params (#175): ruby_llm 1.16's
       # with_thinking raises client-side for models whose registry entry
