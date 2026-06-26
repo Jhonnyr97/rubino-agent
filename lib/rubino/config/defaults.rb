@@ -456,6 +456,15 @@ module Rubino
           "max_live_probes_per_child" => 5
         },
         "tools" => {
+          # Recover tool calls a model LEAKS AS TEXT (tool-call markup in the
+          # assistant content instead of the structured field) — MiniMax's
+          # anthropic-compatible endpoint does this — by parsing the markup back
+          # into real tool calls the agent executes, and stripping it from saved
+          # content so it can't poison history. Covers the format families that
+          # account for ~80% of open models (Hermes/Qwen JSON, MiniMax/Qwen3-Coder
+          # XML, Mistral arrays). Inert when native tool calls exist or no markup
+          # is present (no false positives). Set false to disable the recovery.
+          "recover_text_tool_calls" => true,
           # Sandbox write/edit/delete tools to workspace_root (terminal.cwd
           # or Dir.pwd). Set to false to let the model touch any path the
           # process can reach — only do this if you trust the model + the
