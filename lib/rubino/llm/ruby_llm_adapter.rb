@@ -29,6 +29,21 @@ module Rubino
     class RubyLLMAdapter
       attr_reader :model_id, :provider
 
+      # Per-provider max OUTPUT-token ceilings for the fallback default, mirroring
+      # Hermes' _ANTHROPIC_OUTPUT_LIMITS. thinking tokens count TOWARD max_tokens,
+      # so a flat 16_384 default starves a thinking-enabled model: with an 8_000
+      # thinking budget only ~8_384 remained for visible output. A heavy turn
+      # whose assistant emits a large single-shot tool_use (e.g. writing a whole
+      # file) overran that mid-stream and MiniMax terminated the request with a
+      # generic "invalid params" (reproduced: ~30s of silent generation, then a
+      # failed-response error — NOT a request-shape rejection; the same body
+      # replays 200). MiniMax's real output ceiling is 131_072 (Hermes uses the
+      # same), so give it room. Only providers in this table change; every other
+      # provider keeps the conservative 16_384 default (a model whose hard cap is
+      # lower — e.g. a native Anthropic 3.5 at 8_192 — must not be over-asked).
+      OUTPUT_LIMIT_BY_PROVIDER = { "minimax" => 131_072 }.freeze
+      DEFAULT_OUTPUT_LIMIT = 16_384
+
       def initialize(model_id: nil, provider: nil, config: nil, ui: nil, event_bus: nil,
                      tool_executor: nil, cancel_token: nil, isolate_config: false)
         @config        = config || Rubino.configuration
@@ -857,12 +872,13 @@ module Rubino
       end
 
       # Configurable max output tokens. providers.<name>.max_tokens wins, then
-      # model.max_tokens, then a reasoning-model-sane default (16k vs ruby_llm's
-      # 4096). Returns an Integer.
+      # model.max_tokens, then a provider-aware default (large enough not to
+      # starve a thinking budget). Returns an Integer.
       def max_output_tokens
-        (provider_cfg["max_tokens"] ||
-         @config.dig("model", "max_tokens") ||
-         16_384).to_i
+        configured = provider_cfg["max_tokens"] || @config.dig("model", "max_tokens")
+        return configured.to_i if configured
+
+        OUTPUT_LIMIT_BY_PROVIDER.fetch(@provider.to_s, DEFAULT_OUTPUT_LIMIT)
       end
 
       # Thinking/reasoning budget in tokens. 0 / nil disables thinking entirely.
