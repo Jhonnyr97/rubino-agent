@@ -3,16 +3,16 @@
 require "ruby_llm"
 
 # RubyLLM::ToolCall id-source guard: a tool call the model emitted without an id
-# (MiniMax-M3 intermittently does) gets a synthesised stable id, so the assistant
-# tool_use block and its tool_result inherit the SAME valid id and the provider
-# no longer rejects the continuation with "invalid params" / "tool id() not
-# found". A real id is preserved untouched.
+# (some Anthropic-compatible providers intermittently do) gets a synthesised
+# stable id, so the assistant tool_use block and its tool_result inherit the SAME
+# valid id and the provider no longer rejects the continuation with a
+# request-validation 400. A real id is preserved untouched.
 RSpec.describe Rubino::LLM::ToolCallIdGuard do
   def call(id)
     RubyLLM::ToolCall.new(id: id, name: "shell", arguments: { "command" => "ls" })
   end
 
-  it "synthesises an id for an EMPTY string (the MiniMax case)" do
+  it "synthesises an id for an EMPTY string" do
     expect(call("").id).to match(/\Arubino_toolcall_[0-9a-f]+\z/)
   end
 
