@@ -734,6 +734,10 @@ RSpec.describe Rubino::UI::CLI do
         end
       end.new
 
+      # The raw-tail margin invariant (this test) is the legacy display.live_markdown
+      # OFF path; the formatted live render has its own spec (cli_live_markdown_spec).
+      allow(ui).to receive(:live_markdown?).and_return(false)
+
       old = $stdout
       $stdout = live_io
       begin
@@ -763,6 +767,9 @@ RSpec.describe Rubino::UI::CLI do
           self
         end
       end.new
+
+      # Raw rolling-tail behaviour — the legacy display.live_markdown OFF path.
+      allow(ui).to receive(:live_markdown?).and_return(false)
 
       old = $stdout
       $stdout = live_io

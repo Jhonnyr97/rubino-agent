@@ -50,4 +50,34 @@ RSpec.describe Rubino::UI::LiveRegion do
       expect(described_class.take_first_columns("abc", 0)).to eq("")
     end
   end
+
+  # DEC-2026 synchronized output: when enabled, a frame is wrapped in BSU/ESU so
+  # the terminal swaps it atomically; when not, the frame is byte-identical to
+  # the legacy path (so every existing frame assertion is unaffected).
+  describe "#frame synchronized output (BSU/ESU)" do
+    def run_frame(region)
+      region.frame(committed: "hello", rows: ["row"], cols: 20) { output.print("PROMPT") }
+    end
+
+    it "wraps the frame in BSU…ESU when synchronized" do
+      run_frame(described_class.new(output, synchronized: true))
+      body = output.string
+      expect(body).to start_with(described_class::BSU)
+      expect(body).to end_with(described_class::ESU)
+      expect(body).to include("PROMPT")
+    end
+
+    it "emits NO BSU/ESU by default (legacy per-write frames, byte-exact)" do
+      run_frame(described_class.new(output))
+      expect(output.string).not_to include("\e[?2026")
+    end
+
+    it "still closes the synchronized block if the prompt draw raises" do
+      region = described_class.new(output, synchronized: true)
+      expect do
+        region.frame(committed: nil, rows: [], cols: 20) { raise "boom" }
+      end.to raise_error("boom")
+      expect(output.string).to end_with(described_class::ESU)
+    end
+  end
 end

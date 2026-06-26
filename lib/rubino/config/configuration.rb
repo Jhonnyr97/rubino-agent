@@ -67,6 +67,13 @@ module Rubino
         dig("display", "live_markdown") != false
       end
 
+      # Wrap each live-region frame in DEC-2026 synchronized output
+      # (display.synchronized_output). Default true; only an explicit false
+      # falls back to the legacy per-write frames.
+      def display_synchronized_output?
+        dig("display", "synchronized_output") != false
+      end
+
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
       # A paste with MORE than this many lines collapses to a
       # "[Pasted text #N +M lines]" placeholder in the composer (expanded to
