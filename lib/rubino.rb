@@ -95,6 +95,9 @@ module Rubino
         # anthropic_role_merge.rb prepends RubyLLM::Providers::Anthropic at load
         # time (a side effect, not a Rubino constant) — loaded manually below.
         loader.ignore(File.expand_path("rubino/llm/anthropic_role_merge.rb", __dir__))
+        # stream_tool_call_recovery.rb prepends RubyLLM::StreamAccumulator at load
+        # time (a side effect, not a Rubino constant) — loaded manually below.
+        loader.ignore(File.expand_path("rubino/llm/stream_tool_call_recovery.rb", __dir__))
         loader
       end
     end
@@ -519,6 +522,11 @@ Rubino.loader.setup
 # a tool result followed by another user/tool message would otherwise send two
 # consecutive `user` messages and be rejected with "invalid params").
 require_relative "rubino/llm/anthropic_role_merge"
+
+# Recover tool calls a model leaks AS TEXT into its streamed content (MiniMax's
+# anthropic-compatible shim) into structured calls ruby_llm's native loop runs.
+# Prepends StreamAccumulator at load, so it must come after the loader is set up.
+require_relative "rubino/llm/stream_tool_call_recovery"
 
 # Register the built-in memory backends.
 # The SQLite memory backend: LLM-extracted atomic facts, bi-temporal
