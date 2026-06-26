@@ -9,7 +9,7 @@
 # rebuild_tool_calls and the tool_result id in load_history) so pairing holds —
 # mirroring the reference agent's _sanitize_tool_id.
 RSpec.describe Rubino::LLM::RubyLLMAdapter do
-  subject(:adapter) { described_class.new(model_id: "MiniMax-M3", provider: "anthropic") }
+  subject(:adapter) { described_class.new(model_id: "test-model", provider: "anthropic") }
 
   def sanitize(id)
     adapter.send(:sanitize_tool_id, id)
