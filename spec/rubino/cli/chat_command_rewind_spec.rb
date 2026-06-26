@@ -41,6 +41,33 @@ RSpec.describe Rubino::CLI::ChatCommand do
     cmd.send(:handle_rewind, composer, runner, ui)
   end
 
+  describe "#rewindable_message?" do
+    def msg(role, content, tool_call_id = nil)
+      Struct.new(:role, :content, :tool_call_id).new(role, content, tool_call_id)
+    end
+
+    it "accepts a real typed user message" do
+      expect(cmd.send(:rewindable_message?, msg("user", "wire up billing"))).to be true
+    end
+
+    it "rejects an assistant (LLM) message" do
+      expect(cmd.send(:rewindable_message?, msg("assistant", "On it."))).to be false
+    end
+
+    it "rejects a tool result riding the user role" do
+      expect(cmd.send(:rewindable_message?, msg("user", "output", "call_1"))).to be false
+    end
+
+    it "rejects a <bash-input> injection" do
+      expect(cmd.send(:rewindable_message?, msg("user", "<bash-input>ls</bash-input>"))).to be false
+    end
+
+    it "rejects a synthetic [harness control] injection (the picker bug)" do
+      content = "#{Rubino::Agent::Loop::HARNESS_CONTROL_MARKER} You've reached the maximum number of tool calls"
+      expect(cmd.send(:rewindable_message?, msg("user", content))).to be false
+    end
+  end
+
   describe "#handle_rewind" do
     it "offers only REAL user messages, most recent first, as `N ago · snippet` rows" do
       captured = nil

@@ -2493,11 +2493,18 @@ module Rubino
       end
 
       # A row the rewind picker offers: a REAL typed user message — not a tool
-      # result riding the user role, and not the `!` bang-shell injections
-      # (<bash-input>/<bash-stdout> context glue is not something to resend).
+      # result riding the user role, not the `!` bang-shell injections
+      # (<bash-input>/<bash-stdout> context glue), and not a SYNTHETIC harness
+      # injection (the `[harness control]` iteration-cap continuation / blocked-
+      # tool / resume nudges, #75) — those are runtime control text the agent
+      # wrote on the user's behalf, never something to rewind-to-and-resend. Same
+      # principle as Codex's is_user_turn_boundary, which excludes injected /
+      # contextual messages so only genuine user turns are restore points.
       def rewindable_message?(msg)
+        content = msg.content.to_s
         msg.role == "user" && msg.tool_call_id.nil? &&
-          !msg.content.to_s.start_with?("<bash-")
+          !content.start_with?("<bash-") &&
+          !content.start_with?(Agent::Loop::HARNESS_CONTROL_MARKER)
       end
 
       # One picker row: `N ago · <first 60 chars>` — recency + a flattened
