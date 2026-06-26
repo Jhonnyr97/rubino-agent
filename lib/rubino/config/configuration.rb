@@ -74,6 +74,12 @@ module Rubino
         dig("display", "synchronized_output") != false
       end
 
+      # Syntax-highlight committed code blocks (display.code_highlight). Default
+      # true; only an explicit false falls back to plain (uncoloured) code.
+      def display_code_highlight?
+        dig("display", "code_highlight") != false
+      end
+
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
       # A paste with MORE than this many lines collapses to a
       # "[Pasted text #N +M lines]" placeholder in the composer (expanded to

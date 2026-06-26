@@ -2,6 +2,7 @@
 
 require "kramdown"
 require "kramdown-parser-gfm"
+require "rouge"
 require "tty-table"
 require "unicode/display_width"
 begin
@@ -43,8 +44,13 @@ module Rubino
       # @param width [Integer, nil] the column budget tables must fit into. When
       #   nil we detect the terminal width (IO.console winsize), falling back to
       #   80 so the renderer still works headless / without a real terminal.
-      def initialize(width: nil)
+      # @param code_highlight [Boolean] syntax-highlight fenced code blocks by
+      #   language (Rouge). Off by default; the caller enables it only on the
+      #   COMMITTED render (never the per-delta live tail, so highlighting can
+      #   never block the stream).
+      def initialize(width: nil, code_highlight: false)
         @width = width || detect_width
+        @code_highlight = code_highlight
       end
 
       def render(text)
@@ -308,6 +314,11 @@ module Rubino
         # kramdown's fenced codeblock value ends with a trailing newline -> empty last line. Drop it.
         lines.pop if lines.last == ""
 
+        # Syntax-highlight the whole block once (Rouge), then index per line, so a
+        # multi-line construct (string, comment) colours correctly. nil ⇒ no
+        # highlight (disabled, unknown language, or any failure) → plain body.
+        highlighted = highlight_code(lines.join("\n"), lang)
+
         out = []
         out << if lang.empty?
                  [["┌─ code ", { fg: :gray }], ["─" * 40, { fg: :gray }]]
@@ -315,11 +326,44 @@ module Rubino
                  [["┌─ ", { fg: :gray }], [lang, { fg: :gray, modifiers: [:italic] }], [" ", { fg: :gray }],
                   ["─" * 40, { fg: :gray }]]
                end
-        lines.each do |line|
-          out << [["│ ", { fg: :gray }], [line, { fg: :bright_white }]]
+        lines.each_with_index do |line, i|
+          body =
+            if highlighted && highlighted[i]
+              # The Rouge line already carries its own SGR; emit it verbatim
+              # (style nil) so the caller does not re-style it, and reset at the
+              # end so no colour bleeds into the next row's "│ " gutter.
+              ["#{highlighted[i]}\e[0m", nil]
+            else
+              [line, { fg: :bright_white }]
+            end
+          out << [["│ ", { fg: :gray }], body]
         end
         out << [["└", { fg: :gray }], ["─" * 48, { fg: :gray }]]
         out
+      end
+
+      # Highlight +code+ for +lang+ to ANSI lines via Rouge, or nil to fall back
+      # to a plain body. nil whenever highlighting is disabled, the language is
+      # unknown, or anything raises — highlighting is cosmetic and must NEVER
+      # break a committed render.
+      def highlight_code(code, lang)
+        return nil unless @code_highlight
+
+        name = lang.to_s.strip.downcase
+        return nil if name.empty?
+
+        lexer = ::Rouge::Lexer.find(name)
+        return nil if lexer.nil?
+
+        code_formatter.format(lexer.new.lex(code)).split("\n", -1)
+      rescue StandardError
+        nil
+      end
+
+      # 256-colour terminal formatter (widely supported; degrades on 8/16-colour
+      # terminals). Memoised — building it per code block is wasteful.
+      def code_formatter
+        @code_formatter ||= ::Rouge::Formatters::Terminal256.new(::Rouge::Themes::Base16.mode(:dark).new)
       end
 
       # GFM tables: flatten each cell to a plain string (inline bold/italic is
