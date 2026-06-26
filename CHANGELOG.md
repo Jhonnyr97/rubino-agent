@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.2.1] - 2026-06-26
+
+### Fixed
+
+- **SecretPath now resolves symlinked comparison roots (macOS).** The secret/
+  credential detector canonicalised the candidate path through every symlink but
+  compared it against non-resolved roots (`$HOME`, `SYSTEM_PATHS`, the `/etc`
+  prefixes). On macOS the system symlinks (`/etc` → `/private/etc`, a
+  `$TMPDIR`/`$HOME` under `/var` → `/private/var`) then defeated every match, so
+  `secret?("/etc/sudoers")` returned `false` and the home credential read-gate
+  (`~/.ssh`, `~/.aws`, …) classified nothing — silently no-op'ing the
+  write-approval gate and read-block for those paths. Each comparison root is now
+  resolved through the same `canonical_path`, which also resolves the existing
+  ancestor of a non-existent root (so `/etc/shadow` still classifies on a host
+  where it doesn't exist). Defense-in-depth only — not a security boundary.
+
 ## [0.5.2] - 2026-06-26
 
 ### Added
