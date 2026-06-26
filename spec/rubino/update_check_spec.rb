@@ -124,6 +124,26 @@ RSpec.describe Rubino::UpdateCheck do
     end
   end
 
+  describe ".installed_gem_version" do
+    def spec_for(version)
+      instance_double(Gem::Specification, version: Gem::Version.new(version))
+    end
+
+    it "returns the HIGHEST installed version, not the activated one" do
+      # Regression: find_by_name returned the version ACTIVATED in this process,
+      # so right after `gem update` installed a newer gem `rubino update` still
+      # saw the old version and claimed "already up to date".
+      allow(Gem::Specification).to receive(:find_all_by_name)
+        .with("rubino-agent").and_return([spec_for("0.5.0"), spec_for("0.5.2.1")])
+      expect(described_class.installed_gem_version("rubino-agent")).to eq("0.5.2.1")
+    end
+
+    it "returns nil when no version is installed" do
+      allow(Gem::Specification).to receive(:find_all_by_name).with("absent").and_return([])
+      expect(described_class.installed_gem_version("absent")).to be_nil
+    end
+  end
+
   describe ".fetch_latest" do
     it "returns nil on the 'unknown' sentinel (unpublished gem)" do
       stub_http_body('{"version":"unknown"}')

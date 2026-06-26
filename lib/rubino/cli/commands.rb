@@ -601,6 +601,11 @@ module Rubino
             ui.warning("gem update failed. If this is a permission error, re-run the installer or try `gem update --user-install #{Rubino::UpdateCheck::GEM_NAME}`.")
             return
           end
+          # The subprocess installed the new gem into this process's gem paths,
+          # but our in-memory spec list predates it — refresh so the version
+          # query below sees what `gem update` just wrote (else we'd report the
+          # pre-update version and claim "already up to date").
+          Gem.refresh
           new_v = Rubino::UpdateCheck.installed_gem_version(Rubino::UpdateCheck::GEM_NAME)
           if new_v && Gem::Version.new(new_v) > Gem::Version.new(current)
             ui.info("rubino is now on v#{new_v} (was v#{current}).")

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`rubino update` now reports the new version correctly.** After `gem update`
+  pulled a newer gem, the command read the version via
+  `Gem::Specification.find_by_name`, which returns the spec ACTIVATED in the
+  running process — so it still saw the old version and wrongly printed "rubino is
+  already up to date" even though the update had installed. It now `Gem.refresh`es
+  and reads the HIGHEST installed version (`find_all_by_name(...).max`), so the
+  post-update message reflects what was actually installed.
+
 ## [0.5.2.1] - 2026-06-26
 
 ### Fixed
