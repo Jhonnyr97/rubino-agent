@@ -1215,21 +1215,25 @@ module Rubino
 
         input_tokens, output_tokens = summed_usage(response, usage)
 
+        content = buffered && !buffered.empty? ? buffered : response.content
+        # On the streaming path ruby_llm runs the WHOLE model↔tool loop inside
+        # one ask(): every tool was already executed mid-stream via ToolBridge
+        # (→ Agent::ToolExecutor — the single source of truth for the
+        # tool_started/tool_finished render + audit). The message ruby_llm
+        # RETURNS, however, can STILL carry those executed tool_calls (the
+        # anthropic-compatible MiniMax /anthropic path does), and handing them
+        # back made Loop#run's #has_tool_calls? branch re-run #execute_tool_calls
+        # on tools that already ran — firing a SECOND tool_finished and rendering
+        # the `└ ▸ sa_… · <name> · started` spawn confirmation TWICE (#53). They
+        # already ran, so the streaming response carries NONE; the Loop treats it
+        # as the terminal text turn. The non-streaming path keeps them: there
+        # ruby_llm returns the final TEXT message (no tool_calls) anyway.
+        native_calls = streaming ? [] : extract_tool_calls(response)
+        content, tool_calls, recovered = recover_text_tool_calls(content, native_calls)
+
         AdapterResponse.new(
-          content: buffered && !buffered.empty? ? buffered : response.content,
-          # On the streaming path ruby_llm runs the WHOLE model↔tool loop inside
-          # one ask(): every tool was already executed mid-stream via ToolBridge
-          # (→ Agent::ToolExecutor — the single source of truth for the
-          # tool_started/tool_finished render + audit). The message ruby_llm
-          # RETURNS, however, can STILL carry those executed tool_calls (the
-          # anthropic-compatible MiniMax /anthropic path does), and handing them
-          # back made Loop#run's #has_tool_calls? branch re-run #execute_tool_calls
-          # on tools that already ran — firing a SECOND tool_finished and rendering
-          # the `└ ▸ sa_… · <name> · started` spawn confirmation TWICE (#53). They
-          # already ran, so the streaming response carries NONE; the Loop treats it
-          # as the terminal text turn. The non-streaming path keeps them: there
-          # ruby_llm returns the final TEXT message (no tool_calls) anyway.
-          tool_calls: streaming ? [] : extract_tool_calls(response),
+          content: content,
+          tool_calls: tool_calls,
           input_tokens: input_tokens,
           output_tokens: output_tokens,
           model_id: @model_id,
@@ -1240,10 +1244,42 @@ module Rubino
           # The isolated final text block (#core-F1). Only meaningful when it
           # differs from the full buffer (a multi-block turn that ended after a
           # tool call); nil ⇒ AdapterResponse#final_text_block falls back to
-          # content, so single-block and non-streaming turns are unchanged.
-          final_text_block: final_block_for(final_text_block, buffered),
+          # content, so single-block and non-streaming turns are unchanged. When
+          # recovery rewrote the content (stripped leaked markup), the captured
+          # last block no longer matches — drop it so the cleaned content wins.
+          final_text_block: recovered ? nil : final_block_for(final_text_block, buffered),
           raw: response
         )
+      end
+
+      # Recover tool calls a model LEAKED AS TEXT (markup in content) instead of
+      # the structured field — MiniMax's anthropic-compatible shim does this — so
+      # the tool actually RUNS (the Loop executes the returned tool_calls) and the
+      # leaked markup never poisons saved history. Returns [content, tool_calls,
+      # recovered?]. Inert (returns the inputs unchanged) when native tool calls
+      # already exist, when the feature is off, or when no markup is present — the
+      # parser has no false positives on prose. Gate: tools.recover_text_tool_calls
+      # (default ON). See LLM::ToolCallRecovery for the covered format families.
+      def recover_text_tool_calls(content, native_calls)
+        return [content, native_calls, false] unless native_calls.empty?
+        return [content, native_calls, false] unless recover_text_tool_calls?
+
+        rec = ToolCallRecovery.recover(content)
+        return [content, native_calls, false] if rec.calls.empty?
+
+        recovered = rec.calls.each_with_index.map do |c, i|
+          { id: "call_recovered_#{i}", name: c[:name], arguments: c[:arguments] }
+        end
+        log_safely(event: "llm.tool_call.recovered", count: recovered.size,
+                   names: recovered.map { |c| c[:name] }.join(","))
+        [rec.text, recovered, true]
+      end
+
+      def recover_text_tool_calls?
+        value = @config.dig("tools", "recover_text_tool_calls")
+        value.nil? || value == true
+      rescue StandardError
+        true
       end
 
       # Returns the final-block text to carry on the response, or nil when it adds
