@@ -262,6 +262,37 @@ RSpec.describe Rubino::LLM::ErrorClassifier do
       c = described_class.classify(RubyLLM::Error.new(nil, msg))
       expect(c.reason).not_to eq(FR::FORMAT_ERROR)
     end
+
+    # Regression: a TRANSIENT mid-stream blip that MiniMax emits with the generic
+    # text "invalid params" is re-raised by ruby_llm's streaming path as a
+    # ServerError(500) (parse_streaming_error hard-codes status 500). Bisecting a
+    # captured failing request proved the request itself is VALID (it replays 200
+    # against MiniMax every time), so this must stay on the retryable SERVER_ERROR
+    # path — NOT be clobbered into a permanent FORMAT_ERROR by its message text,
+    # which killed the whole multi-tool turn with no retry.
+    it "a 5xx-wrapped 'invalid params' (streaming transient) stays retryable SERVER_ERROR" do
+      err = ruby_llm_error(RubyLLM::ServerError, 500, "invalid params")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::SERVER_ERROR)
+      expect(c.retryable).to be true
+    end
+
+    it "ServiceUnavailable/Overloaded wrapping 'invalid request' also stays retryable" do
+      expect(described_class.classify(ruby_llm_error(RubyLLM::ServiceUnavailableError, 503,
+                                                     "invalid request")).retryable).to be true
+      expect(described_class.classify(ruby_llm_error(RubyLLM::OverloadedError, 529,
+                                                     "invalid params")).retryable).to be true
+    end
+
+    # The fail-fast contract is preserved for a GENUINE 4xx rejection: a real
+    # BadRequestError(400) "invalid params" is a deterministic request rejection
+    # and still fails fast (the 5xx carve-out must not weaken #327).
+    it "a real 400 BadRequestError 'invalid params' still fails fast (no regression)" do
+      err = ruby_llm_error(RubyLLM::BadRequestError, 400, "invalid params: bad field")
+      c = described_class.classify(err)
+      expect(c.reason).to eq(FR::FORMAT_ERROR)
+      expect(c.retryable).to be false
+    end
   end
 
   describe ".classify — MiniMax unknown-provider blip (folds Slice 0b)" do
