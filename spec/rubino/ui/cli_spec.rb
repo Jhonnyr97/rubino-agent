@@ -672,7 +672,9 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       expect(done).to include("┌─") # frame appears once the fence closes
-      expect(done).to include("puts 1")
+      # Strip SGR: with display.code_highlight on (default) the code body is
+      # syntax-coloured, so "puts 1" is split by ANSI — assert on the content.
+      expect(done.gsub(/\e\[[0-9;]*m/, "")).to include("puts 1")
     end
 
     it "flushes the trailing block on stream_end (no closing blank line)" do
@@ -683,13 +685,18 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("trailing line with no blank")
     end
 
-    it "emits an unclosed fence as PLAIN text on stream_end (never lost)" do
+    it "renders an unclosed fence as a code BOX on stream_end (CommonMark EOF auto-close)" do
       out = capture_stdout do
         ui.stream(type: :content, text: "```ruby\nputs 42\n")
         ui.stream_end # fence never closed by the model
       end
-      expect(out).to include("puts 42")
-      expect(out).to include("```ruby") # plain fallback keeps the fence markup
+      # Like every other CommonMark renderer, an unterminated fence becomes a
+      # code box (the CLI synthesises the close kramdown won't auto-add) — the
+      # content survives and the raw ``` markup is gone.
+      stripped = out.gsub(/\e\[[0-9;]*m/, "")
+      expect(stripped).to include("puts 42")
+      expect(stripped).to include("┌─") # framed as code, not dumped plain
+      expect(stripped).not_to include("```ruby") # the fence markup is consumed
     end
 
     it "no longer prints raw markup straight through for content" do
@@ -734,6 +741,10 @@ RSpec.describe Rubino::UI::CLI do
         end
       end.new
 
+      # The raw-tail margin invariant (this test) is the legacy display.live_markdown
+      # OFF path; the formatted live render has its own spec (cli_live_markdown_spec).
+      allow(ui).to receive(:live_markdown?).and_return(false)
+
       old = $stdout
       $stdout = live_io
       begin
@@ -763,6 +774,9 @@ RSpec.describe Rubino::UI::CLI do
           self
         end
       end.new
+
+      # Raw rolling-tail behaviour — the legacy display.live_markdown OFF path.
+      allow(ui).to receive(:live_markdown?).and_return(false)
 
       old = $stdout
       $stdout = live_io
@@ -1537,26 +1551,9 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  describe "#subagent_ask_banner" do
-    # #145: the banner claimed "no timeout" while tasks.ask_parent_timeout
-    # defaults to 900s — the child auto-resumes. The banner must tell the truth.
-    it "reads the configured ask_parent timeout instead of claiming 'no timeout' (#145)" do
-      out = capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
-      expect(out).to include("auto-resumes with its best judgement in 15m")
-      expect(out).not_to include("no timeout")
-    end
-
-    it "says 'no timeout' only when the bound is explicitly disabled (#145)" do
-      allow(Rubino.configuration).to receive(:tasks_ask_parent_timeout).and_return(nil)
-      out = capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
-      expect(out).to include("no timeout")
-    end
-  end
-
   # Attention notifications: the UI seams ring the Notifier (bell/command
   # hook) exactly when the human is needed — turn end (long turns only, the
-  # notifier's own min_turn_seconds gate), an approval prompt parking the run,
-  # a ⛔ blocked subagent.
+  # notifier's own min_turn_seconds gate) and an approval prompt parking the run.
   describe "attention notification seams" do
     let(:notifier) { instance_spy(Rubino::UI::Notifier) }
 
@@ -1612,11 +1609,6 @@ RSpec.describe Rubino::UI::CLI do
       allow(ui).to receive(:approval_cached?).and_return(true)
       capture_stdout { ui.confirm("shell wants to run: ls", scope: "shell:ls", tool: "shell") }
       expect(notifier).not_to have_received(:needs_approval)
-    end
-
-    it "rings blocked when the ⛔ ask_parent banner surfaces" do
-      capture_stdout { ui.subagent_ask_banner("sa_1", "general", "Which license?") }
-      expect(notifier).to have_received(:blocked).with("sa_1 (general) is waiting on your answer")
     end
   end
 
@@ -2361,23 +2353,6 @@ RSpec.describe Rubino::UI::CLI do
       lines = out.split("\n").reject(&:empty?)
       expect(lines.length).to eq(1)
       expect(lines.first).to include("[sa_e488] status=completed — report line two")
-    end
-  end
-
-  describe "#approval_requested" do
-    it "renders summary with ◆ prefix and choice keys" do
-      out = capture_stdout do
-        ui.approval_requested(
-          summary: "Apply changes?",
-          choices: [
-            { key: "y", label: "apply" },
-            { key: "n", label: "cancel" }
-          ]
-        )
-      end
-      expect(out).to include("◆ Apply changes?")
-      expect(out).to include("[y] apply")
-      expect(out).to include("[n] cancel")
     end
   end
 

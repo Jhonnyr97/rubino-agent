@@ -75,42 +75,18 @@ module Rubino
         # note, the child folds it in at its next iteration via
         # Loop#inject_steered_input. nil ⇒ no steer wire (sync/foreground path).
         :steer_queue,
-        # child->parent ask_parent escalation (Run::ApprovalGate handoff). When a
-        # subagent calls ask_parent and it escalates to the HUMAN, the child
-        # parks on `ask_gate` keyed by `ask_id`, the entry flips to
-        # :blocked_on_human, and the card/banner surface `ask_question`. A
-        # blocking ask holds the child's worker thread on the gate (bounded only
-        # by an explicit /reply or stop — see ask_parent_tool.rb); a non-blocking
-        # ask returns immediately and the answer is delivered later via
-        # `steer_queue`. The human answers via /reply <id>, which decides the gate.
-        # :ask_options — the OPTIONAL concrete answer choices the asking child
-        # supplied (ask_parent `options:`). When present the human's answer
-        # surface is an arrow-select of these options (+ a free-text "Answer"
-        # entry); when nil it stays the [Answer / Dismiss] → free-text affordance.
-        # Display/answer-shape only — never changes WHERE the answer is delivered.
-        :ask_gate, :ask_id, :ask_question, :ask_blocking, :ask_options,
-        # Ownership link (S1 — foundation for model-driven steer/probe/ask_parent).
+        # Ownership link (S1 — foundation for model-driven steer/probe).
         # owner_subagent_id is the `sa_*` id of the subagent that spawned this
         # child, or nil when the spawner is the human / top-level agent. depth is
         # 0 for a human-spawned child and owner.depth + 1 otherwise. The registry
         # stays a FLAT map keyed by id; the parent/child tree is computed over
-        # owner_subagent_id (see #descendants_of).
+        # owner_subagent_id.
         :owner_subagent_id, :depth,
         # Model-driven LIVE-probe budget (S3). probe_count is how many BILLED
-        # `probe(live:true)` peeks the owner has run against this child;
-        # last_probe_at is when the last one ran (for an optional min-interval).
-        # Free snapshot probes (live:false) never touch these. Per-process, dies
+        # `probe(live:true)` peeks the owner has run against this child.
+        # Free snapshot probes (live:false) never touch this. Per-process, dies
         # with the registry like the rest of the live-progress state.
-        :probe_count, :last_probe_at,
-        # The SPAWNING side's input queue, captured on the PARENT thread at
-        # spawn time (TaskTool#run_background) — the same spawn-captured sink
-        # the [background-task] completion notice rides. ask_parent's
-        # [subagent-question] notice for a top-level-owned child MUST use this:
-        # reading the thread-local Rubino.background_sink on the CHILD's thread
-        # resolves to the child's OWN steer_queue and misroutes the question
-        # back into the asking child (#195). nil ⇒ no queue was wired
-        # (sync/foreground spawn, headless).
-        :parent_sink,
+        :probe_count,
         keyword_init: true
       ) do
         # The child subagent's FULL persisted transcript. A background child runs
@@ -134,41 +110,27 @@ module Rubino
       OUTPUT_TAIL_MAX      = 6
       OUTPUT_TAIL_LINE_MAX = 200
 
-      # Prefix #deliver_answer stamps on the steer-queue COPY of an answer it has
-      # ALREADY delivered to the child via its ask gate (the dual-path delivery:
-      # gate for a blocking ask, steer-queue for a non-blocking one). When the
-      # child resumes via the gate and finishes WITHOUT another turn boundary, the
-      # still-queued copy is drained by #complete and would surface as an
-      # "undelivered steer note" — but the answer WAS delivered via the gate, so
-      # reporting it undelivered is a false alarm (the /reply happy-path
-      # regression from the H5 fix #457). The completion-notice paths filter notes
-      # carrying this prefix OUT of the undelivered report for exactly that
-      # reason; a genuine `/agents <id> steer "..."` note never carries it, so the
-      # deliver-or-report-undelivered invariant for real steer notes is intact.
-      ANSWER_NOTE_PREFIX = "[parent answer] "
-
       # Prefix the human's "deny & tell the agent why" reason carries when handed
       # to the child as a steer note (#Y1B). The note is ADVISORY — the approval
       # gate is already denied regardless — so when the child finishes before
       # folding it in, the still-queued copy drained by #complete must NOT raise
       # the scary "steer note not delivered (task completed first)" alarm: the
       # denial applied correctly and the explanation is moot. The completion paths
-      # filter this prefix out of the undelivered WARNING (a calm note instead),
-      # exactly as they filter ANSWER_NOTE_PREFIX. A genuine `/agents <id> steer`
-      # note never carries it, so its deliver-or-report invariant is intact.
+      # filter this prefix out of the undelivered WARNING (a calm note instead). A
+      # genuine `/agents <id> steer` note never carries it, so its
+      # deliver-or-report invariant is intact.
       DENY_NOTE_PREFIX = "[approval denied by human] "
 
       # The statuses under which a child still holds a concurrency slot: its
-      # worker thread is alive — actively running, parked on a human approval,
-      # parked on an escalated ask_parent (waiting on the human OR its
-      # agent-parent), or unwinding after a stop request. This is the SINGLE
+      # worker thread is alive — actively running, parked on a human approval, or
+      # unwinding after a stop request. This is the SINGLE
       # source of truth for "is this child still alive?", shared by the registry
       # itself (#running / #reserve cap) AND by every UI surface that lists live
       # children (the footer cards, the attached switcher, the navigable picker)
       # so they can never drift apart and silently drop a live-but-quiet child
       # from one surface while another still shows it (R1). Any new parked state
       # added to the lifecycle is made visible everywhere by editing this one set.
-      LIVE_STATUSES = %i[running needs_approval blocked_on_human blocked_on_parent stopping].freeze
+      LIVE_STATUSES = %i[running needs_approval stopping].freeze
 
       class << self
         def instance
@@ -422,115 +384,19 @@ module Rubino
         end
       end
 
-      # Records a BILLED live probe against a child (S3): bumps probe_count and
-      # stamps last_probe_at, under the mutex (the owner runs this on its own
-      # thread while the parent renderer may read the entry). Returns the new
-      # count, or nil for an unknown id. Free snapshot probes (live:false) never
-      # call this — only `probe(live:true)` does, after the budget check passes.
+      # Records a BILLED live probe against a child (S3): bumps probe_count
+      # under the mutex (the owner runs this on its own thread while the parent
+      # renderer may read the entry). Returns the new count, or nil for an
+      # unknown id. Free snapshot probes (live:false) never call this — only
+      # `probe(live:true)` does, after the budget check passes.
       def record_live_probe(id)
         @mutex.synchronize do
           entry = @entries[id]
           return nil unless entry
 
-          entry.probe_count   = entry.probe_count.to_i + 1
-          entry.last_probe_at = Time.now
+          entry.probe_count = entry.probe_count.to_i + 1
           entry.probe_count
         end
-      end
-
-      # Flips an entry into the :blocked_on_human state for an escalated
-      # ask_parent: stores the gate + question + blocking flag the card/banner
-      # surface (mirror of #begin_approval, but for a child->parent question that
-      # the parent couldn't answer and escalated to the human). The child thread
-      # then parks on `ask_gate.await(ask_id)` (blocking ask) until /reply <id>
-      # decides the gate, or keeps working (non-blocking ask) with the answer
-      # delivered later via the steer queue. A child in this state still holds a
-      # concurrency slot (its thread is alive, or it is awaiting the human), so it
-      # counts as live.
-      # The status depends on WHO owns the asking child (S4): owner_id present (an
-      # agent-parent) → :blocked_on_parent (the parent MODEL answers via
-      # answer_child; the question was pushed onto the owner's steer_queue, NOT
-      # the human's job); owner_id nil (the human / top-level) → :blocked_on_human
-      # (the human answers via /reply <id>).
-      def begin_ask(id, gate:, ask_id:, question:, blocking:, owner_id: nil, options: nil) # rubocop:disable Metrics/ParameterLists -- keyword args recording one ask's state; splitting would obscure it
-        @mutex.synchronize do
-          entry = @entries[id]
-          return unless entry
-
-          entry.ask_gate     = gate
-          entry.ask_id       = ask_id
-          entry.ask_question = question.to_s
-          entry.ask_blocking = blocking ? true : false
-          # Normalize to a clean array of answer choices, or nil when none — so
-          # the answer surface can branch on "options present?" without
-          # re-validating. Each element is EITHER a plain string (label==value)
-          # OR a {"label"=>, "description"=>} map (preserved as a hash, NOT
-          # stringified into a Ruby literal — #475-3); a blank string / a map
-          # without a usable label is dropped. A child that supplies no options
-          # keeps the old (nil) shape.
-          opts               = Array(options).filter_map { |o| normalize_ask_option(o) }
-          entry.ask_options  = opts.empty? ? nil : opts
-          entry.status       = owner_id ? :blocked_on_parent : :blocked_on_human
-        end
-      end
-
-      # Clears the ask state and returns the entry to :running once the question
-      # has been answered (by the human via /reply, or the agent-parent via
-      # answer_child), or the child unwinds / is stopped.
-      def end_ask(id)
-        @mutex.synchronize do
-          entry = @entries[id]
-          return unless entry
-
-          entry.ask_gate     = nil
-          entry.ask_id       = nil
-          entry.ask_question = nil
-          entry.ask_blocking = nil
-          entry.ask_options  = nil
-          entry.status       = :running if %i[blocked_on_human blocked_on_parent].include?(entry.status)
-        end
-      end
-
-      # The ONE shared answer wire for an escalated ask_parent, used by BOTH the
-      # human /reply path (Commands::Executor#deliver_reply) and the model-callable
-      # `answer_child` tool: route the answer back DOWN to the asking child by
-      # (1) deciding its ask gate — unblocks a BLOCKING ask with the answer as its
-      # tool result — and (2) pushing the answer onto its steer queue so a
-      # NON-BLOCKING ask folds it in at its next turn boundary; then clear the
-      # blocked state (#end_ask). Either way the answer PERSISTS in the child's
-      # context. No-op (returns false) for an unknown id or one not awaiting an
-      # answer (no ask_gate); true when the answer was routed.
-      def deliver_answer(id, answer)
-        entry = find(id)
-        return false unless entry&.ask_gate
-
-        # H5 — #steer is the SINGLE race-free liveness oracle here: it pushes the
-        # answer onto the steer_queue under the registry mutex IFF the child is
-        # still non-terminal, returning false the instant the child has finished
-        # (atomic against #complete, which flips the status and drains the queue
-        # under that same mutex). So we steer FIRST and let its honest result
-        # decide everything:
-        #   false ⇒ the child already finished; neither path can reach it. Do NOT
-        #           decide the gate (a no-op for a child that will never await
-        #           it) and do NOT clear the ask — report not-delivered.
-        #   true  ⇒ the child is live and the answer is queued; a BLOCKING ask
-        #           additionally needs its gate decided so the parked child wakes
-        #           with the answer as its tool result. Then clear the blocked
-        #           state and report delivered.
-        return false unless steer(entry.id, "#{ANSWER_NOTE_PREFIX}#{answer}")
-
-        entry.ask_gate.decide(entry.ask_id, answer)
-        end_ask(entry.id)
-        true
-      end
-
-      # Entries parked on an escalated ask_parent, waiting on THE HUMAN — the
-      # source of the persistent \"\u26d4 N subagent waiting on you\" marker and
-      # answerable via /reply <id>. Counts ONLY :blocked_on_human: a
-      # :blocked_on_parent child is its agent-parent's job (answer_child), not the
-      # human's, so it must NOT inflate the human's "waiting on you" count.
-      def awaiting_human
-        @mutex.synchronize { @entries.values.select { |e| e.status == :blocked_on_human } }
       end
 
       # Entries currently parked on a human approval — surfaced on their card
@@ -578,67 +444,29 @@ module Rubino
         @mutex.synchronize { @entries.delete(id) }
       end
 
-      # --- Tree over owner_subagent_id (the registry stays a flat map) ---------
-
-      # All transitive descendants of `id` (BFS over owner_subagent_id), in
-      # breadth order. Cycle-safe (an id is visited at most once).
-      def descendants_of(id)
-        @mutex.synchronize do
-          out     = []
-          seen    = {}
-          frontier = @entries.values.select { |e| e.owner_subagent_id == id }
-          until frontier.empty?
-            nxt = []
-            frontier.each do |e|
-              next if seen[e.id]
-
-              seen[e.id] = true
-              out << e
-              nxt.concat(@entries.values.select { |c| c.owner_subagent_id == e.id })
-            end
-            frontier = nxt
-          end
-          out
-        end
-      end
-
-      # Stop-cascade (S5a): when a node is stopped, cancel the ask-gates of ALL
-      # its descendants so a blocking ask anywhere in the subtree unwinds at once
-      # (Run::ApprovalGate#cancel! wakes the parked child thread with Interrupted)
-      # instead of leaving an orphaned grandchild parked until its bound elapses.
-      # The descendant runners' CancelTokens are flipped by the caller's cancel!
-      # of the node; this just makes the gate-parked ones wake immediately. Safe
-      # to call on a node with no descendants or no blocked descendants.
-      def cancel_descendant_ask_gates(id)
-        descendants_of(id).each { |e| e.ask_gate&.cancel! }
-      end
-
       # The ONE per-entry stop body, shared by every stop path (the human
       # /agents <id> --stop, the model-callable task_stop, and the
       # parent-teardown #cancel_all below). Marks the stop so the unwind records
       # as :stopped (not ✗ failed) and the list shows ◌ stopping, then wakes the
-      # entry no matter HOW it is blocked: a child parked on its OWN approval or
-      # ask gate (cancel those → Interrupted → clean unwind), any descendant
-      # parked on a blocking ask (the stop-cascade), and the runner's CancelToken
-      # for a child between checkpoints. Idempotent and safe on an already-stopped
-      # or never-blocked entry (each cancel! is one-shot; request_stop no-ops on a
+      # entry no matter HOW it is blocked: a child parked on its approval gate
+      # (cancel it → Interrupted → clean unwind) and the runner's CancelToken for
+      # a child between checkpoints. Idempotent and safe on an already-stopped or
+      # never-blocked entry (each cancel! is one-shot; request_stop no-ops on a
       # non-live status), so #cancel_all can call it across the whole registry.
       def stop_entry(entry)
         return unless entry
 
         request_stop(entry.id)
         entry.approval_gate&.cancel!
-        entry.ask_gate&.cancel!
-        cancel_descendant_ask_gates(entry.id)
         entry.runner&.cancel!
       end
 
       # Structured-concurrency teardown seam: cancel EVERY live subagent so the
       # process never leaves a child parked. The required fix for the parent-death
       # deadlock (#XXX) — when the PARENT dies/interrupts (REPL break, HUP/TERM,
-      # clean quit, an aborted turn) a child blocked on ask_parent(blocking:true)
-      # otherwise stays parked on its gate for the full ask_parent_timeout (~900s)
-      # because nothing cancels its gate; the per-id stop paths only fire on an
+      # clean quit, an aborted turn) a child parked on its approval gate otherwise
+      # stays parked for the full approval timeout because nothing cancels its
+      # gate; the per-id stop paths only fire on an
       # explicit /agents --stop or task_stop. Calling this from each parent-death
       # edge wakes every blocked child SYNCHRONOUSLY (cancel! pushes its sentinel;
       # the gate's await observes it within one WAKE_TICK) so each unwinds via the
@@ -675,7 +503,7 @@ module Rubino
       end
 
       # True iff `child_id`'s direct owner is `parent_id` (the ownership predicate
-      # later slices' steer/probe/answer_child AUTHORIZATION checks will build on).
+      # steer/probe AUTHORIZATION checks build on).
       def owned_by?(parent_id, child_id)
         @mutex.synchronize do
           child = @entries[child_id]
@@ -684,25 +512,6 @@ module Rubino
       end
 
       private
-
-      # Normalizes ONE supplied ask_parent answer choice (#475-3). Returns a clean
-      # plain STRING for a plain string or a label-only map (label==value), a
-      # {"label"=>, "description"=>} HASH for a {label, description} map (so the
-      # picker can show the label + a dim description hint and still deliver the
-      # label string — never a Ruby hash literal), or nil for a blank string / a
-      # map without a usable label (dropped by the filter_map caller).
-      def normalize_ask_option(opt)
-        if opt.is_a?(Hash)
-          label = (opt["label"] || opt[:label]).to_s.strip
-          desc  = (opt["description"] || opt[:description]).to_s.strip
-          return nil if label.empty?
-
-          desc.empty? ? label : { "label" => label, "description" => desc }
-        else
-          s = opt.to_s.strip
-          s.empty? ? nil : s
-        end
-      end
 
       # The reason (if any) a reserve at this owner/depth must be refused, checked
       # in the documented order. nil ⇒ allowed. Runs UNDER the mutex (callers hold

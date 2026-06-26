@@ -29,6 +29,21 @@ module Rubino
     class RubyLLMAdapter
       attr_reader :model_id, :provider
 
+      # Per-provider max OUTPUT-token ceilings for the fallback default, mirroring
+      # Hermes' _ANTHROPIC_OUTPUT_LIMITS. thinking tokens count TOWARD max_tokens,
+      # so a flat 16_384 default starves a thinking-enabled model: with an 8_000
+      # thinking budget only ~8_384 remained for visible output. A heavy turn
+      # whose assistant emits a large single-shot tool_use (e.g. writing a whole
+      # file) overran that mid-stream and MiniMax terminated the request with a
+      # generic "invalid params" (reproduced: ~30s of silent generation, then a
+      # failed-response error — NOT a request-shape rejection; the same body
+      # replays 200). MiniMax's real output ceiling is 131_072 (Hermes uses the
+      # same), so give it room. Only providers in this table change; every other
+      # provider keeps the conservative 16_384 default (a model whose hard cap is
+      # lower — e.g. a native Anthropic 3.5 at 8_192 — must not be over-asked).
+      OUTPUT_LIMIT_BY_PROVIDER = { "minimax" => 131_072 }.freeze
+      DEFAULT_OUTPUT_LIMIT = 16_384
+
       def initialize(model_id: nil, provider: nil, config: nil, ui: nil, event_bus: nil,
                      tool_executor: nil, cancel_token: nil, isolate_config: false)
         @config        = config || Rubino.configuration
@@ -128,21 +143,6 @@ module Rubino
                     on_round_trip: on_round_trip, budget_exhausted: budget_exhausted, &)
       end
 
-      # Returns model information (context window, etc.)
-      def model_info
-        RubyLLM.models.find(@model_id)
-      rescue StandardError
-        nil
-      end
-
-      # Returns the context window size for the current model
-      def context_window
-        info = model_info
-        return @config.dig("model", "context_length") if @config.dig("model", "context_length")
-
-        info&.context_window || 128_000
-      end
-
       private
 
       # The raw #call dispatch (streaming vs non-streaming), shared by the
@@ -200,12 +200,12 @@ module Rubino
         last_chunk_at = monotonic_now
         stale_after   = stale_chunk_timeout
         chunks_seen   = 0
-        # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking ask_parent
-        # parked on a human answer for up to tasks.ask_parent_timeout = 900s)
-        # produces no chunks while it runs, so the stale watchdog below would
-        # otherwise count that legitimate tool runtime as stream-idle and fire at
-        # `stale_after` (300s default), pre-empting the configured ask timeout and
-        # making the "auto-resumes in 15m" banner a lie. While a tool is in flight
+        # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking
+        # `question`/clarify parked on a human answer for up to the clarify
+        # timeout) produces no chunks while it runs, so the stale watchdog below
+        # would otherwise count that legitimate tool runtime as stream-idle and
+        # fire at `stale_after` (300s default), pre-empting the configured wait and
+        # making the "auto-resumes" banner a lie. While a tool is in flight
         # the stream is intentionally paused, not stalled: suspend idle accrual for
         # its duration. Set when a tool-use message closes (tools are about to
         # run); cleared when the next message begins (tools returned).
@@ -282,8 +282,8 @@ module Rubino
           @event_bus&.emit(Interaction::Events::MESSAGE_COMPLETED, message_id: message_block_id)
           # #488: a tool-use message just closed ⇒ ruby_llm is about to run those
           # tools mid-stream. Suspend the stale watchdog's idle accrual for the
-          # tool's runtime so a long, legitimate tool (a blocking ask_parent
-          # waiting on the human) is not killed at `stale_after`.
+          # tool's runtime so a long, legitimate tool (a blocking
+          # `question`/clarify waiting on the human) is not killed at `stale_after`.
           tool_running = true if intermediate_tool_message?(msg)
         end
         if chat_instance.respond_to?(:after_message)
@@ -298,8 +298,8 @@ module Rubino
         # only flips `tool_running` when the tool-use assistant message closes
         # AND intermediate_tool_message?(msg) recognises it — which is unreliable
         # on the anthropic-compatible streaming path (MiniMax /anthropic), where
-        # a blocking interactive tool (`question`/clarify parked on stdin, or
-        # ask_parent) starts running while the watchdog still sees
+        # a blocking interactive tool (`question`/clarify parked on stdin)
+        # starts running while the watchdog still sees
         # tool_running == false and fires at `stale_after` (30s for the
         # anthropic-compatible provider) before the human can answer. Keying the
         # suspend off before_tool_call closes that window: the instant ANY tool
@@ -872,12 +872,13 @@ module Rubino
       end
 
       # Configurable max output tokens. providers.<name>.max_tokens wins, then
-      # model.max_tokens, then a reasoning-model-sane default (16k vs ruby_llm's
-      # 4096). Returns an Integer.
+      # model.max_tokens, then a provider-aware default (large enough not to
+      # starve a thinking budget). Returns an Integer.
       def max_output_tokens
-        (provider_cfg["max_tokens"] ||
-         @config.dig("model", "max_tokens") ||
-         16_384).to_i
+        configured = provider_cfg["max_tokens"] || @config.dig("model", "max_tokens")
+        return configured.to_i if configured
+
+        OUTPUT_LIMIT_BY_PROVIDER.fetch(@provider.to_s, DEFAULT_OUTPUT_LIMIT)
       end
 
       # Thinking/reasoning budget in tokens. 0 / nil disables thinking entirely.
@@ -1219,15 +1220,19 @@ module Rubino
           # On the streaming path ruby_llm runs the WHOLE model↔tool loop inside
           # one ask(): every tool was already executed mid-stream via ToolBridge
           # (→ Agent::ToolExecutor — the single source of truth for the
-          # tool_started/tool_finished render + audit). The message ruby_llm
-          # RETURNS, however, can STILL carry those executed tool_calls (the
-          # anthropic-compatible MiniMax /anthropic path does), and handing them
-          # back made Loop#run's #has_tool_calls? branch re-run #execute_tool_calls
-          # on tools that already ran — firing a SECOND tool_finished and rendering
-          # the `└ ▸ sa_… · <name> · started` spawn confirmation TWICE (#53). They
-          # already ran, so the streaming response carries NONE; the Loop treats it
-          # as the terminal text turn. The non-streaming path keeps them: there
-          # ruby_llm returns the final TEXT message (no tool_calls) anyway.
+          # tool_started/tool_finished render + audit). That INCLUDES a tool the
+          # model leaked as TEXT: StreamToolCallRecovery injects the recovered
+          # call onto the accumulated message BEFORE ruby_llm's loop checks for
+          # tool calls, so it runs natively just like a structured one (the
+          # transport-level recovery, mirroring vLLM/SGLang/OpenHands). The
+          # message ruby_llm RETURNS, however, can STILL carry those executed
+          # tool_calls (the anthropic-compatible MiniMax /anthropic path does),
+          # and handing them back made Loop#run's #has_tool_calls? branch re-run
+          # #execute_tool_calls on tools that already ran — a SECOND tool_finished
+          # and the spawn confirmation TWICE (#53). They already ran, so the
+          # streaming response carries NONE; the Loop treats it as the terminal
+          # text turn. The non-streaming path keeps them: there ruby_llm returns
+          # the final TEXT message (no tool_calls) anyway.
           tool_calls: streaming ? [] : extract_tool_calls(response),
           input_tokens: input_tokens,
           output_tokens: output_tokens,

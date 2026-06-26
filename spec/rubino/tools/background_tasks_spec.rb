@@ -199,11 +199,10 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
   describe "tree helpers over owner_subagent_id (S1)" do
     # Hand-built 3-level fixture without spawning real threads. The tree logic is
     # independent of the caps, so we raise the depth cap for this block to build a
-    # genuine depth-2 chain (root → a → a1) plus a sibling b:
+    # genuine depth-2 chain (root → a → a1):
     #   root (human, depth0)
-    #     ├─ a (depth1)
-    #     │   └─ a1 (depth2)
-    #     └─ b (depth1)
+    #     └─ a (depth1)
+    #         └─ a1 (depth2)
     before do
       cfg = test_configuration("tasks" => { "max_depth" => 10, "max_children_per_node" => 10,
                                             "max_concurrent_total" => 50 })
@@ -213,13 +212,6 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     let!(:root) { registry.reserve(subagent: "explore", prompt: "root") }
     let!(:a)    { registry.reserve(subagent: "general", prompt: "a", owner_subagent_id: root.id) }
     let!(:a1)   { registry.reserve(subagent: "general", prompt: "a1", owner_subagent_id: a.id) }
-    let!(:b)    { registry.reserve(subagent: "general", prompt: "b", owner_subagent_id: root.id) }
-
-    it "descendants_of returns the full transitive subtree (BFS)" do
-      expect(registry.descendants_of(root.id).map(&:id)).to contain_exactly(a.id, b.id, a1.id)
-      expect(registry.descendants_of(a.id).map(&:id)).to contain_exactly(a1.id)
-      expect(registry.descendants_of(b.id)).to be_empty
-    end
 
     it "owned_by? is the direct-parent predicate" do
       expect(registry.owned_by?(a.id, a1.id)).to be(true)
@@ -386,11 +378,11 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
   # R1 — #running is the SINGLE source feeding both the footer cards and the
   # attached switcher. It must list every child the lifecycle still considers
   # alive (LIVE_STATUSES), so a sibling that goes quiet / parks (mid-spawn,
-  # needs_approval, blocked_on_parent) never silently vanishes while alive.
+  # needs_approval, stopping) never silently vanishes while alive.
   describe "#running liveness oracle (R1 — switcher/footer source)" do
     it "exposes LIVE_STATUSES and the shared class predicate" do
-      expect(described_class::LIVE_STATUSES).to include(:running, :needs_approval, :blocked_on_parent)
-      expect(described_class.live_status?(:blocked_on_parent)).to be(true)
+      expect(described_class::LIVE_STATUSES).to include(:running, :needs_approval, :stopping)
+      expect(described_class.live_status?(:needs_approval)).to be(true)
       expect(described_class.live_status?(:completed)).to be(false)
     end
 
@@ -400,16 +392,6 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       registry.begin_approval(apr.id, gate: Rubino::Run::ApprovalGate.new,
                                       approval_id: apr.id, question: "q", command: "c")
       expect(registry.running.map(&:id)).to include(run.id, apr.id)
-    end
-
-    it "keeps a :blocked_on_parent child in #running (it still holds a slot)" do
-      owner = reserve
-      child = registry.reserve(subagent: "explore", prompt: "p", owner_subagent_id: owner.id)
-      registry.begin_ask(child.id, gate: Rubino::Run::ApprovalGate.new, ask_id: child.id,
-                                   question: "may I?", blocking: true, owner_id: owner.id)
-
-      expect(registry.find(child.id).status).to eq(:blocked_on_parent)
-      expect(registry.running.map(&:id)).to include(child.id)
     end
 
     it "drops only TERMINAL children, never a live-but-quiet one" do

@@ -165,12 +165,14 @@ module Rubino
           # max_turns). Previously DEAD config (assigned, never read); now wired as
           # a real ceiling. `--max-turns N` overrides max_tool_iterations directly.
           "max_turns" => 90,
-          # Per-turn model↔tool round-trip cap. Raised 8→25 (#399): 8 was a
-          # rubino-only outlier (the Hermes reference uses 90; peer tools cluster
-          # 10–25 for "stop-and-ask"). 25 matches Cursor's tuned interactive cap —
-          # high enough that real multi-file tasks finish, low enough to still
-          # catch runaways. Kept at 25 (a deliberate prior decision, #414).
-          "max_tool_iterations" => 25,
+          # Per-turn model↔tool round-trip cap. Aligned to the Hermes reference
+          # (90), which is also the outer `max_turns` rail — so a real multi-step
+          # task runs to completion instead of stopping to ask after a couple
+          # dozen tool calls (the prior 25 was a deliberate Cursor-aligned cap,
+          # #414, but read as too eager for genuine multi-file work). The
+          # budget-extension prompt + the runaway backstops below still bound a
+          # truly looping turn. `--max-turns N` overrides this directly.
+          "max_tool_iterations" => 90,
           # At the iteration cap, in INTERACTIVE mode, prompt the user to
           # continue/summarize/abort instead of silently force-summarizing (#399).
           # false forces the old always-summarize behaviour; headless/non-TTY
@@ -290,7 +292,26 @@ module Rubino
           # Cap on the chat input's visual rows: a long/multi-line prompt
           # wraps and grows the input downward up to this many rows, then
           # scrolls vertically (caret kept in view).
-          "input_max_rows" => 8
+          "input_max_rows" => 8,
+          # Render the still-streaming (in-flight) block as FORMATTED markdown in
+          # the live region — bold/headings/lists/code style as they arrive
+          # (incomplete syntax repaired by MarkdownRepair) — instead of the raw
+          # rolling-tail text that only snaps to styled when the block commits.
+          # On by default (the Claude-like live feel, verified in a real
+          # terminal); false ⇒ the legacy raw live tail (exact prior behaviour).
+          "live_markdown" => true,
+          # Wrap each live-region frame in DEC-2026 synchronized output
+          # (BSU/ESU) so a supporting terminal swaps the frame atomically — no
+          # flicker/tearing on multi-step repaints. Unsupported terminals ignore
+          # the private mode, so it degrades cleanly; emitted only to a real TTY.
+          # false ⇒ the legacy per-write frames.
+          "synchronized_output" => true,
+          # Syntax-highlight fenced code blocks by language (Rouge) in the
+          # COMMITTED render — the live tail stays unstyled, so highlighting
+          # never blocks the stream (code shows instantly, colours a beat later
+          # on commit). Unknown languages and any failure fall back to the plain
+          # code body. On by default; false ⇒ plain (uncoloured) code blocks.
+          "code_highlight" => true
         },
         "paste" => {
           # File-backed paste pipeline (UI::PasteStore). A paste with MORE
@@ -309,14 +330,14 @@ module Rubino
         },
         "notifications" => {
           # Attention signals (UI::Notifier) for the moments the agent needs
-          # human eyes: a long turn finishing, an approval prompt, a blocked
-          # subagent. CLI-only; never emitted into a pipe.
+          # human eyes: a long turn finishing, or an approval prompt. CLI-only;
+          # never emitted into a pipe.
           "enabled" => true,
           # Ring the terminal bell (BEL). On iTerm2 an OSC 9 escape is also
           # sent so it surfaces as a native macOS notification.
           "bell" => true,
           # Optional shell command spawned non-blocking per event with
-          # RUBINO_EVENT (turn_finished|needs_approval|blocked) and
+          # RUBINO_EVENT (turn_finished|needs_approval) and
           # RUBINO_MESSAGE in its env — e.g. osascript / notify-send.
           "command" => nil,
           # A turn must run at least this many seconds before its completion
@@ -432,13 +453,18 @@ module Rubino
           # times an owner may run a one-shot model peek over a single child's
           # transcript. Over budget → the model is told to use the FREE
           # live:false snapshot instead. Free snapshots are unlimited.
-          "max_live_probes_per_child" => 5,
-          # Bound (seconds) a BLOCKING ask_parent waits before the child
-          # self-heals and proceeds with its best judgement (S5a). Matches the
-          # approvals wait-timeout default — never "forever".
-          "ask_parent_timeout" => 900
+          "max_live_probes_per_child" => 5
         },
         "tools" => {
+          # Recover tool calls a model LEAKS AS TEXT (tool-call markup in the
+          # assistant content instead of the structured field) — MiniMax's
+          # anthropic-compatible endpoint does this — by parsing the markup back
+          # into real tool calls the agent executes, and stripping it from saved
+          # content so it can't poison history. Covers the format families that
+          # account for ~80% of open models (Hermes/Qwen JSON, MiniMax/Qwen3-Coder
+          # XML, Mistral arrays). Inert when native tool calls exist or no markup
+          # is present (no false positives). Set false to disable the recovery.
+          "recover_text_tool_calls" => true,
           # Sandbox write/edit/delete tools to workspace_root (terminal.cwd
           # or Dir.pwd). Set to false to let the model touch any path the
           # process can reach — only do this if you trust the model + the
@@ -745,7 +771,7 @@ module Rubino
         },
         # #552: how long an interactive `question`/clarify waits for the human
         # before it EXPIRES CLEANLY (the agent proceeds with its best judgement),
-        # mirroring tasks.ask_parent_timeout and Hermes' agent.clarify_timeout.
+        # mirroring Hermes' agent.clarify_timeout.
         # Generous (10 min) — long enough to read a multi-option menu and answer,
         # short enough that an abandoned prompt eventually unblocks the run. This
         # is the BLOCKING-tool wait bound; the stale-chunk watchdog is separately
@@ -831,10 +857,6 @@ module Rubino
         "permissions" => {},
         "formatters" => {},
         "agents" => {},
-        "server" => {
-          "port" => 4820,
-          "auth" => false
-        },
         "api" => {
           # Hard cap on JSON request bodies. Anything past this (whether
           # advertised by Content-Length or revealed mid-read) is rejected

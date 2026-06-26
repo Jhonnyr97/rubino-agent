@@ -61,9 +61,8 @@ module Rubino
                   "the open question."
 
       # #552: clean, NON-ERROR outcome when the human did not answer within the
-      # generous clarify timeout. Mirrors ask_parent's "proceed with your best
-      # judgement" expiry and Hermes' falsy clarify response — the run continues,
-      # nothing is raised, no choice is assumed on the user's behalf.
+      # generous clarify timeout. Mirrors Hermes' falsy clarify response — the run
+      # continues, nothing is raised, no choice is assumed on the user's behalf.
       TIMED_OUT = "No answer: the question timed out waiting for a reply. " \
                   "Do not assume a choice on the user's behalf; proceed with the " \
                   "safest option and state the assumption, or finish and report " \
@@ -114,7 +113,7 @@ module Rubino
 
       # The configured clarify wait (clarify.timeout) when wired, else the
       # built-in default. nil/<=0 disables the bound (wait as long as the UI
-      # blocks) — matching ask_parent's "never forever, but configurable" stance.
+      # blocks) — a "never forever, but configurable" stance.
       def clarify_timeout
         cfg = Rubino.configuration if defined?(Rubino) && Rubino.respond_to?(:configuration)
         val = cfg.respond_to?(:clarify_timeout) ? cfg.clarify_timeout : nil

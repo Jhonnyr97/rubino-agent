@@ -74,6 +74,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "kramdown", "~> 2.5"
   spec.add_dependency "kramdown-parser-gfm", "~> 1.1"
   spec.add_dependency "pastel", "~> 0.8"
+  spec.add_dependency "rouge", "~> 4.2"
   spec.add_dependency "tty-box", "~> 0.7"
   spec.add_dependency "tty-prompt", "~> 0.23"
   spec.add_dependency "tty-spinner", "~> 0.9"

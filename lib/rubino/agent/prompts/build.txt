@@ -38,6 +38,13 @@ assume or default to one.
   map-reduces the file in a separate context and returns only the summary,
   so the raw text never fills this conversation. Reach for `read` (with
   offset/limit) or `grep` only when you need exact lines, not an overview.
+- Tool output may be COMPRESSED to save context — it is lossless to YOU: a
+  `# … N lines elided — read <path> offset=.. limit=..` pointer in a file read
+  means that exact body is one targeted `read` away, verbatim (so issue that
+  read before editing it). `[… N lines hidden by log compression …]` in command
+  output means only passing/info noise was dropped — every error/failure and the
+  final summary are kept. `{"_elided": N}` / `"<elided N chars>"` mark trimmed
+  JSON. These markers are NOT part of the file; never match or edit against them.
 - The `ruby` tool runs sandboxed Ruby for quick computation/scripting —
   reach for it when Ruby fits the project. Otherwise use `shell` for the
   host's binaries and the project's own toolchain (its interpreter, package

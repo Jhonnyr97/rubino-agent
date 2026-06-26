@@ -60,6 +60,26 @@ module Rubino
         value.positive? ? value : UI::BottomComposer::MAX_INPUT_ROWS
       end
 
+      # Render the in-flight streamed block as formatted markdown in the live
+      # region (display.live_markdown). Default true; only an explicit false
+      # falls back to the legacy raw live tail.
+      def display_live_markdown?
+        dig("display", "live_markdown") != false
+      end
+
+      # Wrap each live-region frame in DEC-2026 synchronized output
+      # (display.synchronized_output). Default true; only an explicit false
+      # falls back to the legacy per-write frames.
+      def display_synchronized_output?
+        dig("display", "synchronized_output") != false
+      end
+
+      # Syntax-highlight committed code blocks (display.code_highlight). Default
+      # true; only an explicit false falls back to plain (uncoloured) code.
+      def display_code_highlight?
+        dig("display", "code_highlight") != false
+      end
+
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
       # A paste with MORE than this many lines collapses to a
       # "[Pasted text #N +M lines]" placeholder in the composer (expanded to
@@ -192,18 +212,10 @@ module Rubino
         dig("tasks", "max_live_probes_per_child") || Defaults.dig("tasks", "max_live_probes_per_child")
       end
 
-      # Bound (seconds) a BLOCKING ask_parent waits for an answer before the child
-      # self-heals and proceeds with its best judgement (S5a). Reuses the
-      # approval-gate timeout convention — a sane upper bound, never "forever" —
-      # so an abandoned ask never parks the child's thread indefinitely. Default 900.
-      def tasks_ask_parent_timeout
-        dig("tasks", "ask_parent_timeout") || Defaults.dig("tasks", "ask_parent_timeout")
-      end
-
       # Bound (seconds) an interactive `question`/clarify waits for the human to
       # answer before it EXPIRES CLEANLY and the agent proceeds with its best
-      # judgement (#552). Mirrors the ask_parent / Hermes clarify_timeout
-      # convention — a generous upper bound (default 600s = 10 min, well above
+      # judgement (#552). Mirrors the Hermes clarify_timeout convention — a
+      # generous upper bound (default 600s = 10 min, well above
       # human reading/deliberation time), never the 30s stale-chunk window and
       # never "forever". An abandoned clarify self-heals into the NO_ANSWER
       # outcome instead of hanging the run or being killed by the stale watchdog.

@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.5.2] - 2026-06-26
+
+### Added
+
+- **Live formatted-markdown streaming.** The in-flight model stream now renders
+  as formatted markdown while it arrives (Stage 1), painted as atomic frames via
+  DEC-2026 synchronized output so a fast stream never tears mid-update (Stage 2),
+  with committed code blocks syntax-highlighted through Rouge (Stage 3). (#592,
+  #593, #594)
+- **Leaked tool-call recovery.** Models that emit a tool call as plain text or
+  garbled XML/JSON markup instead of a structured call (MiniMax-M3 and other
+  tool-loop models) now have those calls re-parsed into real `tool_calls` at the
+  transport layer so they actually execute, including a garbled `<invoke">`
+  variant.
+- **`write` content preview.** The `write` tool box now shows a preview of the
+  content being written.
+
+### Changed
+
+- Raise the default `max_tool_iterations` from 25 to 90 (Hermes-aligned), so long
+  tool-driven turns no longer hit the ceiling mid-task.
+- Teach the agent (via the build prompt) to read the compressed tool-output
+  markers introduced in 0.5.1.
+
+### Fixed
+
+- Render any unterminated code fence as a code box, matching CommonMark's
+  end-of-file fence auto-close, instead of leaking the raw backticks. (#595)
+- Merge consecutive same-role messages on the Anthropic-family wire so the
+  request shape stays valid. (#597)
+- Give MiniMax its full output ceiling so a long thinking block no longer starves
+  the visible output (a root cause of heavy-turn "invalid params" death).
+- Keep a 5xx-wrapped "invalid params" response on the retryable path.
+- Multi-line `ask()` prompts no longer erase terminal scrollback.
+- Exclude synthetic `[harness control]` injections from the rewind picker.
+- Fix an installed-gem launch crash (`uninitialized constant Rubino::TAGLINE`).
+
+### Removed
+
+- Drop the dead `server.*` config section, the orphaned `ask_parent` takeover and
+  ask/reply substrate, and dead code surfaced by the post-removal audit.
+
+### Docs
+
+- Mark native OAuth as not wired end-to-end (WIP).
+
 ## [0.5.1] - 2026-06-25
 
 ### Added

@@ -87,7 +87,7 @@ module Rubino
         return nil if ranges.nil?
 
         ranges
-          .map { |first, count| Elision.new(first_line: first, line_count: count, indent: nil) }
+          .map { |first, count| Elision.new(first_line: first, line_count: count) }
           .sort_by(&:first_line)
       end
 

@@ -49,6 +49,35 @@ RSpec.describe Rubino::Config::Configuration do
       cfg = test_configuration("display" => { "input_max_rows" => "junk" })
       expect(cfg.display_input_max_rows).to eq(Rubino::UI::BottomComposer::MAX_INPUT_ROWS)
     end
+
+    it "live_markdown defaults to enabled" do
+      expect(config.display_live_markdown?).to be true
+    end
+
+    it "only an explicit false falls back to the raw live tail" do
+      expect(test_configuration("display" => { "live_markdown" => false })
+               .display_live_markdown?).to be false
+      expect(test_configuration("display" => { "live_markdown" => true })
+               .display_live_markdown?).to be true
+    end
+
+    it "synchronized_output defaults to enabled" do
+      expect(config.display_synchronized_output?).to be true
+    end
+
+    it "only an explicit false disables synchronized output" do
+      expect(test_configuration("display" => { "synchronized_output" => false })
+               .display_synchronized_output?).to be false
+    end
+
+    it "code_highlight defaults to enabled" do
+      expect(config.display_code_highlight?).to be true
+    end
+
+    it "only an explicit false disables code highlighting" do
+      expect(test_configuration("display" => { "code_highlight" => false })
+               .display_code_highlight?).to be false
+    end
   end
 
   describe "notification accessors (attention bell + command hook)" do
@@ -161,8 +190,8 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
-      # Default raised 8→25 (#399); max_turn_seconds raised to a 600s safety-net (#408).
-      expect(config.agent_max_tool_iterations).to eq(25)
+      # Default aligned to the Hermes reference (90); max_turn_seconds is a 600s safety-net (#408).
+      expect(config.agent_max_tool_iterations).to eq(90)
       expect(config.agent_max_turn_seconds).to eq(600)
     end
 
@@ -174,7 +203,7 @@ RSpec.describe Rubino::Config::Configuration do
                                  "max_tool_iterations" => nil,
                                  "max_turn_seconds" => nil
                                })
-      expect(cfg.agent_max_tool_iterations).to eq(25)
+      expect(cfg.agent_max_tool_iterations).to eq(90)
       expect(cfg.agent_max_turn_seconds).to eq(600)
     end
   end

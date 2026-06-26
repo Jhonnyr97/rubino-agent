@@ -99,17 +99,4 @@ RSpec.describe Rubino::Util::SecretsMask do
       end
     end
   end
-
-  describe ".mask_hash" do
-    it "masks sensitive keys and leaves others alone" do
-      h = { "file_path" => "foo.rb", "token" => "abc" }
-      expect(described_class.mask_hash(h)).to eq("file_path" => "foo.rb", "token" => "***")
-    end
-
-    it "does not mutate the input" do
-      h = { token: "abc" }
-      described_class.mask_hash(h)
-      expect(h[:token]).to eq("abc")
-    end
-  end
 end

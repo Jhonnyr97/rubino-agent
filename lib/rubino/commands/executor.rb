@@ -20,10 +20,7 @@ module Rubino
       # conversation / config / turn state, so they run on the composer's reader
       # thread concurrently with the turn thread without a race (output routes
       # through the SAME render-mutex-serialized UI). /stop reuses the cancel
-      # machinery Esc / `--stop` use (already concurrent-safe). /reply is kept
-      # BLOCKED: its interactive form `/reply <id>` (-> @ui.ask) can't be told
-      # apart by NAME from the safe inline form, and would steal the reader's
-      # stdin (default-to-blocked on a concurrency hazard). Single source of
+      # machinery Esc / `--stop` use (already concurrent-safe). Single source of
       # truth for the busy-time classification — #busy_disposition reads it.
       IMMEDIATE_WHILE_BUSY = %w[agents tasks stop status jobs help commands dirs].freeze
 
@@ -210,9 +207,6 @@ module Rubino
           result.is_a?(Hash) ? result : :handled
         when "stop" # `/stop <id>` → `/agents <id> --stop` alias (FRICTION-4)
           agents_handler.handle_stop_alias(arguments) # returns :handled
-        when "reply"
-          agents_handler.handle_reply(arguments)
-          :handled
         when "sessions"
           sessions_handler.handle_sessions(arguments)
         when "probe"

@@ -72,21 +72,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     [entry, gate]
   end
 
-  def stage_ask
-    entry = registry.reserve(subagent: "explore", prompt: "do work")
-    gate  = Rubino::Run::ApprovalGate.new
-    gate.register("ask_#{entry.id}")
-    registry.begin_ask(
-      entry.id, gate: gate, ask_id: "ask_#{entry.id}",
-                question: "sqlite or postgres?", blocking: true, owner_id: nil
-    )
-    [entry, gate]
-  end
-
   describe "#agents_request_handler (the constant the REPL resolves at idle)" do
     # The bug: this raised NameError (uninitialized constant
     # Rubino::CLI::Commands::Handlers) every time the idle loop touched it.
-    it "resolves to the SAME handler the /agents and /reply slash commands use" do
+    it "resolves to the SAME handler the /agents slash command uses" do
       handler = cmd.send(:agents_request_handler)
       expect(handler).to be_a(Rubino::Commands::Handlers::Agents)
     end
@@ -104,15 +93,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
       expect(decided).to be(true)
       expect(ui.lines.join("\n")).to include("needs approval to run:").and include("rm -rf /tmp/x")
-    end
-
-    it "auto-opens the EXISTING reply prompt and delivers the answer down the SAME wire" do
-      entry, _gate = stage_ask
-      answers << "use postgres"
-      expect(registry).to receive(:deliver_answer).with(entry.id, "use postgres").and_call_original
-
-      expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
-      expect(ui.lines.join("\n")).to include("asks").and include("sqlite or postgres?")
     end
 
     it "returns false (nothing presented) when no request is pending" do

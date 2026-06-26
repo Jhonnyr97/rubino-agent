@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 # Regression #488: a tool that ruby_llm runs MID-STREAM produces no chunks while
-# it runs. A blocking ask_parent parked on a human answer can legitimately run
-# for up to tasks.ask_parent_timeout (900s), far past the stale watchdog's idle
+# it runs. A blocking `question`/clarify parked on a human answer can legitimately run
+# for up to its clarify timeout, far past the stale watchdog's idle
 # bound (stale_timeout_seconds, 300s default). Before the fix the watchdog
 # counted that tool runtime as a STALLED stream and raised StreamStaleError at
-# ~300s — pre-empting the configured 900s ask timeout and making the
-# "auto-resumes in 15m" blocked banner a lie.
+# ~300s — pre-empting the configured clarify timeout and making the
+# "auto-resumes" clarify banner a lie.
 #
 # The fix suspends the watchdog's idle accrual while a mid-stream tool is in
 # flight (set when a tool-use message closes via after_message; cleared when the

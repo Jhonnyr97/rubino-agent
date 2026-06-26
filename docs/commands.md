@@ -179,7 +179,6 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/agent` | Switch the primary agent (/agent <name>; a bare /<name> or Tab cycles) |
 | `/agents` | List background subagents; ↓+Enter to attach & steer one live, or steer/probe/view by id |
 | `/tasks` | Alias for /agents |
-| `/reply` | Answer a subagent that is blocked waiting on you (e.g. an approval) |
 | `/stop` | Stop a running subagent (/stop <id>; alias for /agents <id> --stop) |
 | `/jobs` | List the background job queue (status counts); /jobs <id> for detail |
 | `/skills` | List skills; activate one ('none' clears), or enable/disable NAME |
@@ -317,7 +316,7 @@ Read (and set) configuration without leaving the REPL, over the same **effective
 
 Gets resolve default-valued keys (not just what's in the file), and secret-named keys (`api_key`, tokens, …) render masked — exactly like `rubino config show`. A set writes through `Config::Writer` (the same persist path `/reasoning` and `/think` use) **and** updates the live configuration, so it survives the session and applies from the next turn; consumers that memoize their config (e.g. the memory backend) still need a restart. Typing `/config ` opens a dropdown with the verbs plus the known config keys flattened from the defaults tree; after `get`/`set` the keys complete again.
 
-### Background subagents: `/agents` and `/reply`
+### Background subagents: `/agents`
 
 The agent spawns background subagents with its `task` tool; these commands are the human surface over them (full model in [agents.md](agents.md)):
 
@@ -327,8 +326,6 @@ The agent spawns background subagents with its `task` tool; these commands are t
 /agents <id> --stop           # cancel a running subagent (blocked descendants unwind too)
 /agents <id> steer "note"     # park a note folded into the child's context at its next turn
 /agents <id> probe "question" # ephemeral read-only peek — nothing is saved to the child
-/reply <id> <answer>          # answer a subagent blocked on you (e.g. an approval)
-/reply                        # bare: list the subagents currently blocked on you
 ```
 
 `/tasks` is an alias for `/agents`.
@@ -337,9 +334,9 @@ The agent spawns background subagents with its `task` tool; these commands are t
 idle prompt to open the subagent picker, arrow to one, and `Enter` to **attach**:
 the screen switches to that agent's own full timeline (its tool calls and what it
 said, replayed) and the prompt becomes scoped — `sa_xxxx ❯`. While attached, just
-type to steer the running child (or answer it if it's blocked on you); `←` on the
+type to steer the running child; `←` on the
 empty prompt (or `/detach`) returns to the main timeline. The scoped prompt makes
-the global `/agents <id> steer/probe` and `/reply <id>` forms redundant — they're
+the global `/agents <id> steer/probe` forms redundant — they're
 the same operations, by id, from anywhere.
 
 ### Workspace roots: `/add-dir` and `/dirs`

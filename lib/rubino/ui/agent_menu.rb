@@ -160,8 +160,6 @@ module Rubino
       def status_label(entry)
         case entry.status
         when :needs_approval then @pastel.yellow(entry.budget_request ? "wants +budget" : "approval")
-        when :blocked_on_human then @pastel.red("waiting on you")
-        when :blocked_on_parent then @pastel.red("waiting on parent")
         when :stopping then "stopping"
         else "running"
         end

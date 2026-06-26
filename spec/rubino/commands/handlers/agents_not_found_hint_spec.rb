@@ -3,7 +3,7 @@
 # item 5 — dangling subagent-id hint. Subagent ids (sa_*) live ONLY in the
 # current process (the BackgroundTasks registry is in-memory, never persisted),
 # so a prior session's id is genuinely gone after a REPL restart. Every
-# not-found path (/agents <id>, /reply <id>, /stop <id>, steer, probe) used to
+# not-found path (/agents <id>, /stop <id>, steer, probe) used to
 # return a bare "no such id"; these specs pin that each now appends the
 # RESET_HINT so the user knows the id reset on restart instead of hunting for a
 # typo.
@@ -47,11 +47,6 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
 
   it "hints on the /stop alias for an unknown id" do
     handler.handle_stop_alias("sa_gone")
-    expect(last_error).to include(described_class::RESET_HINT)
-  end
-
-  it "hints on /reply <unknown-id>" do
-    handler.handle_reply("sa_gone an answer")
     expect(last_error).to include(described_class::RESET_HINT)
   end
 

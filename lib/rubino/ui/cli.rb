@@ -262,6 +262,19 @@ module Rubino
         # to hold (#107). Fail closed: no prompt, deterministic nil.
         return nil unless interactive_terminal?
 
+        # A MULTI-LINE prompt (the `question` tool builds question + numbered
+        # options + a final "Your choice:" line) handed WHOLE to TTY::Prompt#ask
+        # corrupts the screen: the instant the typed answer wraps the input row,
+        # TTY::Prompt's redraw over-counts rows and clears lines ABOVE the prompt,
+        # erasing the conversation scrollback. Fix: emit the prompt BODY (every
+        # line but the last) as committed output so it lands in scrollback and
+        # stays put, and hand TTY::Prompt only the SHORT final line. The API UI
+        # (UI::API#ask) still gets the full multi-line prompt for its clarify
+        # event — this split is CLI-only.
+        lines    = prompt.to_s.split("\n")
+        ask_line = lines.pop.to_s
+        lines.each { |line| emit(line) }
+
         # A mid-turn prompt must own the real terminal: pause the bottom composer
         # so TTY::Prompt reads the real $stdin and tty-screen probes the real
         # $stdout (not the write-only StdoutProxy). No-op when no composer is
@@ -275,7 +288,7 @@ module Rubino
         # queue line + in-flight keystrokes and PREFILL them as the answer — the
         # user sees it and confirms/edits with Enter (never auto-submitted).
         BottomComposer.run_in_terminal_with_pending do |pending|
-          pending && !pending.empty? ? @prompt.ask(prompt, value: pending) : @prompt.ask(prompt)
+          pending && !pending.empty? ? @prompt.ask(ask_line, value: pending) : @prompt.ask(ask_line)
         end
       end
 
@@ -669,18 +682,6 @@ module Rubino
         rows[1..].each { |row| emit_styled(yield("#{indent}#{row}")) }
       end
 
-      # Approval requested: renders as `◆ summary`
-      def approval_requested(summary:, choices:)
-        emit_blank
-        # The summary is derived from the proposed tool/command (untrusted) — the
-        # funnel's PATH 1 (#emit) strips escapes before the trusted wrap (R3C-1,
-        # CWE-150). Choice labels are rubino's own fixed menu text (trusted).
-        emit("◆ #{summary}", style: :yellow)
-        choices.each do |choice|
-          emit("  [#{choice[:key]}] #{choice[:label]}", style: :dim)
-        end
-      end
-
       # Body text rendered with modest indentation (no big box).
       def body(text)
         return if text.nil? || text.to_s.empty?
@@ -872,51 +873,6 @@ module Rubino
         # An async-notice paint is cosmetic — never let it break a turn or child.
       end
 
-      # Commits the ⛔ "a subagent needs you" attention banner into scrollback the
-      # instant a background child escalates an ask_parent to the human. This is
-      # the ATTENTION event (the one-time, unmissable banner); the persistent
-      # AMBIENT reminder is the ⛔ card line the live region keeps showing (see
-      # UI::SubagentCards#hint_line) so a blocked tree can never hide behind a
-      # spinner. The answer verb is /reply <id>; --stop cancels the child. Routed
-      # through $stdout so (during a turn) it lands above the bottom composer like
-      # every other committed line; between turns it prints inline.
-      def subagent_ask_banner(id, subagent, question)
-        emit_blank
-        emit("┄ a subagent needs you ┄", style: :dim)
-        # id/subagent/question are untrusted — the funnel's PATH 1 (#emit) strips
-        # every escape before the trusted style wrap (R3C-1, CWE-150).
-        emit("⛔ #{id} (#{subagent}) is BLOCKED, waiting on your answer", style: %i[red bold])
-        emit("   ❓ #{question}", style: :yellow)
-        emit("   everything it needs is paused until you answer — #{ask_timeout_hint}", style: :dim)
-        emit("   → /reply #{id} <answer>   to answer   ·   /agents #{id} --stop   to cancel", style: :dim)
-        $stdout.flush
-        # The ⛔ state is the loudest one — the whole subtree is parked on the
-        # human — so it also rings the attention bell/hook.
-        ring_subagent_blocked(id, subagent)
-      end
-
-      # Rings ONLY the ⛔ attention bell/hook for a blocked child, WITHOUT the
-      # scrollback banner. Used by the mid-turn auto-open path: when the answer
-      # dropdown surfaces by itself, its own `◆ … asks` header + picker IS the
-      # on-screen banner, so re-printing #subagent_ask_banner above it just
-      # doubles the same question (#510). The attention bell still belongs on
-      # both paths — the subtree is parked on the human either way.
-      def ring_subagent_blocked(id, subagent)
-        notifier.blocked("#{id} (#{subagent}) is waiting on your answer")
-      end
-
-      # The honest bound for the ⛔ banner: a blocking ask_parent waits at most
-      # tasks.ask_parent_timeout seconds, then the child proceeds with its best
-      # judgement (ask_parent_tool.rb). The banner must say so — "no timeout" was
-      # a lie unless the bound is explicitly disabled (nil/0) in config (#145).
-      def ask_timeout_hint
-        seconds = Rubino.configuration.tasks_ask_parent_timeout.to_i
-        return "no timeout" unless seconds.positive?
-
-        human = (seconds % 60).zero? ? "#{seconds / 60}m" : "#{seconds}s"
-        "auto-resumes with its best judgement in #{human}"
-      end
-
       # Renders an ephemeral `probe` answer in the dim, fenced aside that the
       # locked UX prescribes: an opening `┄ probe (ephemeral · not saved) ┄`
       # rail, the answer body on a dim `┊` left-rail, then a closing
@@ -989,61 +945,6 @@ module Rubino
 
       def subagent_cards
         @subagent_cards ||= SubagentCards.new(pastel: @pastel)
-      end
-
-      # MID-TURN AUTO-OPEN bridge (Option A): a background child just escalated an
-      # ask_parent to the HUMAN while the parent turn is busy. If a bottom composer
-      # owns the screen we ask IT to surface the answer dropdown by itself — the
-      # composer wakes its input thread (self-pipe), snapshots the live draft, runs
-      # the dropdown there, delivers via the child's gate (NEVER the parent turn),
-      # then restores the draft. The FIFO drain (answer_all_human) re-reads
-      # awaiting_human after each delivery, so several pending asks resolve one at
-      # a time and a 2nd child that asks mid-open is picked up on the re-read.
-      #
-      # No-op when no turn is live (BottomComposer.current nil) — the idle poll
-      # (Handlers::Agents#auto_resolve_pending) covers that path. Called from the
-      # CHILD thread (AskParentTool#surface_and_notify); the actual takeover runs
-      # on the input thread. Best-effort — a hiccup here must never break the
-      # child or the parent turn.
-      #
-      # Returns true when a live composer OWNS the screen — i.e. the ask WILL be
-      # surfaced in an on-screen dropdown, either now via this takeover OR via the
-      # FIFO re-read of an already-running dropdown loop (#486, one-at-a-time).
-      # The caller (#surface_and_notify) uses that to SUPPRESS the redundant
-      # scrollback ask-banner whose question the dropdown header already shows
-      # (#510). Returns false only when there is no composer (the idle path, where
-      # /reply is the affordance) or on error.
-      def auto_open_human_ask(_entry = nil)
-        composer = BottomComposer.current
-        return false unless composer
-        # Belt-and-suspenders (#513): when the composer is ALREADY suspended the
-        # idle resolver (chat_command.rb) is mid-resolution and will surface the
-        # child itself — request_takeover would reject this anyway (returns false
-        # on @suspended), but bailing here makes it explicit that only ONE path
-        # claims the shared composer, so the two threads can't both report
-        # success and race the surface.
-        return false if composer.suspended?
-
-        handler = Commands::Handlers::Agents.new(ui: self)
-        # on_resume repaints the subagent cards from the live registry once the
-        # dropdown closes and the composer has resumed — so the aggregated
-        # `⛔N subagents waiting on you` hint (the live region's last row, wiped
-        # when the takeover suspended it) RELIABLY comes back whenever children
-        # are still awaiting_human (several pending, or the human cancelled),
-        # instead of staying invisible for the rest of the turn (#475-A).
-        #
-        # RETURN THE REAL RESULT (#513): request_takeover returns false when NO
-        # takeover (and no snapshot/restore) happened — composer not running,
-        # suspended, no wake pipe, or the one-at-a-time guard. On the one-at-a-time
-        # case the ask is NOT lost (answer_all_human's FIFO re-read surfaces it),
-        # but on the OTHER rejections nothing surfaces it on-screen, so the caller
-        # must KEEP the scrollback banner + /reply affordance. Hardcoding true here
-        # suppressed that banner and stranded the user with only a bell. A
-        # redundant banner is strictly safer than a stranded user, so we report
-        # the actual takeover result.
-        composer.request_takeover(on_resume: -> { set_subagent_cards }) { handler.answer_all_human }
-      rescue StandardError
-        false
       end
 
       # Echoes a line the user typed mid-turn, parked for the next turn.
@@ -1171,13 +1072,24 @@ module Rubino
       # only escapes that reach the terminal. This is the shared funnel for the
       # committed block (#commit_markdown_block) and the atomic block
       # (#margined_render), so both paths are covered.
-      def render_markdown_block(text)
+      # highlight: syntax-highlight fenced code blocks (Rouge). Passed true only
+      # by the COMMITTED render paths — never the per-delta live tail — so
+      # highlighting can never block the stream. Gated by display.code_highlight.
+      def render_markdown_block(text, highlight: false)
         text = Util::Output.sanitize_terminal(text)
-        MarkdownRenderer.new(width: markdown_width).render(text).map do |line_tokens|
+        renderer = MarkdownRenderer.new(width: markdown_width,
+                                        code_highlight: highlight && code_highlight?)
+        renderer.render(text).map do |line_tokens|
           line_tokens.map do |token, style|
             style.nil? ? token : apply_style(token, style)
           end.join
         end
+      end
+
+      # display.code_highlight — opt-in syntax highlighting of committed code
+      # blocks (default false).
+      def code_highlight?
+        Rubino.configuration.display_code_highlight?
       end
 
       # Smallest usable markdown/table budget. Below this a streamed table's
@@ -1857,17 +1769,6 @@ module Rubino
         JOB_STATUS_LABELS[type.to_s] || type.to_s
       end
 
-      def with_spinner(message, &block)
-        spinner = TTY::Spinner.new("[:spinner] #{message}", format: :dots)
-        spinner.auto_spin
-        result = block.call
-        spinner.success
-        result
-      rescue StandardError => e
-        spinner.error
-        raise e
-      end
-
       # --- Legacy box methods (used by print_session_history replay) ---
 
       def box_open(*pieces, at: nil, color: nil)
@@ -2202,7 +2103,7 @@ module Rubino
         # Commit each finished block atomically with the live-tail clear so a raw
         # tail row can't survive above the rendered block at the scroll boundary
         # (#265) — the same single-frame discipline the final flush uses.
-        completed.each { |block| commit_block_atomic(margined_render(block)) }
+        completed.each { |block| commit_block_atomic(margined_render(block, highlight: true)) }
         # Live region. While a GFM table is in flight, paint a FITTED, growing
         # partial table (header + completed rows) instead of the raw `| … |`
         # rows — the rows mid-cell soft-wrap with no borders otherwise (the
@@ -2214,9 +2115,47 @@ module Rubino
         # moment it completes.
         if @stream_md.in_table?
           show_live_table(@stream_md.table_rows_so_far)
+        elsif live_markdown?
+          # Render the in-flight block as FORMATTED markdown (incomplete syntax
+          # repaired) so bold/headings/lists/code style live, like Claude —
+          # instead of the raw rolling tail that only snaps to styled on commit.
+          show_live_markdown(@stream_md)
         else
           show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
         end
+      end
+
+      # display.live_markdown — opt-in formatted live region (default false).
+      def live_markdown?
+        Rubino.configuration.display_live_markdown?
+      end
+
+      # Paint the in-flight block as formatted markdown in the live region: take
+      # the raw tail, close any syntax left open by the still-arriving stream
+      # (MarkdownRepair, using the splitter's fence state), render it through the
+      # SAME MarkdownRenderer the committed blocks use, and keep the last
+      # LIVE_TAIL_ROWS rendered rows so the region stays bounded. Mirrors
+      # #show_live_table: builds margined, ANSI-styled rows and paints them
+      # through the SAME single-frame seam (#paint_live) and #265 ghost guard, so
+      # the preview is cleanly replaced each delta and torn down on commit.
+      def show_live_markdown(stream_md)
+        lines = live_markdown_lines(stream_md)
+        frame = lines.join("\n")
+        note_live_tail(frame)
+        paint_live(frame)
+      end
+
+      # Raw in-flight tail -> repaired -> MD_MARGIN-indented, ANSI-styled lines,
+      # capped to the last LIVE_TAIL_ROWS rendered rows. #render_markdown_block
+      # already sanitize_terminal's the (untrusted) model text before parsing, so
+      # the styled rows carry only rubino's own SGR — they must NOT pass through
+      # #margined_tail again (that would caret-escape our own escapes).
+      def live_markdown_lines(stream_md)
+        raw = stream_md.tail
+        return [] if raw.nil? || raw.empty?
+
+        repaired = MarkdownRepair.close_open_spans(raw, fence: stream_md.open_fence)
+        margined_render(repaired).last(LIVE_TAIL_ROWS)
       end
 
       # Paint the growing partial table in the live region: re-render the
@@ -2344,17 +2283,45 @@ module Rubino
           return
         end
 
-        lines =
-          if open_fence?(remaining)
-            # A half-open fence renders as garbage; emit the buffered text PLAIN
-            # so nothing is lost, still margined to sit under the rest.
-            # CWE-150 (#567): a half-open fence dumps RAW model text — defang
-            # escapes before the margined plain-line fallback prints it.
-            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{safe(line)}" }
-          else
-            margined_render(remaining)
-          end
-        commit_block_atomic(lines)
+        # An unterminated ``` fence at end-of-stream: close it synthetically and
+        # render as a code BOX — what every CommonMark renderer shows via the
+        # spec's EOF auto-close (§4.5), which kramdown does NOT perform (it
+        # degrades an unclosed fence to a paragraph). Covers both a too-short
+        # botched close (MiniMax-M3 emits `` against a ``` opener) and a fence
+        # the model never closed at all. Well-formed text renders normally.
+        rendered = close_unterminated_fence(remaining) || remaining
+        commit_block_atomic(margined_render(rendered, highlight: true))
+      end
+
+      # If +text+ is an UNTERMINATED ``` fence, return it with a valid closing
+      # fence so it renders as a code box; else nil (well-formed text renders as
+      # is). Matches what CommonMark's EOF auto-close gives every other renderer
+      # — done by synthesising the close because kramdown won't auto-close, and
+      # because the field (goldmark, markdown-it, remend) never RELAXES the
+      # "close ≥ opener" rule, only ever closes AT the opener length. Two cases:
+      #   * the last non-blank line is a bare backtick run SHORTER than the
+      #     opener (M3's botched close) → promote it to the opener length;
+      #   * no close at all (model cut off mid-code) → append a close.
+      # The splitter only ever hands us a SINGLE in-flight block, so the first
+      # fence line is the (only) opener.
+      def close_unterminated_fence(text)
+        return nil unless open_fence?(text)
+
+        lines  = text.split("\n", -1)
+        opener = lines.find { |l| l.match?(StreamingMarkdown::FENCE_RE) }
+        return nil unless opener
+
+        open_len = opener[/`+/].length
+        close    = "`" * open_len
+        idx      = lines.rindex { |l| !l.strip.empty? }
+
+        m = idx && lines[idx].match(/\A\s{0,3}(`+)\s*\z/)
+        if m && m[1].length.between?(1, open_len - 1)
+          lines[idx] = close # promote the too-short botched close
+        else
+          lines << close # the model never closed the fence — close it ourselves
+        end
+        lines.join("\n")
       end
 
       # Commit a rendered block AND tear the raw live tail down in a single
@@ -2366,8 +2333,8 @@ module Rubino
       # per-line path, clearing the in-place tail first.
       # A markdown block rendered to MD_MARGIN-indented, ANSI-styled lines —
       # the exact lines #commit_block_atomic commits above the prompt.
-      def margined_render(block)
-        render_markdown_block(block).map { |line| "#{MD_MARGIN}#{line}" }
+      def margined_render(block, highlight: false)
+        render_markdown_block(block, highlight: highlight).map { |line| "#{MD_MARGIN}#{line}" }
       end
 
       def commit_block_atomic(lines)

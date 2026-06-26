@@ -210,6 +210,20 @@ module Rubino
       # AFTER the media check so an image rejection keeps its own reason. The
       # context-overflow phrases are deliberately excluded (skip_if_overflow) —
       # those are handled by the compress-not-fail path above.
+      #
+      # CRUCIAL carve-out (skip_if_server_error): this stage must fire ONLY for a
+      # genuine 4xx-class rejection. ruby_llm's STREAMING path flattens EVERY
+      # mid-stream error frame to a RubyLLM::ServerError(500) (streaming.rb
+      # parse_streaming_error hard-codes status 500), so a TRANSIENT server-side
+      # blip that MiniMax emits mid-stream with the generic text "invalid params"
+      # arrives here as a 5xx — indistinguishable by text from a real 400. Bisecting
+      # one such captured failing request proved it: replayed verbatim against
+      # MiniMax (streaming and non-streaming) it returns a clean 200 every time, so
+      # the request is VALID and the error was transient. Classifying it FORMAT_ERROR
+      # killed the whole multi-tool turn with no retry. So when the error is a 5xx
+      # server class we SKIP this stage and let classify_typed route it to the
+      # retryable SERVER_ERROR path (Hermes parity: 5xx is always retryable). A real
+      # malformed request is a 4xx BadRequestError and still fails fast here.
       INVALID_PARAMS_PATTERNS = [
         "invalid params",
         "invalid parameter",
@@ -270,7 +284,17 @@ module Rubino
         { patterns: INVALID_MEDIA_PATTERNS, reason: FailoverReason::FORMAT_ERROR,
           status: :http },
         { patterns: INVALID_PARAMS_PATTERNS, reason: FailoverReason::FORMAT_ERROR,
-          status: :http, skip_if_overflow: true }
+          status: :http, skip_if_overflow: true, skip_if_server_error: true }
+      ].freeze
+
+      # 5xx-class typed errors. A request-validation text match (invalid-params)
+      # must defer to these so a streaming-wrapped transient (always re-raised as
+      # ServerError(500), see INVALID_PARAMS_PATTERNS) stays retryable instead of
+      # being clobbered into a non-retryable FORMAT_ERROR by its generic message.
+      SERVER_ERROR_CLASSES = [
+        RubyLLM::ServerError,
+        RubyLLM::ServiceUnavailableError,
+        RubyLLM::OverloadedError
       ].freeze
 
       # A rate-limit / quota rejection mis-shaped by the provider's streaming
@@ -302,6 +326,7 @@ module Rubino
         msg = error.message.to_s.downcase
         stages.each do |stage|
           next if stage[:skip_if_overflow] && context_overflow?(error)
+          next if stage[:skip_if_server_error] && server_error_class?(error)
 
           matched = (stage[:config_error] && config_error?(error)) ||
                     stage[:patterns].any? { |p| msg.include?(p) }
@@ -467,6 +492,14 @@ module Rubino
 
       def config_error?(error)
         defined?(RubyLLM::ConfigurationError) && error.is_a?(RubyLLM::ConfigurationError)
+      end
+
+      # True when the error is a 5xx server class (typed) or carries a 5xx status.
+      # Used to keep a streaming-wrapped transient "invalid params" (re-raised as
+      # ServerError(500)) on the retryable path instead of FORMAT_ERROR fail-fast.
+      def server_error_class?(error)
+        SERVER_ERROR_CLASSES.any? { |klass| error.is_a?(klass) } ||
+          http_status(error).to_i >= 500
       end
     end
   end

@@ -16,8 +16,6 @@ RSpec.describe Rubino::Commands::Executor do
         ["◌", "stopping"],
         ["⊘", "stopped"],
         ["●", "needs_approval"],
-        ["⛔", "blocked_on_human"],
-        ["◷", "blocked_on_parent"],
         ["✗", "failed"],
         ["✓", "done"]
       ]

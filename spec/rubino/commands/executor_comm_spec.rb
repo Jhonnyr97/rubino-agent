@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Dispatch + output specs for the parent<->subagent comm slash verbs added to
-# the Executor: /agents <id> steer, /agents <id> probe, and /reply <id>.
+# the Executor: /agents <id> steer and /agents <id> probe.
 # Render/visual correctness is verified separately in the headless terminal.
 RSpec.describe "Rubino::Commands::Executor comm verbs" do
   subject(:exec) { Rubino::Commands::Executor.new(loader: loader, ui: ui, runner: nil) }
@@ -61,41 +61,6 @@ RSpec.describe "Rubino::Commands::Executor comm verbs" do
       # so its honest "I'm not doing anything" answer doesn't read as broken.
       expect(joined).to include("snapshot at this instant")
       expect(store.count(sess[:id])).to eq(before_count)
-    end
-  end
-
-  describe "/reply <id>" do
-    it "decides the gate + steers the answer down, and unblocks the tree" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-      gate  = Rubino::Run::ApprovalGate.new
-      ask_id = "ask_#{entry.id}"
-      gate.register(ask_id)
-      Rubino::Tools::BackgroundTasks.instance.begin_ask(
-        entry.id, gate: gate, ask_id: ask_id, question: "sqlite or postgres?", blocking: true
-      )
-
-      exec.try_execute(%(/reply #{entry.id} use postgres))
-
-      expect(gate.decision_for(ask_id)).to eq("use postgres")
-      expect(entry.steer_queue.drain.join).to include("use postgres")
-      expect(Rubino::Tools::BackgroundTasks.instance.find(entry.id).status).to eq(:running)
-      expect(info_lines.join("\n")).to include("tree unblocked")
-    end
-
-    it "lists who is waiting when called with no id" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-      Rubino::Tools::BackgroundTasks.instance.begin_ask(
-        entry.id, gate: Rubino::Run::ApprovalGate.new, ask_id: "a",
-                  question: "which db?", blocking: true
-      )
-      exec.try_execute("/reply")
-      expect(info_lines.join("\n")).to include("waiting on you")
-    end
-
-    it "errors when the id is not blocked" do
-      entry = Rubino::Tools::BackgroundTasks.instance.reserve(subagent: "explore", prompt: "x")
-      exec.try_execute(%(/reply #{entry.id} hi))
-      expect(info_lines.join("\n")).to include("is not waiting on you")
     end
   end
 end

@@ -332,4 +332,33 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
       expect(buf.flush).to be_nil
     end
   end
+
+  # The open-fence state a forgiving live renderer (MarkdownRepair) reads to
+  # close the fence so the partial body styles as code, not a raw ```.
+  describe "#open_fence" do
+    it "is nil outside a fence" do
+      buf.feed("plain prose")
+      expect(buf.open_fence).to be_nil
+    end
+
+    it "reports a PLAIN code fence (len + plain:true) while it streams" do
+      buf.feed("```ruby\ndef hi")
+      expect(buf.open_fence).to eq({ len: 3, plain: true })
+    end
+
+    it "carries the opening backtick run length" do
+      buf.feed("````\nnested ``` here")
+      expect(buf.open_fence).to eq({ len: 4, plain: true })
+    end
+
+    it "marks a ```markdown WRAPPER as plain:false (renderer unwraps it)" do
+      buf.feed("```markdown\n# Heading")
+      expect(buf.open_fence).to eq({ len: 3, plain: false })
+    end
+
+    it "is nil again once the fence closes" do
+      buf.feed("```\ncode\n```\n")
+      expect(buf.open_fence).to be_nil
+    end
+  end
 end

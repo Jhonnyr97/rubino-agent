@@ -3,20 +3,19 @@
 require "stringio"
 
 # Parent-death deadlock fix: when the PARENT dies/interrupts (REPL break,
-# HUP/TERM, clean quit, an aborted turn) while a CHILD subagent is blocked on
-# ask_parent(blocking:true), the child used to stay parked on its gate for the
-# full tasks.ask_parent_timeout (~900s) because none of the parent-death edges
-# cancelled the children's gates — only the per-id stop paths (/agents --stop,
-# task_stop) did.
+# HUP/TERM, clean quit, an aborted turn) while a CHILD subagent is parked on its
+# approval gate (:needs_approval), the child used to stay parked for the full
+# approval timeout because none of the parent-death edges cancelled the
+# children's gates — only the per-id stop paths (/agents --stop, task_stop) did.
 #
 # The fix adds BackgroundTasks#cancel_all (the structured-concurrency teardown
 # seam), reusing the SAME per-entry stop body (#stop_entry) the per-id paths use,
 # and invokes it from every parent-death edge. These specs:
 #   1. drive the gate/registry/tool classes directly (NO LLM) to REPRODUCE the
-#      deadlock and PROVE the fix: a blocked child unwinds IMMEDIATELY on
+#      deadlock and PROVE the fix: a parked child unwinds IMMEDIATELY on
 #      #cancel_all (well under the bound) with the clean "cancelled" message,
 #      whereas the parent runner's CancelToken alone does NOT reach it;
-#   2. pin the helper's contract (cancels a blocked child's gate, idempotent,
+#   2. pin the helper's contract (cancels a parked child's gate, idempotent,
 #      no-op with no children, reuses #stop_entry, trap-safe locking shape).
 RSpec.describe Rubino::Tools::BackgroundTasks do
   subject(:registry) { described_class.instance }
@@ -35,29 +34,28 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     runner
   end
 
-  # Parks `entry`'s OWN thread on a real ask gate exactly as AskParentTool does
-  # for a blocking ask, with the ask timeout bound LOW so the test never waits
-  # near the real 900s default even if the fix regressed. Returns [thread, gate].
-  # Blocks until the entry is observably :blocked_on_human before returning.
-  def block_child_on_ask(entry, ask_timeout: 8)
-    gate   = Rubino::Run::ApprovalGate.new
-    ask_id = "ask_#{entry.id}"
-    gate.register(ask_id)
+  # Parks `entry`'s OWN thread on a real approval gate exactly as the background
+  # approval-surfacing path does, with the await bound LOW so the test never
+  # waits near the real default even if the fix regressed. Returns
+  # [thread, gate, -> captured]. Blocks until the entry is observably
+  # :needs_approval before returning.
+  def block_child_on_gate(entry, gate_timeout: 8)
+    gate        = Rubino::Run::ApprovalGate.new
+    approval_id = "ap_#{entry.id}"
+    gate.register(approval_id)
 
     captured = nil
     thread = Thread.new do
       status = :done
       Rubino.with_current_subagent_id(entry.id) do
-        registry.begin_ask(entry.id, gate: gate, ask_id: ask_id,
-                                     question: "sqlite or postgres?", blocking: true)
-        # The exact wait AskParentTool#await_human performs, bound low for the test.
-        decision = gate.await(ask_id, timeout: ask_timeout)
-        answer   = decision.equal?(Rubino::Run::ApprovalGate::EXPIRED) ? nil : decision.to_s
-        registry.end_ask(entry.id)
-        captured = answer
+        registry.begin_approval(entry.id, gate: gate, approval_id: approval_id,
+                                          question: "run rm -rf?", command: "rm -rf x")
+        decision = gate.await(approval_id, timeout: gate_timeout)
+        captured = decision.equal?(Rubino::Run::ApprovalGate::EXPIRED) ? nil : decision.to_s
+        registry.end_approval(entry.id)
       rescue Rubino::Interrupted
-        # The SAME unwind AskParentTool#call performs on a cancelled gate.
-        registry.end_ask(entry.id)
+        # The SAME unwind the child performs on a cancelled gate.
+        registry.end_approval(entry.id)
         captured = "Your parent question was cancelled (the run is being stopped)."
         status = :failed # the worker's terminal write maps :stopping + :failed → :stopped
       ensure
@@ -69,7 +67,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
 
     # Wait (bounded) until the child has actually parked on the gate.
     deadline = monotonic + 2.0
-    sleep(0.01) until registry.find(entry.id)&.status == :blocked_on_human || monotonic > deadline
+    sleep(0.01) until registry.find(entry.id)&.status == :needs_approval || monotonic > deadline
     [thread, gate, -> { captured }]
   end
 
@@ -83,21 +81,21 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       expect(registry.running).to be_empty
     end
 
-    it "is aliased as #shutdown!" do
+    it "responds to #shutdown!" do
       expect(registry).to respond_to(:shutdown!)
     end
 
-    it "REPRODUCES the deadlock + PROVES the fix: a blocking-ask child unwinds " \
+    it "REPRODUCES the deadlock + PROVES the fix: a parked child unwinds " \
        "immediately on #cancel_all, where the parent runner's CancelToken alone does NOT" do
       entry = registry.reserve(subagent: "explore", prompt: "do it")
       registry.attach(entry, thread: Thread.current, runner: fake_runner)
-      thread, _gate, captured = block_child_on_ask(entry, ask_timeout: 8)
+      thread, _gate, captured = block_child_on_gate(entry, gate_timeout: 8)
 
       # --- BEFORE (the bug): the parent runner's token flips, the child STAYS parked.
       entry.runner.cancel!(reason: :external)
       expect(entry.runner.cancel_token).to be_cancelled # the parent's token DID flip...
       expect(thread.join(0.5)).to be_nil # ...but the child never woke.
-      expect(registry.find(entry.id).status).to eq(:blocked_on_human)
+      expect(registry.find(entry.id).status).to eq(:needs_approval)
 
       # --- AFTER (the fix): #cancel_all wakes the gate; the child unwinds AT ONCE.
       t0 = monotonic
@@ -109,12 +107,12 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       expect(registry.find(entry.id).status).to eq(:stopped)
     end
 
-    it "cancels EVERY live blocked child in one call" do
+    it "cancels EVERY live parked child in one call" do
       threads = []
       3.times do |i|
         entry = registry.reserve(subagent: "explore", prompt: "do #{i}")
         registry.attach(entry, thread: Thread.current, runner: fake_runner)
-        t, = block_child_on_ask(entry)
+        t, = block_child_on_gate(entry)
         threads << t
       end
       expect(registry.running.size).to eq(3)
@@ -127,7 +125,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     it "is idempotent — a second #cancel_all on already-stopped children is a no-op" do
       entry = registry.reserve(subagent: "explore", prompt: "do it")
       registry.attach(entry, thread: Thread.current, runner: fake_runner)
-      thread, = block_child_on_ask(entry)
+      thread, = block_child_on_gate(entry)
 
       registry.cancel_all
       expect(thread.join(2)).to be_truthy
@@ -153,7 +151,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     it "joins cooperative children after cancelling them" do
       entry = registry.reserve(subagent: "explore", prompt: "do it")
       registry.attach(entry, thread: Thread.current, runner: fake_runner)
-      thread, = block_child_on_ask(entry)
+      thread, = block_child_on_gate(entry)
       registry.attach(entry, thread: thread, runner: entry.runner)
 
       registry.shutdown!(grace: 0.5)
@@ -182,14 +180,14 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     it "is the ONE body the per-id stop paths and #cancel_all all reuse" do
       entry = registry.reserve(subagent: "explore", prompt: "do it")
       registry.attach(entry, thread: Thread.current, runner: fake_runner)
-      thread, gate, = block_child_on_ask(entry)
+      thread, gate, = block_child_on_gate(entry)
 
       registry.stop_entry(entry)
       expect(thread.join(2)).to be_truthy
       expect(entry.runner.cancel_token).to be_cancelled
       expect(registry.find(entry.id).status).to eq(:stopped)
       # The gate is one-shot cancelled; a late await would raise at once.
-      expect { gate.await("ask_#{entry.id}", timeout: 1) }.to raise_error(Rubino::Interrupted)
+      expect { gate.await("ap_#{entry.id}", timeout: 1) }.to raise_error(Rubino::Interrupted)
     end
 
     it "tolerates a nil entry and a never-blocked entry (safe across the registry)" do
@@ -211,7 +209,7 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     it "completes promptly and does no blocking I/O" do
       entry = registry.reserve(subagent: "explore", prompt: "do it")
       registry.attach(entry, thread: Thread.current, runner: fake_runner)
-      thread, = block_child_on_ask(entry)
+      thread, = block_child_on_gate(entry)
 
       t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       registry.cancel_all

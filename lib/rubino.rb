@@ -10,7 +10,6 @@ require "fileutils"
 module Rubino
   class Error < StandardError; end
   class ConfigurationError < Error; end
-  class DatabaseError < Error; end
   class SessionError < Error; end
 
   # Raised when --resume <query> matches more than one session by id-prefix
@@ -39,10 +38,16 @@ module Rubino
 
   class ToolError < Error; end
   class CompactionError < Error; end
-  class JobError < Error; end
 end
 
 require_relative "rubino/errors"
+# version.rb defines Rubino::VERSION + Rubino::TAGLINE (plain constants, not a
+# Rubino::Version module), so Zeitwerk can't autoload it on a TAGLINE/VERSION
+# reference. Require it eagerly here — without this an INSTALLED gem (`gem
+# install rubino-agent && rubino`) crashes at CLI load with "uninitialized
+# constant Rubino::TAGLINE"; it only worked under `bundle exec` because the
+# gemspec's own require_relative loads it. (Ignored by the loader below.)
+require_relative "rubino/version"
 
 module Rubino
   class << self
@@ -80,10 +85,19 @@ module Rubino
         # errors.rb defines multiple constants in Rubino (NotFoundError, ...),
         # not a single Rubino::Errors module — loaded manually via require_relative.
         loader.ignore(File.expand_path("rubino/errors.rb", __dir__))
+        # version.rb defines Rubino::VERSION + Rubino::TAGLINE, not a
+        # Rubino::Version module — loaded manually via require_relative above.
+        loader.ignore(File.expand_path("rubino/version.rb", __dir__))
         # rubino-agent.rb is a require shim matching the gem name; it maps to no
         # Rubino constant (and "Rubino-agent" isn't a valid cname). Zeitwerk must
         # not try to manage it.
         loader.ignore(File.expand_path("rubino-agent.rb", __dir__))
+        # anthropic_role_merge.rb prepends RubyLLM::Providers::Anthropic at load
+        # time (a side effect, not a Rubino constant) — loaded manually below.
+        loader.ignore(File.expand_path("rubino/llm/anthropic_role_merge.rb", __dir__))
+        # stream_tool_call_recovery.rb prepends RubyLLM::StreamAccumulator at load
+        # time (a side effect, not a Rubino constant) — loaded manually below.
+        loader.ignore(File.expand_path("rubino/llm/stream_tool_call_recovery.rb", __dir__))
         loader
       end
     end
@@ -181,11 +195,11 @@ module Rubino
 
     # The BackgroundTasks entry id of the subagent run executing on THIS thread,
     # if any. Set by TaskTool#run_child_thread around the child Runner#run! so a
-    # tool the child invokes (today: ask_parent) can find its own registry entry
-    # — the card it surfaces on, the steer queue it receives answers through —
-    # without threading the id through the loop/executor/tool signatures. Nil on
-    # the parent thread and on any non-delegated (top-level) run, which is the
-    # signal ask_parent uses to refuse (a top-level agent has no parent to ask).
+    # tool the child invokes (steer/probe a grandchild, spawn a nested task) can
+    # find its own registry entry — the card it surfaces on, the steer queue it
+    # receives notes through — without threading the id through the
+    # loop/executor/tool signatures. Nil on the parent thread and on any
+    # non-delegated (top-level) run.
     def current_subagent_id
       Thread.current[:rubino_current_subagent_id]
     end
@@ -501,6 +515,18 @@ end
 
 # Setup autoloading
 Rubino.loader.setup
+
+# Enforce Anthropic user/assistant alternation by merging consecutive same-role
+# wire messages — must run after Zeitwerk setup so RubyLLM is loadable. See the
+# file for the full rationale (a tool result is a `user` message on the wire, so
+# a tool result followed by another user/tool message would otherwise send two
+# consecutive `user` messages and be rejected with "invalid params").
+require_relative "rubino/llm/anthropic_role_merge"
+
+# Recover tool calls a model leaks AS TEXT into its streamed content (MiniMax's
+# anthropic-compatible shim) into structured calls ruby_llm's native loop runs.
+# Prepends StreamAccumulator at load, so it must come after the loader is set up.
+require_relative "rubino/llm/stream_tool_call_recovery"
 
 # Register the built-in memory backends.
 # The SQLite memory backend: LLM-extracted atomic facts, bi-temporal

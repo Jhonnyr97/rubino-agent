@@ -3,7 +3,7 @@
 require "stringio"
 
 # CWE-150 (#564, same class as #563): the /agents handler renders a child's
-# UNTRUSTED fields — subagent name, ask_question, error, activity_log lines,
+# UNTRUSTED fields — subagent name, approval_command, error, activity_log lines,
 # last_activity, approval_command — through @ui.info / @ui.error, i.e.
 # PrinterBase#puts_colored. That seam used to print VERBATIM ($stdout.puts, no
 # sanitize), so a raw `\e[2J` (clear) / `\e]0;…\a` (OSC title) / `\e[?1049h`
@@ -25,7 +25,7 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   # The full exploit chain an attacker-named workspace file carries into a
-  # /agents row via last_activity / error / ask_question.
+  # /agents row via last_activity / error / approval_command.
   let(:evil) { "read \e[2J\e]0;PWNED\a\e[?1049h\rrest\a.txt" }
 
   matcher :have_no_raw_escapes do

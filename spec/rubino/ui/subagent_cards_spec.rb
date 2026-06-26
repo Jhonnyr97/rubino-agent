@@ -26,9 +26,8 @@ RSpec.describe Rubino::UI::SubagentCards do
 
   # R1 — the footer card stack must show EVERY child the registry still counts
   # as alive (BackgroundTasks::LIVE_STATUSES), not a narrower hand-maintained
-  # subset. A child parked on :blocked_on_parent (asking its agent-parent) still
-  # holds a slot and ticks; dropping it here vanished a live sibling from the
-  # footer while the switcher/picker still listed it.
+  # subset, so a quiet live sibling never vanishes from the footer while the
+  # switcher/picker still lists it.
   describe "footer liveness matches the registry oracle (R1)" do
     it "renders a card for a child still RUNNING" do
       line = plain(cards.card_lines([entry(id: "sa_run", status: :running)])).first
@@ -42,20 +41,13 @@ RSpec.describe Rubino::UI::SubagentCards do
       expect(line).to include("needs approval")
     end
 
-    it "renders a card for a child parked on blocked_on_parent (previously dropped)" do
-      e = entry(id: "sa_bop", status: :blocked_on_parent)
-      line = plain(cards.card_lines([e])).first
-      expect(line).to include("sa_bop")
-    end
-
-    it "shows ALL live siblings together — running + needs_approval + blocked_on_parent" do
+    it "shows ALL live siblings together — running + needs_approval" do
       es = [
         entry(id: "sa_run", status: :running),
-        entry(id: "sa_apr", status: :needs_approval, approval_command: "echo hi"),
-        entry(id: "sa_bop", status: :blocked_on_parent)
+        entry(id: "sa_apr", status: :needs_approval, approval_command: "echo hi")
       ]
       joined = plain(cards.card_lines(es)).join("\n")
-      expect(joined).to include("sa_run").and include("sa_apr").and include("sa_bop")
+      expect(joined).to include("sa_run").and include("sa_apr")
     end
 
     it "filters by exactly BackgroundTasks::LIVE_STATUSES (no drift)" do
@@ -221,30 +213,6 @@ RSpec.describe Rubino::UI::SubagentCards do
     end
   end
 
-  describe "aggregated ⛔N waiting-on-you count (#475-4)" do
-    it "shows ⛔1 (singular) for one child blocked on the human" do
-      e = entry(id: "sa_b", status: :blocked_on_human, ask_question: "sqlite or postgres?")
-      hint = plain(cards.card_lines([e])).last
-      expect(hint).to include("⛔1 subagent waiting on you")
-      expect(hint).to include("↓ to navigate")
-    end
-
-    it "aggregates the count (pluralized) across several blocked children" do
-      es = %w[sa_a sa_b].map { |id| entry(id: id, status: :blocked_on_human, ask_question: "q") }
-      hint = plain(cards.card_lines(es)).last
-      expect(hint).to include("⛔2 subagents waiting on you")
-    end
-
-    it "counts blocked children HIDDEN behind the MAX_CARDS overflow too" do
-      # More blocked children than fit as cards: the aggregated count must still
-      # reflect the TRUE total (counted over the full live list, not the shown cards).
-      n  = described_class::MAX_CARDS + 2
-      es = Array.new(n) { |i| entry(id: "sa_#{i}", status: :blocked_on_human, ask_question: "q") }
-      hint = plain(cards.card_lines(es)).last
-      expect(hint).to include("⛔#{n} subagents waiting on you")
-    end
-  end
-
   # #141: "· 1 tools ·" — the card must pluralize like the turn footer does.
   it "pluralizes the tool count (1 tool, 2 tools) (#141)" do
     one = plain(cards.card_lines([entry(tool_count: 1)])).first
@@ -255,7 +223,7 @@ RSpec.describe Rubino::UI::SubagentCards do
 
   # CWE-150 (#564, same class as #563): a card's untrusted fields — last_activity
   # (built from a child's tool args, e.g. an attacker-named workspace file), the
-  # model-chosen subagent NAME, an ask_parent question, an approval command — are
+  # model-chosen subagent NAME, an approval command — are
   # stored in BottomComposer#@cards and the live region paints them VERBATIM the
   # instant the subagent acts, with NO approval and NO user gesture. A raw
   # `\e[2J` (clear) / `\e]0;…\a` (OSC title) / `\e[?1049h` (alt-screen) / CR
@@ -280,16 +248,6 @@ RSpec.describe Rubino::UI::SubagentCards do
     it "neutralizes escapes in a RUNNING card's subagent name" do
       line = cards.card_lines([entry(subagent: "ex\e[2J\aplore")]).join("\n")
       expect(line).to have_no_raw_escapes
-    end
-
-    it "neutralizes escapes in a BLOCKED card's ask_question" do
-      e = entry(status: :blocked_on_human, ask_question: evil)
-      expect(cards.card_lines([e]).join("\n")).to have_no_raw_escapes
-    end
-
-    it "neutralizes escapes in a BLOCKED card's subagent name" do
-      e = entry(status: :blocked_on_human, subagent: "ex\e]0;X\aplore", ask_question: "q")
-      expect(cards.card_lines([e]).join("\n")).to have_no_raw_escapes
     end
 
     it "neutralizes escapes in an APPROVAL card's approval_command" do

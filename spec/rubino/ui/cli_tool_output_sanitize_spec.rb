@@ -122,15 +122,6 @@ RSpec.describe Rubino::UI::CLI do
     end
   end
 
-  describe "#approval_requested sanitizes the summary (R3C-1)" do
-    it "neutralizes escapes in the proposed-tool summary" do
-      out = capture_stdout do
-        ui.approval_requested(summary: pwn, choices: [{ key: "y", label: "Yes" }])
-      end
-      expect_neutralized(out)
-    end
-  end
-
   describe "#activity_finished sanitizes the metric / close row (R3C-1)" do
     it "neutralizes escapes carried in a success metric" do
       out = capture_stdout { ui.activity_finished("shell_output", metric: pwn) }
@@ -172,13 +163,6 @@ RSpec.describe Rubino::UI::CLI do
   describe "subagent rows sanitize untrusted fields (R3C-1)" do
     it "#subagent_lifecycle neutralizes escapes in the line" do
       out = capture_stdout { ui.subagent_lifecycle("▸ sa #{pwn}", status: "done") }
-      expect(out).not_to include("\e[2J")
-      expect(out).not_to include("\e]0;")
-      expect(out).to include("PWN")
-    end
-
-    it "#subagent_ask_banner neutralizes escapes in the child's question" do
-      out = capture_stdout { ui.subagent_ask_banner("sa_1", "explore", pwn) }
       expect(out).not_to include("\e[2J")
       expect(out).not_to include("\e]0;")
       expect(out).to include("PWN")

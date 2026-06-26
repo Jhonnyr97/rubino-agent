@@ -88,11 +88,10 @@ module Rubino
 
       private
 
-      # Mirrors BackgroundTasks#live_status? — a child still holds a loop (its
-      # thread is alive) while running, awaiting approval, or blocked waiting on
-      # the human or on its agent-parent.
+      # A child still holds a loop (its thread is alive) while running or
+      # awaiting approval, so a steer note can still reach it.
       def live?(status)
-        %i[running needs_approval blocked_on_human blocked_on_parent].include?(status)
+        %i[running needs_approval].include?(status)
       end
     end
   end

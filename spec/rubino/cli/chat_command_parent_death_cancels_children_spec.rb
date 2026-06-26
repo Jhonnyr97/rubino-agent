@@ -13,8 +13,8 @@ require "stringio"
 #     #stop_entry / pre-fix #kill_all_groups all take a Mutex (forbidden in a
 #     trap → ThreadError, which used to kill the whole trap and orphan the
 #     shells, #478);
-#   * the /agent switch (switch_primary_agent) — non-destructive, so it SURFACES
-#     a blocked child rather than cancelling it.
+#   * the /agent switch (switch_primary_agent) — non-destructive, so it keeps the
+#     registry alive rather than cancelling running children.
 RSpec.describe Rubino::CLI::ChatCommand do
   subject(:cmd) { described_class.new("query" => "hi") }
 
@@ -65,7 +65,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
   end
 
-  describe "/agent switch (switch_primary_agent) — non-destructive, surfaces blocked children" do
+  describe "/agent switch (switch_primary_agent) — non-destructive" do
     let(:runner) { instance_double(Rubino::Agent::Runner) }
     let(:ui)     { Rubino::UI::Null.new }
 
@@ -75,32 +75,15 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(Rubino::ActiveAgent).to receive_messages(current: "explore", definition: nil)
     end
 
-    def blocked_entry(id)
-      Rubino::Tools::BackgroundTasks::Entry.new(id: id, subagent: "explore", status: :blocked_on_human)
-    end
-
-    it "does NOT cancel children (a switch keeps the registry alive) but surfaces the blocked ones" do
-      allow(registry).to receive(:running).and_return([blocked_entry("sa_1"), blocked_entry("sa_2")])
+    it "does NOT cancel children (a switch keeps the registry alive)" do
+      allow(registry).to receive(:running).and_return([])
       allow(registry).to receive(:cancel_all) # allowed so we can assert it is NOT called
-      allow(ui).to receive(:warning)
-      allow(ui).to receive(:info)
       allow(ui).to receive(:success)
 
       cmd.send(:switch_primary_agent, "general", runner, ui)
 
       expect(registry).not_to have_received(:cancel_all)
-      expect(ui).to have_received(:warning).with(a_string_matching(/waiting on an answer/))
-      expect(ui).to have_received(:info).with(a_string_matching(/sa_1/))
-      expect(ui).to have_received(:info).with(a_string_matching(/sa_2/))
-    end
-
-    it "stays quiet when no child is blocked" do
-      allow(registry).to receive(:running).and_return([])
-      allow(ui).to receive(:warning)
-      allow(ui).to receive(:success)
-
-      cmd.send(:switch_primary_agent, "general", runner, ui)
-      expect(ui).not_to have_received(:warning)
+      expect(ui).to have_received(:success).with(a_string_matching(/explore → /))
     end
   end
 end

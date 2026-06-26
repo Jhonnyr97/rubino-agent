@@ -39,12 +39,9 @@ module Rubino
       # stack. A real pane width (when threaded through) overrides this default.
       DEFAULT_CARD_WIDTH = 100
 
-      # Collapsed glyph (a running card) / approval glyph (needs the human) /
-      # BLOCKED glyph (an escalated ask_parent waiting on the human — RESERVED for
-      # "the tree is blocked on you" and nothing else, the distinct-signal rule).
+      # Collapsed glyph (a running card) / approval glyph (needs the human).
       COLLAPSED = "▸"
       APPROVAL  = "●"
-      BLOCKED   = "⛔"
 
       def initialize(pastel: Pastel.new)
         @pastel = pastel
@@ -63,18 +60,13 @@ module Rubino
         overflow = live.size - shown.size
         lines    = shown.map { |e| clamp_row(card_line(e), width) }
         lines << @pastel.dim("  + #{overflow} more · /agents") if overflow.positive?
-        # Count blocked children over the FULL live list (pre-cap), not just the
-        # shown cards, so the aggregated ⛔N is the true number waiting on the
-        # human even when some are hidden behind the MAX_CARDS overflow (#475-4).
         lines << hint_line(live)
         lines
       end
 
       # One collapsed card row for a single entry.
       def card_line(entry)
-        if entry.status == :blocked_on_human
-          blocked_card_line(entry)
-        elsif entry.status == :needs_approval
+        if entry.status == :needs_approval
           approval_card_line(entry)
         else
           glyph = @pastel.cyan(COLLAPSED)
@@ -88,18 +80,6 @@ module Rubino
                  "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
           "  #{glyph} #{body}"
         end
-      end
-
-      # A card for a child parked on an escalated ask_parent — the ⛔ "tree is
-      # blocked on YOU" row, the loudest state. Leads with the red ⛔ glyph and
-      # the question. The reply prompt AUTO-OPENS (#510/#513); the card just
-      # signals the state and points at the same arrow navigation (↓).
-      def blocked_card_line(entry)
-        glyph    = @pastel.red(BLOCKED)
-        question = entry.ask_question.to_s
-        "  #{glyph} #{entry.id} · #{safe(card_label(entry))} · " +
-          @pastel.red("waiting on you") + ": #{safe(first_line(question, 60))} " \
-                                          "· ↓ to answer"
       end
 
       # A card for a child parked on a human approval — the approval is the most
@@ -146,24 +126,17 @@ module Rubino
 
       # A child is shown on the footer card stack for as long as the REGISTRY
       # considers it alive — the exact same set #running selects (R1). The card
-      # formatter must not carry its OWN narrower status list: dropping
-      # :blocked_on_parent here (a child parked asking its agent-parent, still
-      # holding a slot) silently vanished a live sibling from the footer while
-      # the switcher/picker still listed it. Delegate to the one oracle.
+      # formatter must not carry its OWN narrower status list (which would
+      # silently vanish a live sibling from the footer while the switcher/picker
+      # still listed it). Delegate to the one oracle.
       def live?(entry)
         Tools::BackgroundTasks.live_status?(entry.status)
       end
 
-      # Shared hint under the block. When one or more children are blocked on the
-      # human the hint leads with the aggregated ⛔N answer affordance (N = how
-      # many are waiting, pluralized — #475-4); else if something needs approval
-      # it leads with the approve affordance; otherwise the watch/stop hint.
+      # Shared hint under the block. When something needs approval the hint leads
+      # with the approve affordance; otherwise the watch/stop hint.
       def hint_line(live)
-        blocked = live.count { |e| e.status == :blocked_on_human }
-        if blocked.positive?
-          subagents = blocked == 1 ? "subagent" : "subagents"
-          @pastel.red("    \u26d4#{blocked} #{subagents} waiting on you · ↓ to navigate")
-        elsif live.any? { |e| e.status == :needs_approval }
+        if live.any? { |e| e.status == :needs_approval }
           @pastel.dim("    └ ⚠ approval pending · ↓ to navigate · /stop <id> to cancel")
         else
           @pastel.dim("    └ ↓ to navigate · Enter to view · /stop <id> to cancel")
@@ -219,8 +192,8 @@ module Rubino
       # CWE-150 render-sink defense (#564). Every card field below is UNTRUSTED:
       # the subagent NAME is model-chosen; last_activity is built from the child's
       # tool args (#args_hint extracts file_path/path/pattern/command — an
-      # attacker-named workspace file); ask_question / approval_command are a
-      # child's ask_parent text / a shell-or-ruby command. These lines are stored
+      # attacker-named workspace file); approval_command is a child's
+      # shell-or-ruby command. These lines are stored
       # in BottomComposer#@cards and the live region prints them VERBATIM the
       # instant a subagent acts — no approval, no gesture (the #563 class). Route
       # each untrusted span through the canonical defanger so `\e[2J` (clear) /

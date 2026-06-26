@@ -227,6 +227,9 @@ display:
   statusbar: true        # the model + context bar under the chat input
   tool_output_preview_lines: 3  # head lines of tool output shown in the transcript (0 = full dump)
   input_max_rows: 8      # chat input grows up to this many rows, then scrolls
+  live_markdown: true    # format the in-flight streamed block live (false = raw live tail)
+  synchronized_output: true  # atomic frames via DEC-2026 BSU/ESU (false = legacy per-write frames)
+  code_highlight: true       # syntax-highlight committed code blocks (Rouge); false = plain
 
 paste:
   collapse_lines: 5            # pastes longer than this collapse to a placeholder
@@ -246,6 +249,10 @@ context:
 - `display.statusbar` (default `true`) pins a dim one-line bar UNDER the chat input — the session mode first (plus the branch/skill tokens when set), then the resolved model id and context saturation, e.g. `default · MiniMax-M3 · ctx ~8.4k/64k (13%)` (the percentage is omitted below 1%). The mode token is the live mode indicator (the prompt itself is a constant `▍❯ `): dim `default`, yellow `plan`, red `yolo`. Saturation uses the REAL usage the provider reported for the last response when available (the full assembled prompt, recorded by the agent loop), else the same chars/4 estimate compaction runs on (`Context::TokenBudget`); the window comes from `model.context_length` / `context.max_tokens`. It refreshes at turn boundaries (after each turn footer, and on session resume), never per stream delta. The percentage turns yellow at 70% and red at 90%; with no usable window only the token count shows. The bar is omitted off a TTY or on terminals narrower than 40 columns.
 - `display.tool_output_preview_lines` (default `3`) caps how many head lines of each tool's output the transcript shows before a dim `… +N lines (full output → context)` marker. DISPLAY-ONLY: the model always receives the full output (subject to the `tool_output` truncation caps) — only the scrollback rendering collapses. Set `0` to restore the old full dump.
 - `display.input_max_rows` (default `8`) caps how many visual rows the chat input grows to as a long or multi-line prompt wraps; past the cap the input scrolls vertically, keeping the caret row in view.
+- `display.live_markdown` (default `true`) renders the still-streaming (in-flight) block as FORMATTED markdown in the live region — bold, headings, lists and code style as the tokens arrive, with syntax left open by the partial stream repaired (an open code fence shows as a code block, a dangling `**`/`` ` `` span is closed) so no raw marker leaks. Set `false` for the legacy raw rolling-tail that only snaps to styled when the block commits. Display-only; the committed scrollback render is identical either way.
+- `display.synchronized_output` (default `true`) wraps each live-region frame in DEC private mode 2026 (BSU/ESU synchronized output) so a supporting terminal (kitty, WezTerm, tmux ≥3.4, recent xterm.js) buffers the whole clear→commit→redraw sequence and swaps it in one atomic update — no flicker or tearing on multi-step repaints. Terminals without support silently ignore the mode (it degrades cleanly); the escapes are emitted only to a real TTY. Set `false` for the legacy per-write frames.
+- `display.code_highlight` (default `true`) syntax-highlights fenced code blocks by language (via Rouge) in the COMMITTED render — the live tail stays unstyled, so highlighting never blocks the stream (code shows instantly, colours arrive a beat later when the block commits, like Claude Code). Unknown languages, language-less fences, and any failure fall back to the plain code body. Set `false` for plain (uncoloured) code blocks.
+- An **unterminated** code fence at end-of-stream — a fence the model never closed, or closed with a too-short bare run of backticks (e.g. MiniMax-M3 emitting `` against a ``` opener) — is rendered as a code box, matching CommonMark's end-of-document auto-close (§4.5) that every other renderer relies on. The CLI synthesises the close at the opener length (never relaxing the "close ≥ opener" rule), because kramdown does not auto-close an open fence.
 - `paste.collapse_lines` (default `5`) — the file-backed paste pipeline's first tier. Pasting MORE than this many lines into the chat input inserts a single cyan `[Pasted text #N +M lines]` placeholder instead of flooding the composer; the placeholder is one editable token (backspace deletes it whole, you can type around it, it survives ↑ draft recall and Alt+Enter queueing) and expands to the full pasted body when the message is sent — the model sees everything, while the transcript echo keeps the compact placeholder. Pastes at or under the threshold inline as real rows, exactly as before.
 - `paste.file_threshold_tokens` (default `8000`) — the second tier. A paste estimated above this many tokens (chars/4, the same rule compaction uses) is written to `<RUBINO_HOME>/sessions/<session-id>/paste_N.txt` instead of being held inline, and the sent message carries `[Pasted text #N saved to <path> — too large to inline; read it with the read tool]` so the model reads just the parts it needs. The files persist for the session; `/clear-images` does not touch them (it only drops staged image attachments).
 
@@ -303,7 +310,6 @@ tasks:
   max_children_per_node: 3       # max LIVE direct children per node
   max_concurrent_total: 8        # hard ceiling on total LIVE subagents across the tree
   max_live_probes_per_child: 5   # per-child budget for billed live probes (probe(live: true))
-  ask_parent_timeout: 900        # vestigial: governed the removed child→parent ask channel; no effect now
 ```
 
 ### tools
@@ -657,13 +663,14 @@ agents:
     mcp_servers: []
 ```
 
-### server / api
+### api
+
+The API server's listen port and bind host come from the CLI, not config:
+`rubino server --port <n>` (or `RUBINO_API_PORT`, default `4820`) and `--host`
+(or `RUBINO_API_HOST`). The bearer token is `RUBINO_API_KEY`. The `api` block
+configures payload caps, rate limiting, and the public-bind gate:
 
 ```yaml
-server:
-  port: 4820
-  auth: false
-
 api:
   max_body_bytes: 5242880        # 5 MB cap on JSON request bodies (413 past this)
   max_upload_bytes: 52428800     # 50 MB cap on multipart uploads
