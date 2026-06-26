@@ -831,7 +831,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         allow(RubyLLM).to receive(:chat).and_return(chat)
         adapter.send(:build_chat)
         expect(chat).to have_received(:with_thinking).with(budget: 8000)
-        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        expect(chat).to have_received(:with_params).with(max_tokens: 131_072)
       end
 
       it "forces temperature=1 when thinking is enabled (Anthropic constraint)" do
@@ -841,14 +841,33 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(chat).to have_received(:with_temperature).with(1)
       end
 
-      it "raises max_tokens to at least thinking budget + text headroom" do
+      it "defaults max_output_tokens to MiniMax's 131_072 ceiling, overridable by config" do
+        expect(adapter.send(:max_output_tokens)).to eq(131_072)
+        over = described_class.new(
+          model_id: "MiniMax-M2.7",
+          config: test_configuration(
+            "model" => { "provider" => "minimax", "default" => "MiniMax-M2.7" },
+            "providers" => { "minimax" => {
+              "anthropic_compatible" => true, "assume_model_exists" => true,
+              "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
+              "max_tokens" => 40_000
+            } }
+          )
+        )
+        expect(over.send(:max_output_tokens)).to eq(40_000)
+      end
+
+      it "uses MiniMax's full output ceiling so thinking does not starve output" do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         adapter.send(:build_chat)
-        # default ceiling 16384 vs budget(8000)+headroom(4096)=12096 → 16384.
-        # Single with_params call: ruby_llm REPLACES @params on every call, so
-        # max_tokens must ride together with the params-routed thinking block.
-        expect(chat).to have_received(:with_params).once.with(hash_including(max_tokens: 16_384))
+        # MiniMax default ceiling is 131_072 (Hermes parity), NOT a flat 16_384:
+        # thinking tokens count toward max_tokens, so 16_384 minus an 8_000 budget
+        # left only ~8_384 for output and a heavy single-shot generation overran
+        # it mid-stream → MiniMax "invalid params". Single with_params call:
+        # ruby_llm REPLACES @params on every call, so max_tokens must ride
+        # together with the params-routed thinking block.
+        expect(chat).to have_received(:with_params).once.with(hash_including(max_tokens: 131_072))
       end
 
       it "drives the wire params through LLM::ReasoningManager.render (single source of truth)" do
@@ -858,19 +877,19 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         # just applies what it renders. Spy on the module to prove no duplicate
         # inline rendering remains in the adapter.
         rendered = Rubino::LLM::ReasoningManager::Rendered.new(
-          thinking: { type: :enabled, budget_tokens: 8000 }, temperature: 1, max_tokens: 16_384
+          thinking: { type: :enabled, budget_tokens: 8000 }, temperature: 1, max_tokens: 131_072
         )
         allow(Rubino::LLM::ReasoningManager).to receive(:render).and_return(rendered)
 
         adapter.send(:build_chat)
 
         expect(Rubino::LLM::ReasoningManager).to have_received(:render).with(
-          budget: 8000, temperature: 0.3, max_tokens: 16_384,
+          budget: 8000, temperature: 0.3, max_tokens: 131_072,
           text_headroom: 4096, apply_max_tokens: true
         )
         expect(chat).to have_received(:with_temperature).with(1)
         expect(chat).to have_received(:with_params)
-          .with(max_tokens: 16_384, thinking: { type: :enabled, budget_tokens: 8000 })
+          .with(max_tokens: 131_072, thinking: { type: :enabled, budget_tokens: 8000 })
       end
 
       it "honors a provider thinking_budget override and grows max_tokens accordingly" do
@@ -880,6 +899,9 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
           "providers" => { "minimax" => {
             "anthropic_compatible" => true, "assume_model_exists" => true,
             "api_key" => "mm_secret", "base_url" => "https://api.minimax.io/anthropic",
+            # explicit ceiling so the floor (budget+headroom) logic is exercised
+            # independent of the provider default ceiling.
+            "max_tokens" => 16_384,
             "thinking_budget" => 30_000, "supports_thinking" => true
           } }
         )
@@ -887,7 +909,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         chat = recording_chat
         allow(RubyLLM).to receive(:chat).and_return(chat)
         a.send(:build_chat)
-        # 30000 + 4096 = 34096 > default 16384
+        # 30000 + 4096 = 34096 > configured ceiling 16384 → floor raises it
         expect(chat).to have_received(:with_params)
           .with(max_tokens: 34_096, thinking: { type: :enabled, budget_tokens: 30_000 })
       end
@@ -909,7 +931,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         expect(chat).not_to have_received(:with_thinking)
         expect(chat).to have_received(:with_temperature).with(0.3)
         # exact match — no thinking block rides along when the budget is off
-        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        expect(chat).to have_received(:with_params).with(max_tokens: 131_072)
       end
     end
 
@@ -1005,7 +1027,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
         adapter.send(:build_chat)
         # thinking disabled (budget 0) ⇒ only max_tokens travels; the extra_body
         # key must be absent on this path.
-        expect(chat).to have_received(:with_params).with(max_tokens: 16_384)
+        expect(chat).to have_received(:with_params).with(max_tokens: 131_072)
         expect(chat).not_to have_received(:with_params)
           .with(hash_including(:chat_template_kwargs))
       end
