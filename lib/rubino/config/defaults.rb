@@ -297,9 +297,9 @@ module Rubino
           # the live region — bold/headings/lists/code style as they arrive
           # (incomplete syntax repaired by MarkdownRepair) — instead of the raw
           # rolling-tail text that only snaps to styled when the block commits.
-          # Off ⇒ the legacy raw live tail (exact prior behaviour). Opt-in until
-          # the real-terminal pass confirms the feel matches.
-          "live_markdown" => false
+          # On by default (the Claude-like live feel, verified in a real
+          # terminal); false ⇒ the legacy raw live tail (exact prior behaviour).
+          "live_markdown" => true
         },
         "paste" => {
           # File-backed paste pipeline (UI::PasteStore). A paste with MORE

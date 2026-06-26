@@ -62,8 +62,8 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#live_markdown? gating (display.live_markdown)" do
-    it "is false by default (legacy raw live tail)" do
-      expect(ui.send(:live_markdown?)).to be(false)
+    it "is true by default (the Claude-like live formatting)" do
+      expect(ui.send(:live_markdown?)).to be(true)
     end
   end
 end

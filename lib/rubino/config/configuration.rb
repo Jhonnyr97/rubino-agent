@@ -61,9 +61,10 @@ module Rubino
       end
 
       # Render the in-flight streamed block as formatted markdown in the live
-      # region (display.live_markdown). Default false ⇒ the legacy raw live tail.
+      # region (display.live_markdown). Default true; only an explicit false
+      # falls back to the legacy raw live tail.
       def display_live_markdown?
-        dig("display", "live_markdown") == true
+        dig("display", "live_markdown") != false
       end
 
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
