@@ -299,7 +299,13 @@ module Rubino
           # rolling-tail text that only snaps to styled when the block commits.
           # On by default (the Claude-like live feel, verified in a real
           # terminal); false ⇒ the legacy raw live tail (exact prior behaviour).
-          "live_markdown" => true
+          "live_markdown" => true,
+          # Wrap each live-region frame in DEC-2026 synchronized output
+          # (BSU/ESU) so a supporting terminal swaps the frame atomically — no
+          # flicker/tearing on multi-step repaints. Unsupported terminals ignore
+          # the private mode, so it degrades cleanly; emitted only to a real TTY.
+          # false ⇒ the legacy per-write frames.
+          "synchronized_output" => true
         },
         "paste" => {
           # File-backed paste pipeline (UI::PasteStore). A paste with MORE

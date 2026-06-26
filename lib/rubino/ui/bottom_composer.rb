@@ -303,7 +303,7 @@ module Rubino
         # The live-region renderer: owns the count of rows currently drawn ABOVE
         # the prompt and the scroll-safe erase→commit→redraw frame discipline
         # (see LiveRegion).
-        @region = LiveRegion.new(output)
+        @region = LiveRegion.new(output, synchronized: synchronized_output?(output))
         # The dim status line pinned BELOW the input block (model + context
         # saturation). Drawn as the live region's LAST row on every frame;
         # empty ⇒ no bar (one fewer row). Updated via #set_status at turn
@@ -2657,6 +2657,18 @@ module Rubino
 
       def tty?
         @input.tty?
+      rescue StandardError
+        false
+      end
+
+      # Whether the live region may wrap each frame in DEC-2026 synchronized
+      # output. Safe only to a real TTY (a pipe would receive literal escape
+      # bytes) and only when display.synchronized_output is on. Any failure
+      # (no config, odd output) falls back to the legacy per-write frames.
+      def synchronized_output?(output)
+        return false unless output.respond_to?(:tty?) && output.tty?
+
+        Rubino.configuration.display_synchronized_output?
       rescue StandardError
         false
       end
