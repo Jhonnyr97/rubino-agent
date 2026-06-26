@@ -35,6 +35,29 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     expect(sanitize("call_019f0360f8567570b44fc8bf")).to eq("call_019f0360f8567570b44fc8bf")
   end
 
+  describe "logging (always-on visibility of the malformed-id condition)" do
+    let(:logger) { double("logger", warn: nil) }
+
+    before { allow(Rubino).to receive(:logger).and_return(logger) }
+
+    it "logs a repair with reason 'empty' for an empty id" do
+      expect(logger).to receive(:warn)
+        .with(hash_including(event: "llm.tool_id.repaired", reason: "empty"))
+      sanitize("")
+    end
+
+    it "logs a repair with reason 'invalid_chars' for a non-conforming id" do
+      expect(logger).to receive(:warn)
+        .with(hash_including(event: "llm.tool_id.repaired", reason: "invalid_chars"))
+      sanitize("call:abc/def")
+    end
+
+    it "does NOT log for an already-valid id (no hot-path noise)" do
+      expect(logger).not_to receive(:warn)
+      sanitize("call_abc123")
+    end
+  end
+
   it "keeps the tool_use and tool_result ids in agreement (deterministic pairing)" do
     # The assistant block's id and the matching result's tool_use_id are stored
     # and sanitised SEPARATELY; the same function maps the same stored value to

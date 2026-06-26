@@ -1173,10 +1173,21 @@ module Rubino
       # agent's `_sanitize_tool_id`, which rubino's port had dropped.
       def sanitize_tool_id(tool_id)
         id = tool_id.to_s
-        return "tool_0" if id.empty?
+        if id.empty?
+          # Always log a repair so a recurrence of the "invalid params" class is
+          # visible (and attributable to a malformed id) even though this fix
+          # already prevents it. Fires only when an id is actually malformed —
+          # rare, so no hot-path noise. Tool-call ids are not secrets.
+          log_safely(event: "llm.tool_id.repaired", reason: "empty", to: "tool_0")
+          return "tool_0"
+        end
 
         sanitized = id.gsub(/[^a-zA-Z0-9_-]/, "_")
-        sanitized.empty? ? "tool_0" : sanitized
+        return id if sanitized == id # already Anthropic-valid — untouched, no log
+
+        result = sanitized.empty? ? "tool_0" : sanitized
+        log_safely(event: "llm.tool_id.repaired", reason: "invalid_chars", from: id, to: result)
+        result
       end
 
       # +buffered+ (streaming path) is every assistant TEXT block of the turn
