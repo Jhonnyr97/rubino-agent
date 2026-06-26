@@ -672,7 +672,9 @@ RSpec.describe Rubino::UI::CLI do
         ui.stream_end
       end
       expect(done).to include("┌─") # frame appears once the fence closes
-      expect(done).to include("puts 1")
+      # Strip SGR: with display.code_highlight on (default) the code body is
+      # syntax-coloured, so "puts 1" is split by ANSI — assert on the content.
+      expect(done.gsub(/\e\[[0-9;]*m/, "")).to include("puts 1")
     end
 
     it "flushes the trailing block on stream_end (no closing blank line)" do

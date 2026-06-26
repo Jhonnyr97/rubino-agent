@@ -69,6 +69,15 @@ RSpec.describe Rubino::Config::Configuration do
       expect(test_configuration("display" => { "synchronized_output" => false })
                .display_synchronized_output?).to be false
     end
+
+    it "code_highlight defaults to enabled" do
+      expect(config.display_code_highlight?).to be true
+    end
+
+    it "only an explicit false disables code highlighting" do
+      expect(test_configuration("display" => { "code_highlight" => false })
+               .display_code_highlight?).to be false
+    end
   end
 
   describe "notification accessors (attention bell + command hook)" do
