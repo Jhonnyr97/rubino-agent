@@ -92,6 +92,9 @@ module Rubino
         # Rubino constant (and "Rubino-agent" isn't a valid cname). Zeitwerk must
         # not try to manage it.
         loader.ignore(File.expand_path("rubino-agent.rb", __dir__))
+        # anthropic_role_merge.rb prepends RubyLLM::Providers::Anthropic at load
+        # time (a side effect, not a Rubino constant) — loaded manually below.
+        loader.ignore(File.expand_path("rubino/llm/anthropic_role_merge.rb", __dir__))
         loader
       end
     end
@@ -509,6 +512,13 @@ end
 
 # Setup autoloading
 Rubino.loader.setup
+
+# Enforce Anthropic user/assistant alternation by merging consecutive same-role
+# wire messages — must run after Zeitwerk setup so RubyLLM is loadable. See the
+# file for the full rationale (a tool result is a `user` message on the wire, so
+# a tool result followed by another user/tool message would otherwise send two
+# consecutive `user` messages and be rejected with "invalid params").
+require_relative "rubino/llm/anthropic_role_merge"
 
 # Register the built-in memory backends.
 # The SQLite memory backend: LLM-extracted atomic facts, bi-temporal
