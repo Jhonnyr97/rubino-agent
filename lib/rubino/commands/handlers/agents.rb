@@ -55,7 +55,17 @@ module Rubino
         # decision through the same gate.
         def auto_resolve_pending # rubocop:disable Naming/PredicateMethod -- a prompt-presenting mutator that reports whether it surfaced a request, not a pure query
           registry = Tools::BackgroundTasks.instance
-          if (entry = registry.awaiting_approval.first)
+          # Auto-present a genuine APPROVAL request only — a child blocked on a
+          # tool the human must decide before it can proceed (security-relevant,
+          # must interrupt). A BUDGET request (#574) is deliberately NOT auto-fired
+          # (#586): it is not security-critical and was only swept into this #421
+          # auto-modal by reusing the :needs_approval gate. Auto-opening its
+          # blocking grant/summarize menu stole the ↓/Enter the user meant for the
+          # agent picker and could land a stray keystroke on the DESTRUCTIVE
+          # "Summarize now". A budget request stays a card (`⏏ wants +budget · ↓ to
+          # grant`) the user resolves deliberately via the picker / `/agents <id>`
+          # — which is #574's intended dropdown-grant flow, not an auto-modal.
+          if (entry = registry.awaiting_approval.find { |e| !e.budget_request })
             resolve_agent_approval(entry)
             return true
           end
