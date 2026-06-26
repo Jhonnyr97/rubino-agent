@@ -92,9 +92,6 @@ module Rubino
         # Rubino constant (and "Rubino-agent" isn't a valid cname). Zeitwerk must
         # not try to manage it.
         loader.ignore(File.expand_path("rubino-agent.rb", __dir__))
-        # tool_call_patch.rb prepends RubyLLM::ToolCall at load time (a side
-        # effect, not a Rubino::ToolCallPatch constant) — loaded manually below.
-        loader.ignore(File.expand_path("rubino/llm/tool_call_patch.rb", __dir__))
         loader
       end
     end
@@ -512,11 +509,6 @@ end
 
 # Setup autoloading
 Rubino.loader.setup
-
-# Patch RubyLLM::ToolCall to synthesise a stable id for a tool call the model
-# emitted without one (MiniMax-M3 intermittently does) — must run after Zeitwerk
-# setup so RubyLLM is loadable. See the file for the full rationale.
-require_relative "rubino/llm/tool_call_patch"
 
 # Register the built-in memory backends.
 # The SQLite memory backend: LLM-extracted atomic facts, bi-temporal
