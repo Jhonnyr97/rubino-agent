@@ -1072,13 +1072,24 @@ module Rubino
       # only escapes that reach the terminal. This is the shared funnel for the
       # committed block (#commit_markdown_block) and the atomic block
       # (#margined_render), so both paths are covered.
-      def render_markdown_block(text)
+      # highlight: syntax-highlight fenced code blocks (Rouge). Passed true only
+      # by the COMMITTED render paths — never the per-delta live tail — so
+      # highlighting can never block the stream. Gated by display.code_highlight.
+      def render_markdown_block(text, highlight: false)
         text = Util::Output.sanitize_terminal(text)
-        MarkdownRenderer.new(width: markdown_width).render(text).map do |line_tokens|
+        renderer = MarkdownRenderer.new(width: markdown_width,
+                                        code_highlight: highlight && code_highlight?)
+        renderer.render(text).map do |line_tokens|
           line_tokens.map do |token, style|
             style.nil? ? token : apply_style(token, style)
           end.join
         end
+      end
+
+      # display.code_highlight — opt-in syntax highlighting of committed code
+      # blocks (default false).
+      def code_highlight?
+        Rubino.configuration.display_code_highlight?
       end
 
       # Smallest usable markdown/table budget. Below this a streamed table's
@@ -2092,7 +2103,7 @@ module Rubino
         # Commit each finished block atomically with the live-tail clear so a raw
         # tail row can't survive above the rendered block at the scroll boundary
         # (#265) — the same single-frame discipline the final flush uses.
-        completed.each { |block| commit_block_atomic(margined_render(block)) }
+        completed.each { |block| commit_block_atomic(margined_render(block, highlight: true)) }
         # Live region. While a GFM table is in flight, paint a FITTED, growing
         # partial table (header + completed rows) instead of the raw `| … |`
         # rows — the rows mid-cell soft-wrap with no borders otherwise (the
@@ -2280,7 +2291,7 @@ module Rubino
             # escapes before the margined plain-line fallback prints it.
             remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{safe(line)}" }
           else
-            margined_render(remaining)
+            margined_render(remaining, highlight: true)
           end
         commit_block_atomic(lines)
       end
@@ -2294,8 +2305,8 @@ module Rubino
       # per-line path, clearing the in-place tail first.
       # A markdown block rendered to MD_MARGIN-indented, ANSI-styled lines —
       # the exact lines #commit_block_atomic commits above the prompt.
-      def margined_render(block)
-        render_markdown_block(block).map { |line| "#{MD_MARGIN}#{line}" }
+      def margined_render(block, highlight: false)
+        render_markdown_block(block, highlight: highlight).map { |line| "#{MD_MARGIN}#{line}" }
       end
 
       def commit_block_atomic(lines)

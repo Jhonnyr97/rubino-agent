@@ -305,7 +305,13 @@ module Rubino
           # flicker/tearing on multi-step repaints. Unsupported terminals ignore
           # the private mode, so it degrades cleanly; emitted only to a real TTY.
           # false ⇒ the legacy per-write frames.
-          "synchronized_output" => true
+          "synchronized_output" => true,
+          # Syntax-highlight fenced code blocks by language (Rouge) in the
+          # COMMITTED render — the live tail stays unstyled, so highlighting
+          # never blocks the stream (code shows instantly, colours a beat later
+          # on commit). Unknown languages and any failure fall back to the plain
+          # code body. Opt-in for now (default false).
+          "code_highlight" => false
         },
         "paste" => {
           # File-backed paste pipeline (UI::PasteStore). A paste with MORE

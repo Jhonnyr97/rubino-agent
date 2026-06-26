@@ -74,6 +74,12 @@ module Rubino
         dig("display", "synchronized_output") != false
       end
 
+      # Syntax-highlight committed code blocks (display.code_highlight). Default
+      # false (opt-in); only an explicit true enables Rouge highlighting.
+      def display_code_highlight?
+        dig("display", "code_highlight") == true
+      end
+
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
       # A paste with MORE than this many lines collapses to a
       # "[Pasted text #N +M lines]" placeholder in the composer (expanded to
