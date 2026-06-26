@@ -1084,7 +1084,7 @@ module Rubino
           when :tool
             chat_instance.messages << build_tool_message(
               content: content,
-              tool_call_id: msg[:tool_call_id] || msg["tool_call_id"],
+              tool_call_id: sanitize_tool_id(msg[:tool_call_id] || msg["tool_call_id"]),
               is_error: msg[:is_error] || msg["is_error"]
             )
           end
@@ -1151,12 +1151,43 @@ module Rubino
         Array(raw).each_with_object({}) do |tc, acc|
           h = tc.is_a?(Hash) ? tc.transform_keys(&:to_sym) : tc
           call = RubyLLM::ToolCall.new(
-            id: h[:id],
+            id: sanitize_tool_id(h[:id]),
             name: h[:name],
             arguments: h[:arguments] || {}
           )
           acc[call.id] = call
         end
+      end
+
+      # An Anthropic-family endpoint requires a tool-call id matching
+      # [a-zA-Z0-9_-] and non-empty, and validates every `tool_result`'s id
+      # against the preceding `tool_use` id. Some models (notably on
+      # Anthropic-compatible surfaces) emit a tool call with an empty or
+      # otherwise non-conforming id; sent verbatim, the provider rejects the
+      # whole continuation with a request-validation 400 ("invalid params").
+      # Sanitise DETERMINISTICALLY — replace invalid chars with `_`, map empty to
+      # a fixed fallback — and apply it on BOTH sides at the request-build seam
+      # (the assistant `tool_use` id here and the `tool_result` id in
+      # #load_history), so the same stored id maps to the same value on both ends
+      # and the tool_use/tool_result pairing survives. Mirrors the reference
+      # agent's `_sanitize_tool_id`, which rubino's port had dropped.
+      def sanitize_tool_id(tool_id)
+        id = tool_id.to_s
+        if id.empty?
+          # Always log a repair so a recurrence of the "invalid params" class is
+          # visible (and attributable to a malformed id) even though this fix
+          # already prevents it. Fires only when an id is actually malformed —
+          # rare, so no hot-path noise. Tool-call ids are not secrets.
+          log_safely(event: "llm.tool_id.repaired", reason: "empty", to: "tool_0")
+          return "tool_0"
+        end
+
+        sanitized = id.gsub(/[^a-zA-Z0-9_-]/, "_")
+        return id if sanitized == id # already Anthropic-valid — untouched, no log
+
+        result = sanitized.empty? ? "tool_0" : sanitized
+        log_safely(event: "llm.tool_id.repaired", reason: "invalid_chars", from: id, to: result)
+        result
       end
 
       # +buffered+ (streaming path) is every assistant TEXT block of the turn
