@@ -256,12 +256,26 @@ module Rubino
       def project_local_path?(path)
         return false if path.to_s.start_with?("~", "/")
 
-        expanded = File.expand_path(path.to_s)
-        root = File.expand_path(Workspace.primary_root)
+        # Symlink-resolve BOTH sides: a cwd-relative skill path expands through
+        # Dir.pwd (realpath — macOS `/var/...` → `/private/var/...`), but
+        # primary_root may be unresolved. Comparing the two raw made a symlinked
+        # workspace look NON-project-local, so the trust gate failed to drop an
+        # untrusted repo's `.rubino/skills` — loading hostile project skills in
+        # an untrusted dir. Resolving both makes the prefix check hold.
+        expanded = canonical_dir(File.expand_path(path.to_s))
+        root = canonical_dir(File.expand_path(Workspace.primary_root))
         expanded == root || expanded.start_with?("#{root}#{File::SEPARATOR}")
       rescue StandardError
         # Conservative: if we can't tell, treat as project-local and drop it.
         true
+      end
+
+      # Realpath-resolved directory, falling back to the literal path when it
+      # isn't on disk, so the prefix comparison above survives a symlinked root.
+      def canonical_dir(path)
+        (File.realpath(path) if File.exist?(path)) || path
+      rescue StandardError
+        path
       end
     end
   end
