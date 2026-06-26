@@ -105,15 +105,31 @@ module Rubino
       end
 
       # Path of +abs_path+ relative to +root+, or nil when it's outside +root+.
+      # Both sides are symlink-resolved so the comparison holds when the search
+      # root is reached through a symlink: `git rev-parse --show-toplevel`
+      # returns the REALPATH (e.g. macOS `/var/...` → `/private/var/...`, or any
+      # symlinked checkout), while the caller's +root+/+abs_path+ are not
+      # resolved — without this, the realpath repo root never prefixed the raw
+      # root, so the allowed-set rebase dropped EVERY file and the whole tree
+      # read as git-ignored (grep/glob silently returned nothing).
       def relative(abs_path, root)
-        abs  = File.expand_path(abs_path)
-        base = File.expand_path(root)
+        abs  = canonical(abs_path)
+        base = canonical(root)
         return File.basename(abs) if abs == base
 
         prefix = "#{base}#{File::SEPARATOR}"
         return nil unless abs.start_with?(prefix)
 
         abs[prefix.length..]
+      end
+
+      # Symlink-resolved absolute path, falling back to the expanded path when
+      # the file doesn't exist yet (so a not-on-disk candidate still rebases).
+      def canonical(path)
+        expanded = File.expand_path(path.to_s)
+        File.exist?(expanded) ? File.realpath(expanded) : expanded
+      rescue StandardError
+        File.expand_path(path.to_s)
       end
     end
   end

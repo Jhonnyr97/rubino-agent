@@ -4,17 +4,26 @@
 
 ### Fixed
 
-- **SecretPath now resolves symlinked comparison roots (macOS).** The secret/
-  credential detector canonicalised the candidate path through every symlink but
-  compared it against non-resolved roots (`$HOME`, `SYSTEM_PATHS`, the `/etc`
-  prefixes). On macOS the system symlinks (`/etc` → `/private/etc`, a
-  `$TMPDIR`/`$HOME` under `/var` → `/private/var`) then defeated every match, so
-  `secret?("/etc/sudoers")` returned `false` and the home credential read-gate
-  (`~/.ssh`, `~/.aws`, …) classified nothing — silently no-op'ing the
-  write-approval gate and read-block for those paths. Each comparison root is now
-  resolved through the same `canonical_path`, which also resolves the existing
-  ancestor of a non-existent root (so `/etc/shadow` still classifies on a host
-  where it doesn't exist). Defense-in-depth only — not a security boundary.
+- **Symlinked workspace roots broke three path checks.** Several modules compared
+  a symlink-resolved path against a NON-resolved root, so a workspace reached
+  through a symlink (macOS `/etc` → `/private/etc`, `/var` → `/private/var`, or
+  any symlinked checkout) defeated the match:
+  - **SecretPath** — `secret?("/etc/sudoers")` returned `false` and the
+    `~/.ssh`/`~/.aws`/… credential read-gate classified nothing, silently
+    no-op'ing the write-approval gate and read-block for those paths.
+  - **IgnoreRules** — `git rev-parse --show-toplevel` returns the realpath, so
+    the allowed-set rebase dropped *every* file and the whole tree read as
+    git-ignored; `grep`/`glob` then returned nothing under a symlinked checkout.
+  - **Skills::Registry** — an untrusted repo's project-local `.rubino/skills` was
+    not recognised as project-local, so the trust gate failed to drop it (hostile
+    project skills could load in an untrusted directory).
+
+  All three now resolve both sides of the comparison through `realpath` /
+  `canonical_path`. Defense-in-depth — not security boundaries.
+- **`grep` Ruby fallback now matches dotfiles.** Without ripgrep on PATH, the
+  fallback globbed `**/<include>` without `FNM_DOTMATCH`, so an include like
+  `*.env` never matched `.env`/`.envrc` — exactly the secret-bearing files. The
+  include glob now matches dotfiles, mirroring `rg --glob`.
 
 ## [0.5.2] - 2026-06-26
 
