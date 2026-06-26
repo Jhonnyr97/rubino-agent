@@ -64,6 +64,19 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
     [entry, gate]
   end
 
+  # A parked child that hit its tool-iteration ceiling and is asking for more
+  # budget (#574) — the SAME :needs_approval gate, flagged budget_request.
+  def stage_budget
+    entry = registry.reserve(subagent: "explore", prompt: "long job")
+    gate  = Rubino::Run::ApprovalGate.new
+    gate.register("bud_#{entry.id}")
+    registry.begin_approval(
+      entry.id, gate: gate, approval_id: "bud_#{entry.id}",
+                question: "Reached 5 tool iterations", command: "", budget: true
+    )
+    [entry, gate]
+  end
+
   describe "#auto_resolve_pending" do
     it "auto-opens the EXISTING approval prompt and resolves the child's gate" do
       _, gate = stage_approval
@@ -116,6 +129,37 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
       registry.reserve(subagent: "explore", prompt: "idle child")
       expect(handler.auto_resolve_pending).to be(false)
       expect(ui.lines).to be_empty
+    end
+
+    # #586 — a BUDGET request must NOT auto-fire its blocking grant/summarize
+    # modal: auto-opening it stole the ↓/Enter the user meant for the agent
+    # picker and could trigger the DESTRUCTIVE "Summarize now" by accident. It
+    # stays a card resolved deliberately via the picker / `/agents <id>` (#574's
+    # dropdown-grant flow), so the gate is left parked, not auto-decided.
+    it "does NOT auto-open a budget request (it stays a card; gate left parked) (#586)" do
+      entry, gate = stage_budget
+      allow(gate).to receive(:decide)
+
+      expect(handler.auto_resolve_pending).to be(false)
+      expect(gate).not_to have_received(:decide)
+      expect(registry.find(entry.id).status).to eq(:needs_approval) # still parked, resolvable via /agents
+      expect(ui.lines).to be_empty # no "wants more budget" modal body
+    end
+
+    # A real APPROVAL still auto-fires even when a budget request is also parked:
+    # the security-relevant decision is presented; the budget card is skipped.
+    it "auto-opens a genuine approval and skips a co-pending budget request (#586)" do
+      _, budget_gate   = stage_budget
+      _, approval_gate = stage_approval
+      allow(budget_gate).to receive(:decide)
+      approved = nil
+      allow(approval_gate).to receive(:decide) { |_id, v| approved = v }
+      decisions << :once
+
+      expect(handler.auto_resolve_pending).to be(true)
+      expect(approved).to be(true)                      # the approval was presented + resolved
+      expect(budget_gate).not_to have_received(:decide) # the budget request was skipped
+      expect(ui.lines.join("\n")).to include("needs approval to run:")
     end
 
     # R2 — two children raise an approval at once. Only ONE modal is presented
