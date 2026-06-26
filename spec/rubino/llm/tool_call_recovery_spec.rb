@@ -30,6 +30,24 @@ RSpec.describe Rubino::LLM::ToolCallRecovery do
       r = recover(leaked)
       expect(r.calls.map { |c| c[:name] }).to eq(%w[a b])
     end
+
+    # MiniMax-M3's ]<]minimax[>[ namespace token (chars ] < [ >) collides with
+    # XML delimiters and the gateway mis-segments the tag, dropping name= and
+    # leaving the tool name floating between two `">` (llama.cpp #24523, mlx-lm
+    # #1145). No upstream parser recovers this; the tolerant matcher must.
+    it "recovers M3's GARBLED <invoke\">shell\"> form (name= dropped)" do
+      leaked = 'Faccio.]<]minimax[>[<tool_call>]<]minimax[>[<invoke">shell">' \
+               "]<]minimax[>[<command>cd /work && ls]<]minimax[>[</command>" \
+               "]<]minimax[>[</invoke>]<]minimax[>[</tool_call>"
+      r = recover(leaked)
+      expect(r.calls).to eq([{ name: "shell", arguments: { "command" => "cd /work && ls" } }])
+      expect(r.text).to eq("Faccio.")
+    end
+
+    it "recovers an invoke that lost its leading angle bracket (M3 #1145)" do
+      r = recover('invoke name="write"><path>/tmp/a</path></invoke>')
+      expect(r.calls).to eq([{ name: "write", arguments: { "path" => "/tmp/a" } }])
+    end
   end
 
   describe "family A — JSON in <tool_call> (Hermes, Qwen2.5/3)" do

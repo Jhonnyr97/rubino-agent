@@ -45,7 +45,24 @@ module Rubino
 
       # Family B — one tool call: <invoke name="fn"> … </invoke> (closed, or
       # unterminated to EOF). The body holds the parameters.
-      INVOKE = %r{<invoke\s+name="([^"]+)"\s*>(.*?)(?:</invoke>|\z)}im
+      #
+      # TOLERANT to MiniMax-M3's GARBLED leak: M3's namespace special token
+      # `]<]minimax[>[` (id 200058) carries the literal chars ] < [ > which
+      # collide with XML delimiters, so the gateway routinely mis-segments the
+      # tag and drops `name=`, leaving forms like `<invoke">shell">` or
+      # `invoke name="shell">` (documented: llama.cpp #24523, mlx-lm #1145). The
+      # canonical vLLM/SGLang parsers hard-require `<invoke name="` and recover
+      # NONE of these. So we eat any garbled punctuation between `invoke` and the
+      # first identifier-like token, and capture that token as the tool name —
+      # recovering the name from the well-formed AND every garbled variant.
+      INVOKE = %r{
+        <?invoke                       # optional leading < (M3 drops it too)
+        [^A-Za-z0-9_]*                 # garbled punctuation: ">, ", stray brackets
+        (?:name\s*=\s*)?               # the name= attribute, when it survives
+        ["']?\s*([A-Za-z_][\w.-]*)\s*["']?  # the tool name (bareword identifier)
+        \s*>                           # close of the opening tag
+        (.*?)(?:</invoke>|\z)          # body up to </invoke> or EOF
+      }imx
 
       # Family B parameters, two dialects inside an <invoke> body:
       #   <parameter name="key">value</parameter>   (MiniMax-M2)
