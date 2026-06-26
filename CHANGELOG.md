@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.2.1] - 2026-06-26
+
+### Fixed
+
+- **Symlinked workspace roots broke three path checks.** Several modules compared
+  a symlink-resolved path against a NON-resolved root, so a workspace reached
+  through a symlink (macOS `/etc` → `/private/etc`, `/var` → `/private/var`, or
+  any symlinked checkout) defeated the match:
+  - **SecretPath** — `secret?("/etc/sudoers")` returned `false` and the
+    `~/.ssh`/`~/.aws`/… credential read-gate classified nothing, silently
+    no-op'ing the write-approval gate and read-block for those paths.
+  - **IgnoreRules** — `git rev-parse --show-toplevel` returns the realpath, so
+    the allowed-set rebase dropped *every* file and the whole tree read as
+    git-ignored; `grep`/`glob` then returned nothing under a symlinked checkout.
+  - **Skills::Registry** — an untrusted repo's project-local `.rubino/skills` was
+    not recognised as project-local, so the trust gate failed to drop it (hostile
+    project skills could load in an untrusted directory).
+
+  All three now resolve both sides of the comparison through `realpath` /
+  `canonical_path`. Defense-in-depth — not security boundaries.
+- **`grep` Ruby fallback now matches dotfiles.** Without ripgrep on PATH, the
+  fallback globbed `**/<include>` without `FNM_DOTMATCH`, so an include like
+  `*.env` never matched `.env`/`.envrc` — exactly the secret-bearing files. The
+  include glob now matches dotfiles, mirroring `rg --glob`.
+
 ## [0.5.2] - 2026-06-26
 
 ### Added

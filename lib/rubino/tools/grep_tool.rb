@@ -179,7 +179,19 @@ module Rubino
         # ripgrep accepts a single FILE as well as a directory; mirror that
         # in the fallback. Dir.glob("<file>/**/*") yields nothing, so when
         # `path` is a file we search it directly (include_pattern is moot).
-        files = File.file?(path) ? [path] : Dir.glob(File.join(path, "**", include_pattern || "*"))
+        files =
+          if File.file?(path)
+            [path]
+          elsif include_pattern
+            # Match the dotfiles the include targets (`*.env` → `.env`), the
+            # same way rg's `--glob` does. Plain Dir.glob skips leading-dot
+            # names, so the fallback silently missed `.env`/`.envrc` — exactly
+            # the secret-bearing files this path most needs to surface (redacted).
+            # IgnoreRules still drops `.git`/`node_modules` below.
+            Dir.glob(File.join(path, "**", include_pattern), File::FNM_DOTMATCH)
+          else
+            Dir.glob(File.join(path, "**", "*"))
+          end
 
         # Honor .gitignore the SAME way the rg path does (#375b): without this
         # the fallback returned a different, larger set (build artifacts,

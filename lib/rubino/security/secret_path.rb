@@ -138,10 +138,22 @@ module Rubino
       # directories (~/.ssh, ~/.aws). Mirrors Hermes' write-deny exact-path +
       # prefix split, applied here to the READ gate.
       def home_credential_path?(target)
-        home = File.expand_path("~")
+        home = resolved_root(File.expand_path("~"))
         return true if BLOCKED_HOME_CREDENTIAL_FILES.any? { |rel| target == File.join(home, rel) }
 
         BLOCKED_HOME_CREDENTIAL_DIRS.any? { |rel| under_path?(target, File.join(home, rel)) }
+      end
+
+      # Symlink-resolves a comparison ROOT through the SAME #canonical_path used
+      # on +target+, so the two sides match even when a system symlink sits on
+      # the path. Without this, macOS' symlinks defeat the match: `/etc` →
+      # `/private/etc` makes `/etc/sudoers` (and a non-existent `/etc/shadow`)
+      # resolve past SYSTEM_PATHS, and a `$TMPDIR`/$HOME under `/var` →
+      # `/private/var` slips the home credential dirs. Using canonical_path (not
+      # bare realpath) resolves the existing ancestor of a NON-existent root too,
+      # so `/etc/shadow` still classifies on a host where it doesn't exist.
+      def resolved_root(path)
+        canonical_path(path) || path
       end
 
       # Resolved Rubino home dir, for the mcp-tokens/ subtree match above.
@@ -188,14 +200,14 @@ module Rubino
       # Absolute-path / prefix matches (SSH keys, cloud creds, /etc system
       # files), compared against the symlink-resolved target.
       def denied_path_category(target, base)
-        home = File.expand_path("~")
+        home = resolved_root(File.expand_path("~"))
         HOME_PREFIXES.each do |rel|
           return "credential directory (~/#{rel})" if under_path?(target, File.join(home, rel))
         end
-        return "system file (#{base})" if SYSTEM_PATHS.include?(target)
+        return "system file (#{base})" if SYSTEM_PATHS.any? { |p| target == resolved_root(p) }
 
         SYSTEM_PREFIXES.each do |prefix|
-          return "system path (#{prefix})" if under_path?(target, prefix)
+          return "system path (#{prefix})" if under_path?(target, resolved_root(prefix))
         end
         nil
       end
