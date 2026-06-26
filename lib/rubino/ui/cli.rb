@@ -2283,35 +2283,28 @@ module Rubino
           return
         end
 
-        # Some models (notably MiniMax-M3) close a ``` fence with a SHORTER bare
-        # run (e.g. `` ), which per CommonMark cannot close it — so the block
-        # stays "open" and would fall to the raw plain dump below. At end-of-
-        # stream, normalise that botched close to a real fence so the code block
-        # renders (boxed + highlighted) like a well-formed one.
-        repaired = repair_trailing_fence_close(remaining)
-
-        lines =
-          if repaired
-            margined_render(repaired, highlight: true)
-          elsif open_fence?(remaining)
-            # A genuinely half-open fence renders as garbage; emit the buffered
-            # text PLAIN so nothing is lost, still margined to sit under the rest.
-            # CWE-150 (#567): a half-open fence dumps RAW model text — defang
-            # escapes before the margined plain-line fallback prints it.
-            remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{safe(line)}" }
-          else
-            margined_render(remaining, highlight: true)
-          end
-        commit_block_atomic(lines)
+        # An unterminated ``` fence at end-of-stream: close it synthetically and
+        # render as a code BOX — what every CommonMark renderer shows via the
+        # spec's EOF auto-close (§4.5), which kramdown does NOT perform (it
+        # degrades an unclosed fence to a paragraph). Covers both a too-short
+        # botched close (MiniMax-M3 emits `` against a ``` opener) and a fence
+        # the model never closed at all. Well-formed text renders normally.
+        rendered = close_unterminated_fence(remaining) || remaining
+        commit_block_atomic(margined_render(rendered, highlight: true))
       end
 
-      # Recover a malformed fence close at end-of-stream: when +text+ is an
-      # unclosed ``` fence whose LAST non-blank line is a bare run of backticks
-      # SHORTER than the opener (the M3 `` -closes-``` bug), rewrite that line to
-      # a full-length close so the block parses as code. Returns the repaired
-      # text, or nil when there's nothing to recover (a truly unclosed fence,
-      # or a well-formed one) — the caller keeps the plain fallback for those.
-      def repair_trailing_fence_close(text)
+      # If +text+ is an UNTERMINATED ``` fence, return it with a valid closing
+      # fence so it renders as a code box; else nil (well-formed text renders as
+      # is). Matches what CommonMark's EOF auto-close gives every other renderer
+      # — done by synthesising the close because kramdown won't auto-close, and
+      # because the field (goldmark, markdown-it, remend) never RELAXES the
+      # "close ≥ opener" rule, only ever closes AT the opener length. Two cases:
+      #   * the last non-blank line is a bare backtick run SHORTER than the
+      #     opener (M3's botched close) → promote it to the opener length;
+      #   * no close at all (model cut off mid-code) → append a close.
+      # The splitter only ever hands us a SINGLE in-flight block, so the first
+      # fence line is the (only) opener.
+      def close_unterminated_fence(text)
         return nil unless open_fence?(text)
 
         lines  = text.split("\n", -1)
@@ -2319,13 +2312,15 @@ module Rubino
         return nil unless opener
 
         open_len = opener[/`+/].length
-        idx = lines.rindex { |l| !l.strip.empty? }
-        return nil if idx.nil?
+        close    = "`" * open_len
+        idx      = lines.rindex { |l| !l.strip.empty? }
 
-        m = lines[idx].match(/\A\s{0,3}(`+)\s*\z/)
-        return nil unless m && m[1].length.between?(1, open_len - 1)
-
-        lines[idx] = "`" * open_len
+        m = idx && lines[idx].match(/\A\s{0,3}(`+)\s*\z/)
+        if m && m[1].length.between?(1, open_len - 1)
+          lines[idx] = close # promote the too-short botched close
+        else
+          lines << close # the model never closed the fence — close it ourselves
+        end
         lines.join("\n")
       end
 

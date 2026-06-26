@@ -685,13 +685,18 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("trailing line with no blank")
     end
 
-    it "emits an unclosed fence as PLAIN text on stream_end (never lost)" do
+    it "renders an unclosed fence as a code BOX on stream_end (CommonMark EOF auto-close)" do
       out = capture_stdout do
         ui.stream(type: :content, text: "```ruby\nputs 42\n")
         ui.stream_end # fence never closed by the model
       end
-      expect(out).to include("puts 42")
-      expect(out).to include("```ruby") # plain fallback keeps the fence markup
+      # Like every other CommonMark renderer, an unterminated fence becomes a
+      # code box (the CLI synthesises the close kramdown won't auto-add) — the
+      # content survives and the raw ``` markup is gone.
+      stripped = out.gsub(/\e\[[0-9;]*m/, "")
+      expect(stripped).to include("puts 42")
+      expect(stripped).to include("┌─") # framed as code, not dumped plain
+      expect(stripped).not_to include("```ruby") # the fence markup is consumed
     end
 
     it "no longer prints raw markup straight through for content" do
