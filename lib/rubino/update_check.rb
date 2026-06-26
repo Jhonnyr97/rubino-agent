@@ -191,9 +191,17 @@ module Rubino
       installed_gem_version(GEM_NAME) ? :gem : :source
     end
 
+    # The HIGHEST installed version of +name+ on disk, or nil when none is
+    # installed. Uses find_all_by_name (NOT find_by_name) because the running
+    # `rubino` process has its own gem version ACTIVATED — find_by_name returns
+    # that activated spec, so right after `gem update` pulls a newer gem it still
+    # reported the old version and `rubino update` wrongly said "already up to
+    # date". find_all_by_name isn't activation-filtered; taking the max sees the
+    # freshly-installed version (callers that need post-install freshness run
+    # Gem.refresh first — see Commands#update).
     def installed_gem_version(name)
-      Gem::Specification.find_by_name(name).version.to_s
-    rescue Gem::MissingSpecError, StandardError
+      Gem::Specification.find_all_by_name(name).map(&:version).max&.to_s
+    rescue StandardError
       nil
     end
 
