@@ -70,10 +70,30 @@ module Rubino
         verb  = existed ? "overwrote" : "created"
         bytes = content.to_s.bytesize
         lines = content.to_s.lines.size
-        { output: "#{verb} #{file_path} (#{bytes} bytes)",
-          metrics: "#{lines} line#{"s" if lines != 1} · #{bytes}B" }
+        result = { output: "#{verb} #{file_path} (#{bytes} bytes)",
+                   metrics: "#{lines} line#{"s" if lines != 1} · #{bytes}B",
+                   body_kind: :plain }
+        preview = content_preview(content)
+        result[:body] = preview if preview
+        result
       rescue StandardError => e
         "Error writing #{file_path}: #{e.message}"
+      end
+
+      # The first lines of what was just written, shown inside the tool box so
+      # the user can SEE the file content (Claude Code / Codex do the same — a
+      # blind `✓ N lines` is opaque). Trimmed to a preview; the full file is on
+      # disk. nil for an empty write so no empty body box renders.
+      MAX_PREVIEW_LINES = 16
+
+      def content_preview(content)
+        text = content.to_s
+        return nil if text.empty?
+
+        lines = text.lines
+        shown = lines.first(MAX_PREVIEW_LINES).map(&:chomp)
+        shown << "  [… #{lines.size - MAX_PREVIEW_LINES} more line(s)]" if lines.size > MAX_PREVIEW_LINES
+        shown.join("\n")
       end
     end
   end

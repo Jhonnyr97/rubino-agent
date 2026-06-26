@@ -40,6 +40,29 @@ RSpec.describe Rubino::Tools::WriteTool do
     expect(res[:metrics]).to eq("3 lines · 6B")
   end
 
+  it "returns a content preview body so the user can see what was written" do
+    path = File.join(tmp_dir, "p.rb")
+    res  = tool.call("file_path" => path, "content" => "line1\nline2\nline3\n")
+    expect(res[:body]).to eq("line1\nline2\nline3")
+    expect(res[:body_kind]).to eq(:plain)
+  end
+
+  it "truncates the preview body to MAX_PREVIEW_LINES with a remainder note" do
+    path    = File.join(tmp_dir, "big.txt")
+    content = (1..30).map { |n| "row#{n}" }.join("\n")
+    res     = tool.call("file_path" => path, "content" => content)
+    body_lines = res[:body].lines
+    expect(body_lines.first).to eq("row1\n")
+    expect(res[:body]).to include("[… 14 more line(s)]")
+    expect(File.read(path)).to eq(content) # full file still written
+  end
+
+  it "omits the body for an empty write (no empty box)" do
+    path = File.join(tmp_dir, "empty.txt")
+    res  = tool.call("file_path" => path, "content" => "")
+    expect(res).not_to have_key(:body)
+  end
+
   it "creates parent directories" do
     path = File.join(tmp_dir, "a", "b", "c.txt")
     tool.call("file_path" => path, "content" => "deep")
