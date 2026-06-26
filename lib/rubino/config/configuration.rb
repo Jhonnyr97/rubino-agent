@@ -60,6 +60,12 @@ module Rubino
         value.positive? ? value : UI::BottomComposer::MAX_INPUT_ROWS
       end
 
+      # Render the in-flight streamed block as formatted markdown in the live
+      # region (display.live_markdown). Default false ⇒ the legacy raw live tail.
+      def display_live_markdown?
+        dig("display", "live_markdown") == true
+      end
+
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --
       # A paste with MORE than this many lines collapses to a
       # "[Pasted text #N +M lines]" placeholder in the composer (expanded to
