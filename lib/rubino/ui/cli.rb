@@ -2283,10 +2283,19 @@ module Rubino
           return
         end
 
+        # Some models (notably MiniMax-M3) close a ``` fence with a SHORTER bare
+        # run (e.g. `` ), which per CommonMark cannot close it — so the block
+        # stays "open" and would fall to the raw plain dump below. At end-of-
+        # stream, normalise that botched close to a real fence so the code block
+        # renders (boxed + highlighted) like a well-formed one.
+        repaired = repair_trailing_fence_close(remaining)
+
         lines =
-          if open_fence?(remaining)
-            # A half-open fence renders as garbage; emit the buffered text PLAIN
-            # so nothing is lost, still margined to sit under the rest.
+          if repaired
+            margined_render(repaired, highlight: true)
+          elsif open_fence?(remaining)
+            # A genuinely half-open fence renders as garbage; emit the buffered
+            # text PLAIN so nothing is lost, still margined to sit under the rest.
             # CWE-150 (#567): a half-open fence dumps RAW model text — defang
             # escapes before the margined plain-line fallback prints it.
             remaining.split("\n", -1).map { |line| "#{MD_MARGIN}#{safe(line)}" }
@@ -2294,6 +2303,30 @@ module Rubino
             margined_render(remaining, highlight: true)
           end
         commit_block_atomic(lines)
+      end
+
+      # Recover a malformed fence close at end-of-stream: when +text+ is an
+      # unclosed ``` fence whose LAST non-blank line is a bare run of backticks
+      # SHORTER than the opener (the M3 `` -closes-``` bug), rewrite that line to
+      # a full-length close so the block parses as code. Returns the repaired
+      # text, or nil when there's nothing to recover (a truly unclosed fence,
+      # or a well-formed one) — the caller keeps the plain fallback for those.
+      def repair_trailing_fence_close(text)
+        return nil unless open_fence?(text)
+
+        lines  = text.split("\n", -1)
+        opener = lines.find { |l| l.match?(StreamingMarkdown::FENCE_RE) }
+        return nil unless opener
+
+        open_len = opener[/`+/].length
+        idx = lines.rindex { |l| !l.strip.empty? }
+        return nil if idx.nil?
+
+        m = lines[idx].match(/\A\s{0,3}(`+)\s*\z/)
+        return nil unless m && m[1].length.between?(1, open_len - 1)
+
+        lines[idx] = "`" * open_len
+        lines.join("\n")
       end
 
       # Commit a rendered block AND tear the raw live tail down in a single

@@ -75,9 +75,9 @@ module Rubino
       end
 
       # Syntax-highlight committed code blocks (display.code_highlight). Default
-      # false (opt-in); only an explicit true enables Rouge highlighting.
+      # true; only an explicit false falls back to plain (uncoloured) code.
       def display_code_highlight?
-        dig("display", "code_highlight") == true
+        dig("display", "code_highlight") != false
       end
 
       # -- Paste section (UI::PasteStore: the file-backed paste pipeline) --

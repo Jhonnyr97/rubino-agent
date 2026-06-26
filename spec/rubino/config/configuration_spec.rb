@@ -70,13 +70,13 @@ RSpec.describe Rubino::Config::Configuration do
                .display_synchronized_output?).to be false
     end
 
-    it "code_highlight defaults to disabled (opt-in)" do
-      expect(config.display_code_highlight?).to be false
+    it "code_highlight defaults to enabled" do
+      expect(config.display_code_highlight?).to be true
     end
 
-    it "only an explicit true enables code highlighting" do
-      expect(test_configuration("display" => { "code_highlight" => true })
-               .display_code_highlight?).to be true
+    it "only an explicit false disables code highlighting" do
+      expect(test_configuration("display" => { "code_highlight" => false })
+               .display_code_highlight?).to be false
     end
   end
 

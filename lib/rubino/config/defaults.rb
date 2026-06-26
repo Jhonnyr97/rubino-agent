@@ -310,8 +310,8 @@ module Rubino
           # COMMITTED render — the live tail stays unstyled, so highlighting
           # never blocks the stream (code shows instantly, colours a beat later
           # on commit). Unknown languages and any failure fall back to the plain
-          # code body. Opt-in for now (default false).
-          "code_highlight" => false
+          # code body. On by default; false ⇒ plain (uncoloured) code blocks.
+          "code_highlight" => true
         },
         "paste" => {
           # File-backed paste pipeline (UI::PasteStore). A paste with MORE
