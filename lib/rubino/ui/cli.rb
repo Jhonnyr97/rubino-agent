@@ -544,7 +544,7 @@ module Rubino
       # agent why" path lets the human hand the child a reason instead of a
       # bare deny. The security semantics are unchanged — only the UI unifies.
       def subagent_approval_choice
-        approval_menu("approve?", [
+        approval_menu("Approve?", [
                         ["Approve once", :once],
                         ["Approve always (this command)", :always_command],
                         ["Deny", :no],
@@ -565,7 +565,7 @@ module Rubino
       # option needs a deliberate ↓↓, so an auto-popped budget modal can't
       # force-summarize a child by a mis-aimed picker keystroke.
       def subagent_budget_choice
-        approval_menu("grant more budget?", [
+        approval_menu("Grant more budget?", [
                         ["Grant more iterations", :grant],
                         ["Decide later", :later],
                         ["Summarize now", :summarize]
@@ -2397,7 +2397,7 @@ module Rubino
         choices << ["Approve — #{session_scope_noun(tool)} (this session)", :always_tool]
         choices << ["Deny once", :no]
         choices << ["Deny — #{narrow} (always)", :deny_always]
-        approval_menu("approve?", choices)
+        approval_menu("Approve?", choices)
       end
 
       # The UNIFIED arrow-key approval menu (TUI-6): the ONE select component
