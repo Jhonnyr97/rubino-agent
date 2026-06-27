@@ -98,6 +98,36 @@ module Rubino
           session_id = runner&.session&.dig(:id)
           session_id ? ::Rubino::Session::Store.new.for_session(session_id) : []
         end
+
+        # A subagent IS NOT a shell — the discriminator the shared /stop, steer,
+        # probe and attach paths dispatch on (ShellEntryAdapter#shell? ⇒ true).
+        def shell? = false
+
+        # Parent→child steer: park a turn-boundary note on the child's queue
+        # (folded in at its next iteration). The shell analogue is a stdin write.
+        def steer(text)
+          return false unless steer_queue
+
+          steer_queue.push(text)
+          true
+        end
+
+        # Ephemeral read-only peek: a synchronous LLM side-inference over the
+        # child's current context. The shell analogue is an output snapshot.
+        def peek(question)
+          ::Rubino::Tools::SubagentProbe.new.peek(entry: self, question: question)
+        end
+
+        # A dim hint shown ABOVE a probe answer, or nil. A just-spawned subagent has
+        # an empty context, so its honest "I'm not doing anything yet" reply would
+        # read as broken (#112) without this; a shell has no such notion (its peek
+        # IS its output), so the adapter returns nil.
+        def peek_hint
+          return unless tool_count.to_i.zero?
+
+          "(snapshot at this instant — the child just started and its context is " \
+            "still empty; probe again in a moment)"
+        end
       end
 
       # How many recent activity lines the drill-in shows (the live `recent:` ring).
@@ -373,15 +403,15 @@ module Rubino
       # is no window in which a note is pushed onto a queue nobody will drain yet
       # reported delivered. Pushing inside the mutex is safe: InputQueue#push has
       # its own lock and never calls back into the registry, so no lock cycle.
+      # Send input to a background worker. The registry owns the liveness guard
+      # (one place); the ACTION is polymorphic on the entry — a subagent parks a
+      # turn-boundary steer note, a shell writes straight to its stdin.
       def steer(id, text)
-        @mutex.synchronize do
-          entry = @entries[id]
-          return false unless entry&.steer_queue
-          return false if terminal_status?(entry.status)
+        entry = find(id)
+        return false unless entry
+        return false if terminal_status?(entry.status)
 
-          entry.steer_queue.push(text)
-          true
-        end
+        entry.steer(text)
       end
 
       # Records a BILLED live probe against a child (S3): bumps probe_count
@@ -424,12 +454,24 @@ module Rubino
       end
 
       def find(id)
-        @mutex.synchronize { @entries[id] }
+        @mutex.synchronize { @entries[id] } || shell_adapter_for(id)
       end
 
-      # All entries, newest first — for a `task` listing (the /tasks analogue).
+      # A read-time adapter for a background SHELL by id (bg_*), or nil. Lets the
+      # shared /stop and attach paths resolve a shell exactly like a subagent
+      # without the shell living in @entries (no cap/steer/sync coupling).
+      def shell_adapter_for(id)
+        shell = ShellRegistry.instance.find(id)
+        shell ? ShellEntryAdapter.new(shell) : nil
+      end
+
+      # All entries, newest first — for a `task` listing (the /tasks analogue) and
+      # the /agents list + /status count. Includes background shells (same unified
+      # set as #running) so a running shell is never visible in the picker/cards
+      # yet absent from the list/count.
       def list
-        @mutex.synchronize { @entries.values.sort_by(&:started_at).reverse }
+        subs = @mutex.synchronize { @entries.values }
+        (subs + shell_adapters).sort_by(&:started_at).reverse
       end
 
       # Live (still-running) children — used by the parent stop path to cancel
@@ -437,7 +479,18 @@ module Rubino
       # approval (:needs_approval) is STILL live (its thread is alive, holding a
       # slot), so it counts as running here.
       def running
-        @mutex.synchronize { @entries.values.select { |e| live_status?(e.status) } }
+        subs = @mutex.synchronize { @entries.values.select { |e| live_status?(e.status) } }
+        subs + shell_adapters
+      end
+
+      # Background SHELLS, presented as read-time adapters that duck-type a
+      # subagent entry — the ONE place shells join the unified live set, so every
+      # surface that lists "background work" (cards, picker, /agents list, /status
+      # count) includes them with zero shell-specific branches. No second registry
+      # entry ⇒ no status sync / double completion notice / concurrency-cap
+      # pollution / dead steer_queue.
+      def shell_adapters
+        ShellRegistry.instance.running_entries.map { |e| ShellEntryAdapter.new(e) }
       end
 
       def remove(id)
@@ -455,6 +508,9 @@ module Rubino
       # non-live status), so #cancel_all can call it across the whole registry.
       def stop_entry(entry)
         return unless entry
+        # A shell stops by killing its process group (polymorphic #stop on the
+        # adapter), not by the cooperative subagent cancel.
+        return entry.stop if entry.respond_to?(:shell?) && entry.shell?
 
         request_stop(entry.id)
         entry.approval_gate&.cancel!

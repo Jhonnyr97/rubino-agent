@@ -71,13 +71,14 @@ module Rubino
         else
           glyph = @pastel.cyan(COLLAPSED)
           state = entry.status == :stopping ? "stopping" : "running"
-          count = entry.tool_count.to_i
-          # Compact card: id · label · state · N tools · elapsed. The per-tool
-          # last_activity (often a long grep/glob arg or absolute path) is NOT
-          # shown here — too noisy on the always-visible card; the live detail
-          # lives in the agent's own view (Enter) / drill-in.
-          body = "#{entry.id} · #{safe(card_label(entry))} · #{state} · " \
-                 "#{count} tool#{"s" if count != 1} · #{elapsed(entry)}"
+          # Compact card: id · label · state · [N tools ·] elapsed. The tool count
+          # shows only when the entry HAS one (subagents); a background shell runs
+          # no tools, so its tool_count is nil and the segment is omitted instead of
+          # a meaningless "0 tools". last_activity is NOT shown — too noisy on the
+          # always-visible card; the live detail lives in the agent's view (Enter).
+          count  = entry.tool_count
+          metric = count ? "#{count.to_i} tool#{"s" if count.to_i != 1} · " : ""
+          body = "#{entry.id} · #{safe(card_label(entry))} · #{state} · #{metric}#{elapsed(entry)}"
           "  #{glyph} #{body}"
         end
       end

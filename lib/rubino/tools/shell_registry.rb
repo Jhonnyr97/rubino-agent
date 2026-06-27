@@ -2,6 +2,9 @@
 
 require "securerandom"
 require "open3"
+require "pty"
+require "shellwords"
+require "io/console"
 
 module Rubino
   module Tools
@@ -37,6 +40,15 @@ module Rubino
         # completion notice exactly once (US-5; avoids the Claude-Code
         # duplicate-reminder leak).
         :sink, :notified,
+        # pty: true when the child runs on a real pseudo-terminal (interactive
+        # mode) rather than plain pipes — changes how the reader EOFs (EIO vs
+        # IOError) and how stdin is closed (EOT vs fd close, since closing a PTY
+        # master SIGHUPs the child). #591-adjacent: kept a plain field, no logic.
+        :pty,
+        # stopped: set when the shell was DELIBERATELY terminated from the UI
+        # (/stop) so #status reports :stopped, not :failed — a SIGTERM/SIGKILL
+        # exit is "non-success" but it's a user stop, not a crash.
+        :stopped,
         keyword_init: true
       )
 
@@ -93,37 +105,15 @@ module Rubino
 
       # Spawns `command` detached in its own process group so a single kill
       # takes out the whole subtree. Returns the new entry.
-      def spawn(command:, cwd:)
+      def spawn(command:, cwd:, pty: false)
         # Capture the parent's notification sink on the CALLING thread (the turn
         # thread). The reader thread below can't read Rubino.background_sink —
         # thread-locals don't propagate — so a finished bg shell would notify
         # nothing (US-5 lost-completion). Stash it like a subagent does.
         sink = Rubino.background_sink
-        rd, wr = IO.pipe
-        # Writable stdin pipe: the agent feeds answers to interactive prompts
-        # (Y/N, "select region", apt-style) via the `shell_input` tool, which
-        # writes to `in_wr`. Line-oriented `read`/prompt commands consume this
-        # fine; full-screen TTY programs (vim, REPLs that require [ -t 0 ]) are
-        # out of scope for a plain pipe.
-        in_rd, in_wr = IO.pipe
-        # pgroup: true → child becomes leader of a new process group whose
-        # pgid == child pid. Lets shell_kill send SIGTERM to the whole tree.
-        # bash -o pipefail keeps this path consistent with the foreground
-        # shell: a mid-pipeline crash surfaces as the exit status (#156).
-        #
-        # OS write-jail (#290/#544, slice 2): a backgrounded command went
-        # UNJAILED before this — a real hole, since `run_in_background: true`
-        # let a write outside the workspace through that the foreground path
-        # blocks. We now build the spawn argv+env through the SAME
-        # ShellTool.sandboxed_bash_argv helper the foreground uses, so the
-        # platform sandbox launcher prefixes bash and the writable-roots env is
-        # merged identically. The launcher `exec`s into bash in-place, so the
-        # pgroup/pipes/cwd/tracking below are all preserved. Empty prefix when
-        # the sandbox is off/unavailable ⇒ byte-identical to before.
-        pid = Process.spawn(*ShellTool.sandboxed_bash_argv(command, cwd: cwd),
-                            chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
-        wr.close
-        in_rd.close
+        # I/O setup differs by mode but the registry bookkeeping below is shared:
+        # pipe (default, non-interactive) vs PTY (interactive — real terminal).
+        reader_io, stdin_io, pid = pty ? spawn_pty(command, cwd) : spawn_pipe(command, cwd)
 
         entry = Entry.new(
           id: new_id,
@@ -136,17 +126,68 @@ module Rubino
           mutex: Mutex.new,
           started_at: Time.now,
           read_offset: 0,
-          stdin: in_wr,
+          stdin: stdin_io,
           sink: sink,
-          notified: false
+          notified: false,
+          pty: pty
         )
-        entry.reader_thr = Thread.new { drain_into(entry, rd) }
+        entry.reader_thr = Thread.new { drain_into(entry, reader_io) }
 
         @mutex.synchronize do
           @entries[entry.id] = entry
           refresh_pgid_snapshot
         end
         entry
+      end
+
+      # Pipe-backed spawn (default): a writable stdin pipe lets the agent feed
+      # answers to line-oriented prompts (Y/N, apt-style) via `shell_input`;
+      # stdout+stderr merge into one read pipe. Full-screen TTY programs (vim,
+      # REPLs that require `[ -t 0 ]`, getpass on /dev/tty) are out of scope for
+      # a plain pipe — those want PTY mode (#spawn_pty). Returns [reader, stdin, pid].
+      #
+      # pgroup: true → the child leads a new process group (pgid == child pid),
+      # so shell_kill SIGTERMs the whole tree. bash -o pipefail mirrors the
+      # foreground shell (a mid-pipeline crash surfaces as the exit status, #156).
+      # OS write-jail (#290/#544): the argv+env go through the SAME
+      # ShellTool.sandboxed_bash_argv the foreground uses, so a backgrounded
+      # write is jailed identically (the launcher exec's bash in-place, preserving
+      # pgroup/pipes/cwd). Empty prefix when the sandbox is off ⇒ unchanged.
+      def spawn_pipe(command, cwd)
+        rd, wr = IO.pipe
+        in_rd, in_wr = IO.pipe
+        pid = Process.spawn(*ShellTool.sandboxed_bash_argv(command, cwd: cwd),
+                            chdir: cwd, pgroup: true, in: in_rd, out: wr, err: wr)
+        wr.close
+        in_rd.close
+        [rd, in_wr, pid]
+      end
+
+      # PTY-backed spawn (interactive): the child runs on a REAL pseudo-terminal,
+      # so `[ -t 0 ]`, tty-aware tools, y/N prompts and /dev/tty password reads
+      # all work where a pipe can't. PTY.spawn sets up the controlling terminal
+      # (setsid), making the child a session leader → pgid == pid, so the same
+      # pgroup hard-kill applies. The master is FULL-DUPLEX: the same terminal is
+      # both the output reader and the stdin writer. cwd is baked into the script
+      # (PTY.spawn takes no chdir option); the sandbox argv/env still come from
+      # the shared helper. Returns [master_reader, master_writer, pid]. Mirrors
+      # Hermes' ptyprocess path (tools/process_registry.py spawn_local use_pty).
+      def spawn_pty(command, cwd)
+        # cwd on its OWN line, NOT a `cd && (#{command})` subshell: a command
+        # ending in a `#`-comment would otherwise swallow the closing paren and
+        # break. `|| exit 127` still aborts before running in the wrong dir,
+        # mirroring the pipe path's `chdir:` failure.
+        script = "cd #{Shellwords.escape(cwd)} || exit 127\n#{command}"
+        master_r, master_w, pid = PTY.spawn(*ShellTool.sandboxed_bash_argv(script, cwd: cwd))
+        # A fresh PTY is 0x0; give it a sane size so `tput cols`, pagers and
+        # progress bars don't misbehave (the attach view resizes to the real
+        # terminal later). Best-effort — never fail a spawn over winsize.
+        begin
+          master_w.winsize = [40, 120]
+        rescue StandardError
+          nil
+        end
+        [master_r, master_w, pid]
       end
 
       def find(id)
@@ -218,9 +259,23 @@ module Rubino
       # Closes the write end of the child's stdin (sends EOF). Idempotent.
       def close_stdin(entry)
         io = entry&.stdin
-        io.close if io && !io.closed?
-      rescue IOError
-        # already closed
+        return if io.nil? || io.closed?
+
+        # On a PTY, closing the master fd SIGHUPs the child. So while the child is
+        # ALIVE, signal EOF without killing by sending EOT (Ctrl-D) — a line reader
+        # in canonical mode at line-start treats it as end-of-input (a raw-mode
+        # child sees a literal byte; that's out of scope). Once the child is GONE,
+        # there is nothing to EOF and writing the master raises Errno::EIO — so
+        # close the master fd instead, which also reclaims it (it is a SEPARATE fd
+        # from the reader's, otherwise leaked until GC).
+        if entry&.pty && entry.wait_thr&.alive?
+          io.write("\x04")
+          io.flush
+        else
+          io.close
+        end
+      rescue IOError, Errno::EIO, Errno::EBADF
+        # already closed / child gone — nothing to flush
       end
 
       # Reads accumulated bytes since the last `read_new` call. Returns the
@@ -239,6 +294,7 @@ module Rubino
 
       def status(entry)
         return :running if entry.wait_thr.alive?
+        return :stopped if entry.stopped
 
         code = entry.wait_thr.value.exitstatus
         code && ShellTool.success_exit?(code) ? :completed : :failed
@@ -248,6 +304,29 @@ module Rubino
         return nil if entry.wait_thr.alive?
 
         entry.wait_thr.value.exitstatus
+      end
+
+      # The RUNNING background shells (not yet exited, not retired) — the set the
+      # picker/cards surface as live "background work" alongside subagents.
+      def running_entries
+        @mutex.synchronize { @entries.values.select { |e| e.retired_at.nil? && e.wait_thr&.alive? } }
+      end
+
+      # SIGTERM→grace→SIGKILL the process group, then retire so the captured
+      # output stays retrievable (shares the kill contract with shell_kill). The
+      # single per-shell stop seam the UI (/stop, picker) routes through.
+      def terminate(entry, grace: 2)
+        entry.stopped = true # a UI /stop ⇒ #status reports :stopped, not :failed
+        return retire(entry.id) unless entry.wait_thr.alive?
+
+        signal_group("TERM", entry.pgid)
+        grace.times do
+          break unless entry.wait_thr.alive?
+
+          sleep 1
+        end
+        signal_group("KILL", entry.pgid) if entry.wait_thr.alive?
+        retire(entry.id)
       end
 
       # Synchronous teardown reaper (MED-2): SIGTERM every live shell process
@@ -339,8 +418,10 @@ module Rubino
             end
           end
         end
-      rescue IOError, Errno::EBADF
-        # pipe closed — process exited
+      rescue IOError, Errno::EBADF, Errno::EIO
+        # End of stream = the process exited. A pipe signals this with EOF/IOError;
+        # a PTY master instead raises Errno::EIO once the child is gone. Both mean
+        # "reader done", same completion path below.
       ensure
         rd.close unless rd.closed?
         # The reader thread ends exactly when the pipe closes = the process

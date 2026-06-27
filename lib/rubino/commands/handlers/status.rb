@@ -232,9 +232,12 @@ module Rubino
 
         def status_background_line
           entries = Tools::BackgroundTasks.instance.list
-          running = entries.count { |e| e.status == :running }
-          ids     = entries.first(3).map(&:id).join(", ")
-          line    = "#{running} running · #{entries.size} total"
+          running = entries.select { |e| e.status == :running }
+          # The parenthetical names the RUNNING ids (capped), matching the count
+          # and the picker — not the first rows of the total table, which could
+          # name a finished task while hiding a running one (subagents + shells).
+          ids  = running.first(3).map(&:id).join(", ")
+          line = "#{running.size} running · #{entries.size} total"
           ids.empty? ? line : "#{line} (#{ids})"
         rescue StandardError
           "(unavailable)"
