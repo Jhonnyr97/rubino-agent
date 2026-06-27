@@ -301,6 +301,28 @@ module Rubino
         entry.wait_thr.value.exitstatus
       end
 
+      # The RUNNING background shells (not yet exited, not retired) — the set the
+      # picker/cards surface as live "background work" alongside subagents.
+      def running_entries
+        @mutex.synchronize { @entries.values.select { |e| e.retired_at.nil? && e.wait_thr&.alive? } }
+      end
+
+      # SIGTERM→grace→SIGKILL the process group, then retire so the captured
+      # output stays retrievable (shares the kill contract with shell_kill). The
+      # single per-shell stop seam the UI (/stop, picker) routes through.
+      def terminate(entry, grace: 2)
+        return retire(entry.id) unless entry.wait_thr.alive?
+
+        signal_group("TERM", entry.pgid)
+        grace.times do
+          break unless entry.wait_thr.alive?
+
+          sleep 1
+        end
+        signal_group("KILL", entry.pgid) if entry.wait_thr.alive?
+        retire(entry.id)
+      end
+
       # Synchronous teardown reaper (MED-2): SIGTERM every live shell process
       # group this session owns — the background ENTRIES and the tracked
       # FOREGROUND pgids — give them a brief grace, then SIGKILL any straggler.

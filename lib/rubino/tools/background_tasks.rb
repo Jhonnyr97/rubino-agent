@@ -424,7 +424,15 @@ module Rubino
       end
 
       def find(id)
-        @mutex.synchronize { @entries[id] }
+        @mutex.synchronize { @entries[id] } || shell_adapter_for(id)
+      end
+
+      # A read-time adapter for a background SHELL by id (bg_*), or nil. Lets the
+      # shared /stop and attach paths resolve a shell exactly like a subagent
+      # without the shell living in @entries (no cap/steer/sync coupling).
+      def shell_adapter_for(id)
+        shell = ShellRegistry.instance.find(id)
+        shell ? ShellEntryAdapter.new(shell) : nil
       end
 
       # All entries, newest first — for a `task` listing (the /tasks analogue).
@@ -437,7 +445,11 @@ module Rubino
       # approval (:needs_approval) is STILL live (its thread is alive, holding a
       # slot), so it counts as running here.
       def running
-        @mutex.synchronize { @entries.values.select { |e| live_status?(e.status) } }
+        subs = @mutex.synchronize { @entries.values.select { |e| live_status?(e.status) } }
+        # Background SHELLS join the same live set as read-time adapters (no second
+        # registry, no status sync / double completion notice / concurrency-cap
+        # pollution) so the cards and picker render them with zero shell branches.
+        subs + ShellRegistry.instance.running_entries.map { |e| ShellEntryAdapter.new(e) }
       end
 
       def remove(id)
@@ -455,6 +467,9 @@ module Rubino
       # non-live status), so #cancel_all can call it across the whole registry.
       def stop_entry(entry)
         return unless entry
+        # A shell stops by killing its process group (polymorphic #stop on the
+        # adapter), not by the cooperative subagent cancel.
+        return entry.stop if entry.respond_to?(:shell?) && entry.shell?
 
         request_stop(entry.id)
         entry.approval_gate&.cancel!
