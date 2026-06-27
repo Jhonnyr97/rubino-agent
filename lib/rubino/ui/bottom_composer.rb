@@ -1120,9 +1120,10 @@ module Rubino
         end
         rows, caret_row, caret_col = visible_input_rows
         status = status_row
-        # Rows drawn BELOW the input, top→bottom: the subagent panel (one calm
-        # representation of the running children) then the status footer. A fresh
-        # array so appending the status never mutates the panel's own rows.
+        # Rows drawn BELOW the input, top→bottom: the "⏳ queued:" type-ahead
+        # indicators, then the subagent panel (one calm representation of the
+        # running children), then the status footer. A fresh array so appending
+        # the status never mutates the panel's own rows.
         below_rows = below_input_rows
         below_rows += [status] if status
 
@@ -1535,12 +1536,16 @@ module Rubino
       #   [committed lines]   ← only when +committed+ is given; scroll into
       #                         scrollback and stay there
       #   [live rows]         ← cards, completion menu, transient announce,
-      #                         "⏳ queued:" indicators, streamed partial —
-      #                         redrawn in place every frame (do NOT scroll)
+      #                         streamed partial — redrawn in place every
+      #                         frame (do NOT scroll)
       #   [input block]       ← "▍❯ " + buffer (the rail leads every row),
       #                         wrapped over up to @max_input_rows visual
       #                         rows; the cursor parks at the caret's
       #                         row/column
+      #   [queued + panel]    ← "⏳ queued:" type-ahead indicators, then the
+      #                         subagent panel/switcher — drawn BELOW the input
+      #                         so a pending line sits next to the prompt it was
+      #                         typed at, not up in the streamed-output area
       #   [status bar]        ← the dim model + context line (when set/fits)
       #
       # The +buffer+ is redrawn on every frame, so it can never be lost across
@@ -1584,16 +1589,24 @@ module Rubino
       # The live rows for this frame, top → bottom: the subagent cards; the
       # completion menu (a navigable list redrawn in place each frame, so it
       # never scrolls or smears); the TRANSIENT announcement (mode confirmation
-      # — one row, never committed, D2/D3); the EXPLICITLY-queued "⏳ queued:"
-      # indicators (removed, and the item committed as a normal message, when
-      # its turn runs); and the streamed partial (one row per line, capped, so
-      # a rolling markdown tail can't push the prompt off-screen, #127).
+      # — one row, never committed, D2/D3); and the streamed partial (one row
+      # per line, capped, so a rolling markdown tail can't push the prompt
+      # off-screen, #127). The "⏳ queued:" indicators are NOT here — they draw
+      # BELOW the input (see #below_input_rows) so a pending line sits next to
+      # the prompt it was typed at, not up in the streamed-output area.
       def live_rows
         rows = menu_rows
         rows << @announce unless @announce.empty?
-        rows.concat(@queued.rows)
         rows.concat(partial_rows)
         rows
+      end
+
+      # Rows drawn BELOW the input line, top → bottom: the "⏳ queued:" type-ahead
+      # indicators (the user's pending lines — kept next to the input they were
+      # typed at), then the subagent panel / switcher. The status footer is
+      # appended by the caller (#draw_input).
+      def below_input_rows
+        @queued.rows + subagent_panel_rows
       end
 
       # The single subagent panel, drawn BELOW the input (see Composer::SubagentPanel).
@@ -1610,7 +1623,7 @@ module Rubino
       #   - otherwise: a single COMPACT line listing the running subs with the
       #     focused one marked, plus the "↓ to switch" hint, so the other subs
       #     are visible at a glance and ↓ opens the picker to jump.
-      def below_input_rows
+      def subagent_panel_rows
         attached = @focused_agent_id != :main
         return @agent_menu.rows(@cols) if attached && @agent_menu.open?
         return attached_switcher_rows if attached
