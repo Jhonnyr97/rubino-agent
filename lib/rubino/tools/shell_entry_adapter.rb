@@ -60,6 +60,23 @@ module Rubino
       # pipe) stdin — the shell analogue of steering a subagent.
       def feed_input(text, enter: true) = @registry.write_input(@shell, text, enter: enter)
 
+      # Polymorphic counterpart to a subagent's #steer: a shell has no turn to
+      # fold a note into — "steering" it means writing the text to its stdin.
+      def steer(text) # rubocop:disable Naming/PredicateMethod -- an action mirroring Entry#steer, not a predicate
+        feed_input(text)
+        true
+      end
+
+      # Polymorphic counterpart to a subagent's #peek: a shell has no model
+      # context to side-infer over, so a "probe" is an instant snapshot of its
+      # recent output — NO LLM round-trip (the question is informational).
+      def peek(_question = nil)
+        out = output_all.to_s
+        return "(no output captured yet)" if out.strip.empty?
+
+        out.lines.last(20).join.rstrip
+      end
+
       # The live output a shell's attach view tails (no session/transcript).
       def output_new = @registry.read_new(@shell)
       def output_all = @registry.read_all(@shell)

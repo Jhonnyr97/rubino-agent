@@ -62,4 +62,33 @@ RSpec.describe "background shell ↔ BackgroundTasks bridge" do # rubocop:disabl
   ensure
     shells.terminate(entry) if entry
   end
+
+  it "includes the shell in #list (so /status count + /agents list show it)" do
+    entry = shells.spawn(command: %(sleep 5), cwd: "/tmp")
+    expect(bg.list.map(&:id)).to include(entry.id)
+  ensure
+    shells.terminate(entry) if entry
+  end
+
+  # Polymorphic steer: a shell has no turn to fold a note into — "steering" it
+  # writes the text to its stdin (the shell analogue), via the SAME /agents steer
+  # path subagents use.
+  it "routes steer to the shell's stdin (not a steer_queue)" do
+    entry = shells.spawn(command: %(read X; echo "steered=$X"), cwd: "/tmp")
+    expect(bg.steer(entry.id, "PONG")).to be(true)
+    expect(wait_until { shells.read_all(entry).include?("steered=PONG") }).to be(true)
+  ensure
+    shells.terminate(entry) if entry
+  end
+
+  # Polymorphic peek: a shell's "probe" is an instant output snapshot — NO LLM
+  # round-trip (the bug the adversarial pass caught).
+  it "answers a probe/peek with the shell's output and no model call" do
+    entry = shells.spawn(command: %(echo PROBE_ME; sleep 5), cwd: "/tmp")
+    wait_until { shells.read_all(entry).include?("PROBE_ME") }
+    row = bg.find(entry.id)
+    expect(row.peek("anything")).to include("PROBE_ME")
+  ensure
+    shells.terminate(entry) if entry
+  end
 end
