@@ -515,6 +515,9 @@ module Rubino
         request_stop(entry.id)
         entry.approval_gate&.cancel!
         entry.runner&.cancel!
+        # Cascade-kill the child background shells this subagent opened — stopping
+        # a subagent stops its resources (Hermes kill_all(task_id)).
+        ShellRegistry.instance.terminate_owned_by(entry.id)
       end
 
       # Structured-concurrency teardown seam: cancel EVERY live subagent so the

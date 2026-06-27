@@ -49,6 +49,12 @@ module Rubino
         # (/stop) so #status reports :stopped, not :failed — a SIGTERM/SIGKILL
         # exit is "non-success" but it's a user stop, not a crash.
         :stopped,
+        # owner_subagent_id: the sa_* id of the background subagent that opened
+        # this shell (nil when the human / main agent did). Captured at spawn from
+        # Rubino.current_subagent_id (thread-local). Lets stopping a parent
+        # subagent cascade-kill its child shells — mirrors Hermes' process_registry
+        # task_id + kill_all(task_id).
+        :owner_subagent_id,
         keyword_init: true
       )
 
@@ -109,8 +115,11 @@ module Rubino
         # Capture the parent's notification sink on the CALLING thread (the turn
         # thread). The reader thread below can't read Rubino.background_sink —
         # thread-locals don't propagate — so a finished bg shell would notify
-        # nothing (US-5 lost-completion). Stash it like a subagent does.
-        sink = Rubino.background_sink
+        # nothing (US-5 lost-completion). Stash it like a subagent does. Same for
+        # the owning subagent id (thread-local), so stopping that subagent can
+        # cascade-kill this shell.
+        sink  = Rubino.background_sink
+        owner = Rubino.current_subagent_id
         # I/O setup differs by mode but the registry bookkeeping below is shared:
         # pipe (default, non-interactive) vs PTY (interactive — real terminal).
         reader_io, stdin_io, pid = pty ? spawn_pty(command, cwd) : spawn_pipe(command, cwd)
@@ -128,6 +137,7 @@ module Rubino
           read_offset: 0,
           stdin: stdin_io,
           sink: sink,
+          owner_subagent_id: owner,
           notified: false,
           pty: pty
         )
@@ -310,6 +320,21 @@ module Rubino
       # picker/cards surface as live "background work" alongside subagents.
       def running_entries
         @mutex.synchronize { @entries.values.select { |e| e.retired_at.nil? && e.wait_thr&.alive? } }
+      end
+
+      # Cascade-stop: terminate every RUNNING shell a subagent opened — its child
+      # background work, killed when the parent subagent is stopped. Mirrors
+      # Hermes' process_registry kill_all(task_id). Returns the count terminated.
+      def terminate_owned_by(subagent_id)
+        return 0 unless subagent_id
+
+        owned = @mutex.synchronize do
+          @entries.values.select do |e|
+            e.owner_subagent_id == subagent_id && e.retired_at.nil? && e.wait_thr&.alive?
+          end
+        end
+        owned.each { |e| terminate(e) }
+        owned.size
       end
 
       # SIGTERM→grace→SIGKILL the process group, then retire so the captured

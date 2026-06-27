@@ -108,4 +108,25 @@ RSpec.describe "background shell ↔ BackgroundTasks bridge" do # rubocop:disabl
   ensure
     shells.terminate(entry) if entry
   end
+
+  # Cascade-kill (Hermes kill_all(task_id) parity): a shell a subagent opened is
+  # tagged with that subagent's id, and stopping the subagent kills its children.
+  it "cascade-kills a subagent's child shells when the subagent is stopped" do
+    sub   = bg.reserve(subagent: "explore", prompt: "do work")
+    child = Rubino.with_current_subagent_id(sub.id) { shells.spawn(command: %(sleep 30), cwd: "/tmp") }
+    expect(child.owner_subagent_id).to eq(sub.id)
+
+    bg.stop_entry(sub)
+    expect(wait_until { !child.wait_thr.alive? }).to be(true) # the child shell died with its parent
+  end
+
+  it "leaves the user/main-agent's own shells untouched when a subagent stops" do
+    sub  = bg.reserve(subagent: "explore", prompt: "do work")
+    mine = shells.spawn(command: %(sleep 30), cwd: "/tmp") # owner nil → the main agent's
+    bg.stop_entry(sub)
+    expect(mine.owner_subagent_id).to be_nil
+    expect(mine.wait_thr.alive?).to be(true) # not the subagent's child → not killed
+  ensure
+    shells.terminate(mine) if mine
+  end
 end
