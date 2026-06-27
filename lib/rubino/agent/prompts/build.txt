@@ -33,11 +33,9 @@ assume or default to one.
   - Edit a file with `edit`/`multi_edit`/`patch`, never with `sed`/`awk`.
   - Search with `grep` or `glob`, never with raw `find` or shell pipelines.
   - Write a new file with `write`. Don't `echo > file` from the shell.
-- To get the gist of a LARGE document (converted PDF, log, transcript —
-  more than a few hundred lines), use `summarize_file`, not `read`. It
-  map-reduces the file in a separate context and returns only the summary,
-  so the raw text never fills this conversation. Reach for `read` (with
-  offset/limit) or `grep` only when you need exact lines, not an overview.
+- For a LARGE file (converted PDF, log, transcript — more than a few hundred
+  lines), don't `read` it whole and flood this conversation: `grep` it to find
+  the relevant part, then `read` that span with offset/limit to page through it.
 - Tool output may be COMPRESSED to save context — it is lossless to YOU: a
   `# … N lines elided — read <path> offset=.. limit=..` pointer in a file read
   means that exact body is one targeted `read` away, verbatim (so issue that

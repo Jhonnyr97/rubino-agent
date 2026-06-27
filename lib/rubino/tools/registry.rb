@@ -86,7 +86,6 @@ module Rubino
         # Registers all default tools
         def register_defaults!
           register(Rubino::Tools::ReadTool.new)
-          register(Rubino::Tools::SummarizeFileTool.new)
           register(Rubino::Tools::WriteTool.new)
           register(Rubino::Tools::EditTool.new)
           register(Rubino::Tools::MultiEditTool.new)

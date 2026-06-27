@@ -125,40 +125,51 @@ RSpec.describe Rubino::Tools::ReadAttachmentTool do
     end
   end
 
-  describe "oversized output — routed through the summarize aux" do
-    it "writes the converted Markdown to a temp file and summarizes it instead of inlining" do
+  describe "oversized output — spilled to a file and paged, not inlined" do
+    # A spill path uniquely names this tool's artifacts in tmpdir.
+    def spilled_paths
+      Dir.glob(File.join(Dir.tmpdir, "rubino_attachment_*.md"))
+    end
+
+    after { spilled_paths.each { |p| FileUtils.rm_f(p) } }
+
+    it "writes the converted Markdown to a persistent file and returns a framed pointer" do
       path = File.join(dir, "big.csv")
       File.write(path, "a,b\n1,2\n")
 
-      big_markdown = "X" * (Rubino::Attachments::Policy.inline_text_budget_bytes + 10)
+      big_markdown = "UNIQUE_BODY_TOKEN " * ((Rubino::Attachments::Policy.inline_text_budget_bytes / 17) + 1)
       allow(Rubino::Documents).to receive(:to_markdown).and_return(big_markdown)
 
-      fake_summarizer = instance_double(Rubino::Tools::SummarizeFileTool)
-      received_path = nil
-      allow(fake_summarizer).to receive(:call) do |args|
-        received_path = args["file_path"]
-        expect(File.read(received_path)).to eq(big_markdown)
-        { output: "SUMMARY OF THE DOC" }
-      end
-      tool.summarizer = fake_summarizer
-
       out = output_of(tool.call("file_path" => path))
-      expect(out).to include("SUMMARY OF THE DOC")
-      expect(out).to include("summarized")
+
+      # (a) the full converted content is NOT inlined
+      expect(out.bytesize).to be < big_markdown.bytesize
+      expect(out).not_to include(big_markdown)
+      # (d) it carries the untrusted-data warning, nonce-framed
+      expect(out).to include("untrusted user data")
       expect(out).to match(/--BEGIN [0-9a-f]{16}--/)
-      # the temp file is cleaned up afterwards
-      expect(File.exist?(received_path)).to be(false)
+      expect(out).to include("NOT inlined")
+      expect(out).to match(/read|grep/i)
+
+      # (b) it names a spill path that (c) exists and holds the converted text
+      spill = out[%r{(/\S*rubino_attachment_\S+\.md)}, 1]
+      expect(spill).not_to be_nil
+      expect(File.exist?(spill)).to be(true)
+      expect(File.read(spill)).to eq(big_markdown)
     end
 
-    it "honors an explicit summarize: true even for small documents" do
-      path = File.join(dir, "small.csv")
+    it "refuses (does NOT spill) a converted document over the hard cap" do
+      path = File.join(dir, "huge.csv")
       File.write(path, "a,b\n1,2\n")
-      fake = instance_double(Rubino::Tools::SummarizeFileTool)
-      allow(fake).to receive(:call).and_return({ output: "TINY SUMMARY" })
-      tool.summarizer = fake
 
-      out = output_of(tool.call("file_path" => path, "summarize" => true))
-      expect(out).to include("TINY SUMMARY")
+      huge = "Z" * (described_class::MAX_SPILL_BYTES + 1)
+      allow(Rubino::Documents).to receive(:to_markdown).and_return(huge)
+
+      out = output_of(tool.call("file_path" => path))
+      expect(out).to start_with("Error:")
+      expect(out).to match(/cap|narrow|grep|split/i)
+      # nothing was written
+      expect(spilled_paths).to be_empty
     end
   end
 

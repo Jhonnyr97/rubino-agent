@@ -187,7 +187,7 @@ module Rubino
             # Mirror the chunk onto the bus so the API/SSE stream isn't silent
             # during a long tool call: the Recorder maps TOOL_PROGRESS to a
             # `tool.progress` event, which resets the idle watchdog. Without
-            # this a busy tool (summarize_file: ~30 sequential aux-LLM calls,
+            # this a busy tool (a long shell stream, or an aux-LLM-backed tool,
             # no run-events) is killed at the 300s idle timeout. Throttled so a
             # chatty tool (shell streaming thousands of stdout lines) doesn't
             # write a DB row + SSE frame per line — one heartbeat per interval
