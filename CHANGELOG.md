@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Background shells get the same dev UX as background subagents.** A shell
+  started with `run_in_background: true` now appears in the `↓` picker and the
+  live cards alongside subagents, can be FOCUSED (Enter attaches to a cleared
+  view that live-tails its output and lets you type straight to its stdin), and
+  STOPPED with `/stop`. Interactive shells run on a real PTY, so `y/N` prompts,
+  sudo passwords, and tty-aware programs work where a plain pipe couldn't.
+  `probe` (an instant output snapshot — no LLM call), `steer` (→ stdin), the
+  `/agents` list and the `/status` count all treat shells consistently with
+  subagents. Stopping a subagent **cascade-kills the background shells it
+  opened** (shells the user/main agent opened are left running). Ported from
+  Hermes' `ptyprocess`/`process_registry` model.
+- **H1/H2 headings get breathing room** — a blank line above and below big
+  headings so they break the surrounding prose instead of sitting glued to it;
+  H3+ stay compact.
+
+### Changed
+
+- The background picker header reads "background" (not "subagents") now that it
+  lists background shells alongside subagents.
+
 ### Fixed
 
 - **`rubino update` now reports the new version correctly.** After `gem update`
