@@ -32,7 +32,7 @@ module Rubino
         # they'd mistyped; this names the real reason so they don't hunt for a
         # typo. Surfaced from EVERY not-found path (/agents <id>, /stop <id>,
         # steer, probe).
-        RESET_HINT = "(subagents reset when rubino restarts)"
+        RESET_HINT = "(background tasks reset when rubino restarts)"
 
         def initialize(ui:)
           @ui = ui
@@ -115,10 +115,10 @@ module Rubino
           end
 
           if Tools::BackgroundTasks.instance.steer(id, text)
-            @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}  (parked · enters child context next turn)")
+            @ui.info("steer ▸ #{id} ← #{truncate(text, 80)}")
             @ui.set_subagent_cards if @ui.respond_to?(:set_subagent_cards)
           else
-            @ui.error("cannot steer #{id} — no such running subagent. #{RESET_HINT}")
+            @ui.error("cannot steer #{id} — no such running background task. #{RESET_HINT}")
           end
         end
 
@@ -136,26 +136,21 @@ module Rubino
 
           entry = Tools::BackgroundTasks.instance.find(id)
           unless entry
-            @ui.error("cannot probe #{id} — no such subagent. #{RESET_HINT}")
+            @ui.error("cannot probe #{id} — no such background task. #{RESET_HINT}")
             return
           end
 
-          @ui.info(pastel.dim("┄┄ probe → #{id} ┄┄  (ephemeral · not saved · child trajectory unchanged)"))
-          # A probe answers from the child's context AT THIS INSTANT; right after
-          # spawn that context is still empty and the child honestly says it isn't
-          # working on anything yet — hint so that doesn't read as broken (#112).
-          if entry.tool_count.to_i.zero?
-            @ui.info(pastel.dim("   (snapshot at this instant — the child just started and its " \
-                                "context is still empty; probe again in a moment)"))
-          end
+          @ui.info(pastel.dim("┄┄ probe → #{id} ┄┄  (ephemeral · not saved · trajectory unchanged)"))
+          hint = entry.peek_hint
+          @ui.info(pastel.dim("   #{hint}")) if hint
           @ui.info("?  #{question}")
-          # The peek is a synchronous side-inference (seconds of model wait) with
-          # nothing streaming — show the same thinking row /probe got in #58 so
-          # the gap before the ⟵ answer never looks frozen (#146). TTY only;
-          # Null/API adapters and pipes stay silent.
+          # The peek is polymorphic: a subagent runs a synchronous LLM side-inference
+          # (seconds of model wait — show the thinking row so the gap doesn't look
+          # frozen, #58/#146), while a shell returns an instant output snapshot with
+          # no model call. Either way #peek lives on the entry, not here.
           probe_thinking_started(@ui)
           answer = begin
-            Tools::SubagentProbe.new.peek(entry: entry, question: question)
+            entry.peek(question)
           ensure
             probe_thinking_finished(@ui)
           end

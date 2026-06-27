@@ -31,7 +31,7 @@ RSpec.describe Rubino::Commands::Handlers::Agents do
   def last_error = ui.lines.last.to_s
 
   it "exposes the reset hint as a constant" do
-    expect(described_class::RESET_HINT).to match(/subagents reset when rubino restarts/i)
+    expect(described_class::RESET_HINT).to match(/background tasks reset when rubino restarts/i)
   end
 
   it "hints on /agents <unknown-id>" do
