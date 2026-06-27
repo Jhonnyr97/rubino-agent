@@ -29,6 +29,12 @@ module Rubino
       end
 
       def open!
+        # Idempotent: re-opening an ALREADY-open menu must NOT rebuild items and
+        # reset the selection to the top — a background list mutation (a shell
+        # finishing) that re-triggered open! while the user was on row N then
+        # snapped the highlight to row 0, so Enter attached to the wrong row.
+        return @state if open?
+
         items = menu_items
         return if items.empty?
 

@@ -87,6 +87,14 @@ RSpec.describe "background shell ↔ BackgroundTasks bridge" do # rubocop:disabl
     shells.terminate(entry) if entry
   end
 
+  it "keeps a FINISHED (retired) shell in #list, like a finished subagent" do
+    entry = shells.spawn(command: %(echo done), cwd: "/tmp")
+    wait_until { !entry.wait_thr.alive? }
+    shells.retire(entry.id) # finished + retained for output retrieval
+    expect(bg.list.map(&:id)).to include(entry.id) # still in /agents list
+    expect(bg.running.map(&:id)).not_to include(entry.id) # but NOT in the live picker/cards
+  end
+
   # Polymorphic steer: a shell has no turn to fold a note into — "steering" it
   # writes the text to its stdin (the shell analogue), via the SAME /agents steer
   # path subagents use.

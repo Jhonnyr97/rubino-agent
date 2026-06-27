@@ -31,6 +31,14 @@ RSpec.describe Rubino::UI::AgentMenu do
     expect(empty).not_to be_open
   end
 
+  it "re-opening an already-open menu preserves the selection (no reset-to-top race)" do
+    menu.down # open, sa_1
+    menu.down # sa_2
+    expect(menu.selected.id).to eq("sa_2")
+    menu.open! # a background re-trigger MUST NOT snap the highlight back to sa_1
+    expect(menu.selected.id).to eq("sa_2")
+  end
+
   describe "#up! focus hand-off" do
     it "moves the highlight up and returns true while above the top" do
       menu.down # selected sa_1

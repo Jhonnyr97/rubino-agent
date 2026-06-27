@@ -322,6 +322,12 @@ module Rubino
         @mutex.synchronize { @entries.values.select { |e| e.retired_at.nil? && e.wait_thr&.alive? } }
       end
 
+      # Running PLUS retired (finished-but-retained) shells — the set shown in the
+      # /agents list + /status count, mirroring how finished subagents linger.
+      def listable_entries
+        @mutex.synchronize { @entries.values.dup }
+      end
+
       # Cascade-stop: terminate every RUNNING shell a subagent opened — its child
       # background work, killed when the parent subagent is stopped. Mirrors
       # Hermes' process_registry kill_all(task_id). Returns the count terminated.

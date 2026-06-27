@@ -471,7 +471,12 @@ module Rubino
       # yet absent from the list/count.
       def list
         subs = @mutex.synchronize { @entries.values }
-        (subs + shell_adapters).sort_by(&:started_at).reverse
+        # The list (/agents table, /status count) keeps FINISHED subagents, so it
+        # keeps finished-but-retained shells too (running + retired) for symmetry —
+        # otherwise a just-finished shell vanished from /agents while a finished
+        # subagent lingered. #running stays running-only (the live picker/cards).
+        shells = ShellRegistry.instance.listable_entries.map { |e| ShellEntryAdapter.new(e) }
+        (subs + shells).sort_by(&:started_at).reverse
       end
 
       # Live (still-running) children — used by the parent stop path to cancel
