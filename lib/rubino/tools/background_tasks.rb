@@ -63,6 +63,15 @@ module Rubino
         :last_activity, :tool_count, :activity_log, :output_tail,
         :approval_gate, :approval_id, :approval_question, :approval_command,
         :budget_request,
+        # "Decide later" (#586): the user dismissed this request's AUTO-modal
+        # without deciding it. The child stays parked on its gate and the
+        # `wants +budget` card stays visible, but auto_resolve stops re-popping
+        # the modal at idle — the user re-engages it deliberately via the picker /
+        # `/agents <id>` (the manual path presents regardless). This is what makes
+        # the picker's ↓+Enter gesture non-destructive: a stray gesture lands on
+        # "Decide later" (defers) instead of "Summarize now". Cleared when the
+        # approval is (re)opened or decided. nil/false ⇒ auto-pops normally.
+        :approval_snoozed,
         # Monotonic stamp of the instant this child blocked on its approval gate
         # (begin_approval), used to order the approval MODAL QUEUE FIFO: only one
         # approval modal is presented at a time (awaiting_approval.first), and a
@@ -364,8 +373,23 @@ module Rubino
           entry.approval_question = question.to_s
           entry.approval_command  = command.to_s
           entry.budget_request    = budget ? true : false
+          entry.approval_snoozed  = false
           entry.approval_seq      = (@approval_seq += 1)
           entry.status            = :needs_approval
+        end
+      end
+
+      # "Decide later" (#586): stop auto-popping THIS request's modal at idle
+      # without deciding its gate — the child stays parked and the card stays
+      # visible; the user re-engages via the picker / `/agents <id>`. Mirrors
+      # begin/end_approval (one mutex-guarded mutation of the entry's approval
+      # state); a no-op if the entry is gone.
+      def snooze_approval(id)
+        @mutex.synchronize do
+          entry = @entries[id]
+          return unless entry
+
+          entry.approval_snoozed = true
         end
       end
 
@@ -381,6 +405,7 @@ module Rubino
           entry.approval_question = nil
           entry.approval_command  = nil
           entry.budget_request    = false
+          entry.approval_snoozed  = false
           entry.approval_seq      = nil
           entry.status            = :running if entry.status == :needs_approval
         end

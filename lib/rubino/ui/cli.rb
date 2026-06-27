@@ -499,10 +499,18 @@ module Rubino
       # tool-iteration ceiling and is asking for more. Reuses the same unified
       # #approval_menu component, but the vocabulary is GRANT/DENY budget — there
       # is no "always" (no command to allowlist; budget is a one-shot grant). The
-      # caller maps :grant→continue and :deny/:summarize→summarize.
+      # caller maps :grant→continue, :later→snooze (leave parked), :summarize→summarize.
+      #
+      # "Decide later" sits BETWEEN grant and summarize on purpose (#586): the
+      # default highlight is the safe "Grant", and a stray ↓+Enter — the exact
+      # gesture used to open+attach in the subagent picker — lands on the
+      # non-destructive "Decide later", never on "Summarize now". The destructive
+      # option needs a deliberate ↓↓, so an auto-popped budget modal can't
+      # force-summarize a child by a mis-aimed picker keystroke.
       def subagent_budget_choice
         approval_menu("grant more budget?", [
                         ["Grant more iterations", :grant],
+                        ["Decide later", :later],
                         ["Summarize now", :summarize]
                       ])
       end

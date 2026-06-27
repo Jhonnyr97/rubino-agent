@@ -26,9 +26,10 @@ RSpec.describe Rubino::CLI::ChatCommand do
     Class.new do
       attr_reader :lines
 
-      def initialize(answers, decisions)
+      def initialize(answers, decisions, budgets)
         @answers   = answers
         @decisions = decisions
+        @budgets   = budgets
         @lines     = []
       end
 
@@ -42,13 +43,15 @@ RSpec.describe Rubino::CLI::ChatCommand do
       # @ask the existing tests drive.
       def select(_prompt, _choices) = :answer
       def subagent_approval_choice = @decisions.shift
+      def subagent_budget_choice   = @budgets.shift
       def respond_to_missing?(_name, _priv = false) = true
       def method_missing(_name, *_args) = nil
-    end.new(answers, decisions)
+    end.new(answers, decisions, budgets)
   end
 
   let(:answers)   { [] }
   let(:decisions) { [] }
+  let(:budgets)   { [] }
   let(:registry) { Rubino::Tools::BackgroundTasks.instance }
 
   before do
@@ -68,6 +71,17 @@ RSpec.describe Rubino::CLI::ChatCommand do
     registry.begin_approval(
       entry.id, gate: gate, approval_id: "appr_#{entry.id}",
                 question: "run shell?", command: "rm -rf /tmp/x"
+    )
+    [entry, gate]
+  end
+
+  def stage_budget(prompt: "do work")
+    entry = registry.reserve(subagent: "explore", prompt: prompt)
+    gate  = Rubino::Run::ApprovalGate.new
+    gate.register("appr_#{entry.id}")
+    registry.begin_approval(
+      entry.id, gate: gate, approval_id: "appr_#{entry.id}",
+                question: "Reached 13 tool iterations", command: "", budget: true
     )
     [entry, gate]
   end
@@ -126,6 +140,61 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
       expect(gate).to have_received(:decide).with("appr_#{registry.list.first.id}", true)
+    end
+
+    # #586 residual — the destructive-keystroke footgun on the budget modal.
+    # "Decide later" leaves the child PARKED (gate undecided) and snoozes the
+    # auto-modal so a mis-aimed picker ↓+Enter can't force-summarize it.
+    context "when a budget request is dismissed with 'Decide later' (#586 residual)" do
+      it "does NOT decide the gate and SNOOZES the auto-modal" do
+        entry, gate = stage_budget
+        allow(gate).to receive(:decide)
+        budgets << :later
+
+        expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
+        expect(gate).not_to have_received(:decide) # child stays parked
+        expect(registry.find(entry.id).approval_snoozed).to be(true)
+        expect(ui.lines.join("\n")).to include("left waiting")
+      end
+
+      it "stops re-popping the snoozed request at the next idle tick (no flicker loop)" do
+        _, gate = stage_budget
+        allow(gate).to receive(:decide)
+        budgets << :later
+
+        cmd.send(:auto_resolve_pending_subagent_request) # user picks "Decide later"
+        ui.lines.clear
+        # The very next tick must NOT re-present it (it's a parked card now).
+        expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(false)
+        expect(ui.lines).to be_empty
+      end
+
+      it "still auto-opens a DIFFERENT (non-snoozed) pending request, skipping the snoozed one" do
+        snoozed, gate1 = stage_budget(prompt: "snoozed child")
+        allow(gate1).to receive(:decide)
+        budgets << :later
+        cmd.send(:auto_resolve_pending_subagent_request) # snooze the first
+        ui.lines.clear
+
+        _, gate2 = stage_approval # a fresh, non-snoozed approval behind it
+        allow(gate2).to receive(:decide)
+        decisions << :once
+
+        expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
+        expect(gate2).to have_received(:decide) # the non-snoozed one fired
+        expect(registry.find(snoozed.id).approval_snoozed).to be(true) # the snoozed one stayed parked
+      end
+
+      it "grants budget normally when the user picks Grant (gate decided true)" do
+        entry, gate = stage_budget
+        decided = nil
+        allow(gate).to receive(:decide) { |_id, v| decided = v }
+        budgets << :grant
+
+        expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
+        expect(decided).to be(true)
+        expect(registry.find(entry.id).approval_snoozed).to be(false)
+      end
     end
 
     it "does NOT swallow a programming error (NameError) silently — it surfaces via the logger" do
