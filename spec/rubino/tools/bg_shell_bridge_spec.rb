@@ -63,6 +63,23 @@ RSpec.describe "background shell ↔ BackgroundTasks bridge" do # rubocop:disabl
     shells.terminate(entry) if entry
   end
 
+  it "omits the meaningless 'N tools' card segment for a shell (no tools)" do
+    entry = shells.spawn(command: %(sleep 5), cwd: "/tmp")
+    row  = bg.running.find { |e| e.id == entry.id }
+    line = Rubino::UI::SubagentCards.new(pastel: Pastel.new).card_line(row)
+    expect(line).to include("sleep 5")
+    expect(line).not_to include("tool") # subagents show "N tools"; a shell must not
+  ensure
+    shells.terminate(entry) if entry
+  end
+
+  it "reports a UI-stopped shell as :stopped, not :failed" do
+    entry = shells.spawn(command: %(sleep 30), cwd: "/tmp")
+    shells.terminate(entry)
+    expect(wait_until { !entry.wait_thr.alive? }).to be(true)
+    expect(shells.status(entry)).to eq(:stopped) # a deliberate stop, not a crash
+  end
+
   it "includes the shell in #list (so /status count + /agents list show it)" do
     entry = shells.spawn(command: %(sleep 5), cwd: "/tmp")
     expect(bg.list.map(&:id)).to include(entry.id)

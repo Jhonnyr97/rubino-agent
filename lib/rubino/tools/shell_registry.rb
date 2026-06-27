@@ -45,6 +45,10 @@ module Rubino
         # IOError) and how stdin is closed (EOT vs fd close, since closing a PTY
         # master SIGHUPs the child). #591-adjacent: kept a plain field, no logic.
         :pty,
+        # stopped: set when the shell was DELIBERATELY terminated from the UI
+        # (/stop) so #status reports :stopped, not :failed — a SIGTERM/SIGKILL
+        # exit is "non-success" but it's a user stop, not a crash.
+        :stopped,
         keyword_init: true
       )
 
@@ -290,6 +294,7 @@ module Rubino
 
       def status(entry)
         return :running if entry.wait_thr.alive?
+        return :stopped if entry.stopped
 
         code = entry.wait_thr.value.exitstatus
         code && ShellTool.success_exit?(code) ? :completed : :failed
@@ -311,6 +316,7 @@ module Rubino
       # output stays retrievable (shares the kill contract with shell_kill). The
       # single per-shell stop seam the UI (/stop, picker) routes through.
       def terminate(entry, grace: 2)
+        entry.stopped = true # a UI /stop ⇒ #status reports :stopped, not :failed
         return retire(entry.id) unless entry.wait_thr.alive?
 
         signal_group("TERM", entry.pgid)

@@ -34,8 +34,8 @@ module Rubino
       def started_at  = @shell.started_at
       # :running / :completed / :failed (derived)
       def status      = @registry.status(@shell)
-      # a shell runs no tools
-      def tool_count  = 0
+      # a shell runs no tools — nil omits the card's "N tools" segment entirely
+      def tool_count = nil
       def activity_log = []
       # Mirrors BackgroundTasks::Entry#budget_request — a FIELD the renderers read,
       # not a predicate, so it keeps the field name (no `?`).

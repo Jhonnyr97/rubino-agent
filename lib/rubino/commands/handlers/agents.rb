@@ -32,7 +32,7 @@ module Rubino
         # they'd mistyped; this names the real reason so they don't hunt for a
         # typo. Surfaced from EVERY not-found path (/agents <id>, /stop <id>,
         # steer, probe).
-        RESET_HINT = "(subagents reset when rubino restarts)"
+        RESET_HINT = "(background tasks reset when rubino restarts)"
 
         def initialize(ui:)
           @ui = ui
