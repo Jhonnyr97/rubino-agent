@@ -715,10 +715,11 @@ module Rubino
       # thread is done, its steer_queue has been drained, and it has no further
       # turn to fold a steer note into. #steer rejects pushes onto a terminal
       # entry (H5) so an answer arriving after finalize is reported undelivered
-      # rather than dropped-but-reported-delivered. :cancelled is included for
-      # the API surface, which records cancellation via #complete too.
+      # rather than dropped-but-reported-delivered. The only producers are
+      # #complete (:completed/:failed) and the stop path (:stopped); nothing sets
+      # :cancelled, so it was inert defensive set membership and is dropped (#591).
       def terminal_status?(status)
-        %i[completed failed stopped cancelled].include?(status)
+        %i[completed failed stopped].include?(status)
       end
 
       def running_count

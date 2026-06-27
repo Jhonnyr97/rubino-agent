@@ -12,6 +12,23 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
     registry.reserve(subagent: subagent, prompt: prompt)
   end
 
+  # #591 — the terminal-status set must list ONLY statuses something actually
+  # produces: #complete yields :completed/:failed and the stop path yields
+  # :stopped. :cancelled was inert defensive membership (nothing ever sets it).
+  describe "#terminal_status? (#591)" do
+    it "is true for the statuses a child actually reaches" do
+      %i[completed failed stopped].each do |s|
+        expect(registry.send(:terminal_status?, s)).to be(true)
+      end
+    end
+
+    it "is false for non-terminal and for the dropped inert :cancelled" do
+      %i[running stopping needs_approval cancelled].each do |s|
+        expect(registry.send(:terminal_status?, s)).to be(false)
+      end
+    end
+  end
+
   describe "live-activity fields" do
     it "starts a reserved entry with a zero tool_count and an empty log" do
       entry = reserve
