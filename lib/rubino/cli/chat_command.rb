@@ -124,6 +124,18 @@ module Rubino
       # must never break the idle prompt, so it falls back to "nothing pending"
       # and the manual slash paths still work.
       def auto_resolve_pending_subagent_request(_runner = nil)
+        # Defer while the subagent PICKER is open (#586): the picker and this
+        # blocking approval/budget modal compete for the same stdin. A child
+        # hammering tool calls re-hits its budget gate every few ticks, so
+        # auto-firing the `wants +budget` modal here would suspend the open picker
+        # and swallow the ↓/Enter the user meant to ATTACH with — worse, the
+        # picker's ↓+Enter gesture could land on the modal's destructive
+        # "Summarize now". The request stays pending and auto-presents on the very
+        # next idle tick once the picker closes: deferred a few seconds, never
+        # lost — it still appears like a permission, in arrival order. (@composer
+        # is nil on the piped/one-shot paths, which have no picker.)
+        return false if @composer&.agent_menu_open?
+
         agents_request_handler.auto_resolve_pending
       rescue StandardError => e
         # Resilience floor: a hiccup in the auto-open must never crash the idle
@@ -1632,6 +1644,7 @@ module Rubino
           # suspend THIS composer and restore it after), so it does not race the
           # reader. Resolves one request, then `next` so the cards repaint and the
           # loop re-checks for the next pending request before reading input.
+          # (It defers itself while the picker is open — see the hook, #586.)
           if auto_resolve_pending_subagent_request(runner)
             idle_cards.paint
             next
