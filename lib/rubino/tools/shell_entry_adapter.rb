@@ -77,6 +77,10 @@ module Rubino
         out.lines.last(20).join.rstrip
       end
 
+      # A shell's peek IS its output — no "empty context" caveat applies (the
+      # subagent's #peek_hint does).
+      def peek_hint = nil
+
       # The live output a shell's attach view tails (no session/transcript).
       def output_new = @registry.read_new(@shell)
       def output_all = @registry.read_all(@shell)

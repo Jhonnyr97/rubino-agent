@@ -141,6 +141,8 @@ module Rubino
           end
 
           @ui.info(pastel.dim("┄┄ probe → #{id} ┄┄  (ephemeral · not saved · trajectory unchanged)"))
+          hint = entry.peek_hint
+          @ui.info(pastel.dim("   #{hint}")) if hint
           @ui.info("?  #{question}")
           # The peek is polymorphic: a subagent runs a synchronous LLM side-inference
           # (seconds of model wait — show the thinking row so the gap doesn't look

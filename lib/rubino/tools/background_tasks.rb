@@ -117,6 +117,17 @@ module Rubino
         def peek(question)
           ::Rubino::Tools::SubagentProbe.new.peek(entry: self, question: question)
         end
+
+        # A dim hint shown ABOVE a probe answer, or nil. A just-spawned subagent has
+        # an empty context, so its honest "I'm not doing anything yet" reply would
+        # read as broken (#112) without this; a shell has no such notion (its peek
+        # IS its output), so the adapter returns nil.
+        def peek_hint
+          return unless tool_count.to_i.zero?
+
+          "(snapshot at this instant — the child just started and its context is " \
+            "still empty; probe again in a moment)"
+        end
       end
 
       # How many recent activity lines the drill-in shows (the live `recent:` ring).
