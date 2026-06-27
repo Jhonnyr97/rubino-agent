@@ -65,7 +65,7 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
 
     it "renders headings styled (bold) WITHOUT leaking literal '#' markers" do
       blocks = renderer.render("## Hello")
-      line   = blocks.first
+      line   = blocks.find { |b| b.any? { |t, _| t.to_s.include?("Hello") } }
       text   = text_of(line)
       # The "##" marker must NOT appear verbatim (L3).
       expect(text).not_to include("#")
@@ -73,6 +73,25 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       # The heading text keeps the bold modifier.
       hello = find_token(blocks, "Hello")
       expect(style_of(hello)[:modifiers]).to include(:bold)
+    end
+
+    it "wraps H1/H2 headings with blank lines above and below for breathing room" do
+      blocks = described_class.new(width: 80).render("# Title\n\nbody text")
+      # H1/H2 add a leading blank line.
+      expect(blocks.first).to eq([])
+      # The heading itself sits in between, bold.
+      title_idx = blocks.index { |b| b.any? { |t, _| t.to_s.include?("Title") } }
+      expect(title_idx).to eq(1)
+      title_token = blocks[title_idx].find { |t, _| t.to_s.include?("Title") }
+      expect(style_of(title_token)[:modifiers]).to include(:bold)
+      # A blank line follows the heading, separating it from the body.
+      expect(blocks[title_idx + 1]).to eq([])
+    end
+
+    it "does NOT add blank lines around H3+ headings" do
+      blocks = described_class.new(width: 80).render("### Small\n\nbody")
+      title_idx = blocks.index { |b| b.any? { |t, _| t.to_s.include?("Small") } }
+      expect(title_idx).to eq(0)
     end
 
     describe "word wrapping (L2)" do

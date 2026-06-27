@@ -247,7 +247,10 @@ module Rubino
         # raw "##" would otherwise show through verbatim. A leading bar gives a
         # subtle visual cue without leaking markdown syntax.
         body = inline_tokens(el.children, style)
-        wrap_lines(tokens_to_lines([["▌ ", style]] + body), hang: 2)
+        rendered = wrap_lines(tokens_to_lines([["▌ ", style]] + body), hang: 2)
+        # Big headings (H1/H2) get breathing room above and below so they
+        # visually break the prose instead of sitting glued to surrounding text.
+        level <= 2 ? [[]] + rendered + [[]] : rendered
       end
 
       # Raw (un-wrapped) paragraph lines. Wrapping is applied by the CALLER

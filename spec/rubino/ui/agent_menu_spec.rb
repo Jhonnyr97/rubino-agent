@@ -88,7 +88,7 @@ RSpec.describe Rubino::UI::AgentMenu do
     expect(menu.rows(80)).to eq([])
     menu.down
     rows = menu.rows(80).map { |r| r.gsub(/\e\[[0-9;]*m/, "") }
-    expect(rows.first).to include("subagents")
+    expect(rows.first).to include("background") # neutral — the picker lists subagents AND shells
     expect(rows.any? { |r| r.include?("sa_1") }).to be(true)
   end
 end

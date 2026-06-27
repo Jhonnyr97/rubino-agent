@@ -116,7 +116,7 @@ module Rubino
       end
 
       # The rendered picker rows, or [] when closed. Delegates the look — the
-      # `┄ subagents ┄` header, the scroll-window slice, the cyan ❯ + inverse
+      # `┄ background ┄` header, the scroll-window slice, the cyan ❯ + inverse
       # highlight, the dim rest, and the overflow footer — to the shared
       # {MenuView}, so this picker and the `/` command palette render alike
       # (#562). This menu still owns its rows: the status-coloured
@@ -130,7 +130,7 @@ module Rubino
         descriptors = @state[:items].map { |entry| descriptor(entry) }
         MenuView.render(descriptors, cols,
                         window: { selected: @state[:selected], top: @state[:top], max_rows: MAX_ROWS },
-                        header: "subagents", hints: "Enter attaches · ← back")
+                        header: "background", hints: "Enter attaches · ← back")
       end
 
       private
