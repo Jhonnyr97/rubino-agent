@@ -19,7 +19,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
   end
   let(:entry) do
     instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                    id: "sa_1", subagent: "explore", status: :running, messages: [])
+                    id: "sa_1", subagent: "explore", status: :running, messages: [], shell?: false)
   end
 
   before do
@@ -229,7 +229,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "switches to ANOTHER agent when the picker re-attaches while attached" do
       other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_2", subagent: "build", status: :running, messages: [])
+                              id: "sa_2", subagent: "build", status: :running, messages: [], shell?: false)
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
       cmd.send(:handle_attached_input, "/agents sa_2 --attach", runner, ui, cmd_executor)
       expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
@@ -271,7 +271,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "acts on a {attach_agent:} signal returned by a dispatched command" do
       other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_9", subagent: "build", status: :running, messages: [])
+                              id: "sa_9", subagent: "build", status: :running, messages: [], shell?: false)
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_9").and_return(other)
       allow(cmd_executor).to receive(:try_execute).with("/agents sa_9 --attach")
                                                   .and_return({ attach_agent: "sa_9" })
@@ -328,7 +328,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "still lets you SWITCH away from a finished child to another live one" do
       allow(entry).to receive(:status).and_return(:completed)
       other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_2", subagent: "build", status: :running, messages: [])
+                              id: "sa_2", subagent: "build", status: :running, messages: [], shell?: false)
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
       cmd.send(:handle_attached_input, "/agents sa_2 --attach", runner, ui, cmd_executor)
       expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
