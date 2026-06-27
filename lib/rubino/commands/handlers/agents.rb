@@ -55,7 +55,10 @@ module Rubino
         # decision through the same gate.
         def auto_resolve_pending # rubocop:disable Naming/PredicateMethod -- a prompt-presenting mutator that reports whether it surfaced a request, not a pure query
           registry = Tools::BackgroundTasks.instance
-          if (entry = registry.awaiting_approval.first)
+          # Oldest-first (FIFO), skipping any the user dismissed with "Decide
+          # later" (#586): those stay parked cards the user re-opens deliberately,
+          # so the auto-modal doesn't re-pop them at every idle tick.
+          if (entry = registry.awaiting_approval.find { |e| !e.approval_snoozed })
             resolve_agent_approval(entry)
             return true
           end
@@ -376,6 +379,17 @@ module Rubino
           @ui.info("  #{entry.approval_question}")
           choice = ask_budget_answer(entry)
           return if choice.nil?
+
+          if choice == :later
+            # "Decide later" (#586): don't decide the gate — leave the child parked
+            # and SNOOZE its auto-modal so it stops re-popping at idle. It stays a
+            # `wants +budget` card the user resolves deliberately via the picker /
+            # `/agents <id>`. This is the safe ↓-target that keeps a mis-aimed
+            # picker ↓+Enter from force-summarizing a child.
+            Tools::BackgroundTasks.instance.snooze_approval(entry.id)
+            @ui.info("#{entry.id} left waiting — /agents #{entry.id} to grant or summarize.")
+            return
+          end
 
           grant = choice == :grant
           gate.decide(entry.approval_id, grant)
