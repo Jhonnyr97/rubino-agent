@@ -1584,7 +1584,7 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       composer.send(:history_down)
       expect(composer.agent_menu_open?).to be(true)
-      expect(output.string).to include("subagents")
+      expect(output.string).to include("background") # neutral header (lists subagents AND shells, #606)
       expect(output.string).to include(entry.id)
       # The picker shows only `id · subagent · status` — NOT a live activity
       # preview (e.g. `read parser.rb`) under the selected row; that tool-level
@@ -1621,7 +1621,7 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(result).to be_nil # did NOT submit an empty line
       expect(composer.agent_menu_open?).to be(true)
       expect(queue.shift).to be_nil # nothing attached/submitted yet
-      expect(output.string).to include("subagents")
+      expect(output.string).to include("background") # neutral header (lists subagents AND shells, #606)
     end
 
     it "Enter on an empty prompt with NO live subagents submits as usual (open! inert)" do

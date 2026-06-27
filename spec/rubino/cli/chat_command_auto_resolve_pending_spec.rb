@@ -101,6 +101,33 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(ui.lines).to be_empty
     end
 
+    # #586: while the subagent picker is open it competes with this blocking
+    # modal for stdin, so the auto-open DEFERS — the request stays pending and
+    # surfaces on the next tick once the picker closes (never lost). Without the
+    # guard the modal fires under the open picker and swallows the attach Enter.
+    it "DEFERS (does not auto-open) while the subagent picker is open" do
+      _, gate = stage_approval
+      allow(gate).to receive(:decide)
+      decisions << :once
+      composer = instance_double(Rubino::UI::BottomComposer, agent_menu_open?: true)
+      cmd.instance_variable_set(:@composer, composer)
+
+      expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(false)
+      expect(gate).not_to have_received(:decide) # the gate was NOT touched
+      expect(ui.lines).to be_empty               # no modal presented under the picker
+    end
+
+    it "auto-opens once the picker has closed (the deferred request is not lost)" do
+      _, gate = stage_approval
+      allow(gate).to receive(:decide)
+      decisions << :once
+      composer = instance_double(Rubino::UI::BottomComposer, agent_menu_open?: false)
+      cmd.instance_variable_set(:@composer, composer)
+
+      expect(cmd.send(:auto_resolve_pending_subagent_request)).to be(true)
+      expect(gate).to have_received(:decide).with("appr_#{registry.list.first.id}", true)
+    end
+
     it "does NOT swallow a programming error (NameError) silently — it surfaces via the logger" do
       # The regression that hid #450: a NameError on every tick was invisible.
       # The hardened rescue logs the swallowed error ONCE at warn level so a future
