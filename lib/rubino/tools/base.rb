@@ -295,7 +295,7 @@ module Rubino
       end
 
       # Typed "outside workspace" error gate, retained for the AUX-LLM read
-      # tools (summarize_file, vision) ONLY. Those route the raw file bytes
+      # tools (vision) ONLY. Those route the raw file bytes
       # through a third-party auxiliary model, so an out-of-workspace read would
       # EXFILTRATE a sibling-repo secret / ~/.ssh file — a stronger threat than
       # the in-process read/grep/glob, which were relaxed to broad in #406. A

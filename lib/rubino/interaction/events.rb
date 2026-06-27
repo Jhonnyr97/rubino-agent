@@ -51,8 +51,8 @@ module Rubino
 
       # Tool events
       TOOL_STARTED = :tool_started
-      # Incremental progress from a long-running tool (e.g. summarize_file's
-      # per-chunk "summarizing chunk N/M" or shell stdout lines). Emitted from
+      # Incremental progress from a long-running tool (e.g. shell stdout lines
+      # streamed as they arrive). Emitted from
       # the tool's stream_chunk callback so a tool that runs for minutes
       # without finishing keeps the API event stream alive — the SSE idle
       # watchdog only fires when NOTHING flows, so a genuinely hung run is
