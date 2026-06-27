@@ -44,13 +44,18 @@ module Rubino
         # between child events. Repaints go through the composer's render mutex, so
         # they never race the keystroke handler. Exits as soon as no child is live
         # (it clears the region one last time) or when killed on teardown.
-        def start_ticker(composer)
+        # +on_tick+ (optional) runs once per tick after the card repaint — used by
+        # the attach view to live-tail a focused shell's new output on the SAME
+        # 1 Hz cadence and through the same render mutex (composer#print_above) the
+        # cards use, so it never races the keystroke handler.
+        def start_ticker(composer, &on_tick)
           Thread.new do
             loop do
               sleep(IDLE_CARD_TICK)
               break unless composer.equal?(UI::BottomComposer.current)
 
               paint
+              on_tick&.call
               break unless children_live?
             end
           rescue StandardError => e

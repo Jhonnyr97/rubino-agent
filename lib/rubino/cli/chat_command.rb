@@ -1576,7 +1576,7 @@ module Rubino
         composer.reset_input
         seed_draft(composer, draft)
         idle_cards.paint
-        ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
+        ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) { tail_attached_shell(composer) } : nil
 
         # SIGINT trap as a FALLBACK only (BH-2 / #551): the dependable idle Ctrl+C
         # path is now the in-band \x03 byte (on_idle_interrupt above), because
@@ -1940,7 +1940,11 @@ module Rubino
         # cards stay visible and their elapsed time advances until the turn ends.
         # Killed in the ensure below.
         idle_cards.paint
-        card_ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) : nil
+        card_ticker = if idle_cards.children_live?
+                        idle_cards.start_ticker(composer) do
+                          tail_attached_shell(composer)
+                        end
+                      end
 
         # If this turn's prompt came off the input queue (interrupt-by-default
         # Enter, Alt+Enter, or "/queued" during the previous turn), commit it now
@@ -3037,8 +3041,7 @@ module Rubino
           if entry.shell?
             ui.info(pastel.cyan("▶ attached to #{id} · shell") +
                     pastel.dim(" — type to send input · ↓ to switch · ← to go back"))
-            @attached_shell_cursor = 0
-            render_shell_output(ui, entry, full: true)
+            paint_shell_tail(composer, entry, full: true)
           else
             ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
                     pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
@@ -3051,18 +3054,37 @@ module Rubino
         # is a later refinement.
       end
 
-      # Print a shell's captured output in the attached view. Tracks its OWN cursor
-      # (@attached_shell_cursor) so it never advances the SHARED read_offset the
-      # model's shell_output reads — full: renders the whole buffer (on attach),
-      # otherwise only the bytes added since the last render.
-      def render_shell_output(ui, entry, full:)
-        buf = entry.output_all.to_s
-        @attached_shell_cursor = 0 if full || @attached_shell_cursor.nil?
-        text = buf.byteslice(@attached_shell_cursor..) || ""
-        @attached_shell_cursor = buf.bytesize
+      # Paint a focused shell's NEW output into the attached view, through the SAME
+      # focus-gated, render-mutex-safe seam subagent live frames use
+      # (composer#print_above with the shell's origin) — so it is safe to call both
+      # from the keystroke handler AND the 1 Hz idle ticker thread. A private,
+      # mutex-guarded cursor tracks bytes already shown so it NEVER advances the
+      # shared read_offset the model's shell_output reads. full: ⇒ from the start
+      # (on attach); otherwise only bytes added since the last paint.
+      def paint_shell_tail(composer, entry, full: false)
+        return unless composer && entry
+
+        @attached_shell_mutex ||= Mutex.new
+        text = @attached_shell_mutex.synchronize do
+          buf = entry.output_all.to_s
+          @attached_shell_cursor = 0 if full || @attached_shell_cursor.nil?
+          slice = buf.byteslice(@attached_shell_cursor..) || ""
+          @attached_shell_cursor = buf.bytesize
+          slice
+        end
         return if text.strip.empty?
 
-        text.each_line { |line| ui.info(line.chomp) }
+        composer.print_above(text.chomp, origin: @attached_id)
+      end
+
+      # The idle ticker's per-tick hook (#start_ticker): live-tail the focused
+      # shell's output, if one is attached. A no-op while on a subagent (its own
+      # per-sub CLI streams) or the main view.
+      def tail_attached_shell(composer)
+        return unless @attached_id
+
+        entry = Tools::BackgroundTasks.instance.find(@attached_id)
+        paint_shell_tail(composer, entry) if entry&.shell?
       end
 
       # Leave the agent-view and return to the main session: clear the screen,
@@ -3186,7 +3208,7 @@ module Rubino
           agents_request_handler.steer_agent(id, input)
           if entry.shell?
             sleep 0.2 # let the shell consume the line + emit its response
-            with_focused_view_replay(UI::BottomComposer.current) { render_shell_output(ui, entry, full: false) }
+            paint_shell_tail(UI::BottomComposer.current, entry)
           end
         end
       end
