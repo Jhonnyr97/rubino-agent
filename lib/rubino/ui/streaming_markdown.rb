@@ -146,6 +146,34 @@ module Rubino
         parts.join("\n")
       end
 
+      # How many trailing lines of the in-flight block the LIVE markdown preview
+      # ever needs as render input. We only SHOW the last few rendered rows
+      # (CLI::LIVE_TAIL_ROWS), so feeding the renderer more than a screenful of
+      # source is wasted work: it re-parses the WHOLE growing block on EVERY
+      # delta and throws all but the last rows away — O(N²), which freezes the
+      # stream once a long ``` fence (a streamed file/code dump) accumulates.
+      # Generous enough that ordinary prose/lists/tables still render in full.
+      LIVE_SOURCE_MAX_LINES = 60
+
+      # Bounded source text for the LIVE markdown preview (#show_live_markdown):
+      # at most the last +max_lines+ lines of the in-flight block. When the block
+      # is inside a code fence the OPENER line (```lang) is always prepended so
+      # the windowed tail still parses AS a fenced block (same language, same box
+      # framing) — which makes the rendered last-LIVE_TAIL_ROWS rows identical to
+      # rendering the whole block, just without the quadratic cost. Outside a
+      # fence the cap only bites a pathologically long loose list (the one other
+      # unbounded block type); its transient numbering may differ for a frame,
+      # which beats freezing. Small blocks return the full #tail unchanged.
+      def live_source(max_lines = LIVE_SOURCE_MAX_LINES)
+        lines = @block.dup
+        lines << @pending unless @pending.empty?
+        return lines.join("\n") if lines.length <= max_lines
+
+        window = lines.last(max_lines)
+        window.unshift(@block.find { |l| l.match?(FENCE_OPEN_RE) }) if @in_fence
+        window.compact.join("\n")
+      end
+
       # The in-progress tail to show live (raw): the LAST +rows+ lines of the
       # in-flight block — its most recent already-newlined lines plus the
       # un-newlined remainder. Newline-joined; the live region renders one row

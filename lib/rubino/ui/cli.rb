@@ -2169,7 +2169,12 @@ module Rubino
       # the styled rows carry only rubino's own SGR — they must NOT pass through
       # #margined_tail again (that would caret-escape our own escapes).
       def live_markdown_lines(stream_md)
-        raw = stream_md.tail
+        # #live_source, not #tail: render only a bounded trailing window of the
+        # in-flight block (with the fence opener preserved), not the WHOLE
+        # growing block on every delta — re-parsing the full block per token was
+        # O(N²) and froze the stream on long ``` code/file dumps. The visible
+        # last-LIVE_TAIL_ROWS rows are unchanged.
+        raw = stream_md.live_source
         return [] if raw.nil? || raw.empty?
 
         repaired = MarkdownRepair.close_open_spans(raw, fence: stream_md.open_fence)
