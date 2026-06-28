@@ -11,7 +11,7 @@ module Rubino
     # `grep` match content (both with code_file:true to skip the ENV/JSON
     # assignment patterns that false-positive on source), `shell`/background
     # shell output (full patterns — `cat .env` / `printenv` leak keys), and
-    # the `summarize_file` chunks shipped to the auxiliary model.
+    # converted-document content from `read_attachment` before it enters context.
     #
     # Short tokens (< 18 chars) are fully masked; longer ones preserve the
     # first 6 and last 4 characters for debuggability — matching Hermes'

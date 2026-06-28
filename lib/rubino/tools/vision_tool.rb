@@ -60,7 +60,7 @@ module Rubino
         return "Error: file_path is required" if path.empty?
 
         expanded = File.expand_path(path)
-        # Like summarize_file, vision sends the raw bytes off to the auxiliary
+        # Vision sends the raw bytes off to the auxiliary
         # LLM, so an out-of-workspace image must be DENIED rather than read and
         # exfiltrated. Checked before existence so a file outside the sandbox
         # isn't even probed for presence (r5 MF-1 / r5c NEW-2).

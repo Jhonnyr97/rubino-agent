@@ -134,9 +134,10 @@ module Rubino
             "base_url" => nil,
             "timeout" => 120
           },
-          # Document summarization. The `summarize_file` tool delegates here so
-          # the raw bytes of a huge file are map-reduced in these aux calls and
-          # never enter the main agent context (only the final summary returns).
+          # Summarization aux task. Used by skill distillation
+          # (jobs/handlers/distill_skill_job.rb, task: "summarize") to condense
+          # captured transcripts into a reusable skill; routed through this aux
+          # backend so it never blocks the live turn.
           # `provider: "main"` reuses the primary's provider/model.
           "summarize" => {
             "provider" => "main",
@@ -743,7 +744,7 @@ module Rubino
           # passwords, JWTs…) from tool output before it enters context, the
           # transcript, or the aux model. ON by default (secure default,
           # Hermes #17691). Applied to read / grep / shell / shell_output /
-          # shell_tail / summarize_file content via Security::Redactor. Set
+          # shell_tail / read_attachment content via Security::Redactor. Set
           # false ONLY when you need raw credential values in tool output
           # (e.g. working on the redactor itself). NOT a security boundary —
           # the shell runs as the same OS user; this is defense-in-depth.

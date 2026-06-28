@@ -165,7 +165,7 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
     it "does NOT reap a long-running tool that keeps emitting tool.progress heartbeats" do
       run = create_queued_run
 
-      # A long, silent tool (summarize_file: ~30 sequential aux-LLM calls) emits
+      # A long, silent tool (e.g. a multi-minute shell stream) emits
       # NO terminal events for minutes, but its stream_chunk now mirrors onto the
       # bus as tool.progress. Each progress event is a real run-event, so it
       # resets the idle watchdog. Here every poll appends one fresh progress
@@ -180,7 +180,7 @@ RSpec.describe Rubino::API::Operations::Runs::EventsOperation do
         else
           event_store.append(session_id: run[:session_id], run_id: run[:id],
                              type: "tool.progress",
-                             payload: { name: "summarize_file", chunk: "summarizing chunk #{polls}/30" })
+                             payload: { name: "shell", chunk: "processing line #{polls}/30" })
         end
       end
 
