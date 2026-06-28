@@ -56,6 +56,13 @@ module Rubino
       # produced the "1. Mercury / 1. Venus / 1. Earth" off-by-one (B4).
       LIST_ITEM_RE = /\A\s*(?:[-*+]|\d+[.)])\s/
 
+      # An ATX heading: 1-6 `#` (up to 3 leading spaces) followed by a space or
+      # end-of-line. CommonMark makes this a SINGLE-LINE block that can interrupt
+      # a paragraph, so the splitter commits it on its own — that's what lets a
+      # heading render WITH its H1/H2 breathing-room spacing live, instead of
+      # staying glued inside a multi-line block stuck in the capped live tail.
+      ATX_HEADING_RE = /\A {0,3}\#{1,6}(?:\s|\z)/
+
       # A GFM pipe-table separator row, e.g. "|---|:--:|---|" or "---|---". The
       # EXACT regex MarkdownRenderer uses to detect a table (markdown_renderer.rb)
       # — DRY: a separator row is the single unambiguous "this is a table" signal,
@@ -124,8 +131,7 @@ module Rubino
         while (idx = @pending.index("\n"))
           line = @pending[0...idx]
           @pending = @pending[(idx + 1)..] || +""
-          block = consume_line(line)
-          completed << block if block
+          completed.concat(consume_line(line))
         end
 
         completed
@@ -190,16 +196,18 @@ module Rubino
       private
 
       # Feed one complete (newline-stripped) line through the state machine.
-      # Returns the finished block's text when this line closes a block, else nil.
+      # Returns the block texts this line COMPLETED — usually 0 or 1, but a
+      # heading can close the open block AND emit itself, so the contract is an
+      # Array (feed concats them; the public #feed already returns an array).
       def consume_line(line)
         if @in_fence
           @block << line
-          return nil unless fence_line_closes?(line)
+          return [] unless fence_line_closes?(line)
 
           @in_fence = false
           @fence_len = 0
           @fence_depth = nil
-          return take_block
+          return [take_block]
         end
 
         if (m = line.match(FENCE_OPEN_RE)) # opening fence starts a code block
@@ -212,7 +220,7 @@ module Rubino
           @fence_depth = MARKDOWN_FENCE_LANGS.include?(m[2].to_s.strip.downcase) ? 1 : nil
           flush_blanks
           @block << line
-          return nil
+          return []
         end
 
         # A GFM pipe table is its own block type (like a fence): handled in
@@ -220,8 +228,15 @@ module Rubino
         # header-ish row), holds its rows, and closes it on a blank/non-row line.
         # Returns a 2-tuple [handled?, completed_block_or_nil].
         handled, table_block = consume_table_line(line)
-        return table_block if handled
+        return Array(table_block) if handled
 
+        consume_prose_line(line)
+      end
+
+      # A non-fence, non-table line: blank separators, ATX headings, list items,
+      # and plain prose. Returns the block texts this line completed (see
+      # #consume_line for the Array contract).
+      def consume_prose_line(line)
         if line.strip.empty?
           # A blank line inside a list is BUFFERED, not a separator: it only ends
           # the block if the list doesn't continue (handled when the next
@@ -229,11 +244,23 @@ module Rubino
           # blank line ends the current prose block (separator consumed).
           if @in_list
             @blanks += 1
-            return nil
+            return []
           end
-          return nil if @block.empty?
+          return [] if @block.empty?
 
-          return take_block
+          return [take_block]
+        end
+
+        # An ATX heading is a single-line block that can interrupt a paragraph
+        # (ATX_HEADING_RE). Close any open block first (dropping a list's trailing
+        # separator blank, like the list-exit path below), then emit the heading
+        # on its OWN so it commits — and renders with its breathing-room spacing —
+        # the instant it arrives, instead of staying glued in the capped live tail
+        # with the following lines until the whole block ends.
+        if line.match?(ATX_HEADING_RE)
+          @blanks = 0 if @in_list
+          finished = @block.empty? ? [] : [take_block]
+          return finished + [line]
         end
 
         is_item = line.match?(LIST_ITEM_RE)
@@ -245,13 +272,13 @@ module Rubino
           @blanks = 0 # drop the trailing blank(s) that separated list from this line
           finished = take_block
           @block << line
-          return finished
+          return [finished]
         end
 
         flush_blanks
         @in_list = true if is_item
         @block << line
-        nil
+        []
       end
 
       # Does this line (already appended to the open fence's block) CLOSE that
