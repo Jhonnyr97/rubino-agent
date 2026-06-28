@@ -480,6 +480,21 @@ RSpec.describe Rubino::UI::BottomComposer do
         expect(idx_a).to be < idx_b
       end
 
+      # The "⏳ queued:" indicator draws BELOW the input line (next to the prompt
+      # it was typed at), NOT up in the above-input live region with the streamed
+      # output. Asserted at the row-source level: it's in #below_input_rows and
+      # absent from #live_rows.
+      it "draws the '⏳ queued:' indicator below the input, not above it" do
+        c = described_class.new(input_queue: queue, input: input, output: output,
+                                on_interrupt: -> {})
+        c.begin_turn
+        c.begin_content_stream
+        "ping".each_char { |ch| c.handle_key(ch) }
+        c.handle_key("\r")
+        expect(c.send(:below_input_rows).join).to include("⏳ queued: ping")
+        expect(c.send(:live_rows).join).not_to include("⏳ queued:")
+      end
+
       # A queued Enter line never front-jumps an explicitly-parked item: an
       # Alt+Enter / "/queued" earlier in the turn keeps its place; the later
       # plain Enter lands BEHIND it.
