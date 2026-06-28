@@ -75,6 +75,12 @@ module Rubino
       # keeps the old contract — hidden means no reasoning deltas reach
       # API consumers, so the gate lives here now.
       def stream(chunk)
+        # A tool-preparing hint (the tool name while its args stream, #608) is a
+        # transient progress signal, NOT answer text — route it to its own event
+        # so an API consumer can surface "preparing <tool>" without mistaking it
+        # for streamed content. (The real call arrives later as :tool_started.)
+        return emit_event(:tool_preparing, name: chunk[:text]) if chunk.is_a?(Hash) && chunk[:type] == :tool_preparing
+
         return if chunk.is_a?(Hash) && chunk[:type] == :thinking &&
                   Config::ReasoningPrefs.effective_mode(Rubino.configuration) == :hidden
 
