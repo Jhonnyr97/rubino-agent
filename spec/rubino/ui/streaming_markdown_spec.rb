@@ -185,6 +185,36 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
     end
   end
 
+  # #live_source bounds what the live MARKDOWN preview re-renders each delta:
+  # rendering the WHOLE growing block per token (the old #tail) was O(N²) and
+  # froze the stream on a long ``` code/file dump. It caps to a trailing window
+  # while preserving the fence opener, so the rendered last rows are unchanged.
+  describe "#live_source" do
+    it "returns the full block unchanged while it fits the cap" do
+      buf.feed("line1\nline2\npart")
+      expect(buf.live_source).to eq("line1\nline2\npart")
+    end
+
+    it "caps a long in-flight block to a bounded trailing window (kills O(N²))" do
+      max = Rubino::UI::StreamingMarkdown::LIVE_SOURCE_MAX_LINES
+      (max + 50).times { |i| buf.feed("prose line #{i}\n") }
+      # The block kept growing (no blank line split), but the render input does
+      # not: it stays bounded regardless of how many lines have streamed.
+      expect(buf.live_source.lines.count).to be <= max
+      expect(buf.tail.lines.count).to be > max # the full block really is longer
+    end
+
+    it "prepends the fence opener so a windowed code tail still parses as code" do
+      max = Rubino::UI::StreamingMarkdown::LIVE_SOURCE_MAX_LINES
+      buf.feed("```ruby\n")
+      (max + 20).times { |i| buf.feed("  x_#{i} = #{i}\n") }
+      lines = buf.live_source.lines
+      expect(lines.first).to eq("```ruby\n")      # opener preserved for styling
+      expect(lines.count).to be <= max + 1        # window + the prepended opener
+      expect(lines.last).to include("x_") # most recent code line still present
+    end
+  end
+
   # The live region is a SINGLE row, so the in-flight tail shown there must be
   # one line: only the un-newlined remainder, never the earlier complete lines
   # of a multi-line block. Showing the whole multi-line tail there collapsed a
