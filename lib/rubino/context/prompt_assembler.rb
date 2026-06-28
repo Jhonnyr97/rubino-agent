@@ -43,6 +43,14 @@ module Rubino
         end
       end
 
+      # Model-name substrings that trigger tool-use-enforcement steering under the
+      # "auto" default. Ported from Hermes' TOOL_USE_ENFORCEMENT_MODELS, plus
+      # "minimax" — rubino's default targets it and its field notes document the
+      # same text-leaked-tool-call / narrate-instead-of-act failures.
+      TOOL_USE_ENFORCEMENT_MODELS = %w[
+        gpt codex gemini gemma grok glm qwen deepseek minimax
+      ].freeze
+
       def initialize(session:, memory_context:, config:, agent_definition: nil,
                      ignore_rules: false)
         @session = session
@@ -209,6 +217,15 @@ module Rubino
 
         parts = []
         parts << agent_identity
+        # Behavioral steering grouped with identity (and inside the cached stable
+        # prefix — model-stable). Ported from Hermes (prompt_builder.py): the
+        # open-weight models rubino targets (MiniMax/Qwen/GLM/DeepSeek) narrate-
+        # instead-of-act and leak tool-calls as text without this — the config
+        # key existed but its injection was dropped in the port (#588 dead key).
+        enforcement = tool_use_enforcement_block
+        parts << enforcement if enforcement
+        memory_guide = memory_guidance_block
+        parts << memory_guide if memory_guide
         product = product_preamble
         parts << "[Product]\n#{product}" if product
         env = environment_block
@@ -392,6 +409,52 @@ module Rubino
           You can use tools to help accomplish tasks.
           Be concise and accurate in your responses.
         FALLBACK
+      end
+
+      # The tool-use-enforcement block (+ per-family operational guidance), or nil
+      # when not applicable. Gated by `agent.tool_use_enforcement`:
+      #   "auto" (default) — inject when the model id matches a known weak-FC family
+      #   true / false     — always / never
+      #   Array of substrings — custom match list
+      # Hermes-aligned (system_prompt.py): the open-weight models rubino runs need
+      # explicit steering to call tools instead of describing intended actions.
+      def tool_use_enforcement_block
+        return nil unless inject_tool_use_enforcement?
+
+        parts = [load_builtin_prompt("tool_use_enforcement")].compact
+        model = model_id_lower
+        if model.include?("gemini") || model.include?("gemma")
+          parts << load_builtin_prompt("tool_use_enforcement_google")
+        end
+        if model.include?("gpt") || model.include?("codex") || model.include?("grok")
+          parts << load_builtin_prompt("tool_use_enforcement_openai")
+        end
+        parts.compact!
+        parts.empty? ? nil : parts.join("\n\n")
+      end
+
+      def inject_tool_use_enforcement?
+        setting = @config.dig("agent", "tool_use_enforcement")
+        case setting
+        when true then true
+        when false then false
+        when Array then setting.any? { |p| model_id_lower.include?(p.to_s.downcase) }
+        else # "auto" or any unrecognised value — the default model-family list
+          TOOL_USE_ENFORCEMENT_MODELS.any? { |p| model_id_lower.include?(p) }
+        end
+      end
+
+      # The memory-write discipline block (HOW to curate memory), or nil when the
+      # memory subsystem is off. Hermes injects this when the memory tool is
+      # present; rubino gates on `memory.enabled` (default on), the same signal.
+      def memory_guidance_block
+        return nil if @config.dig("memory", "enabled") == false
+
+        load_builtin_prompt("memory_guidance")
+      end
+
+      def model_id_lower
+        @config.dig("model", "default").to_s.downcase
       end
 
       def product_preamble
