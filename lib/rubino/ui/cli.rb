@@ -2133,7 +2133,7 @@ module Rubino
         end
       end
 
-      # display.live_markdown — opt-in formatted live region (default false).
+      # display.live_markdown — formatted live region (default true, defaults.rb).
       def live_markdown?
         Rubino.configuration.display_live_markdown?
       end

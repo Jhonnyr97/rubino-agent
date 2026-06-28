@@ -40,6 +40,28 @@ RSpec.describe Rubino::UI::StreamingMarkdown do
     end
   end
 
+  # An ATX heading is a single-line block in CommonMark. Committing it on its
+  # own (the instant its line arrives) is what lets it render WITH its H1/H2
+  # breathing-room spacing live, instead of staying glued to the following lines
+  # in one multi-line block that sits in the capped live tail until it ends.
+  describe "#feed ATX headings (commit on their own)" do
+    it "commits a heading as its own block, not glued to the following lines" do
+      done = feed_all("intro.\n", "\n", "## Title\n", "body one\n", "body two\n")
+      expect(done).to eq(["intro.", "## Title"])    # heading committed the instant it arrived
+      expect(buf.tail).to eq("body one\nbody two")  # the following lines stay in-flight
+    end
+
+    it "lets a heading interrupt a paragraph (closes the prose, then the heading)" do
+      done = feed_all("some prose\n", "# Heading\n")
+      expect(done).to eq(["some prose", "# Heading"])
+    end
+
+    it "does not treat '#tag' (no space after #) as a heading" do
+      done = feed_all("#notaheading and more\n", "\n")
+      expect(done).to eq(["#notaheading and more"]) # commits as prose via the blank line
+    end
+  end
+
   describe "#feed across chunk boundaries" do
     it "reassembles a heading split mid-token" do
       done = feed_all("# Tit", "le here\n", "\n")
