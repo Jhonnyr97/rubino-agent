@@ -1142,6 +1142,16 @@ module Rubino
         text = chunk[:text].to_s
         return if text.empty?
 
+        # A tool call is streaming its arguments (the long `content` of a `write`,
+        # etc.): no answer/thinking text arrives, so the footer would sit on
+        # "thinking" and look frozen. Surface the tool name as a visible, animated
+        # status row instead (#608, Hermes on_tool_start). Not content/thinking —
+        # status only — so it never enters the answer buffer; return after.
+        if type == :tool_preparing
+          status_ensure("preparing #{text}", phase: :thinking)
+          return
+        end
+
         @turn_tok_chars += text.length if @turn_active
 
         # Reasoning deltas are handled by #handle_thinking_delta: ALWAYS buffered

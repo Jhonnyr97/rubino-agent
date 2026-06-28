@@ -228,6 +228,9 @@ module Rubino
         # glued on. The headless one-shot `result` surfaces this, not `buffered`.
         last_block      = +""
         last_block_seen = message_block_id
+        # Tool-call ids already announced as "preparing" this stream, so the
+        # per-chunk arg deltas of one call surface the name exactly once (#608).
+        announced_tools = {}
 
         emit = lambda do |type, text|
           next if text.nil? || text.empty?
@@ -344,6 +347,12 @@ module Rubino
               emit.call(:thinking, thinking_text)
             end
             think_filter.feed(chunk.content, &emit) if chunk.content.is_a?(String) && !chunk.content.empty?
+            # A tool-call delta (the streaming `content` of a long `write`, etc.)
+            # carries neither thinking nor textual content, so without this the UI
+            # sits on "thinking" and looks frozen while a big file streams in.
+            # Surface the tool NAME once per call (Hermes' on_tool_start) so the
+            # footer can show "preparing <tool>…" with live progress (#608).
+            announce_tool_preparing(chunk, announced_tools, &emit)
           end
         rescue Rubino::Interrupted
           # Flush whatever the filter has buffered, then re-raise. Loop will
@@ -473,6 +482,30 @@ module Rubino
         think_filter.flush(final: final, &emit)
       rescue StandardError => e
         log_safely(event: event, error: e.message)
+      end
+
+      # Emit a `:tool_preparing` signal carrying the tool name the first time a
+      # given tool call is seen in the stream (Hermes' on_tool_start, #608). The
+      # accumulating arg deltas of one call all carry the same id, so +announced+
+      # dedupes to one emit per call. +emit+ is the stream's (type, text) lambda,
+      # so the signal rides the same error-handled path as content/thinking.
+      # Best-effort: never let a chunk-shape quirk break the stream.
+      def announce_tool_preparing(chunk, announced, &emit)
+        calls = chunk.respond_to?(:tool_calls) ? chunk.tool_calls : nil
+        return unless calls.respond_to?(:each_value)
+
+        calls.each_value do |tc|
+          name = tc.respond_to?(:name) ? tc.name : nil
+          next if name.nil? || name.empty?
+
+          id = (tc.respond_to?(:id) && tc.id) || name
+          next if announced[id]
+
+          announced[id] = true
+          emit.call(:tool_preparing, name.to_s)
+        end
+      rescue StandardError => e
+        log_safely(event: "llm.stream.tool_preparing_error", error: e.message)
       end
 
       # Buffered-partial AdapterResponse returned when a stream is cut after at
