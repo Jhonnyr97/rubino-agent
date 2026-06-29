@@ -113,6 +113,19 @@ module Rubino
         # the footer (the frozen tail stays above the prompt). Touched only under
         # @status_mutex.
         @last_stream_at = nil
+        # Transient live-region repaint COALESCING (#freeze): a fast model streams
+        # deltas hundreds of times a second and each one repainted the live tail
+        # in full (clear + redraw, wrapped in synchronized-output) — rubino's CPU
+        # stays low but the volume of cursor-churn ANSI floods the terminal, which
+        # is what reads as a "freeze" (worst in the :full reasoning aside). We cap
+        # transient repaints to ~LIVE_FRAME_HZ: a too-soon frame is stored as
+        # @live_pending and the LATEST one is flushed by the ticker thread (≤ one
+        # STATUS_TICK later) or the next delta. Clearing frames bypass the cap so
+        # the tail tears down instantly on commit/turn-end. Guarded by its own
+        # mutex (paint comes from the delta thread AND the ticker thread).
+        @live_mutex      = Mutex.new
+        @live_pending    = nil # latest coalesced frame awaiting flush, or nil
+        @live_painted_at = nil # monotonic time of the last actual emit
         # The last retained reasoning block (committed/collapsed), revealable via
         # ctrl-o even after the answer has streamed. Reset per turn.
         @last_reasoning = nil
@@ -1388,7 +1401,72 @@ module Rubino
       #     repaints in place via CR + clear-line;
       #   * a pipe hosts nothing — raw escapes must not leak into the cooked
       #     output (#56).
+      # Transient live repaints are capped to this many per second (coalesced).
+      # ~20 fps is smooth to the eye but turns a fast model's hundreds-of-deltas-
+      # per-second repaint storm into at most 20 frames/s of terminal output —
+      # the fix for the streaming "freeze" (the terminal, not rubino, was the
+      # bottleneck). The trailing frame is flushed by the ticker (#flush_pending_live).
+      LIVE_FRAME_HZ = 20.0
+      LIVE_FRAME_INTERVAL = 1.0 / LIVE_FRAME_HZ
+
+      # Coalescing front door for the transient live region (tail / partial table
+      # / reasoning aside). A CLEARING frame (nil/empty — a commit/teardown) is
+      # painted immediately and cancels any pending frame, so the row never
+      # lingers. A content frame paints immediately if at least LIVE_FRAME_INTERVAL
+      # has passed since the last emit; otherwise it is stored as @live_pending and
+      # the LATEST stored frame is flushed by the ticker thread (#flush_pending_live)
+      # or superseded by the next delta — bounding repaints regardless of token rate.
       def paint_live(frame)
+        emit = false
+        to_emit = nil
+        @live_mutex.synchronize do
+          clearing = frame.nil? || frame.to_s.empty?
+          now = monotonic_now
+          # Coalesce ONLY a content frame that arrives within the interval, and
+          # ONLY while the ticker is running to flush the trailing one. A clearing
+          # (teardown) frame is never withheld and RESETS the window so the next
+          # content frame — often painted in the SAME delta right after a tail
+          # clear — emits at once.
+          if !clearing && throttle_live? && @live_painted_at &&
+             (now - @live_painted_at) < LIVE_FRAME_INTERVAL
+            @live_pending = frame # ticker/next delta paints the latest
+          else
+            @live_pending = nil
+            @live_painted_at = clearing ? nil : now
+            to_emit = frame
+            emit = true
+          end
+        end
+        emit_live_frame(to_emit) if emit
+      end
+
+      # Coalesce live repaints only while the turn ticker thread is alive — it
+      # provides the trailing-edge flush (#flush_pending_live). Outside a turn
+      # (tests, the cooked /probe wait, plain non-TTY paths) there is no flusher,
+      # so paint every frame immediately to preserve exact legacy behavior.
+      def throttle_live?
+        @thinking_thread&.alive? || false
+      end
+
+      # Paint the latest coalesced frame if the interval has elapsed. Called by the
+      # ticker thread every STATUS_TICK so a burst that stops mid-stream still
+      # settles to its final tail within ~one tick (no stale rows during a pause).
+      # The actual terminal write happens OUTSIDE @live_mutex (its own seam mutex),
+      # mirroring #refresh_live_cards' un-nested-locks discipline.
+      def flush_pending_live
+        emit = nil
+        @live_mutex.synchronize do
+          return if @live_pending.nil?
+          return if @live_painted_at && (monotonic_now - @live_painted_at) < LIVE_FRAME_INTERVAL
+
+          emit = @live_pending
+          @live_pending = nil
+          @live_painted_at = monotonic_now
+        end
+        emit_live_frame(emit)
+      end
+
+      def emit_live_frame(frame)
         # The $stdout proxy belongs to the MAIN turn (the main thread swaps it in);
         # only the main CLI may write through it. A background subagent's CLI runs
         # on its own thread where the GLOBAL $stdout is the main's proxy (or real
@@ -2595,6 +2673,11 @@ module Rubino
             # Outside @status_mutex (set_subagent_cards takes the composer's own
             # render mutex; keeping the locks un-nested avoids any ordering risk).
             refresh_live_cards if (i % 10).zero?
+            # Trailing-edge flush for the coalesced live region: if a burst of
+            # deltas left a frame pending (repaints capped to LIVE_FRAME_HZ), paint
+            # the latest one now so a stream that paused never shows a stale tail.
+            # Outside @status_mutex (paint takes the composer's own render mutex).
+            flush_pending_live
             i += 1
             sleep STATUS_TICK
           end
