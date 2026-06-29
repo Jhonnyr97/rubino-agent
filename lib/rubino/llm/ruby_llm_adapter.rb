@@ -3,6 +3,8 @@
 require "ruby_llm"
 require "faraday"
 require "net/http"
+require "uri"
+require "ipaddr"
 require_relative "tool_bridge"
 require_relative "cache_breakpoint_middleware"
 require_relative "inline_think_filter"
@@ -198,7 +200,7 @@ module Rubino
         think_filter  = InlineThinkFilter.new
         buffered      = +""
         last_chunk_at = monotonic_now
-        stale_after   = stale_chunk_timeout
+        stale_after   = stale_chunk_timeout(messages)
         chunks_seen   = 0
         # #488: a tool that ruby_llm runs MID-STREAM (e.g. a blocking
         # `question`/clarify parked on a human answer for up to the clarify
@@ -316,9 +318,10 @@ module Rubino
         # stalled SSE / a 200 that never sends an event), nothing inside the
         # callback ever runs and the only backstop is the 600s socket
         # read-timeout. Bound the idle gap INDEPENDENTLY of chunk arrival with a
-        # watchdog thread that wakes on `stale_after` (300s default, well below
-        # 600s; configurable via providers.<name>.stale_timeout_seconds) and, on
-        # observing an idle past the deadline, raises StreamStaleError INTO this
+        # watchdog thread that wakes on `stale_after` (90s remote default,
+        # DISABLED for local endpoints, configurable via
+        # providers.<name>.stale_timeout_seconds — see #stale_chunk_timeout) and,
+        # on observing an idle past the deadline, raises StreamStaleError INTO this
         # streaming thread to break it out of the blocking socket read. The
         # rescue below then surfaces a clear "stream stalled" and lets the retry
         # ladder run. The closure reads `last_chunk_at`/`chunks_seen` live (they
@@ -1004,14 +1007,85 @@ module Rubino
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
-      def stale_chunk_timeout
+      # The stale-stream watchdog deadline, ported from Hermes'
+      # _compute_non_stream_stale_timeout (run_agent.py). Priority:
+      #   1. providers.<id>.stale_timeout_seconds — explicit always wins.
+      #   2. LOCAL endpoint (localhost / 127.x / host.docker.internal / RFC-1918
+      #      / Tailscale CGNAT) with NO explicit config ⇒ DISABLED (0): a large
+      #      local model can legitimately PREFILL for minutes before the first
+      #      token, and a local box isn't a flaky remote provider — the 600s
+      #      socket read-timeout still backstops a genuinely dead connection.
+      #      This is the fix for "no chunk received for 30s" on local models.
+      #   3. Remote default 90s (Hermes parity; was 30/300), scaled UP for large
+      #      contexts whose prefill is inherently slower (>50k→150, >100k→240).
+      # 0 disables the watchdog (start_stale_watchdog / check_stream_stale! both
+      # early-return on a non-positive deadline).
+      def stale_chunk_timeout(messages = nil)
         explicit = @config.dig("providers", @provider, "stale_timeout_seconds")
         return explicit if explicit
 
-        return 30 if openai_compatible_provider? || anthropic_compatible_provider?
+        return 0 if local_endpoint?
 
-        @config.dig("providers", "openai", "stale_timeout_seconds") || 300
+        scale_stale_for_context(default_remote_stale_timeout, messages)
       end
+
+      DEFAULT_REMOTE_STALE_SECONDS = 90
+
+      def default_remote_stale_timeout
+        @config.dig("providers", "openai", "stale_timeout_seconds") || DEFAULT_REMOTE_STALE_SECONDS
+      end
+
+      # Bump the base deadline for large requests — prefill (time-to-first-token)
+      # grows with context, so a flat timeout false-positives on big prompts.
+      def scale_stale_for_context(base, messages)
+        est = estimate_context_tokens(messages)
+        return [base, 240].max if est > 100_000
+        return [base, 150].max if est > 50_000
+
+        base
+      end
+
+      # Cheap context-size estimate (~4 chars/token) over the request messages,
+      # only used to pick a timeout tier — never for billing/truncation. Tolerant
+      # of either symbol/string content keys and any odd shape (→ 0).
+      def estimate_context_tokens(messages)
+        return 0 unless messages.respond_to?(:sum)
+
+        chars = messages.sum do |m|
+          content = m[:content] || m["content"] if m.respond_to?(:[])
+          content.to_s.length
+        end
+        chars / 4
+      rescue StandardError
+        0
+      end
+
+      # True when the configured base_url points at the local machine / private
+      # network — a faithful port of Hermes' agent.model_metadata.is_local_endpoint.
+      # Such endpoints auto-disable the stale watchdog (slow local prefill is
+      # normal, not a stall). Any parse failure ⇒ treat as remote (false).
+      def local_endpoint?
+        url = present_base_url(provider_cfg).to_s
+        return false if url.empty?
+
+        host = (URI.parse(url).host || URI.parse("http://#{url}").host).to_s.downcase
+        return false if host.empty?
+        return true if LOCAL_HOSTS.include?(host)
+        return true if CONTAINER_LOCAL_SUFFIXES.any? { |s| host.end_with?(s) }
+
+        ip = IPAddr.new(host)
+        ip.loopback? || ip.private? || ip.link_local? || TAILSCALE_CGNAT.include?(ip)
+      rescue URI::InvalidURIError, IPAddr::Error
+        false
+      end
+
+      LOCAL_HOSTS = %w[localhost 127.0.0.1 ::1 0.0.0.0].freeze
+      # Container/VM internal DNS (host.docker.internal, *.lima.internal, …) and
+      # the mDNS .local suffix all resolve to the host loopback in practice.
+      CONTAINER_LOCAL_SUFFIXES = %w[.internal .local .localhost].freeze
+      # Tailscale CGNAT 100.64.0.0/10 — a remote-but-trusted local box reached
+      # over a Tailscale mesh gets the same treatment as localhost.
+      TAILSCALE_CGNAT = IPAddr.new("100.64.0.0/10")
 
       def check_stream_stale!(last_chunk_at, stale_after)
         return if stale_after.to_f <= 0
