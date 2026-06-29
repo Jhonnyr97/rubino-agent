@@ -26,6 +26,12 @@ module Rubino
     class ShellTool < Base
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
+      # After the direct child exits, how long to wait for the merged output pipe
+      # to reach EOF before concluding a DETACHED background child (`server &`)
+      # inherited it and is holding it open. Matches Codex's IO_DRAIN_TIMEOUT
+      # (2s); a normal command EOFs the instant its child exits, so this adds no
+      # latency to the common path — it only bounds the foreground-`&` hang.
+      DETACHED_DRAIN_GRACE = 2
 
       # Secondary hardening for #536 (GHSA-9ccr-r5hg-74gf, GitHub Copilot-CLI
       # fix): neutralize the repo-config exec vectors a poisoned `.git/config`
@@ -107,7 +113,10 @@ module Rubino
                "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
                "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
                "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
-               "and `shell_kill` to terminate it."
+               "and `shell_kill` to terminate it. " \
+               "For a LONG-LIVED process (a dev/web server, a watcher) ALWAYS use " \
+               "`run_in_background: true` — do NOT start it in the foreground with a " \
+               "trailing `&`: the foreground call would block until the timeout."
         base + compression_note
       end
 
@@ -605,7 +614,7 @@ module Rubino
           end
 
           code = status&.exitstatus
-          stdout = output_thr.value
+          stdout, detached = drain_after_exit(output_thr, pgid)
           # Persist `cd` + confine to the workspace (#544/#545). Only on the
           # normal-exit path: the cancel/timeout paths KILLED the group, so fd 3
           # was never written and captured_pwd is nil ⇒ prior cwd kept. The reset
@@ -613,15 +622,18 @@ module Rubino
           # appended after the exit suffix so neither mangles the other.
           captured_pwd = cwd_thr&.value
           cwd_note     = persist_session_cwd(captured_pwd)
-          suffix       = [exit_suffix(code), cwd_note].compact.join("\n")
+          suffix       = [exit_suffix(code), cwd_note, (detached_background_note if detached)].compact.join("\n")
           foreground_result(stdout: stdout,
                             suffix: (suffix unless suffix.empty?),
                             exit_code: code,
                             duration_ms: elapsed_ms(started_at))
         rescue Errno::ECHILD
-          # No child to wait on — already reaped/never there. Nothing to kill.
+          # No child to wait on — already reaped/never there. Still bound the
+          # drain: a detached `&` child can hold the pipe even when the direct
+          # child is already gone.
           reaped = true
-          foreground_result(stdout: output_thr.value,
+          stdout, = drain_after_exit(output_thr, pgid)
+          foreground_result(stdout: stdout,
                             duration_ms: elapsed_ms(started_at))
         end
       rescue Rubino::Interrupted
@@ -713,6 +725,34 @@ module Rubino
         Process.kill("KILL", -pgid)
       rescue Errno::ESRCH, Errno::EPERM
         # Already dead or not ours — fine.
+      end
+
+      # Collect the drained output once the direct child has exited, WITHOUT ever
+      # blocking the turn on it. A pipe reaches EOF only when its LAST writer
+      # closes; a process the command detached (`server &`) inherits the merged
+      # output fd and holds it open forever, so the reader would block past the
+      # timeout (which only guarded waitpid on the now-exited direct child) — the
+      # foreground-`&` hang. If the drain doesn't settle within
+      # DETACHED_DRAIN_GRACE, killpg the group: that is the RELIABLE unblock (it
+      # forces a real kernel EOF and stops the stray daemon) — cross-thread
+      # IO#close has documented MRI races (#14841) and isn't trusted here. The
+      # same kill also lets the fd-3 cwd reader (#cwd_thr) EOF. Returns
+      # [stdout, detached?]; the caller surfaces #detached_background_note.
+      def drain_after_exit(output_thr, pgid)
+        return [output_thr.value, false] if output_thr.join(DETACHED_DRAIN_GRACE)
+
+        kill_group(pgid)
+        [output_thr.value, true]
+      end
+
+      # Appended when a foreground command exited but left a background child
+      # holding the output stream (handled by #drain_after_exit). Steers the model
+      # to the tracked background channel instead of a trailing `&`, and is worded
+      # so it never reads as a command failure.
+      def detached_background_note
+        "[The command exited but a process it started in the background kept the output " \
+          "stream open, so that process was stopped. To run a long-lived process (a server, " \
+          "a watcher), call shell again with run_in_background: true instead of a trailing `&`.]"
       end
 
       # Hard RAM ceiling for the capture seam, config-overridable. Floored well
