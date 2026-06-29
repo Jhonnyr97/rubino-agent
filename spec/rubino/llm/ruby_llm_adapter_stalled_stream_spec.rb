@@ -88,11 +88,13 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     expect(Thread.list.size).to be <= before_threads
   end
 
-  it "uses a shorter default stale timeout for custom compatible providers" do
+  it "uses the 90s remote default for a REMOTE custom compatible provider" do
+    # Hermes parity: a uniform 90s default for remote providers (was a special-
+    # cased 30s), scaled up only for large contexts. A REMOTE compatible endpoint
+    # (api.minimax.io) is not local, so the watchdog stays enabled at the default.
     cfg = test_configuration(
       "model" => { "provider" => "minimax", "default" => "MiniMax-M3" },
       "providers" => {
-        "openai" => { "stale_timeout_seconds" => 300 },
         "minimax" => {
           "anthropic_compatible" => true,
           "base_url" => "https://api.minimax.io/anthropic",
@@ -102,7 +104,7 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
     )
     custom = described_class.new(model_id: "MiniMax-M3", config: cfg)
 
-    expect(custom.send(:stale_chunk_timeout)).to eq(30)
+    expect(custom.send(:stale_chunk_timeout)).to eq(90)
   end
 
   it "honors explicit stale timeout on custom compatible providers" do
