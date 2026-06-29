@@ -1,0 +1,15 @@
+# Build context trimming — keep the image small and the build fast. The gem is
+# run from source (lib/ + exe/ + Gemfile), so none of the below is needed at
+# build or run time. .git is the big one (~66M) and the gemspec's `git ls-files`
+# simply yields [] without it, which is harmless (we run via exe/rubino, not the
+# packaged file list).
+.git
+.github
+coverage
+tmp
+pkg
+*.gem
+*.log
+.DS_Store
+node_modules
+spec/tmp
