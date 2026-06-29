@@ -375,13 +375,13 @@ module Rubino
           end
           log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
-          return partial_response(buffered)
+          return partial_response(buffered, usage)
         rescue JSON::ParserError => e
           # Preserve whatever we've buffered so far so the user sees partial
           # output instead of a blank failure. (issues #12, #22)
           log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
-          return partial_response(buffered)
+          return partial_response(buffered, usage)
         rescue *STREAM_DROP_ERRORS => e
           # A genuine transport drop (the observed M3 EOF, a connection reset, a
           # read timeout, …). If NOTHING was emitted yet, re-raise so the runner
@@ -394,7 +394,7 @@ module Rubino
           log_safely(event: "llm.stream.partial_interrupted", error: e.message,
                      buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
-          return partial_response(buffered)
+          return partial_response(buffered, usage)
         ensure
           # Always tear the watchdog down — on success, on partial-return, and on
           # a raised StreamStaleError/transport drop — so it never leaks a thread
@@ -516,9 +516,18 @@ module Rubino
       # Flagged +interrupted+ so the Loop fails the turn (run.failed) instead of
       # mistaking the truncated buffer for a finished answer (the silent
       # "completed-but-empty" bug — see Rubino::StreamInterruptedError).
-      def partial_response(buffered)
-        AdapterResponse.new(content: buffered, tool_calls: [], input_tokens: 0,
-                            output_tokens: 0, model_id: @model_id, interrupted: true)
+      #
+      # Token accounting (#token-loss): a cut stream still SPENT the tokens of
+      # every round-trip ruby_llm already completed inside this one ask() — the
+      # `usage` accumulator (wire_round_trip_callbacks) holds their summed spend
+      # at the moment of the drop. A multi-round-trip TOOL turn against a flaky
+      # transport is exactly where this fires, so zeroing the tokens here made
+      # tool/file-writing turns report no token spend at all. Carry the
+      # accumulated usage through so the turn summary still counts what was spent.
+      def partial_response(buffered, usage = nil)
+        summed_in, summed_out = usage ? [usage[:input].to_i, usage[:output].to_i] : [0, 0]
+        AdapterResponse.new(content: buffered, tool_calls: [], input_tokens: summed_in,
+                            output_tokens: summed_out, model_id: @model_id, interrupted: true)
       end
 
       def configure_ruby_llm!
