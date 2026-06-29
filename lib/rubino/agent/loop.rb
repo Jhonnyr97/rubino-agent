@@ -23,10 +23,13 @@ module Rubino
       # instead of ending the turn with nothing. Carries the trusted-harness marker
       # (#75) so it reads as runtime control, not as suspect user input.
       MAX_ITERATIONS_SUMMARY_NUDGE =
-        "#{HARNESS_CONTROL_MARKER} You've reached the maximum number of " \
-        "tool-calling iterations allowed. " \
-        "Please provide a final response summarizing what you've found and " \
-        "accomplished so far, without calling any more tools.".freeze
+        "#{HARNESS_CONTROL_MARKER} You've done a long run of tool calls this " \
+        "turn and hit this turn's tool-call checkpoint. Without calling any " \
+        "more tools, give the user a brief, constructive summary: what you " \
+        "accomplished and what's left. This is a per-turn checkpoint, NOT a " \
+        "hard limit on the work — do NOT tell the user to start a new session, " \
+        "and do NOT claim you are unable to continue or improve things. They " \
+        "can simply reply and you'll pick up right where you left off.".freeze
 
       # Framing for turn-start background notices (#148): tells the model the
       # notices are secondary to the user message that follows them.

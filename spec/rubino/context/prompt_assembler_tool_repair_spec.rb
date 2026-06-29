@@ -72,4 +72,24 @@ RSpec.describe Rubino::Context::PromptAssembler do
     expect(declared_ids(wire)).to eq(%w[call_1])
     expect(result_ids(wire) - declared_ids(wire)).to be_empty
   end
+
+  # A persisted `[harness control]` nudge (the iteration-cap summary request)
+  # must NOT re-enter the model context on the next turn — re-feeding the
+  # synthetic "you've hit the tool-call checkpoint" user turn made the model
+  # parrot a "start a new session" refusal every subsequent turn instead of
+  # acting on the real request.
+  it "drops persisted [harness control] messages from the model context" do
+    store.create(session_id: session[:id], role: "user", content: "build a page")
+    store.create(session_id: session[:id], role: "assistant", content: "done, here's the page")
+    store.create(
+      session_id: session[:id], role: "user",
+      content: Rubino::Agent::Loop::MAX_ITERATIONS_SUMMARY_NUDGE
+    )
+    store.create(session_id: session[:id], role: "user", content: "now add zoom and pan")
+
+    wire = assembler.build
+    user_contents = wire.select { |m| m[:role] == "user" }.map { |m| m[:content].to_s }
+    expect(user_contents).to include("build a page", "now add zoom and pan")
+    expect(user_contents.any? { |c| c.start_with?(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER) }).to be false
+  end
 end

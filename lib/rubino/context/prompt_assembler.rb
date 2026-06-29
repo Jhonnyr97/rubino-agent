@@ -85,7 +85,21 @@ module Rubino
         # compaction/fork (those rows exist in prod). Mirrors Claude Code's
         # pre-call sanitization: never emit an orphan tool block that 400s a
         # strict provider. Conservative by design — when in doubt, keep.
-        history = repair_tool_pairs(@message_store.for_session(@session[:id]))
+        #
+        # Drop `[harness control]` messages FIRST: they are ephemeral within-turn
+        # runtime control (Loop's iteration-cap summary nudge, the resume /
+        # truncation / blocked-tool reminders, #75), written on the user's behalf
+        # for ONE model call — not durable conversation. They stay in the DB for
+        # audit/scrollback (and are already excluded from the rewind picker,
+        # chat_command#rewindable_message?), but must never re-enter the model's
+        # context on a LATER turn. Re-feeding the synthetic "you've reached the
+        # maximum tool-calling iterations" user turn made the model believe it
+        # was perpetually capped and parrot a "start a new session" refusal on
+        # every subsequent turn instead of acting. This is the single chokepoint
+        # every surface (CLI + web/API) rebuilds context through, so filtering
+        # here fixes them all.
+        durable = @message_store.for_session(@session[:id]).reject { |m| harness_control?(m) }
+        history = repair_tool_pairs(durable)
         history.each do |msg|
           messages << msg.to_context
         end
@@ -94,6 +108,17 @@ module Rubino
       end
 
       private
+
+      # A `[harness control]`-marked message is runtime control the agent wrote
+      # on the user's behalf for a single model call (#75), never durable
+      # conversation — see #build for why re-feeding it poisons later turns. The
+      # marker only ever rides the user role (the iteration-cap nudge, resume /
+      # truncation / blocked-tool reminders), so scope the check to user rows to
+      # avoid dropping a genuine assistant message that merely quotes the marker.
+      def harness_control?(msg)
+        msg.role == "user" &&
+          msg.content.to_s.start_with?(Agent::Loop::HARNESS_CONTROL_MARKER)
+      end
 
       # Final pairing repair over the full history (a list of Message objects).
       # Two orphan shapes 400 strict providers; we fix both, conservatively:
