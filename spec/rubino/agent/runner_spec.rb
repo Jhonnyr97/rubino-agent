@@ -89,6 +89,31 @@ RSpec.describe Rubino::Agent::Runner do
       expect(runner.instance_variable_get(:@session)[:id]).to eq(session[:id])
     end
 
+    # #model-resume: the adapter generates with the boot override (explicit -m,
+    # else model.default), so a resumed session's stored model — which footer,
+    # /status and the token budget all read — must be re-pointed to it. Otherwise
+    # changing model.default looked ignored (stale model in the statusbar) even
+    # though generation honored it.
+    it "re-points a resumed session's model to the boot override" do
+      repo = Rubino::Session::Repository.new(db: db.db)
+      session = repo.create(source: "test", model: "gpt-4o")
+
+      runner = described_class.new(session_id: session[:id], model_override: "claude-sonnet-4-6", ui: null_ui)
+
+      expect(runner.instance_variable_get(:@session)[:model]).to eq("claude-sonnet-4-6")
+      expect(repo.find_by_id_or_title(session[:id])[:model]).to eq("claude-sonnet-4-6")
+    end
+
+    it "leaves a resumed session's model untouched when no boot override is given" do
+      repo = Rubino::Session::Repository.new(db: db.db)
+      session = repo.create(source: "test", model: "gpt-4o")
+
+      runner = described_class.new(session_id: session[:id], ui: null_ui)
+
+      expect(runner.instance_variable_get(:@session)[:model]).to eq("gpt-4o")
+      expect(repo.find_by_id_or_title(session[:id])[:model]).to eq("gpt-4o")
+    end
+
     it "raises SessionError for unknown session ID" do
       expect do
         described_class.new(session_id: "nonexistent-0000-0000", model_override: "gpt-4o", ui: null_ui)

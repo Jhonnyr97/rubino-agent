@@ -219,6 +219,32 @@ module Rubino
         model_id
       end
 
+      # Aligns a RESUMED session's stored model with the model the adapter will
+      # actually use this run (#model-resume). Lifecycle builds the adapter from
+      # `@explicit_model_override || @session[:model]`, and the CLI ALWAYS passes
+      # a boot override (explicit `-m`, else `model.default` from config) — so on
+      # resume the override, NOT the model this session happened to last use, is
+      # what generates. The session row, the footer/statusbar, the token-budget
+      # context window and `/status` all read `session[:model]`, so without this
+      # they showed the STALE pinned model (e.g. the old default) while the agent
+      # was really running the new one: changing `model.default` looked ignored
+      # even though generation honored it. Re-point the row to the effective
+      # model so every surface tells the truth and a config change takes visible
+      # effect. No-op when there is no explicit override (then the session model
+      # IS what the adapter uses) or it already matches.
+      def sync_resumed_session_model!(session)
+        return unless @explicit_model_override
+        return if session[:model] == @explicit_model_override
+
+        session[:model]    = @explicit_model_override
+        session[:provider] = @provider_override ||
+                             LLM::ProviderResolver.resolve(@explicit_model_override,
+                                                           explicit_provider: @config.dig("model", "provider"))
+        return unless @session_repo.persisted?(session[:id])
+
+        @session_repo.update(session[:id], model: session[:model], provider: session[:provider])
+      end
+
       # Marks the current session ended (#100). Called from the CLI on a clean
       # REPL teardown (and best-effort on terminal close) so a session stops
       # showing as "active" forever and cleanup/list/--continue can tell a
@@ -437,6 +463,7 @@ module Rubino
           # sees us as the live owner and forks rather than interleaving.
           session[:persisted] = true
           session[:owner_pid] = Process.pid
+          sync_resumed_session_model!(session)
           @ui.status("Resuming session: #{session[:id][0..7]}...") if @announce_session
           session
         else
