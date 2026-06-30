@@ -87,9 +87,13 @@ RSpec.describe Rubino::UI::StdoutProxy do
       expect(composer.committed).to eq(["└ ✓ general: Started background subagent"])
     end
 
-    it "splits a multi-line argument into one commit per line" do
+    it "commits a run of complete lines as ONE batched block (#FREEZE)" do
+      # The whole finished run commits in a SINGLE print_above so a big multi-line
+      # write lands as one frame, not one full live-region repaint per line.
+      # LiveRegion#commit still splits the embedded "\n" into one scrollback row
+      # per line, so the on-screen result is unchanged.
       proxy.puts("line one\nline two")
-      expect(composer.committed).to eq(["line one", "line two"])
+      expect(composer.committed).to eq(["line one\nline two"])
     end
 
     it "flattens array arguments" do

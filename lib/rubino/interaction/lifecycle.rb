@@ -12,8 +12,8 @@ module Rubino
 
       # Queue priority for the user-visible memory save (#79). Lower = drained
       # first (the queue orders by `priority, run_at`). Below the default 100 the
-      # other post-turn jobs use, so an ExtractMemoryJob jumps ahead of the
-      # SummarizeSessionJob backlog and the "remember X" → recall is prompt.
+      # other post-turn jobs use, so an ExtractMemoryJob jumps ahead of any
+      # default-priority backlog and the "remember X" → recall is prompt.
       PRIORITY_EXTRACT_MEMORY = 50
       # The session this lifecycle is currently bound to. Starts as the session
       # passed in, but an automatic budget-triggered compaction swaps it to the
@@ -28,7 +28,7 @@ module Rubino
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
-                     max_tool_iterations: nil, polishing: nil)
+                     max_tool_iterations: nil, polishing: nil, interactive: false)
         @session = session
         @event_bus = event_bus
         @ui = ui
@@ -44,6 +44,9 @@ module Rubino
         # API/server path and nested subagent runs, which keep the original
         # synchronous inline drain (no interactive prompt to free up).
         @polishing = polishing
+        # True only on the interactive REPL (more in-process turns follow). Gates
+        # automatic memory extraction OFF the live KV slot between turns (#608c).
+        @interactive = interactive
         # Explicit per-run cap from `--max-turns` (Runner → here → IterationBudget).
         # nil ⇒ use the configured agent_max_tool_iterations (#141).
         @max_tool_iterations = max_tool_iterations
@@ -426,14 +429,36 @@ module Rubino
         # extract off the interactive path AND cuts its cadence ~10x.
         enqueued = false
 
-        if @config.memory_auto_extract? && interval_due?(turn_no, @config.memory_auto_extract_interval)
+        # KV-cache coherence (#608c): when the aux model shares the MAIN model's
+        # server slot (the default — see Configuration#auxiliary_on_main_endpoint?),
+        # an inter-turn extraction OVERWRITES the live conversation's prefix cache,
+        # so the NEXT user turn re-prefills the whole context (the "freeze after N
+        # turns"). On a single-slot local server there is no way to run a divergent
+        # aux prompt between turns without evicting — so we DON'T: extraction is
+        # deferred to the session-end flush (Memory::Flusher#flush_on_session_end!,
+        # runner.rb) and to compaction, exactly like Hermes/Claude Code keep
+        # automatic memory work off the live conversation. No recall is lost: the
+        # per-session memory snapshot is FROZEN at session start (PromptAssembler
+        # @snapshots), so a mid-session extract is never recalled THIS session
+        # anyway — only the next one, which the end-of-session flush already feeds.
+        #
+        # Scoped to the INTERACTIVE REPL (@interactive), where more in-process
+        # turns follow this one and would reuse the live KV prefix. A headless
+        # one-shot / API run exits after its single turn, so there is no live
+        # cache to protect and the extraction must still run there (it is how the
+        # fact gets stored before exit, #358). A DISTINCT aux endpoint (its own
+        # slot) never evicts, so it keeps the inter-turn cadence too.
+        extract_evicts_live_slot = @interactive && @config.auxiliary_on_main_endpoint?("compression")
+        distill_evicts_live_slot = @interactive && @config.auxiliary_on_main_endpoint?("summarize")
+
+        if @config.memory_auto_extract? && !extract_evicts_live_slot &&
+           interval_due?(turn_no, @config.memory_auto_extract_interval)
           # ExtractMemoryJob is the user-visible save ("remember X" → recall):
-          # it must drain AHEAD of the SummarizeSessionJobs that pile up one per
-          # turn once a session passes 20 messages (#79). The drain orders by
-          # `priority, run_at` (lower = first), so a higher-priority (smaller
-          # number) extract jumps the queue of slower, less time-sensitive
-          # summaries that were enqueued before it — otherwise the save the user
-          # is about to recall waits minutes behind a FIFO backlog of summaries.
+          # it must drain AHEAD of any default-priority post-turn jobs already in
+          # the queue (#79). The drain orders by `priority, run_at` (lower =
+          # first), so a higher-priority (smaller number) extract jumps slower,
+          # less time-sensitive jobs enqueued before it — otherwise the save the
+          # user is about to recall waits behind a FIFO backlog.
           queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] },
                         priority: PRIORITY_EXTRACT_MEMORY, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
@@ -448,20 +473,19 @@ module Rubino
         # already covered) before spending one aux-model call. Handler lookup
         # is load-order independent: Jobs::Registry resolves the class from
         # the Handlers namespace on demand (#81).
-        if @config.skills_auto_distill? && interval_due?(turn_no, @config.skills_auto_distill_interval)
+        if @config.skills_auto_distill? && !distill_evicts_live_slot &&
+           interval_due?(turn_no, @config.skills_auto_distill_interval)
           queue.enqueue("DistillSkillJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
           enqueued = true
         end
 
-        # Summarize if session is getting long (gateable like the extract/distill
-        # background jobs, so the whole aux-LLM surface can be turned off together).
-        message_count = @message_store.count(@session[:id])
-        if @config.memory_auto_summarize? && message_count > 20
-          queue.enqueue("SummarizeSessionJob", { session_id: @session[:id] }, drain_inline: drain_inline)
-          @event_bus.emit(Events::JOB_ENQUEUED, type: "SummarizeSessionJob")
-          enqueued = true
-        end
+        # NB: there is no per-turn session-summary job. The running summary that
+        # PromptAssembler injects is produced by the THRESHOLD-GATED compaction
+        # (Context::Compressor → SummaryStore), exactly as Hermes / Claude Code /
+        # Codex do it — summarize INLINE only when the context approaches its
+        # limit, never as a background job after every turn (which on a slow local
+        # gateway would pile up faster than it drains and starve the live turns).
 
         # Detach: kick the polishing worker so it drains the rows just enqueued
         # off this thread. Returns immediately — the next prompt is never gated.

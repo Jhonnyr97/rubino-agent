@@ -13,7 +13,8 @@ module Rubino
 
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
-                     event_bus: nil, announce_session: true, session_source: "cli")
+                     event_bus: nil, announce_session: true, session_source: "cli",
+                     interactive: false)
         @ui = ui || Rubino.ui
         # An in-chat rewind/fork builds a runner on the child session but has its
         # own purpose-built "┄ rewound to message N — editing ┄" marker, so the
@@ -40,6 +41,11 @@ module Rubino
         # not the user's own conversations) while staying resumable by explicit
         # id. Like Claude Code hiding its Task subagent sessions from the picker.
         @session_source = session_source
+        # True only for the interactive REPL, where more in-process turns follow
+        # this one. Lifecycle uses it to keep automatic memory extraction OFF the
+        # live KV-cache slot between turns (#608c) — a headless one-shot, which
+        # exits after its single turn, leaves it false and extracts normally.
+        @interactive = interactive
         # Pre-instantiate so cancel! is meaningful between turns and during the
         # window between Signal.trap install and run() — a too-early Ctrl+C
         # used to land on a nil token and silently no-op, then the next run
@@ -123,6 +129,7 @@ module Rubino
           cancel_token: @cancel_token,
           model_override: @explicit_model_override,
           provider_override: @provider_override,
+          interactive: @interactive,
           # The SOFT iteration ceiling (where the budget-extension prompt fires)
           # vs the HARD max_turns outer rail. For the main agent @max_turns is the
           # `--max-turns N` override, which intentionally sets the soft ceiling.

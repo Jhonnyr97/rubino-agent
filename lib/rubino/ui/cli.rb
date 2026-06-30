@@ -25,6 +25,10 @@ module Rubino
     #   ◆  approval required
     #   ┄  low-priority metadata
     class CLI < PrinterBase
+      # The REPL host installs a per-turn render lambda here so the `ctx` gauge
+      # climbs live during a turn (#608e); see @live_status_provider.
+      attr_writer :live_status_provider
+
       # Page size tty-prompt paginates a select menu at (its Paginator's
       # DEFAULT_PAGE_SIZE) — the count of menu rows visible at once, used to wipe
       # a cancelled picker's frame (#219).
@@ -95,6 +99,11 @@ module Rubino
         @turn_started_at    = nil
         @turn_tool_count    = 0
         @turn_tok_chars     = 0
+        # Optional cheap render lambda (set by the REPL host per turn) that maps a
+        # LIVE in-flight token estimate to a status-bar line, so the `ctx ~Xk/…`
+        # gauge climbs DURING a turn instead of freezing until it ends (#608e).
+        # nil off the interactive REPL (one-shot/API/tests) — the bar is unchanged.
+        @live_status_provider = nil
         @thinking_started_at = nil
         @reasoning_buffer   = +""
         # :full-mode LIVE reasoning stream state. @reasoning_md splits the streamed
@@ -964,6 +973,21 @@ module Rubino
         nil
       end
 
+      # Repaints the persistent status bar with the live in-flight token estimate
+      # so `ctx ~Xk/…` climbs during a turn (#608e). The provider (installed by
+      # the REPL host for the duration of a turn) maps the estimate → a bar line;
+      # @turn_tok_chars/4 is the SAME chars/4 estimate the facet's `~N tok` uses.
+      # No-op off the interactive REPL (provider nil) or between turns. Cosmetic:
+      # a paint failure must never disturb the turn.
+      def refresh_live_ctx_bar
+        return unless @turn_active && @live_status_provider
+
+        line = @live_status_provider.call(@turn_tok_chars / 4)
+        BottomComposer.current&.set_status(line) if line
+      rescue StandardError
+        nil
+      end
+
       def subagent_cards
         @subagent_cards ||= SubagentCards.new(pastel: @pastel)
       end
@@ -1076,8 +1100,11 @@ module Rubino
         # Each rendered line is rubino-built with its own per-token SGR, off a
         # source already sanitize_terminal'd in #render_markdown_block before
         # parse. PATH 2 (#emit_styled) keeps that SGR and strips any residual
-        # danger byte.
-        render_markdown_block(text).each { |line| emit_styled("#{MD_MARGIN}#{line}") }
+        # danger byte. Emit the whole block in ONE write (lines joined by "\n",
+        # which #emit_styled preserves) so it commits as a SINGLE frame instead of
+        # one full live-region repaint per line — the #FREEZE storm on long blocks.
+        lines = render_markdown_block(text).map { |line| "#{MD_MARGIN}#{line}" }
+        emit_styled(lines.join("\n")) unless lines.empty?
       end
 
       # A markdown string -> Array<String> of ANSI-styled lines (no indent).
@@ -1155,13 +1182,20 @@ module Rubino
         text = chunk[:text].to_s
         return if text.empty?
 
-        # A tool call is streaming its arguments (the long `content` of a `write`,
-        # etc.): no answer/thinking text arrives, so the footer would sit on
-        # "thinking" and look frozen. Surface the tool name as a visible, animated
-        # status row instead (#608, Hermes on_tool_start). Not content/thinking —
-        # status only — so it never enters the answer buffer; return after.
+        # A tool call is starting to stream (#608). The NAME arrives once on
+        # :tool_preparing — open the tool card NOW, at the start of the call, so
+        # the timeline shows the tool being invoked (NOT a "preparing" label in
+        # the footer: the footer stays a pure token meter). The argument FRAGMENTS
+        # then arrive on :tool_args — count them toward the live token meter (so a
+        # long `write` shows the count climbing instead of freezing) and stream
+        # them into the card as the live params. Neither enters the answer buffer.
         if type == :tool_preparing
-          status_ensure("preparing #{text}", phase: :thinking)
+          tool_params_begin(text)
+          return
+        end
+        if type == :tool_args
+          @turn_tok_chars += text.length if @turn_active
+          tool_params_feed(text)
           return
         end
 
@@ -1285,6 +1319,9 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
+        # Streaming-params card state (#608): no tool call is mid-stream yet.
+        @tool_params_open   = nil
+        @tool_params_stream = nil
         # Fresh turn: silence clock unarmed (#21).
         @status_mutex.synchronize { @last_stream_at = nil }
         # Per-turn tally of plain "Approve once" choices by tool — drives the
@@ -1592,6 +1629,17 @@ module Rubino
       # contract #confirm uses before the approval card.
       def tool_started(name, arguments: nil, at: nil, call_id: nil)
         record_subagent_tool_started(name, arguments)
+        # Streaming path: the card was already opened at the START of the call
+        # (#tool_params_begin) and its params streamed live. Commit the held
+        # params tail and DON'T redraw the header — just relabel the status row.
+        if @tool_params_open == name
+          tool_params_flush
+          return delegation_started(arguments, call_id) if name == "task"
+
+          status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
+          return
+        end
+
         finalize_stream
         return delegation_started(arguments, call_id) if name == "task"
 
@@ -1601,6 +1649,67 @@ module Rubino
         # label to the tool (P3) instead of leaving the live region dead while
         # the tool runs. The engine thread stays the same — label swap only.
         status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
+      end
+
+      # The streaming tool call just started (its NAME arrived, #608). Open the
+      # tool card at the START — before the arguments finish — so the user sees
+      # the invocation and its params stream in, rather than a frozen footer.
+      # #tool_started reconciles against @tool_params_open so the `● name` header
+      # is drawn exactly once. No-op off-turn or if this call is already open.
+      def tool_params_begin(name)
+        return unless @turn_active
+        return if @tool_params_open == name
+        # `task` (subagent delegation) has a bespoke card (#delegation_started);
+        # don't pre-open a generic `● task` that would clash with it.
+        return if name == "task"
+
+        # Close any open answer block first (the normal #tool_started path does
+        # this via #finalize_stream) so the card never opens under a live tail.
+        finalize_stream
+        activity_started(name)
+        @tool_params_open   = name
+        @tool_params_stream = ToolArgsStream.new
+        # Keep the animated facet ALIVE for the whole argument stream (#608d).
+        # A large `write` streams its content for MINUTES past the 30-line preview
+        # cap; without a live status the screen sits silent (measured: ~38s of
+        # dead UI on a 100-line file) and reads as a freeze. status_text already
+        # renders the "writing" phase with the ~N-tok meter climbing — it just
+        # needs the facet visible. Mirrors the SAME facet+tool_chunk pairing the
+        # tool-EXECUTION phase (#tool_started) already uses, so the params scroll
+        # above an animated `tool · Ns · ~N tok` footer instead of nothing.
+        status_show(name, phase: :tool) if @turn_active
+      end
+
+      # An argument fragment of the in-flight call: decode the JSON arg VALUES and
+      # render the complete lines unlocked so far under the card (the partial last
+      # line is held by the decoder until its newline lands), reusing the
+      # head-N-lines preview collapse. Token counting happens in #stream.
+      def tool_params_feed(fragment)
+        return unless @tool_params_stream
+
+        lines = @tool_params_stream.feed(fragment)
+        # Stream the params IN FULL (no 30-line preview cap): a `write`/`edit`'s
+        # content is exactly what the user wants to watch land, line by line, as
+        # the model generates it (#608d). The cap is for collapsing a finished
+        # tool's OUTPUT in the transcript — not for hiding the file being authored
+        # right now. Streaming every line also keeps the screen alive the whole
+        # time, so a long write never sits silent.
+        tool_chunk(@tool_params_open, lines, full: true) unless lines.empty?
+      end
+
+      # Flush the held params tail and close the streaming-params state. Called
+      # when the tool actually starts (args complete) and at turn end so the last
+      # line is never lost.
+      def tool_params_flush
+        stream = @tool_params_stream
+        @tool_params_stream = nil
+        @tool_params_open   = nil
+        return unless stream
+
+        tail = stream.flush
+        # Full (uncapped) to match the live params stream (#608d) — the final
+        # partial line is part of the content the user is watching land.
+        tool_chunk(@activity_name, "#{tail}\n", full: true) unless tail.empty?
       end
 
       # DISPLAY-ONLY collapse (P2): the transcript shows the head few lines of
@@ -1632,7 +1741,7 @@ module Rubino
       # accumulated across chunks. Lines past the preview budget are counted
       # silently; #activity_finished flushes the `… +N lines` marker right
       # before the close row.
-      def tool_chunk(_name, chunk, kind: :plain)
+      def tool_chunk(_name, chunk, kind: :plain, full: false)
         record_subagent_tool_output(chunk)
         return if chunk.nil? || chunk.to_s.empty?
 
@@ -1645,9 +1754,12 @@ module Rubino
           return
         end
 
+        # +full+ (live `write`/`edit` params, #608d) shows EVERY line — the user
+        # is watching the file being authored, not reviewing a finished dump.
         limit = tool_preview_limit
-        unless limit.positive?
+        if full || !limit.positive?
           write_body_lines(chunk.to_s) { |chomped| @pastel.dim(chomped) }
+          @last_block = :tool
           return
         end
 
@@ -1836,8 +1948,7 @@ module Rubino
       # Short human labels for the post-turn inline jobs the status row tracks.
       JOB_STATUS_LABELS = {
         "ExtractMemoryJob" => "memory",
-        "DistillSkillJob" => "skills",
-        "SummarizeSessionJob" => "summary"
+        "DistillSkillJob" => "skills"
       }.freeze
 
       def job_enqueued(type)
@@ -2124,6 +2235,7 @@ module Rubino
         # Width left for body text after the 2-space margin; a small floor keeps
         # a very narrow terminal from looping on a 1-col field.
         budget = [terminal_cols - 1 - BODY_MARGIN.length, 4].max
+        rows = []
         Util::Output.sanitize_terminal(text).each_line do |line|
           chomped = line.chomp
           # HARD-WRAP a long no-break token inside the output body instead of
@@ -2134,11 +2246,15 @@ module Rubino
           # continuation lines hang-indent under the first.
           wrap_tail_row(chomped, budget).each do |row|
             rendered = style ? style.call(row) : row
-            # +text+ was sanitize_terminal'd above; the style block adds rubino's
-            # own SGR → PATH 2 (#emit_styled) keeps that colour, strips danger.
-            emit_styled("#{BODY_MARGIN}#{rendered}")
+            rows << "#{BODY_MARGIN}#{rendered}"
           end
         end
+        # +text+ was sanitize_terminal'd above; the style block adds rubino's own
+        # SGR → PATH 2 (#emit_styled) keeps that colour, strips danger. Emit the
+        # whole captured body in ONE write so a large tool output (a multi-hundred-
+        # line `read`) commits as a SINGLE frame, not one full repaint per line
+        # — the storm that wedged tmux on "read many files" (#FREEZE).
+        emit_styled(rows.join("\n")) unless rows.empty?
       end
 
       # COMPOSE-TIME span defang: neutralizes an UNTRUSTED span (a tool metric, a
@@ -2673,6 +2789,12 @@ module Rubino
             # Outside @status_mutex (set_subagent_cards takes the composer's own
             # render mutex; keeping the locks un-nested avoids any ordering risk).
             refresh_live_cards if (i % 10).zero?
+            # Repaint the persistent `ctx ~Xk/…` bar ~1/s with the live in-flight
+            # token estimate so it climbs during the turn (#608e) instead of
+            # sitting frozen until the turn ends. ~1 Hz (not per delta) keeps the
+            # full bar redraw cheap. Outside @status_mutex (set_status takes the
+            # composer's own render mutex; keeps the locks un-nested).
+            refresh_live_ctx_bar if (i % 10).zero?
             # Trailing-edge flush for the coalesced live region: if a burst of
             # deltas left a frame pending (repaints capped to LIVE_FRAME_HZ), paint
             # the latest one now so a stream that paused never shows a stale tail.
@@ -2681,9 +2803,16 @@ module Rubino
             i += 1
             sleep STATUS_TICK
           end
-        rescue StandardError
+        rescue StandardError => e
           # The animation is cosmetic — a repaint failure must never break the
-          # turn. Stop quietly.
+          # turn. But NEVER swallow it silently: a programming slip here (e.g. a
+          # private-method call) used to kill this thread on tick one, freezing the
+          # spinner for the whole turn while the wait looked like a hang (#FREEZE).
+          # Log it (to the file logger, not the raw-mode $stdout) so it is
+          # diagnosable instead of invisible.
+          Rubino.logger.error(event: "ui.status_ticker.died",
+                              error: "#{e.class}: #{e.message}",
+                              at: e.backtrace&.first)
         end
       end
 
@@ -2731,10 +2860,14 @@ module Rubino
         if s[:phase] == :thinking
           parts << "#{(now - (@turn_started_at || s[:phase_started_at])).to_i}s"
           parts << "#{@turn_tool_count} tool#{"s" if @turn_tool_count != 1}" if @turn_tool_count.positive?
-          parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
         else
           parts << "#{(now - s[:phase_started_at]).to_i}s"
         end
+        # The live token meter rides EVERY phase (#608), not just thinking: while a
+        # long `write`'s params stream, the facet resurfaces labelled "writing" and
+        # must still show the count climbing — that's the whole point of counting
+        # the tool-arg fragments. Estimate, hence the leading ~.
+        parts << "~#{format_status_tokens(@turn_tok_chars / 4)} tok" if @turn_tok_chars >= 4
         text = parts.join(" · ")
         budget = [terminal_cols, 80].min - FACET_TRACK_CELLS - 2
         text.length > budget ? "#{text[0, budget - 1]}…" : text

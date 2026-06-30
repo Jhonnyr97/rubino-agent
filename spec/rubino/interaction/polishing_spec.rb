@@ -134,26 +134,26 @@ RSpec.describe Rubino::Interaction::Polishing do
   end
 
   # #79: the user-visible memory save (ExtractMemoryJob, priority 50) must drain
-  # AHEAD of the SummarizeSessionJobs (default priority 100) that pile up one per
-  # turn once a session passes 20 messages. The queue orders by `priority,
-  # run_at` (lower = first), so even when the slower summaries were enqueued
-  # FIRST, the higher-priority extract jumps the FIFO backlog — otherwise the
-  # fact the user is about to recall waits minutes behind the summary queue.
-  describe "post-turn job priority (#79 save→recall not starved by summaries)" do
+  # AHEAD of lower-priority post-turn jobs (default priority 100) already queued.
+  # The queue orders by `priority, run_at` (lower = first), so even when the
+  # slower default-priority jobs were enqueued FIRST, the higher-priority extract
+  # jumps the FIFO backlog — otherwise the fact the user is about to recall waits
+  # minutes behind the queue.
+  describe "post-turn job priority (#79 save→recall not starved by the backlog)" do
     let(:drain_order) { [] }
     let(:handler_class) { Class.new { define_method(:perform) { |_payload| nil } } }
 
     before do
       order = drain_order
-      summarize = Class.new { define_method(:perform) { |_p| order.push("summary") } }
-      extract   = Class.new { define_method(:perform) { |_p| order.push("extract") } }
-      Rubino::Jobs::Registry.register("SummarizeSessionJob", summarize)
+      lowprio = Class.new { define_method(:perform) { |_p| order.push("lowprio") } }
+      extract = Class.new { define_method(:perform) { |_p| order.push("extract") } }
+      Rubino::Jobs::Registry.register("LowPriorityJob", lowprio)
       Rubino::Jobs::Registry.register("ExtractMemoryJob", extract)
     end
 
-    it "drains the higher-priority ExtractMemoryJob before the summaries enqueued first" do
-      # Three summaries enqueued FIRST (default priority 100, FIFO by run_at)...
-      3.times { queue.enqueue("SummarizeSessionJob", {}, drain_inline: false) }
+    it "drains the higher-priority ExtractMemoryJob before the default-priority jobs enqueued first" do
+      # Three default-priority jobs enqueued FIRST (priority 100, FIFO by run_at)...
+      3.times { queue.enqueue("LowPriorityJob", {}, drain_inline: false) }
       # ...then the user-visible save, enqueued LAST but at a higher priority.
       queue.enqueue("ExtractMemoryJob", {},
                     priority: Rubino::Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY,
@@ -165,7 +165,7 @@ RSpec.describe Rubino::Interaction::Polishing do
       # One kick drains the whole due backlog; the extract leads despite being
       # enqueued last, so recall is prompt instead of waiting behind the queue.
       expect(drain_order.first).to eq("extract")
-      expect(drain_order).to eq(%w[extract summary summary summary])
+      expect(drain_order).to eq(%w[extract lowprio lowprio lowprio])
     end
   end
 

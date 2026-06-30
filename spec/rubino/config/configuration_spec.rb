@@ -147,14 +147,6 @@ RSpec.describe Rubino::Config::Configuration do
       expect(config.dig("memory", "memory_char_limit")).to eq(2200)
       expect(config.dig("memory", "user_char_limit")).to eq(1375)
     end
-
-    it "auto_summarize defaults ON and only an explicit false disables it" do
-      expect(config.memory_auto_summarize?).to be true
-      off = described_class.new(raw: { "memory" => { "auto_summarize" => false } })
-      expect(off.memory_auto_summarize?).to be false
-      absent = described_class.new(raw: { "memory" => {} })
-      expect(absent.memory_auto_summarize?).to be true
-    end
   end
 
   describe "tool accessors" do

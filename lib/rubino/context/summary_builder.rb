@@ -116,16 +116,6 @@ module Rubino
         text
       end
 
-      # Builds and saves the summary to the database
-      def build_and_save!
-        message_store = Session::Store.new
-        messages = message_store.for_session(@session_id)
-        return if messages.size < 10
-
-        summary = build(messages: messages, previous_summary: load_previous_summary)
-        save!(summary)
-      end
-
       private
 
       def summary_system_prompt
@@ -170,18 +160,6 @@ module Rubino
           content = msg.respond_to?(:content) ? msg.content : msg[:content]
           "[#{role}] #{content}"
         end.join("\n\n")
-      end
-
-      def summary_store
-        @summary_store ||= Session::SummaryStore.new
-      end
-
-      def load_previous_summary
-        summary_store.latest_content(@session_id)
-      end
-
-      def save!(content)
-        summary_store.insert(session_id: @session_id, content: content)
       end
 
       def fallback_summary(messages, previous_summary)
