@@ -893,11 +893,16 @@ module Rubino
       # Providers like Bedrock require this message to appear in the conversation
       # history between the user prompt and the tool result(s).
       def build_assistant_tool_use_message(response)
-        {
+        msg = {
           role: "assistant",
           content: response.content || "",
           tool_calls: response.tool_calls
         }
+        # Carry reasoning on the in-turn (non-streaming) assistant(tool_use) too,
+        # so load_history replays it and the prefix stays KV-cache-stable (#608b).
+        reasoning = response.respond_to?(:thinking) ? response.thinking : nil
+        msg[:reasoning] = reasoning if reasoning && !reasoning.to_s.empty?
+        msg
       end
 
       # Called once per executed tool by the ToolExecutor's on_result sink, on
@@ -1061,6 +1066,10 @@ module Rubino
         metadata = tool_calls.empty? ? {} : { tool_calls: tool_calls }
         input_tokens = msg[:input_tokens].to_i
         metadata[:input_tokens] = input_tokens if input_tokens.positive?
+        # Keep the reasoning with the assistant(tool_use) row so the next turn
+        # replays it and the KV-cache prefix stays byte-stable (#608b) — this is
+        # the row that diverged from the server cache when reasoning was dropped.
+        metadata[:reasoning] = msg[:reasoning] if msg[:reasoning] && !msg[:reasoning].to_s.empty?
 
         with_db_retries do
           @message_store.create(
@@ -1110,6 +1119,13 @@ module Rubino
         # this, strict providers (Anthropic, Bedrock) 400 the next turn because
         # they see tool result messages with no matching toolUse upstream.
         metadata = response.has_tool_calls? ? { tool_calls: response.tool_calls } : {}
+
+        # Persist the reasoning so later turns can replay it (Hermes parity,
+        # #608b): the local KV cache holds this turn's reasoning tokens, so a
+        # later replay that omits them busts the prefix and re-prefills the whole
+        # context. Session::Message#to_context re-emits it as wire reasoning_content.
+        reasoning = response.respond_to?(:thinking) ? response.thinking : nil
+        metadata[:reasoning] = reasoning if reasoning && !reasoning.to_s.empty?
 
         # Record the REAL context size the provider saw for this response:
         # input_tokens covers the whole assembled prompt (system prompt +

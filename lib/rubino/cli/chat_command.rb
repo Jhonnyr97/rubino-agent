@@ -288,7 +288,7 @@ module Rubino
         text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
         requested_session_id = session_resolver.resolve_session_id
         runner = build_runner(session_id: requested_session_id, ui: ui,
-                              announce_session: announce_session)
+                              announce_session: announce_session, interactive: false)
         warn_if_resume_forked(requested_session_id, runner)
         note_if_resuming_compacted_parent(runner)
         recorder = Output::TurnRecorder.new.attach!
@@ -1984,6 +1984,11 @@ module Rubino
         # Only thread the paste expansions when a placeholder was actually
         # collected, so a normal turn's runner.run signature is unchanged.
         run_kwargs[:paste_expansions] = paste_expansions unless paste_expansions.empty?
+        # Drive the live `ctx ~Xk/…` gauge during THIS turn (#608e): hand the UI a
+        # cheap render lambda (base ctx captured once + the in-flight token
+        # estimate) so its ticker repaints the bar ~1/s as the model generates,
+        # instead of the bar sitting frozen until the turn ends. Cleared in ensure.
+        ui.live_status_provider = live_status_meter(runner) if ui.respond_to?(:live_status_provider=)
         oneshot = one_shot_agent_definition(agent_name)
         if oneshot && runner.respond_to?(:run_with_agent)
           runner.run_with_agent(oneshot, prompt, **run_kwargs)
@@ -2018,6 +2023,8 @@ module Rubino
         # time the runner returns, so the facet has already landed in the
         # footer and the engine thread must not outlive the turn.
         ui.turn_finished if ui.respond_to?(:turn_finished)
+        # Stop driving the live ctx gauge; the reconcile below sets the exact bar.
+        ui.live_status_provider = nil if ui.respond_to?(:live_status_provider=)
         # Stop the during-turn panel ticker before tearing the composer down, so
         # it can't repaint over the next idle prompt (the idle read starts its
         # own ticker). Idempotent if it already exited on its own (no live child).
@@ -2050,17 +2057,42 @@ module Rubino
         session  = runner.session
         budget   = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
         messages = ::Rubino::Session::Store.new.for_session(session[:id])
+        render_status_bar(session, budget, context_tokens(messages, budget))
+      rescue StandardError
+        nil
+      end
+
+      # A cheap, DB-free render lambda for the LIVE ctx gauge (#608e): captures the
+      # base (persisted) token count ONCE here on the main thread, then maps an
+      # in-flight token estimate → a bar line with NO further DB reads, so the UI
+      # ticker can call it ~1/s from its thread without re-querying the session.
+      # The base omits this turn's not-yet-persisted generation; the +extra+
+      # estimate covers it, and #ensure reconciles to the exact bar at turn end.
+      # nil (no live gauge) when the bar is disabled or on any failure.
+      def live_status_meter(runner)
+        return nil unless runner && Rubino.configuration.display_statusbar?
+
+        session = runner.session
+        budget  = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
+        base    = context_tokens(::Rubino::Session::Store.new.for_session(session[:id]), budget)
+        ->(extra) { render_status_bar(session, budget, base + extra.to_i) }
+      rescue StandardError
+        nil
+      end
+
+      # Renders the model + context-saturation bar for +tokens+ against the
+      # session's window. Shared by the turn-boundary bar (#build_status_line) and
+      # the live gauge (#live_status_meter) so both read one format (#608e).
+      def render_status_bar(session, budget, tokens)
         UI::StatusBar.render(
           chips: { mode: Rubino::Modes.current, agent: status_agent_chip,
                    branch: @branch_short_id,
                    skill: Rubino::ActiveSkill.current },
           model: session[:model] || model_name,
-          tokens: context_tokens(messages, budget),
+          tokens: tokens,
           window: budget.available_tokens,
           pastel: pastel
         )
-      rescue StandardError
-        nil
       end
 
       # The status-bar agent chip (#320): the active primary agent name, but
@@ -2983,7 +3015,7 @@ module Rubino
       # Builds an Agent::Runner with this invocation's shared flag overrides —
       # only the session and UI vary per call site (one-shot, interactive boot,
       # /sessions resume, /new).
-      def build_runner(session_id:, ui:, announce_session: true)
+      def build_runner(session_id:, ui:, announce_session: true, interactive: true)
         Agent::Runner.new(
           session_id: session_id,
           model_override: model_name,
@@ -2991,7 +3023,11 @@ module Rubino
           max_turns: max_turns_override,
           ignore_rules: opt(:ignore_rules) || false,
           ui: ui,
-          announce_session: announce_session
+          announce_session: announce_session,
+          # build_runner is the interactive-REPL builder; only setup_oneshot
+          # overrides this to false (a headless one-shot exits after one turn).
+          # Drives Lifecycle's single-slot KV-cache gate (#608c).
+          interactive: interactive
         )
       end
 

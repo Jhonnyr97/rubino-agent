@@ -81,6 +81,11 @@ module Rubino
         # for streamed content. (The real call arrives later as :tool_started.)
         return emit_event(:tool_preparing, name: chunk[:text]) if chunk.is_a?(Hash) && chunk[:type] == :tool_preparing
 
+        # A streaming argument fragment of the in-flight call (#608): its own
+        # event so a consumer can show the params composing, distinct from
+        # answer content. The decoded/rendered form is the CLI's concern.
+        return emit_event(:tool_args, text: chunk[:text]) if chunk.is_a?(Hash) && chunk[:type] == :tool_args
+
         return if chunk.is_a?(Hash) && chunk[:type] == :thinking &&
                   Config::ReasoningPrefs.effective_mode(Rubino.configuration) == :hidden
 

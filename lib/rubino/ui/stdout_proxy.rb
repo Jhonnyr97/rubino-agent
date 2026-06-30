@@ -133,19 +133,34 @@ module Rubino
         return if str.nil? || str.empty?
 
         @partial << str
-        commit_complete_lines
-        render_partial
+        committed = commit_complete_lines
+        # print_above ALREADY cleared the partial row and repainted the prompt for
+        # each line it committed; when nothing is left over, a second set_partial("")
+        # would repaint the very same empty row — the double-frame-per-line that
+        # helped wedge tmux during reasoning/tool streaming (#FREEZE). Only render
+        # the partial when there's a non-empty remainder, or when no line committed
+        # (a partial growing in place still needs its live row redrawn).
+        render_partial unless committed && @partial.empty?
       end
 
       def commit_complete_lines
-        while (idx = @partial.index("\n"))
-          line = @partial[0...idx]
-          @partial = @partial[(idx + 1)..] || +""
-          # A committed line is a finished row; embedded "\r" (e.g. the CLI's
-          # in-place clear before a streamed chunk) is preserved so print_above's
-          # clear-line semantics still apply.
-          @composer.print_above(line)
-        end
+        nl = @partial.rindex("\n")
+        return false unless nl
+
+        # Commit the WHOLE run of finished lines in ONE frame. print_above →
+        # LiveRegion#commit splits the embedded "\n" into CRLF-terminated rows
+        # that each scroll into scrollback, so a 500-line tool result (a big
+        # `read`, a long rendered markdown block) lands with a SINGLE live-region
+        # clear+redraw instead of one full repaint PER line — the storm that
+        # wedged tmux on "read many files / write file" (#FREEZE). Embedded "\r"
+        # (the CLI's in-place clear before a streamed chunk) is preserved.
+        # Strip ONLY the final "\n" (not a preceding "\r"): the per-line path this
+        # replaces excluded just the newline and kept any in-place-clear "\r", and
+        # LiveRegion#commit re-adds the row terminators.
+        block = @partial[0...nl]
+        @partial = @partial[(nl + 1)..] || +""
+        @composer.print_above(block)
+        true
       end
 
       # Show the in-progress (un-newlined) line above the composer without

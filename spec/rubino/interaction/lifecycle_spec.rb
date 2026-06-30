@@ -426,6 +426,10 @@ RSpec.describe Rubino::Interaction::Lifecycle do
   # the rows (drain_inline: false) and hands off to the detached worker.
   describe "#enqueue_post_turn_jobs detachment (#319)" do
     let(:db_connection) { test_database }
+    # A DISTINCT aux endpoint (its own server/slot): with it, post-turn
+    # extraction is NOT skipped by the single-slot KV-cache gate (#608c) even on
+    # the interactive REPL. Used by the gate's own describe block below.
+    let(:aux_offslot) { { "compression" => { "base_url" => "http://aux.test:9/v1" } } }
     let(:detach_config) do
       test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1,
@@ -446,8 +450,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     before do
       allow(Rubino).to receive(:database).and_return(db_connection)
       db_connection.db[:jobs].delete
-      # Short-circuit the >20-messages summarize gate so only the memory-extract
-      # row is enqueued (count is stubbed per-lifecycle on its message store).
+      # Stub the per-lifecycle message count (drives current_turn_index) so the
+      # memory-extract row is the only thing enqueued.
       [lifecycle].each { |lc| stub_message_count(lc, 1) }
     end
 
@@ -517,6 +521,61 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
     end
 
+    # #608c: when the aux model shares the MAIN model's server slot (the DEFAULT —
+    # provider:"main", no distinct base_url), an inter-turn extraction overwrites
+    # the live conversation's KV-cache prefix, so the next user turn re-prefills
+    # the whole context (the "freeze after N turns" on a single-slot local server).
+    # The enqueue is therefore SKIPPED even on an interval-boundary turn; the
+    # session-end flush + compaction still mine memory. A distinct aux endpoint
+    # (own slot) is unaffected — see the interval-boundary test above, which DOES
+    # enqueue precisely because it points the aux at an off-slot endpoint.
+    it "skips ExtractMemoryJob on the INTERACTIVE REPL when the aux shares the main slot (#608c)" do
+      shared = test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
+        "skills" => { "auto_distill" => false }
+        # NB: no "auxiliary" override → compression resolves to the main endpoint.
+      )
+      lc = described_class.new(session: { id: "sess-shared", model: "gpt-4o" },
+                               event_bus: event_bus, ui: null_ui, config: shared,
+                               polishing: polishing, interactive: true)
+      stub_message_count(lc, 1)
+      allow(lc).to receive(:current_turn_index).and_return(10) # interval-due
+      lc.send(:enqueue_post_turn_jobs)
+      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).to be_nil
+    end
+
+    it "STILL extracts on a headless one-shot (interactive:false) even on the shared slot (#358)" do
+      shared = test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
+        "skills" => { "auto_distill" => false }
+      )
+      lc = described_class.new(session: { id: "sess-oneshot", model: "gpt-4o" },
+                               event_bus: event_bus, ui: null_ui, config: shared,
+                               polishing: polishing, interactive: false)
+      stub_message_count(lc, 1)
+      allow(lc).to receive(:current_turn_index).and_return(10)
+      lc.send(:enqueue_post_turn_jobs)
+      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
+    end
+
+    it "extracts inter-turn even on the INTERACTIVE REPL when the aux is OFF-slot (#608c)" do
+      offslot = test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
+        "skills" => { "auto_distill" => false },
+        "auxiliary" => aux_offslot
+      )
+      lc = described_class.new(session: { id: "sess-offslot", model: "gpt-4o" },
+                               event_bus: event_bus, ui: null_ui, config: offslot,
+                               polishing: polishing, interactive: true)
+      stub_message_count(lc, 1)
+      allow(lc).to receive(:current_turn_index).and_return(10)
+      lc.send(:enqueue_post_turn_jobs)
+      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
+    end
+
     # #59: the polish must NOT fire on every turn. The interval/length gates mean
     # the TYPICAL turn enqueues no row at all — yet the worker was kicked
     # unconditionally, spawning a throwaway thread, binding the aux cancel token
@@ -551,15 +610,6 @@ RSpec.describe Rubino::Interaction::Lifecycle do
 
       it "kicks the polishing worker when a memory row was actually enqueued" do
         lc = lifecycle_for(memory_interval: 1, turn_index: 1, message_count: 1)
-
-        lc.send(:enqueue_post_turn_jobs)
-
-        expect(polishing).to have_received(:start)
-      end
-
-      it "kicks the polishing worker when only a summarize row was enqueued" do
-        # No memory/distill row, but the >20-message summarize gate fires.
-        lc = lifecycle_for(memory_interval: 10, turn_index: 1, message_count: 21)
 
         lc.send(:enqueue_post_turn_jobs)
 

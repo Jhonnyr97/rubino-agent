@@ -65,6 +65,18 @@ module Rubino
         # Surface assistant tool_calls (persisted as metadata) so the adapter
         # can rebuild the toolUse block expected by strict providers on resume.
         msg[:tool_calls] = @metadata[:tool_calls] if @metadata.is_a?(Hash) && @metadata[:tool_calls]
+        # Replay the assistant's reasoning on every later turn (Hermes
+        # conversation_loop.py:940 "pass reasoning back to the API for ALL
+        # assistant messages"). The local server's KV cache, after generating a
+        # turn, holds the reasoning tokens; a replay that OMITS them diverges
+        # from that cache at the point the reasoning was generated, forcing a
+        # full re-prefill of the whole context every turn. Re-emitting the stored
+        # reasoning keeps the prompt prefix byte-stable so the server reuses the
+        # cache (verified: same assistant row got a KV hit WITH reasoning, a miss
+        # WITHOUT). The adapter rebuilds it into the wire `reasoning_content`.
+        if @role == "assistant" && @metadata.is_a?(Hash) && (reasoning = @metadata[:reasoning])
+          msg[:reasoning] = reasoning
+        end
         # #583: re-derive the error flag from the persisted outcome so a
         # denied/errored tool result replays to the model marked as an error
         # (is_error) on the next turn, exactly as it was sent live — never as a

@@ -56,20 +56,6 @@ RSpec.describe "Rubino::Jobs::Handlers" do
     end
   end
 
-  describe Rubino::Jobs::Handlers::SummarizeSessionJob do
-    it "delegates to Context::SummaryBuilder for the given session_id" do
-      builder = instance_double(Rubino::Context::SummaryBuilder, build_and_save!: nil)
-      expect(Rubino::Context::SummaryBuilder)
-        .to receive(:new).with(session_id: "sid-77").and_return(builder)
-      described_class.new.perform(session_id: "sid-77")
-    end
-
-    it "is a no-op when session_id is missing" do
-      expect(Rubino::Context::SummaryBuilder).not_to receive(:new)
-      described_class.new.perform({})
-    end
-  end
-
   describe Rubino::Jobs::Handlers::CleanupSessionsJob do
     let(:db_double) { double("DB") }
     let(:dataset)   { double("Dataset") }

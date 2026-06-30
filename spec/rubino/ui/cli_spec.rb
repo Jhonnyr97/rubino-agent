@@ -1597,6 +1597,57 @@ RSpec.describe Rubino::UI::CLI do
       expect(after[:label]).to eq("thinking")
     end
 
+    # #608d: a long `write` streams its arguments for MINUTES past the 30-line
+    # preview cap. Without a live facet the screen sits silent and reads as a
+    # freeze (measured: ~38s of dead UI). Opening the streaming tool card must
+    # therefore leave an ANIMATED status visible (phase :tool), so the ticker
+    # keeps painting `write · Ns · ~N tok` while the params stream in.
+    it "keeps an animated facet visible while a tool's arguments stream (#608d)" do
+      allow(ui).to receive(:thinking_painter).and_return(->(_f) {})
+      status = nil
+      capture_stdout do
+        ui.turn_started
+        ui.stream(type: :tool_preparing, text: "write") # card opens, args incoming
+        ui.stream(type: :tool_args, text: '{"path":"a.html","content":"<html>')
+        status = ui.instance_variable_get(:@status)&.dup
+        ui.turn_finished
+      end
+      expect(status).not_to be_nil
+      expect(status[:visible]).to be(true)
+      expect(status[:phase]).to eq(:tool)
+      expect(status[:label]).to eq("write")
+    end
+
+    # #608e: the persistent `ctx ~Xk/…` gauge must climb DURING a turn, not sit
+    # frozen until it ends. The REPL host installs a render lambda; the ticker
+    # feeds it the live chars/4 estimate (@turn_tok_chars) and repaints the bar.
+    it "drives the live ctx bar from the in-flight token estimate (#608e)" do
+      ui.instance_variable_set(:@turn_active, true)
+      ui.instance_variable_set(:@turn_tok_chars, 800) # ~200 tok at chars/4
+      seen = nil
+      ui.live_status_provider = lambda { |extra|
+        seen = extra
+        "mode · model · ctx ~0.2k/128k"
+      }
+      composer = instance_double(Rubino::UI::BottomComposer, set_status: nil)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      ui.send(:refresh_live_ctx_bar)
+
+      expect(seen).to eq(200) # 800 chars / 4
+      expect(composer).to have_received(:set_status).with("mode · model · ctx ~0.2k/128k")
+    end
+
+    it "leaves the ctx bar alone with no live provider / between turns (#608e)" do
+      ui.instance_variable_set(:@turn_active, true)
+      ui.live_status_provider = nil
+      composer = instance_double(Rubino::UI::BottomComposer)
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      expect { ui.send(:refresh_live_ctx_bar) }.not_to raise_error
+      expect(composer).not_to have_received(:set_status) if composer.respond_to?(:set_status)
+    end
+
     it "rings needs_approval when the approval card parks the run on the human" do
       allow(ui).to receive(:approval_choice).and_return(:no)
       capture_stdout do

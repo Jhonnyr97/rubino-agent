@@ -378,12 +378,6 @@ module Rubino
           "enabled" => true,
           "backend" => "sqlite",
           "auto_extract" => true,
-          # Background session-summary aux-LLM job (SummarizeSessionJob), enqueued
-          # once a session passes the message threshold. Gateable like
-          # auto_extract / skills.auto_distill so the whole background aux-LLM
-          # surface can be turned off together (e.g. an engine-vs-engine
-          # benchmark that wants ONLY the task, no side-work). Default on.
-          "auto_summarize" => true,
           # Throttle the background aux-LLM memory extraction to ~every N turns
           # instead of EVERY turn (#412), mirroring Hermes' nudge_interval (10):
           # extraction enqueues only when turns-since-last-extract >= this. 10x

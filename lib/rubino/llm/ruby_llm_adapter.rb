@@ -350,12 +350,13 @@ module Rubino
               emit.call(:thinking, thinking_text)
             end
             think_filter.feed(chunk.content, &emit) if chunk.content.is_a?(String) && !chunk.content.empty?
-            # A tool-call delta (the streaming `content` of a long `write`, etc.)
-            # carries neither thinking nor textual content, so without this the UI
-            # sits on "thinking" and looks frozen while a big file streams in.
-            # Surface the tool NAME once per call (Hermes' on_tool_start) so the
-            # footer can show "preparing <tool>…" with live progress (#608).
-            announce_tool_preparing(chunk, announced_tools, &emit)
+            # A tool-call delta (the streaming arguments of a long `write`, etc.)
+            # carries neither thinking nor textual content. Surface BOTH the tool
+            # NAME once per call (:tool_preparing, so the timeline can open the
+            # tool card the moment the call starts) AND every argument FRAGMENT
+            # (:tool_args, so the UI streams the params live and the token meter
+            # keeps climbing instead of freezing while a big file streams). #608.
+            announce_tool_stream(chunk, announced_tools, &emit)
           end
         rescue Rubino::Interrupted
           # Flush whatever the filter has buffered, then re-raise. Loop will
@@ -465,9 +466,25 @@ module Rubino
         {
           content: msg.respond_to?(:content) ? msg.content : nil,
           tool_calls: normalize_message_tool_calls(msg),
+          # Carry the reasoning forward so the Loop persists it and later turns
+          # replay it (KV-cache prefix stability, #608b — see load_history).
+          reasoning: message_reasoning_text(msg),
           input_tokens: msg.respond_to?(:input_tokens) ? msg.input_tokens.to_i : 0,
           output_tokens: msg.respond_to?(:output_tokens) ? msg.output_tokens.to_i : 0
         }
+      end
+
+      # The reasoning text on a ruby_llm Message (its `thinking` is a
+      # RubyLLM::Thinking with `#text`), or nil. Best-effort: a chunk-shape quirk
+      # must never break the intermediate-persist path.
+      def message_reasoning_text(msg)
+        return nil unless msg.respond_to?(:thinking) && msg.thinking
+
+        t = msg.thinking
+        text = t.respond_to?(:text) ? t.text : t.to_s
+        text.to_s.empty? ? nil : text
+      rescue StandardError
+        nil
       end
 
       def normalize_message_tool_calls(msg)
@@ -487,28 +504,37 @@ module Rubino
         log_safely(event: event, error: e.message)
       end
 
-      # Emit a `:tool_preparing` signal carrying the tool name the first time a
-      # given tool call is seen in the stream (Hermes' on_tool_start, #608). The
-      # accumulating arg deltas of one call all carry the same id, so +announced+
-      # dedupes to one emit per call. +emit+ is the stream's (type, text) lambda,
-      # so the signal rides the same error-handled path as content/thinking.
-      # Best-effort: never let a chunk-shape quirk break the stream.
-      def announce_tool_preparing(chunk, announced, &emit)
+      # Surface a streaming tool call to the UI as two signals (#608):
+      #   * `:tool_preparing` — the tool NAME, emitted ONCE per call (deduped via
+      #     +announced+, keyed by id), the instant the call first appears. The
+      #     timeline uses it to open the tool card at the START of the call.
+      #   * `:tool_args` — every argument FRAGMENT as it streams. ruby_llm yields
+      #     the per-delta chunk (not the accumulator), so `tc.arguments` here is
+      #     the NEW fragment, not the cumulative string — forward it as-is. The UI
+      #     streams these as the live params and counts them toward the token
+      #     meter, so a long `write` shows progress instead of a frozen footer.
+      # Both ride the stream's (type, text) lambda, so they share the same
+      # error-handled path as content/thinking. Best-effort: never let a
+      # chunk-shape quirk break the stream.
+      def announce_tool_stream(chunk, announced, &emit)
         calls = chunk.respond_to?(:tool_calls) ? chunk.tool_calls : nil
         return unless calls.respond_to?(:each_value)
 
         calls.each_value do |tc|
           name = tc.respond_to?(:name) ? tc.name : nil
-          next if name.nil? || name.empty?
+          if name && !name.empty?
+            id = (tc.respond_to?(:id) && tc.id) || name
+            unless announced[id]
+              announced[id] = true
+              emit.call(:tool_preparing, name.to_s)
+            end
+          end
 
-          id = (tc.respond_to?(:id) && tc.id) || name
-          next if announced[id]
-
-          announced[id] = true
-          emit.call(:tool_preparing, name.to_s)
+          args = tc.respond_to?(:arguments) ? tc.arguments : nil
+          emit.call(:tool_args, args) if args.is_a?(String) && !args.empty?
         end
       rescue StandardError => e
-        log_safely(event: "llm.stream.tool_preparing_error", error: e.message)
+        log_safely(event: "llm.stream.tool_stream_error", error: e.message)
       end
 
       # Buffered-partial AdapterResponse returned when a stream is cut after at
@@ -1211,7 +1237,13 @@ module Rubino
             chat_instance.messages << RubyLLM::Message.new(
               role: role,
               content: content,
-              tool_calls: tool_calls
+              tool_calls: tool_calls,
+              # Replay the stored reasoning as the wire `reasoning_content`
+              # (openai/chat.rb#format_thinking) so the prompt prefix byte-matches
+              # the server's KV cache, which holds this turn's reasoning tokens
+              # (#608b). Omitting it diverged the prefix at the reasoning boundary
+              # and forced a full re-prefill every turn.
+              thinking: rebuild_thinking(msg[:reasoning] || msg["reasoning"])
             )
           when :tool
             chat_instance.messages << build_tool_message(
@@ -1289,6 +1321,16 @@ module Rubino
           )
           acc[call.id] = call
         end
+      end
+
+      # Reconstructs the RubyLLM::Thinking carrying a replayed assistant turn's
+      # reasoning (#608b), or nil when there is none. RubyLLM::Thinking.build
+      # already drops empty text, so a blank/absent reasoning yields nil and the
+      # message replays without a reasoning_content field (unchanged behaviour).
+      def rebuild_thinking(reasoning)
+        return nil if reasoning.nil? || reasoning.to_s.empty?
+
+        RubyLLM::Thinking.build(text: reasoning.to_s)
       end
 
       # +buffered+ (streaming path) is every assistant TEXT block of the turn
@@ -1446,13 +1488,13 @@ module Rubino
 
       # Reasoning text/summary if ruby_llm surfaced it on the message; nil
       # otherwise. Kept defensive — older builds carry no reasoning field.
+      # ruby_llm exposes a completed message's reasoning as #thinking (a
+      # RubyLLM::Thinking with #text) — there is no #reasoning method, so the old
+      # probe (response.reasoning) always rescued to nil and the final turn's
+      # reasoning was never persisted; its replay then busted the KV-cache prefix
+      # (#608b). Same extraction the intermediate path uses (#message_reasoning_text).
       def extract_thinking(response)
-        return nil unless response.respond_to?(:reasoning) && response.reasoning
-
-        r = response.reasoning
-        r.respond_to?(:text) ? r.text : r.to_s
-      rescue StandardError
-        nil
+        message_reasoning_text(response)
       end
 
       def extract_tool_calls(response)

@@ -284,14 +284,6 @@ module Rubino
         dig("memory", "auto_extract") == true
       end
 
-      # Background session-summary aux-LLM job (SummarizeSessionJob). Default ON
-      # (absent ⇒ true), so existing behaviour is unchanged; an explicit false
-      # turns it off — letting the whole background aux-LLM surface
-      # (extract/distill/summarize) be disabled together.
-      def memory_auto_summarize?
-        dig("memory", "auto_summarize") != false
-      end
-
       # Throttle interval (in turns) for memory.auto_extract (#412). Returns a
       # positive Integer; nil/<=1 (or absent) ⇒ 1 = every turn. The lifecycle
       # only enqueues ExtractMemoryJob when turns-since-last >= this.
@@ -447,6 +439,31 @@ module Rubino
       # the task isn't defined, so callers can chain .dig safely.
       def auxiliary_config(task)
         dig("auxiliary", task.to_s) || {}
+      end
+
+      # True when the auxiliary +task+ resolves to the SAME server ENDPOINT as the
+      # main model — i.e. its LLM calls land on the main model server's KV slot.
+      # Slot-sharing is about the endpoint (provider + base_url), NOT the model: a
+      # different model on the SAME server still shares the single slot. At the
+      # defaults (auxiliary.<task>.provider:"main", empty base_url) this is true.
+      #
+      # It matters for local single-slot servers: an aux call sharing the slot
+      # OVERWRITES the live conversation's KV-cache prefix, so the next user turn
+      # re-prefills the whole context (the "freeze after N turns"). The post-turn
+      # extraction/distill gates use this to stay OFF the interactive slot,
+      # mirroring how Hermes/Claude Code keep automatic memory work off the live
+      # conversation (extract at session end instead). A DISTINCT aux endpoint
+      # (its own server/slot) does not evict, so inter-turn extraction stays on.
+      def auxiliary_on_main_endpoint?(task)
+        cfg = auxiliary_config(task)
+        provider = cfg["provider"].to_s.strip
+        aux_provider = provider.empty? || provider == "main" ? dig("model", "provider").to_s : provider
+
+        aux_base = cfg["base_url"].to_s.strip
+        aux_base = provider_config(aux_provider)["base_url"].to_s.strip if aux_base.empty?
+        main_base = provider_config(dig("model", "provider").to_s)["base_url"].to_s.strip
+
+        aux_provider == dig("model", "provider").to_s && aux_base == main_base
       end
 
       # Returns true when the primary model can ingest images directly. Honours
