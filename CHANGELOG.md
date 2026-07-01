@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.2.2] - 2026-07-01
+
 ### Added
 
 - **Background shells get the same dev UX as background subagents.** A shell
@@ -21,11 +23,31 @@
 
 ### Changed
 
+- **The per-turn wall clock is disabled by default.** `agent.max_turn_seconds`
+  (was 600s) guillotined legitimate multi-file work on slow local models — a real
+  docs-vs-code audit runs dozens of tool calls over 10+ minutes and was
+  force-summarized into a confused non-answer. The default is now `nil`
+  (disabled); the tool-iteration budget (`max_tool_iterations`, 90) is the
+  runaway guard, and per-tool timeouts bound a hung tool. Hermes parity (its
+  IterationBudget has no clock). Set a positive number to re-arm the clock as a
+  backstop.
 - The background picker header reads "background" (not "subagents") now that it
   lists background shells alongside subagents.
 
 ### Fixed
 
+- **Truncated subagents are reported as PARTIAL, not "completed".** A background
+  subagent force-summarized at its budget/time cap used to return its partial
+  progress recap as a normal completion, so the parent — and you — got a false
+  success with no real deliverable. The turn's terminal stop reason now flows out
+  of the loop, and the completion notice, the main-timeline marker, and
+  `task_result` all mark a cut-off child **PARTIAL** with a banner telling the
+  parent the delegated work is unfinished — so it recovers (re-delegates or
+  finishes the work itself) instead of trusting a false completion.
+- **A subagent's own `max_turns` budget is honored again.** `explore`'s per-agent
+  cap (20) was silently dropped — the runner passed `nil` for subagents, so the
+  cap never applied. A subagent now honors its cap and, on reaching it, surfaces
+  the budget-extension request (#574) instead of silently force-summarizing.
 - **`rubino update` now reports the new version correctly.** After `gem update`
   pulled a newer gem, the command read the version via
   `Gem::Specification.find_by_name`, which returns the spec ACTIVATED in the
