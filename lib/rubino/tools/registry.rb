@@ -65,8 +65,7 @@ module Rubino
             disabled.include?(tool.name) ||
               !tool_enabled_in_config?(tool, config) ||
               !Rubino::Modes.allows_tool?(tool.name) ||
-              !aux_dependency_satisfied?(tool, config) ||
-              situational_tool_hidden?(tool)
+              !aux_dependency_satisfied?(tool, config)
           end
         end
 
@@ -148,77 +147,28 @@ module Rubino
           false
         end
 
-        # The delegate+poll toolset that MUST travel with `task` (spawn). The
-        # `task` tool's own description tells the model it can "fetch the result
-        # anytime with `task_result(<id>)` or stop it with `task_stop(<id>)`",
-        # and `probe` is the read-only check-on-a-child companion. If we hid
-        # these behind `any_subagent?` (the #313 token-saving gate) the model
-        # would be PROMISED a tool that is absent from its function list — it
-        # then concludes "I have no way to poll/verify my subagents" and the
-        # delegate->poll->collect flow breaks. So we deliberately trade the
-        # ~2k-token saving on these poll tools for correctness: they are exposed
-        # whenever `task` itself is (i.e. only gated by `tools.task`, NOT by a
-        # live child). The model needs the full delegate+poll toolset present to
-        # plan delegation in the first place. (#313)
-        TASK_POLL_TOOLS = %w[task_result task_stop probe].freeze
-
-        # Tools that act ON a LIVE child and are NOT named in the `task`
-        # description — they only make sense once a child SUBAGENT exists, so
-        # they stay gated on `any_subagent?`. Before any task is spawned a
-        # `steer` with no child just errors ("not your child"), so hiding it
-        # costs no promised capability and keeps the common-turn schema lean.
-        # `task` itself (spawn) stays always-on. (#313)
-        TASK_DEPENDENT_TOOLS = %w[steer].freeze
-
-        # Tools that ONLY make sense once a background SHELL exists this session —
-        # the shell-management channels. Before any `shell run_in_background:true`
-        # they have no handle to act on. `shell` itself stays always-on. (#313)
-        SHELL_DEPENDENT_TOOLS = %w[shell_input shell_output shell_tail shell_kill].freeze
+        # The whole tool set is STATIC for the life of a session. We used to
+        # situationally hide the shell-management tools (shell_input/output/tail/
+        # kill) until a background shell existed, and `steer` until a subagent
+        # existed (#313, a ~2k-token saving on the common turn). That mutated the
+        # `tools` block MID-SESSION, and on a local single-slot inference server
+        # (openai-compatible, no Anthropic cache_control breakpoint) the tools
+        # block is prefilled as part of the prompt PREFIX — so every flip busted
+        # the whole KV cache and forced a full re-prefill (measured: ~20-150s).
+        # Worse, ShellRegistry entries retire (read once / TTL), so `any?` toggled
+        # false->true->false as background shells came and went => a full re-prefill
+        # on EVERY shell on/off cycle. The ~2k "saving" is a false economy on a
+        # CACHED prefix — the tokens are prefilled once at session start then reused
+        # for free. Every reference agent keeps the tool list static and does
+        # background-shell management via always-present tools addressed by an id
+        # parameter (Codex exec_command + write_stdin(session_id) — "prefer
+        # disabling over removing … mutating mid-session invalidates the prefix";
+        # Claude Code Bash + always-present TaskOutput/TaskStop; OpenCode/aider keep
+        # tool defs and their order identical for caching). So: register once, never
+        # hide — the presence of a shell/child only changes tool RESULTS, never the
+        # tool list. (supersedes #313)
 
         private
-
-        # Context-gates (#313) on SESSION-STABLE lifecycle signals, NOT per-turn
-        # relevance — they flip at most once per session (when a subagent / a
-        # background shell first appears), so the cached tool prefix that the
-        # prompt-cache breakpoint (#311) protects stays byte-stable across the
-        # common turn. Saves ~2k tokens on a normal file-edit turn that has
-        # neither a child nor a background shell.
-        #
-        #   - task_result / task_stop / probe (TASK_POLL_TOOLS): NOT situationally
-        #     hidden — they ride with `task` (gated only by `tools.task`) because
-        #     the `task` description references task_result/task_stop and the
-        #     model must see the whole delegate+poll toolset to plan delegation.
-        #   - steer (TASK_DEPENDENT_TOOLS): acts on a LIVE child and isn't named
-        #     in the task description, so it's exposed only once ≥1 child task
-        #     exists in the BackgroundTasks registry.
-        #   - shell_* management: exposed only once ≥1 background shell exists in
-        #     the ShellRegistry.
-        def situational_tool_hidden?(tool)
-          case tool.name
-          when *TASK_DEPENDENT_TOOLS
-            !any_subagent?
-          when *SHELL_DEPENDENT_TOOLS
-            !any_background_shell?
-          else
-            false
-          end
-        end
-
-        # True once at least one child task (in any state) exists this session.
-        def any_subagent?
-          BackgroundTasks.instance.list.any?
-        rescue StandardError
-          # Never let a registry probe failure hide a tool that should show — be
-          # permissive (expose) on error, matching the opt-out posture elsewhere.
-          true
-        end
-
-        # True once at least one background shell exists this session.
-        def any_background_shell?
-          ShellRegistry.instance.any?
-        rescue StandardError
-          true
-        end
 
         def tool_enabled_in_config?(tool, config)
           # Single source of truth: the tool declares its own `tools.<key>`
