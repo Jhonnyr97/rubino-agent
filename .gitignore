@@ -52,3 +52,7 @@ Thumbs.db
 
 # generated A/B eval result dumps (keep .gitkeep + .md analyses)
 eval/results/*.json
+
+# Kept local, never tracked/pushed/shipped (user directive)
+AGENTS.md
+docs/agents.md
