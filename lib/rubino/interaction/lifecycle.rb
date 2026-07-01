@@ -25,6 +25,12 @@ module Rubino
         @session
       end
 
+      # How the turn just run by #execute terminated (Agent::Loop#stop_reason),
+      # read back by the owning Runner so the subagent-completion path can report
+      # a force-summarized/truncated run as PARTIAL rather than "completed".
+      # nil until a turn has run.
+      attr_reader :last_stop_reason
+
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
@@ -396,7 +402,11 @@ module Rubino
         # (API/server) ⇒ no sink; the result stays reachable via `task_result`.
         Rubino.with_background_sink(input_queue) do
           Rubino.with_event_bus(@event_bus) do
-            loop_runner.run(messages: messages, tools: tools)
+            content = loop_runner.run(messages: messages, tools: tools)
+            # Post-turn state, captured like #active_session: the caller reads it
+            # off #last_stop_reason after #execute returns.
+            @last_stop_reason = loop_runner.stop_reason
+            content
           end
         end
       end

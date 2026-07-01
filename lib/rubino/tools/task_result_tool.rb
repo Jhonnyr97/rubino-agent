@@ -70,7 +70,10 @@ module Rubino
             transcript_card: false
           )
         when :completed
-          "[#{entry.id}] status=completed (subagent '#{entry.subagent}')\n#{entry.result}"
+          banner = TaskTool.truncation_banner(entry.stop_reason)
+          label  = banner ? "completed (PARTIAL — cut off before finishing)" : "completed"
+          body   = banner ? "#{banner}\n\n#{entry.result}" : entry.result.to_s
+          "[#{entry.id}] status=#{label} (subagent '#{entry.subagent}')\n#{body}"
         when :failed
           "[#{entry.id}] status=failed (subagent '#{entry.subagent}'): #{entry.error}"
         else

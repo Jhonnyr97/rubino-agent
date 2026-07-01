@@ -11,6 +11,24 @@ RSpec.describe Rubino::Agent::IterationBudget do
       expect(budget.can_continue?(3)).to be true
       expect(budget.can_continue?(4)).to be false
     end
+  end
+
+  describe "#limiting_factor" do
+    it "names the iteration ceiling, or nil when the turn can still continue" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 90, "max_tool_iterations" => 3, "max_turn_seconds" => 120
+                                                              }))
+      expect(budget.limiting_factor(2)).to be_nil
+      expect(budget.limiting_factor(4)).to eq(:iterations)
+    end
+
+    it "reports :time when the wall-clock net is spent but iterations remain" do
+      budget = described_class.new(config: test_configuration("agent" => {
+                                                                "max_turns" => 90, "max_tool_iterations" => 90, "max_turn_seconds" => 120
+                                                              }))
+      budget.instance_variable_set(:@turn_started_at, Time.now - 300) # blow the 120s net
+      expect(budget.limiting_factor(2)).to eq(:time)
+    end
 
     # #139: a nil iteration/time cap (e.g. `config set agent.max_turn_seconds nil`)
     # must NOT crash the turn with "comparison of Float with nil failed". The
@@ -48,8 +66,10 @@ RSpec.describe Rubino::Agent::IterationBudget do
       expect(budget.can_continue?(6)).to be(false)
     end
 
-    it "ships a 600s pure-safety-net max_turn_seconds default (#408)" do
-      expect(Rubino::Config::Defaults.dig("agent", "max_turn_seconds")).to eq(600)
+    it "ships a DISABLED (nil) per-turn wall clock by default — iterations are the runaway guard (#408)" do
+      # 600s still guillotined legitimate multi-file work on local models; the
+      # tool-iteration budget bounds a runaway turn instead. Hermes parity.
+      expect(Rubino::Config::Defaults.dig("agent", "max_turn_seconds")).to be_nil
     end
   end
 
