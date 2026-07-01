@@ -48,8 +48,10 @@ module Rubino
       def messages = []
 
       # True while the process is still alive — the single liveness rule every UI
-      # surface filters by (mirrors BackgroundTasks.live_status?).
-      def live? = @shell.wait_thr&.alive? || false
+      # surface filters by (mirrors BackgroundTasks.live_status?). Routes through
+      # the registry's #running? oracle so a server that backgrounded its leader
+      # (`npm run dev &`) stays visible instead of vanishing the instant bash exits.
+      def live? = @registry.running?(@shell)
 
       # Stop from the UI (/stop / picker): SIGTERM→grace→SIGKILL the process group,
       # then retire so the captured output stays retrievable. Reuses the one

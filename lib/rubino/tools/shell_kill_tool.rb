@@ -43,7 +43,7 @@ module Rubino
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 
-        unless entry.wait_thr.alive?
+        unless registry.running?(entry)
           # Already finished cleanly — nothing to signal. Retire (don't drop) so
           # its captured output stays retrievable via shell_output (#78).
           registry.retire(run_id)
@@ -52,12 +52,12 @@ module Rubino
 
         send_signal(entry.pgid, "TERM")
         GRACE_SECONDS.times do
-          break unless entry.wait_thr.alive?
+          break unless registry.running?(entry)
 
           sleep 1
         end
 
-        if entry.wait_thr.alive?
+        if registry.running?(entry)
           send_signal(entry.pgid, "KILL")
           sleep 0.1
         end
@@ -65,7 +65,7 @@ module Rubino
         # Retire (don't drop) so the partial output captured before the kill
         # stays retrievable via shell_output on a later turn (#78).
         registry.retire(run_id)
-        "[#{run_id}] terminated (SIGTERM" + (entry.wait_thr.alive? ? "+SIGKILL" : "") + ")"
+        "[#{run_id}] terminated (SIGTERM" + (registry.running?(entry) ? "+SIGKILL" : "") + ")"
       end
 
       private
