@@ -278,7 +278,7 @@ module Rubino
         # there is nothing to EOF and writing the master raises Errno::EIO — so
         # close the master fd instead, which also reclaims it (it is a SEPARATE fd
         # from the reader's, otherwise leaked until GC).
-        if entry&.pty && entry.wait_thr&.alive?
+        if entry&.pty && running?(entry)
           io.write("\x04")
           io.flush
         else
@@ -302,8 +302,36 @@ module Rubino
         entry.mutex.synchronize { entry.buffer.dup }
       end
 
+      # THE single liveness oracle for a background shell — "is the work this
+      # entry represents still running?". Every surface (status, the running
+      # set, the kill/input guards, the UI cards) routes through here so they
+      # can never disagree about whether a shell is alive.
+      #
+      # A shell is alive while EITHER:
+      #   - the `bash -c` LEADER is still alive (the normal case — a server run
+      #     without a trailing `&` keeps bash in the foreground), OR
+      #   - the output READER thread is still draining — i.e. SOME descendant
+      #     still holds the merged stdout/stderr pipe open. This is what catches
+      #     a server that backgrounds ITSELF (`npm run dev &`, `cmd & echo up`)
+      #     or a launcher that exits while its child keeps serving: the leader
+      #     reaps but the child holds the pipe, so the work is plainly still
+      #     running. Keying liveness off the leader ALONE (the old behaviour)
+      #     falsely reported these :completed the instant the launcher exited,
+      #     so shell_output retired+closed them mid-flight — orphaning a live
+      #     server and driving the model into a kill/restart loop (port already
+      #     in use → crash → restart → …).
+      #
+      # The reader-thread signal is immune to PID/PGID reuse: it tracks OUR pipe
+      # fd, not a pid, so it can never alias an unrelated later process group the
+      # way a bare `kill(0, -pgid)` probe could after the group is fully reaped.
+      def running?(entry)
+        return false unless entry
+
+        entry.wait_thr&.alive? || entry.reader_thr&.alive? || false
+      end
+
       def status(entry)
-        return :running if entry.wait_thr.alive?
+        return :running if running?(entry)
         return :stopped if entry.stopped
 
         code = entry.wait_thr.value.exitstatus
@@ -311,7 +339,7 @@ module Rubino
       end
 
       def exit_code(entry)
-        return nil if entry.wait_thr.alive?
+        return nil if running?(entry)
 
         entry.wait_thr.value.exitstatus
       end
@@ -319,7 +347,7 @@ module Rubino
       # The RUNNING background shells (not yet exited, not retired) — the set the
       # picker/cards surface as live "background work" alongside subagents.
       def running_entries
-        @mutex.synchronize { @entries.values.select { |e| e.retired_at.nil? && e.wait_thr&.alive? } }
+        @mutex.synchronize { @entries.values.select { |e| e.retired_at.nil? && running?(e) } }
       end
 
       # Running PLUS retired (finished-but-retained) shells — the set shown in the
@@ -336,7 +364,7 @@ module Rubino
 
         owned = @mutex.synchronize do
           @entries.values.select do |e|
-            e.owner_subagent_id == subagent_id && e.retired_at.nil? && e.wait_thr&.alive?
+            e.owner_subagent_id == subagent_id && e.retired_at.nil? && running?(e)
           end
         end
         owned.each { |e| terminate(e) }
@@ -348,15 +376,15 @@ module Rubino
       # single per-shell stop seam the UI (/stop, picker) routes through.
       def terminate(entry, grace: 2)
         entry.stopped = true # a UI /stop ⇒ #status reports :stopped, not :failed
-        return retire(entry.id) unless entry.wait_thr.alive?
+        return retire(entry.id) unless running?(entry)
 
         signal_group("TERM", entry.pgid)
         grace.times do
-          break unless entry.wait_thr.alive?
+          break unless running?(entry)
 
           sleep 1
         end
-        signal_group("KILL", entry.pgid) if entry.wait_thr.alive?
+        signal_group("KILL", entry.pgid) if running?(entry)
         retire(entry.id)
       end
 

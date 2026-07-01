@@ -73,7 +73,7 @@ module Rubino
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 
-        unless entry.wait_thr.alive?
+        unless registry.running?(entry)
           return "Error: [#{run_id}] already exited (exit=#{registry.exit_code(entry)}) — cannot send input"
         end
 
