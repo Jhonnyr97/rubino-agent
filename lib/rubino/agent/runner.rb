@@ -131,17 +131,17 @@ module Rubino
           provider_override: @provider_override,
           interactive: @interactive,
           # The SOFT iteration ceiling (where the budget-extension prompt fires)
-          # vs the HARD max_turns outer rail. For the main agent @max_turns is the
-          # `--max-turns N` override, which intentionally sets the soft ceiling.
-          # A SUBAGENT, though, gets @max_turns = definition.max_turns (= config
-          # agent.max_turns, 90) — passing THAT as the soft ceiling made soft ==
-          # hard, so #extendable? was always false and a subagent could NEVER
-          # surface a budget request (#571) — it just force-summarized. Subagents
-          # therefore pass nil so the soft ceiling falls back to config
-          # agent.max_tool_iterations (25) < the 90 hard rail, exactly like the
-          # main agent — so a subagent at 25 iterations parks and asks for budget
-          # via the dropdown (#574), extendable up to the 90 outer rail.
-          max_tool_iterations: @session_source == "subagent" ? nil : @max_turns,
+          # vs the HARD max_turns outer rail (config agent.max_turns, applied
+          # inside IterationBudget). @max_turns carries the per-run soft cap on
+          # BOTH paths:
+          #   - MAIN agent: the `--max-turns N` override (nil ⇒ config default).
+          #   - SUBAGENT:   definition.max_turns — e.g. explore=20, general=50,
+          #     BELOW the 90 hard rail — so the child both HONORS its per-agent
+          #     cap (#571: it used to be dropped entirely) AND can surface the
+          #     #574 budget-park at that cap, extendable up to the 90 outer rail.
+          # A subagent that sets no max_turns falls back to config agent.max_turns
+          # (soft == hard) and simply hard-stops there, like the main agent.
+          max_tool_iterations: @max_turns,
           polishing: @polishing
         )
 
@@ -157,9 +157,18 @@ module Rubino
         # counterpart to the manual /compact swap (chat_command rebuilds the
         # runner on result[:compact_into]).
         @session = lifecycle.active_session
+        # Post-turn state, read by the subagent-completion path (task_tool) so a
+        # force-summarized/truncated child is reported PARTIAL, not "completed".
+        @last_stop_reason = lifecycle.last_stop_reason
 
         response
       end
+
+      # How this runner's LAST turn terminated (Agent::Loop#stop_reason),
+      # threaded up via Lifecycle. nil until a turn has run. Read by the `task`
+      # tool after a subagent's #run! to distinguish a real completion from a
+      # budget-/time-truncated partial.
+      attr_reader :last_stop_reason
 
       # Pins the agent Definition this runner threads into every subsequent turn
       # (the sticky `/agent <name>` / Tab-cycle switch). Lifecycle reads

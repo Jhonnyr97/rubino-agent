@@ -182,9 +182,11 @@ RSpec.describe Rubino::Config::Configuration do
 
   describe "agent budget accessors (#139 — nil falls back to default)" do
     it "returns the configured iteration/time caps" do
-      # Default aligned to the Hermes reference (90); max_turn_seconds is a 600s safety-net (#408).
+      # Iteration budget aligned to the Hermes reference (90); the per-turn wall
+      # clock is DISABLED by default (nil) so it can't guillotine legitimate long
+      # work — the iteration budget is the runaway guard (#408 / Hermes parity).
       expect(config.agent_max_tool_iterations).to eq(90)
-      expect(config.agent_max_turn_seconds).to eq(600)
+      expect(config.agent_max_turn_seconds).to be_nil
     end
 
     it "falls back to the built-in default when the value is nil" do
@@ -196,7 +198,9 @@ RSpec.describe Rubino::Config::Configuration do
                                  "max_turn_seconds" => nil
                                })
       expect(cfg.agent_max_tool_iterations).to eq(90)
-      expect(cfg.agent_max_turn_seconds).to eq(600)
+      # max_turn_seconds default is now nil (disabled), so a nil config value
+      # resolves to nil — the wall clock stays off rather than snapping to 600.
+      expect(cfg.agent_max_turn_seconds).to be_nil
     end
   end
 

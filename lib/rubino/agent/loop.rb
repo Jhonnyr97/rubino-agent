@@ -122,6 +122,15 @@ module Rubino
         @tool_executor.on_result = method(:handle_tool_result) if @tool_executor.respond_to?(:on_result=)
       end
 
+      # How the LAST turn terminated, read back by the caller AFTER #run returns
+      # (mirrors how Lifecycle exposes #active_session). :completed on a normal
+      # answer; :max_iterations / :max_time when the turn was force-summarized at
+      # the tool/turn ceiling or the wall-clock net; :aborted on a user abort;
+      # :stream_incomplete when a truncated stream was handed back as the answer.
+      # The subagent-completion path reads this so a truncated run is reported
+      # PARTIAL instead of a false "completed" (#core-F1 honesty).
+      attr_reader :stop_reason
+
       # Runs the agent loop, returning the final assistant response content.
       def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity
         # Stash the resolved toolset so #streaming? can decide, per run, whether
@@ -194,6 +203,10 @@ module Rubino
         # most once per turn, only after a real block, and reset here so a fresh
         # turn never inherits a prior turn's reminder.
         @blocked_reminder_emitted = false
+        # Terminal outcome of THIS turn, read back via #stop_reason once #run
+        # returns. Optimistic default — every early return below that ISN'T a
+        # clean answer overwrites it (force-summary, abort, truncated stream).
+        @stop_reason = :completed
         token_total = 0
 
         loop do
@@ -316,6 +329,7 @@ module Rubino
             end
             # Continuations exhausted — hand back the recovered partial as the
             # (truncated) final answer: truthful and resumable, not a hard failure.
+            @stop_reason = :stream_incomplete
             emit_turn_summary(turn_started_at, token_total)
             return response.content
           end
@@ -580,6 +594,7 @@ module Rubino
       # note rather than a force-summary (no extra model call). The ledger note
       # keeps it truthful about how much ran.
       def abort_on_budget_exhausted(iteration, turn_started_at, token_total)
+        @stop_reason = :aborted
         note = "Stopped at user request after #{iteration} tool iteration" \
                "#{"s" if iteration != 1} (#{tool_count_label})."
         persist_user_message_note(note)
@@ -629,6 +644,10 @@ module Rubino
       end
 
       def force_summarize_budget_exhausted(messages, iteration, turn_started_at, token_total)
+        # Record WHICH rail forced the summary so a background subagent's
+        # completion can be reported PARTIAL with the real reason (time vs
+        # iterations) instead of a misleading "completed" (#core-F1).
+        @stop_reason = @budget.limiting_factor(iteration) == :time ? :max_time : :max_iterations
         nudge = force_summary_nudge
         persist_user_message(nudge)
         messages << { role: "user", content: nudge }

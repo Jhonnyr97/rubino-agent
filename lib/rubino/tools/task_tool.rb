@@ -50,6 +50,37 @@ module Rubino
         text.to_s.strip.end_with?(NOOP_RESULT_SUFFIX)
       end
 
+      # Agent::Loop#stop_reason values that mean the child was CUT OFF before
+      # finishing (force-summarized at a budget rail, or a truncated stream) — so
+      # its "result" is a partial progress recap, NOT the delegated task. Used to
+      # report the completion as PARTIAL rather than a misleading "completed".
+      TRUNCATED_REASONS = %i[max_time max_iterations stream_incomplete].freeze
+
+      # Main-timeline glyph per completion status (see #completion_status).
+      COMPLETION_ICONS = { "no-op" => "⊘", "partial" => "⚠", "done" => "✓" }.freeze
+
+      def self.truncated?(stop_reason)
+        TRUNCATED_REASONS.include?(stop_reason)
+      end
+
+      # The model-facing banner prepended to a truncated child's result, spelling
+      # out WHY it stopped and that the task is UNFINISHED. Shared by the
+      # background completion notice, the sync tool-result, and task_result so all
+      # three surfaces tell the same truth. nil for a clean (non-truncated) run.
+      def self.truncation_banner(stop_reason)
+        reason =
+          case stop_reason
+          when :max_time         then "hit its per-turn time budget (agent.max_turn_seconds) before finishing"
+          when :max_iterations   then "hit its per-turn tool-iteration budget before finishing"
+          when :stream_incomplete then "had its model stream end early before finishing"
+          else return nil
+          end
+        "⚠ INCOMPLETE — the subagent #{reason}. The text below is a PARTIAL " \
+          "progress summary, NOT the finished task. Treat the delegated work as " \
+          "UNFINISHED: re-delegate a narrower slice, or complete the remaining " \
+          "work yourself."
+      end
+
       def name
         "task"
       end
@@ -254,8 +285,12 @@ module Rubino
           end
         end
         text = result_or_noop(result, entry.subagent)
+        # How the child's turn ended, so a budget-/time-truncated run is reported
+        # PARTIAL instead of a false "completed". A test runner_factory stub may
+        # not expose it — default nil (treated as a clean completion).
+        stop_reason = runner.respond_to?(:last_stop_reason) ? runner.last_stop_reason : nil
 
-        record_completion(entry, text, sink, parent_ui)
+        record_completion(entry, text, sink, parent_ui, stop_reason: stop_reason)
         # The OLD AttachedAgentWatcher closed its live tail with a "✓ finished —
         # press ← to return" affordance shown only while the user was attached to
         # THIS sub. Re-home it onto the sub's OWN UI: it commits with this sub's
@@ -302,15 +337,16 @@ module Rubino
       # #complete's return closes that gap: a note is either drained here (and
       # reported undelivered) or rejected by #steer (and reported not-delivered
       # to its caller) — never silently lost.
-      def record_completion(entry, text, sink, parent_ui)
-        drained = BackgroundTasks.instance.complete(entry, status: :completed, result: text)
+      def record_completion(entry, text, sink, parent_ui, stop_reason: nil)
+        drained = BackgroundTasks.instance.complete(entry, status: :completed, result: text,
+                                                           stop_reason: stop_reason)
         # A drained DENY-note (#Y1B) is ADVISORY — the approval was already
         # denied, so a "couldn't deliver it" alarm is misleading: the denial
         # applied and the explanation is simply moot. Only GENUINE
         # `/agents <id> steer` notes (no prefix) are a real deliver-or-report
         # case that warrants the scary warning.
         denied, undelivered = drained.partition { |n| n.to_s.start_with?(BackgroundTasks::DENY_NOTE_PREFIX) }
-        notify(sink, completion_notice(entry, text, undelivered: undelivered))
+        notify(sink, completion_notice(entry, text, stop_reason: stop_reason, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,
                              "⚠ #{entry.id} · steer note not delivered (task completed first): " \
@@ -322,7 +358,7 @@ module Rubino
           surface_completion(parent_ui,
                              "#{entry.id} · denial applied; the agent finished before reading the note")
         end
-        status = self.class.noop_result?(text) ? "no-op" : "done"
+        status = completion_status(text, stop_reason)
         surface_completion(parent_ui, completion_marker(entry, status),
                            id: entry.id, status: status)
       end
@@ -339,8 +375,19 @@ module Rubino
       # reaches the MODEL via the InputQueue notice + task_result. A no-op /
       # fully-denied run (#16) reads "no-op", never a misleading green ✓.
       def completion_marker(entry, status)
-        icon = status == "no-op" ? "⊘" : "✓"
+        icon = COMPLETION_ICONS.fetch(status, "✓")
         "#{icon} #{entry.id} · #{entry.subagent} · #{status}"
+      end
+
+      # The one-word main-timeline status for a finished child: "no-op" (did
+      # nothing / fully denied), "partial" (cut off by a budget/time rail before
+      # finishing — #core-F1), or "done". A no-op takes precedence: an empty run
+      # is a no-op even if the turn was also force-summarized.
+      def completion_status(text, stop_reason)
+        return "no-op" if self.class.noop_result?(text)
+        return "partial" if self.class.truncated?(stop_reason)
+
+        "done"
       end
 
       # Rings the parent's attention notifier (bell/command hook) for a child
@@ -404,9 +451,12 @@ module Rubino
         sink&.push_notice(text)
       end
 
-      def completion_notice(entry, text, undelivered: [])
-        notice = "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') completed.\n" \
-                 "Result:\n#{Rubino::Util::Output.elide(text, 4000)}\n" \
+      def completion_notice(entry, text, stop_reason: nil, undelivered: [])
+        banner = self.class.truncation_banner(stop_reason)
+        headline = banner ? "completed BUT WAS CUT OFF before finishing" : "completed"
+        body = banner ? "#{banner}\n\nResult:" : "Result:"
+        notice = "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') #{headline}.\n" \
+                 "#{body}\n#{Rubino::Util::Output.elide(text, 4000)}\n" \
                  "(full result via task_result(\"#{entry.id}\"))"
         return notice if undelivered.empty?
 
@@ -477,6 +527,15 @@ module Rubino
       def result_or_noop(result, name)
         text = result.to_s.strip
         text.empty? ? "(subagent '#{name}' #{NOOP_RESULT_SUFFIX}" : text
+      end
+
+      # Prepends the PARTIAL banner to a child's result text when the run was cut
+      # off by a budget/time rail; returns the text unchanged for a clean run.
+      # Used by the SYNC path, whose returned string IS the model-facing result
+      # (the background path carries the banner in its completion notice instead).
+      def annotate_if_truncated(text, stop_reason)
+        banner = self.class.truncation_banner(stop_reason)
+        banner ? "#{banner}\n\n#{text}" : text
       end
 
       # Builds the nested Runner for BOTH the sync and background paths.
@@ -696,8 +755,12 @@ module Rubino
         registry_bg.attach(entry, thread: Thread.current, runner: runner)
         result = Rubino.with_current_subagent_id(entry.id) { runner.run!(prompt) }
         text   = result_or_noop(result, definition.name)
-        registry_bg.complete(entry, status: :completed, result: text)
-        text
+        stop_reason = runner.respond_to?(:last_stop_reason) ? runner.last_stop_reason : nil
+        registry_bg.complete(entry, status: :completed, result: text, stop_reason: stop_reason)
+        # The sync path returns the child's text straight back as THIS tool's
+        # result (the parent sees it inline, no [background-task] notice), so the
+        # PARTIAL banner must ride on the returned string itself.
+        annotate_if_truncated(text, stop_reason)
       rescue StandardError => e
         # Release the reserved slot on ANY failure so a raising sync child can
         # never wedge a live-slot leak; #call's rescue phrases the message.

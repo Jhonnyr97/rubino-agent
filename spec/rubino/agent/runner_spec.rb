@@ -5,7 +5,7 @@ RSpec.describe Rubino::Agent::Runner do
   let(:null_ui) { Rubino::UI::Null.new }
 
   let(:fake_lifecycle) do
-    instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE")
+    instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE", last_stop_reason: nil)
   end
 
   # Holds the session the Lifecycle reports active AFTER a turn. Defaults to the
@@ -40,12 +40,13 @@ RSpec.describe Rubino::Agent::Runner do
       captured
     end
 
-    it "a SUBAGENT passes a nil soft ceiling so it falls back to config max_tool_iterations (< max_turns)" do
-      kwargs = captured_kwargs_for(max_turns: 90, session_source: "subagent")
-      # nil → IterationBudget uses config agent.max_tool_iterations (25) as the
-      # soft ceiling, below the 90 hard rail — so #extendable? is true and the
-      # subagent can surface a budget request (#574) instead of soft==hard==90.
-      expect(kwargs[:max_tool_iterations]).to be_nil
+    it "a SUBAGENT passes its own definition.max_turns as the soft ceiling (#571 — honored, not dropped)" do
+      # explore's max_turns (20) is BELOW the 90 hard rail, so it is honored as
+      # the soft ceiling AND #extendable? is true — the child parks and asks for
+      # budget (#574) at 20 instead of silently running to (or force-summarizing
+      # at) the global 90. Previously this was dropped to nil ⇒ soft==hard==90.
+      kwargs = captured_kwargs_for(max_turns: 20, session_source: "subagent")
+      expect(kwargs[:max_tool_iterations]).to eq(20)
     end
 
     it "the MAIN agent still passes its max_turns as the soft ceiling (--max-turns N honored)" do

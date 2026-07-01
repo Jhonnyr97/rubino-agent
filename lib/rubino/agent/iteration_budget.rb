@@ -37,6 +37,19 @@ module Rubino
         within_iteration_limit?(iteration) && within_time_limit?
       end
 
+      # Which rail is blocking the turn RIGHT NOW, so a force-summarized turn can
+      # report WHY it stopped (honest subagent-completion reporting, not a false
+      # "completed"). :iterations when the tool/turn ceiling is spent, :time when
+      # the wall-clock safety-net is, nil when the turn could still continue.
+      # Mirrors #can_continue?'s conjunction — the iteration ceiling is checked
+      # first, matching the order the loop exhausts them.
+      def limiting_factor(iteration)
+        return :iterations unless within_iteration_limit?(iteration)
+        return :time unless within_time_limit?
+
+        nil
+      end
+
       # True ONLY when offering the interactive Continue extension would actually
       # help: the SOFT iteration ceiling (@max_tool_iterations) is what's
       # exhausted, and neither non-extendable rail is the blocker (#403).

@@ -59,6 +59,11 @@ module Rubino
       # to remember); the parking/wake/stop-cancel plumbing is identical.
       Entry = Struct.new(
         :id, :subagent, :prompt, :status, :result, :error,
+        # How the child's turn TERMINATED (Agent::Loop#stop_reason). :completed on
+        # a real answer; :max_time / :max_iterations / :stream_incomplete when the
+        # run was force-summarized/truncated. Lets the completion notice, the card,
+        # and task_result all report a truncated run as PARTIAL, not "completed".
+        :stop_reason,
         :thread, :runner, :started_at, :finished_at,
         :last_activity, :tool_count, :activity_log, :output_tail,
         :approval_gate, :approval_id, :approval_question, :approval_command,
@@ -293,12 +298,13 @@ module Rubino
       # omitted from `undelivered`, yet reported delivered. Returns the notes
       # that were still queued at finalize time (never delivered to the child),
       # so the caller can surface them as undelivered.
-      def complete(entry, status:, result: nil, error: nil)
+      def complete(entry, status:, result: nil, error: nil, stop_reason: nil)
         @mutex.synchronize do
           status            = :stopped if entry.status == :stopping && status == :failed
           entry.status      = status
           entry.result      = result
           entry.error       = error
+          entry.stop_reason = stop_reason
           entry.finished_at = Time.now
           # Drain UNDER the mutex: anything still here is undelivered (the child
           # has no further turn to fold it in), and once status is terminal no

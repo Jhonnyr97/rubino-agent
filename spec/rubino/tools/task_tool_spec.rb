@@ -126,6 +126,58 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
+  # truncation honesty (#core-F1): a child force-summarized at a budget/time rail
+  # must be reported PARTIAL, not as a clean completion, on EVERY surface.
+  # ---------------------------------------------------------------------------
+
+  # Like StubRunner but exposes #last_stop_reason, the post-turn signal the real
+  # Agent::Runner threads up from the Loop.
+  TruncatedRunner = Struct.new(:final, :stop_reason) do
+    def run!(_input, **_opts) = final
+    def last_stop_reason = stop_reason
+  end
+
+  describe "truncated subagent reporting" do
+    it "prepends the PARTIAL banner to the SYNC tool result when time-truncated" do
+      runner = TruncatedRunner.new("recap of what I read so far", :max_time)
+      out = task_tool_with(runner).call("subagent" => "explore", "prompt" => "compare code to docs",
+                                        "background" => false)
+      expect(out).to include("⚠ INCOMPLETE")
+      expect(out).to include("per-turn time budget")
+      expect(out).to include("recap of what I read so far")
+    end
+
+    it "leaves a CLEAN sync result untouched (no banner) when the child completed" do
+      runner = TruncatedRunner.new("the real answer", :completed)
+      out = task_tool_with(runner).call("subagent" => "explore", "prompt" => "find X", "background" => false)
+      expect(out).to eq("the real answer")
+    end
+
+    it "marks the BACKGROUND completion notice + registry entry PARTIAL when iteration-truncated" do
+      runner = TruncatedRunner.new("partial progress", :max_iterations)
+      sink   = Rubino::Interaction::InputQueue.new
+      tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
+
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "explore", "prompt" => "big job")
+      end
+      task_id = out[/sa_[0-9a-f]+/]
+      wait_until { sink.pending? }
+
+      notice = sink.drain.join("\n")
+      expect(notice).to include("CUT OFF before finishing")
+      expect(notice).to include("⚠ INCOMPLETE")
+
+      entry = Rubino::Tools::BackgroundTasks.instance.find(task_id)
+      expect(entry.stop_reason).to eq(:max_iterations)
+
+      # task_result surfaces the same truth on a later poll.
+      result = Rubino::Tools::TaskResultTool.new.call("task_id" => task_id)
+      expect(result).to include("PARTIAL")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # real nested Runner path (no stub): the default factory builds an
   # Agent::Runner with the subagent definition; the child loop runs on a fake
   # adapter and must see ONLY the prompt — never the parent's transcript.

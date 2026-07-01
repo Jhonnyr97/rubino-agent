@@ -187,9 +187,16 @@ module Rubino
           # Pure SAFETY-NET wall clock on a single turn, NOT a working-time cap
           # (#408). Hermes' IterationBudget has no clock at all; the old 120s
           # KILLED slow-but-legitimate test/build turns mid-work (and was the
-          # root that made the #403 budget-extension loop possible). Raised to a
-          # backstop only a genuinely runaway turn should ever hit. nil disables.
-          "max_turn_seconds" => 600,
+          # root that made the #403 budget-extension loop possible). Even the
+          # raised 600s still guillotines legitimate work: a genuine multi-file
+          # "compare docs vs code" audit on a LOCAL model runs ~40 tool calls in
+          # ~13 min, blowing 600s and force-summarizing the turn into a confused
+          # non-answer — the exact failure #408 warned about. So the wall clock
+          # is DISABLED by default (nil): the tool-iteration budget
+          # (max_tool_iterations, 90) is the real runaway guard, and individual
+          # hung tools are bounded by their own per-tool timeouts. Hermes parity.
+          # Set a positive number to re-arm the clock as an explicit backstop.
+          "max_turn_seconds" => nil,
           # 5 retries with exponential backoff = 1+2+4+8+16 = 31s total wait.
           # Sized to absorb common provider blips (MiniMax intl in particular
           # has been observed returning "API server error - please try again"
