@@ -59,6 +59,15 @@ module Rubino
       # policy denial is never reported as "denied by user" (#143).
       attr_reader :last_deny_reason
 
+      # Why the most recent #decide returned :ask, when the reason is one the UI
+      # should annotate — currently only :outside_workspace (a structured write
+      # whose target sits outside every allowed root, routed to the widen prompt).
+      # nil for an ordinary risk/secret/shell :ask. ToolExecutor reads it right
+      # after #decide to prepend the "outside the workspace — approving adds the
+      # directory" note to the approval card, so the human sees WHY the write is
+      # being gated and what approving grants.
+      attr_reader :last_ask_reason
+
       def initialize(config: nil, agent_overrides: nil)
         @config = config || Rubino.configuration
         @mode = @config.dig("approvals", "mode")
@@ -120,6 +129,7 @@ module Rubino
       # by a fast-path the way yolo used to override deny rules.
       def decide(tool, arguments: {})
         @last_deny_reason = nil
+        @last_ask_reason = nil
         @doom_loop_warning = false
         command_str = self.class.command_string(tool, arguments)
 
@@ -237,6 +247,29 @@ module Rubino
         #      The hardline floor (step 1) and permissions:deny (step 2) already
         #      ran, so dangerous_only NEVER weakens the non-bypassable floor.
         return shell_confirm_decision(command_str) if tool.name == "shell"
+
+        # 8a. Out-of-workspace structured write → :ask (Claude-Code-aligned). A
+        #     write/edit/multi_edit/apply_patch whose target resolves OUTSIDE
+        #     every allowed root (and is neither temp scratch nor the agent home)
+        #     is NO LONGER hard-refused at the tool boundary with no recourse:
+        #     it prompts, and on approval the ToolExecutor widens the workspace
+        #     to include the target's directory (Workspace.add), matching Claude
+        #     Code's "writes are confined to the project; an out-of-scope write
+        #     requests explicit permission" boundary. This MUST precede the 8b/8c
+        #     auto-allow (which would otherwise let the write through to the
+        #     tool's own guard and its dead-end refusal).
+        #
+        #     Below yolo (step 3) so a --yolo operator is never prompted — the
+        #     ToolExecutor still widens on the yolo path so the write lands. When
+        #     headless the :ask becomes the #260 fail-closed block, so an
+        #     out-of-workspace write can't be silently auto-approved without a
+        #     human. workspace_strict=false (no jail) ⇒ widen_target_for is nil ⇒
+        #     no prompt. An explicit permissions:allow rule (step 5) already
+        #     won above, so a user who pre-authorised the path isn't re-asked.
+        if outside_workspace_write?(tool, arguments)
+          @last_ask_reason = :outside_workspace
+          return :ask
+        end
 
         # 8b. Structured in-workspace edit symmetry (#427). Under dangerous_only,
         #    a safe `shell sed -i …` / `echo > file` runs UNPROMPTED (step 7-8),
@@ -360,6 +393,30 @@ module Rubino
         return false unless SECRET_GATED_WRITE_TOOLS.include?(tool.name)
 
         secret_targets(tool, arguments).any? { |p| SecretPath.secret?(p) }
+      end
+
+      # True when this structured write touches at least one path outside every
+      # allowed root — the trigger for the Claude-Code-aligned widen prompt
+      # (#decide step 8a). Non-structured tools and fully in-workspace writes
+      # return false.
+      def outside_workspace_write?(tool, arguments)
+        return false unless STRUCTURED_EDIT_TOOLS.include?(tool.name)
+
+        workspace_widen_dirs(tool, arguments).any?
+      end
+
+      # The directories that must be added to the workspace for this write to
+      # land — one per target that resolves outside every allowed root, deduped;
+      # empty for an in-workspace write. ToolExecutor adds them once the call is
+      # cleared to run (after approval, or under yolo). Reuses #secret_targets so
+      # the SAME per-tool target resolution the secret gate uses (write/edit/
+      # multi_edit → file_path; apply_patch → every patched file) drives the
+      # widen, and Tools::Base.boundary#widen_target_for applies the one shared
+      # writability rule (strict-off / temp-scratch / agent-home all yield nil).
+      def workspace_widen_dirs(tool, arguments)
+        return [] unless STRUCTURED_EDIT_TOOLS.include?(tool.name)
+
+        secret_targets(tool, arguments).filter_map { |t| Tools::Base.boundary.widen_target_for(t) }.uniq
       end
 
       # The absolute path(s) a write tool will touch. apply_patch yields one per

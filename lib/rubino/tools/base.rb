@@ -112,7 +112,51 @@ module Rubino
         }
       end
 
+      # Class-level access to the write-boundary predicates for a caller that
+      # has no tool instance — the ApprovalPolicy's out-of-workspace widen gate.
+      # The predicates are STATELESS (they read config / Workspace / ENV / home
+      # live on every call, never an ivar), so a memoized throwaway instance is a
+      # faithful, allocation-free way to reuse the EXACT logic the tools enforce
+      # rather than re-implementing it — the same throwaway-instance idiom
+      # Attachments::Classify already uses for #canonical_path. One source of
+      # truth for "may this be written / must it be widened", shared by the
+      # approval decision and the tool's own guard.
+      def self.boundary
+        @boundary ||= Class.new(self) { def name = "__boundary__" }.new
+      end
+
+      # The directory to ADD to the workspace so a write to +path+ becomes
+      # allowed, or nil when no widening applies. Returns nil when the target is
+      # ALREADY writable (in-workspace or temp scratch), when strict mode is off
+      # (there is no jail to widen), or when the target is under the agent home
+      # (a deliberately non-writable trust anchor we must NEVER offer to widen,
+      # #290). Otherwise returns the deepest EXISTING ancestor directory of the
+      # target: that is the dir Workspace.add can accept (it requires an existing
+      # directory) and the minimal grant that lets the write land. Drives the
+      # Claude-Code-aligned "write outside the workspace → ask, then add the
+      # directory for the session" flow; PUBLIC so Base.boundary can reach it.
+      def widen_target_for(path)
+        return nil unless workspace_strict?
+
+        expanded = expand_workspace_path(path)
+        return nil if writable_workspace?(expanded)
+        return nil if under_agent_home?(expanded)
+
+        nearest_existing_dir(expanded)
+      end
+
       protected
+
+      # Walks up from +expanded+ to the deepest ancestor that exists and is a
+      # directory. The target is a not-yet-created file (the common widen case)
+      # or an existing file, so the search starts at its parent. nil only if
+      # nothing up the chain is a real directory (the filesystem root always is,
+      # so this is effectively total).
+      def nearest_existing_dir(expanded)
+        dir = File.dirname(expanded)
+        dir = File.dirname(dir) until File.directory?(dir) || dir == File.dirname(dir)
+        File.directory?(dir) ? dir : nil
+      end
 
       # Resolves a model-supplied path to an absolute one, anchoring a RELATIVE
       # path at the SESSION cwd (Workspace.current_cwd) instead of the process

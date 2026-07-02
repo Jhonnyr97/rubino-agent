@@ -121,6 +121,18 @@ module Rubino
           end
         end
 
+        # Widen-on-approval (Claude-Code-aligned): a structured write whose
+        # target sits OUTSIDE the workspace was routed to :ask by the policy
+        # (step 8a) and just cleared approval — or was auto-allowed under yolo.
+        # Add the target's directory to the workspace roots NOW, before the tool
+        # runs, so both the tool's own writable_workspace? guard and the OS
+        # write-jail (both read Workspace.roots live) let the write land, instead
+        # of the dead-end "refusing to access" the boundary used to return. No-op
+        # for an in-workspace write. Runs on EVERY proceed path (approved :ask
+        # and yolo :allow); the headless block and user-deny paths returned above,
+        # so an unapproved out-of-workspace write is never widened.
+        widen_workspace_if_needed(tool, arguments)
+
         # Warn-not-block doom-loop guard (#414): when the detector tripped but
         # hard_stop is off (the default), the call is ALLOWED — surface a
         # one-time warning so a stuck autopilot is visible without hard-denying a
@@ -439,6 +451,25 @@ module Rubino
         )
       end
 
+      # Adds each out-of-workspace write target's directory to the session
+      # workspace roots so the impending write clears the tool guard + OS
+      # write-jail. Best-effort: a widen failure is logged and left to the tool's
+      # own boundary guard (which then refuses), so we never write somewhere the
+      # workspace still forbids. No-op unless the policy exposes the widen dirs
+      # and returns a non-empty set (out-of-workspace structured write only).
+      def widen_workspace_if_needed(tool, arguments)
+        return unless @approval_policy.respond_to?(:workspace_widen_dirs)
+
+        @approval_policy.workspace_widen_dirs(tool, arguments).each do |dir|
+          Workspace.add(dir)
+          Rubino.logger&.info(event: "workspace.widened", dir: dir, tool: tool.name)
+          @ui.warning("added #{dir} to the workspace for this session") if @ui.respond_to?(:warning)
+        end
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "tool_executor.widen_failed",
+                            error: e.message, error_class: e.class.name)
+      end
+
       # Build a stable string identifier for (tool, arguments) so the
       # UI layer can short-circuit on a prior "session"/"always"
       # decision. Reuses the same command extractor ApprovalPolicy
@@ -483,7 +514,25 @@ module Rubino
       # model actually sent. Lay each key out on its own line; clip long
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
-        with_mcp_note(tool, build_approval_question(tool, arguments))
+        question = with_mcp_note(tool, build_approval_question(tool, arguments))
+        with_workspace_note(tool, arguments, question)
+      end
+
+      # Prepends the out-of-workspace disclosure when the policy routed THIS write
+      # to the widen prompt (last_ask_reason == :outside_workspace): the human
+      # sees the target is OUTSIDE the current workspace and that approving adds
+      # its directory to the session, so "approve" is an informed widen — not a
+      # blind edit that looks in-project. Any other :ask (risk / secret / shell)
+      # returns the question unchanged.
+      def with_workspace_note(tool, arguments, question)
+        return question unless @approval_policy.respond_to?(:last_ask_reason)
+        return question unless @approval_policy.last_ask_reason == :outside_workspace
+
+        dirs = @approval_policy.workspace_widen_dirs(tool, arguments)
+        return question if dirs.empty?
+
+        "#{question}\n   ↳ OUTSIDE the workspace (#{Workspace.roots.join(", ")}) — " \
+          "approving adds #{dirs.join(", ")} for this session"
       end
 
       # Appends the external-code disclosure line ONLY for MCP tools, so the human
