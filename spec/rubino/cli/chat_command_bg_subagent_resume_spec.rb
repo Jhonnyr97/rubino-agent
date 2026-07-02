@@ -33,6 +33,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       stop: nil,
       reconfigure: nil,
       reset_input: nil,
+      pristine_prefill?: false,
       quit_pending?: false,
       clear_quit_pending: nil
     )

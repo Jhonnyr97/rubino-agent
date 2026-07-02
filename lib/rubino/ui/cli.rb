@@ -373,34 +373,69 @@ module Rubino
         # $stdin so a mid-turn type-ahead can't leak into its filter. A filtering
         # menu is a CHOICE, not a freeform answer — no queue line is consumed.
         BottomComposer.run_in_terminal_with_pending(consume_queue: false) do
-          cancellable_prompt.select(prompt, cycle: false, filter: true) do |menu|
+          # Esc aborts tty-prompt mid-render — the exception unwinds straight out
+          # of its draw loop, so the per-frame refresh that would have CLEARED the
+          # header + menu it just drew never runs; the dead frame is left on screen
+          # (#219). We must ERASE it HERE, INSIDE the run_in_terminal block, while
+          # the picker is still the active frame and the cursor sits at its bottom
+          # row. Catching InputInterrupt at the method level instead let the block's
+          # `ensure` run #resume FIRST — which redrew the composer prompt below the
+          # picker and swapped $stdout back to the write-only proxy — so the erase
+          # then fought an already-resumed prompt from the wrong cursor row and
+          # walked into the conversation above (the "timeline disappears" bug).
+
+          cancellable_prompt.select(prompt, cycle: false, filter: true,
+                                            per_page: PICKER_PAGE_SIZE) do |menu|
             menu.help(FILTER_MENU_HELP)
             choices.each { |label, value| menu.choice label, value }
           end
+        rescue TTY::Reader::InputInterrupt
+          erase_picker_frame(prompt, choices.length)
+          nil
         end
-      rescue TTY::Reader::InputInterrupt
-        # Esc aborts tty-prompt mid-render — the exception unwinds straight out of
-        # its draw loop, so the per-frame refresh that would have CLEARED the just
-        # drawn header + menu never runs. The frame is left committed to the
-        # scrollback (a dead "Resume which session? …" / "Rewind to which
-        # message? …" header + its first row), and repeated cancels stack corpses
-        # (#219). Erase the picker's frame so cancel restores the prompt cleanly —
-        # "nothing changed", as documented. The cursor is parked at the end of the
-        # last menu row, so we walk up over every drawn line and wipe to the end
-        # of the screen.
-        erase_picker_frame(choices.length)
-        nil
       end
 
-      # Clears a cancelled picker's drawn frame: 1 header row + the visible menu
-      # rows (tty-prompt paginates at PICKER_PAGE_SIZE). Walks the cursor up to
-      # the header column-0 and erases everything below it, leaving the terminal
-      # exactly as it was before the picker opened.
-      def erase_picker_frame(choice_count)
-        rows = 1 + [choice_count, PICKER_PAGE_SIZE].min
-        # rubino's OWN cursor moves to wipe the cancelled picker frame — no
-        # untrusted text → one Cat 4 frame through the single seam.
-        emit_frame("#{TTY::Cursor.column(1)}#{TTY::Cursor.up(rows)}#{TTY::Cursor.clear_screen_down}")
+      # Erases a cancelled picker's drawn frame (called from INSIDE the
+      # run_in_terminal block, BEFORE the composer resumes — see #select), leaving
+      # the terminal exactly as it was before the picker opened. tty-prompt's last
+      # choice carries no trailing newline, so when Esc raises InputInterrupt the
+      # cursor is parked on the frame's BOTTOM row; we walk up to the first row and
+      # clear-screen-down. The frame is:
+      #
+      #   header row(s)  — "<prompt> <help>", which WRAPS by the real terminal
+      #                    width (a wide terminal keeps it on one row, a narrow one
+      #                    splits it), and
+      #   menu row(s)    — up to PICKER_PAGE_SIZE choices (per_page is pinned so the
+      #                    count is deterministic).
+      #
+      # Width MUST come from the composer (its @output, captured before the
+      # StdoutProxy swap): TTY::Screen.width probes the live $stdout — the
+      # write-only proxy — raises, and falls back to 80, which mis-measured the
+      # header as a 2-row wrap on a wide terminal and walked the cursor up into the
+      # conversation, deleting scrollback on every cancel (the reported bug). The
+      # header is measured WITH the help text (shown on the first render): if it has
+      # since scrolled off (later renders drop it), we over-estimate by at most one
+      # row, which only clears the blank spacer the composer keeps above the prompt
+      # — never real content. Verified end-to-end in tmux at widths 70/100/160.
+      def erase_picker_frame(prompt, choice_count)
+        cols        = picker_width
+        header_rows = [(display_width("#{prompt} #{FILTER_MENU_HELP}").to_f / cols).ceil, 1].max
+        menu_rows   = [choice_count, PICKER_PAGE_SIZE].min
+        up          = header_rows + menu_rows - 1
+        frame = +TTY::Cursor.column(1)
+        frame << TTY::Cursor.up(up) if up.positive?
+        frame << TTY::Cursor.clear_screen_down
+        emit_frame(frame)
+      end
+
+      # The real terminal width for sizing a picker frame: the session composer's
+      # (resolved from its pre-proxy @output), with an IO.console fallback for
+      # between-turns pickers where no composer is up. NOT TTY::Screen.width — it
+      # reads the write-only StdoutProxy and is unreliable while a session runs.
+      def picker_width
+        w = BottomComposer.current&.terminal_width
+        w = terminal_cols unless w.is_a?(Integer) && w.positive?
+        w
       end
 
       # A DEDICATED TTY::Prompt for cancellable pickers, with Esc bound to the

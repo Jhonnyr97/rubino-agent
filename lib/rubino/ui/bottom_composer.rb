@@ -266,7 +266,13 @@ module Rubino
         # math — extracted into Composer::InputLine so it lives in one unit-tested
         # model instead of the composer. Read via #buffer/#cursor; every mutation
         # goes through @input_line under the @render mutex, then a #redraw.
-        @input_line  = Composer::InputLine.new
+        @input_line = Composer::InputLine.new
+        # The last text placed by #prefill (the Esc-Esc rewind edit affordance),
+        # kept so #pristine_prefill? can tell an UNTOUCHED programmatic prefill
+        # from genuine user input: the former must never be carried across
+        # prompts as a draft. Cleared on submit / reset and once the buffer
+        # diverges from it (any edit). nil ⇒ the buffer is not a live prefill.
+        @prefilled_text = nil
         @partial     = +"" # live, un-committed streamed line shown above the prompt
         # The live TURN activity (the animated facet: "◆ writing · 47s · 18 tools
         # · ~202 tok"), set by the CLI status ticker via #set_turn_status. When
@@ -1028,9 +1034,33 @@ module Rubino
           @menu.close!
           @input_line.replace(text.to_s)
           @history.reset!
+          # Remember what we injected so #pristine_prefill? can flag an
+          # untouched rewind prefill and keep the REPL from capturing it as a
+          # carried @pending_draft (which re-seeded it every idle turn — the
+          # "deleted message keeps coming back" bug).
+          @prefilled_text = text.to_s
           redraw
         end
       end
+
+      # True when the buffer STILL holds the exact, unedited text #prefill
+      # injected — the Esc-Esc rewind edit affordance the user has not touched.
+      # That content was written by the REPL, not typed by the user, so the idle
+      # read / turn-end draft capture must SKIP it: carrying it into
+      # @pending_draft re-seeded it on every later prompt, surviving deletes. Any
+      # edit diverges the buffer from @prefilled_text, and a submit (#take_buffer)
+      # or #reset_input clears the marker, so both make this false — genuine and
+      # edited drafts are still carried as before.
+      def pristine_prefill?
+        !@prefilled_text.to_s.empty? && buffer == @prefilled_text
+      end
+
+      # The REAL terminal width in columns, from @output (captured BEFORE the
+      # StdoutProxy swap) with an IO.console fallback. Authoritative for callers
+      # that must reason about wrapping while the session composer owns the
+      # screen — TTY::Screen.width probes the live $stdout (the write-only proxy),
+      # which raises and falls back to 80, so it can't be trusted there.
+      def terminal_width = compute_cols
 
       # Empty the editable buffer + close any open menu, without the history
       # reset or the eager redraw #prefill does (BUG 02). The REPL now REUSES one
@@ -1046,6 +1076,7 @@ module Rubino
         @render.synchronize do
           @menu.close!
           @input_line.clear
+          @prefilled_text = nil
         end
       end
 
@@ -1862,6 +1893,7 @@ module Rubino
         @render.synchronize do
           @menu.close!
           line = @input_line.take
+          @prefilled_text = nil # a submitted line is no longer a live prefill
           redraw # clears any open-menu rows above the prompt on submit
         end
         line

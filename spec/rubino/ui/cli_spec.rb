@@ -2701,22 +2701,33 @@ RSpec.describe Rubino::UI::CLI do
       expect(ui.select("pick", choices)).to eq(2)
     end
 
-    # Regression for #219 (and #138): Esc aborts tty-prompt mid-render, so its
-    # per-frame refresh never clears the header + menu it just drew — the dead
-    # frame is left in the scrollback and repeated cancels stack corpses. The
-    # cancel path must ERASE that frame (walk the cursor up over every drawn row
-    # and clear to the end of the screen), leaving the terminal as it was before
-    # the picker opened — which also fixes #138 (no cancel-hint glue onto a stale
-    # last row, since the cursor lands at column 1 on a clean line).
-    it "erases the cancelled picker frame so nothing is left in the scrollback (#219)" do
+    # Regression for #219 / #138 and the "timeline disappears while I cancel the
+    # rewind picker" report: Esc aborts tty-prompt mid-render, so its per-frame
+    # refresh never clears the header + menu it just drew — the cancel path erases
+    # that frame. tty-prompt leaves the cursor on the frame's BOTTOM row, so we
+    # walk up (header rows + visible menu rows − 1) to the top and clear down. The
+    # header "<prompt> <help>" wraps by the REAL terminal width, so the row count
+    # must use it — measuring at the wrong (proxy-fallback 80) width over-walked
+    # into the conversation above and deleted scrollback. Verified in tmux at 70,
+    # 100, 160. `choices` has 2 entries; the "pick" header + help is ~103 cols.
+    it "erases the cancelled picker frame: header(wrapped) + menu − 1 rows up, then clear-down" do
+      allow(ui).to receive(:terminal_cols).and_return(80) # header wraps to 2 rows
       picker_with_keys("\e")
       out = capture_stdout { expect(ui.select("pick", choices)).to be_nil }
 
-      # 1 header row + the 2 visible choice rows = 3 rows walked back, then
-      # everything below the header is wiped.
-      expect(out).to include(TTY::Cursor.up(3))
+      expect(out).to include(TTY::Cursor.up(3)) # 2 header + 2 menu − 1
       expect(out).to include(TTY::Cursor.clear_screen_down)
       expect(out).to include(TTY::Cursor.column(1))
+    end
+
+    it "does NOT over-walk into the timeline on a wide terminal (header = 1 row)" do
+      allow(ui).to receive(:terminal_cols).and_return(240) # header fits on one row
+      picker_with_keys("\e")
+      out = capture_stdout { expect(ui.select("pick", choices)).to be_nil }
+
+      expect(out).to include(TTY::Cursor.up(2))     # 1 header + 2 menu − 1
+      expect(out).not_to include(TTY::Cursor.up(3)) # walking up 3 would eat a timeline row
+      expect(out).to include(TTY::Cursor.clear_screen_down)
     end
   end
 

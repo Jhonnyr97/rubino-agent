@@ -1731,7 +1731,12 @@ module Rubino
         # line already cleared the buffer).
         if composer
           pending = composer.buffer.to_s
-          @pending_draft = pending unless pending.strip.empty?
+          # Skip an UNTOUCHED Esc-Esc rewind prefill (#pristine_prefill?): it is
+          # a one-shot edit affordance the REPL wrote, not a user draft, so
+          # carrying it into @pending_draft re-seeded it every idle turn — the
+          # picked message reappeared and survived deletes. A submitted or edited
+          # buffer is carried as before.
+          @pending_draft = pending unless pending.strip.empty? || composer.pristine_prefill?
         end
       end
 
@@ -2359,7 +2364,10 @@ module Rubino
         return unless composer
 
         draft = composer.buffer.to_s
-        @pending_draft = draft unless draft.strip.empty?
+        # An untouched rewind prefill left in the buffer when the turn ends is the
+        # REPL's edit affordance, not a user draft — don't carry it (it re-seeded
+        # the picked message on the next prompt). See #read_idle_line's ensure.
+        @pending_draft = draft unless draft.strip.empty? || composer.pristine_prefill?
       rescue IOError, Errno::ENOTTY, Errno::EIO
         nil
       end
