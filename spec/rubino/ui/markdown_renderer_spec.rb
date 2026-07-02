@@ -613,4 +613,42 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       expect(blocks).to eq([[["a", nil]], [["b", nil]]])
     end
   end
+
+  # Definition lists (kramdown :dl → :dt/:dd). Without a dedicated block case
+  # they fell to the recover-inline `else` branch, which flattened every term
+  # and definition into ONE concatenated line ("FrameworkInsieme…AgenteAI…").
+  describe "definition lists" do
+    def lines_of(blocks) = blocks.map { |line| text_of(line) }
+
+    it "renders each term on its own line and indents its definition" do
+      out = lines_of(renderer.render("Framework\n: Insieme di librerie e tool.\n\nAgente AI\n: Programma autonomo."))
+      expect(out).to include("Framework")
+      expect(out).to include("  : Insieme di librerie e tool.")
+      expect(out).to include("Agente AI")
+      expect(out).to include("  : Programma autonomo.")
+    end
+
+    it "keeps multiple definitions under the same term as separate lines" do
+      out = lines_of(renderer.render("Framework\n: First sense.\n: Second sense."))
+      expect(out).to include("  : First sense.")
+      expect(out).to include("  : Second sense.")
+    end
+
+    it "styles the term bold" do
+      blocks = renderer.render("Framework\n: A definition.")
+      term = find_token(blocks, "Framework")
+      expect(term).not_to be_nil
+      expect(style_of(term)[:modifiers]).to include(:bold)
+    end
+
+    it "separates contiguous groups the model glued without blank lines" do
+      # kramdown would fold "Agente AI" into the prior definition as a lazy
+      # continuation; normalize inserts the missing blank so it is a new term.
+      out = lines_of(renderer.render("Framework\n: Librerie.\nAgente AI\n: Autonomo."))
+      expect(out).to include("Agente AI")
+      expect(out).to include("  : Autonomo.")
+      # The term is NOT swallowed into the previous definition line.
+      expect(out).not_to include("    Agente AI")
+    end
+  end
 end
