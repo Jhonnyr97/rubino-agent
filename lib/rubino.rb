@@ -216,6 +216,33 @@ module Rubino
       Thread.current[:rubino_current_subagent_id] = prev
     end
 
+    # During a background skill/memory review (the Hermes-style post-turn fork,
+    # Jobs::Handlers::BackgroundReviewJob) this holds the frozen set of tool
+    # names the forked review agent may dispatch. ToolExecutor consults it to
+    # (a) DENY any tool outside the set and (b) treat the whitelisted
+    # skill/memory tools as PRE-APPROVED trusted background writes — they only
+    # touch HOME/skills and the memory store, never shell or arbitrary paths —
+    # so they never reach the interactive approval gate on a thread with no
+    # human to answer it (the #260 headless fail-closed floor would otherwise
+    # deny them). Also the presence of a value signals "a review turn is
+    # running on this thread" so Lifecycle#enqueue_post_turn_jobs skips its own
+    # post-turn enqueue (no recursive reviews). Nil on every normal run.
+    def review_toolset
+      Thread.current[:rubino_review_toolset]
+    end
+
+    # Binds +names+ (an array of tool names) as the review toolset for the
+    # duration of the block, thread-local so the forked review Runner's tools
+    # reach it with zero signature churn. Mirrors Hermes'
+    # set_thread_tool_whitelist + non-interactive approval callback.
+    def with_review_toolset(names)
+      prev = Thread.current[:rubino_review_toolset]
+      Thread.current[:rubino_review_toolset] = names && names.to_set(&:to_s).freeze
+      yield
+    ensure
+      Thread.current[:rubino_review_toolset] = prev
+    end
+
     # The CancelToken governing best-effort AUX work (post-turn polishing:
     # memory-extract / skill-distill / summarize) running on THIS thread, if
     # any. The detached polishing thread (Interaction::Polishing) binds its

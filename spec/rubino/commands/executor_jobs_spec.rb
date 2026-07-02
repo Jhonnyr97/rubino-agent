@@ -32,7 +32,7 @@ RSpec.describe Rubino::Commands::Executor do
     end
 
     it "renders the status counts plus the same table as `rubino jobs list`" do
-      queue.enqueue("DistillSkillJob", { "session_id" => "s1" })
+      queue.enqueue("BackgroundReviewJob", { "session_id" => "s1" })
       queue.enqueue("ExtractMemoryJob", { "session_id" => "s2" })
       failed_id = queue.enqueue("ExtractMemoryJob", { "session_id" => "s3" })
       Rubino.database.db[:jobs].where(id: failed_id).update(status: "failed")
@@ -48,14 +48,14 @@ RSpec.describe Rubino::Commands::Executor do
 
   describe "/jobs <id> (detail)" do
     it "shows one job in full by short-id prefix, including its error" do
-      id = queue.enqueue("DistillSkillJob", { "session_id" => "s1" })
+      id = queue.enqueue("BackgroundReviewJob", { "session_id" => "s1" })
       Rubino.database.db[:jobs].where(id: id).update(status: "failed", last_error: "boom went the model")
 
       result = exec.try_execute("/jobs #{id[0..7]}")
 
       expect(result).to eq(:handled)
       lines = info_lines.join("\n")
-      expect(lines).to include("DistillSkillJob", "failed", "attempts", "session_id")
+      expect(lines).to include("BackgroundReviewJob", "failed", "attempts", "session_id")
       err = ui.messages.find { |m| m[:level] == :error }
       expect(err[:message]).to include("boom went the model")
     end

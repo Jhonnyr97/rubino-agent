@@ -1990,7 +1990,7 @@ module Rubino
       # Short human labels for the post-turn inline jobs the status row tracks.
       JOB_STATUS_LABELS = {
         "ExtractMemoryJob" => "memory",
-        "DistillSkillJob" => "skills"
+        "BackgroundReviewJob" => "skills"
       }.freeze
 
       def job_enqueued(type)

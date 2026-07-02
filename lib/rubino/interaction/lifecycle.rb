@@ -34,7 +34,8 @@ module Rubino
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
-                     max_tool_iterations: nil, polishing: nil, interactive: false)
+                     max_tool_iterations: nil, polishing: nil, interactive: false,
+                     system_prompt_override: nil)
         @session = session
         @event_bus = event_bus
         @ui = ui
@@ -58,6 +59,9 @@ module Rubino
         @max_tool_iterations = max_tool_iterations
         @session_repo = Session::Repository.new
         @message_store = Session::Store.new
+        # Byte-identical system prompt for the background review fork (nil on
+        # every normal turn). Threaded into PromptAssembler by #build_messages.
+        @system_prompt_override = system_prompt_override
       end
 
       # Executes the full interaction lifecycle for a user input.
@@ -236,7 +240,8 @@ module Rubino
           memory_context: memory_context,
           config: @config,
           agent_definition: @agent_definition,
-          ignore_rules: @ignore_rules
+          ignore_rules: @ignore_rules,
+          system_prompt_override: @system_prompt_override
         )
         assembler.build
       end
@@ -418,6 +423,12 @@ module Rubino
       end
 
       def enqueue_post_turn_jobs
+        # A background review turn (the Hermes-style fork, BackgroundReviewJob)
+        # must NOT enqueue its own post-turn jobs — that would recurse
+        # (review → review → …). The review runs on a thread with
+        # Rubino.review_toolset bound, so bail out here.
+        return if Rubino.review_toolset
+
         queue = Jobs::Queue.new
         # When a detached polishing worker is wired (interactive CLI), only
         # PERSIST the rows here and let that worker drain them off the live
@@ -459,7 +470,6 @@ module Rubino
         # fact gets stored before exit, #358). A DISTINCT aux endpoint (its own
         # slot) never evicts, so it keeps the inter-turn cadence too.
         extract_evicts_live_slot = @interactive && @config.auxiliary_on_main_endpoint?("compression")
-        distill_evicts_live_slot = @interactive && @config.auxiliary_on_main_endpoint?("summarize")
 
         if @config.memory_auto_extract? && !extract_evicts_live_slot &&
            interval_due?(turn_no, @config.memory_auto_extract_interval)
@@ -475,18 +485,21 @@ module Rubino
           enqueued = true
         end
 
-        # Variant B — deterministic post-turn skill distillation. Gated exactly
-        # like ExtractMemoryJob above: a dedicated config predicate guards the
-        # enqueue so this aux-spending background job only runs when explicitly
-        # enabled (skills.auto_distill, default true). The job then applies its
-        # own deterministic gate (run succeeded AND >= N tool calls AND not
-        # already covered) before spending one aux-model call. Handler lookup
-        # is load-order independent: Jobs::Registry resolves the class from
-        # the Handlers namespace on demand (#81).
-        if @config.skills_auto_distill? && !distill_evicts_live_slot &&
+        # Background skill review — the Hermes-style post-turn fork
+        # (BackgroundReviewJob), throttled every N turns like Hermes'
+        # _skill_nudge_interval. Unlike the old DistillSkillJob (a single aux
+        # call with a DIVERGENT prompt that evicted the live KV slot, so it had
+        # to be suppressed in interactive), the review fork REUSES the parent
+        # turn's cached system prompt + conversation snapshot, so its request
+        # extends the warm prefix instead of busting it — no freeze. That is why
+        # there is NO `evicts_live_slot` gate here: it runs inter-turn in the
+        # interactive REPL exactly as Hermes does. The forked review agent
+        # decides (agentically) whether to create/update a skill; a fresh
+        # skills dir or a trivial one-off simply yields no write.
+        if @config.skills_auto_distill? &&
            interval_due?(turn_no, @config.skills_auto_distill_interval)
-          queue.enqueue("DistillSkillJob", { session_id: @session[:id] }, drain_inline: drain_inline)
-          @event_bus.emit(Events::JOB_ENQUEUED, type: "DistillSkillJob")
+          queue.enqueue("BackgroundReviewJob", { session_id: @session[:id] }, drain_inline: drain_inline)
+          @event_bus.emit(Events::JOB_ENQUEUED, type: "BackgroundReviewJob")
           enqueued = true
         end
 

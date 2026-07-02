@@ -19,6 +19,14 @@ module Rubino
       @snapshots = {}
       @snapshots_mutex = Mutex.new
 
+      # Process-wide cache of the EXACT system-prompt content last sent for a
+      # session, captured verbatim in #build. The Hermes-style background review
+      # fork (BackgroundReviewJob) reads it and re-emits it as a
+      # system_prompt_override so the review request's prefix is byte-identical
+      # to the parent turn's warm KV cache — no divergent prompt, no eviction.
+      # Mirrors Hermes' review_agent._cached_system_prompt = agent._cached_system_prompt.
+      @system_prompts = {}
+
       class << self
         # Returns the cached snapshot for a session, computing it via the
         # supplied block on first access. The block receives no args and
@@ -41,6 +49,21 @@ module Rubino
         def reset_all_snapshots!
           @snapshots_mutex.synchronize { @snapshots.clear }
         end
+
+        # Records the exact system-prompt content sent for +session_id+ this
+        # turn (called from #build). Guarded by the same mutex as @snapshots.
+        def record_system_prompt(session_id, content)
+          return if session_id.nil?
+
+          @snapshots_mutex.synchronize { @system_prompts[session_id] = content }
+        end
+
+        # The verbatim system-prompt content last sent for +session_id+, or nil
+        # if none captured yet. Read by BackgroundReviewJob to pin the review
+        # fork's prefix to the parent turn's cached bytes.
+        def system_prompt_for(session_id)
+          @snapshots_mutex.synchronize { @system_prompts[session_id] }
+        end
       end
 
       # Model-name substrings that trigger tool-use-enforcement steering under the
@@ -52,11 +75,17 @@ module Rubino
       ].freeze
 
       def initialize(session:, memory_context:, config:, agent_definition: nil,
-                     ignore_rules: false)
+                     ignore_rules: false, system_prompt_override: nil)
         @session = session
         @memory_context = memory_context
         @config = config
         @agent_definition = agent_definition
+        # When set (the Hermes-style background review fork), #build emits this
+        # content verbatim as the single system message and skips the normal
+        # stable_prefix/volatile_tail rebuild — so the review request's prefix is
+        # byte-identical to the parent turn's warm cache. See
+        # PromptAssembler.system_prompt_for / BackgroundReviewJob.
+        @system_prompt_override = system_prompt_override
         # --ignore-rules suppresses project-context discovery
         # (AGENTS.md/CLAUDE.md/.rubino.md/.cursorrules). The flag is threaded
         # from Lifecycle so the CLI option genuinely skips discovery (#47), not
@@ -77,7 +106,16 @@ module Rubino
         # sits AFTER it so the cached bytes stay byte-stable. Both regions live
         # in ONE role:"system" entry (#253), built as a Content::Raw array of
         # text blocks when caching is on, or a plain joined String otherwise.
-        messages << { role: "system", content: system_content }
+        # Override path (background review fork): re-emit the parent turn's
+        # captured system prompt verbatim so the prefix is byte-identical. The
+        # normal path computes system_content AND records it for a later review.
+        if @system_prompt_override
+          system = @system_prompt_override
+        else
+          system = system_content
+          self.class.record_system_prompt(@session && @session[:id], system)
+        end
+        messages << { role: "system", content: system }
 
         # Conversation history. Repair tool pairing across the FULL list before
         # mapping to wire format — this is the defensive "net" that recovers

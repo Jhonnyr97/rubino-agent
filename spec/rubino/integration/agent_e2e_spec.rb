@@ -13,9 +13,9 @@ RSpec.describe "Agent end-to-end with FakeLLMAdapter" do
   # Memory auto-extraction and skill auto-distillation are exercised in their
   # own specs; here they would just consume scripted FakeLLM turns (both mine
   # the just-finished transcript via an aux LLM call), so disable both for these
-  # conversation/tool-loop tests. Leaving auto_distill on would fire
-  # DistillSkillJob inline on every >= 5-tool turn against an already-exhausted
-  # FakeLLM, which retries with exponential backoff and pollutes later specs.
+  # conversation/tool-loop tests. Leaving auto_distill on would fork
+  # BackgroundReviewJob every N turns against an already-exhausted FakeLLM,
+  # which retries with exponential backoff and pollutes later specs.
   let(:config) do
     mem    = Rubino::Config::Defaults.dig("memory").merge("auto_extract" => false)
     skills = Rubino::Config::Defaults.dig("skills").merge("auto_distill" => false)

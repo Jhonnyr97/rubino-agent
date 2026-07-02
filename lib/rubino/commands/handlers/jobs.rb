@@ -5,7 +5,7 @@ module Rubino
     module Handlers
       # The `/jobs` in-chat window into the PERSISTENT jobs queue (#187),
       # extracted from Commands::Executor (batch B) — the queue the agent itself
-      # feeds mid-session (DistillSkillJob after tool-heavy turns, memory
+      # feeds mid-session (BackgroundReviewJob after tool-heavy turns, memory
       # extraction), distinct from the in-process /agents subagents. Read-mostly:
       # `process`/`worker` stay CLI-only (they are daemons, not session actions).
       #

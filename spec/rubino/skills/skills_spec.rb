@@ -605,7 +605,7 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       it "exposes action/description/body in the input schema with the load/create enum" do
         props = tool.input_schema[:properties]
         expect(props).to include(:action, :description, :body)
-        expect(props[:action][:enum]).to eq(%w[load create])
+        expect(props[:action][:enum]).to eq(%w[load create edit patch write_file])
       end
 
       it "writes a valid SKILL.md with proper frontmatter and counts one creation" do

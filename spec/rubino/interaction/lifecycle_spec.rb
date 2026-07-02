@@ -477,6 +477,24 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       expect(polishing).to have_received(:start)
     end
 
+    it "enqueues BackgroundReviewJob (not the retired DistillSkillJob) when skills.auto_distill is on" do
+      review_config = test_configuration(
+        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
+        "memory" => { "enabled" => true, "auto_extract" => false },
+        "skills" => { "auto_distill" => true, "auto_distill_interval" => 1 }
+      )
+      lc = described_class.new(session: { id: "sess-rev", model: "gpt-4o" },
+                              event_bus: event_bus, ui: null_ui, config: review_config,
+                              polishing: polishing)
+      stub_message_count(lc, 1)
+
+      lc.send(:enqueue_post_turn_jobs)
+
+      types = db_connection.db[:jobs].all.map { |r| r[:type] }
+      expect(types).to include("BackgroundReviewJob")
+      expect(types).not_to include("DistillSkillJob")
+    end
+
     it "keeps the synchronous inline drain when NO polishing worker is wired" do
       no_worker = described_class.new(session: { id: "sess-2", model: "gpt-4o" },
                                       event_bus: event_bus, ui: null_ui, config: detach_config)

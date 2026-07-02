@@ -218,7 +218,7 @@ module Rubino
         #    same SKILL.md — the workspace sandbox (within_workspace?) refuses any
         #    write outside the workspace, leaving this :ask-gated helper as the
         #    ONLY way to author a skill.
-        return :ask if skill_create?(tool, arguments)
+        return :ask if skill_write?(tool, arguments)
 
         # 7-8. confirm_policy gate for a shell command not otherwise resolved.
         #    NOT under runtime yolo (handled at step 3) — that is the explicit
@@ -323,12 +323,15 @@ module Rubino
 
       # True when this is the WRITE action of the skill tool (action: "create").
       # The skill tool is :low (so read_only keeps load/list/show), but its
-      # create action writes a SKILL.md and must be approval-gated (#405).
-      def skill_create?(tool, arguments)
+      # WRITE actions (create/edit/patch/write_file) author or mutate a SKILL.md
+      # and must be approval-gated (#405). The background review fork bypasses
+      # this via Rubino.review_toolset (trusted sandboxed write); a foreground
+      # agent still asks.
+      def skill_write?(tool, arguments)
         return false unless tool.name == "skill"
 
         args = arguments || {}
-        (args["action"] || args[:action]).to_s == "create"
+        %w[create edit patch write_file].include?((args["action"] || args[:action]).to_s)
       end
 
       # The confirm_policy shell gate (steps 7-8), extracted so #decide stays
