@@ -13,6 +13,9 @@ module Rubino
     # action: "create" (0 extra LLM calls; the create happens inline on the
     # tool-call the model already emitted).
     class SkillTool < Tools::Base
+      # Subdirs a supporting file (write_file) may live under (mirrors Hermes).
+      SUPPORT_DIRS = %w[references templates scripts assets].freeze
+
       def initialize(registry: nil)
         @registry = registry || Registry.new
       end
@@ -22,46 +25,63 @@ module Rubino
       end
 
       def description
-        "Load a specialized skill's instructions into context, or create a new " \
-          "skill. action defaults to \"load\": use it when a task matches one of " \
-          "the available skills listed under \"## Skills\" in the system prompt " \
-          "(pass file_path to load a bundled file). After finishing a complex, " \
-          "multi-step task (typically 5+ tool calls) that is likely to recur and " \
-          "isn't already covered, call action: \"create\" with name, description, " \
-          "and body to save it as a reusable skill."
+        "Load a specialized skill's instructions into context, or author/maintain " \
+          "skills. action defaults to \"load\": use it when a task matches one of the " \
+          "available skills listed under \"## Skills\" in the system prompt (pass " \
+          "file_path to load a bundled file). After finishing a complex, multi-step " \
+          "task (typically 5+ tool calls) likely to recur, either UPDATE an existing " \
+          "skill it fits (action \"edit\"/\"patch\", or \"write_file\" for a support " \
+          "file) or, if none covers it, action \"create\" a new one with " \
+          "name/description/body."
       end
 
-      def input_schema
+      def input_schema # rubocop:disable Metrics/MethodLength -- flat JSON-schema literal
         {
           type: "object",
           properties: {
             action: {
               type: "string",
-              enum: %w[load create],
-              description: "\"load\" (default) loads an existing skill; " \
-                           "\"create\" writes a new skill from name/description/body."
+              enum: %w[load create edit patch write_file],
+              description: "\"load\" (default) loads an existing skill; \"create\" writes a " \
+                           "new skill from name/description/body; \"edit\" rewrites an existing " \
+                           "skill's SKILL.md body; \"patch\" does a find-and-replace in SKILL.md " \
+                           "or a bundled file (old_str/new_str); \"write_file\" adds a supporting " \
+                           "file (references/templates/scripts/assets). Prefer edit/patch over " \
+                           "create when an existing skill already covers the territory."
             },
             name: {
               type: "string",
-              description: "The skill name. For load: the skill to load. " \
+              description: "The skill name. For load/edit/patch/write_file: the existing skill. " \
                            "For create: a kebab-case name (<=64 chars)."
             },
             file_path: {
               type: "string",
-              description: "Optional (load only). Relative path of a bundled file within the " \
-                           "skill (e.g. 'references/api.md', 'scripts/run.py') to load " \
-                           "its contents. Use the linked_files listed when the skill " \
-                           "body is first loaded."
+              description: "For load: relative path of a bundled file to read (e.g. " \
+                           "'references/api.md'). For patch: the file to patch (defaults to " \
+                           "SKILL.md). For write_file: the relative path to write under " \
+                           "references/, templates/, scripts/, or assets/."
             },
             description: {
               type: "string",
-              description: "Required for create. One line: what the skill is for and WHEN " \
-                           "it applies (the only text future runs see before loading it)."
+              description: "Required for create (optional for edit — kept as-is if omitted). " \
+                           "One line: what the skill is for and WHEN it applies."
             },
             body: {
               type: "string",
-              description: "Required for create. The markdown body: proven step-by-step " \
+              description: "Required for create/edit. The markdown body: proven step-by-step " \
                            "instructions, commands, and pitfalls. Be specific and prescriptive."
+            },
+            old_str: {
+              type: "string",
+              description: "Required for patch. The exact text to replace; must occur once."
+            },
+            new_str: {
+              type: "string",
+              description: "For patch. The replacement text (empty string deletes old_str)."
+            },
+            content: {
+              type: "string",
+              description: "Required for write_file. The full contents of the supporting file."
             }
           },
           required: %w[name]
@@ -78,7 +98,12 @@ module Rubino
       # action: "create" — write a new <name>/SKILL.md inline (Variant A).
       def call(arguments)
         action = (arguments["action"] || arguments[:action] || "load").to_s
-        return create(arguments) if action == "create"
+        case action
+        when "create"     then return create(arguments)
+        when "edit"       then return edit(arguments)
+        when "patch"      then return patch(arguments)
+        when "write_file" then return write_file(arguments)
+        end
 
         skill_name = arguments["name"] || arguments[:name]
         file_path  = arguments["file_path"] || arguments[:file_path]
@@ -162,7 +187,134 @@ module Rubino
 
       def duplicate(skill_name)
         "A skill named '#{skill_name}' already exists; not overwriting. " \
-          "Pick a different name or load the existing one with skill(name: \"#{skill_name}\")."
+          "Pick a different name, or UPDATE it with action \"edit\"/\"patch\", " \
+          "or load it with skill(name: \"#{skill_name}\")."
+      end
+
+      # ---- edit / patch / write_file (UPDATE existing HOME skills) -----------
+      # Prefer these over create when a loaded/existing skill already covers the
+      # territory (Hermes' update-over-create shape). They only touch skills
+      # authored under the agent HOME dir; a bundled (gem-shipped) skill is
+      # protected and refused.
+
+      # Full SKILL.md body rewrite. Keeps the existing description unless a new
+      # one is passed. Major overhauls only — prefer patch for small changes.
+      def edit(arguments)
+        name = str(arguments, "name")
+        body = str(arguments, "body")
+        skill, dir, err = editable(name)
+        return err if err
+        return "Cannot edit skill '#{name}': body is required." if body.empty?
+
+        description = description_arg?(arguments) ? str(arguments, "description") : skill.description.to_s
+        return "Cannot edit skill '#{name}': description must be <=1024 chars." if description.length > 1024
+
+        path = Skill.write!(dir: dir, name: skill.name, description: description, body: body)
+        @registry.discover!
+        "Updated skill '#{skill.name}' (full SKILL.md rewrite) at #{path}."
+      rescue StandardError => e
+        "Could not edit skill '#{name}': #{e.message}"
+      end
+
+      # Targeted find-and-replace within SKILL.md (default) or a bundled file.
+      # old_str must occur EXACTLY once so the edit is unambiguous.
+      def patch(arguments)
+        name    = str(arguments, "name")
+        rel     = str(arguments, "file_path")
+        old_str = raw(arguments, "old_str")
+        new_str = raw(arguments, "new_str")
+        skill, dir, err = editable(name)
+        return err if err
+        return "Cannot patch skill '#{name}': old_str is required." if old_str.empty?
+
+        label  = rel.empty? ? "SKILL.md" : rel
+        target = rel.empty? ? File.join(dir, "SKILL.md") : safe_join(dir, rel)
+        return "Cannot patch skill '#{name}': file_path escapes the skill dir." unless target
+        return "Cannot patch skill '#{name}': file '#{label}' not found." unless File.file?(target)
+
+        content = File.read(target, encoding: "UTF-8")
+        count   = content.scan(old_str).size
+        return "Cannot patch skill '#{name}': old_str not found in #{label}." if count.zero?
+        return "Cannot patch skill '#{name}': old_str matches #{count}× in #{label}; make it unique." if count > 1
+
+        File.write(target, content.sub(old_str, new_str))
+        @registry.discover!
+        "Patched #{label} in skill '#{skill.name}'."
+      rescue StandardError => e
+        "Could not patch skill '#{name}': #{e.message}"
+      end
+
+      # Add/overwrite a supporting file under references/ templates/ scripts/
+      # assets/ — session-specific detail, starter templates, or re-runnable
+      # scripts, per Hermes' class-level-umbrella shape.
+      def write_file(arguments)
+        name    = str(arguments, "name")
+        rel     = str(arguments, "file_path")
+        content = raw(arguments, "content")
+        skill, dir, err = editable(name)
+        return err if err
+        return "Cannot write file: file_path is required." if rel.empty?
+        unless SUPPORT_DIRS.include?(rel.split("/").first)
+          return "Cannot write file: supporting files must live under #{SUPPORT_DIRS.join("/, ")}/."
+        end
+
+        target = safe_join(dir, rel)
+        return "Cannot write file: file_path escapes the skill dir." unless target
+
+        FileUtils.mkdir_p(File.dirname(target))
+        File.write(target, content)
+        @registry.discover!
+        "Wrote #{rel} in skill '#{skill.name}'."
+      rescue StandardError => e
+        "Could not write file in skill '#{name}': #{e.message}"
+      end
+
+      # [skill, dir, nil] when +name+ is an editable HOME directory-skill, else
+      # [nil, nil, error]. Refuses unknown, flat-file, and protected bundled
+      # skills (those whose dir is not under the agent HOME skills dir).
+      def editable(name)
+        name = name.to_s.strip
+        return [nil, nil, "Cannot update skill: name is required."] if name.empty?
+
+        skill = @registry.find(name)
+        return [nil, nil, not_found(name)] unless skill
+        return [nil, nil, "Skill '#{name}' is a flat-file skill and can't be updated in place."] unless skill.directory?
+
+        dir = File.dirname(skill.path)
+        unless under_home?(dir)
+          return [nil, nil, "Skill '#{name}' is a bundled skill and is protected from edits. " \
+                            "Create a new skill instead."]
+        end
+        [skill, dir, nil]
+      end
+
+      def under_home?(dir)
+        home = File.expand_path(skills_write_dir)
+        resolved = File.expand_path(dir)
+        resolved == home || resolved.start_with?("#{home}#{File::SEPARATOR}")
+      end
+
+      # Resolve +rel+ within +dir+, refusing any path that escapes it.
+      def safe_join(dir, rel)
+        root   = File.expand_path(dir)
+        target = File.expand_path(rel.to_s, root)
+        return nil unless target == root || target.start_with?("#{root}#{File::SEPARATOR}")
+
+        target
+      end
+
+      def description_arg?(arguments)
+        arguments.key?("description") || arguments.key?(:description)
+      end
+
+      def str(arguments, key)
+        (arguments[key] || arguments[key.to_sym]).to_s.strip
+      end
+
+      def raw(arguments, key)
+        value = arguments[key]
+        value = arguments[key.to_sym] if value.nil?
+        value.to_s
       end
 
       # ---- load (unchanged) -------------------------------------------------

@@ -822,18 +822,20 @@ module Rubino
         },
         "skills" => {
           "enabled" => true,
-          # Post-turn skill distillation (Variant B). When true, a successful,
-          # tool-heavy turn enqueues DistillSkillJob, which spends ONE auxiliary
-          # model call to distil a reusable SKILL.md. Mirrors memory.auto_extract:
-          # a separate toggle from `enabled` (which only controls whether skills
-          # are loaded/usable) so a deployment — or a test that scripts a fixed
-          # number of LLM turns — can keep skills usable while turning off the
-          # extra background aux call.
+          # Post-turn background skill review. When true, every N turns a
+          # successful turn enqueues BackgroundReviewJob — the Hermes-style fork
+          # that replays the conversation (reusing the warm KV prefix, so no
+          # freeze) and lets a restricted review agent decide whether to capture
+          # a reusable SKILL.md. A separate toggle from `enabled` (which only
+          # controls whether skills are loaded/usable) so a deployment — or a
+          # test that scripts a fixed number of LLM turns — can keep skills
+          # usable while turning the background review off. (Key name kept for
+          # config back-compat with the earlier distillation implementation.)
           "auto_distill" => true,
-          # Throttle post-turn skill distillation to ~every N turns (#414),
-          # mirroring memory.auto_extract_interval, so a tool-heavy session
-          # doesn't spend an aux-model call every single turn. nil/<=1 = every
-          # eligible turn. The job's own deterministic gate still applies on top.
+          # Throttle the background skill review to ~every N turns (#414),
+          # mirroring memory.auto_extract_interval and Hermes' skill
+          # nudge_interval, so a session doesn't fork a review every single turn.
+          # nil/<=1 = every eligible turn.
           "auto_distill_interval" => 10,
           # Discover the skills shipped *inside the gem* (skills/<name>/SKILL.md),
           # so every install gets the built-in catalogue (e.g. ruby-expert) with

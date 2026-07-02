@@ -160,7 +160,7 @@ RSpec.describe Rubino::UI::CLI do
         expect($stdout.string).to include("polishing · memory · 0")
 
         ui.job_finished("ExtractMemoryJob")
-        ui.job_started("DistillSkillJob")
+        ui.job_started("BackgroundReviewJob")
         sleep 0.15
         expect($stdout.string).to include("polishing · skills · 0")
 

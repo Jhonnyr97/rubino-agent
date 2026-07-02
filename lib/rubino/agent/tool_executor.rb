@@ -79,7 +79,25 @@ module Rubino
         tool = @registry.find(name)
         raise ToolError, "Unknown tool: #{name}" unless tool
 
-        case @approval_policy.decide(tool, arguments: arguments)
+        # Background review (Hermes-style post-turn fork, BackgroundReviewJob):
+        # the forked review agent may ONLY dispatch the whitelisted skill/memory
+        # tools. The request still CARRIES the full tools[] so the prompt prefix
+        # stays byte-identical to the parent turn's warm KV cache — only DISPATCH
+        # is restricted here. A non-whitelisted call is denied-by-policy; a
+        # whitelisted one is a trusted, sandboxed background write (HOME/skills +
+        # memory store only) and is pre-approved (decision :allow), so it never
+        # reaches the interactive approval gate / #260 headless fail-closed floor
+        # that a human-less thread can't clear. See Rubino.review_toolset.
+        review_allowed = Rubino.review_toolset
+        if review_allowed && !review_allowed.include?(name)
+          denied = Tools::Result.denied(name: name, call_id: call_id, reason: :policy)
+          record_denied(name: name, call_id: call_id, arguments: arguments,
+                        result: denied, reason: "review-not-whitelisted")
+          return finish(name, arguments, call_id, denied)
+        end
+
+        decision = review_allowed ? :allow : @approval_policy.decide(tool, arguments: arguments)
+        case decision
         when :deny
           # A policy denial must NOT read "denied by user" to the model — the
           # policy records why it fired (#last_deny_reason) and the Result

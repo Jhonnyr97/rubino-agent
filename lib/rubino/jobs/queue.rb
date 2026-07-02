@@ -195,7 +195,7 @@ module Rubino
       # whole foreign backlog (each row a full LLM call), so a trivial `rubino -q`
       # on a home with a backlog blocked 9-15+ min past its answer and, under
       # --output-format json, withheld stdout behind the backlog. The post-turn
-      # jobs (ExtractMemory/DistillSkill/Summarize) all carry the enqueuing
+      # jobs (ExtractMemory/BackgroundReview/Summarize) all carry the enqueuing
       # session's id in their payload, so passing +session_id+ restricts the
       # drain to rows this session owns; foreign rows stay `queued` for the next
       # run / the worker. Reaping with no +session_id+ keeps the original

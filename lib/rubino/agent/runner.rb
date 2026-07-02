@@ -14,7 +14,7 @@ module Rubino
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
                      event_bus: nil, announce_session: true, session_source: "cli",
-                     interactive: false)
+                     interactive: false, system_prompt_override: nil)
         @ui = ui || Rubino.ui
         # An in-chat rewind/fork builds a runner on the child session but has its
         # own purpose-built "┄ rewound to message N — editing ┄" marker, so the
@@ -34,6 +34,10 @@ module Rubino
         @max_turns = max_turns
         @ignore_rules = ignore_rules
         @agent_definition = agent_definition
+        # Byte-identical system prompt for the Hermes-style background review
+        # fork (nil on every normal runner). Threaded into each turn's Lifecycle
+        # so the review request's prefix matches the parent turn's warm cache.
+        @system_prompt_override = system_prompt_override
         # The `source` stamped on a freshly-created session row. Defaults to
         # "cli" (a user-driven REPL/one-shot session); the `task` tool passes
         # "subagent" so internal subagent prompt-sessions can be filtered out of
@@ -142,7 +146,8 @@ module Rubino
           # A subagent that sets no max_turns falls back to config agent.max_turns
           # (soft == hard) and simply hard-stops there, like the main agent.
           max_tool_iterations: @max_turns,
-          polishing: @polishing
+          polishing: @polishing,
+          system_prompt_override: @system_prompt_override
         )
 
         response = lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,

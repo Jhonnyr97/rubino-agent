@@ -179,7 +179,7 @@ RSpec.describe Rubino::CLI::Chat::CompletionBuilder do
       queue = Rubino::Jobs::Queue.new(
         db: db.db, config: test_configuration("jobs" => { "mode" => "manual", "max_attempts" => 3 })
       )
-      id = queue.enqueue("DistillSkillJob", { "session_id" => "s1" })
+      id = queue.enqueue("BackgroundReviewJob", { "session_id" => "s1" })
       allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
 
       cmd_loader = instance_double(Rubino::Commands::Loader, names: [], all: [])
