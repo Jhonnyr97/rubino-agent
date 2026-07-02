@@ -1138,12 +1138,23 @@ module Rubino
       # `stale_after` raises StreamStaleError INTO the streaming thread to break
       # it out of the read. nil when stale_after <= 0 (watchdog disabled).
       def start_stale_watchdog(stale_after, &last_chunk_at_reader)
-        return if stale_after.to_f <= 0
+        stale_enabled = stale_after.to_f.positive?
+        # Even with the stale check DISABLED (local endpoints ⇒ stale_after == 0),
+        # we still need a watcher to observe @cancel_token: the per-chunk
+        # check_stream_stale!/@cancel_token.check! (line 338) only runs once a
+        # chunk arrives, so during PREFILL (request in flight, zero chunks yet)
+        # nothing sees an Esc-driven cancel and the turn keeps prefilling until the
+        # first token. Spawn the poll whenever a cancel token exists so Esc aborts
+        # the in-flight request even before the first chunk. Nothing to watch when
+        # both the stale check is off AND there is no cancel token.
+        return unless stale_enabled || @cancel_token
 
         target = Thread.current
         # Tick fast enough to bound the OVERSHOOT past the deadline, but never
-        # busy-spin: cap the tick at 1s and never exceed the deadline itself.
-        tick = (stale_after.to_f / 4.0).clamp(0.01, 1.0)
+        # busy-spin: cap the tick at 1s and never exceed the deadline itself. When
+        # only polling cancellation (stale disabled), use a short fixed tick so Esc
+        # feels instant.
+        tick = stale_enabled ? (stale_after.to_f / 4.0).clamp(0.01, 1.0) : 0.05
         Thread.new do
           loop do
             sleep(tick)
@@ -1151,6 +1162,7 @@ module Rubino
               target.raise(Rubino::Interrupted.new(reason: @cancel_token.reason))
               break
             end
+            next unless stale_enabled
 
             idle = monotonic_now - last_chunk_at_reader.call
             next if idle <= stale_after

@@ -829,7 +829,10 @@ module Rubino
         # twice. The reset makes the marker land as ONE clean frame.
         reset_finalize_geometry
         clear_line
-        emit("  ⎿ interrupted", style: :dim)
+        # The interrupted turn's prompt is now the last user message, so point the
+        # user at the Esc-Esc rewind to fix-and-resend it (e.g. a typo they cancelled
+        # to correct) right on the marker.
+        emit("  ⎿ interrupted · press esc esc to edit your message", style: :dim)
         $stdout.flush
         @turn_interrupting = false
       end

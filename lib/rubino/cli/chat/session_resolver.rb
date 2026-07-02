@@ -177,6 +177,15 @@ module Rubino
             replay_assistant_text(ui, msg.content)
           when "tool"
             name      = msg.tool_name || "tool"
+            # `task` (subagent) delegations render as a LIVE timeline/cards backed
+            # by the in-process BackgroundTasks registry, which dies with the
+            # process (it is intentionally NOT persisted — background_tasks.rb).
+            # On a fresh launch that auto-resumes this folder's last session, those
+            # rows would repaint a phantom "old subagent" timeline for children
+            # that no longer exist. Skip them in scrollback — the model still gets
+            # the persisted rows via PromptAssembler; only the stale UI is dropped.
+            return if name == "task"
+
             arguments = msg.metadata.is_a?(Hash) ? msg.metadata[:arguments] : nil
             # Pass the persisted call_id so a `task` row's close label resolves
             # from the per-call_id name stash (#35) rather than a shared ivar.

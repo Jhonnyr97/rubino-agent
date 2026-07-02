@@ -86,6 +86,41 @@ RSpec.describe Rubino::CLI::Chat::SessionResolver, "#print_session_history" do
     end
   end
 
+  # A resumed session must NOT repaint the subagent (`task`) delegation timeline:
+  # those cards/rows are backed by the in-process BackgroundTasks registry, which
+  # dies with the process, so on a fresh launch that auto-resumes the folder's
+  # last session they'd describe children that no longer exist ("phantom old
+  # subagent timeline"). The `task` rows are skipped in scrollback; the model
+  # still receives them via PromptAssembler.
+  describe "subagent (task) rows on resume" do
+    it "does not repaint a delegation timeline for a persisted task row" do
+      out = replay([
+                     msg(role: "user", content: "delegate this",
+                         metadata: {}, created_at: Time.now),
+                     msg(role: "tool", content: "subagent done",
+                         tool_name: "task", tool_call_id: "sa1",
+                         metadata: { arguments: { description: "explore repo" },
+                                     status: "success" },
+                         created_at: Time.now)
+                   ])
+      txt = plain(out)
+      # the user prompt still replays…
+      expect(txt).to include("delegate this")
+      # …but nothing from the task delegation surface leaks into scrollback.
+      expect(txt).not_to include("delegated")
+      expect(txt).not_to include("subagent done")
+    end
+
+    it "still replays a normal (non-task) tool row" do
+      out = replay([
+                     msg(role: "tool", content: "ok", tool_name: "read",
+                         tool_call_id: "r1", metadata: { status: "success" },
+                         created_at: Time.now)
+                   ])
+      expect(plain(out)).to include("└ ✓")
+    end
+  end
+
   describe "adjacent assistant text separation (item 4)" do
     it "separates two adjacent assistant segments with a blank line, never glued" do
       out = replay([
