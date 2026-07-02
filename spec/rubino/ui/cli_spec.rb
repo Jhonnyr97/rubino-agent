@@ -486,6 +486,9 @@ RSpec.describe Rubino::UI::CLI do
         ui.turn_interrupted
       end
       expect(out).to include("⎿ interrupted")
+      # The marker points the user at the Esc-Esc rewind to edit-and-resend the
+      # message they just cancelled.
+      expect(out).to include("esc esc to edit your message")
       expect(ui.instance_variable_get(:@thinking_indicator)).to be(false)
       expect(ui.instance_variable_get(:@thinking_thread)).to be_nil
     end

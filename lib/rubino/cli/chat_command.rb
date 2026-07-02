@@ -1189,7 +1189,14 @@ module Rubino
                   # prompt 2-3s on its aux-LLM extract (the new runner's worker
                   # drains it).
                   @branch_short_id = nil
+                  old_session = runner.session
                   runner.end_session!(handoff: true)
+                  # Tell the user how to return to the session they're leaving,
+                  # before announcing the new one — otherwise /new prints only the
+                  # fresh id and the old session id is lost. (print_resume_hint
+                  # no-ops on a nil/empty session.)
+                  show_hint = interacted || session_resolver.resuming_session?
+                  session_resolver.print_resume_hint(ui, old_session) if show_hint
                   runner = swap_runner!(fresh_runner(ui), ui)
                   interacted = false
                   next
@@ -1245,7 +1252,13 @@ module Rubino
 
         ui.blank_line
         ui.info("Session ended.")
-        session_resolver.print_resume_hint(ui, runner.session) if interacted
+        # Print the resume hint whenever there's a resumable session to return to
+        # — not only when the user typed this run. The common quit flow is: rubino
+        # auto-resumes your last session, you read it and Ctrl+C out without
+        # sending a new message (interacted == false); the hint must still show.
+        # print_resume_hint no-ops on a nil/empty session, so a brand-new untouched
+        # session still prints nothing.
+        session_resolver.print_resume_hint(ui, runner.session) if interacted || session_resolver.resuming_session?
 
         # Field standard: a session that surfaced an AUTH/credential error must
         # NOT report success on exit (git/gh/Claude Code/Codex all exit non-zero
