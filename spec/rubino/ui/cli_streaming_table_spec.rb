@@ -32,15 +32,25 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to eq([])
     end
 
-    it "caps the visible data rows to the live-region budget (header + last K)" do
+    it "keeps EVERY completed data row while the table streams (no header+last-3 window)" do
+      # The old header-plus-last-LIVE_TAIL_ROWS window hid a table's earlier
+      # rows for its whole stream (painted, then erased, re-shown only at the
+      # final commit). All completed rows render now; the on-screen windowing of
+      # a table taller than the terminal is BottomComposer#partial_budget's job.
       many = ["| A | B |", "| --- | --- |"]
       6.times { |i| many << "| r#{i} | v#{i} |" }
-      out = plain(ui.send(:render_partial_table_lines, many))
-      body = out.join("\n")
-      # Header stays; only the LAST LIVE_TAIL_ROWS (3) data rows show.
-      expect(body).to include("r5").and include("r4").and include("r3")
-      expect(body).not_to include("r0")
-      expect(body).not_to include("r1")
+      body = plain(ui.send(:render_partial_table_lines, many)).join("\n")
+      6.times { |i| expect(body).to include("r#{i}") }
+    end
+
+    it "bounds the render INPUT for a huge table (cost cap, far past a screenful)" do
+      many = ["| A | B |", "| --- | --- |"]
+      100.times { |i| many << "| row#{i} | v#{i} |" }
+      body = plain(ui.send(:render_partial_table_lines, many)).join("\n")
+      # The last LIVE_SOURCE_MAX_LINES data rows render; the earliest fall out
+      # of the O(N²)-guard window (they're off-screen regardless).
+      expect(body).to include("row99")
+      expect(body).not_to include("row0 ")
     end
 
     it "every rendered partial-table row is a real ANSI table line (margined)" do

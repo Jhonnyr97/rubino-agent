@@ -147,11 +147,12 @@ module Rubino
       end
 
       # How many trailing lines of the in-flight block the LIVE markdown preview
-      # ever needs as render input. We only SHOW the last few rendered rows
-      # (CLI::LIVE_TAIL_ROWS), so feeding the renderer more than a screenful of
+      # ever needs as render input. The screen only ever SHOWS what fits the
+      # composer's live budget (BottomComposer#partial_budget — screen height
+      # minus its chrome), so feeding the renderer much more than a screenful of
       # source is wasted work: it re-parses the WHOLE growing block on EVERY
-      # delta and throws all but the last rows away — O(N²), which freezes the
-      # stream once a long ``` fence (a streamed file/code dump) accumulates.
+      # delta and throws the excess away — O(N²), which freezes the stream once
+      # a long ``` fence (a streamed file/code dump) accumulates.
       # Generous enough that ordinary prose/lists/tables still render in full.
       LIVE_SOURCE_MAX_LINES = 60
 
