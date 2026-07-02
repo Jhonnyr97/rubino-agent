@@ -661,6 +661,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Class.new do
         def initialize(buf) = @buf = buf
         def buffer = @buf
+        def pristine_prefill? = false
         def stop; end
       end.new(buffer)
     end
