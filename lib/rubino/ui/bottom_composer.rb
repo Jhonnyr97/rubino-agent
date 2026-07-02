@@ -62,14 +62,18 @@ module Rubino
       # off-screen — a corrupt caller is clamped, not trusted.
       MAX_CARD_ROWS = 6
 
-      # Hard ceiling on the live partial rows so a runaway caller can never push
-      # the prompt off-screen (mirrors MAX_CARD_ROWS for the card block). Sized
-      # for the tallest legitimate partial: the GROWING table live-render — a
-      # fitted bordered table of the header + the last LIVE_TAIL_ROWS (3)
-      # completed rows is top-border + header + header-separator + 3 rows +
-      # bottom-border = 7 physical rows. Prose/reasoning tails arrive pre-capped
-      # to LIVE_TAIL_ROWS upstream, so this ceiling only ever clamps a runaway.
-      MAX_PARTIAL_ROWS = 7
+      # Floor on the live-partial budget (#partial_budget): when the terminal
+      # height is unreadable (StringIO tests, odd multiplexers) or the screen is
+      # too short to grant more, the partial keeps at least the room the old
+      # fixed ceiling guaranteed — a fitted bordered table of header + 3 data
+      # rows (top border + header + separator + 3 rows + bottom border = 7
+      # physical rows).
+      MIN_PARTIAL_ROWS = 7
+
+      # Rows kept free below the live partial when sizing #partial_budget, so a
+      # frame can never lay down exactly screen-height rows and scroll its own
+      # top row out of reach of the next frame's relative \e[1A erase walk.
+      PARTIAL_SAFETY_ROWS = 2
 
       # Default cap on the input block's visual rows (config:
       # display.input_max_rows, threaded in by the chat command). Past it the
@@ -1660,11 +1664,56 @@ module Rubino
         @menu.rows(@cols)
       end
 
-      # The partial as drawn: its last MAX_PARTIAL_ROWS lines, one row each.
+      # The partial as drawn: the WHOLE in-flight block when it fits this
+      # frame's budget (#partial_budget), one row per line. When it is taller, a
+      # dim "… +N earlier rows …" marker plus the trailing rows that fit — the
+      # Codex/Gemini streaming model: the top of a tall in-progress table/list
+      # scrolls out of the LIVE window (and re-appears in full when the block
+      # commits to scrollback), instead of the old fixed 7-row ceiling that
+      # erased the block's earlier rows for its whole stream — a mid-size table
+      # visibly "lost" its first rows until the final snap.
       def partial_rows
         return [] if @partial.empty?
 
-        @partial.split("\n").last(MAX_PARTIAL_ROWS) || []
+        lines = @partial.split("\n")
+        budget = partial_budget
+        return lines if lines.size <= budget
+
+        hidden = lines.size - (budget - 1)
+        [pastel.dim("… +#{hidden} earlier #{hidden == 1 ? "row" : "rows"} …"),
+         *lines.last(budget - 1)]
+      end
+
+      # Rows the live partial may occupy THIS frame: the terminal height minus
+      # every other row the frame draws — the completion menu, the transient
+      # announce, and the input block as last drawn (wrapped input rows + the
+      # queued/panel/status rows below it, all recorded by #input_drawn) — minus
+      # PARTIAL_SAFETY_ROWS, floored at MIN_PARTIAL_ROWS. Recomputed from the
+      # live winsize every frame, so the in-flight block can grow to fill the
+      # real screen while the erase walk is still guaranteed to reach the
+      # region's top row (nothing it painted can have scrolled off-screen).
+      def partial_budget
+        rows = live_winsize_rows
+        return MIN_PARTIAL_ROWS unless rows
+
+        chrome = menu_rows.size +
+                 (@announce.empty? ? 0 : 1) +
+                 (@region.input_above + @region.input_below + 1) +
+                 PARTIAL_SAFETY_ROWS
+        [rows - chrome, MIN_PARTIAL_ROWS].max
+      end
+
+      # A freshly-read terminal row count, or nil when winsize can't report a
+      # positive height right now (StringIO tests, pty startup) — the caller
+      # then falls back to the conservative MIN_PARTIAL_ROWS budget.
+      def live_winsize_rows
+        positive_int(@output.winsize.first)
+      rescue StandardError
+        begin
+          positive_int(IO.console&.winsize&.first)
+        rescue StandardError
+          nil
+        end
       end
 
       # Width math delegators (see LiveRegion for the display-column semantics):
