@@ -592,17 +592,22 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
           ))
         end
 
+        # In-workspace paths (relative → anchored at the primary root): #427 is
+        # about the confirm_policy NOT prompting structured edits the way it
+        # would gate raw shell — orthogonal to the workspace jail. An OUT-of-
+        # workspace target now routes to :ask (the Claude-aligned widen prompt,
+        # step 8a) and is covered by its own context below.
         it "allows edit WITHOUT a prompt (symmetric with safe shell)" do
-          args = { "file_path" => "/ws/x", "old_string" => "a", "new_string" => "b" }
+          args = { "file_path" => "in_ws.txt", "old_string" => "a", "new_string" => "b" }
           expect(pol.decide(edit, arguments: args)).to eq(:allow)
         end
 
         it "allows write WITHOUT a prompt" do
-          expect(pol.decide(write_t, arguments: { "file_path" => "/ws/y", "content" => "hi" })).to eq(:allow)
+          expect(pol.decide(write_t, arguments: { "file_path" => "in_ws.txt", "content" => "hi" })).to eq(:allow)
         end
 
         it "allows multi_edit WITHOUT a prompt" do
-          expect(pol.decide(multi_edit, arguments: { "file_path" => "/ws/x" })).to eq(:allow)
+          expect(pol.decide(multi_edit, arguments: { "file_path" => "in_ws.txt" })).to eq(:allow)
         end
 
         it "allows apply_patch WITHOUT a prompt" do
@@ -632,6 +637,85 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
           args = { "file_path" => "/ws/x", "old_string" => "a", "new_string" => "b" }
           expect(pol.decide(edit, arguments: args)).to eq(:ask)
         end
+      end
+    end
+
+    # Out-of-workspace structured write → :ask, then widen (step 8a,
+    # Claude-Code-aligned). A write/edit/multi_edit/apply_patch whose target is
+    # OUTSIDE every allowed root is no longer let through to the tool's dead-end
+    # "refusing to access"; the policy prompts and reports the directory the
+    # ToolExecutor must add on approval.
+    context "out-of-workspace write widen gate (#decide step 8a)" do
+      # Roots created UNDER $HOME, not under $TMPDIR: a Dir.mktmpdir default lands
+      # in temp scratch, which #writable_workspace? deliberately allows, so it
+      # would NOT prompt — that would mask the gate. This mirrors the real
+      # scenario (rubino in ~/projectA writing ~/projectB): both are ordinary
+      # non-scratch dirs. The boundary probe + Workspace read the GLOBAL config,
+      # so terminal.cwd is set there (the policy is built from the same global
+      # config, exactly as in production where they are one object).
+      let(:workspace) { Dir.mktmpdir("ws-root", Dir.home) }
+      let(:outside)   { Dir.mktmpdir("outside-root", Dir.home) }
+      let(:edit)      { make_tool(name: "edit",  risk_level: :medium, risky: true) }
+      let(:write_t)   { make_tool(name: "write", risk_level: :medium, risky: true) }
+      let(:pol) { described_class.new }
+
+      before { Rubino.configuration.set("terminal", "cwd", workspace) }
+
+      after do
+        Rubino.configuration.set("terminal", "cwd", nil)
+        Rubino::Workspace.reset!
+        FileUtils.rm_rf(workspace)
+        FileUtils.rm_rf(outside)
+      end
+
+      it "asks for a write whose target is outside every root" do
+        target = File.join(outside, "new.rb")
+        expect(pol.decide(write_t, arguments: { "file_path" => target, "content" => "x" })).to eq(:ask)
+      end
+
+      it "records last_ask_reason and the directory to widen" do
+        target = File.join(outside, "sub", "new.rb")
+        pol.decide(write_t, arguments: { "file_path" => target, "content" => "x" })
+        expect(pol.last_ask_reason).to eq(:outside_workspace)
+        # sub/ doesn't exist yet → widen to the deepest existing ancestor (outside).
+        # workspace_widen_dirs takes `arguments` POSITIONALLY (like #secret_targets),
+        # unlike #decide's keyword — pass a bare hash, matching the ToolExecutor call.
+        expect(pol.workspace_widen_dirs(write_t, { "file_path" => target }))
+          .to eq([File.realpath(outside)])
+      end
+
+      it "does NOT ask for an in-workspace write (widen list empty)" do
+        target = File.join(workspace, "in.rb")
+        expect(pol.decide(write_t, arguments: { "file_path" => target, "content" => "x" })).to eq(:allow)
+        expect(pol.last_ask_reason).to be_nil
+        expect(pol.workspace_widen_dirs(write_t, { "file_path" => target })).to be_empty
+      end
+
+      it "does NOT ask once the target's dir has been added (no re-prompt)" do
+        target = File.join(outside, "new.rb")
+        Rubino::Workspace.add(outside)
+        expect(pol.decide(write_t, arguments: { "file_path" => target, "content" => "x" })).to eq(:allow)
+      end
+
+      it "does NOT ask for a temp-scratch write (already writable)" do
+        scratch = File.join(Dir.tmpdir, "rubino_ap_scratch_#{Process.pid}.rb")
+        expect(pol.decide(write_t, arguments: { "file_path" => scratch, "content" => "x" })).to eq(:allow)
+      end
+
+      it "does NOT ask when workspace_strict is off (no jail to widen)" do
+        Rubino.configuration.set("tools", "workspace_strict", false)
+        target = File.join(outside, "new.rb")
+        expect(pol.decide(write_t, arguments: { "file_path" => target, "content" => "x" })).to eq(:allow)
+      ensure
+        Rubino.configuration.set("tools", "workspace_strict", nil)
+      end
+
+      it "asks for edit + multi_edit + apply_patch targets outside the workspace" do
+        expect(pol.decide(edit, arguments: { "file_path" => File.join(outside, "e.rb"),
+                                             "old_string" => "a", "new_string" => "b" })).to eq(:ask)
+        patch = "--- a/#{File.join(outside, "p.rb")}\n+++ b/#{File.join(outside, "p.rb")}\n"
+        apply = make_tool(name: "apply_patch", risk_level: :medium, risky: true)
+        expect(pol.decide(apply, arguments: { "patch" => patch, "base_path" => workspace })).to eq(:ask)
       end
     end
 

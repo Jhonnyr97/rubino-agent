@@ -33,6 +33,40 @@ RSpec.describe Rubino::Agent::ToolExecutor do
   after { FileUtils.rm_rf(spill_home) }
   before { allow(Rubino).to receive(:home_path).and_return(spill_home) }
 
+  # Claude-aligned widen-on-approval: a structured write routed to :ask because
+  # its target is outside the workspace gets the target's directory added to the
+  # roots once the human approves (or under yolo), so the tool's own guard + the
+  # OS write-jail let it land instead of the dead-end refusal.
+  describe "widen-on-approval for out-of-workspace writes" do
+    it "adds each widen dir to the workspace after approval, before running" do
+      dir = Dir.mktmpdir("widen")
+      allow(policy).to receive(:decide).and_return(:ask)
+      allow(policy).to receive(:last_ask_reason).and_return(:outside_workspace)
+      allow(policy).to receive(:workspace_widen_dirs).and_return([dir])
+      allow(ui).to receive(:warning)
+      expect(Rubino::Workspace).to receive(:add).with(dir)
+      executor.execute(name: "fake_tool", arguments: { "file_path" => "x" }, call_id: "c1")
+    ensure
+      FileUtils.rm_rf(dir)
+    end
+
+    it "does not widen when the policy reports no dirs (in-workspace write)" do
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(policy).to receive(:workspace_widen_dirs).and_return([])
+      expect(Rubino::Workspace).not_to receive(:add)
+      executor.execute(name: "fake_tool", arguments: { "file_path" => "x" }, call_id: "c1")
+    end
+
+    it "never widens on a denied out-of-workspace write" do
+      allow(policy).to receive(:decide).and_return(:ask)
+      allow(policy).to receive(:last_ask_reason).and_return(:outside_workspace)
+      allow(policy).to receive(:workspace_widen_dirs).and_return(["/somewhere/outside"])
+      allow(ui).to receive(:confirm).and_return(false)
+      expect(Rubino::Workspace).not_to receive(:add)
+      executor.execute(name: "fake_tool", arguments: { "file_path" => "x" }, call_id: "c1")
+    end
+  end
+
   describe "approval decisions" do
     it "records the call and runs the tool when policy allows" do
       allow(policy).to receive(:decide).and_return(:allow)
