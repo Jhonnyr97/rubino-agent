@@ -2158,6 +2158,43 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
   end
 
+  # The live partial is bounded by the SCREEN, not a fixed row count: a tall
+  # in-flight table/list keeps every row that fits (Codex/Gemini model), and
+  # only the top rolls out — with a marker — when it exceeds what the screen can
+  # host. This is the fix for the streaming-table glitch (earlier rows painted
+  # then erased for the block's whole stream).
+  describe "#partial_rows (screen-height budget)" do
+    it "keeps the WHOLE block when it fits the budget" do
+      allow(composer).to receive(:partial_budget).and_return(10)
+      composer.instance_variable_set(:@partial, (1..6).map { |i| "row#{i}" }.join("\n"))
+      expect(composer.send(:partial_rows)).to eq(%w[row1 row2 row3 row4 row5 row6])
+    end
+
+    it "rolls the TOP out with a marker when the block exceeds the budget" do
+      allow(composer).to receive(:partial_budget).and_return(4)
+      composer.instance_variable_set(:@partial, (1..10).map { |i| "row#{i}" }.join("\n"))
+      rows = composer.send(:partial_rows)
+      # budget 4 = 1 marker + last 3 rows; the marker counts the 7 hidden rows.
+      expect(rows.length).to eq(4)
+      expect(rows.first).to include("+7 earlier rows")
+      expect(rows[1..]).to eq(%w[row8 row9 row10])
+    end
+
+    it "budget tracks the live terminal height minus the frame's own chrome" do
+      # FakeTermIO is 24 rows. Fresh composer: no menu/announce, input block is
+      # one row (caret) with no rows below yet, plus the safety margin.
+      composer.set_partial("") # draw one frame so input geometry is recorded
+      expect(composer.send(:partial_budget)).to be > Rubino::UI::BottomComposer::MIN_PARTIAL_ROWS
+      expect(composer.send(:partial_budget)).to be <= 24
+    end
+
+    it "floors at MIN_PARTIAL_ROWS when the terminal height is unreadable" do
+      plain_io = StringIO.new # no #winsize
+      c = described_class.new(input_queue: queue, input: input, output: plain_io)
+      expect(c.send(:partial_budget)).to eq(Rubino::UI::BottomComposer::MIN_PARTIAL_ROWS)
+    end
+  end
+
   describe "#set_cards (subagent card block, Variant A)" do
     it "renders each subagent on its own row BELOW the input (the panel)" do
       composer.handle_key("x")

@@ -1144,7 +1144,11 @@ module Rubino
       # columns collapse to ~1 char each (#95), so we floor here rather than at 1.
       MIN_MARKDOWN_WIDTH = 40
 
-      # How many trailing lines of the in-flight block stay visible live (#127).
+      # Rolling window for the RAW live tail (display.live_markdown off) and the
+      # dim reasoning aside (#127) — deliberately small: both are transient
+      # asides, not the answer. The default formatted live paths (markdown +
+      # partial table) are instead bounded by the composer's screen-height
+      # budget (BottomComposer#partial_budget), not by this.
       LIVE_TAIL_ROWS = 3
 
       # A spawn handle: the verbose model-facing acknowledgement the task tool
@@ -2344,12 +2348,17 @@ module Rubino
 
       # Paint the in-flight block as formatted markdown in the live region: take
       # the raw tail, close any syntax left open by the still-arriving stream
-      # (MarkdownRepair, using the splitter's fence state), render it through the
-      # SAME MarkdownRenderer the committed blocks use, and keep the last
-      # LIVE_TAIL_ROWS rendered rows so the region stays bounded. Mirrors
-      # #show_live_table: builds margined, ANSI-styled rows and paints them
-      # through the SAME single-frame seam (#paint_live) and #265 ghost guard, so
-      # the preview is cleanly replaced each delta and torn down on commit.
+      # (MarkdownRepair, using the splitter's fence state), and render it through
+      # the SAME MarkdownRenderer the committed blocks use. The WHOLE rendered
+      # block is handed to the live seam — the composer bounds what actually
+      # draws to the screen (BottomComposer#partial_budget: screen height minus
+      # its own chrome, trailing window + "… +N earlier rows …" marker past it),
+      # so a growing list/paragraph stays fully visible while it fits instead of
+      # rolling in a fixed 3-row window that hid its earlier lines until commit.
+      # Mirrors #show_live_table: builds margined, ANSI-styled rows and paints
+      # them through the SAME single-frame seam (#paint_live) and #265 ghost
+      # guard, so the preview is cleanly replaced each delta and torn down on
+      # commit.
       def show_live_markdown(stream_md)
         lines = live_markdown_lines(stream_md)
         frame = lines.join("\n")
@@ -2357,8 +2366,10 @@ module Rubino
         paint_live(frame)
       end
 
-      # Raw in-flight tail -> repaired -> MD_MARGIN-indented, ANSI-styled lines,
-      # capped to the last LIVE_TAIL_ROWS rendered rows. #render_markdown_block
+      # Raw in-flight tail -> repaired -> MD_MARGIN-indented, ANSI-styled lines.
+      # NOT capped here: the composer clamps what draws to the screen each frame
+      # (#partial_budget), so the whole rendered window is handed down and the
+      # user keeps every line that fits on screen. #render_markdown_block
       # already sanitize_terminal's the (untrusted) model text before parsing, so
       # the styled rows carry only rubino's own SGR — they must NOT pass through
       # #margined_tail again (that would caret-escape our own escapes).
@@ -2366,24 +2377,28 @@ module Rubino
         # #live_source, not #tail: render only a bounded trailing window of the
         # in-flight block (with the fence opener preserved), not the WHOLE
         # growing block on every delta — re-parsing the full block per token was
-        # O(N²) and froze the stream on long ``` code/file dumps. The visible
-        # last-LIVE_TAIL_ROWS rows are unchanged.
+        # O(N²) and froze the stream on long ``` code/file dumps. The window
+        # (LIVE_SOURCE_MAX_LINES) is comfortably taller than any screen the
+        # composer's budget can show.
         raw = stream_md.live_source
         return [] if raw.nil? || raw.empty?
 
         repaired = MarkdownRepair.close_open_spans(raw, fence: stream_md.open_fence)
-        margined_render(repaired).last(LIVE_TAIL_ROWS)
+        margined_render(repaired)
       end
 
       # Paint the growing partial table in the live region: re-render the
       # completed-rows-so-far through MarkdownRenderer's solid table path
       # (fitted to markdown_width, balanced columns, #95 floor — never a
-      # mid-cell raw-pipe wrap), capped to LIVE_TAIL_ROWS data rows so a tall
-      # table can't push the prompt off-screen (header + last K rows show; the
-      # full table snaps in on completion via #flush_content_stream). Uses the
-      # SAME single-frame live-region seam (#paint_live) and #265 ghost guard as
-      # the raw tail, so the partial table is cleanly replaced each row and torn
-      # down when the block commits.
+      # mid-cell raw-pipe wrap). The whole table-so-far is handed to the live
+      # seam; the composer bounds what draws (#partial_budget — screen height
+      # minus chrome, with a "… +N earlier rows …" marker past it), so every row
+      # streamed so far stays visible while it fits on screen instead of the old
+      # header-plus-last-3 window that hid the table's earlier rows until the
+      # final snap (#flush_content_stream still commits the complete table).
+      # Uses the SAME single-frame live-region seam (#paint_live) and #265 ghost
+      # guard as the raw tail, so the partial table is cleanly replaced each row
+      # and torn down when the block commits.
       def show_live_table(rows)
         lines = render_partial_table_lines(rows)
         if lines.empty?
@@ -2400,11 +2415,14 @@ module Rubino
       # Completed-rows-so-far -> MD_MARGIN-indented, ANSI-styled live-table lines.
       # The source pipe rows are untrusted model text (CWE-150): defang escapes
       # before parsing, exactly as #render_markdown_block does for committed
-      # blocks. Capped to LIVE_TAIL_ROWS data rows to keep the live region small.
+      # blocks. max_rows is a RENDER-COST bound only (re-parsing every row per
+      # delta is O(N²) on a huge table), far taller than any screen — the
+      # on-screen windowing is the composer's (#partial_budget).
       def render_partial_table_lines(rows)
         safe_rows = Array(rows).map { |line| Util::Output.sanitize_terminal(line.to_s) }
         MarkdownRenderer.new(width: markdown_width)
-                        .render_partial_table(safe_rows, max_rows: LIVE_TAIL_ROWS)
+                        .render_partial_table(safe_rows,
+                                              max_rows: StreamingMarkdown::LIVE_SOURCE_MAX_LINES)
                         .map do |line_tokens|
           "#{MD_MARGIN}#{line_tokens.map { |token, style| style.nil? ? token : apply_style(token, style) }.join}"
         end

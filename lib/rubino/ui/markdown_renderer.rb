@@ -71,12 +71,14 @@ module Rubino
       # (block_lines -> table_lines -> balanced_column_widths), so the partial
       # never mid-cell soft-wraps and matches the final snap.
       #
-      # The live region is bounded (it must never push the prompt off-screen):
-      # +max_rows+ caps the visible DATA rows. When the table-so-far is taller,
-      # only the header + the LAST +max_rows+ data rows render (the user watches
-      # the bottom of the table fill in), with the full table snapping in on
-      # completion via the committed path. Returns [] until a separator row has
-      # arrived (nothing meaningful to draw yet — "hide until it means something").
+      # +max_rows+ bounds the DATA rows fed to the parser — a render-cost cap
+      # (re-parsing every accumulated row on every delta is O(N²) on a huge
+      # table), sized well past a screenful by the caller; when it bites, the
+      # header + the LAST +max_rows+ data rows render. The on-SCREEN windowing
+      # of a tall table is the composer's job (BottomComposer#partial_budget),
+      # and the full table still snaps in on completion via the committed path.
+      # Returns [] until a separator row has arrived (nothing meaningful to draw
+      # yet — "hide until it means something").
       def render_partial_table(lines, max_rows: nil)
         rows = Array(lines)
         sep_idx = rows.index { |l| l.to_s.match?(TABLE_SEP_RE) }
@@ -165,6 +167,10 @@ module Rubino
         lines.each_with_index do |line, i|
           nxt = lines[i + 1]
           out << "" if table_opens_here?(line, nxt, out) # (a) blank before header
+          # (c) blank before a definition-list TERM glued to the previous group,
+          # so kramdown starts a new term instead of folding it into the prior
+          # definition as a lazy continuation (the same LLM-glue fix as tables).
+          out << "" if definition_term_opens_here?(line, nxt, out)
           in_table = true if line.match?(TABLE_SEP_RE)
           out << line
           if in_table && table_closes_here?(line, nxt) # (b) close glued prose
@@ -174,6 +180,21 @@ module Rubino
           in_table = false if nxt && nxt.strip.empty?
         end
         out.join("\n")
+      end
+
+      # A definition-list definition line: up to 3 leading spaces, a ":", a space.
+      DEF_MARKER_RE = /\A {0,3}:\s/
+
+      # A definition-list TERM (a line a `: definition` follows) glued directly
+      # to the PREVIOUS group's definition, with no separating blank line. Models
+      # emit contiguous groups ("term1\n: def1\nterm2\n: def2"); kramdown then
+      # reads term2 as a lazy continuation of def1 instead of a new term. Insert
+      # the missing blank so each group parses on its own (mirrors the table
+      # glue-fix). Not a term when it is itself a definition line or blank.
+      def definition_term_opens_here?(line, nxt, out)
+        nxt&.match?(DEF_MARKER_RE) &&
+          !line.strip.empty? && !line.match?(DEF_MARKER_RE) &&
+          !out.empty? && out.last.match?(DEF_MARKER_RE)
       end
 
       # A header row glued to the previous line that a separator row follows.
@@ -215,6 +236,8 @@ module Rubino
           list_lines(el, ordered: false)
         when :ol
           list_lines(el, ordered: true)
+        when :dl
+          definition_list_lines(el)
         when :blockquote
           blockquote_lines(el)
         when :codeblock
@@ -283,6 +306,37 @@ module Rubino
               prefix = i.zero? ? marker : indent
               line = [[prefix, { fg: :gray }]] + line_tokens
               out.concat(wrap_lines([line], hang: marker.length))
+            end
+          end
+        end
+        out
+      end
+
+      # A kramdown definition list (`:dl`): terms (`:dt`, inline) and their
+      # definitions (`:dd`, block children — usually a `:p`). Without a case
+      # here it fell to the `else` branch, whose #inline_tokens flattened EVERY
+      # dt/dd into one concatenated line ("FrameworkInsieme di…AgenteAI…"). Each
+      # term renders bold on its own line; each definition indents two columns
+      # under it with a leading ": " cue on its first line, wrapped once with a
+      # hanging indent so a long definition breaks under its own text.
+      DEF_INDENT = "  "
+      def definition_list_lines(el)
+        out = []
+        el.children.each do |child|
+          case child.type
+          when :dt
+            out.concat(wrap_lines(tokens_to_lines(
+                                    inline_tokens(child.children, { modifiers: [:bold] })
+                                  )))
+          when :dd
+            # UN-wrapped inner (a :p yields raw tokens_to_lines); wrap ONCE below
+            # with the ": " marker + hanging indent, mirroring #list_lines.
+            def_lines = child.children.flat_map { |c| c.type == :p ? paragraph_lines(c) : block_lines(c) }
+            def_lines.pop while def_lines.last == []
+            def_lines.each_with_index do |line_tokens, i|
+              prefix = i.zero? ? "#{DEF_INDENT}: " : (" " * (DEF_INDENT.length + 2))
+              out.concat(wrap_lines([[[prefix, { fg: :gray }]] + line_tokens],
+                                    hang: DEF_INDENT.length + 2))
             end
           end
         end
