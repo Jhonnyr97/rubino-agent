@@ -44,10 +44,13 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to all(start_with(Rubino::UI::CLI::MD_MARGIN))
     end
 
-    it "caps the live region to the last LIVE_TAIL_ROWS rendered rows" do
+    it "keeps EVERY rendered row of the in-flight block (screen windowing is the composer's)" do
+      # A growing list used to roll in a fixed 3-row window that hid its earlier
+      # items until the block committed. The whole rendered block is handed to
+      # the live seam now; BottomComposer#partial_budget bounds what draws.
       sm = stream("- one\n", "- two\n", "- three\n", "- four\n", "- five")
-      out = ui.send(:live_markdown_lines, sm)
-      expect(out.size).to be <= Rubino::UI::CLI::LIVE_TAIL_ROWS
+      body = plain(ui.send(:live_markdown_lines, sm)).join("\n")
+      %w[one two three four five].each { |item| expect(body).to include(item) }
     end
 
     it "returns [] for an empty in-flight tail" do

@@ -71,12 +71,14 @@ module Rubino
       # (block_lines -> table_lines -> balanced_column_widths), so the partial
       # never mid-cell soft-wraps and matches the final snap.
       #
-      # The live region is bounded (it must never push the prompt off-screen):
-      # +max_rows+ caps the visible DATA rows. When the table-so-far is taller,
-      # only the header + the LAST +max_rows+ data rows render (the user watches
-      # the bottom of the table fill in), with the full table snapping in on
-      # completion via the committed path. Returns [] until a separator row has
-      # arrived (nothing meaningful to draw yet — "hide until it means something").
+      # +max_rows+ bounds the DATA rows fed to the parser — a render-cost cap
+      # (re-parsing every accumulated row on every delta is O(N²) on a huge
+      # table), sized well past a screenful by the caller; when it bites, the
+      # header + the LAST +max_rows+ data rows render. The on-SCREEN windowing
+      # of a tall table is the composer's job (BottomComposer#partial_budget),
+      # and the full table still snaps in on completion via the committed path.
+      # Returns [] until a separator row has arrived (nothing meaningful to draw
+      # yet — "hide until it means something").
       def render_partial_table(lines, max_rows: nil)
         rows = Array(lines)
         sep_idx = rows.index { |l| l.to_s.match?(TABLE_SEP_RE) }
