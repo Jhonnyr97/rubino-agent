@@ -941,6 +941,21 @@ module Rubino
         # An async-notice paint is cosmetic — never let it break a turn or child.
       end
 
+      # The background skill review built or updated a skill. Like
+      # #subagent_lifecycle this is an ASYNC write from the polishing worker
+      # thread while the idle composer owns the screen, so it MUST go through
+      # #commit_async_above to land at column 0 in the TIMELINE above the prompt
+      # (never over the composer). A quiet dim marker with a green ✓ — the
+      # per-skill detail lives on disk + in the "## Skills" catalogue. The name
+      # is agent-authored (UNTRUSTED): defang escapes before the style wrap.
+      def skill_built(name, updated: false)
+        verb = updated ? "updated" : "built"
+        safe = Util::Output.sanitize_terminal(name.to_s)
+        line = "#{@pastel.green("✓")} #{@pastel.dim("skill #{verb} · #{safe}")}"
+        commit_async_above([line], gap: @last_block != :gap)
+        @last_block = :other
+      end
+
       # Renders an ephemeral `probe` answer in the dim, fenced aside that the
       # locked UX prescribes: an opening `┄ probe (ephemeral · not saved) ┄`
       # rail, the answer body on a dim `┊` left-rail, then a closing
