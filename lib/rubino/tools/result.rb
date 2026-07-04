@@ -5,7 +5,7 @@ module Rubino
     # Encapsulates the result of a tool execution.
     class Result
       attr_reader :name, :call_id, :output, :status, :error,
-                  :metrics, :error_code, :artifact
+                  :metrics, :error_code, :artifact, :label
       # Stamped by the ToolExecutor just before the audit write (the Result is
       # built deep in the tool pipeline, which has no session context). nil for
       # results created outside a session (one-shot / test path).
@@ -22,9 +22,14 @@ module Rubino
       # user-facing file. The agent loop reads this and emits an
       # ARTIFACT_CREATED bus event so SSE consumers (the web UI, the CLI)
       # can offer a download.
+      # `label` is an optional short HUMAN-facing tag rendered as a dim `[…]`
+      # badge on the tool card (e.g. `[hardline]`, `[config: escalation=off]`).
+      # It names WHY an action was auto-refused or neutered by policy/config, so
+      # the operator sees which knob is responsible — the human counterpart to
+      # the model-facing denial text, NOT a duplicate of it.
       def initialize(name:, call_id:, output:, status:, error: nil,
                      metrics: nil, error_code: nil, artifact: nil,
-                     transcript_card: true)
+                     transcript_card: true, label: nil)
         @name = name
         @call_id = call_id
         @output = output
@@ -34,6 +39,7 @@ module Rubino
         @error_code = error_code
         @artifact = artifact
         @transcript_card = transcript_card
+        @label = label
         @session_id = nil
       end
 
@@ -90,10 +96,10 @@ module Rubino
 
       # Factory methods
       def self.success(name:, call_id:, output:, metrics: nil, error_code: nil, artifact: nil,
-                       transcript_card: true)
+                       transcript_card: true, label: nil)
         new(name: name, call_id: call_id, output: normalize_output(output),
             status: :success, metrics: metrics, error_code: error_code, artifact: artifact,
-            transcript_card: transcript_card)
+            transcript_card: transcript_card, label: label)
       end
 
       def self.error(name:, call_id:, error:, error_code: nil)
@@ -138,9 +144,22 @@ module Rubino
                    "of polling."
       }.freeze
 
+      # Short HUMAN-facing card labels per denial reason — the counterpart to
+      # DENIED_OUTPUTS (which is the MODEL's text). Only AUTOMATIC refusals get a
+      # label: a real human "No" (:user) carries none — the card already reads
+      # "denied — not executed" and no config knob is responsible.
+      DENIED_LABELS = {
+        policy: "policy",
+        hardline: "hardline",
+        permission_rule: "permissions: deny",
+        doom_loop: "doom-loop",
+        noninteractive: "no interactive session"
+      }.freeze
+
       def self.denied(name:, call_id:, reason: :user)
         key = DENIED_OUTPUTS.key?(reason) ? reason : :policy
-        new(name: name, call_id: call_id, output: DENIED_OUTPUTS[key], status: :denied)
+        new(name: name, call_id: call_id, output: DENIED_OUTPUTS[key], status: :denied,
+            label: DENIED_LABELS[key])
       end
 
       def self.normalize_output(output)

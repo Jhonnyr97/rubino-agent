@@ -106,6 +106,14 @@ module Rubino
           denied = Tools::Result.denied(name: name, call_id: call_id, reason: policy_deny_reason)
           record_denied(name: name, call_id: call_id, arguments: arguments,
                         result: denied, reason: "policy-denied")
+          # A policy deny (hardline / permissions:deny / doom-loop) previously
+          # rendered NO live card — only the footer's "N denied" counter — so the
+          # operator couldn't see WHICH command was auto-refused or why. Emit the
+          # started+finished pair now so it surfaces as a labelled card
+          # (`● shell rm -rf /` → `└ ✗ shell denied — not executed [hardline]`).
+          # The :ask user-"No" path renders via #confirm and is untouched.
+          emit_started(name, arguments, call_id)
+          emit_finished(name, result: denied, duration_ms: 0, arguments: arguments)
           return finish(name, arguments, call_id, denied)
         when :ask
           # Headless FAIL-CLOSED floor (#260). A tool the policy wants to ASK
@@ -258,6 +266,7 @@ module Rubino
           error_code   = raw[:error_code] || raw["error_code"]
           artifact     = raw[:artifact]   || raw["artifact"]
           compress_hint = raw[:compress_hint] || raw["compress_hint"]
+          label = raw[:label] || raw["label"]
         else
           text = raw
           metrics = nil
@@ -266,6 +275,7 @@ module Rubino
           error_code = nil
           artifact = nil
           compress_hint = nil
+          label = nil
         end
         # Skip the body block when the tool already streamed its output line by
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
@@ -288,7 +298,8 @@ module Rubino
                                               spill: ->(full) { spill_full_output(full, call_id) }),
           metrics: metrics,
           error_code: error_code&.to_sym,
-          artifact: artifact
+          artifact: artifact,
+          label: label
         )
         record_audit(name: name, call_id: call_id, arguments: arguments,
                      result: result, status: "completed")

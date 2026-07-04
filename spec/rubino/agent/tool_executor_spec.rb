@@ -128,6 +128,25 @@ RSpec.describe Rubino::Agent::ToolExecutor do
         result = executor.execute(name: "fake_tool", arguments: {}, call_id: "c12")
         expect(result.output).to include("Tool execution denied by user.")
       end
+
+      # A policy deny now SURFACES as a card (started + a denied result carrying
+      # the reason label) instead of being counter-only, so the operator sees
+      # which command was auto-refused and why.
+      it "emits a started + labelled-denied card for a policy deny" do
+        card_ui = double("UI", confirm: true, interactive?: true)
+        allow(card_ui).to receive(:tool_started)
+        finished = nil
+        allow(card_ui).to receive(:tool_finished) { |_name, result:| finished = result }
+        ex = described_class.new(registry: registry, approval_policy: policy, ui: card_ui,
+                                 config: config, tool_call_repository: repo)
+        allow(policy).to receive_messages(decide: :deny, last_deny_reason: :hardline)
+
+        ex.execute(name: "fake_tool", arguments: { "command" => "rm -rf /" }, call_id: "cX")
+
+        expect(card_ui).to have_received(:tool_started)
+        expect(finished).to be_denied
+        expect(finished.label).to eq("hardline")
+      end
     end
 
     it "passes the arguments to the approval policy so patterns can match (#17)" do

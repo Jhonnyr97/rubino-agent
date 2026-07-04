@@ -26,6 +26,14 @@ module Rubino
     class ShellTool < Base # rubocop:disable Metrics/ClassLength -- one cohesive shell surface (spawn/jail/stream/cwd-carry/escalation) whose parts are tightly coupled around the single Process.spawn
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
+
+      # Surfaced when disable_sandbox:true is requested but the operator disabled
+      # the escape hatch (tools.sandbox.escalation=off): a model-facing note (so
+      # it stops retrying the modifier) and a human card badge.
+      ESCALATION_REFUSED_NOTE =
+        "(out-of-jail escalation is disabled — tools.sandbox.escalation=off; ran confined. " \
+        "Do not retry with disable_sandbox.)"
+      ESCALATION_REFUSED_LABEL = "config: escalation=off"
       # After the direct child exits, how long to wait for the merged output pipe
       # to reach EOF before concluding a DETACHED background child (`server &`)
       # inherited it and is holding it open. Matches Codex's IO_DRAIN_TIMEOUT
@@ -186,11 +194,14 @@ module Rubino
         timeout    = [[timeout.to_i, 1].max, MAX_TIMEOUT].min
         # Escape hatch (§B): run outside the OS write-jail after explicit
         # approval. Honoured only when the operator hasn't disabled the hatch
-        # (tools.sandbox.allow_escalation) — otherwise the flag is IGNORED and
-        # the command runs confined (fail-hard on a jailed write, matching Claude
-        # Code allowUnsandboxedCommands:false). Foreground only.
-        escalate   = truthy?(arguments["disable_sandbox"] || arguments[:disable_sandbox]) &&
-                     Security::Sandbox.escalation_allowed?
+        # (tools.sandbox.escalation != off) — otherwise the flag is refused and
+        # the command runs CONFINED. That refusal is NOT silent: the model is
+        # told (so it doesn't keep retrying the flag) and the card is labelled
+        # for the human (matching Claude Code allowUnsandboxedCommands:false).
+        # Foreground only.
+        requested_escalation = truthy?(arguments["disable_sandbox"] || arguments[:disable_sandbox])
+        escalate             = requested_escalation && Security::Sandbox.escalation_allowed?
+        escalation_refused   = requested_escalation && !escalate
 
         return "Error: command is required" if command.nil? || command.to_s.empty?
         if escalate && background
@@ -236,6 +247,10 @@ module Rubino
           # Append a one-line hint when the jail is the real cause. No-op text
           # (nil) when it isn't a jailed-write denial.
           run[:text] = append_jail_hint(run[:text], working_dir)
+          # disable_sandbox was requested but the operator disabled the hatch:
+          # tell the model the modifier was refused (ran confined) so it stops
+          # retrying it, and label the card for the human (see #call gate).
+          run[:text] = "#{run[:text]}\n#{ESCALATION_REFUSED_NOTE}" if escalation_refused
           # exit_code / timed_out / cancelled are surfaced as structured
           # keys so downstream code (and the model) doesn't have to parse
           # `[Exit code: N]` out of free-form text to know whether the
@@ -249,6 +264,9 @@ module Rubino
             timed_out: run[:timed_out],
             cancelled: run[:cancelled],
             error_code: shell_error_code(run),
+            # Human card badge naming the config knob when the out-of-jail
+            # escape was refused; nil (no badge) otherwise.
+            label: (escalation_refused ? ESCALATION_REFUSED_LABEL : nil),
             # Routing context for the compression seam: the stream_kind lets the
             # router send a diff (`git diff`) through UNTOUCHED — its own +/-
             # channel — while a test/build/lint dump routes to LogCompressor. The

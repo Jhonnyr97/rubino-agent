@@ -87,6 +87,17 @@ RSpec.describe Rubino::Tools::Result do
       expect(result.output).not_to include("denied by user")
     end
 
+    # The human card badge (label) names the config knob for an AUTOMATIC
+    # refusal; a real human "No" (:user) carries none (the card already reads
+    # "denied — not executed" and no knob is responsible).
+    it "labels an automatic denial with the reason, but not a human :user deny" do
+      expect(described_class.denied(name: "shell", call_id: "l1", reason: :hardline).label).to eq("hardline")
+      expect(described_class.denied(name: "shell", call_id: "l2", reason: :permission_rule).label)
+        .to eq("permissions: deny")
+      expect(described_class.denied(name: "shell", call_id: "l3", reason: :doom_loop).label).to eq("doom-loop")
+      expect(described_class.denied(name: "shell", call_id: "l4").label).to be_nil # :user
+    end
+
     # #583: the headless fail-closed denial keeps the "no interactive session"
     # substring (Agent::Loop's binding-guard keys off it) AND carries the
     # strengthened anti-confabulation wording + the actionable --yolo hint.
