@@ -89,9 +89,18 @@ module Rubino
       # association is stamped by the Recorder (run_id), like every other event.
       SKILL_LOADED = :skill_loaded
 
-      # Emitted when a skill is created inline via skill(action: "create") or by
-      # the post-turn distill job. Payload: { name:, file_path: }.
+      # Emitted when a skill is created via skill(action: "create") — inline by
+      # the foreground agent OR by the background review fork. Payload:
+      # { name:, file_path:, origin: } where origin is "review" (the post-turn
+      # fork) or "foreground" (an in-turn call the transcript already renders).
       SKILL_CREATED = :skill_created
+
+      # Emitted when an EXISTING skill is updated via skill(action:
+      # "edit"/"patch"/"write_file"). Payload: { name:, action:, origin: }. Same
+      # origin semantics as SKILL_CREATED — the interactive REPL surfaces the
+      # background review's writes (which its Null UI would otherwise swallow),
+      # while a foreground call already shows as a `● skill` tool row.
+      SKILL_UPDATED = :skill_updated
 
       # Artifact events
       # Fired by tools that produce a downloadable user-facing file

@@ -105,4 +105,39 @@ RSpec.describe Rubino::Skills::SkillTool do
       expect(tool.call("action" => "edit", "name" => "ghost", "body" => "x")).to include("not found")
     end
   end
+
+  # The interactive REPL surfaces ONLY review-origin writes in the timeline (a
+  # foreground call already renders as a `● skill` tool row). So the tool must
+  # tag each write with the right origin.
+  describe "event origin tagging" do
+    def capture(event)
+      bus = Rubino::Interaction::EventBus.new
+      seen = []
+      bus.on(event) { |p| seen << p }
+      Rubino.with_event_bus(bus) { yield }
+      seen
+    end
+
+    it "tags a foreground create as origin=foreground" do
+      seen = capture(Rubino::Interaction::Events::SKILL_CREATED) { create_demo }
+      expect(seen.last).to include(origin: "foreground", name: "demo")
+    end
+
+    it "tags a create inside the review fork as origin=review" do
+      seen = capture(Rubino::Interaction::Events::SKILL_CREATED) do
+        Rubino.with_review_toolset(%w[skill]) { create_demo }
+      end
+      expect(seen.last).to include(origin: "review")
+    end
+
+    it "emits SKILL_UPDATED with origin=review for a review-fork patch" do
+      create_demo
+      seen = capture(Rubino::Interaction::Events::SKILL_UPDATED) do
+        Rubino.with_review_toolset(%w[skill]) do
+          tool.call("action" => "patch", "name" => "demo", "old_str" => "step one", "new_str" => "x")
+        end
+      end
+      expect(seen.last).to include(origin: "review", action: "patch", name: "demo")
+    end
+  end
 end

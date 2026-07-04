@@ -140,7 +140,7 @@ module Rubino
         @registry.discover!
         Rubino.active_event_bus&.emit(
           Interaction::Events::SKILL_CREATED,
-          name: skill_name, file_path: path
+          name: skill_name, file_path: path, origin: skill_write_origin
         )
         "Created skill '#{skill_name}' at #{path}. It is now available to load " \
           "with skill(name: \"#{skill_name}\")."
@@ -211,6 +211,7 @@ module Rubino
 
         path = Skill.write!(dir: dir, name: skill.name, description: description, body: body)
         @registry.discover!
+        emit_skill_updated(skill.name, "edit")
         "Updated skill '#{skill.name}' (full SKILL.md rewrite) at #{path}."
       rescue StandardError => e
         "Could not edit skill '#{name}': #{e.message}"
@@ -239,6 +240,7 @@ module Rubino
 
         File.write(target, content.sub(old_str, new_str))
         @registry.discover!
+        emit_skill_updated(skill.name, "patch")
         "Patched #{label} in skill '#{skill.name}'."
       rescue StandardError => e
         "Could not patch skill '#{name}': #{e.message}"
@@ -264,6 +266,7 @@ module Rubino
         FileUtils.mkdir_p(File.dirname(target))
         File.write(target, content)
         @registry.discover!
+        emit_skill_updated(skill.name, "write_file")
         "Wrote #{rel} in skill '#{skill.name}'."
       rescue StandardError => e
         "Could not write file in skill '#{name}': #{e.message}"
@@ -315,6 +318,23 @@ module Rubino
         value = arguments[key]
         value = arguments[key.to_sym] if value.nil?
         value.to_s
+      end
+
+      # Emits SKILL_UPDATED so the interactive REPL can surface a background
+      # review's edit/patch/write_file (whose Null UI swallows the tool row).
+      def emit_skill_updated(name, action)
+        Rubino.active_event_bus&.emit(
+          Interaction::Events::SKILL_UPDATED,
+          name: name, action: action, origin: skill_write_origin
+        )
+      end
+
+      # "review" when running inside the background review fork (see
+      # Rubino.review_toolset), else "foreground" — a foreground skill call
+      # already shows as a `● skill` tool row, so the REPL only surfaces the
+      # review's otherwise-invisible writes.
+      def skill_write_origin
+        Rubino.review_toolset ? "review" : "foreground"
       end
 
       # ---- load (unchanged) -------------------------------------------------

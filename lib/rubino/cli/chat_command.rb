@@ -1453,6 +1453,25 @@ module Rubino
         rescue StandardError
           nil
         end
+        # Background skill review (BackgroundReviewJob) writes to the skill
+        # library on the polishing worker with a Null UI, so its tool rows never
+        # reach the REPL. Surface ONLY those review-origin writes as a quiet
+        # timeline marker above the idle prompt (a foreground skill call already
+        # renders as a `● skill` tool row, so it is skipped).
+        bus.on(Rubino::Interaction::Events::SKILL_CREATED) do |payload|
+          next unless payload[:origin].to_s == "review"
+
+          ui.skill_built(payload[:name]) if ui.respond_to?(:skill_built)
+        rescue StandardError
+          nil
+        end
+        bus.on(Rubino::Interaction::Events::SKILL_UPDATED) do |payload|
+          next unless payload[:origin].to_s == "review"
+
+          ui.skill_built(payload[:name], updated: true) if ui.respond_to?(:skill_built)
+        rescue StandardError
+          nil
+        end
       end
 
       # Shared stack of EXPLICITLY-queued messages (Alt+Enter / "/queued"),
