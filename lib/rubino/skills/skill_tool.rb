@@ -41,13 +41,14 @@ module Rubino
           properties: {
             action: {
               type: "string",
-              enum: %w[load create edit patch write_file],
+              enum: %w[load create edit patch write_file delete],
               description: "\"load\" (default) loads an existing skill; \"create\" writes a " \
                            "new skill from name/description/body; \"edit\" rewrites an existing " \
                            "skill's SKILL.md body; \"patch\" does a find-and-replace in SKILL.md " \
                            "or a bundled file (old_str/new_str); \"write_file\" adds a supporting " \
-                           "file (references/templates/scripts/assets). Prefer edit/patch over " \
-                           "create when an existing skill already covers the territory."
+                           "file (references/templates/scripts/assets); \"delete\" removes an " \
+                           "authored skill entirely. Prefer edit/patch over create when an " \
+                           "existing skill already covers the territory."
             },
             name: {
               type: "string",
@@ -103,6 +104,7 @@ module Rubino
         when "edit"       then return edit(arguments)
         when "patch"      then return patch(arguments)
         when "write_file" then return write_file(arguments)
+        when "delete"     then return delete(arguments)
         end
 
         skill_name = arguments["name"] || arguments[:name]
@@ -270,6 +272,45 @@ module Rubino
         "Wrote #{rel} in skill '#{skill.name}'."
       rescue StandardError => e
         "Could not write file in skill '#{name}': #{e.message}"
+      end
+
+      # Remove an authored skill entirely — the in-PROCESS counterpart to the
+      # `rm` a user would otherwise reach for. Deleting via this tool (never via
+      # the jailed shell) is what makes removal WORK: skills live under the agent
+      # HOME (~/.rubino/skills), which the OS write-jail deliberately refuses to
+      # let the shell touch (it holds the sandbox's trust anchors). This runs in
+      # the Ruby process, so no jail applies; the approval layer still gates it
+      # (:ask, like every other skill write — see ApprovalPolicy#skill_write?).
+      #
+      # Confined to HOME-authored skills: a gem-bundled skill is protected and
+      # refused (same boundary as edit/patch). Handles both directory skills
+      # (remove the dir) and flat-file skills (remove the .md). For a skill
+      # installed via `rubino skills install`, Installer#remove drops its
+      # provenance-ledger entry too; a ledger-less inline-created/manual skill
+      # falls back to removing its authored path directly.
+      def delete(arguments)
+        name = str(arguments, "name")
+        return "Cannot delete skill: name is required." if name.empty?
+
+        skill = @registry.find(name)
+        return not_found(name) unless skill
+
+        target    = skill.directory? ? File.dirname(skill.path) : skill.path
+        guard_dir = skill.directory? ? target : File.dirname(skill.path)
+        unless under_home?(guard_dir)
+          return "Skill '#{name}' is a bundled skill and is protected from deletion. " \
+                 "Only skills authored under the agent home can be deleted."
+        end
+
+        # Prefer the installer so a git-installed skill's ledger entry goes too;
+        # it removes the dir itself when it owns the entry, so only fall back to
+        # a direct remove for ledger-less (inline-created / manual) skills.
+        FileUtils.rm_rf(target) unless Installer.new.remove(name)
+        @registry.discover!
+        emit_skill_updated(skill.name, "delete")
+        "Deleted skill '#{skill.name}'."
+      rescue StandardError => e
+        "Could not delete skill '#{name}': #{e.message}"
       end
 
       # [skill, dir, nil] when +name+ is an editable HOME directory-skill, else

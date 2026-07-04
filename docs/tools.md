@@ -98,9 +98,11 @@ Commands run under `bash -o pipefail` (foreground and background), so a failure 
 
 Provably read-only commands (`ls`, `grep`, `git log`, ...) run without an approval prompt by default — see [Auto-allowed read-only commands](security.md#auto-allowed-read-only-commands).
 
+When a write fails because the OS write-jail blocked a path **outside** the workspace, re-run with `disable_sandbox: true` to run the command outside the jail after an explicit approval (foreground only; gated by `tools.sandbox.escalation`, see [OS write-jail](security.md#os-write-jail)). `~/.rubino` skills are managed with the `skill` tool instead.
+
 ```
 Risk: high (always requires approval unless in allowlist or provably read-only)
-Parameters: command, cwd, timeout, run_in_background
+Parameters: command, cwd, timeout, run_in_background, disable_sandbox
 ```
 
 ### shell_output
@@ -273,11 +275,11 @@ Parameters: file_path, question
 
 ### skill
 
-Load a skill body (Level 2) and any bundled files (Level 3) on demand, or create a new skill (`action: "create"`). The agent sees available skills (name + description) up front and calls this to pull in the full instructions only when relevant. After a complex, repeatable task it can also distil what it did into a new skill — and the deterministic post-turn `DistillSkillJob` does this automatically. Gated by `tools.skill`. See **[docs/skills.md](skills.md)** for the skill system — the 3-level disclosure, creating skills (the post-turn job + the on-demand tool), authoring `SKILL.md` files, and the `SKILL_LOADED` / `SKILL_CREATED` observability signals.
+Load a skill body (Level 2) and any bundled files (Level 3) on demand, or author/maintain skills: `action: "create"` (new), `"edit"`/`"patch"`/`"write_file"` (update a home-authored skill), `"delete"` (remove one). The agent sees available skills (name + description) up front and calls this to pull in the full instructions only when relevant. After a complex, repeatable task it can also distil what it did into a new skill. The write actions are approval-gated and confined to the home skills dir (bundled skills are protected); they run in-process, so deleting a skill works where a shell `rm` under the OS write-jail cannot. Gated by `tools.skill`. See **[docs/skills.md](skills.md)** for the skill system — the 3-level disclosure, creating skills (the post-turn job + the on-demand tool), authoring `SKILL.md` files, and the `SKILL_LOADED` / `SKILL_CREATED` observability signals.
 
 ```
 Risk: low
-Parameters: action, name, file_path, description, body
+Parameters: action, name, file_path, description, body, old_str, new_str, content
 ```
 
 ### task

@@ -23,7 +23,7 @@ module Rubino
     # of yolo is "trust the model to move fast", not "let it wipe the root
     # filesystem if it confuses paths" — so catastrophic, unrecoverable
     # commands are refused here even if the policy was somehow bypassed.
-    class ShellTool < Base
+    class ShellTool < Base # rubocop:disable Metrics/ClassLength -- one cohesive shell surface (spawn/jail/stream/cwd-carry/escalation) whose parts are tightly coupled around the single Process.spawn
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
       # After the direct child exits, how long to wait for the merged output pipe
@@ -73,9 +73,9 @@ module Rubino
       # before `bash -o pipefail -c <script>`, and GIT_HARDENED_ENV merged with
       # the jail's extra_env (writable roots, never on argv). `cwd` derives the
       # writable roots; `script` is the already-wrapped bash source.
-      def self.sandboxed_bash_argv(script, cwd:)
-        argv = Security::Sandbox.wrap_argv(["bash", "-o", "pipefail", "-c", script], cwd: cwd)
-        env  = GIT_HARDENED_ENV.merge(Security::Sandbox.wrap_env(cwd: cwd))
+      def self.sandboxed_bash_argv(script, cwd:, escalate: false)
+        argv = Security::Sandbox.wrap_argv(["bash", "-o", "pipefail", "-c", script], cwd: cwd, escalate: escalate)
+        env  = GIT_HARDENED_ENV.merge(Security::Sandbox.wrap_env(cwd: cwd, escalate: escalate))
         [env, *argv]
       end
 
@@ -155,6 +155,16 @@ module Rubino
             description: "If true, start the command detached and return a run_id immediately."
           }
         }
+        if Security::Sandbox.escalation_allowed?
+          props[:disable_sandbox] = {
+            type: "boolean",
+            description: "Set true ONLY to re-run a command that a previous attempt failed to run " \
+                         "because the OS write-jail blocked a write OUTSIDE the workspace. It runs " \
+                         "the command outside the jail and REQUIRES explicit user approval. The " \
+                         "agent home (~/.rubino) stays protected even so — manage skills with the " \
+                         "`skill` tool, not a shell rm. Foreground only."
+          }
+        end
         if compression_enabled?
           props[:compress] = {
             type: "boolean",
@@ -174,8 +184,19 @@ module Rubino
         background = arguments["run_in_background"] || arguments[:run_in_background] || false
         timeout    = arguments["timeout"]           || arguments[:timeout] || DEFAULT_TIMEOUT
         timeout    = [[timeout.to_i, 1].max, MAX_TIMEOUT].min
+        # Escape hatch (§B): run outside the OS write-jail after explicit
+        # approval. Honoured only when the operator hasn't disabled the hatch
+        # (tools.sandbox.allow_escalation) — otherwise the flag is IGNORED and
+        # the command runs confined (fail-hard on a jailed write, matching Claude
+        # Code allowUnsandboxedCommands:false). Foreground only.
+        escalate   = truthy?(arguments["disable_sandbox"] || arguments[:disable_sandbox]) &&
+                     Security::Sandbox.escalation_allowed?
 
         return "Error: command is required" if command.nil? || command.to_s.empty?
+        if escalate && background
+          return { output: "Error: disable_sandbox is not supported for background commands — " \
+                           "run it in the foreground.", error_code: :denied_command }
+        end
 
         # "show me the diff" DX: when the command's job is to PRODUCE a diff
         # (`git diff`, `git show`, `diff …`), render its output as a real diff —
@@ -208,7 +229,7 @@ module Rubino
           # them — they run in the explicitly resolved cwd, like before (#544/#545).
           spawn_background(command, working_dir)
         else
-          run = execute_foreground(command, working_dir, timeout)
+          run = execute_foreground(command, working_dir, timeout, escalate: escalate)
           # Attribute an OS write-jail denial (#74): an EACCES against a path
           # outside the writable roots reads like a plain perms error, so the
           # model retries with chmod/sudo instead of writing in the workspace.
@@ -244,6 +265,12 @@ module Rubino
       def append_jail_hint(text, cwd)
         hint = Security::Sandbox.write_jail_attribution(text, cwd: cwd)
         hint ? "#{text}\n#{hint}" : text
+      end
+
+      # Accepts either a real boolean (native tool call) or the string "true"
+      # (some providers stringify booleans in tool arguments).
+      def truthy?(value)
+        value == true || value.to_s == "true"
       end
 
       def shell_error_code(run)
@@ -404,7 +431,7 @@ module Rubino
       # timeout (a bare `kill pid` would leave child processes orphaned).
       # Returns a structured hash — the wrapper builds the model-facing text
       # from the same data, keeping the parse path single-sourced.
-      def execute_foreground(command, cwd, timeout)
+      def execute_foreground(command, cwd, timeout, escalate: false)
         rd = nil
         pgid = nil
         cwd_rd = nil
@@ -446,7 +473,7 @@ module Rubino
         # byte-identical to before. Writable roots go to the helper via env
         # (never argv), merged on top of GIT_HARDENED_ENV. Built by the SHARED
         # helper so the background path (ShellRegistry) jails identically.
-        pid = Process.spawn(*self.class.sandboxed_bash_argv(wrapped, cwd: cwd), **spawn_opts)
+        pid = Process.spawn(*self.class.sandboxed_bash_argv(wrapped, cwd: cwd, escalate: escalate), **spawn_opts)
         pgid = pid
         wr.close
         cwd_wr&.close

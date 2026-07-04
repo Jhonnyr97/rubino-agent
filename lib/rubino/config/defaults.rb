@@ -486,14 +486,27 @@ module Rubino
           # boundary; this is the real floor (Security::Sandbox).
           #   mode: off | read-only | workspace-write   (default workspace-write)
           #     off            — no OS confinement (byte-identical to pre-sandbox)
-          #     read-only      — workspace is read-only; writes only to temp/home
-          #     workspace-write— writes confined to workspace + temp + ~/.rubino
+          #     read-only      — workspace is read-only; writes only to temp
+          #     workspace-write— writes confined to workspace + temp (NOT
+          #                      ~/.rubino: it holds the sandbox trust anchors)
           #   network: allow (slice 1; deny/proxy are slice 3+)
           #   extra_writable: extra absolute paths added to the write jail
           #   require: false — fail-OPEN when no mechanism exists (default).
           #     Set true to FAIL-CLOSED: shell (foreground AND background)
           #     REFUSES to run when the sandbox is unavailable, for the
           #     paranoid / multi-tenant-host operator (slice 2 Part B).
+          #   escalation: off | protect-home | full   (default protect-home)
+          #     Governs the disable_sandbox escape hatch — re-running a shell
+          #     command OUTSIDE the jail after EXPLICIT approval when a write-jail
+          #     denial blocked it (§B).
+          #     off          — no hatch; the flag is ignored and a jailed write
+          #                    hard-fails (Claude allowUnsandboxedCommands:false).
+          #     protect-home — DEFAULT. Escalation runs broadly but ~/.rubino (the
+          #                    sandbox trust anchors) stays OS-refused even when
+          #                    approved; on Linux/Landlock it can't be expressed,
+          #                    so there the floor is approval-only.
+          #     full         — Codex-style: an approved escalation is fully
+          #                    unconfined; the human approval is the only boundary.
           # Always-on when a mechanism exists, INCLUDING under --yolo (--yolo
           # skips approval prompts, not the OS write-jail). Fails OPEN with a
           # one-time loud banner where no mechanism is available (old kernel,
@@ -502,7 +515,8 @@ module Rubino
             "mode" => "workspace-write",
             "network" => "allow",
             "extra_writable" => [],
-            "require" => false
+            "require" => false,
+            "escalation" => "protect-home"
           },
 
           # Default ON, matching Hermes (web tools ship in the default toolset,

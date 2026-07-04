@@ -106,6 +106,49 @@ RSpec.describe Rubino::Skills::SkillTool do
     end
   end
 
+  describe %(action: "delete") do
+    it "removes an authored directory skill and re-discovers" do
+      create_demo
+      expect(registry.find("demo")).not_to be_nil
+
+      out = tool.call("action" => "delete", "name" => "demo")
+
+      expect(out).to include("Deleted skill 'demo'")
+      expect(File.exist?(File.join(@write_dir, "demo"))).to be(false)
+      expect(registry.find("demo")).to be_nil
+    end
+
+    it "refuses to delete a bundled skill" do
+      bundled = Dir.mktmpdir
+      FileUtils.mkdir_p(File.join(bundled, "vendored"))
+      File.write(File.join(bundled, "vendored", "SKILL.md"),
+                 "---\nname: vendored\ndescription: v\n---\n\nbody\n")
+      cfg = test_configuration("skills" => { "paths" => [@write_dir, bundled] })
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+      reg = Rubino::Skills::Registry.new(config: cfg)
+      reg.discover!
+      t = described_class.new(registry: reg)
+
+      expect(t.call("action" => "delete", "name" => "vendored")).to include("protected")
+      expect(File.exist?(File.join(bundled, "vendored", "SKILL.md"))).to be(true)
+    end
+
+    it "refuses to delete an unknown skill" do
+      expect(tool.call("action" => "delete", "name" => "ghost")).to include("not found")
+    end
+
+    it "emits SKILL_UPDATED action=delete for a review-fork delete" do
+      create_demo
+      bus = Rubino::Interaction::EventBus.new
+      captured = []
+      bus.on(Rubino::Interaction::Events::SKILL_UPDATED) { |p| captured << p }
+      Rubino.with_event_bus(bus) do
+        Rubino.with_review_toolset(%w[skill]) { tool.call("action" => "delete", "name" => "demo") }
+      end
+      expect(captured.last).to include(origin: "review", action: "delete", name: "demo")
+    end
+  end
+
   # The interactive REPL surfaces ONLY review-origin writes in the timeline (a
   # foreground call already renders as a `● skill` tool row). So the tool must
   # tag each write with the right origin.

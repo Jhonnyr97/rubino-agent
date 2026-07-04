@@ -140,8 +140,18 @@ module Rubino
       end
 
       # The argv prefix to splice before `bash …`. [] when off/unavailable.
-      def command_prefix(cwd: nil)
+      #
+      # escalate:true is the approved out-of-jail run (the `disable_sandbox`
+      # shell param, §B). It does NOT simply drop the jail: the ~/.rubino trust
+      # anchors stay OS-refused even here, so an approved escalation can widen
+      # reach to the rest of the disk WITHOUT re-opening the self-tamper
+      # persistence escape. On Seatbelt that is a broad-allow-except-anchors
+      # policy; Landlock cannot express an exclusion, so escalation there runs
+      # unconfined ([] prefix) — an honest platform degradation (see
+      # #escalation_degrades_on_linux? / the shell tool's disclosure).
+      def command_prefix(cwd: nil, escalate: false)
         return [] if mode == :off
+        return escalated_prefix if escalate
 
         case available_mechanism
         when :seatbelt then seatbelt_prefix(cwd: cwd)
@@ -155,24 +165,81 @@ module Rubino
       # write-jail. [] prefix when off/unavailable ⇒ byte-identical to no
       # sandbox. Callers splat the result into Process.spawn/Open3 and merge
       # #wrap_env into their env. `argv` is the already-built command argv.
-      def wrap_argv(argv, cwd: nil)
-        [*command_prefix(cwd: cwd), *argv]
+      def wrap_argv(argv, cwd: nil, escalate: false)
+        [*command_prefix(cwd: cwd, escalate: escalate), *argv]
       end
 
       # The extra env every wrapped spawn must merge (writable roots for
       # Landlock; {} for Seatbelt/off). Alias of #extra_env for symmetry with
       # #wrap_argv at the call sites.
-      def wrap_env(cwd: nil)
-        extra_env(cwd: cwd)
+      def wrap_env(cwd: nil, escalate: false)
+        extra_env(cwd: cwd, escalate: escalate)
       end
 
       # Extra env merged into the spawn. Landlock receives the writable roots
       # here (never on argv, so a path with spaces/quotes is safe); Seatbelt
-      # passes them as -D params, so it needs none.
-      def extra_env(cwd: nil)
-        return {} unless mode != :off && available_mechanism == :landlock
+      # passes them as -D params, so it needs none. An escalated run needs none
+      # either: Seatbelt carves the anchors out via -D params, and Landlock
+      # escalation is unconfined (empty prefix, no roots).
+      def extra_env(cwd: nil, escalate: false)
+        return {} if mode == :off || escalate
+        return {} unless available_mechanism == :landlock
 
         { "RUBINO_SANDBOX_WRITABLE_ROOTS" => landlock_roots_env(cwd: cwd) }
+      end
+
+      # The operator's escalation posture (config tools.sandbox.escalation),
+      # governing what the `disable_sandbox` out-of-jail escape hatch does:
+      #   :off           — no escape hatch; the flag is ignored and a jailed
+      #                    write hard-fails (Claude allowUnsandboxedCommands:false
+      #                    / Codex Never).
+      #   :"protect-home"— DEFAULT. Escalation runs broadly BUT the ~/.rubino
+      #                    trust anchors stay OS-refused (Seatbelt carve-out;
+      #                    Landlock can't express it → approval-only there).
+      #   :full          — Codex-style: an approved escalation is fully unconfined
+      #                    (SandboxType::None); the human approval is the only
+      #                    boundary. No OS floor on ~/.rubino.
+      # Unknown/absent ⇒ the secure default. Independent of #required? (that
+      # governs fail-open vs -closed when NO mechanism exists; this governs the
+      # escape hatch when one does).
+      def escalation_mode
+        case Rubino.configuration&.dig("tools", "sandbox", "escalation").to_s
+        when "off"  then :off
+        when "full" then :full
+        else :"protect-home"
+        end
+      rescue StandardError
+        :"protect-home"
+      end
+
+      # Whether the escape hatch is available at all (any mode but :off). Read by
+      # the shell tool (advertise the param / honour the flag), the approval
+      # policy (route to :ask), and #escalated_prefix.
+      def escalation_allowed?
+        escalation_mode != :off
+      end
+
+      # True when the ~/.rubino floor CANNOT be OS-enforced during an escalation
+      # on this host — i.e. protect-home mode on Landlock, where the anchors are
+      # held only by the approval prompt. The approval card surfaces this so the
+      # human knows the floor is best-effort here. False in :full (no floor is
+      # intended) and on Seatbelt (the carve-out enforces it).
+      def escalation_degrades_on_linux?
+        escalation_mode == :"protect-home" && active? && available_mechanism == :landlock
+      end
+
+      # The one-line disclosure the approval card shows for an escalation prompt,
+      # honest about what the approval actually grants under the active mode.
+      def escalation_disclosure
+        case escalation_mode
+        when :full
+          "runs OUTSIDE the OS write-jail (tools.sandbox) — FULL filesystem access, ~/.rubino NOT protected"
+        when :"protect-home"
+          base = "runs OUTSIDE the OS write-jail (tools.sandbox); ~/.rubino stays protected"
+          escalation_degrades_on_linux? ? "#{base} by approval only on this host" : base
+        else
+          "runs OUTSIDE the OS write-jail (tools.sandbox)"
+        end
       end
 
       # The de-duped, existing absolute paths the jail allows writes to. The
@@ -194,6 +261,21 @@ module Rubino
       # writing inside the workspace.
       WRITE_JAIL_HINT =
         "(blocked by the workspace write-jail — tools.sandbox; write inside the workspace)"
+
+      # Clause appended when the escape hatch is open: the model can re-issue the
+      # SAME shell command with disable_sandbox:true to REQUEST approval to run
+      # it outside the jail (§B). Not advertised when escalation is disabled.
+      ESCALATE_CLAUSE =
+        "or re-run the shell command with disable_sandbox:true to request approval to run it outside the jail"
+
+      # Hint for a denied write that lands INSIDE the agent-home trust anchors
+      # (e.g. ~/.rubino/skills/…): steer the model to the in-process path instead
+      # of a shell write. True in every escalation mode — skills are managed via
+      # the tool, not a jailed/escalated shell rm (and under protect-home an
+      # escalation wouldn't reach here anyway).
+      TRUST_ANCHOR_HINT =
+        "(the agent home ~/.rubino holds rubino's own config/skills/DB — manage skills with the " \
+        "`skill` tool: action create/edit/patch/delete, not a shell write)"
 
       # Detects the OS-deny shape, capturing the offending path. EACCES from a
       # write outside the jail surfaces as "Permission denied @ ... - /abs/path"
@@ -222,12 +304,24 @@ module Rubino
           next unless path
 
           target = canonical(path) || File.expand_path(path)
-          return WRITE_JAIL_HINT unless inside_roots?(target, roots)
+          return hint_for(target) unless inside_roots?(target, roots)
         end
         nil
       rescue StandardError
         nil
       end
+
+      # The right attribution for a jailed write to +target+: the trust-anchor
+      # hint when it lands under ~/.rubino (escalation won't help — use the skill
+      # tool), the escalation-aware hint when the escape hatch is open, else the
+      # plain write-inside-the-workspace hint.
+      def hint_for(target)
+        return TRUST_ANCHOR_HINT if inside_roots?(target, trust_anchor_roots)
+        return "#{WRITE_JAIL_HINT[0..-2]} — #{ESCALATE_CLAUSE})" if escalation_allowed?
+
+        WRITE_JAIL_HINT
+      end
+      private_class_method :hint_for
 
       # True when +path+ resolves under one of the current writable roots — i.e.
       # a write there would NOT be blocked by the jail. Public so callers that
@@ -361,15 +455,50 @@ module Rubino
       end
       private_class_method :seatbelt_prefix
 
-      # default-deny base (lifted from Codex seatbelt_base_policy.sbpl) + broad
-      # reads + open network (slice 1) + a write rule per parameterised root.
-      # Literal paths are passed only as -D params, never interpolated here, so
-      # a path with a `"`/`)` cannot break out of the policy text.
-      def seatbelt_policy(root_count)
-        writes = (0...root_count).map do |i|
-          "(allow file-write* (subpath (param \"WRITABLE_ROOT_#{i}\")))"
-        end.join("\n")
+      # The escalated (disable_sandbox) launcher prefix. Only reached when the
+      # hatch is open (escalation_allowed?), so the mode here is :full or
+      # :"protect-home".
+      #   :full          → [] (no launcher; fully unconfined, Codex parity).
+      #   :"protect-home"→ Seatbelt broad-write EXCEPT the trust anchors, which
+      #                    are re-denied as -D params (last matching SBPL rule
+      #                    wins); Landlock can't express the exclusion ⇒ [].
+      def escalated_prefix
+        return [] if escalation_mode == :full
 
+        case available_mechanism
+        when :seatbelt
+          anchors = trust_anchor_roots
+          defines = anchors.each_with_index.map { |r, i| "-DANCHOR_#{i}=#{r}" }
+          [ABS_SANDBOX_EXEC, "-p", escalated_seatbelt_policy(anchors.size), *defines, "--"]
+        else
+          []
+        end
+      end
+      private_class_method :escalated_prefix
+
+      # The agent-home dir(s) that stay OS-non-writable EVEN under an approved
+      # escalation — the sandbox's own trust anchors (config.yml/.env/session
+      # DB/helper/skills). Existing dirs only, so a Seatbelt subpath rule never
+      # names a missing path. Skills under here are managed via the `skill` tool
+      # (in-process), never a jailed/escalated shell write.
+      def trust_anchor_roots
+        home = canonical(agent_home) || File.expand_path(agent_home)
+        [home].compact.select { |p| File.directory?(p) }
+      end
+      private_class_method :trust_anchor_roots
+
+      def agent_home
+        Config::Loader.default_home_path
+      rescue StandardError
+        File.expand_path("~/.rubino")
+      end
+      private_class_method :agent_home
+
+      # default-deny base (lifted from Codex seatbelt_base_policy.sbpl) + broad
+      # reads + open network. Literal paths are passed only as -D params, never
+      # interpolated, so a path with a `"`/`)` cannot break out of the text. The
+      # write rules are appended by the two composers below.
+      def seatbelt_base_policy
         <<~SBPL
           (version 1)
           (deny default)
@@ -394,12 +523,33 @@ module Rubino
           ; NETWORK: allowed in slice 1
           (allow network*)
           (allow system-socket)
-
-          ; WRITES: deny everywhere, allow only the parameterised roots
-          #{writes}
         SBPL
       end
+      private_class_method :seatbelt_base_policy
+
+      # WORKSPACE-WRITE: deny writes everywhere, allow only the parameterised
+      # roots (the default confinement).
+      def seatbelt_policy(root_count)
+        writes = (0...root_count).map do |i|
+          "(allow file-write* (subpath (param \"WRITABLE_ROOT_#{i}\")))"
+        end.join("\n")
+
+        "#{seatbelt_base_policy}\n; WRITES: deny everywhere, allow only the parameterised roots\n#{writes}\n"
+      end
       private_class_method :seatbelt_policy
+
+      # ESCALATED: allow writes broadly, then RE-DENY the trust anchors (last
+      # match wins). The approved out-of-jail run reaches the rest of the disk
+      # but still cannot poison ~/.rubino.
+      def escalated_seatbelt_policy(anchor_count)
+        denies = (0...anchor_count).map do |i|
+          "(deny file-write* (subpath (param \"ANCHOR_#{i}\")))"
+        end.join("\n")
+
+        "#{seatbelt_base_policy}\n; WRITES: broad allow, then re-deny the trust anchors\n" \
+          "(allow file-write*)\n#{denies}\n"
+      end
+      private_class_method :escalated_seatbelt_policy
 
       # ---- Linux / Landlock ----------------------------------------------
 

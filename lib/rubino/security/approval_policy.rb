@@ -127,7 +127,7 @@ module Rubino
       # explicit permissions:deny BOTH run before any allow path (yolo,
       # permissions:allow, command_allowlist), so neither can be overridden
       # by a fast-path the way yolo used to override deny rules.
-      def decide(tool, arguments: {})
+      def decide(tool, arguments: {}) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity -- one canonical, deliberately linear deny-before-allow decision ladder; splitting it would scatter the ordering invariant
         @last_deny_reason = nil
         @last_ask_reason = nil
         @doom_loop_warning = false
@@ -166,6 +166,23 @@ module Rubino
         #    warn mode it sets @doom_loop_warning and falls through to the normal
         #    decision so a legitimate repeated call is not hard-denied.
         return deny_with(:doom_loop) if doom_loop_blocks?(tool, arguments)
+
+        # 4b. Sandbox ESCALATION request (shell disable_sandbox:true, §B). Running
+        #     OUTSIDE the OS write-jail is inherently privileged, so it ALWAYS
+        #     prompts with a FRESH, distinct approval — never auto-allowed on a
+        #     readonly/allowlisted/dangerous? basis, and above the step 5-6 allow
+        #     fast-paths so an escalated form of an otherwise pre-approved command
+        #     still asks. Below yolo (step 3): a --yolo operator opted into full
+        #     trust and runs it unprompted — the OS anchor carve-out still guards
+        #     ~/.rubino even then. Hardline (step 1) + permissions:deny (step 2)
+        #     already ran, so an escalated `rm -rf /` is still denied. Headless
+        #     :ask becomes the #260 fail-closed block. When the operator disabled
+        #     the hatch (allow_escalation:false) the shell tool ignores the flag,
+        #     so this is false and the command routes through the normal gate.
+        if escalated_shell?(tool, arguments)
+          @last_ask_reason = :sandbox_escalation
+          return :ask
+        end
 
         # 5. Remaining explicit pattern rules (allow / ask). deny was already
         #    handled in step 2. An explicit user permissions rule (allow/ask)
@@ -321,17 +338,33 @@ module Rubino
         CommandAllowlist.new(config: @config).allowed?(command)
       end
 
-      # True when this is the WRITE action of the skill tool (action: "create").
+      # True when this is a WRITE action of the skill tool (action: "create").
       # The skill tool is :low (so read_only keeps load/list/show), but its
-      # WRITE actions (create/edit/patch/write_file) author or mutate a SKILL.md
-      # and must be approval-gated (#405). The background review fork bypasses
-      # this via Rubino.review_toolset (trusted sandboxed write); a foreground
-      # agent still asks.
+      # WRITE actions (create/edit/patch/write_file/delete) author, mutate, or
+      # remove a SKILL.md and must be approval-gated (#405). delete is the
+      # in-process removal path (the jailed shell can't touch ~/.rubino/skills),
+      # so it MUST be gated here too — otherwise a destructive removal would slip
+      # through unprompted. The background review fork bypasses this via
+      # Rubino.review_toolset (trusted sandboxed write); a foreground agent still
+      # asks.
       def skill_write?(tool, arguments)
         return false unless tool.name == "skill"
 
         args = arguments || {}
-        %w[create edit patch write_file].include?((args["action"] || args[:action]).to_s)
+        %w[create edit patch write_file delete].include?((args["action"] || args[:action]).to_s)
+      end
+
+      # True when this is a shell call requesting the out-of-jail escape hatch
+      # (disable_sandbox:true) AND the operator hasn't disabled it. The gate
+      # mirrors the shell tool's own #escalate resolution so the policy and the
+      # tool agree on when the flag is live: if allow_escalation is off the tool
+      # ignores the flag and runs confined, so the policy must NOT prompt for it.
+      def escalated_shell?(tool, arguments)
+        return false unless tool.name == "shell"
+
+        args = arguments || {}
+        raw = args.key?("disable_sandbox") ? args["disable_sandbox"] : args[:disable_sandbox]
+        (raw == true || raw.to_s == "true") && Sandbox.escalation_allowed?
       end
 
       # The confirm_policy shell gate (steps 7-8), extracted so #decide stays

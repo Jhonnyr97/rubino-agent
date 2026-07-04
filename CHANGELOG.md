@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Delete skills without leaving the tool.** The `skill` tool gains
+  `action: "delete"`, the in-process counterpart to create/edit/patch/write_file:
+  it removes a home-authored skill (dropping its provenance-ledger entry when it
+  has one), confined to the home skills dir and refusing bundled skills, and is
+  approval-gated like every other skill write. This closes a real trap — skills
+  live under `~/.rubino/skills`, which the OS write-jail refuses to let the shell
+  touch, so deleting one with `rm` failed with no recourse. `rubino skills remove`
+  likewise now deletes any home-authored skill (not just git-installed ones)
+  instead of punting to a manual `rm`.
+- **Escape hatch for out-of-workspace writes (`disable_sandbox`).** When the OS
+  write-jail blocks a legitimate write outside the workspace, the model can
+  re-run the shell command with `disable_sandbox: true` to run it outside the
+  jail — always behind a fresh, explicit approval that discloses it runs outside
+  the jail (model-driven, aligned with Claude Code). It sits below `--yolo` and
+  below the hardline floor (`rm -rf /` stays denied) and fails closed headless.
+  New config `tools.sandbox.escalation`: `off` (no hatch), **`protect-home`**
+  (default — `~/.rubino` trust anchors stay OS-refused even when approved), or
+  `full` (Codex-style fully-unconfined-on-approval). The write-jail hint now
+  steers the model to the right next move (the `skill` tool for `~/.rubino`,
+  `disable_sandbox` for elsewhere).
+
 ## [0.5.2.2] - 2026-07-01
 
 ### Added

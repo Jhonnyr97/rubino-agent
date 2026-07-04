@@ -227,12 +227,23 @@ RSpec.describe Rubino::CLI::SkillsCommand do
         expect(installer.sources).to eq({})
       end
 
-      it "raises Thor::Error for a skill without a provenance entry, keeping the dir" do
+      it "removes a home-authored skill without a provenance entry (no manual rm)" do
         FileUtils.mkdir_p(File.join(skills_dir, "handmade"))
 
-        expect { described_class.new.remove("handmade") }
-          .to raise_error(Thor::Error, /handmade wasn't installed via `rubino skills install`/)
-        expect(Dir.exist?(File.join(skills_dir, "handmade"))).to be(true)
+        described_class.new.remove("handmade")
+
+        expect(messages(:success).join).to include("Removed skill: handmade")
+        expect(Dir.exist?(File.join(skills_dir, "handmade"))).to be(false)
+      end
+
+      it "raises Thor::Error for a skill that does not exist at all" do
+        expect { described_class.new.remove("ghost") }
+          .to raise_error(Thor::Error, /No skill named ghost found/)
+      end
+
+      it "refuses a name that escapes the skills root" do
+        expect { described_class.new.remove("../escape") }
+          .to raise_error(Thor::Error, /No skill named/)
       end
     end
 
