@@ -77,6 +77,20 @@ RSpec.describe Rubino::Tools::ShellTool do
       allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(false)
       expect(tool.input_schema[:properties]).not_to have_key(:disable_sandbox)
     end
+
+    context "when the operator disabled the hatch (escalation=off)" do
+      before { allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(false) }
+
+      it "runs confined, tells the model, and labels the card (not silent)" do
+        expect(described_class).to receive(:sandboxed_bash_argv)
+          .with(anything, cwd: anything, escalate: false).and_call_original
+        res = tool.call("command" => "echo esc_off_ok", "disable_sandbox" => true)
+
+        expect(payload(res)).to include("esc_off_ok")                       # ran confined
+        expect(payload(res)).to include("tools.sandbox.escalation=off")     # model told
+        expect(res[:label]).to eq("config: escalation=off")                 # human badge
+      end
+    end
   end
 
   describe ".sandbox_refusal_reason (fail-closed delegation)" do

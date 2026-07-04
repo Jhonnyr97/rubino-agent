@@ -2748,4 +2748,30 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to match(/\e\[33m/) # yellow
     end
   end
+
+  # An action auto-refused/neutered by policy or config carries a short HUMAN
+  # badge on the tool card — the operator sees which knob is responsible.
+  describe "auto-refusal card label" do
+    it "renders a labelled policy denial as a short 'denied — not executed [reason]' card" do
+      result = Rubino::Tools::Result.denied(name: "shell", call_id: "x", reason: :hardline)
+      out = capture_stdout { ui.tool_finished("shell", result: result) }
+      expect(out).to include("✗")
+      expect(out).to include("shell denied — not executed")
+      expect(out).to include("[hardline]")
+    end
+
+    it "appends the badge to a normal card (e.g. escalation refused, ran confined)" do
+      result = Rubino::Tools::Result.success(name: "shell", call_id: "x", output: "ok",
+                                             label: "config: escalation=off")
+      out = capture_stdout { ui.tool_finished("shell", result: result) }
+      expect(out).to include("└ ✓")
+      expect(out).to include("[config: escalation=off]")
+    end
+
+    it "leaves an unlabelled result's card unchanged (no empty brackets)" do
+      result = Rubino::Tools::Result.success(name: "shell", call_id: "x", output: "ok")
+      out = capture_stdout { ui.tool_finished("shell", result: result) }
+      expect(out).not_to include("[]")
+    end
+  end
 end

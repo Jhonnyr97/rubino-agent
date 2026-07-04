@@ -203,8 +203,12 @@ module Rubino
       # governs fail-open vs -closed when NO mechanism exists; this governs the
       # escape hatch when one does).
       def escalation_mode
+        # YAML parses a bare `off`/`no` as the boolean false (and `on` as true),
+        # so an operator who writes `escalation: off` yields false here — map that
+        # (and the string forms) to :off, otherwise a disabled hatch would
+        # silently read as the protect-home default.
         case Rubino.configuration&.dig("tools", "sandbox", "escalation").to_s
-        when "off"  then :off
+        when "off", "false", "no" then :off
         when "full" then :full
         else :"protect-home"
         end

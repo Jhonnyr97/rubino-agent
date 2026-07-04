@@ -698,9 +698,23 @@ module Rubino
       # outcome that needs eyes (P1). Failure keeps name + wording, in red:
       # `└ ✗ failed · shell · exit 1` — the word must agree with the glyph;
       # "✗ done" read as if the errored tool had still succeeded (#153).
-      def activity_finished(name, metric: nil, failed: false)
+      def activity_finished(name, metric: nil, failed: false, label: nil, denied: false)
         @activity_open = false
         flush_tool_preview_overflow
+        # `label` is a short HUMAN tag (`[hardline]`, `[config: escalation=off]`)
+        # naming WHY policy/config auto-refused or neutered the action — appended
+        # as a dim-bracket badge so the operator sees which knob is responsible.
+        tag = label && !label.to_s.empty? ? " [#{truncate_inline(safe(label), 40)}]" : ""
+
+        # A policy/config DENIAL (never ran) reads "<tool> denied — not executed"
+        # + the badge, not the "failed · … · <output>" shape (nothing executed to
+        # produce output). Only reached for auto-denials that carry a label; a
+        # human "No" is rendered by #confirm → #denied.
+        if denied
+          put_card_row("  └ ✗ #{name} denied — not executed#{tag}") { |line| @pastel.red(line) }
+          @last_block = :tool
+          return
+        end
         # The metric can carry newlines (e.g. a task_result body): interpolating
         # it raw would continue flush-left and unstyled on the next lines —
         # inline it into the ONE styled row instead.
@@ -714,10 +728,10 @@ module Rubino
         inline = metric ? truncate_inline(safe(metric), 120) : nil
         if failed
           suffix = inline && !inline.empty? ? " · #{inline}" : ""
-          put_card_row("  └ ✗ failed · #{name}#{suffix}") { |line| @pastel.red(line) }
+          put_card_row("  └ ✗ failed · #{name}#{suffix}#{tag}") { |line| @pastel.red(line) }
         else
           suffix = inline && !inline.empty? ? " #{inline}" : ""
-          put_card_row("  └ ✓#{suffix}") { |line| @pastel.dim(line) }
+          put_card_row("  └ ✓#{suffix}#{tag}") { |line| @pastel.dim(line) }
         end
         @last_block = :tool
       end
@@ -1847,10 +1861,19 @@ module Rubino
       # Tool finished renders as the compact `└ ✓ metric` close row, or
       # `└ ✗ failed · name · error` in red (P10).
       # The `task` tool closes the delegation row: `✓ <subagent>: <summary>`.
-      def tool_finished(name, result: nil)
+      def tool_finished(name, result: nil) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity -- one linear result→card dispatch (task/transcript/denied/failed/ok); splitting scatters the render decision
         record_subagent_tool_finished(name, result)
         return delegation_finished(result) if name == "task"
         return status_back_to_thinking if result.respond_to?(:transcript_card?) && !result.transcript_card?
+
+        label = (result.label if result.respond_to?(:label))
+        # A labelled policy/config denial renders as the short "denied — not
+        # executed [reason]" card rather than the long model-facing denial text.
+        # Unlabelled denials (a human "No") keep their existing rendering.
+        if label && result.respond_to?(:denied?) && result.denied?
+          activity_finished(name, denied: true, label: label)
+          return status_back_to_thinking
+        end
 
         failed = result.respond_to?(:errorish?) ? result.errorish? : (result.respond_to?(:success?) && !result.success?)
         metric = if failed
@@ -1859,7 +1882,7 @@ module Rubino
                    (result.respond_to?(:metrics) && result.metrics) ||
                      (result&.respond_to?(:truncated_preview) ? result.truncated_preview : nil)
                  end
-        activity_finished(name, metric: metric, failed: failed)
+        activity_finished(name, metric: metric, failed: failed, label: label)
         status_back_to_thinking
       end
 

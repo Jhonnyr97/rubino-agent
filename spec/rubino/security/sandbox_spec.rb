@@ -327,6 +327,14 @@ RSpec.describe Rubino::Security::Sandbox do
       expect(described_class.escalation_allowed?).to be(false)
     end
 
+    # YAML parses a bare `escalation: off` as the boolean false — it must still
+    # disable the hatch, not fall through to the protect-home default.
+    it "treats a YAML boolean false (bare `off`) as :off" do
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: false)
+      expect(described_class.escalation_mode).to eq(:off)
+      expect(described_class.escalation_allowed?).to be(false)
+    end
+
     it "protect-home builds a broad-allow-EXCEPT-anchors Seatbelt policy" do
       home = Dir.mktmpdir("rubino-home")
       allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(home)
