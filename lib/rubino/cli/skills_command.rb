@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "thor"
+require "fileutils"
 
 module Rubino
   module CLI
@@ -164,11 +165,21 @@ module Rubino
           return
         end
 
-        # Nothing removed — a FAILURE (P2-H1/H2). The "delete manually" hint
-        # goes to stderr alongside the error, then raise so exit != 0.
-        dir = File.join(installer.skills_dir, name)
-        warn "It exists at #{dir} — delete the directory manually." if File.directory?(dir)
-        raise Thor::Error, "#{name} wasn't installed via `rubino skills install` (no provenance entry)"
+        # No provenance entry — but a skill authored in-session (`skill create`)
+        # or dropped in by hand still lives under the home skills dir and is just
+        # as removable. Delete it directly, CONFINED to the skills root (a `name`
+        # with `..`/separators can't escape), so the user never has to reach for a
+        # manual `rm` (which the agent's own shell can't run against ~/.rubino).
+        root = File.realpath(installer.skills_dir) if File.directory?(installer.skills_dir)
+        dir  = File.expand_path(name.to_s, root) if root
+        if dir&.start_with?("#{root}#{File::SEPARATOR}") && File.directory?(dir)
+          FileUtils.rm_rf(dir)
+          Rubino.ui.success("Removed skill: #{name}")
+          return
+        end
+
+        # Nothing to remove — a FAILURE (P2-H1/H2). Raise so exit != 0.
+        raise Thor::Error, "No skill named #{name} found under #{installer.skills_dir}"
       end
 
       private

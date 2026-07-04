@@ -533,6 +533,7 @@ module Rubino
       # values explicitly; tag dropped lines so silence can't mask intent.
       def approval_question(tool, arguments)
         question = with_mcp_note(tool, build_approval_question(tool, arguments))
+        question = with_escalation_note(question)
         with_workspace_note(tool, arguments, question)
       end
 
@@ -551,6 +552,18 @@ module Rubino
 
         "#{question}\n   ↳ OUTSIDE the workspace (#{Workspace.roots.join(", ")}) — " \
           "approving adds #{dirs.join(", ")} for this session"
+      end
+
+      # Appends the out-of-jail disclosure when the policy routed THIS call to the
+      # sandbox-escalation prompt (last_ask_reason == :sandbox_escalation). The
+      # wording is mode-aware (full vs protect-home, and the Landlock degrade) and
+      # lives in Sandbox#escalation_disclosure so the card can't drift from what
+      # the launcher actually does. Any other :ask is unchanged.
+      def with_escalation_note(question)
+        return question unless @approval_policy.respond_to?(:last_ask_reason)
+        return question unless @approval_policy.last_ask_reason == :sandbox_escalation
+
+        "#{question}\n   ⚠ #{Security::Sandbox.escalation_disclosure}"
       end
 
       # Appends the external-code disclosure line ONLY for MCP tools, so the human

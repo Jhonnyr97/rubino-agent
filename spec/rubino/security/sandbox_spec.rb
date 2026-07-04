@@ -18,11 +18,12 @@ RSpec.describe Rubino::Security::Sandbox do
   end
 
   # Drive a deterministic config + mechanism regardless of the host OS.
-  def configure(mode:, mechanism:, extra_writable: [], require_sandbox: false)
+  def configure(mode:, mechanism:, extra_writable: [], require_sandbox: false, escalation: nil)
     raw = Rubino::Config::Defaults.to_hash
     raw["tools"]["sandbox"]["mode"] = mode
     raw["tools"]["sandbox"]["extra_writable"] = extra_writable
     raw["tools"]["sandbox"]["require"] = require_sandbox
+    raw["tools"]["sandbox"]["escalation"] = escalation unless escalation.nil?
     config = Rubino::Config::Configuration.new(raw: raw)
     allow(Rubino).to receive(:configuration).and_return(config)
     allow(described_class).to receive(:available_mechanism).and_return(mechanism)
@@ -311,6 +312,71 @@ RSpec.describe Rubino::Security::Sandbox do
     it "runs (nil refusal) when require:true but a mechanism IS available" do
       configure(mode: "workspace-write", mechanism: :seatbelt, require_sandbox: true)
       expect(described_class.refusal_reason).to be_nil
+    end
+  end
+
+  describe "escalation (disable_sandbox, §B)" do
+    it "defaults to protect-home (hatch open)" do
+      configure(mode: "workspace-write", mechanism: :seatbelt)
+      expect(described_class.escalation_mode).to eq(:"protect-home")
+      expect(described_class.escalation_allowed?).to be(true)
+    end
+
+    it "is off (hatch closed) when escalation is off" do
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "off")
+      expect(described_class.escalation_allowed?).to be(false)
+    end
+
+    it "protect-home builds a broad-allow-EXCEPT-anchors Seatbelt policy" do
+      home = Dir.mktmpdir("rubino-home")
+      allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(home)
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "protect-home")
+
+      prefix = described_class.command_prefix(cwd: workspace, escalate: true)
+      expect(prefix.first).to eq("/usr/bin/sandbox-exec")
+      expect(prefix).to include("-DANCHOR_0=#{File.realpath(home)}")
+
+      policy = prefix[prefix.index("-p") + 1]
+      expect(policy).to include("(allow file-write*)") # broad write
+      expect(policy).to include('(deny file-write* (subpath (param "ANCHOR_0")))') # anchor re-denied
+      expect(policy).not_to include("WRITABLE_ROOT_0") # not the confined policy
+    ensure
+      FileUtils.remove_entry(home) if home && File.directory?(home)
+    end
+
+    it "full is UNCONFINED even on Seatbelt (Codex parity, no anchor carve-out)" do
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "full")
+      expect(described_class.command_prefix(cwd: workspace, escalate: true)).to eq([])
+      expect(described_class.escalation_degrades_on_linux?).to be(false)
+    end
+
+    it "protect-home runs UNCONFINED on Landlock (can't express the exclusion) and flags the degrade" do
+      configure(mode: "workspace-write", mechanism: :landlock, escalation: "protect-home")
+      allow(described_class).to receive(:landlock_helper).and_return("/h/rubino-landlock")
+
+      expect(described_class.command_prefix(cwd: workspace, escalate: true)).to eq([])
+      expect(described_class.wrap_env(cwd: workspace, escalate: true)).to eq({})
+      expect(described_class.escalation_degrades_on_linux?).to be(true)
+    end
+
+    it "the disclosure is honest per mode" do
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "full")
+      expect(described_class.escalation_disclosure).to include("FULL filesystem access")
+
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "protect-home")
+      expect(described_class.escalation_disclosure).to include("~/.rubino stays protected")
+    end
+
+    it "wrap_argv splices the escalated prefix ahead of the argv" do
+      home = Dir.mktmpdir("rubino-home")
+      allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(home)
+      configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "protect-home")
+
+      argv = described_class.wrap_argv(["bash", "-c", "x"], cwd: workspace, escalate: true)
+      expect(argv.first).to eq("/usr/bin/sandbox-exec")
+      expect(argv.last(3)).to eq(["bash", "-c", "x"])
+    ensure
+      FileUtils.remove_entry(home) if home && File.directory?(home)
     end
   end
 end

@@ -1025,6 +1025,49 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
   end
 
+  # §B: the disable_sandbox escape hatch — an approved out-of-jail run. It ALWAYS
+  # prompts (fresh, distinct approval), sits BELOW yolo and BELOW the hardline
+  # floor, and is inert when the operator disabled the hatch.
+  describe "sandbox escalation (disable_sandbox)" do
+    let(:config) { test_configuration("approvals" => { "mode" => "manual" }) }
+    let(:policy) { described_class.new(config: config) }
+    let(:shell)  { make_tool(name: "shell", risk_level: :high, risky: true) }
+
+    after { Rubino::Modes.reset! }
+
+    it "routes an escalated shell command to :ask with reason :sandbox_escalation" do
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true)
+      d = policy.decide(shell, arguments: { "command" => "cp a ~/x", "disable_sandbox" => true })
+      expect(d).to eq(:ask)
+      expect(policy.last_ask_reason).to eq(:sandbox_escalation)
+    end
+
+    it "prompts even for an otherwise auto-allowed read-only command" do
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true)
+      expect(policy.decide(shell, arguments: { "command" => "ls", "disable_sandbox" => true })).to eq(:ask)
+    end
+
+    it "is inert (flag ignored) when the operator disabled the hatch" do
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(false)
+      d = policy.decide(shell, arguments: { "command" => "ls", "disable_sandbox" => true })
+      expect(d).to eq(:allow)
+      expect(policy.last_ask_reason).to be_nil
+    end
+
+    it "still runs under yolo without a prompt (escape hatch is BELOW yolo)" do
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true)
+      Rubino::Modes.set(:yolo)
+      expect(policy.decide(shell, arguments: { "command" => "cp a ~/x", "disable_sandbox" => true })).to eq(:allow)
+    end
+
+    it "never overrides the hardline floor" do
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true)
+      d = policy.decide(shell, arguments: { "command" => "rm -rf /", "disable_sandbox" => true })
+      expect(d).to eq(:deny)
+      expect(policy.last_deny_reason).to eq(:hardline)
+    end
+  end
+
   describe "#reset_turn!" do
     it "resets doom loop detector without error" do
       config = test_configuration("approvals" => { "mode" => "manual" })

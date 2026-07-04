@@ -41,6 +41,44 @@ RSpec.describe Rubino::Tools::ShellTool do
     end
   end
 
+  # §B: disable_sandbox threads an escalate flag down to the launcher, is
+  # foreground-only, and is inert when the operator disabled the hatch.
+  describe "#call disable_sandbox (escalation)" do
+    before { allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true) }
+    after  { Rubino::Security::Sandbox.reset! }
+
+    it "threads escalate:true to the sandbox launcher" do
+      expect(described_class).to receive(:sandboxed_bash_argv)
+        .with(anything, cwd: anything, escalate: true).and_call_original
+      tool.call("command" => "echo esc_ok", "disable_sandbox" => true)
+    end
+
+    it "runs confined (escalate:false) for a normal command" do
+      expect(described_class).to receive(:sandboxed_bash_argv)
+        .with(anything, cwd: anything, escalate: false).and_call_original
+      tool.call("command" => "echo plain_ok")
+    end
+
+    it "rejects disable_sandbox for a background command" do
+      res = tool.call("command" => "echo x", "disable_sandbox" => true, "run_in_background" => true)
+      expect(payload(res)).to include("not supported for background")
+      expect(res[:error_code]).to eq(:denied_command)
+    end
+
+    it "ignores the flag (runs confined) when the operator disabled the hatch" do
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(false)
+      expect(described_class).to receive(:sandboxed_bash_argv)
+        .with(anything, cwd: anything, escalate: false).and_call_original
+      tool.call("command" => "echo x", "disable_sandbox" => true)
+    end
+
+    it "advertises disable_sandbox in the schema only when the hatch is open" do
+      expect(tool.input_schema[:properties]).to have_key(:disable_sandbox)
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(false)
+      expect(tool.input_schema[:properties]).not_to have_key(:disable_sandbox)
+    end
+  end
+
   describe ".sandbox_refusal_reason (fail-closed delegation)" do
     after { Rubino::Security::Sandbox.reset! }
 

@@ -333,6 +333,40 @@ tools (`read`/`write`/`edit`/`multi_edit`/`grep`/`glob`/`apply_patch`),
 both web tools share a single gate: `tools.web` controls `webfetch` **and**
 `websearch` (there is no `tools.webfetch` / `tools.websearch`).
 
+#### tools.sandbox (OS write-jail)
+
+```yaml
+tools:
+  sandbox:
+    mode: workspace-write   # off | read-only | workspace-write (default)
+    network: allow          # slice 1; deny/proxy are later
+    extra_writable: []       # extra absolute paths added to the write jail
+    require: false          # true = FAIL-CLOSED: shell refuses to run when no
+                            #        OS mechanism is available (default fails OPEN)
+    escalation: protect-home # off | protect-home | full  (see below)
+```
+
+The OS write-jail confines shell (and `ruby`) **writes** at the kernel level —
+Seatbelt on macOS, Landlock on Linux — so a write outside the workspace fails
+even if it slips past the command allowlist. Reads stay broad. `~/.rubino` is
+**deliberately non-writable** from the jailed shell: it holds the sandbox's own
+trust anchors (config, `.env`, the session DB, the Landlock/Seatbelt helper,
+skills). Manage skills with the `skill` tool, not a shell `rm`.
+
+`escalation` governs the `disable_sandbox` escape hatch — re-running a command
+**outside** the jail after **explicit approval** when a write-jail denial blocked
+a legitimate out-of-workspace write:
+
+| value | behaviour |
+| --- | --- |
+| `off` | no hatch; `disable_sandbox` is ignored and a jailed write hard-fails (Claude Code `allowUnsandboxedCommands:false` / Codex `Never`). |
+| `protect-home` | **default.** Escalation runs broadly, but the `~/.rubino` trust anchors stay OS-refused even when approved (Seatbelt carve-out). On Linux/Landlock the exclusion can't be expressed, so there the floor is approval-only (the approval card says so). |
+| `full` | Codex-style: an approved escalation is fully unconfined (`SandboxType::None`) — the human approval is the only boundary, no OS floor on `~/.rubino`. |
+
+An escalated command **always** prompts (a fresh, distinct approval that shows it
+runs outside the jail), sits below `--yolo` and below the non-bypassable hardline
+floor (`rm -rf /` is still denied), and fails closed in a headless session.
+
 ### tool_output
 
 ```yaml

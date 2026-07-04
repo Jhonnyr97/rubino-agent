@@ -79,7 +79,7 @@ rubino skills install owner/repo --all                # take everything
 rubino skills install https://gitlab.com/o/r.git      # any git URL works
 rubino skills install --documents                     # anthropics/skills: pdf docx pptx xlsx
 rubino skills update                                  # re-fetch installed skills
-rubino skills remove NAME                             # delete dir + provenance
+rubino skills remove NAME                             # delete any skill under the home dir
 ```
 
 With no `--skill`/`--all` and multiple skills in the source, the CLI prints the
@@ -87,8 +87,11 @@ catalogue and asks you to pick (off a TTY it just prints the hint). Provenance
 is recorded per installed skill in `~/.rubino/skills/.sources.json`
 (`name → {source, path, commit}`): `rubino skills list` shows it in the Source
 column, and `update` re-fetches from the recorded source, reporting
-*up to date* vs *updated* by comparing commits. `remove` only deletes skills
-this mechanism installed — hand-written skills are never touched.
+*up to date* vs *updated* by comparing commits. `remove` drops the provenance
+entry when there is one and deletes the skill directory; a hand-written or
+inline-authored skill (no provenance) is removed too, as long as it lives under
+the home skills dir (the delete is confined there — a `NAME` with `..` or path
+separators can't escape). Bundled, gem-shipped skills are never touched.
 
 ### Authoring a `SKILL.md`
 
@@ -284,6 +287,13 @@ loads (Level 2 / Level 3) and on-demand creation:
 - `skill(name: "<skill>", file_path: "references/...")` — load a bundled file.
 - `skill(action: "create", name:, description:, body:)` — author a new skill
   (see [Creating skills](#creating-skills)).
+- `skill(action: "edit" | "patch" | "write_file", name:, ...)` — maintain an
+  existing home-authored skill (full rewrite / find-and-replace / supporting file).
+- `skill(action: "delete", name:)` — remove a home-authored skill entirely. This
+  is the in-process removal path: skills live under `~/.rubino/skills`, which the
+  OS write-jail refuses to let the shell touch, so deleting via a shell `rm` fails
+  — use this action (or `rubino skills remove`) instead. Bundled skills are
+  protected; the write action is approval-gated like create/edit.
 
 It is a low-risk tool. For the full tool entry see **[docs/tools.md](tools.md#skill)**.
 

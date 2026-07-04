@@ -127,6 +127,18 @@ A run parked on a human decision is bounded by `approvals.wait_timeout_seconds` 
 
 `tools.workspace_strict: true` (default) confines write/edit/delete tools to the workspace root (`terminal.cwd` or `Dir.pwd`). Set it to `false` only if you trust the model plus the approval flow alone to touch any path the process can reach.
 
+## OS write-jail
+
+Above the tool-level workspace check sits the real floor: an **OS write-jail** (`tools.sandbox`, see [configuration.md](configuration.md#toolssandbox-os-write-jail)) that confines shell and `ruby` **writes** at the kernel level — Seatbelt (macOS) / Landlock (Linux) — to `{workspace roots, $TMPDIR, /tmp, /dev/null}`. Reads stay broad (clone-and-inspect keeps working). The per-command allowlist is a UX convenience; this is the boundary. When no mechanism exists it fails **open** with a one-time banner (or **closed** if `tools.sandbox.require: true`).
+
+`~/.rubino` is **deliberately non-writable** from the jailed shell even though it is the agent's home: it holds the sandbox's own trust anchors (config, `.env`, session DB, the resolved Landlock/Seatbelt helper, skills). Confining the shell out of it closes the self-tamper persistence escape (helper/config poisoning) and loses no legitimate capability — the agent persists all of that from the Ruby **process**, never by spawning the shell. Skills are managed in-process via the `skill` tool (`create`/`edit`/`patch`/`delete`); deleting one with a shell `rm` is refused by the jail by design.
+
+### Escalation (`disable_sandbox`)
+
+When a write-jail denial blocks a legitimate write **outside** the workspace, the model can re-issue the shell call with `disable_sandbox: true` to run it outside the jail — which **always** requires a fresh, explicit approval that discloses it runs outside the jail (model-driven, aligned with Claude Code's `dangerouslyDisableSandbox`). It sits below `--yolo` and below the non-bypassable hardline floor (`rm -rf /` stays denied), and fails closed headless.
+
+`tools.sandbox.escalation` picks the posture: `off` (no hatch — hard-fail), **`protect-home`** (default — escalation runs broadly but `~/.rubino` stays OS-refused even when approved; approval-only on Linux/Landlock where the exclusion can't be expressed), or `full` (Codex-style fully-unconfined-on-approval, no OS floor on `~/.rubino`). The default keeps the trust-anchor floor OS-enforced so a rubber-stamped approval can't reopen the self-tamper escape.
+
 ## Attachment SSRF guard
 
 URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped. The same policy gates CLI image attachments (`-i`/`--image`, `@image` tokens, dropped paths, `/paste`): a file that fails classification or the size cap is rejected client-side, before any provider call.
