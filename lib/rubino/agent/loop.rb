@@ -185,11 +185,6 @@ module Rubino
         # reads this count so ToolBridge can Halt the in-ask loop once the
         # iteration/time budget is spent. Reset per turn.
         @stream_round_trips = 0
-        # Accumulates the content streamed to the screen this turn so that an
-        # interrupt mid-stream can persist EXACTLY what the user saw, marked
-        # interrupted (#338b). Reset per turn — a one-shot CancelToken plus a
-        # fresh buffer means a stale partial can never attach to a later turn.
-        @interrupt_partial = +""
         # Stream-recovery budgets (Hermes parity) — reset per turn. A no-finish
         # stream end is retried (empty partial → discard-and-restart) or continued
         # (partial shown → keep-and-continue) instead of failing the turn.
@@ -244,22 +239,22 @@ module Rubino
           @ui.thinking_started if streaming?
           begin
             response = call_model(messages, tools, iteration)
-          rescue Rubino::Interrupted
+          rescue Rubino::Interrupted => e
             # The streaming callback (or the per-iteration check above)
             # observed cancellation. Persist EXACTLY the partial that was shown
-            # on screen — flagged interrupted in metadata — so storage matches
-            # the screen and the transcript stays truthful & resumable (#338b).
-            # Without this, the on-screen `⎿ interrupted` partial was absent from
-            # the messages table and resume/compaction/memory diverged from what
-            # the user saw. Then close any open stream box (commits the partial
-            # answer streamed so far) and bail out — the standardized
-            # `⎿ interrupted` marker is appended once by the Runner's rescue,
-            # right after this kept partial. The upstream stream is already
-            # cancelled: raising out of the per-chunk callback unwinds Faraday's
-            # net-http read loop, which closes the socket (no drain) — verified
-            # against ruby_llm 1.x's Streaming#stream_response, where the block
-            # we raise from runs inside the on_data handler.
-            persist_interrupted_partial
+            # on screen — content AND reasoning, flagged interrupted — so storage
+            # matches the screen and the transcript stays truthful, resumable, and
+            # KV-cache-stable (#338b/#608b). The adapter built the partial at the
+            # interrupt point and attached it to the exception; persisting it
+            # through the SAME lossless path a completed turn uses means the next
+            # turn replays the cut turn's reasoning and the server reuses the
+            # prefix instead of re-prefilling the tail. Then close any open stream
+            # box and bail out — the standardized `⎿ interrupted` marker is
+            # appended once by the Runner's rescue, right after this kept partial.
+            # The upstream stream is already cancelled: raising out of the
+            # per-chunk callback unwinds Faraday's net-http read loop, which closes
+            # the socket (no drain).
+            persist_interrupted_partial(e.partial_response)
             @ui.stream_end if streaming?
             raise
           end
@@ -807,21 +802,19 @@ module Rubino
         # streaming yields chunks to the block, non-streaming returns in one shot.
         # The runner forwards this block straight through on each attempt.
         #
-        # Interrupt path (#338): every content delta is also accumulated into
-        # @interrupt_partial so that if the user cancels mid-stream — and the
-        # adapter raises Rubino::Interrupted before returning a response — the
-        # Loop still has the exact text that was shown on screen to PERSIST as an
-        # interrupted partial (storage matches the screen, transcript stays
-        # truthful & resumable). And once the cancel token has flipped, a late
-        # chunk that escaped the per-chunk poll (arriving in the window between
-        # the flag flip and the adapter tearing down the socket) is DROPPED here
-        # — it is neither rendered nor accumulated, so no late token can bleed
-        # into the next turn (Gemini's turnCancelledRef pattern, belt-and-
-        # suspenders on top of the socket abort the raise already triggers).
+        # Interrupt path (#338/#608b): the streaming ADAPTER owns the accumulated
+        # partial (content + reasoning) and, on a mid-stream cancel, builds it and
+        # attaches it to the Rubino::Interrupted it raises — so the Loop no longer
+        # keeps a duplicate content-only buffer here (which dropped reasoning and
+        # busted the next turn's KV-cache prefix). This lambda only forwards chunks
+        # to the UI/event bus. Once the cancel token has flipped, a late chunk that
+        # escaped the per-chunk poll (arriving between the flag flip and the socket
+        # teardown) is DROPPED here — neither rendered nor forwarded, so no late
+        # token can bleed into the next turn (Gemini's turnCancelledRef pattern,
+        # belt-and-suspenders on top of the socket abort the raise already triggers).
         stream_chunk = lambda do |chunk|
           next if @cancel_token&.cancelled?
 
-          @interrupt_partial << chunk[:text].to_s if chunk.is_a?(Hash) && chunk[:type] == :content
           @ui.stream(chunk)
           @event_bus.emit(Interaction::Events::MODEL_STREAM, chunk: chunk)
         end
@@ -1025,24 +1018,35 @@ module Rubino
         @session_repo ||= Session::Repository.new
       end
 
-      # Persists the partial assistant text streamed so far when the user
-      # interrupts mid-turn (#338b). Bound to THIS session (and thereby the
-      # current user turn — the user row was appended by Lifecycle before the
-      # model call), flagged interrupted: true in metadata so resume / audit /
-      # compaction can tell a cut-off turn from a completed one and never
-      # mistake the truncated buffer for a finished answer. No-op when nothing
-      # streamed (interrupt during "thinking" before the first content token) —
-      # there's no partial to keep, only a status row to clear.
-      def persist_interrupted_partial
-        partial = @interrupt_partial.to_s
-        return if partial.strip.empty?
+      # Persists the partial assistant turn the adapter captured when the user
+      # interrupted mid-stream (#338b/#608b). The adapter attached it to the
+      # Rubino::Interrupted as a real AdapterResponse (content + reasoning +
+      # usage), so this reuses the SAME lossless metadata + create path a
+      # completed turn uses — reasoning included — and only ADDS interrupted:true
+      # so resume / audit / compaction can tell a cut-off turn from a finished
+      # one. Replaying the reasoning keeps the next turn's KV-cache prefix
+      # byte-stable, so the server reuses it instead of re-prefilling the tail.
+      #
+      # Bound to THIS session (and thereby the current user turn — the user row
+      # was appended by Lifecycle before the model call). No-op when the interrupt
+      # fired before any stream (no partial attached) or before the first token
+      # (empty content AND no reasoning) — there's nothing to keep, only a status
+      # row to clear.
+      def persist_interrupted_partial(response)
+        return if response.nil?
 
+        content = response.content.to_s
+        reasoning = response.respond_to?(:thinking) ? response.thinking.to_s : ""
+        return if content.strip.empty? && reasoning.strip.empty?
+
+        metadata = assistant_metadata(response).merge(interrupted: true)
         with_db_retries do
           @message_store.create(
             session_id: @session[:id],
             role: "assistant",
-            content: partial,
-            metadata: { interrupted: true }
+            content: content,
+            token_count: response.output_tokens,
+            metadata: metadata
           )
         end
         session_repo.increment_message_count!(@session[:id])
@@ -1133,36 +1137,39 @@ module Rubino
       end
 
       def persist_assistant_message(response)
-        # Stash tool_calls under metadata so --resume can rebuild the
-        # assistant(toolUse) → tool(result) pair the provider expects. Without
-        # this, strict providers (Anthropic, Bedrock) 400 the next turn because
-        # they see tool result messages with no matching toolUse upstream.
-        metadata = response.has_tool_calls? ? { tool_calls: response.tool_calls } : {}
-
-        # Persist the reasoning so later turns can replay it (Hermes parity,
-        # #608b): the local KV cache holds this turn's reasoning tokens, so a
-        # later replay that omits them busts the prefix and re-prefills the whole
-        # context. Session::Message#to_context re-emits it as wire reasoning_content.
-        reasoning = response.respond_to?(:thinking) ? response.thinking : nil
-        metadata[:reasoning] = reasoning if reasoning && !reasoning.to_s.empty?
-
-        # Record the REAL context size the provider saw for this response:
-        # input_tokens covers the whole assembled prompt (system prompt +
-        # history + tools), which no local chars/4 estimate can reproduce
-        # without re-assembling. The status bar under the chat input prefers
-        # this over the estimate when present. Omitted when the provider
-        # reports no usage (same rule as the `↳ turn` footer, #86).
-        metadata[:input_tokens] = response.input_tokens if response.input_tokens.to_i.positive?
-
         with_db_retries do
           @message_store.create(
             session_id: @session[:id],
             role: "assistant",
             content: response.content,
             token_count: response.output_tokens,
-            metadata: metadata
+            metadata: assistant_metadata(response)
           )
         end
+      end
+
+      # The durable metadata for an assistant row, built once and shared by the
+      # completed-turn persist and the interrupted-partial persist so BOTH carry
+      # the same lossless shape — no divergent hand-rolled subset that drops
+      # reasoning and busts the KV-cache prefix on the next turn.
+      #
+      #   * tool_calls — so --resume can rebuild the assistant(toolUse) →
+      #     tool(result) pair strict providers (Anthropic, Bedrock) require, or
+      #     they 400 the next turn on a result with no matching toolUse.
+      #   * reasoning  — replayed on every later turn (#608b): the local KV cache
+      #     holds this turn's reasoning tokens, so a replay that omits them
+      #     diverges from that cache and re-prefills the whole context.
+      #     Session::Message#to_context re-emits it as wire reasoning_content.
+      #   * input_tokens — the REAL context size the provider saw (system prompt +
+      #     history + tools), which no local chars/4 estimate reproduces. The
+      #     status bar prefers it when present; omitted when the provider reports
+      #     no usage (same rule as the `↳ turn` footer, #86).
+      def assistant_metadata(response)
+        metadata = response.has_tool_calls? ? { tool_calls: response.tool_calls } : {}
+        reasoning = response.respond_to?(:thinking) ? response.thinking : nil
+        metadata[:reasoning] = reasoning if reasoning && !reasoning.to_s.empty?
+        metadata[:input_tokens] = response.input_tokens if response.input_tokens.to_i.positive?
+        metadata
       end
 
       def persist_tool_result(result)

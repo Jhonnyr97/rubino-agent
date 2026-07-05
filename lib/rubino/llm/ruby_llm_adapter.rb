@@ -199,6 +199,13 @@ module Rubino
 
         think_filter  = InlineThinkFilter.new
         buffered      = +""
+        # Reasoning streamed so far, accumulated symmetrically to `buffered`
+        # (see the emit lambda). It feeds the partial response built on a
+        # user interrupt / transport drop so the cut turn is persisted WITH its
+        # reasoning — the same #608b invariant the completed path gets from
+        # extract_thinking(response). Without it a partial replays reasoning-less
+        # and the next turn re-prefills the tail (KV-cache miss).
+        reasoning_buffered = +""
         last_chunk_at = monotonic_now
         stale_after   = stale_chunk_timeout(messages)
         chunks_seen   = 0
@@ -244,6 +251,12 @@ module Rubino
             last_block.clear if message_block_id != last_block_seen
             last_block_seen = message_block_id
             last_block << text
+          elsif type == :thinking
+            # Accumulate reasoning from BOTH sources that emit it — native
+            # chunk.thinking deltas AND inline <think>…</think> routed by the
+            # think-filter — so a partial built on interrupt carries the full
+            # reasoning, symmetric to `buffered` for content.
+            reasoning_buffered << text
           end
 
           begin
@@ -358,11 +371,15 @@ module Rubino
             # keeps climbing instead of freezing while a big file streams). #608.
             announce_tool_stream(chunk, announced_tools, &emit)
           end
-        rescue Rubino::Interrupted
-          # Flush whatever the filter has buffered, then re-raise. Loop will
-          # catch and persist the partial assistant message so the user sees
-          # what arrived before they hit Esc.
+        rescue Rubino::Interrupted => e
+          # Flush whatever the filter has buffered, attach the partial (content +
+          # reasoning shown before Esc) to the exception, then re-raise. The Loop
+          # persists it through the SAME lossless path a completed turn uses, so
+          # the cut turn replays WITH its reasoning and the next turn reuses the
+          # KV-cache prefix instead of re-prefilling the tail (#608b). The runner
+          # re-raises this exact object (bare `raise`), so the attachment survives.
           flush_filter(think_filter, &emit)
+          e.partial_response = partial_response(buffered, usage, reasoning: reasoning_buffered)
           raise
         rescue StreamStaleError => e
           # The stream stalled (no chunk within the idle bound). If NOTHING was
@@ -376,13 +393,13 @@ module Rubino
           end
           log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
-          return partial_response(buffered, usage)
+          return partial_response(buffered, usage, reasoning: reasoning_buffered)
         rescue JSON::ParserError => e
           # Preserve whatever we've buffered so far so the user sees partial
           # output instead of a blank failure. (issues #12, #22)
           log_safely(event: "llm.stream.partial", error: e.message, buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
-          return partial_response(buffered, usage)
+          return partial_response(buffered, usage, reasoning: reasoning_buffered)
         rescue *STREAM_DROP_ERRORS => e
           # A genuine transport drop (the observed M3 EOF, a connection reset, a
           # read timeout, …). If NOTHING was emitted yet, re-raise so the runner
@@ -395,7 +412,7 @@ module Rubino
           log_safely(event: "llm.stream.partial_interrupted", error: e.message,
                      buffered_bytes: buffered.bytesize)
           flush_filter(think_filter, &emit)
-          return partial_response(buffered, usage)
+          return partial_response(buffered, usage, reasoning: reasoning_buffered)
         ensure
           # Always tear the watchdog down — on success, on partial-return, and on
           # a raised StreamStaleError/transport drop — so it never leaks a thread
@@ -550,10 +567,15 @@ module Rubino
       # transport is exactly where this fires, so zeroing the tokens here made
       # tool/file-writing turns report no token spend at all. Carry the
       # accumulated usage through so the turn summary still counts what was spent.
-      def partial_response(buffered, usage = nil)
+      def partial_response(buffered, usage = nil, reasoning: nil)
         summed_in, summed_out = usage ? [usage[:input].to_i, usage[:output].to_i] : [0, 0]
+        # Carry the reasoning streamed so far (nil/"" ⇒ omit) so a partial is
+        # persisted with the same reasoning a completed turn keeps — the KV-cache
+        # prefix stays byte-stable across the interrupt/drop boundary (#608b).
+        thinking = reasoning.to_s.empty? ? nil : reasoning
         AdapterResponse.new(content: buffered, tool_calls: [], input_tokens: summed_in,
-                            output_tokens: summed_out, model_id: @model_id, interrupted: true)
+                            output_tokens: summed_out, model_id: @model_id, interrupted: true,
+                            thinking: thinking)
       end
 
       def configure_ruby_llm!

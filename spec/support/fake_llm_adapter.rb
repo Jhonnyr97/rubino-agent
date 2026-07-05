@@ -115,8 +115,8 @@ class FakeLLMAdapter
   # Ctrl+C that runs on another thread) and raise Rubino::Interrupted — so any
   # +late_words+ are NEVER yielded. The Loop must persist exactly the shown words
   # (marked interrupted) and drop the late ones.
-  def enqueue_user_interrupt(cancel_token, shown:, late: [])
-    @stream_interrupt = { cancel_token: cancel_token, shown: shown, late: late }
+  def enqueue_user_interrupt(cancel_token, shown:, late: [], reasoning: nil)
+    @stream_interrupt = { cancel_token: cancel_token, shown: shown, late: late, reasoning: reasoning }
     self
   end
 
@@ -204,8 +204,17 @@ class FakeLLMAdapter
       end
       # The interrupt arrives between chunks (another thread flipped it).
       scenario[:cancel_token].cancel!
-      # The next per-chunk poll observes it and raises — late words never flow.
-      raise Rubino::Interrupted
+      # The next per-chunk poll observes it and raises. Mirror the real adapter
+      # (#608b): attach the partial (content shown so far + any reasoning) to the
+      # exception so the Loop persists it losslessly. Late words never flow.
+      shown_text = scenario[:shown].each_with_index
+                                   .map { |w, i| i.zero? ? w : " #{w}" }.join
+      err = Rubino::Interrupted.new
+      err.partial_response = Rubino::LLM::AdapterResponse.new(
+        content: shown_text, tool_calls: [], input_tokens: 0, output_tokens: 0,
+        model_id: "fake-model", interrupted: true, thinking: scenario[:reasoning]
+      )
+      raise err
     end
 
     # Run any mid-stream tool side-effect (ToolBridge → executor) before the
