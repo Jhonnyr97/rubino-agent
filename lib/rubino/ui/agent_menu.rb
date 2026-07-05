@@ -18,8 +18,14 @@ module Rubino
 
       def self.main_row?(entry) = entry.equal?(MAIN_ROW)
 
-      def initialize(entries: -> { Tools::BackgroundTasks.instance.running }, pastel: Pastel.new)
+      # @param attached [#call] queried per rebuild — true while the composer is
+      #   attached to a subagent. Only then is the `◂ main session` (detach) row
+      #   appended; at the main prompt it would be a no-op (you are already on
+      #   main) and `←`/↑-off-top already close the picker, so it is omitted.
+      def initialize(entries: -> { Tools::BackgroundTasks.instance.running },
+                     attached: -> { false }, pastel: Pastel.new)
         @entries = entries
+        @attached = attached
         @pastel = pastel
         @state = nil
       end
@@ -41,14 +47,15 @@ module Rubino
         @state = { items: items, selected: 0, top: 0 }
       end
 
-      # The picker rows: the live subagents, then the "◂ main" row at the bottom.
-      # Empty (so the picker stays closed) when no subagent is live — there is
-      # nothing to switch between and "main" alone would be a pointless prompt.
+      # The picker rows: the live subagents, then — only while ATTACHED to a
+      # subagent — the "◂ main" detach row at the bottom. Empty (so the picker
+      # stays closed) when no subagent is live: nothing to switch between, and at
+      # the main prompt "main" alone would be a pointless self-referential row.
       def menu_items
         live = live_entries
         return [] if live.empty?
 
-        live + [MAIN_ROW]
+        attached? ? live + [MAIN_ROW] : live
       end
 
       # The single live subagent, or nil when there are zero or several. Lets the
@@ -152,6 +159,16 @@ module Rubino
         Array(@entries.call).select { |entry| live?(entry) }
       rescue StandardError
         []
+      end
+
+      # Whether the composer is attached to a subagent right now — gates the
+      # `◂ main session` detach row. Defensive: a raising predicate collapses to
+      # "not attached" (the switcher just omits the row) rather than crashing the
+      # render.
+      def attached?
+        @attached.call
+      rescue StandardError
+        false
       end
 
       # Same liveness rule the registry and the footer cards use — one oracle,

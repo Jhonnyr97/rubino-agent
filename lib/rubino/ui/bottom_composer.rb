@@ -1095,7 +1095,7 @@ module Rubino
       end
 
       def build_menus(completion_source)
-        [CompletionMenu.new(completion_source), AgentMenu.new]
+        [CompletionMenu.new(completion_source), AgentMenu.new(attached: -> { @focused_agent_id != :main })]
       end
 
       def agent_menu_open?

@@ -1677,13 +1677,13 @@ RSpec.describe Rubino::UI::BottomComposer do
 
       c = described_class.new(input_queue: queue, input: input, output: output,
                               echo: :prompt, history: history)
-      reg.reserve(subagent: "explore", prompt: "inspect")
+      entry = reg.reserve(subagent: "explore", prompt: "inspect")
 
       expect(c.buffer).to eq("") # empty prompt
       c.send(:history_down)      # ↓
-      expect(c.agent_menu_open?).to be(true)               # picker opens (was: recalled "old command")
-      expect(c.buffer).to eq("")                           # did NOT recall history into the buffer
-      expect(output.string).to include("◂ main session") # the main row IS reachable
+      expect(c.agent_menu_open?).to be(true) # picker opens (was: recalled "old command")
+      expect(c.buffer).to eq("")             # did NOT recall history into the buffer
+      expect(output.string).to include(entry.id) # the subagent row IS reachable (picker, not history)
     end
 
     it "← (Ctrl+B) backs out of the OPEN picker (the picker's '← back' hint)" do
@@ -1714,9 +1714,11 @@ RSpec.describe Rubino::UI::BottomComposer do
     end
 
     it "during a turn, picking ◂ main routes /detach through the busy classifier (immediate, not queued)" do
-      reg.reserve(subagent: "explore", prompt: "inspect")
+      entry = reg.reserve(subagent: "explore", prompt: "inspect")
       seen = nil
+      # ATTACHED to the sub: only then does the picker carry the ◂ main detach row.
       c = described_class.new(input_queue: queue, input: input, output: output, echo: :prompt,
+                              attached: entry.id,
                               on_busy_command: lambda { |line|
                                 seen = line
                                 :immediate
