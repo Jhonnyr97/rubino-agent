@@ -146,7 +146,7 @@ RSpec.describe "parent <-> subagent communication" do
         Class.new do
           define_method(:run!) do |_input, **_opts|
             task = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { GrandchildRunner.new(latch) })
-            grandchild_handles << task.call("subagent" => "general", "prompt" => "deeper")
+            grandchild_handles << task.call("subagent" => "general", "prompt" => "deeper", "background" => true)
             "child done"
           end
           define_method(:cancel!) {}
@@ -164,7 +164,7 @@ RSpec.describe "parent <-> subagent communication" do
       end)
 
       parent_task = Rubino::Tools::TaskTool.new(runner_factory: child_factory)
-      child_handle = parent_task.call("subagent" => "explore", "prompt" => "spawn one")
+      child_handle = parent_task.call("subagent" => "explore", "prompt" => "spawn one", "background" => true)
       child_id = child_handle[/sa_[0-9a-f]+/]
 
       # The child ran and spawned a grandchild via the real path.
@@ -200,7 +200,7 @@ RSpec.describe "parent <-> subagent communication" do
 
       out = Rubino.with_current_subagent_id(depth1.id) do
         Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { never_runs })
-                               .call("subagent" => "general", "prompt" => "too deep")
+                               .call("subagent" => "general", "prompt" => "too deep", "background" => true)
       end
 
       expect(out).to include("Max nesting depth reached")
@@ -230,7 +230,7 @@ RSpec.describe "parent <-> subagent communication" do
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      handle = tool.call("subagent" => "explore", "prompt" => "human task")
+      handle = tool.call("subagent" => "explore", "prompt" => "human task", "background" => true)
       id = handle[/sa_[0-9a-f]+/]
       entry = registry.find(id)
       expect(entry.owner_subagent_id).to be_nil
