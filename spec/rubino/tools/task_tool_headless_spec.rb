@@ -37,11 +37,11 @@ RSpec.describe Rubino::Tools::TaskTool do
       runner = recording_runner("the child answer is 42", seen)
       tool   = described_class.new(runner_factory: ->(_d) { runner })
 
-      # background defaults to true; under Rubino.with_headless it must be
-      # forced foreground, so the call returns the CHILD's result directly
+      # Even an explicit background: true must be forced foreground under
+      # Rubino.with_headless, so the call returns the CHILD's result directly
       # (not a "Started background subagent …" handle) and the child ran.
       out = Rubino.with_headless do
-        tool.call("subagent" => "explore", "prompt" => "compute")
+        tool.call("subagent" => "explore", "prompt" => "compute", "background" => true)
       end
 
       expect(out).to eq("the child answer is 42")
@@ -59,7 +59,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       end.new
       tool = described_class.new(runner_factory: ->(_d) { runner })
 
-      out = tool.call("subagent" => "explore", "prompt" => "slow")
+      out = tool.call("subagent" => "explore", "prompt" => "slow", "background" => true)
       expect(out).to include("Started background subagent 'explore' as task sa_")
 
       latch << "done" # release the worker so the thread doesn't leak

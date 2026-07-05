@@ -3,10 +3,11 @@
 require "benchmark"
 
 # Subagent delegation: the `task` tool runs an ISOLATED nested agent turn. By
-# DEFAULT it runs in the BACKGROUND (returns a task id immediately, notifies on
-# completion); `background: false` is the synchronous inline-result path. These
-# specs use the FakeLLMAdapter (no real model) and stub/gated runners so both
-# paths are deterministic and inspectable.
+# DEFAULT it runs SYNCHRONOUSLY (blocks, returns the child's final message
+# inline); `background: true` is the opt-in async path (returns a task id
+# immediately, notifies on completion). These specs use the FakeLLMAdapter (no
+# real model) and stub/gated runners so both paths are deterministic and
+# inspectable.
 RSpec.describe Rubino::Tools::TaskTool do
   # Polls a condition up to ~2s — background work runs on its own thread, so
   # the test waits for the worker to reach a terminal state instead of sleeping
@@ -101,11 +102,10 @@ RSpec.describe Rubino::Tools::TaskTool do
   # delegation round-trip + isolation (direct tool call)
   # ---------------------------------------------------------------------------
 
-  # The SYNCHRONOUS path (background: false) is the inline-result contract the
-  # original Phase-1 specs covered. Background is now the DEFAULT (see the
-  # dedicated "#call background delegation" block below), so these pass
-  # background: false to exercise the inline path explicitly.
-  describe "#call delegation (synchronous, background: false)" do
+  # The SYNCHRONOUS path is the DEFAULT and the inline-result contract the
+  # original Phase-1 specs covered. These pass background: false explicitly to
+  # be unambiguous, but omitting it would now take the same path.
+  describe "#call delegation (synchronous, default)" do
     it "returns the subagent's final message as the tool result" do
       runner = StubRunner.new("FOUND: lib/x.rb:42", [])
       out = task_tool_with(runner).call("subagent" => "explore", "prompt" => "find X", "background" => false)
@@ -159,7 +159,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
       out = Rubino.with_background_sink(sink) do
-        tool.call("subagent" => "explore", "prompt" => "big job")
+        tool.call("subagent" => "explore", "prompt" => "big job", "background" => true)
       end
       task_id = out[/sa_[0-9a-f]+/]
       wait_until { sink.pending? }
@@ -502,13 +502,14 @@ RSpec.describe Rubino::Tools::TaskTool do
   end
 
   # ---------------------------------------------------------------------------
-  # BACKGROUND delegation (the DEFAULT) — Claude-Code-modeled: the call returns
-  # a task id immediately, the subagent runs on its own thread, completion is
-  # notified into the parent (InputQueue) + a SUBAGENT_COMPLETED event, and the
-  # result is retrievable via the BackgroundTasks registry / task_result tool.
+  # BACKGROUND delegation (opt-in via background: true) — Claude-Code-modeled:
+  # the call returns a task id immediately, the subagent runs on its own thread,
+  # completion is notified into the parent (InputQueue) + a SUBAGENT_COMPLETED
+  # event, and the result is retrievable via the BackgroundTasks registry /
+  # task_result tool.
   # ---------------------------------------------------------------------------
 
-  describe "background delegation (default)" do
+  describe "background delegation (background: true)" do
     # A runner whose #run! blocks on a latch the test controls, so we can assert
     # the `task` call returned WITHOUT waiting for the child to finish.
     def gated_runner(final, latch)
@@ -528,7 +529,7 @@ RSpec.describe Rubino::Tools::TaskTool do
 
       out = nil
       elapsed = Benchmark.realtime do
-        out = tool.call("subagent" => "explore", "prompt" => "slow task")
+        out = tool.call("subagent" => "explore", "prompt" => "slow task", "background" => true)
       end
 
       # Child is still parked on the latch, yet the call already returned.
@@ -543,7 +544,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       runner = gated_runner("the answer is 42", latch)
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = tool.call("subagent" => "explore", "prompt" => "compute")
+      out = tool.call("subagent" => "explore", "prompt" => "compute", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
       expect(Rubino::Tools::BackgroundTasks.instance.find(task_id).status).to eq(:running)
 
@@ -562,7 +563,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
       out = Rubino.with_background_sink(sink) do
-        tool.call("subagent" => "explore", "prompt" => "go")
+        tool.call("subagent" => "explore", "prompt" => "go", "background" => true)
       end
       task_id = out[/sa_[0-9a-f]+/]
 
@@ -585,7 +586,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
       out = Rubino.with_event_bus(event_bus) do
-        tool.call("subagent" => "general", "prompt" => "go")
+        tool.call("subagent" => "general", "prompt" => "go", "background" => true)
       end
       task_id = out[/sa_[0-9a-f]+/]
 
@@ -605,7 +606,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "x") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
+      end
       task_id = out[/sa_[0-9a-f]+/]
 
       wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).status == :failed }
@@ -628,7 +631,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "x") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
+      end
       task_id = out[/sa_[0-9a-f]+/]
 
       Rubino::Tools::BackgroundTasks.instance.request_stop(task_id)
@@ -646,11 +651,11 @@ RSpec.describe Rubino::Tools::TaskTool do
       tool  = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { gated_runner("x", latch) })
 
       ids = Array.new(Rubino::Tools::BackgroundTasks::MAX_CONCURRENT) do
-        tool.call("subagent" => "explore", "prompt" => "p")
+        tool.call("subagent" => "explore", "prompt" => "p", "background" => true)
       end
       expect(ids).to all(include("sa_"))
 
-      over = tool.call("subagent" => "explore", "prompt" => "one too many")
+      over = tool.call("subagent" => "explore", "prompt" => "one too many", "background" => true)
       expect(over).to include("At capacity")
 
       Rubino::Tools::BackgroundTasks::MAX_CONCURRENT.times { latch << :go }
@@ -664,7 +669,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       runner = gated_runner("done", latch)
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "explore", "prompt" => "go", "background" => true)
+      end
       task_id = out[/sa_[0-9a-f]+/]
       Rubino::Tools::BackgroundTasks.instance.steer(task_id, "also include the word PINEAPPLE")
 
@@ -682,7 +689,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       runner = gated_runner("done", latch)
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go", "background" => true) }
       latch << :go
       wait_until { sink.pending? }
 
@@ -700,7 +707,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       runner = gated_runner("done", latch)
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "explore", "prompt" => "go", "background" => true)
+      end
       task_id = out[/sa_[0-9a-f]+/]
       prefix  = Rubino::Tools::BackgroundTasks::DENY_NOTE_PREFIX
       Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}that file is out of scope")
@@ -721,7 +730,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       runner = gated_runner("done", latch)
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "explore", "prompt" => "go") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "explore", "prompt" => "go", "background" => true)
+      end
       task_id = out[/sa_[0-9a-f]+/]
       prefix  = Rubino::Tools::BackgroundTasks::DENY_NOTE_PREFIX
       Rubino::Tools::BackgroundTasks.instance.steer(task_id, "#{prefix}out of scope")
@@ -751,7 +762,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "general", "prompt" => "x") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "general", "prompt" => "x", "background" => true)
+      end
       task_id  = out[/sa_[0-9a-f]+/]
       registry = Rubino::Tools::BackgroundTasks.instance
       registry.record_tool_started(task_id, "write docs/USAGE.md")
@@ -781,7 +794,9 @@ RSpec.describe Rubino::Tools::TaskTool do
       end.new
       tool = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
 
-      out = Rubino.with_background_sink(sink) { tool.call("subagent" => "general", "prompt" => "x") }
+      out = Rubino.with_background_sink(sink) do
+        tool.call("subagent" => "general", "prompt" => "x", "background" => true)
+      end
       task_id = out[/sa_[0-9a-f]+/]
 
       Rubino::Tools::BackgroundTasks.instance.request_stop(task_id)
@@ -928,7 +943,7 @@ RSpec.describe Rubino::Tools::TaskTool do
     it "updates last_activity + tool_count on the entry from the child's tool events" do
       latch = Queue.new
       tool  = described_class.new(runner_factory: ->(_d) { activity_runner("done", latch) })
-      out   = tool.call("subagent" => "explore", "prompt" => "find needle")
+      out   = tool.call("subagent" => "explore", "prompt" => "find needle", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
 
       # Wait on the actual asserted state. tool_count is bumped by tool_started,
@@ -1124,7 +1139,7 @@ RSpec.describe Rubino::Tools::TaskTool do
         define_method(:cancel!) {}
       end.new
       tool   = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
-      out    = tool.call("subagent" => "explore", "prompt" => "x")
+      out    = tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
 
       result_tool = Rubino::Tools::TaskResultTool.new
@@ -1226,7 +1241,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       sync_runner = Class.new do
         define_method(:run!) do |_i, **_o|
           inner = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { grandchild_runner })
-          handles << inner.call("subagent" => "general", "prompt" => "bg from sync")
+          handles << inner.call("subagent" => "general", "prompt" => "bg from sync", "background" => true)
           "sync done"
         end
         define_method(:cancel!) {}
@@ -1277,7 +1292,7 @@ RSpec.describe Rubino::Tools::TaskTool do
         define_method(:cancel!) { cancelled << true }
       end.new
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
-      out     = tool.call("subagent" => "explore", "prompt" => "x")
+      out     = tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
 
       stop_out = Rubino::Tools::TaskStopTool.new.call("task_id" => task_id)
@@ -1324,7 +1339,7 @@ RSpec.describe Rubino::Tools::TaskTool do
         def registry = Rubino::Tools::BackgroundTasks.instance
       end.new
       tool    = Rubino::Tools::TaskTool.new(runner_factory: ->(_d) { runner })
-      out     = tool.call("subagent" => "explore", "prompt" => "x")
+      out     = tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
       wait_until { registry.find(task_id).status == :needs_approval }
 

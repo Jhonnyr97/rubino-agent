@@ -3,20 +3,24 @@
 module Rubino
   module Tools
     # Delegates a bounded sub-task to a specialized subagent (the "agents-as-tools"
-    # pattern). Modeled on Claude Code's Task/Agent tool, which runs subagents in
-    # the BACKGROUND via `run_in_background` — here background is the DEFAULT:
+    # pattern). Modeled on Claude Code's Task/Agent tool, which runs subagents
+    # SYNCHRONOUSLY by default and exposes `run_in_background` as an opt-in — so
+    # here too synchronous is the DEFAULT and background is opt-in:
     #
-    #   - background (default): spawn the subagent on its own thread and return
-    #     IMMEDIATELY with a task id (`sa_…`). The subagent works while the parent
-    #     keeps going. On completion the parent is NOTIFIED — a `[background-task]`
-    #     message is injected into its live turn (via the parent's InputQueue, the
-    #     same channel mid-turn steering uses) — and the result is also fetchable
-    #     with `task_result(<id>)` or stoppable with `task_stop(<id>)`. This is
-    #     the SendMessage/poll/notify trio Claude Code exposes for background
-    #     agents, mapped onto the gem's existing async substrate.
-    #   - synchronous (`background: false`): the legacy path — run the nested turn
-    #     to completion inline and return ONLY the subagent's final message as the
-    #     tool result. For callers that cannot proceed without the answer now.
+    #   - synchronous (default): run the nested turn to completion inline and
+    #     return ONLY the subagent's final message as the tool result. This is
+    #     what a caller wants whenever it needs the subagent's answer to continue
+    #     — the common case ("explore the code, then I'll use the finding"). It
+    #     avoids the busy-wait anti-pattern where a caller backgrounds a task and
+    #     then immediately polls for a result it can't proceed without, and on a
+    #     single-slot local model it avoids parent+child contending for one slot.
+    #   - background (`background: true`): spawn the subagent on its own thread and
+    #     return IMMEDIATELY with a task id (`sa_…`). The subagent works while the
+    #     parent keeps going. On completion the parent is NOTIFIED — a
+    #     `[background-task]` message is injected into its live turn (via the
+    #     parent's InputQueue, the same channel mid-turn steering uses) — and the
+    #     result is also fetchable with `task_result(<id>)` or stoppable with
+    #     `task_stop(<id>)`. For callers with OTHER useful work to do meanwhile.
     #
     # Isolation contract (unchanged, both paths):
     #   - the nested run gets a FRESH session seeded with ONLY the `prompt`
@@ -101,20 +105,21 @@ module Rubino
       # the turn footer (0 tools) and /agents.
       def description
         "Delegate a bounded sub-task to a specialized subagent. By DEFAULT the " \
-          "subagent runs in the BACKGROUND: this call returns immediately with a " \
-          "task id and the subagent keeps working while you continue with other " \
-          "tools or reasoning — do NOT wait for it. When it finishes you will " \
-          "automatically receive a `[background-task] <id> completed` message with " \
-          "its result; you can also fetch the result anytime with `task_result(<id>)` " \
-          "or stop it with `task_stop(<id>)`. Set `background: false` ONLY when you " \
-          "cannot proceed without the subagent's answer in this same step (this " \
-          "blocks until it finishes and returns the result inline). The subagent " \
-          "runs in an isolated fresh context (it does NOT see this conversation) and " \
-          "returns only its final message — put every file path / error / detail it " \
-          "needs into `prompt`. NEVER claim a task was started unless THIS call just " \
-          "returned its id in the current turn — `sa_…` ids from earlier in the " \
-          "conversation belong to old tasks and must not be reported as new ones. " \
-          "Available subagents: #{available_subagents_description}."
+          "subagent runs SYNCHRONOUSLY: this call BLOCKS until the subagent finishes " \
+          "and returns its final message inline as the tool result — use this whenever " \
+          "you need the subagent's answer to continue, which is the common case. Do " \
+          "NOT background a task and then immediately wait or poll for it; just run it " \
+          "synchronously. Set `background: true` ONLY when you have OTHER useful work " \
+          "to do meanwhile and do NOT need the answer in this step: it returns " \
+          "immediately with a task id, the subagent keeps working, and when it " \
+          "finishes you automatically receive a `[background-task] <id> completed` " \
+          "message (also fetchable with `task_result(<id>)`, stoppable with " \
+          "`task_stop(<id>)`). The subagent runs in an isolated fresh context (it does " \
+          "NOT see this conversation) and returns only its final message — put every " \
+          "file path / error / detail it needs into `prompt`. NEVER claim a task was " \
+          "started unless THIS call just returned its id in the current turn — `sa_…` " \
+          "ids from earlier in the conversation belong to old tasks and must not be " \
+          "reported as new ones. Available subagents: #{available_subagents_description}."
       end
 
       def input_schema
@@ -127,10 +132,12 @@ module Rubino
                       description: "The full self-contained task for the subagent (the only context it receives)" },
             background: {
               type: "boolean",
-              description: "Run the subagent in the background (default true). " \
-                           "true = return immediately with a task id, keep working, get " \
-                           "notified on completion. false = block until the subagent " \
-                           "finishes and return its result inline."
+              description: "Run the subagent in the background (default false). " \
+                           "false = block until the subagent finishes and return its " \
+                           "result inline (use when you need the answer now — the " \
+                           "common case). true = return immediately with a task id, " \
+                           "keep working, get notified on completion (use only when you " \
+                           "have other work to do meanwhile)."
             }
           },
           required: %w[subagent prompt]
@@ -176,14 +183,15 @@ module Rubino
 
       private
 
-      # background defaults to TRUE (Claude-Code-style background-by-default).
-      # Absent ⇒ true; only an explicit false (bool or "false") opts into the
-      # synchronous path. A nil from a caller that omitted the key stays true.
+      # background defaults to FALSE (Claude-Code-style: subagents run
+      # SYNCHRONOUSLY and return their result inline; background is opt-in).
+      # Absent ⇒ false; only an explicit true (bool or "true"/1) opts into the
+      # async background path. A nil from a caller that omitted the key stays false.
       def background_arg(arguments)
         raw = arguments.key?("background") ? arguments["background"] : arguments[:background]
-        return true if raw.nil?
+        return false if raw.nil?
 
-        ![false, "false", 0, "0"].include?(raw)
+        [true, "true", 1, "1"].include?(raw)
       end
 
       # Background spawn (the default). Reserves a registry slot, builds the
