@@ -88,6 +88,15 @@ module Rubino
   class Interrupted < Error
     attr_reader :reason
 
+    # The partial AdapterResponse captured at the interrupt point (content +
+    # reasoning streamed before the user hit Esc). The streaming adapter builds
+    # it and attaches it here before re-raising, so the Loop can persist the cut
+    # turn through the SAME lossless path a completed turn uses — reasoning
+    # included, keeping the KV-cache prefix byte-stable on the next turn (#608b).
+    # nil when the interrupt fired before any stream (e.g. a between-turns
+    # Ctrl+C), in which case there is nothing to persist.
+    attr_accessor :partial_response
+
     def initialize(message = nil, reason: :user)
       @reason = reason
       super(message || default_message(reason))

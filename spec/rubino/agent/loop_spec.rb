@@ -183,6 +183,40 @@ RSpec.describe Rubino::Agent::Loop do
       expect(stored.select { |m| m.role == "assistant" }).to be_empty
     end
 
+    # KV-cache prefix stability (#608b): the interrupted partial must persist the
+    # reasoning streamed before Esc — exactly like a completed turn — so the next
+    # turn replays it and the server reuses the prefix instead of re-prefilling
+    # the tail. Regression guard for the reasoning-dropping partial path.
+    it "persists the interrupted turn's reasoning so a later turn can replay it" do
+      fake_llm.enqueue_user_interrupt(token, shown: %w[partial answer],
+                                             reasoning: "let me think about this")
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      assistant = message_store.for_session(session[:id]).select { |m| m.role == "assistant" }
+      expect(assistant.size).to eq(1)
+      expect(assistant.last.metadata[:interrupted]).to be true
+      expect(assistant.last.metadata[:reasoning]).to eq("let me think about this")
+      # to_context re-emits it as wire reasoning so the replayed prefix matches
+      # what the server cached during the interrupted generation.
+      expect(assistant.last.to_context[:reasoning]).to eq("let me think about this")
+    end
+
+    # The empty-content-but-reasoning case: an interrupt during thinking that DID
+    # stream reasoning tokens must still persist a row (reasoning alone keeps the
+    # prefix coherent), not be dropped as "nothing streamed".
+    it "persists a reasoning-only partial when interrupted after thinking, before text" do
+      fake_llm.enqueue_user_interrupt(token, shown: [], reasoning: "half a thought")
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      assistant = message_store.for_session(session[:id]).select { |m| m.role == "assistant" }
+      expect(assistant.size).to eq(1)
+      expect(assistant.last.metadata[:reasoning]).to eq("half a thought")
+    end
+
     it "a following turn's message does NOT contain the interrupted turn's tokens" do
       # Turn 1: interrupted after streaming 'first partial'. Turn 2: a fresh,
       # clean turn. The second turn's assistant content must be ONLY its own.
