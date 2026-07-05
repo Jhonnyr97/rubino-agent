@@ -3,6 +3,7 @@
 require "net/http"
 require "uri"
 require "json"
+require "cgi"
 
 module Rubino
   module Tools
@@ -11,19 +12,25 @@ module Rubino
     # Backends, in priority order:
     #   1. Tavily        (TAVILY_API_KEY)   — high-quality, preferred
     #   2. SearXNG       (SEARXNG_URL)      — self-hosted, full web index
-    #   3. DuckDuckGo Instant Answer JSON   — keyless DEFAULT (no key needed)
+    #   3. DuckDuckGo, keyless DEFAULT (no key needed), two tiers:
+    #        3a. html.duckduckgo.com POST scrape — a FULL web index
+    #        3b. Instant Answer JSON API — topic/entity fallback
     #
-    # Why not scrape html/lite.duckduckgo.com keyless? DuckDuckGo now serves
-    # an anomaly/bot-challenge page (zero results) to datacenter egress IPs,
-    # so the old single-regex HTML scrape returned "No results" 100% of the
-    # time — a silent failure that looked like success. The Instant Answer
-    # JSON API (api.duckduckgo.com) is keyless, returns structured JSON, and
-    # is NOT bot-walled, so it is the robust keyless default. Its coverage is
-    # narrower (topic/entity answers, not a full web index): when it yields
-    # nothing we degrade to an EXPLICIT "search unavailable" message that
-    # points the user at TAVILY_API_KEY / SEARXNG_URL — never a silent
-    # zero-results-that-looks-like-a-real-answer.
+    # The html.duckduckgo.com endpoint (POST form) returns a full web result
+    # set (title / real URL / snippet) and is the keyless primary. DuckDuckGo
+    # DOES serve an anomaly/bot-challenge page to some DATACENTER egress IPs —
+    # so a defensive parse is used and, when the HTML tier yields nothing
+    # (empty page or challenge), we degrade to the Instant Answer JSON API
+    # (api.duckduckgo.com), which is keyless and not bot-walled but covers only
+    # topic/entity answers. Only when BOTH tiers yield nothing do we emit an
+    # EXPLICIT "search unavailable" message pointing at TAVILY_API_KEY /
+    # SEARXNG_URL — never a silent zero-results-that-looks-like-a-real-answer.
     class WebSearchTool < Base
+      # A realistic browser User-Agent — html.duckduckgo.com serves an empty
+      # page to a non-browser UA, so the search-bot default is not usable there.
+      BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
+                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
       def name
         "websearch"
       end
@@ -101,7 +108,13 @@ module Rubino
         results.empty? ? "No results found for: #{query}" : results.join("\n\n")
       end
 
-      # SearXNG (self-hosted, privacy-focused)
+      # SearXNG (self-hosted, privacy-focused). The endpoint is OPERATOR-configured
+      # via SEARXNG_URL and typically lives on localhost/LAN, so the fetch is made
+      # with allow_private: true — the SSRF guard exists to stop a MODEL/prompt from
+      # targeting internal hosts, but here the host/port/path are fixed by the
+      # operator and only the `q` query param is model-supplied, so it is not an
+      # SSRF vector. Without this a self-hosted SearXNG on 127.0.0.1 is (wrongly)
+      # blocked by the loopback rule.
       def search_searxng(query, max_results)
         base_url = ENV["SEARXNG_URL"].chomp("/")
         uri = URI("#{base_url}/search")
@@ -111,7 +124,7 @@ module Rubino
           pageno: 1
         )
 
-        response = get_json(uri)
+        response = get_json(uri, allow_private: true)
         data = JSON.parse(response)
 
         results = (data["results"] || []).first(max_results).map do |r|
@@ -121,10 +134,62 @@ module Rubino
         results.empty? ? "No results found for: #{query}" : results.join("\n\n")
       end
 
-      # Keyless default: DuckDuckGo Instant Answer JSON API.
-      # No API key, no bot-challenge for datacenter IPs. Defensive parse over
-      # Abstract / Results / RelatedTopics; explicit "unavailable" on no data.
+      # Keyless default. Try the FULL-web HTML endpoint first (real result set);
+      # only if it yields nothing fall back to the narrow Instant Answer API,
+      # then to an explicit "unavailable" message. Neither tier needs a key.
       def search_ddg(query, max_results)
+        html = search_ddg_html(query, max_results)
+        return html.join("\n\n") unless html.empty?
+
+        search_ddg_instant(query, max_results)
+      end
+
+      # Full web index via html.duckduckgo.com (POST form is the reliable path).
+      # Returns a list of formatted result strings (possibly empty — an empty
+      # page or a bot-challenge both parse to zero results, and the caller then
+      # degrades to the Instant Answer tier). Best-effort: any transport/parse
+      # error yields [] rather than raising, so the fallback still runs.
+      def search_ddg_html(query, max_results)
+        uri = URI("https://html.duckduckgo.com/html/")
+        body = post_form(uri, "q" => query)
+        parse_ddg_html(body, max_results)
+      rescue StandardError
+        []
+      end
+
+      # Parse the html.duckduckgo.com result list. Each result carries a
+      # `result__a` anchor (title + href) and a `result__snippet` anchor
+      # (the description). Titles/snippets appear in matching order, so we pair
+      # them by index. hrefs may be a `/l/?uddg=` redirect wrapper — unwrapped
+      # to the real target by #ddg_unwrap.
+      def parse_ddg_html(html, max_results)
+        titles = html.to_s.scan(%r{<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>}m)
+        snippets = html.to_s.scan(%r{class="result__snippet"[^>]*>(.*?)</a>}m).map { |m| strip_html(m[0]) }
+        titles.first(max_results).each_with_index.map do |(href, title), i|
+          format_result(strip_html(title), ddg_unwrap(href), snippets[i].to_s)
+        end
+      end
+
+      # DuckDuckGo wraps some result links in a redirect
+      # (`//duckduckgo.com/l/?uddg=<url-encoded target>`). Pull the real target
+      # out of the `uddg` param; pass a direct href through unchanged.
+      def ddg_unwrap(href)
+        href = href.to_s
+        if (enc = href[/[?&]uddg=([^&]+)/, 1])
+          decoded = CGI.unescape(enc)
+          return decoded unless decoded.empty?
+        end
+        href.start_with?("//") ? "https:#{href}" : href
+      end
+
+      # Strip HTML tags and decode entities from a scraped title/snippet.
+      def strip_html(str)
+        CGI.unescapeHTML(str.to_s.gsub(/<[^>]+>/, "")).strip
+      end
+
+      # Instant Answer JSON API — narrow topic/entity fallback for when the
+      # full-web HTML tier returns nothing.
+      def search_ddg_instant(query, max_results)
         uri = URI("https://api.duckduckgo.com/")
         uri.query = URI.encode_www_form(
           q: query,
@@ -223,8 +288,11 @@ module Rubino
         http.request(request).body
       end
 
-      def get_json(uri)
-        Rubino::Security::UrlSafety.validate!(uri.to_s)
+      # allow_private skips the SSRF guard for an OPERATOR-configured, fixed-host
+      # endpoint (the self-hosted SearXNG at SEARXNG_URL) — see #search_searxng.
+      # It stays ON (validated) for every model/keyless path (DDG instant answer).
+      def get_json(uri, allow_private: false)
+        Rubino::Security::UrlSafety.validate!(uri.to_s) unless allow_private
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl      = (uri.scheme == "https")
         http.open_timeout = 10
@@ -233,6 +301,23 @@ module Rubino
         request = Net::HTTP::Get.new(uri.request_uri)
         request["Accept"] = "application/json"
         request["User-Agent"] = "Rubino/#{Rubino::VERSION}"
+
+        http.request(request).body
+      end
+
+      # POST a form-encoded body (html.duckduckgo.com/html/). Returns the raw
+      # response body (HTML). Uses a browser UA so DDG returns real results.
+      def post_form(uri, fields)
+        Rubino::Security::UrlSafety.validate!(uri.to_s)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl      = (uri.scheme == "https")
+        http.open_timeout = 10
+        http.read_timeout = 15
+
+        request = Net::HTTP::Post.new(uri.request_uri)
+        request["Content-Type"] = "application/x-www-form-urlencoded"
+        request["User-Agent"] = BROWSER_UA
+        request.body = URI.encode_www_form(fields)
 
         http.request(request).body
       end
