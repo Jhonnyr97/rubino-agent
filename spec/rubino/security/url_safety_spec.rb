@@ -41,6 +41,29 @@ RSpec.describe Rubino::Security::UrlSafety do
     end
   end
 
+  describe "allow_private: relaxes loopback/LAN but NEVER the metadata floor" do
+    %w[
+      http://127.0.0.1/admin
+      http://10.1.2.3/
+      http://192.168.0.1/
+      http://[::1]/
+    ].each do |url|
+      it "permits #{url}" do
+        expect { described_class.validate!(url, allow_private: true) }.not_to raise_error
+      end
+    end
+
+    it "STILL blocks the cloud-metadata IP even with allow_private: true" do
+      expect { described_class.validate!("http://169.254.169.254/latest/meta-data/", allow_private: true) }
+        .to raise_error(described_class::BlockedURLError, /metadata/i)
+    end
+
+    it "STILL blocks the metadata hostname even with allow_private: true" do
+      expect { described_class.validate!("http://metadata.google.internal/", allow_private: true) }
+        .to raise_error(described_class::BlockedURLError)
+    end
+  end
+
   describe "scheme allowlist (W-3)" do
     %w[
       file:///etc/passwd

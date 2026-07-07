@@ -70,6 +70,13 @@ INSTALL_METHOD="${RUBINO_INSTALL_METHOD:-}"
 # Optional (mise method only): global | local. When unset and interactive, we prompt.
 INSTALL_SCOPE="${RUBINO_INSTALL_SCOPE:-}"
 
+# Optional JS-rendering extra for the web tool. 1/yes installs the `ferrum` gem
+# so webfetch can render JavaScript-heavy pages (SPAs) in a headless Chrome;
+# 0/no skips it. When unset and interactive, we prompt (default no). Chrome is
+# NOT installed by us: we detect a system browser and, if absent, print how to
+# get one.
+INSTALL_JS="${RUBINO_INSTALL_JS:-}"
+
 # --- output helpers ---------------------------------------------------------
 
 if [ -t 1 ]; then
@@ -930,6 +937,70 @@ fi
 
 # Post-install gate: confirm a fresh login shell finds rubino, or fail loudly.
 verify_fresh_shell "$PATH_LINE"
+
+# --- optional: JS-rendering extra (ferrum + a system Chrome) -----------------
+# The web tool works out of the box on server-rendered pages. This OPTIONAL
+# extra lets it render JavaScript-heavy pages (SPAs) by driving a headless
+# Chrome via the `ferrum` gem. We install only the gem; the browser is detected,
+# never bundled. Fully skippable and re-runnable (installing ferrum later, by
+# hand, enables the feature just the same).
+find_system_chrome() {
+  # Mirror Web::JsRenderer::SYSTEM_CHROME_CANDIDATES + PATH lookup.
+  local c
+  for c in \
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+    "/usr/bin/google-chrome" "/usr/bin/google-chrome-stable" \
+    "/usr/bin/chromium" "/usr/bin/chromium-browser" "/snap/bin/chromium"; do
+    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  for c in google-chrome google-chrome-stable chromium chromium-browser; do
+    command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
+  done
+  return 1
+}
+
+maybe_install_js() {
+  local want="$INSTALL_JS"
+  if [ -z "$want" ]; then
+    tty_usable || return 0   # non-interactive + no override → skip silently
+    {
+      printf '\n%sEnable JavaScript rendering for the web tool?%s %s(optional)%s\n' \
+        "$BOLD" "$RESET" "$DIM" "$RESET"
+      printf '  Installs the %sferrum%s gem so webfetch can render SPAs via a\n' "$BOLD" "$RESET"
+      printf '  headless Chrome. Uses a browser already on your system.\n'
+      printf 'Enable it? %s[y/N]%s: ' "$BOLD" "$RESET"
+    } >/dev/tty
+    local ans=""
+    read -r ans </dev/tty || ans=""
+    case "$ans" in y|Y|yes|1) want=1 ;; *) want=0 ;; esac
+  fi
+  case "$want" in
+    1|y|Y|yes|true) : ;;
+    *) return 0 ;;
+  esac
+
+  info "Installing the ferrum gem (JS rendering)…"
+  if rubyx gem install ferrum >/dev/null 2>&1; then
+    ok "ferrum installed."
+  else
+    warn "Could not install ferrum. JS rendering stays off; run 'gem install ferrum' later to enable it."
+    return 0
+  fi
+
+  local chrome
+  if chrome="$(find_system_chrome)"; then
+    ok "Found a browser for JS rendering: ${chrome}"
+  else
+    warn "No Chrome/Chromium found. Install one to use JS rendering:"
+    case "$OS" in
+      *[Dd]arwin*|mac*) printf '  %sbrew install --cask google-chrome%s   (or set BROWSER_PATH)\n' "$DIM" "$RESET" >&2 ;;
+      *)                printf '  %ssudo apt install chromium%s   (or your distro package; or set BROWSER_PATH)\n' "$DIM" "$RESET" >&2 ;;
+    esac
+  fi
+}
+
+maybe_install_js
 
 printf '%sNext step:%s\n\n' "$BOLD" "$RESET"
 printf '  %s%s setup%s   %s# guided first-run: pick a provider, paste a key%s\n\n' "$GREEN" "${BIN_NAME}" "$RESET" "$DIM" "$RESET"

@@ -54,6 +54,21 @@ Gem::Specification.new do |spec|
   spec.add_dependency "faraday-retry", "~> 2.2"
   # Readability-style main-content extraction in the webfetch tool.
   spec.add_dependency "nokogiri", "~> 1.18"
+  # HTML -> Markdown serialization for the webfetch tool. Purpose-built for
+  # scraping messy web HTML: it drops unknown/attributed inline tags to their
+  # text, decodes entities, and emits clean GFM — where kramdown's `to_kramdown`
+  # (used by Documents for CLEAN document HTML) leaks literal <span class>/<a>
+  # wrappers and kramdown-only IAL syntax on real web pages. MIT-licensed;
+  # depends on nokogiri, already present.
+  spec.add_dependency "reverse_markdown", "~> 3.0"
+  # Headless-browser (Chrome DevTools Protocol) rendering for the webfetch tool's
+  # JS tier (SPAs). OPTIONAL, never bundled: WebFetchTool `require`s it lazily
+  # inside begin/rescue LoadError (Web::JsRenderer#available?), so the gem loads
+  # and every static fetch works with ferrum absent. An end user who wants JS
+  # rendering installs it + a Chrome/Chromium binary on demand (see install.sh).
+  # Declared as a DEVELOPMENT dependency so CI/specs can exercise the JS path.
+  # MIT-licensed; needs only Ruby + a Chrome binary (no Selenium/WebDriver).
+  spec.add_development_dependency "ferrum", "~> 0.15"
   spec.add_dependency "oauth2", "~> 2.0"
   spec.add_dependency "puma", "~> 6.4"
   spec.add_dependency "rack", "~> 3.1"

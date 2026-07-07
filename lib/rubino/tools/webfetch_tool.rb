@@ -3,6 +3,7 @@
 require "net/http"
 require "uri"
 require "nokogiri"
+require "reverse_markdown"
 
 module Rubino
   module Tools
@@ -78,7 +79,7 @@ module Rubino
         # Default a bare host to https:// (previous behaviour) before
         # validating, so the SSRF guard sees a complete URL with a scheme.
         url = "https://#{url}" unless URI.parse(url).scheme
-        safe = Rubino::Security::UrlSafety.validate!(url)
+        safe = Rubino::Security::UrlSafety.validate!(url, allow_private: allow_private_network?)
         uri = safe[:uri]
 
         http = build_http(uri, safe[:addresses].first)
@@ -113,7 +114,7 @@ module Rubino
           if format == "html"
             body
           else
-            strip_html(body)
+            maybe_js_render(safe, body, strip_html(body))
           end
         else
           "Error: HTTP #{response.code} - #{response.message}"
@@ -188,27 +189,146 @@ module Rubino
         legacy_strip_html(html)
       end
 
-      # Readability-style extraction. Drops page chrome, prefers the main-content
-      # container, and serializes the kept subtree to markdown-ish text. Applies a
-      # safety fallback to the full-page strip when the result looks over-trimmed.
+      # Readability-style extraction. Drops page chrome (nokogiri), prefers the
+      # main-content container, and serializes the kept subtree to Markdown with
+      # reverse_markdown, so links/tables/code survive instead of being flattened
+      # by a hand-rolled serializer. Falls back to the robust legacy strip when
+      # the result looks over-trimmed.
       def readability_extract(html)
         doc = Nokogiri::HTML(html)
 
-        # Full-document text is our reference for "did we trim too much?".
+        # Cheap full-page text as the reference for "did we trim too much?".
         full = legacy_strip_html(html)
 
         strip_boilerplate(doc)
         root = main_container(doc)
         return full if root.nil?
 
-        extracted = collapse_blank_lines(serialize_node(root).strip)
+        # inner_html (not to_html): convert the CONTENT of the main container,
+        # not the <main>/<article> wrapper tag itself.
+        extracted = html_to_markdown(root.inner_html)
 
-        # Safety fallback: if extraction looks suspiciously small relative to the
-        # whole document (or below an absolute floor), prefer the full strip.
+        # Safety fallback to the robust legacy regex strip (never fails, even on
+        # null-byte / malformed input reverse_markdown chokes on) when extraction
+        # looks suspiciously small relative to the whole document.
         if over_trimmed?(extracted, full)
           full
         else
           maybe_annotate(extracted, full)
+        end
+      end
+
+      # Convert an HTML fragment to Markdown with reverse_markdown, tuned for
+      # messy web HTML: `unknown_tags: :bypass` drops tags it can't map (a
+      # <span class>, <small>, layout <div>) to their text instead of leaking the
+      # literal tag; `github_flavored` gives GFM tables/strikethrough. It also
+      # decodes HTML entities natively, so nothing here re-encodes &amp;.
+      def html_to_markdown(html)
+        md = ReverseMarkdown.convert(html.to_s, unknown_tags: :bypass, github_flavored: true)
+        collapse_blank_lines(md)
+      end
+
+      # Config gate for the headless-browser tier (tools.webfetch.js_rendering):
+      #   "auto"   (default) — render only when the static extraction is thin
+      #   "off"              — never render
+      #   "always"           — render every page (slower; debugging)
+      def js_rendering_mode
+        mode = Rubino.configuration.dig("tools", "webfetch", "js_rendering").to_s
+        %w[off auto always].include?(mode) ? mode : "auto"
+      end
+
+      # Whether webfetch may reach loopback/LAN addresses (default true — see
+      # tools.webfetch.allow_private_network). The cloud-metadata floor is
+      # enforced by UrlSafety regardless of this.
+      def allow_private_network?
+        Rubino.configuration.dig("tools", "webfetch", "allow_private_network") != false
+      end
+
+      # Multi-signal classifier for "this static response is a client-rendered
+      # shell, so rendering it in a browser would surface content the raw HTML
+      # doesn't have". Copied from the render-fetch MCP server's published scorer
+      # rather than invented: no single signal decides — signals are weighted and
+      # summed, and we render only at/above the threshold. An empty app-shell
+      # root is the STRONGEST signal (frameworks mount here); short extracted
+      # content is just one weight (render-fetch uses 500 chars), never the sole
+      # trigger, so a page that is merely short (a 404, a small JSON body) is not
+      # dragged through Chrome. Deliberately NOT gated on framework detection
+      # alone ("it's a React site" is too broad) — we inspect the actual response.
+      NEEDS_JS_THRESHOLD = 3
+      JS_CONTENT_FLOOR = 500
+
+      # An app-shell mount point left empty in the static HTML: <div id="root">,
+      # id="app", id="__next"/__nuxt, optionally with other attributes, nothing
+      # (or whitespace) inside.
+      EMPTY_APP_SHELL =
+        %r{<(?:div|main)\b[^>]*\bid=["'](?:root|app|__next|__nuxt)["'][^>]*>\s*</(?:div|main)>}i
+      FRAMEWORK_MARKERS = /data-reactroot|ng-version=|<div\b[^>]*\bid=["']q-app["']/i
+      CLIENT_STATE_MARKERS =
+        /__NEXT_DATA__|window\.__(?:REDUX_STATE|INITIAL_STATE|NUXT|APOLLO_STATE)__/i
+      # render-fetch's "+1 bundled JS": a script src that looks like an app bundle
+      # (webpack/vite chunk names), i.e. real client logic that could BE the
+      # content — not an analytics pixel.
+      BUNDLED_JS_SRC =
+        /<script[^>]+src=["'][^"']*(?:bundle|app|main|chunk|vendor|runtime|index)[^"']*\.js/i
+      # A big inline <script> with no src is a data/hydration payload (e.g.
+      # `var data=[…]` embedding the content in JS). Distinguish from a tiny
+      # analytics snippet by size.
+      INLINE_JS_FLOOR = 500
+
+      def needs_js?(body, static_text)
+        score = 0
+        score += 3 if body.match?(EMPTY_APP_SHELL)
+        score += 2 if static_text.to_s.strip.length < JS_CONTENT_FLOOR
+        score += 2 if body.match?(FRAMEWORK_MARKERS)
+        score += 2 if body.match?(CLIENT_STATE_MARKERS)
+        score += 1 if substantial_js?(body)
+        score >= NEEDS_JS_THRESHOLD
+      end
+
+      # True when the page ships real client-side logic that could produce the
+      # content: a bundled app script, or a sizable inline script (a data blob).
+      def substantial_js?(body)
+        return true if body.match?(BUNDLED_JS_SRC)
+
+        body.scan(%r{<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>}mi)
+            .any? { |m| m.first.to_s.strip.length > INLINE_JS_FLOOR }
+      end
+
+      # Tier-2: when the static fetch looks like a JS-rendered SPA shell, render
+      # the page in a real headless Chromium (ferrum, OPTIONAL gem) and re-run the
+      # SAME extraction on the post-JS DOM. Returns whichever yielded more content,
+      # so a page that needs no JS (or a machine without ferrum/Chrome) keeps the
+      # static result and never pays the browser cost. Fails soft to the static
+      # text on any renderer error.
+      def maybe_js_render(safe, body, static_text)
+        mode = js_rendering_mode
+        return static_text if mode == "off"
+        return static_text unless mode == "always" || needs_js?(body, static_text)
+        return static_text unless Rubino::Web::JsRenderer.available?
+
+        rendered_html = Rubino::Web::JsRenderer.render(safe[:uri].to_s)
+        return static_text if rendered_html.nil? || rendered_html.empty?
+
+        # Cap the rendered DOM to the same ceiling as the static body before we
+        # convert it, so a huge SPA can't blow the extraction budget.
+        rendered_html = rendered_html.dup.force_encoding("UTF-8").scrub("?")
+        if rendered_html.bytesize > MAX_BODY_SIZE
+          rendered_html = rendered_html.byteslice(0, MAX_BODY_SIZE).to_s
+                                       .force_encoding("UTF-8").scrub("?")
+        end
+
+        rendered_text = strip_html(rendered_html)
+        if rendered_text.length > static_text.length
+          # Observability: a successful render is otherwise silent (JsRenderer
+          # only logs failures), so record when the JS tier actually improved the
+          # result — this is the signal that the headless browser earned its cost.
+          Rubino.logger&.debug(event: "webfetch.js_render.used",
+                               url: safe[:uri].to_s,
+                               static_chars: static_text.length,
+                               rendered_chars: rendered_text.length)
+          rendered_text
+        else
+          static_text
         end
       end
 
@@ -245,49 +365,6 @@ module Rubino
           doc.at_css("article") ||
           doc.at_css("body") ||
           doc.root
-      end
-
-      # Serialize a kept subtree to markdown-ish text: headings as "## ", list
-      # items as "- ", paragraphs separated by blank lines. nokogiri's #text
-      # already decodes entities.
-      def serialize_node(node)
-        out = +""
-        node.children.each { |child| render_child(child, out) }
-        out
-      end
-
-      BLOCK_SEPARATORS = {
-        "p" => "\n\n", "div" => "\n", "section" => "\n\n", "article" => "\n\n",
-        "br" => "\n", "tr" => "\n", "ul" => "\n", "ol" => "\n",
-        "blockquote" => "\n\n", "pre" => "\n\n", "table" => "\n\n"
-      }.freeze
-
-      def render_child(node, out)
-        case node.type
-        when Nokogiri::XML::Node::TEXT_NODE
-          out << node.text.gsub(/[ \t]*\n[ \t]*/, " ")
-        when Nokogiri::XML::Node::ELEMENT_NODE
-          render_element(node, out)
-        end
-      end
-
-      def render_element(node, out)
-        name = node.name.downcase
-        case name
-        when /\Ah[1-6]\z/
-          out << "\n\n## #{node.text.strip}\n\n"
-        when "li"
-          out << "\n- #{collapse_inline(node.text)}"
-        when "br"
-          out << "\n"
-        else
-          serialize_node(node).then { |inner| out << inner }
-          out << (BLOCK_SEPARATORS[name] || "")
-        end
-      end
-
-      def collapse_inline(text)
-        text.gsub(/\s+/, " ").strip
       end
 
       def collapse_blank_lines(text)

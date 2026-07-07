@@ -91,7 +91,11 @@ module Rubino
         #   { uri:, host:, port:, addresses: [validated IP strings] }
         # so the caller can connect to a pinned, already-validated IP.
         # Raises BlockedURLError (with a safe message) on any violation.
-        def validate!(url)
+        # `allow_private: true` relaxes the loopback/private/LAN block (so a local
+        # agent can fetch its own localhost dev server or an internal service) but
+        # KEEPS the always-blocked cloud-metadata floor — nothing legitimate fetches
+        # 169.254.169.254, and blocking it protects the OSS gem on a real cloud VM.
+        def validate!(url, allow_private: false)
           uri = parse(url)
           assert_scheme!(uri)
           assert_no_secrets!(uri)
@@ -100,7 +104,7 @@ module Rubino
           raise BlockedURLError, "Blocked: URL has no host" if host.empty?
 
           assert_hostname_not_blocked!(host)
-          addresses = resolve_and_check!(host)
+          addresses = resolve_and_check!(host, allow_private: allow_private)
 
           { uri: uri, host: host, port: uri.port, addresses: addresses }.freeze
         end
@@ -185,7 +189,7 @@ module Rubino
         # Resolve the hostname (or accept a literal IP) and check EVERY answer.
         # Returns the list of validated IP strings for connection pinning.
         # Fails closed on resolution failure.
-        def resolve_and_check!(host)
+        def resolve_and_check!(host, allow_private: false)
           literal = safe_ipaddr(host)
           addresses = literal ? [literal.to_s] : resolve(host)
 
@@ -195,7 +199,7 @@ module Rubino
             ip = safe_ipaddr(addr)
             next if ip.nil?
 
-            check_ip!(host, ip)
+            check_ip!(host, ip, allow_private: allow_private)
           end
 
           addresses
@@ -207,12 +211,14 @@ module Rubino
           []
         end
 
-        def check_ip!(host, ip)
+        def check_ip!(host, ip, allow_private: false)
+          # The cloud-metadata floor is ALWAYS enforced, even with allow_private.
           if ip_always_blocked?(ip)
             raise BlockedURLError,
                   "Blocked: '#{host}' resolves to a cloud-metadata address (#{ip}) — refusing (SSRF)"
           end
 
+          return if allow_private
           return unless ip_blocked?(ip)
 
           raise BlockedURLError,
