@@ -68,9 +68,7 @@ RSpec.describe Rubino::Commands::Executor do
           role = i.even? ? "user" : "assistant"
           store.create(session_id: session[:id], role: role, content: "turn #{i} #{"x" * 200}")
         end
-        # Keep the spec offline + deterministic: real flusher/summary call out.
-        allow(Rubino::Memory::Flusher).to receive(:new)
-          .and_return(instance_double(Rubino::Memory::Flusher, flush_before_compaction!: nil))
+        # Keep the spec offline + deterministic: the summary call is stubbed out.
         allow(Rubino::Context::SummaryBuilder).to receive(:new)
           .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "the summary"))
       end
@@ -133,8 +131,6 @@ RSpec.describe Rubino::Commands::Executor do
         role = i.even? ? "user" : "assistant"
         store.create(session_id: session[:id], role: role, content: "turn #{i} #{"x" * 200}")
       end
-      allow(Rubino::Memory::Flusher).to receive(:new)
-        .and_return(instance_double(Rubino::Memory::Flusher, flush_before_compaction!: nil))
       # A summary far LARGER than the middle it replaces → the child is bigger.
       allow(Rubino::Context::SummaryBuilder).to receive(:new)
         .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "S" * 40_000))

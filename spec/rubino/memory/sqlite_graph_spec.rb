@@ -1,15 +1,18 @@
 # frozen_string_literal: true
 
-require "ostruct"
-
-# Graph-lite layer (Memory Phase 3b): entity nodes, typed/co-occurrence edges
-# with temporal supersession, and the 1-hop traversal blended into retrieval.
+# Graph-lite layer (Memory Phase 3b): entity nodes, co-occurrence edges (laid
+# down on the write path from each fact's entity tags) with temporal
+# supersession, and the 1-hop traversal blended into retrieval.
+#
+# NB: typed edges used to be emitted by the aux extractor's edges[]; with the
+# structured extractor removed, only co-occurrence edges (from store entities)
+# and edges written directly via #upsert_edge exist. Recall degrades gracefully
+# — FTS still works; there are simply no extractor-authored typed edges.
 RSpec.describe Rubino::Memory::SqliteGraph do
   let(:db_connection) { test_database }
   let(:db) { db_connection.db }
   let(:config) { test_configuration("memory" => memory_cfg) }
-  let(:aux_client) { instance_double(Rubino::LLM::AuxiliaryClient) }
-  let(:backend) { Rubino::Memory::Backends::Sqlite.new(config: config, db: db, aux_client: aux_client) }
+  let(:backend) { Rubino::Memory::Backends::Sqlite.new(config: config, db: db) }
 
   def memory_cfg(overrides = {})
     {
@@ -18,21 +21,6 @@ RSpec.describe Rubino::Memory::SqliteGraph do
       "memory_char_limit" => 4000, "user_char_limit" => 1375,
       "sqlite" => { "vector" => false }
     }.merge(overrides)
-  end
-
-  # Durable user content so the turn clears the salience gate and the stubbed
-  # extraction path (edges[]) actually runs — a bare "hi" would NOOP first.
-  def seed_session(id = "s1")
-    now = Time.now.utc.iso8601
-    db[:sessions].insert(id: id, source: "test", status: "active",
-                         message_count: 0, token_count: 0, created_at: now, updated_at: now)
-    Rubino::Session::Store.new(db: db).create(
-      session_id: id, role: "user", content: "I use Redis for caching in this project."
-    )
-  end
-
-  def stub_llm(json)
-    allow(aux_client).to receive(:call).and_return(OpenStruct.new(content: json))
   end
 
   describe "node resolution + co-occurrence edges on store" do
@@ -56,27 +44,15 @@ RSpec.describe Rubino::Memory::SqliteGraph do
     end
   end
 
-  describe "typed edges via extraction + supersession" do
-    before { seed_session }
-
-    it "inserts a typed edge emitted by the extractor under edges[]" do
-      stub_llm('{"add":[{"text":"App uses Redis for caching.","kind":"project","entities":["app","redis"]}],' \
-               '"supersede":[],"edges":[{"src":"app","relation":"uses","dst":"redis"}]}')
-      backend.extract("s1")
-      edge = db[:memory_edges].where(relation: "uses", valid_to: nil).first
-      expect(edge).not_to be_nil
-      src = db[:memory_entities].where(id: edge[:src_entity_id]).get(:name_norm)
-      dst = db[:memory_entities].where(id: edge[:dst_entity_id]).get(:name_norm)
-      expect([src, dst]).to eq(%w[app redis])
-    end
-
+  describe "typed edges via #upsert_edge + supersession" do
     it "soft-retires a changed relation between the SAME entity pair" do
       app = backend.resolve_entity("app")
       redis = backend.resolve_entity("redis")
       backend.upsert_edge(app, redis, "considers", nil)
-      # the turn now asserts a different relation for the same app->redis pair
-      stub_llm('{"add":[],"supersede":[],"edges":[{"src":"app","relation":"uses","dst":"redis"}]}')
-      backend.extract("s1")
+      # a later assertion changes the relation for the same app->redis pair
+      # (the retire-then-insert sequence #index_fact_graph runs for typed edges)
+      backend.supersede_edge(app, redis, "uses")
+      backend.upsert_edge(app, redis, "uses", nil)
 
       retired = db[:memory_edges].where(src_entity_id: app, dst_entity_id: redis).exclude(valid_to: nil)
       live = db[:memory_edges].where(src_entity_id: app, dst_entity_id: redis, valid_to: nil)

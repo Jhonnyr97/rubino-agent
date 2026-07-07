@@ -132,10 +132,10 @@ RSpec.describe Rubino::Context::Compressor do
       child = compressor.send(:create_child_session, parent, head, "SUMMARY", tail)
 
       cursor = db[:sessions].where(id: child[:id]).get(:memory_extracted_msg_id)
+      # Seeded to the child's last copied message (the watermark column is now
+      # inert bookkeeping, but the seed path still runs uniformly across
+      # fork/branch/compaction).
       expect(cursor).to eq(store.last_id(child[:id]))
-      # Nothing in the copied child is newer than the cursor -> first turn feeds
-      # only genuinely new messages, not the whole transcript.
-      expect(store.since(child[:id], after_id: cursor)).to eq([])
     end
 
     # R1-M1: copy_into/create write message rows but never touch the session's
@@ -179,8 +179,6 @@ RSpec.describe Rubino::Context::Compressor do
 
       builder = instance_double(Rubino::Context::SummaryBuilder, build: "NEW SUMMARY")
       allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(builder)
-      allow_any_instance_of(Rubino::Memory::Flusher)
-        .to receive(:flush_before_compaction!)
 
       result = described_class.new(session_id: parent[:id], config: lineage_config, db: db).compact!
 
@@ -213,7 +211,6 @@ RSpec.describe Rubino::Context::Compressor do
       allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(
         instance_double(Rubino::Context::SummaryBuilder, build: "NEW SUMMARY")
       )
-      allow_any_instance_of(Rubino::Memory::Flusher).to receive(:flush_before_compaction!)
 
       summaries_before = db[:session_summaries].count
       sessions_before  = db[:sessions].count
@@ -338,7 +335,6 @@ RSpec.describe Rubino::Context::Compressor do
       allow(Rubino::Context::SummaryBuilder).to receive(:new).and_return(
         instance_double(Rubino::Context::SummaryBuilder, build: "NEW SUMMARY")
       )
-      allow_any_instance_of(Rubino::Memory::Flusher).to receive(:flush_before_compaction!)
 
       short_id = parent[:id][0, 8]
       result = described_class.new(session_id: short_id, config: lineage_config, db: db).compact!

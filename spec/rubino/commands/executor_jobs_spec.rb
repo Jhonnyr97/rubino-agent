@@ -33,8 +33,8 @@ RSpec.describe Rubino::Commands::Executor do
 
     it "renders the status counts plus the same table as `rubino jobs list`" do
       queue.enqueue("BackgroundReviewJob", { "session_id" => "s1" })
-      queue.enqueue("ExtractMemoryJob", { "session_id" => "s2" })
-      failed_id = queue.enqueue("ExtractMemoryJob", { "session_id" => "s3" })
+      queue.enqueue("CompactSessionJob", { "session_id" => "s2" })
+      failed_id = queue.enqueue("CleanupSessionsJob", { "session_id" => "s3" })
       Rubino.database.db[:jobs].where(id: failed_id).update(status: "failed")
 
       exec.try_execute("/jobs")

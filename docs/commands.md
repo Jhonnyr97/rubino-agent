@@ -293,7 +293,7 @@ Typing `/memory ` opens a dropdown with the verbs; after `show`/`forget` it offe
 
 ### Jobs in-chat: `/jobs`
 
-The window into the **persistent jobs queue** — the queue the agent itself feeds mid-session (skill distillation after tool-heavy turns, memory extraction) — distinct from the in-process `/agents` subagents:
+The window into the **persistent jobs queue** — the queue the agent itself feeds mid-session (the review fork that distils skills and mines memory) — distinct from the in-process `/agents` subagents:
 
 ```
 /jobs           # status counts (3 queued · 1 failed …) + the recent-jobs table

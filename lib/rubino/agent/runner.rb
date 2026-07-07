@@ -274,25 +274,21 @@ module Rubino
       # +handoff+ marks an IN-SESSION switch (the in-chat `/new`) where the REPL
       # immediately builds a fresh runner and stays interactive — as opposed to a
       # teardown/headless close where the process is about to exit. On a handoff
-      # the end-of-session memory flush is ENQUEUED detached (so the prompt is
-      # never blocked 2-3s on the catch-all extract's aux LLM call) and the
-      # in-flight-polishing wait is skipped — the still-running process's worker
-      # drains the same process-global queue. Teardown/headless keep the
-      # synchronous flush + bounded wait so the row's facts are mined before the
-      # process dies (a detached job would never drain after exit).
+      # the in-flight-polishing wait is skipped — the still-running process's
+      # worker drains the same process-global queue. The end-of-session review
+      # fork itself branches on @interactive, not handoff (see
+      # #flush_memory_on_session_end!): interactive enqueues detached, headless
+      # runs inline so the row's facts are mined before the process dies.
       def end_session!(handoff: false)
         # Nothing to end for a session that was never persisted (the user opened
         # chat and left without sending a message, #144) — there's no row.
         return if @session.nil? || (@session[:persisted] == false && !@session_repo.persisted?(@session[:id]))
 
-        # End-of-session memory flush (#554): the turn-based auto-extract gate
-        # only fires when the turn counter lands on memory.auto_extract_interval
-        # (default 10), so a session that ends with FEWER turns than the interval
-        # — and never compacted — never extracted its facts. This is the
-        # catch-all that mines any un-extracted turns once on a clean close,
-        # bounded by the same per-session extraction watermark (so it never
-        # double-extracts what the interval/compaction flush already mined) and
-        # gated on memory.enabled + memory.auto_extract. Mirrors Hermes'
+        # End-of-session review fork (#554): the turn-based review gate only
+        # fires when the turn counter lands on the interval, so a short session
+        # that ends before the interval — and never compacted — would never mine
+        # its facts or distill its skills. This is the catch-all that runs the
+        # warm-prefix review once on a clean close. Mirrors Hermes'
         # MemoryProvider#on_session_end. Best-effort: never breaks the exit.
         flush_memory_on_session_end!(handoff: handoff)
 
@@ -316,26 +312,31 @@ module Rubino
 
       private
 
-      # Mine any un-extracted turns before the session row is marked ended
-      # (#554). Routes through Memory::Flusher#flush_on_session_end!, which
-      # honours the memory config gates and the per-session extraction watermark
-      # (so it's a no-op when memory/auto_extract is off and never re-mines what
-      # the interval/compaction flush already extracted). Fully rescued so a
-      # memory hiccup never crashes the exit path.
+      # Run the end-of-session review fork (#554) — the SINGLE post-session
+      # extraction path now that the structured aux-LLM memory extractor is gone.
+      # BackgroundReviewJob mines durable memory AND distills skills off the
+      # warm-prefix fork, so both surfaces are covered here. Gated on the same
+      # config predicates the post-turn path uses and fully rescued so a memory
+      # hiccup never crashes the exit path.
       #
-      # On a +handoff+ (the in-chat `/new`) the synchronous extract — an aux LLM
-      # call that froze the prompt 2-3s — is replaced by ENQUEUEING the SAME
-      # ExtractMemoryJob the post-turn path uses, detached (drain_inline: false),
-      # gated identically. The new runner's polishing worker drains it off the
-      # process-global queue, so `/new` returns instantly and no facts are lost.
-      def flush_memory_on_session_end!(handoff: false)
-        if handoff
-          return unless @config.memory_enabled? && @config.memory_auto_extract?
+      # INTERACTIVE (the in-chat `/new` handoff, or any REPL still alive): enqueue
+      # the review DETACHED (drain_inline: false) so the prompt is never blocked —
+      # the still-running polishing worker drains it off the process-global queue.
+      # HEADLESS one-shot / API: the process is about to EXIT, so a detached job
+      # would never drain; run the fork INLINE and synchronously before exit so
+      # the session's durable facts are mined (and skills distilled) first.
+      #
+      # +handoff+ is retained for call-site compatibility but no longer branches:
+      # the ONLY handoff caller (chat_command `/new`) is interactive, already
+      # covered by the @interactive branch below.
+      def flush_memory_on_session_end!(handoff: false) # rubocop:disable Lint/UnusedMethodArgument
+        return unless @config.memory_auto_extract? || @config.skills_auto_distill?
 
-          Jobs::Queue.new.enqueue("ExtractMemoryJob", { session_id: @session[:id] },
-                                  priority: Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY, drain_inline: false)
+        if @interactive
+          Jobs::Queue.new.enqueue("BackgroundReviewJob", { session_id: @session[:id] },
+                                  drain_inline: false)
         else
-          Memory::Flusher.new(config: @config).flush_on_session_end!(@session[:id])
+          Jobs::Handlers::BackgroundReviewJob.new.perform(session_id: @session[:id])
         end
       rescue StandardError
         nil

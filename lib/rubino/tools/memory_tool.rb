@@ -13,13 +13,15 @@ module Rubino
     # tool-protocol error strings.
     class MemoryTool < Base
       VALID_ACTIONS = %w[add replace remove].freeze
-      VALID_TARGETS = %w[memory user].freeze
+      VALID_TARGETS = %w[memory user project].freeze
 
-      # target → memory kind. "user" is the user_profile slot; "memory"
-      # is the catch-all "fact" kind. Other kinds (preference,
-      # technical_decision, …) are reserved for the auto-extractor — the
-      # agent does not get to write to them directly through this tool.
-      TARGET_TO_KIND = { "memory" => "fact", "user" => "user_profile" }.freeze
+      # target → memory kind. "user" is the user_profile slot; "project" is the
+      # durable project/codebase slot (surfaced as [Project Context]); "memory"
+      # is the catch-all "fact" kind. Other kinds (preference, env, …) are
+      # written by the background review fork, not directly through this tool.
+      TARGET_TO_KIND = {
+        "memory" => "fact", "user" => "user_profile", "project" => "project"
+      }.freeze
 
       def initialize(backend: nil)
         @backend = backend
@@ -33,7 +35,8 @@ module Rubino
         "Persist facts across sessions. Use action=add to record a new fact, " \
           "replace to update an existing fact (substring match on old_text), " \
           "or remove to delete one. target=user writes to the user profile; " \
-          "target=memory writes to general memory. " \
+          "target=project records a durable project/codebase fact (surfaced as " \
+          "[Project Context]); target=memory writes to general memory. " \
           "Store ONE atomic fact per call — make separate calls for separate " \
           "facts so each can be superseded or forgotten independently. " \
           "Content is scanned for prompt-injection / exfiltration patterns and " \
@@ -52,7 +55,8 @@ module Rubino
             target: {
               type: "string",
               enum: VALID_TARGETS,
-              description: "memory (general) or user (user profile)"
+              description: "memory (general), user (user profile), or " \
+                           "project (durable project/codebase fact)"
             },
             content: {
               type: "string",

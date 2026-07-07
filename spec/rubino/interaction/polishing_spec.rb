@@ -96,14 +96,14 @@ RSpec.describe Rubino::Interaction::Polishing do
     end
   end
 
-  # The post-turn memory extraction (ExtractMemoryJob) runs ON this detached
+  # The post-turn review fork (BackgroundReviewJob) runs ON this detached
   # worker, OFF the live turn (#319/#412), mirroring Hermes' best-effort
   # background review (conversation_loop.py:4565-4575 spawns _spawn_background_review
-  # inside try/except: pass). A raise inside the extraction must therefore be
+  # inside try/except: pass). A raise inside the review must therefore be
   # SWALLOWED: it must not propagate out of the worker (crashing the thread /
   # the REPL), the worker must still finish cleanly, and the failing row must be
   # marked terminal so the queue stays honest — not left "queued" to busy-loop.
-  describe "background extraction error isolation (#319)" do
+  describe "background review error isolation (#319)" do
     let(:handler_class) do
       Class.new { define_method(:perform) { |_payload| raise "extraction blew up" } }
     end
@@ -130,42 +130,6 @@ RSpec.describe Rubino::Interaction::Polishing do
       # Inline-mode Queue#fail! marks a failed row "failed" (terminal) rather
       # than re-queuing it, so the drain doesn't pick the same poison row again.
       expect(queue.find(job_id)[:status]).to eq("failed")
-    end
-  end
-
-  # #79: the user-visible memory save (ExtractMemoryJob, priority 50) must drain
-  # AHEAD of lower-priority post-turn jobs (default priority 100) already queued.
-  # The queue orders by `priority, run_at` (lower = first), so even when the
-  # slower default-priority jobs were enqueued FIRST, the higher-priority extract
-  # jumps the FIFO backlog — otherwise the fact the user is about to recall waits
-  # minutes behind the queue.
-  describe "post-turn job priority (#79 save→recall not starved by the backlog)" do
-    let(:drain_order) { [] }
-    let(:handler_class) { Class.new { define_method(:perform) { |_payload| nil } } }
-
-    before do
-      order = drain_order
-      lowprio = Class.new { define_method(:perform) { |_p| order.push("lowprio") } }
-      extract = Class.new { define_method(:perform) { |_p| order.push("extract") } }
-      Rubino::Jobs::Registry.register("LowPriorityJob", lowprio)
-      Rubino::Jobs::Registry.register("ExtractMemoryJob", extract)
-    end
-
-    it "drains the higher-priority ExtractMemoryJob before the default-priority jobs enqueued first" do
-      # Three default-priority jobs enqueued FIRST (priority 100, FIFO by run_at)...
-      3.times { queue.enqueue("LowPriorityJob", {}, drain_inline: false) }
-      # ...then the user-visible save, enqueued LAST but at a higher priority.
-      queue.enqueue("ExtractMemoryJob", {},
-                    priority: Rubino::Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY,
-                    drain_inline: false)
-
-      polishing.start(ui: ui, event_bus: bus)
-      polishing.wait(5)
-
-      # One kick drains the whole due backlog; the extract leads despite being
-      # enqueued last, so recall is prompt instead of waiting behind the queue.
-      expect(drain_order.first).to eq("extract")
-      expect(drain_order).to eq(%w[extract lowprio lowprio lowprio])
     end
   end
 

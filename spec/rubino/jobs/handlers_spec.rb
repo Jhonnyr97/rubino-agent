@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Contract-level specs for the 4 lifecycle job handlers. They run on the hot
+# Contract-level specs for the lifecycle job handlers. They run on the hot
 # path of every long session, so silent breakage = corrupted sessions / lost
 # memories / unbounded session table growth. These specs verify each handler
 # delegates to the expected collaborator with the right id (audit issue #15).
@@ -17,42 +17,6 @@ RSpec.describe "Rubino::Jobs::Handlers" do
     it "is a no-op when session_id is missing" do
       expect(Rubino::Context::Compressor).not_to receive(:new)
       expect { described_class.new.perform({}) }.not_to raise_error
-    end
-  end
-
-  describe Rubino::Jobs::Handlers::ExtractMemoryJob do
-    it "delegates to the configured memory backend for the given session_id" do
-      backend = instance_double(Rubino::Memory::Backends::Sqlite, extract: [])
-      expect(Rubino::Memory::Backends).to receive(:build).and_return(backend)
-      expect(backend).to receive(:extract).with("sid-9")
-      described_class.new.perform(session_id: "sid-9")
-    end
-
-    it "is a no-op when session_id is missing" do
-      expect(Rubino::Memory::Backends).not_to receive(:build)
-      described_class.new.perform({})
-    end
-
-    # #87: "I'll remember X" narration is not a save signal — the handler
-    # echoes a deterministic confirmation from the actual write path.
-    it "prints a deterministic save confirmation when facts were stored (#87)" do
-      backend = instance_double(Rubino::Memory::Backends::Sqlite)
-      allow(backend).to receive(:extract).and_return([{ id: "abcdef1234567890", content: "x" }])
-      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
-
-      described_class.new.perform(session_id: "sid-9")
-
-      notes = Rubino.ui.messages.select { |m| m[:level] == :note }.map { |m| m[:message] }
-      expect(notes).to include(a_string_matching(/saved to memory · 1 fact \(abcdef12\)/))
-    end
-
-    it "stays silent when extraction stored nothing (#87)" do
-      backend = instance_double(Rubino::Memory::Backends::Sqlite, extract: [])
-      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
-
-      described_class.new.perform(session_id: "sid-9")
-
-      expect(Rubino.ui.messages.none? { |m| m[:level] == :note }).to be(true)
     end
   end
 

@@ -68,54 +68,6 @@ RSpec.describe Rubino::Session::Store do
     end
   end
 
-  describe "#since (memory-extraction cursor, #249)" do
-    it "returns all messages in order when the cursor is nil" do
-      %w[a b c].each { |c| store.create(session_id: session[:id], role: "user", content: c) }
-      expect(store.since(session[:id], after_id: nil).map(&:content)).to eq(%w[a b c])
-    end
-
-    it "returns only messages strictly newer than the cursor id" do
-      a = store.create(session_id: session[:id], role: "user", content: "a")
-      store.create(session_id: session[:id], role: "user", content: "b")
-      store.create(session_id: session[:id], role: "user", content: "c")
-      expect(store.since(session[:id], after_id: a.id).map(&:content)).to eq(%w[b c])
-    end
-
-    it "returns nothing when the cursor is already the newest message" do
-      store.create(session_id: session[:id], role: "user", content: "a")
-      last = store.create(session_id: session[:id], role: "user", content: "b")
-      expect(store.since(session[:id], after_id: last.id)).to eq([])
-    end
-
-    it "splits same-second inserts on rowid (no overlap, no skip)" do
-      same_ts = "2026-01-01T00:00:00Z"
-      ids = %w[x y z].map do |c|
-        id = SecureRandom.uuid
-        db_connection.db[:messages].insert(id: id, session_id: session[:id],
-                                           role: "user", content: c, created_at: same_ts)
-        id
-      end
-      # Cursor at the middle row -> only the row after it (rowid tie-break).
-      expect(store.since(session[:id], after_id: ids[1]).map(&:content)).to eq(%w[z])
-    end
-
-    # MEM-3: a message that arrives with an EARLIER created_at than the cursor
-    # (backward clock step / NTP / VM suspend) must still be returned as "new" —
-    # it was inserted after the cursor (higher rowid) even though its wall-clock
-    # timestamp regressed. The old (created_at, rowid) tuple filter silently
-    # dropped it forever; ordering on the monotonic rowid sees it.
-    it "returns an out-of-order (backdated created_at) message newer than the cursor" do
-      cursor = store.create(session_id: session[:id], role: "user", content: "ontime",
-                            created_at: "2026-06-13T10:00:00+00:00")
-      # Inserted AFTER the cursor but timestamped BEFORE it (clock went backwards).
-      backdated = store.create(session_id: session[:id], role: "user", content: "skewed",
-                               created_at: "2026-06-13T09:59:00+00:00")
-      result = store.since(session[:id], after_id: cursor.id)
-      expect(result.map(&:content)).to include("skewed")
-      expect(result.map(&:id)).to eq([backdated.id])
-    end
-  end
-
   describe "#last_id" do
     it "returns the newest message id (rowid tie-break)" do
       store.create(session_id: session[:id], role: "user", content: "a")
@@ -172,11 +124,10 @@ RSpec.describe Rubino::Session::Store do
       # Delete the cursor message itself (what undo/retry do).
       store.delete_from_inclusive(session[:id], from_id: cursor_msg.id)
       new_cursor = db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id)
+      # Re-clamped to the new tail so a dangling watermark can't point at a
+      # deleted row (inert bookkeeping now, but the clamp path still runs).
       expect(new_cursor).to eq(store.last_id(session[:id]))
       expect(new_cursor).not_to eq(cursor_msg.id)
-      # The remaining transcript is now entirely behind the cursor -> nothing
-      # re-fed (no re-mine of the whole session).
-      expect(store.since(session[:id], after_id: new_cursor)).to eq([])
     end
 
     it "clears the cursor when the delete empties the session" do
@@ -202,11 +153,10 @@ RSpec.describe Rubino::Session::Store do
       store.delete_from_inclusive(session[:id], from_id: doomed.id)
 
       new_cursor = db_connection.db[:sessions].where(id: session[:id]).get(:memory_extracted_msg_id)
-      # Cursor stays at `mined` (clamp = never move forward), so the survivor is
-      # still fed to the next extraction instead of being sealed/lost.
+      # Cursor stays at `mined` (clamp = never move forward), so a surviving
+      # message is never sealed past — it is not advanced to the new tail.
       expect(new_cursor).to eq(mined.id)
-      expect(store.since(session[:id], after_id: new_cursor).map(&:content))
-        .to eq(["un-mined survivor"])
+      expect(new_cursor).not_to eq(store.last_id(session[:id]))
     end
   end
 

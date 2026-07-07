@@ -42,7 +42,7 @@ rubino runs a single agent by default and multi-agent routing is dormant.
 ### `context/`
 - `PromptAssembler` — Builds the full prompt from all sources
 - `TokenBudget` — Calculates token usage and decides when to compact (`needs_compaction?`)
-- `Compressor` — Orchestrates compaction (flush memory → split → summarize → lineage)
+- `Compressor` — Orchestrates compaction (split → summarize → lineage; the review fork already mines memory inter-turn, so there is no pre-compaction memory flush)
 - `MessageBoundary` — Splits messages into head/middle/tail
 - `SummaryBuilder` — Generates structured summaries via LLM
 - `ToolPairSanitizer` — Keeps tool_call/result pairs intact
@@ -51,9 +51,11 @@ rubino runs a single agent by default and multi-agent routing is dormant.
 ### `memory/`
 - `Store` — CRUD for memories (7 kinds: user_profile, preference, fact, etc.)
 - `Retriever` — Loads relevant memories for prompt inclusion
-- `Extractor` — Pattern-based extraction from conversations
 - `Deduplicator` — Jaccard similarity deduplication
-- `Flusher` — Pre-compaction memory flush
+
+Extraction is no longer a dedicated class: durable facts are mined agentically
+by the warm-prefix review fork (`Jobs::Handlers::BackgroundReviewJob`) writing
+through the `memory` tool. See [memory.md](memory.md#how-facts-are-extracted-write-path).
 
 ### `session/`
 - `Repository` — Session CRUD with prefix-matching find
@@ -68,7 +70,7 @@ API's `parent_session_id` path.
 - `Runner` — Executes jobs, records runs
 - `Worker` — Polling loop for background processing
 - `Registry` — Maps job types to handler classes
-- Handlers: ExtractMemory, SummarizeSession, CompactSession, CleanupSessions, DistillSkill
+- Handlers: BackgroundReview (memory + skills), SummarizeSession, CompactSession, CleanupSessions
 
 ### `tools/`
 - `Base` — Abstract tool interface (name, description, input_schema, risk_level, call)
@@ -165,6 +167,6 @@ User Input
         │    └─ Final text response
         │
         ├─ Persist session
-        ├─ Enqueue jobs (extract memory, summarize)
+        ├─ Enqueue post-turn jobs (review fork: memory + skills)
         └─ Emit events → UI + SSE clients
 ```

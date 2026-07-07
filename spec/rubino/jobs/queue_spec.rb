@@ -56,21 +56,19 @@ RSpec.describe Rubino::Jobs::Queue do
 
     # Regression for #81: the handler used to self-register only when its
     # constant happened to be loaded; with Zeitwerk lazy autoload nothing
-    # touched ExtractMemoryJob before the inline Runner ran at enqueue time,
-    # so every auto-extract turn failed with "No handler registered" and the
-    # job sat "queued" forever. The Registry now resolves handlers from the
-    # Jobs::Handlers namespace on demand, independent of load order.
-    it "completes an inline ExtractMemoryJob even when nothing pre-registered its handler (#81)" do
+    # touched the handler before the inline Runner ran at enqueue time, so every
+    # post-turn job failed with "No handler registered" and sat "queued" forever.
+    # The Registry now resolves handlers from the Jobs::Handlers namespace on
+    # demand, independent of load order. BackgroundReviewJob#perform for an
+    # unknown session id returns cleanly, so the row still completes.
+    it "completes an inline BackgroundReviewJob even when nothing pre-registered its handler (#81)" do
       Rubino::Jobs::Registry.reset! # simulate a clean process: no constant touched yet
-      backend = instance_double(Rubino::Memory::Backends::Sqlite, extract: [])
-      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
 
-      id = queue.enqueue("ExtractMemoryJob", { session_id: "sid-1" })
+      id = queue.enqueue("BackgroundReviewJob", { session_id: "no-such-session" })
 
       job = db_connection.db[:jobs].where(id: id).first
       expect(job[:status]).to eq("completed")
       expect(job[:last_error]).to be_nil
-      expect(backend).to have_received(:extract).with("sid-1")
     end
 
     # Regression for #84: an inline failure used to go back to "queued", but
@@ -86,8 +84,8 @@ RSpec.describe Rubino::Jobs::Queue do
 
     # Regression for #224 (re-#84): in inline mode run_job is invoked directly
     # (never locked) and Interrupt is not a StandardError, so a turn whose
-    # post-turn extraction was cut short — e.g. the user quit the session while
-    # "polishing · memory" was still running — leaves a row at status=queued,
+    # post-turn review was cut short — e.g. the user quit the session while
+    # "polishing · review" was still running — leaves a row at status=queued,
     # attempts=0, locked_by=nil, last_error=nil. Nothing re-runs it; #84's fix
     # only made inline *failures* terminal, never reaped an orphaned *queued*
     # row. The next inline enqueue (the next `rubino` turn) must drain it. The
@@ -105,7 +103,7 @@ RSpec.describe Rubino::Jobs::Queue do
       it "drains a queued row orphaned by a prior interrupted inline run on the next enqueue (#224)" do
         now = Time.now.utc.iso8601
         orphan = SecureRandom.uuid
-        # An ExtractMemoryJob left exactly as an interrupted inline run would:
+        # A post-turn job left exactly as an interrupted inline run would:
         # queued, never locked, no attempts, no error.
         db_connection.db[:jobs].insert(
           id: orphan, type: "TestJob", status: "queued", priority: 100,
@@ -205,7 +203,7 @@ RSpec.describe Rubino::Jobs::Queue do
   # Regression for #346: the inline orphan reaper used to call Runner#run_job
   # directly — no lock, no terminal re-check — so two processes sharing one
   # RUBINO_HOME both saw the same `queued` orphans and DOUBLE-RAN them (each
-  # billed ExtractMemoryJob ran twice). The reaper now CAS-claims every row
+  # billed job ran twice). The reaper now CAS-claims every row
   # through the same lock #dequeue uses before running it, and run_job refuses a
   # row that already reached a terminal status. Each orphan runs at most once.
   describe "concurrent orphan reaping (#346)" do

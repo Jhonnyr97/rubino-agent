@@ -2,12 +2,14 @@
 
 require "spec_helper"
 
-# The Hermes-style post-turn skill review fork. These specs cover the GATING
-# and ORCHESTRATION deterministically (the actual model turn is stubbed): it
-# skips cleanly when there is nothing to review, and when it does run it forks a
-# child session seeded from the parent, restricts dispatch to the skill tool via
+# The Hermes-style post-turn review fork — the SINGLE extraction mechanism for
+# BOTH memory and skills. These specs cover the GATING and ORCHESTRATION
+# deterministically (the actual model turn is stubbed): it skips cleanly when
+# there is nothing to review, and when it does run it forks a child session
+# seeded from the parent, restricts dispatch to the skill/memory tools via
 # Rubino.review_toolset, pins the parent's captured system prompt + live
-# provider, and cleans up the child afterwards.
+# provider, and cleans up the child afterwards. The `surfaces:` payload selects
+# which halves run, intersected with the config-enabled surfaces.
 RSpec.describe Rubino::Jobs::Handlers::BackgroundReviewJob do
   let(:db)     { test_database }
   let(:config) { test_configuration }
@@ -24,6 +26,14 @@ RSpec.describe Rubino::Jobs::Handlers::BackgroundReviewJob do
     store.create(session_id: session[:id], role: "user", content: "do a thing")
     store.create(session_id: session[:id], role: "assistant", content: "done")
     session
+  end
+
+  # A config with the two review surfaces explicitly toggled.
+  def config_with(memory:, skills:)
+    test_configuration(
+      "memory" => { "enabled" => true, "auto_extract" => memory },
+      "skills" => { "enabled" => true, "auto_distill" => skills }
+    )
   end
 
   it "does nothing without a session id" do
@@ -77,6 +87,60 @@ RSpec.describe Rubino::Jobs::Handlers::BackgroundReviewJob do
     expect(Rubino::Session::Repository.new.find(child_id)).to be_nil
     # and review_toolset is unbound again once the job returns
     expect(Rubino.review_toolset).to be_nil
+  end
+
+  it "runs ONE combined turn (skill + memory in a single prompt) when both surfaces are enabled" do
+    session = parent_with_answer
+    allow(Rubino).to receive(:configuration).and_return(config_with(memory: true, skills: true))
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    prompts  = []
+    toolsets = []
+    runner = instance_double(Rubino::Agent::Runner)
+    allow(runner).to receive(:run!) do |prompt|
+      prompts << prompt
+      toolsets << Rubino.review_toolset
+    end
+    allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+
+    described_class.new.perform({ session_id: session[:id] })
+
+    # A single combined pass — NOT two separate focused turns — so the model
+    # routes corrections to skills and identity facts to memory in one shot.
+    expect(prompts).to eq([described_class::COMBINED_REVIEW_PROMPT])
+    # it still executes under one restricted toolset carrying skill AND memory
+    expect(toolsets.last).to include("skill", "memory")
+  end
+
+  it "runs ONLY the requested surface (memory) even when skills are also enabled" do
+    session = parent_with_answer
+    allow(Rubino).to receive(:configuration).and_return(config_with(memory: true, skills: true))
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    prompts = []
+    toolset = nil
+    runner = instance_double(Rubino::Agent::Runner)
+    allow(runner).to receive(:run!) do |prompt|
+      prompts << prompt
+      toolset = Rubino.review_toolset
+    end
+    allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+
+    described_class.new.perform({ session_id: session[:id], surfaces: ["memory"] })
+
+    expect(prompts).to eq([described_class::MEMORY_REVIEW_PROMPT])
+    expect(toolset).to include("memory")
+    expect(toolset).not_to include("skill")
+  end
+
+  it "skips entirely when the requested surface is disabled in config" do
+    session = parent_with_answer
+    allow(Rubino).to receive(:configuration).and_return(config_with(memory: false, skills: true))
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    # memory requested but auto_extract off, skill enabled but NOT requested.
+    expect(Rubino::Agent::Runner).not_to receive(:new)
+    described_class.new.perform({ session_id: session[:id], surfaces: ["memory"] })
   end
 
   it "swallows a runner failure and still cleans up the child" do

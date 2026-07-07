@@ -69,29 +69,6 @@ module Rubino
         dataset.all.map { |row| hydrate(row) }
       end
 
-      # Returns messages strictly NEWER than +after_id+, in INSERTION order.
-      # Used by the memory extractor's per-session cursor (#249): feeding only the
-      # messages a turn actually added, instead of an overlapping recency window.
-      #
-      # Ordering is on the monotonic `rowid` — NOT the wall-clock `created_at` —
-      # so a message whose `created_at` regresses (backward clock step, NTP
-      # correction, VM suspend) is still seen as "new" and never silently
-      # skipped (MEM-3): its rowid is strictly greater than the cursor's even
-      # when its timestamp is smaller. rowid is SQLite's append-only insertion
-      # counter, exactly the "what arrived after the watermark" semantics the
-      # cursor wants. A nil/unknown +after_id+ (never-extracted session) returns
-      # the whole session in order.
-      def since(session_id, after_id:)
-        cursor_rowid = after_id && @db[:messages]
-                       .where(id: after_id, session_id: session_id)
-                       .get(Sequel.lit("rowid"))
-        ds = @db[:messages]
-             .where(session_id: session_id)
-             .order(Sequel.lit("rowid"))
-        ds = ds.where(Sequel.lit("rowid > ?", cursor_rowid)) if cursor_rowid
-        ds.all.map { |row| hydrate(row) }
-      end
-
       # The id of the newest message in a session (by insertion `rowid`), or nil
       # for an empty session. Used to advance/seed the memory-extraction cursor —
       # rowid (not created_at) so the watermark tracks insertion order and a

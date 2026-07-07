@@ -10,11 +10,6 @@ module Rubino
       # comparably short titles (#45).
       AUX_TITLE_MAX_CHARS = 60
 
-      # Queue priority for the user-visible memory save (#79). Lower = drained
-      # first (the queue orders by `priority, run_at`). Below the default 100 the
-      # other post-turn jobs use, so an ExtractMemoryJob jumps ahead of any
-      # default-priority backlog and the "remember X" → recall is prompt.
-      PRIORITY_EXTRACT_MEMORY = 50
       # The session this lifecycle is currently bound to. Starts as the session
       # passed in, but an automatic budget-triggered compaction swaps it to the
       # compaction child (see #check_and_compact). The owning Runner reads this
@@ -442,62 +437,28 @@ module Rubino
         # column needed (#412/#414).
         turn_no = current_turn_index
 
-        # Extract memory if enabled — THROTTLED to ~every N turns (Hermes'
-        # nudge_interval) instead of every turn (#412). `drain_inline` is already
-        # false on the interactive CLI (a polishing worker drains it OFF the live
-        # turn's critical path); it is only true in API/server/subagent contexts
-        # that have no background drainer, so the throttle keeps the aux-LLM
-        # extract off the interactive path AND cuts its cadence ~10x.
-        enqueued = false
-
-        # KV-cache coherence (#608c): when the aux model shares the MAIN model's
-        # server slot (the default — see Configuration#auxiliary_on_main_endpoint?),
-        # an inter-turn extraction OVERWRITES the live conversation's prefix cache,
-        # so the NEXT user turn re-prefills the whole context (the "freeze after N
-        # turns"). On a single-slot local server there is no way to run a divergent
-        # aux prompt between turns without evicting — so we DON'T: extraction is
-        # deferred to the session-end flush (Memory::Flusher#flush_on_session_end!,
-        # runner.rb) and to compaction, exactly like Hermes/Claude Code keep
-        # automatic memory work off the live conversation. No recall is lost: the
-        # per-session memory snapshot is FROZEN at session start (PromptAssembler
-        # @snapshots), so a mid-session extract is never recalled THIS session
-        # anyway — only the next one, which the end-of-session flush already feeds.
+        # Post-turn housekeeping is the Hermes-style warm-prefix review fork
+        # (BackgroundReviewJob) — the SINGLE mechanism that mines durable memory
+        # AND distills skills. Unlike the old divergent aux calls (the structured
+        # memory extractor + DistillSkillJob, both of which evicted the live KV
+        # slot and so had to be suppressed in interactive), the fork REUSES the
+        # parent turn's cached system prompt + conversation snapshot, so its
+        # request EXTENDS the warm prefix instead of busting it — no eviction, no
+        # "freeze after N turns". That is why it runs inter-turn in the
+        # interactive REPL with NO evicts-live-slot gate, exactly as Hermes does.
         #
-        # Scoped to the INTERACTIVE REPL (@interactive), where more in-process
-        # turns follow this one and would reuse the live KV prefix. A headless
-        # one-shot / API run exits after its single turn, so there is no live
-        # cache to protect and the extraction must still run there (it is how the
-        # fact gets stored before exit, #358). A DISTINCT aux endpoint (its own
-        # slot) never evicts, so it keeps the inter-turn cadence too.
-        extract_evicts_live_slot = @interactive && @config.auxiliary_on_main_endpoint?("compression")
+        # Throttled per surface like Hermes' nudge intervals (memory and skills
+        # each have their own cadence); enqueue ONCE when EITHER surface is due —
+        # the job intersects the config-enabled surfaces itself, so a single
+        # fork covers whichever halves are live.
+        review_due =
+          (@config.skills_auto_distill? &&
+           interval_due?(turn_no, @config.skills_auto_distill_interval)) ||
+          (@config.memory_auto_extract? &&
+           interval_due?(turn_no, @config.memory_auto_extract_interval))
 
-        if @config.memory_auto_extract? && !extract_evicts_live_slot &&
-           interval_due?(turn_no, @config.memory_auto_extract_interval)
-          # ExtractMemoryJob is the user-visible save ("remember X" → recall):
-          # it must drain AHEAD of any default-priority post-turn jobs already in
-          # the queue (#79). The drain orders by `priority, run_at` (lower =
-          # first), so a higher-priority (smaller number) extract jumps slower,
-          # less time-sensitive jobs enqueued before it — otherwise the save the
-          # user is about to recall waits behind a FIFO backlog.
-          queue.enqueue("ExtractMemoryJob", { session_id: @session[:id] },
-                        priority: PRIORITY_EXTRACT_MEMORY, drain_inline: drain_inline)
-          @event_bus.emit(Events::JOB_ENQUEUED, type: "ExtractMemoryJob")
-          enqueued = true
-        end
-
-        # Background skill review — the Hermes-style post-turn fork
-        # (BackgroundReviewJob), throttled every N turns like Hermes'
-        # _skill_nudge_interval. Unlike the old DistillSkillJob (a single aux
-        # call with a DIVERGENT prompt that evicted the live KV slot, so it had
-        # to be suppressed in interactive), the review fork REUSES the parent
-        # turn's cached system prompt + conversation snapshot, so its request
-        # extends the warm prefix instead of busting it — no freeze. That is why
-        # there is NO `evicts_live_slot` gate here: it runs inter-turn in the
-        # interactive REPL exactly as Hermes does. The forked review agent
-        # decides (agentically) whether to create/update a skill; a fresh
-        # skills dir or a trivial one-off simply yields no write.
-        if @config.skills_auto_distill? &&
-           interval_due?(turn_no, @config.skills_auto_distill_interval)
+        enqueued = false
+        if review_due
           queue.enqueue("BackgroundReviewJob", { session_id: @session[:id] }, drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "BackgroundReviewJob")
           enqueued = true

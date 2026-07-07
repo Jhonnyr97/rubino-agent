@@ -4,9 +4,9 @@ module Rubino
   module Memory
     # Duck-typed contract for a pluggable memory backend.
     #
-    # A backend owns the WRITE path (store / replace / forget / extract), the
-    # READ path the prompt assembler depends on (user_profile / project_context
-    # / retrieve), and the admin surface that powers `rubino memory ...`
+    # A backend owns the WRITE path (store / replace / forget), the READ path
+    # the prompt assembler depends on (user_profile / project_context /
+    # retrieve), and the admin surface that powers `rubino memory ...`
     # (list / find). The method set is the union of what the rest of the gem
     # already calls today — extracting this interface is a mechanical refactor,
     # not a rewrite.
@@ -50,12 +50,6 @@ module Rubino
       # Returns the matched row, or nil if nothing matched.
       def forget(kind:, old_text:)
         raise NotImplementedError, "#{self.class} must implement #forget"
-      end
-
-      # Mine a session's messages for durable facts and persist them.
-      # Returns the list of stored entries.
-      def extract(session_id)
-        raise NotImplementedError, "#{self.class} must implement #extract"
       end
 
       # -- READ path (consumed by lifecycle#load_memory -> PromptAssembler) --

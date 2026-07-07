@@ -246,7 +246,7 @@ module Rubino
     # The CancelToken governing best-effort AUX work (post-turn polishing:
     # memory-extract / skill-distill / summarize) running on THIS thread, if
     # any. The detached polishing thread (Interaction::Polishing) binds its
-    # token here so the aux retry/backoff loop (Memory::AuxRetry) can poll it
+    # token here so best-effort aux work on that thread can poll it
     # and abort the moment the user presses Esc — without threading a token
     # through every aux call site. Nil on the foreground turn thread and on the
     # API/server path (no detached polishing), where aux work is uncancellable
